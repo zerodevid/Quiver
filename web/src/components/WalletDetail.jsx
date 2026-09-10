@@ -124,7 +124,8 @@ function StatGrid({ s }) {
 const feeTotal = (p) => (p.status === 'open' ? (p.fees_q || 0) + (p.live_fee_q || 0) : (p.fees_q || 0));
 
 const posCols = (open) => [
-  { key: 'pair', label: 'Posisi / pool', render: (p) => (
+  { key: 'pair', label: 'Posisi / pool', sort: (p) => `${p.symbol0}/${p.symbol1}`,
+    search: (p) => `${p.symbol0}/${p.symbol1} ${p.token_id}`, render: (p) => (
     <div className="flex items-center gap-2.5">
       <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={22} />
       <div>
@@ -136,10 +137,10 @@ const posCols = (open) => [
         </div>
       </div>
     </div>) },
-  { key: 'age', label: 'Umur', render: (p) => <span className="whitespace-nowrap text-muted">{p.ageHours == null ? '—' : p.ageHours < 24 ? p.ageHours.toFixed(2) + tt(' j') : (p.ageHours / 24).toFixed(1) + tt(' hr')}</span> },
-  { key: 'inv', label: 'Modal', align: 'end', render: (p) => usd(p.invested_q) },
-  ...(open ? [{ key: 'val', label: 'Nilai', align: 'end', render: (p) => usd(p.live_value_q) }] : []),
-  { key: 'fee', label: 'Fee total', align: 'end', render: (p) => {
+  { key: 'age', label: 'Umur', sort: (p) => p.ageHours, render: (p) => <span className="whitespace-nowrap text-muted">{p.ageHours == null ? '—' : p.ageHours < 24 ? p.ageHours.toFixed(2) + tt(' j') : (p.ageHours / 24).toFixed(1) + tt(' hr')}</span> },
+  { key: 'inv', label: 'Modal', align: 'end', sort: (p) => p.invested_q, render: (p) => usd(p.invested_q) },
+  ...(open ? [{ key: 'val', label: 'Nilai', align: 'end', sort: (p) => p.live_value_q, render: (p) => usd(p.live_value_q) }] : []),
+  { key: 'fee', label: 'Fee total', align: 'end', sort: feeTotal, render: (p) => {
     const f = feeTotal(p);
     const claimed = p.fees_q || 0, unclaimed = p.status === 'open' ? (p.live_fee_q || 0) : 0;
     return (
@@ -148,13 +149,13 @@ const posCols = (open) => [
         <div className="text-xs text-muted">{p.invested_q > 0 ? ((f / p.invested_q) * 100).toFixed(2) + '%' : ''}</div>
       </div>);
   } },
-  { key: 'pnl', label: open ? 'uPnL' : 'PnL', align: 'end', render: (p) => (<div className={tone(p.pnl_q)}>{usd(p.pnl_q)}<div className="text-xs">{p.pnlPct == null ? '' : pct(p.pnlPct, 2)}</div></div>) },
-  { key: 'dpr', label: 'DPR', align: 'end', render: (p) => <span className={tone(p.dprPct)}>{p.dprPct == null ? '—' : Math.abs(p.dprPct) >= 1000 ? (p.dprPct / 1000).toFixed(2) + 'k%' : p.dprPct.toFixed(2) + '%'}</span> },
-  { key: 'rng', label: 'Rentang harga', render: (p) => (
+  { key: 'pnl', label: open ? 'uPnL' : 'PnL', align: 'end', sort: (p) => p.pnl_q, render: (p) => (<div className={tone(p.pnl_q)}>{usd(p.pnl_q)}<div className="text-xs">{p.pnlPct == null ? '' : pct(p.pnlPct, 2)}</div></div>) },
+  { key: 'dpr', label: 'DPR', align: 'end', sort: (p) => p.dprPct, render: (p) => <span className={tone(p.dprPct)}>{p.dprPct == null ? '—' : Math.abs(p.dprPct) >= 1000 ? (p.dprPct / 1000).toFixed(2) + 'k%' : p.dprPct.toFixed(2) + '%'}</span> },
+  { key: 'rng', label: 'Rentang harga', sortable: false, render: (p) => (
     <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={open ? p.curTick : null}
       dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1}
       entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />) },
-  { key: 'when', label: open ? 'Dibuka' : 'Ditutup', render: (p) => (
+  { key: 'when', label: open ? 'Dibuka' : 'Ditutup', sort: (p) => (open ? p.opened_ts : p.closed_ts), render: (p) => (
     <span className="whitespace-nowrap text-muted">{ago(open ? p.opened_ts : p.closed_ts)}</span>) },
 ];
 
@@ -216,7 +217,6 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
   const [blocks, setBlocks] = useState('900000');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [showAll, setShowAll] = useState(false);
   const timer = useRef(null);
   const alive = useRef(true);
 
@@ -243,7 +243,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
   // muat saat alamat berganti; pindai otomatis kalau belum pernah
   useEffect(() => {
     alive.current = true;
-    setData(null); setLoading(true); setShowAll(false); stopPoll();
+    setData(null); setLoading(true); stopPoll();
     (async () => {
       try {
         const d = await fetchWallet();
@@ -313,19 +313,17 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
             <Panel title={t('Posisi berjalan ({n})', { n: data.open.length })} className="mb-6" bodyClass="p-0"
               action={<Totals rows={data.open} />}>
               <DataTable label="Posisi berjalan" rows={data.open} rowKey={(p) => p.token_id} columns={posCols(true)}
+                searchable defaultSort={{ column: 'val', direction: 'descending' }}
                 empty={<Empty title="Tidak ada posisi berjalan" />}
                 footer={<TotalRow rows={data.open} open />} />
             </Panel>
             <Panel title={t('Riwayat posisi ({n})', { n: data.closed.length })} bodyClass="p-0">
-              <DataTable label="Riwayat posisi" rows={showAll ? data.closed : data.closed.slice(0, 20)} rowKey={(p) => p.token_id} columns={posCols(false)}
+              {/* Pembagian halaman menggantikan tombol "tampilkan semua": 145 baris
+                  sekaligus membuat halaman panjang dan sulit dibaca. */}
+              <DataTable label="Riwayat posisi" rows={data.closed} rowKey={(p) => p.token_id} columns={posCols(false)}
+                searchable pageSize={20} defaultSort={{ column: 'when', direction: 'descending' }}
                 empty={<Empty title="Belum ada posisi tertutup" />}
                 footer={<TotalRow rows={data.closed} />} />
-              {data.closed.length > 20 && (
-                <div className="flex justify-center border-t border-border p-3">
-                  <Button size="sm" variant="ghost" onPress={() => setShowAll(!showAll)}>
-                    {showAll ? t('Tampilkan 20 terbaru saja') : t('Tampilkan semua ({n})', { n: data.closed.length })}</Button>
-                </div>
-              )}
             </Panel>
             <p className="mt-4 text-xs text-muted">{t('Pokok & fee dibaca dari state pool dan posisi tepat di blok tiap kejadian (node arsip). Posisi yang dibuka-tutup tanpa ada swap di rentangnya tercatat impas, bukan kalah.')}</p>
           </>

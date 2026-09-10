@@ -1,10 +1,11 @@
 // Komponen kecil yang dipakai berulang. Semuanya dirakit dari komponen HeroUI;
 // tidak ada gaya visual baru di luar token tema HeroUI.
+import { useEffect, useMemo, useState } from 'react';
 import {
   Card, Chip, EmptyState, Label, Description, TextField, Input, Select, ListBox,
-  Switch, Table, Spinner, Alert,
+  Switch, Table, Spinner, Alert, Pagination,
 } from '@heroui/react';
-import { Inbox } from 'lucide-react';
+import { Inbox, Search } from 'lucide-react';
 import { price, tickPrice, sqrtPrice, widthPct, pct } from '../fmt';
 import { translate as t } from '../i18n';
 
@@ -170,36 +171,149 @@ export function PriceRange({
   );
 }
 
-// Tabel data: kolom = [{key,label,align,className,render}]
-export function DataTable({ label, columns, rows, rowKey, empty, dense, footer }) {
+// Tabel data: menyortir, mencari, dan membagi halaman sendiri.
+//
+// Kolom: { key, label, align, className, render, sort, search, sortable:false }
+//  - sort   : (row) => nilai pembanding (angka/teks). Default: pakai row[key].
+//  - search : (row) => teks yang ikut dicari. Default: hasil sort kalau berupa teks.
+// Semua tabel memakai komponen ini, jadi perilakunya seragam di seluruh dasbor.
+const cmp = (a, b) => {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;              // kosong selalu di bawah, di kedua arah
+  if (b == null) return -1;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return String(a).localeCompare(String(b), undefined, { numeric: true });
+};
+const valOf = (c, r) => (c.sort ? c.sort(r) : r[c.key]);
+
+export function DataTable({
+  label, columns, rows, rowKey, empty, dense, footer,
+  searchable, pageSize = 0, defaultSort,
+}) {
+  const [sort, setSort] = useState(defaultSort || null);
+  const [q, setQ] = useState('');
+  const [page, setPage] = useState(1);
+
+  const searchCols = columns.filter((c) => c.search || (c.sortable !== false && typeof valOf(c, rows[0] || {}) === 'string'));
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return rows;
+    return rows.filter((r) => searchCols.some((c) => {
+      const v = c.search ? c.search(r) : valOf(c, r);
+      return v != null && String(v).toLowerCase().includes(needle);
+    }));
+  }, [rows, q]);
+
+  const sorted = useMemo(() => {
+    if (!sort?.column) return filtered;
+    const col = columns.find((c) => c.key === sort.column);
+    if (!col) return filtered;
+    const dir = sort.direction === 'descending' ? -1 : 1;
+    return [...filtered].sort((a, b) => cmp(valOf(col, a), valOf(col, b)) * dir);
+  }, [filtered, sort, columns]);
+
+  const pages = pageSize ? Math.max(1, Math.ceil(sorted.length / pageSize)) : 1;
+  const cur = Math.min(page, pages);
+  const view = pageSize ? sorted.slice((cur - 1) * pageSize, cur * pageSize) : sorted;
+
+  // Menyaring atau menyortir mengubah isi halaman — kembali ke halaman pertama.
+  useEffect(() => { setPage(1); }, [q, sort?.column, sort?.direction, rows.length]);
+
+  const head = (searchable || pageSize) && rows.length > 0;
   return (
-    <Table variant="secondary">
-      <Table.ScrollContainer>
-        <Table.Content aria-label={t(label)} className="min-w-[640px]">
-          <Table.Header>
-            {columns.map((c, i) => (
-              <Table.Column key={c.key} id={c.key} isRowHeader={i === 0} className={c.align === 'end' ? 'text-end' : ''}>
-                {t(c.label)}
-              </Table.Column>
-            ))}
-          </Table.Header>
-          <Table.Body renderEmptyState={() => empty || <Empty title="Belum ada data" />}>
-            {rows.map((r, i) => (
-              <Table.Row key={rowKey ? rowKey(r, i) : i} id={rowKey ? rowKey(r, i) : i}>
-                {columns.map((c) => (
-                  <Table.Cell key={c.key} className={`${c.align === 'end' ? 'text-end num' : ''} ${dense ? 'py-2' : ''} ${c.className || ''}`}>
-                    {c.render ? c.render(r) : r[c.key]}
-                  </Table.Cell>
-                ))}
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table.Content>
-      </Table.ScrollContainer>
+    <div>
+      {head && (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+          {searchable ? (
+            <div className="relative w-full max-w-64">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
+              <Input variant="secondary" className="pl-8" value={q} aria-label={t('Cari')}
+                placeholder={t('Cari…')} onChange={(e) => setQ(e.target.value)} />
+            </div>
+          ) : <span />}
+          <span className="text-sm text-muted">
+            {q ? t('{n} dari {total} baris', { n: sorted.length, total: rows.length }) : t('{n} baris', { n: rows.length })}
+          </span>
+        </div>
+      )}
+      <Table variant="secondary">
+        <Table.ScrollContainer>
+          <Table.Content aria-label={t(label)} className="min-w-[640px]"
+            sortDescriptor={sort || undefined} onSortChange={setSort}>
+            <Table.Header>
+              {columns.map((c, i) => {
+                const canSort = c.sortable !== false && !!c.key;
+                return (
+                  <Table.Column key={c.key} id={c.key} isRowHeader={i === 0} allowsSorting={canSort}
+                    className={c.align === 'end' ? 'text-end' : ''}>
+                    {canSort
+                      ? ({ sortDirection }) => (
+                        <Table.SortableColumnHeader sortDirection={sortDirection}>{t(c.label)}</Table.SortableColumnHeader>)
+                      : t(c.label)}
+                  </Table.Column>
+                );
+              })}
+            </Table.Header>
+            <Table.Body renderEmptyState={() => (q ? <Empty title="Tidak ada yang cocok" sub="Coba kata kunci lain." /> : empty || <Empty title="Belum ada data" />)}>
+              {view.map((r, i) => (
+                <Table.Row key={rowKey ? rowKey(r, i) : i} id={rowKey ? rowKey(r, i) : i}>
+                  {columns.map((c) => (
+                    <Table.Cell key={c.key} className={`${c.align === 'end' ? 'text-end num' : ''} ${dense ? 'py-2' : ''} ${c.className || ''}`}>
+                      {c.render ? c.render(r) : r[c.key]}
+                    </Table.Cell>
+                  ))}
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table.Content>
+        </Table.ScrollContainer>
+      </Table>
       {footer && rows.length > 0 && (
         <div className="border-t border-border px-4 py-2.5 text-sm">{footer}</div>
       )}
-    </Table>
+      {pageSize > 0 && pages > 1 && (
+        <div className="border-t border-border px-4 py-3">
+          <Pager page={cur} pages={pages} total={sorted.length} pageSize={pageSize} onChange={setPage} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Pager({ page, pages, total, pageSize, onChange }) {
+  const nums = [];
+  if (pages <= 7) for (let i = 1; i <= pages; i++) nums.push(i);
+  else {
+    nums.push(1);
+    if (page > 3) nums.push('…');
+    for (let i = Math.max(2, page - 1); i <= Math.min(pages - 1, page + 1); i++) nums.push(i);
+    if (page < pages - 2) nums.push('…');
+    nums.push(pages);
+  }
+  return (
+    <Pagination>
+      <Pagination.Summary>
+        {t('Baris {a}–{b} dari {n}', { a: (page - 1) * pageSize + 1, b: Math.min(page * pageSize, total), n: total })}
+      </Pagination.Summary>
+      <Pagination.Content>
+        <Pagination.Item>
+          <Pagination.Previous isDisabled={page === 1} onPress={() => onChange(page - 1)}>
+            <Pagination.PreviousIcon /><span className="hidden sm:inline">{t('Sebelumnya')}</span>
+          </Pagination.Previous>
+        </Pagination.Item>
+        {nums.map((p, i) => (
+          <Pagination.Item key={p === '…' ? `e${i}` : p}>
+            {p === '…' ? <Pagination.Ellipsis />
+              : <Pagination.Link isActive={p === page} onPress={() => onChange(p)}>{p}</Pagination.Link>}
+          </Pagination.Item>
+        ))}
+        <Pagination.Item>
+          <Pagination.Next isDisabled={page === pages} onPress={() => onChange(page + 1)}>
+            <span className="hidden sm:inline">{t('Berikutnya')}</span><Pagination.NextIcon />
+          </Pagination.Next>
+        </Pagination.Item>
+      </Pagination.Content>
+    </Pagination>
   );
 }
 

@@ -7,6 +7,7 @@
 //
 // Sisipan nilai: t('Tahap {n} dari 2', { n: 1 }).
 import { createContext, useContext, useEffect, useState } from 'react';
+import { I18nProvider as AriaI18n } from '@heroui/react';
 
 export const LOCALES = { id: 'Indonesia', en: 'English' };
 
@@ -56,6 +57,15 @@ const EN = {
     'lpcopy · mirrors Uniswap v3/v4 liquidity positions · Robinhood Chain (4663)',
   'Memuat…': 'Loading…',
   'Belum ada data': 'No data yet',
+  'Cari': 'Search',
+  'Cari…': 'Search…',
+  'Tidak ada yang cocok': 'Nothing matches',
+  'Coba kata kunci lain.': 'Try a different search term.',
+  '{n} baris': '{n} rows',
+  '{n} dari {total} baris': '{n} of {total} rows',
+  'Baris {a}–{b} dari {n}': 'Rows {a}–{b} of {n}',
+  'Sebelumnya': 'Previous',
+  'Berikutnya': 'Next',
 
   // ---- ringkasan ----
   'Eksposur terbuka': 'Open exposure',
@@ -260,8 +270,6 @@ const EN = {
   'Posisi berjalan ({n})': 'Live positions ({n})',
   'Riwayat posisi ({n})': 'Position history ({n})',
   'Tidak ada posisi berjalan': 'No live positions',
-  'Tampilkan semua ({n})': 'Show all ({n})',
-  'Tampilkan 20 terbaru saja': 'Show only the 20 most recent',
   'Posisi / pool': 'Position / pool',
   'Fee total': 'Total fees',
   'uPnL': 'uPnL',
@@ -595,7 +603,17 @@ export function I18nProvider({ children }) {
     listeners.add(f);
     return () => listeners.delete(f);
   }, []);
-  return <Ctx.Provider value={locale}>{children}</Ctx.Provider>;
+  // AriaI18n menyamakan locale internal React Aria dengan pilihan bahasa di sini,
+  // sehingga arah teks dan format bawaannya ikut. Teks yang dibacakan pembaca layar
+  // ("sortable column", "sorted by column in descending order") tetap Inggris:
+  // React Aria memang tidak mengirim berkas bahasa Indonesia (lihat
+  // node_modules/react-aria/dist/private/intl/table/ — tidak ada id-ID), dan itu
+  // milik pustaka, bukan kamus kita.
+  return (
+    <Ctx.Provider value={locale}>
+      <AriaI18n locale={locale === 'en' ? 'en-US' : 'id-ID'}>{children}</AriaI18n>
+    </Ctx.Provider>
+  );
 }
 export function useI18n() {
   const locale = useContext(Ctx);

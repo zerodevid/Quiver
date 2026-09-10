@@ -17,23 +17,24 @@ export default function Activity() {
           options={[['all', 'Semua keputusan'], ['copy', 'Disalin'], ['dry', 'Simulasi'], ['skip', 'Dilewati'], ['error', 'Gagal']]} />
       </PageHeader>
       <Panel bodyClass="p-0">
-        <DataTable label="Aktivitas" rows={rows} rowKey={(a) => a.id}
+        <DataTable label="Aktivitas" rows={rows} rowKey={(a) => a.id} searchable pageSize={25}
+          defaultSort={{ column: 'ts', direction: 'descending' }}
           empty={<Empty title="Belum ada aktivitas" sub="Gerakan LP wallet target akan muncul di sini begitu terdeteksi." />}
           columns={[
-            { key: 'ts', label: 'Waktu', render: (a) => <span className="whitespace-nowrap text-muted">{ago(a.ts)}</span> },
-            { key: 'tgt', label: 'Target', render: (a) => (
+            { key: 'ts', label: 'Waktu', sort: (a) => a.ts, render: (a) => <span className="whitespace-nowrap text-muted">{ago(a.ts)}</span> },
+            { key: 'tgt', label: 'Target', sort: (a) => a.targetLabel || a.target, search: (a) => `${a.targetLabel || ''} ${a.target}`, render: (a) => (
               <a href={'#target/' + a.target} className="block max-w-40 hover:underline" title={a.target}>
                 {a.targetLabel && <div className="truncate font-medium">{a.targetLabel}</div>}
                 <div className="mono text-muted">{short(a.target)}</div>
               </a>) },
-            { key: 'kind', label: 'Aksi', render: (a) => <div className="flex items-center gap-1.5"><Tag map={AKSI} k={a.kind} /><span className="text-xs text-muted">{a.venue}</span></div> },
-            { key: 'pair', label: 'Pasangan', render: (a) => (a.symbol0 ? `${a.symbol0}/${a.symbol1}` : <span className="text-muted">—</span>) },
-            { key: 'range', label: 'Rentang harga', render: (a) => (a.tick_lower != null
+            { key: 'kind', label: 'Aksi', sort: (a) => a.kind, render: (a) => <div className="flex items-center gap-1.5"><Tag map={AKSI} k={a.kind} /><span className="text-xs text-muted">{a.venue}</span></div> },
+            { key: 'pair', label: 'Pasangan', sort: (a) => (a.symbol0 ? `${a.symbol0}/${a.symbol1}` : null), render: (a) => (a.symbol0 ? `${a.symbol0}/${a.symbol1}` : <span className="text-muted">—</span>) },
+            { key: 'range', label: 'Rentang harga', sortable: false, render: (a) => (a.tick_lower != null
               ? <PriceRange lo={a.tick_lower} hi={a.tick_upper} dec0={a.dec0} dec1={a.dec1}
                   quoteSide={a.quoteSide} symbol0={a.symbol0} symbol1={a.symbol1} />
               : <span className="text-muted">—</span>) },
-            { key: 'val', label: 'Nilai', align: 'end', render: (a) => (a.value_quote == null ? '—' : a.quote_symbol === 'ETH' ? `${a.value_quote.toFixed(4)} Ξ` : usd(a.value_quote)) },
-            { key: 'dec', label: 'Keputusan', render: (a) => (
+            { key: 'val', label: 'Nilai', align: 'end', sort: (a) => a.value_quote, render: (a) => (a.value_quote == null ? '—' : a.quote_symbol === 'ETH' ? `${a.value_quote.toFixed(4)} Ξ` : usd(a.value_quote)) },
+            { key: 'dec', label: 'Keputusan', sort: (a) => a.verdict, search: (a) => `${a.verdict || ''} ${a.reason || ''}`, render: (a) => (
               <div className="max-w-sm"><Tag map={KEPUTUSAN} k={a.verdict} />
                 {a.reason && <div className="mt-1 truncate text-xs text-muted" title={reason(a.reason)}>{reason(a.reason)}</div>}</div>) },
           ]} />

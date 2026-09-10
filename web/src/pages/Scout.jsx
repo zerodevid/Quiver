@@ -60,24 +60,26 @@ export default function Scout() {
           <div className="grid gap-4 lg:grid-cols-5">
             <Panel title="Pasangan" className="lg:col-span-2" bodyClass="p-0">
               <DataTable label="Pasangan" rows={pairs} rowKey={([k]) => k}
+                defaultSort={{ column: 'v', direction: 'descending' }}
                 columns={[
-                  { key: 'k', label: 'Pasangan', render: ([k]) => k },
-                  { key: 'n', label: 'Posisi', align: 'end', render: ([, v]) => v.n },
-                  { key: 'v', label: 'Nilai', align: 'end', render: ([, v]) => usd(v.valueUsd, 0) },
-                  { key: 'f', label: 'Fee', align: 'end', render: ([, v]) => <span className="text-success">{usd(v.feeUsd)}</span> },
+                  { key: 'k', label: 'Pasangan', sort: ([k]) => k, render: ([k]) => k },
+                  { key: 'n', label: 'Posisi', align: 'end', sort: ([, v]) => v.n, render: ([, v]) => v.n },
+                  { key: 'v', label: 'Nilai', align: 'end', sort: ([, v]) => v.valueUsd, render: ([, v]) => usd(v.valueUsd, 0) },
+                  { key: 'f', label: 'Fee', align: 'end', sort: ([, v]) => v.feeUsd, render: ([, v]) => <span className="text-success">{usd(v.feeUsd)}</span> },
                 ]} />
             </Panel>
             <Panel title="Posisi hidup" desc={t('{n} posisi dilepas dalam jendela ini', { n: r.positionsClosed })} className="lg:col-span-3" bodyClass="p-0">
-              <DataTable label="Posisi hidup" rows={live} rowKey={(p) => p.tokenId}
+              <DataTable label="Posisi hidup" rows={live} rowKey={(p) => p.tokenId} searchable pageSize={15}
+                defaultSort={{ column: 'v', direction: 'descending' }}
                 empty={<Empty title="Tidak ada posisi hidup" />}
                 columns={[
-                  { key: 'p', label: 'Pasangan', render: (p) => <div>{p.symbol0}/{p.symbol1}
+                  { key: 'p', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <div>{p.symbol0}/{p.symbol1}
                     <span className={`ml-2 text-xs ${p.inRange ? 'text-success' : 'text-warning'}`}>{t(p.inRange ? 'in' : 'luar')}</span></div> },
-                  { key: 'r', label: 'Rentang harga', render: (p) => <PriceRange lo={p.tickLower} hi={p.tickUpper} cur={p.curTick}
+                  { key: 'r', label: 'Rentang harga', sortable: false, render: (p) => <PriceRange lo={p.tickLower} hi={p.tickUpper} cur={p.curTick}
                     dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1} /> },
-                  { key: 'v', label: 'Nilai', align: 'end', render: (p) => usd(p.valueUsd, 0) },
-                  { key: 'f', label: 'Fee', align: 'end', render: (p) => <span className={tone(p.feeUsd)}>{usd(p.feeUsd)}</span> },
-                  { key: 'a', label: 'Umur', align: 'end', render: (p) => <span className="text-muted">{p.ageHours == null ? '—' : p.ageHours.toFixed(1) + t(' j')}</span> },
+                  { key: 'v', label: 'Nilai', align: 'end', sort: (p) => p.valueUsd, render: (p) => usd(p.valueUsd, 0) },
+                  { key: 'f', label: 'Fee', align: 'end', sort: (p) => p.feeUsd, render: (p) => <span className={tone(p.feeUsd)}>{usd(p.feeUsd)}</span> },
+                  { key: 'a', label: 'Umur', align: 'end', sort: (p) => p.ageHours, render: (p) => <span className="text-muted">{p.ageHours == null ? '—' : p.ageHours.toFixed(1) + t(' j')}</span> },
                 ]} />
             </Panel>
           </div>
