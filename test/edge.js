@@ -377,6 +377,74 @@ async function t(name, fn) {
     await assert.rejects(() => eng.exec.send({ to: ME, data: '0x', value: '0' }, { kind: 'uji' }), /insufficient funds/);
   });
 
+  // ---- yang TIDAK boleh memicu apa pun -----------------------------------
+  // Kekhawatiran wajar: kalau target mengirim ETH/token, bridge, atau swap, apakah
+  // bot ikut? Tidak — bot hanya membaca event likuiditas dari PoolManager dan
+  // perpindahan NFT posisi. Uji ini mengunci perilaku itu.
+  const { Watcher } = require('../src/watcher');
+  const TOPIC_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+  const TOPIC_SWAP_V4 = '0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f';
+  const pad32 = (a) => '0x' + a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+  const LAIN = '0x1234567890123456789012345678901234567890';
+
+  function watcherWith(range) {
+    const store = new Store(':memory:');
+    store.run('INSERT INTO targets(address,label,enabled,added_ts) VALUES(?,?,1,?)', TARGET, 'uji', Date.now());
+    const rpc = { ethCallMany: async (c) => c.map(() => '0x'), batch: async (c) => c.map(() => ({ result: null })), getLogs: async () => [] };
+    const chain = { blockTs: async (b) => b * 101, tokens: async (l) => l.map((a) => ({ address: a, symbol: '?', decimals: 18 })), slot0V4Many: async (ids) => ids.map(() => null), quoteSideOf: () => null, valueInQuote: () => null, poolKeyOfId: async () => null };
+    const w = new Watcher({ rpc, store, chain, cfg: {}, log: () => {} });
+    w.fetchRange = async () => range;
+    w.contractCheck = async () => {};
+    return w;
+  }
+  const log = (address, topics, data = '0x' + '0'.repeat(64)) => ({ address, topics, data, blockNumber: '0x1', transactionHash: '0xdead', logIndex: '0x1' });
+
+  await t('target mengirim USDG ke alamat lain -> bot diam', async () => {
+    const w = watcherWith({
+      modLiq: [], npm: [], xferV4: [],   // transfer ERC20 ada di kontrak USDG, bukan di POSM
+    });
+    assert.strictEqual((await w.scan(1, 1)).length, 0);
+  });
+
+  await t('token ERC20 apa pun yang menyentuh target -> bot diam walau lognya ikut terbawa', async () => {
+    // pertahanan berlapis: seandainya log ERC20 sampai masuk hasil query, bentuknya
+    // 3 topik (bukan NFT 4 topik) dan harus diabaikan.
+    const w = watcherWith({
+      modLiq: [], npm: [],
+      xferV4: [log(USDG, [TOPIC_TRANSFER, pad32(TARGET), pad32(LAIN)])],
+    });
+    assert.strictEqual((await w.scan(1, 1)).length, 0);
+  });
+
+  await t('target melakukan swap (bukan LP) -> bot diam', async () => {
+    const w = watcherWith({
+      modLiq: [log(ADDR.poolManager, [TOPIC_SWAP_V4, '0x' + 'aa'.repeat(32), pad32(TARGET)])],
+      xferV4: [], npm: [],
+    });
+    assert.strictEqual((await w.scan(1, 1)).length, 0);
+  });
+
+  await t('target mengirim NFT koleksi lain -> bot diam', async () => {
+    const w = watcherWith({
+      modLiq: [], npm: [],
+      xferV4: [log(LAIN, [TOPIC_TRANSFER, pad32(TARGET), pad32(ME), pad32('0x01')])],
+    });
+    const acts = await w.scan(1, 1);
+    // hanya NFT dari PositionManager yang berarti; koleksi lain tidak dianggap posisi
+    assert.strictEqual(acts.filter((a) => a.venue === 'v4' && a.kind !== 'transfer_out').length, 0);
+  });
+
+  await t('kontrol positif: NFT POSISI yang berpindah TETAP terdeteksi', async () => {
+    const w = watcherWith({
+      modLiq: [], npm: [],
+      xferV4: [log(ADDR.posmV4, [TOPIC_TRANSFER, pad32(TARGET), pad32(LAIN), pad32('0x7b')])],
+    });
+    const acts = await w.scan(1, 1);
+    assert.strictEqual(acts.length, 1, 'perpindahan NFT posisi harus terdeteksi');
+    assert.strictEqual(acts[0].kind, 'transfer_out');
+    assert.strictEqual(acts[0].tokenId, '123');
+  });
+
   console.log(`\n${pass} lulus, ${fail} gagal`);
   process.exit(fail ? 1 : 0);
 })();
