@@ -142,6 +142,34 @@ class Watcher {
       if (liqDelta === 0n) continue; // hanya klaim fee
       v4Rows.push({ l, poolId: l.topics[1], tickLower, tickUpper, liqDelta, tokenId });
     }
+    // 2b. Jaring pengaman silang. Aksi transfer/penitipan dan aksi likuiditas datang
+    // dari DUA query getLogs terpisah atas rentang yang sama. Kalau query PoolManager
+    // gagal sebagian sementara query PositionManager berhasil, perubahan likuiditas
+    // hilang diam-diam sementara penitipannya tercatat — persis yang terjadi pada
+    // penutupan #2339460 (blok 59601918): custody_out + custody_in tercatat, decrease
+    // tidak, sehingga posisi cermin kita tidak akan pernah ikut ditutup.
+    // Untuk tiap transaksi yang SUDAH kita ketahui menyangkut target, log
+    // ModifyLiquidity-nya diambil langsung dari receipt.
+    const seenTx = new Set(v4Rows.map((r) => r.l.transactionHash));
+    const needTx = [...new Set(actions.filter((a) => a.venue === 'v4').map((a) => a.log.transactionHash))]
+      .filter((h) => !seenTx.has(h));
+    if (needTx.length) {
+      const rcs = await this.rpc.batch(needTx.map((h) => ({ method: 'eth_getTransactionReceipt', params: [h] })));
+      for (const r of rcs) {
+        const rc = r && !r.error ? r.result : null;
+        for (const l of rc?.logs || []) {
+          if (l.address.toLowerCase() !== ADDR.poolManager || l.topics[0] !== TOPIC.modifyLiquidity) continue;
+          if (asAddr(l.topics[2]) !== ADDR.posmV4) continue;
+          const b = ethers.getBytes(l.data);
+          const w = (i) => BigInt(ethers.hexlify(b.slice(i * 32, i * 32 + 32)));
+          const liqDelta = i256(w(2));
+          if (liqDelta === 0n) continue;
+          v4Rows.push({ l, poolId: l.topics[1], tickLower: i24(w(0)), tickUpper: i24(w(1)), liqDelta, tokenId: w(3).toString() });
+          this.log(`aksi likuiditas terselamatkan dari receipt ${l.transactionHash.slice(0, 12)}… (query log tidak memuatnya)`);
+        }
+      }
+    }
+
     await this.resolveOwners('v4', v4Rows.map((r) => r.tokenId));
 
     // 3. v3 NPM increase/decrease

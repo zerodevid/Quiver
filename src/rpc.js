@@ -288,7 +288,13 @@ class RpcPool {
     for (let attempt = 0; attempt < Math.max(1, eligible.length); attempt++) {
       try {
         const span = spanOf(filter);
-        return await this.call('eth_getLogs', [filter], { timeoutMs: 45_000, logSpan: span });
+        const out = await this.call('eth_getLogs', [filter], { timeoutMs: 45_000, logSpan: span });
+        // Sebagian upstream membalas `result: null` alih-alih daftar kosong saat gagal
+        // di dalam. Kalau itu diterima sebagai "tidak ada log", satu rentang blok
+        // hilang DIAM-DIAM padahal kursor tetap maju — aksi target di rentang itu
+        // tidak akan pernah terlihat. Perlakukan sebagai kegagalan supaya diulang.
+        if (!Array.isArray(out)) throw new Error('eth_getLogs mengembalikan hasil bukan daftar');
+        return out;
       } catch (e) {
         lastErr = e;
         if (!capacityErr(e.message)) throw e;

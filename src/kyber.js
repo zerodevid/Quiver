@@ -93,14 +93,19 @@ class Kyber {
     // tx ditolak "Return amount is not enough". Ambil kutipan baru dan ulangi.
     let lastErr = null;
     for (let attempt = 0; attempt < 3; attempt++) {
+      // Toleransi dinaikkan bertahap HANYA saat mengulang: 1x, 2x, 3x. Percobaan
+      // pertama tetap ketat supaya harga wajar tidak dikorbankan; pelonggaran hanya
+      // dipakai kalau harga memang sedang bergerak cepat. Batas rugi rute (maxLossBps)
+      // tidak ikut dilonggarkan, jadi rute yang buruk tetap ditolak.
+      const slip = Math.min(slippageBps * (attempt + 1), maxLossBps || slippageBps * 3);
       try {
-        const r = await this.attempt(tokenIn, tokenOut, amountIn, { slippageBps, maxLossBps, kind, detail, me, nativeIn });
+        const r = await this.attempt(tokenIn, tokenOut, amountIn, { slippageBps: slip, maxLossBps, kind, detail, me, nativeIn });
         if (r || attempt === 2) return r;
       } catch (e) {
         lastErr = e;
         // Hanya harga basi yang layak diulang; gerbang keamanan & batas rugi tidak.
         if (!/Return amount is not enough|not enough|slippage|revert/i.test(e.message) || /router Kyber tidak cocok|nilai ETH tx|menyimpang|rugi/.test(e.message)) throw e;
-        this.log(`swap Kyber percobaan ${attempt + 1} tertolak harga basi — kutipan ulang`);
+        this.log(`swap Kyber percobaan ${attempt + 1} tertolak harga basi — kutipan ulang, toleransi ${(Math.min(slippageBps * (attempt + 2), maxLossBps || slippageBps * 3) / 100).toFixed(1)}%`);
       }
       await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
     }

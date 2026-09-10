@@ -525,8 +525,17 @@ class Engine {
       if (payHave < payRaw) throw new Error(`saldo kurang untuk zap: butuh ~${payRaw} unit ${payTok.slice(0, 8)}…, punya ${payHave}`);
       // Jalur utama: Kyber (rute terbaik lintas pool; banyak pool menolak swap langsung).
       const buyTok = idx === 0 ? plan.token0 : plan.token1;
+      // Batas rugi zap ikut memperhitungkan FEE POOL-nya sendiri. Pool memecoin di chain
+      // ini berfee 4–10%, jadi membeli tokennya memang tidak mungkin lebih murah dari
+      // fee itu; batas kaku 5% membuat pool berfee 4,2% selalu ditolak padahal wajar.
+      // Untuk pool fee dinamis (bendera 0x800000) besarannya tidak diketahui di muka,
+      // jadi tetap memakai batas yang disetel pengguna.
+      const feeBps = plan.fee != null && plan.fee < 1_000_000 ? plan.fee / 100 : null;
+      const zapLossBps = feeBps != null
+        ? Math.max(rules.swap.max_price_impact_bps, Math.round(feeBps) + 200)
+        : rules.swap.max_price_impact_bps;
       const kz = await this.kyber.swap(payTok, buyTok, payRaw, {
-        slippageBps: rules.swap.max_slippage_bps, maxLossBps: rules.swap.max_price_impact_bps,
+        slippageBps: rules.swap.max_slippage_bps, maxLossBps: zapLossBps,
         kind: 'zap_swap', detail: { via: 'kyber', pool: plan.poolRef },
       });
       if (kz) {
