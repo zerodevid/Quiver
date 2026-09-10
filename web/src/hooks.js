@@ -6,10 +6,18 @@ export function usePoll(path, ms = 5000) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const alive = useRef(true);
+  // Balasan bisa datang tidak berurutan: /api/targets kadang lama (RPC kena 429),
+  // sehingga poll berkala yang berangkat lebih dulu bisa mendarat SETELAH reload
+  // yang kita minta usai mengubah sesuatu — dan menimpanya dengan data basi.
+  // Hanya balasan dari permintaan terbaru yang dipakai.
+  const seq = useRef(0);
   const load = useCallback(async () => {
     if (!path) return;
-    try { const d = await get(path); if (alive.current) { setData(d); setError(d.error || null); } }
-    catch (e) { if (alive.current) setError(e.message); }
+    const mine = ++seq.current;
+    try {
+      const d = await get(path);
+      if (alive.current && mine === seq.current) { setData(d); setError(d.error || null); }
+    } catch (e) { if (alive.current && mine === seq.current) setError(e.message); }
   }, [path]);
   useEffect(() => {
     alive.current = true;

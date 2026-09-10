@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, Card, Switch, toast } from '@heroui/react';
 import { Trash2, SlidersHorizontal, Plus, ChevronRight, ArrowLeft, Copy, Pencil, Check as CheckIcon, X } from 'lucide-react';
 import { usePoll } from '../hooks';
@@ -47,9 +47,38 @@ function ResearchLine({ r }) {
   );
 }
 
-const toggle = async (t, on, onChanged) => { await post('/api/targets/toggle', { address: t.address, enabled: on }); onChanged(); };
+// Sakelar dibuat optimistis. /api/targets ikut menghitung riset tiap wallet, jadi
+// balasannya bisa beberapa detik saat RPC sedang kena 429; tanpa ini sakelar diam di
+// posisi lama sampai balasan datang — persis seperti tidak bisa diklik. Nilai lokal
+// dipakai sampai server menyetujuinya.
+function useToggles(targets, reload) {
+  const [pending, setPending] = useState({});
+  useEffect(() => {
+    if (!targets) return;
+    setPending((p) => {
+      const next = {}; let changed = false;
+      for (const [addr, want] of Object.entries(p)) {
+        const srv = targets.find((x) => x.address === addr);
+        if (srv && !!srv.enabled === want) { changed = true; continue; }   // server sudah setuju
+        next[addr] = want;
+      }
+      return changed ? next : p;
+    });
+  }, [targets]);
+  const enabledOf = (tg) => pending[tg.address] ?? !!tg.enabled;
+  const toggle = async (tg, on) => {
+    setPending((p) => ({ ...p, [tg.address]: on }));
+    const r = await post('/api/targets/toggle', { address: tg.address, enabled: on });
+    if (r?.error) {
+      setPending((p) => { const n = { ...p }; delete n[tg.address]; return n; });
+      return toast.danger(r.error);
+    }
+    reload();
+  };
+  return { enabledOf, toggle };
+}
 
-function TargetCard({ tg, onChanged }) {
+function TargetCard({ tg, enabled, onToggle, onChanged }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const href = '#target/' + tg.address;
@@ -61,7 +90,7 @@ function TargetCard({ tg, onChanged }) {
     <Card>
       <Card.Content className="gap-4">
         <div className="flex flex-wrap items-center gap-4">
-          <Switch isSelected={!!tg.enabled} onChange={(on) => toggle(tg, on, onChanged)} aria-label={t('Aktifkan target')}>
+          <Switch isSelected={enabled} onChange={(on) => onToggle(tg, on)} aria-label={t('Aktifkan target')}>
             <Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
           </Switch>
           {/* Bagian kiri bisa diklik: membuka PnL, posisi, dan riwayat wallet ini */}
@@ -123,7 +152,7 @@ function EditableLabel({ tg, onChanged }) {
 }
 
 // Halaman detail satu target: status copy + riset wallet lengkap (sama dengan menu Wallet).
-function TargetDetail({ address, targets, reload }) {
+function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
   const { t } = useI18n();
   const tg = targets.find((x) => x.address === address.toLowerCase());
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -149,10 +178,10 @@ function TargetDetail({ address, targets, reload }) {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <Switch isSelected={!!tg.enabled} onChange={(on) => toggle(tg, on, reload)}>
+          <Switch isSelected={enabledOf(tg)} onChange={(on) => onToggle(tg, on)}>
             <Switch.Content>
               <Switch.Control><Switch.Thumb /></Switch.Control>
-              <span className="text-sm">{t(tg.enabled ? 'Sedang dicopy' : 'Dimatikan')}</span>
+              <span className="text-sm">{t(enabledOf(tg) ? 'Sedang dicopy' : 'Dimatikan')}</span>
             </Switch.Content>
           </Switch>
           <Button variant={rulesOpen ? 'secondary' : 'outline'} onPress={() => setRulesOpen(!rulesOpen)}>
@@ -182,12 +211,13 @@ function TargetDetail({ address, targets, reload }) {
 export default function Targets({ param }) {
   const { t } = useI18n();
   const { data: d, reload } = usePoll('/api/targets', 15000);
+  const { enabledOf, toggle } = useToggles(d?.targets, reload);
   const [addr, setAddr] = useState('');
   const [label, setLabel] = useState('');
   const [busy, setBusy] = useState(false);
   const valid = /^0x[0-9a-fA-F]{40}$/.test(addr.trim());
 
-  if (param) return !d ? <Loading /> : <TargetDetail address={param} targets={d.targets} reload={reload} />;
+  if (param) return !d ? <Loading /> : <TargetDetail address={param} targets={d.targets} reload={reload} enabledOf={enabledOf} onToggle={toggle} />;
 
   const add = async () => {
     setBusy(true);
@@ -213,7 +243,7 @@ export default function Targets({ param }) {
         </Panel>
         <div className="flex min-w-0 flex-col gap-4 lg:col-span-2">
           {!d ? <Loading /> : d.targets.length
-            ? d.targets.map((x) => <TargetCard key={x.address + (x.rules || '')} tg={x} onChanged={reload} />)
+            ? d.targets.map((x) => <TargetCard key={x.address + (x.rules || '')} tg={x} enabled={enabledOf(x)} onToggle={toggle} onChanged={reload} />)
             : <Card><Card.Content><Empty title="Belum ada wallet target" sub="Tambahkan alamat di sebelah kiri, atau dari halaman Wallet setelah memeriksa kinerjanya." /></Card.Content></Card>}
         </div>
       </div>
