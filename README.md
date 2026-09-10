@@ -286,6 +286,28 @@ kursor sudah terlanjur lewat.
 - `scout` hanya melihat sejauh jendela pindainya. Posisi yang dibuka sebelum jendela
   tidak terhitung, dan angka itu ditampilkan apa adanya di rapor.
 
+## Dwibahasa (Indonesia / Inggris)
+
+Pemilih bahasa ada di kaki sidebar; pilihannya disimpan di browser, dan bahasa awal
+mengikuti pengaturan sistem. Angka dan tanggal ikut berubah — Indonesia memakai koma
+desimal (`$0,00`, `59.451.560`), Inggris memakai titik (`$0.00`, `59,451,416`).
+
+Kamusnya di `web/src/i18n.jsx` dan memakai **teks Indonesia sebagai kunci**. Alasannya:
+kalau sebuah terjemahan terlewat, yang muncul tetap kalimat Indonesia yang benar — bukan
+kunci mentah atau teks kosong. Untuk dua bahasa, itu menghapus seluruh kelas bug
+"kunci tidak ketemu".
+
+Alasan keputusan dari mesin (`decisions.reason`) dirangkai di server dengan nilai yang
+disisipkan, jadi diterjemahkan per potongan lewat `reason()`; angka, alamat, dan pesan
+error RPC dibiarkan apa adanya karena memang bukan kalimat kita.
+
+Dua pemeriksaan yang dipakai saat mengembangkan (keduanya bersih):
+
+```bash
+python3 /tmp/check-keys.py   # setiap t('…') di kode ada padanannya di kamus
+python3 /tmp/audit-i18n.py   # render tiap halaman di kedua bahasa, cari teks yang identik
+```
+
 ## Tampilan (React + HeroUI v3)
 
 Sumbernya di `web/` (Vite + React 19 + HeroUI v3 + Tailwind v4 + lucide-react + recharts),

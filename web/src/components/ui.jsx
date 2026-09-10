@@ -6,14 +6,15 @@ import {
 } from '@heroui/react';
 import { Inbox } from 'lucide-react';
 import { price, tickPrice, sqrtPrice, widthPct, pct } from '../fmt';
+import { translate as t } from '../i18n';
 
 export function PageHeader({ group, title, desc, children }) {
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div>
-        <div className="text-xs font-medium uppercase tracking-wider text-muted">{group}</div>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">{title}</h1>
-        {desc && <p className="mt-1 max-w-2xl text-sm text-muted">{desc}</p>}
+        <div className="text-xs font-medium uppercase tracking-wider text-muted">{t(group)}</div>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t(title)}</h1>
+        {desc && <p className="mt-1 max-w-2xl text-sm text-muted">{t(desc)}</p>}
       </div>
       {children && <div className="flex items-center gap-2">{children}</div>}
     </div>
@@ -24,9 +25,9 @@ export function Stat({ label, value, sub, valueClass = '' }) {
   return (
     <Card className="min-w-0">
       <Card.Content className="gap-1">
-        <div className="text-xs font-medium uppercase tracking-wider text-muted">{label}</div>
+        <div className="text-xs font-medium uppercase tracking-wider text-muted">{t(label)}</div>
         <div className={`num text-2xl font-semibold tracking-tight ${valueClass}`}>{value}</div>
-        {sub && <div className="text-sm text-muted">{sub}</div>}
+        {sub && <div className="text-sm text-muted">{typeof sub === 'string' ? t(sub) : sub}</div>}
       </Card.Content>
     </Card>
   );
@@ -41,8 +42,8 @@ export function Panel({ title, desc, action, children, className = '', bodyClass
       {(title || action) && (
         <Card.Header className="flex-row items-start justify-between gap-3">
           <div>
-            {title && <Card.Title>{title}</Card.Title>}
-            {desc && <Card.Description>{desc}</Card.Description>}
+            {title && <Card.Title>{t(title)}</Card.Title>}
+            {desc && <Card.Description>{t(desc)}</Card.Description>}
           </div>
           {action}
         </Card.Header>
@@ -54,21 +55,21 @@ export function Panel({ title, desc, action, children, className = '', bodyClass
 
 export function Tag({ map, k, fallback }) {
   const v = map?.[k];
-  return <Chip size="sm" variant="soft" color={v ? v[1] : 'default'} className="whitespace-nowrap">{v ? v[0] : (fallback ?? k ?? '—')}</Chip>;
+  return <Chip size="sm" variant="soft" color={v ? v[1] : 'default'} className="whitespace-nowrap">{v ? t(v[0]) : (fallback ?? k ?? '—')}</Chip>;
 }
 
 export function Empty({ title, sub }) {
   return (
     <EmptyState className="flex w-full flex-col items-center justify-center gap-2 py-10 text-center">
       <Inbox className="size-6 text-muted" strokeWidth={1.5} />
-      <div className="text-sm font-medium">{title}</div>
-      {sub && <div className="max-w-sm text-sm text-muted">{sub}</div>}
+      <div className="text-sm font-medium">{t(title)}</div>
+      {sub && <div className="max-w-sm text-sm text-muted">{t(sub)}</div>}
     </EmptyState>
   );
 }
 
 export function Loading({ text = 'Memuat…' }) {
-  return <div className="flex items-center justify-center gap-3 py-12 text-sm text-muted"><Spinner size="sm" color="current" />{text}</div>;
+  return <div className="flex items-center justify-center gap-3 py-12 text-sm text-muted"><Spinner size="sm" color="current" />{t(text)}</div>;
 }
 
 export function Notice({ status = 'default', title, children }) {
@@ -76,7 +77,7 @@ export function Notice({ status = 'default', title, children }) {
     <Alert status={status}>
       <Alert.Indicator />
       <Alert.Content>
-        {title && <Alert.Title>{title}</Alert.Title>}
+        {title && <Alert.Title>{t(title)}</Alert.Title>}
         {children && <Alert.Description>{children}</Alert.Description>}
       </Alert.Content>
     </Alert>
@@ -125,18 +126,18 @@ export function PriceRange({
   if (!closed && pNow != null) {
     if (inRange) {
       const toLo = (pNow / pLo - 1) * 100, toHi = (pHi / pNow - 1) * 100;
-      edge = <span className="text-success">di dalam · {Math.min(toLo, toHi).toFixed(0)}% ke tepi {toLo < toHi ? 'bawah' : 'atas'}</span>;
+      edge = <span className="text-success">{t(toLo < toHi ? 'di dalam · {n}% ke tepi bawah' : 'di dalam · {n}% ke tepi atas', { n: Math.min(toLo, toHi).toFixed(0) })}</span>;
     } else {
       const off = pNow < pLo ? (pLo / pNow - 1) * 100 : (pNow / pHi - 1) * 100;
-      edge = <span className="text-warning">di luar · {off.toFixed(0)}% {pNow < pLo ? 'di bawah' : 'di atas'}</span>;
+      edge = <span className="text-warning">{t(pNow < pLo ? 'di luar · {n}% di bawah' : 'di luar · {n}% di atas', { n: off.toFixed(0) })}</span>;
     }
   }
 
   const title = [
-    `Rentang ${price(pLo)} – ${price(pHi)}${quote ? ' ' + quote : ''}${base ? ' per ' + base : ''}`,
-    pEntry != null ? `Harga masuk ${price(pEntry)}` : null,
-    pNow != null ? `Harga ${closed ? 'keluar' : 'kini'} ${price(pNow)}${move != null ? ` (${pct(move, 1)})` : ''}` : null,
-    `Lebar ${widthPct(lo, hi).toFixed(0)}% (${(pHi / pLo).toFixed(2)}×) · tick ${lo} … ${hi}`,
+    t('Rentang {lo} – {hi}{q} per {b}', { lo: price(pLo), hi: price(pHi), q: quote ? ' ' + quote : '', b: base || '—' }),
+    pEntry != null ? t('Harga masuk {p}', { p: price(pEntry) }) : null,
+    pNow != null ? t(closed ? 'Harga keluar {p}{m}' : 'Harga kini {p}{m}', { p: price(pNow), m: move != null ? ` (${pct(move, 1)})` : '' }) : null,
+    t('Lebar {w}% ({x}×) · tick {lo} … {hi}', { w: widthPct(lo, hi).toFixed(0), x: (pHi / pLo).toFixed(2), lo, hi }),
   ].filter(Boolean).join('\n');
 
   return (
@@ -151,16 +152,16 @@ export function PriceRange({
         <div className="absolute inset-y-0 rounded-full bg-accent/60"
           style={{ left: `${at100(pLo)}%`, width: `${Math.max(2, at100(pHi) - at100(pLo))}%` }} />
         {/* masuk: penanda tipis & redup; kini/keluar: penanda tegas */}
-        {pEntry != null && <div className="absolute -top-0.5 h-2.5 w-0.5 rounded-full bg-muted" style={{ left: `${at100(pEntry)}%` }} title="harga masuk" />}
-        {pNow != null && <div className="absolute -top-1 h-3.5 w-0.5 rounded-full bg-foreground" style={{ left: `${at100(pNow)}%` }} title={closed ? 'harga keluar' : 'harga kini'} />}
+        {pEntry != null && <div className="absolute -top-0.5 h-2.5 w-0.5 rounded-full bg-muted" style={{ left: `${at100(pEntry)}%` }} title={t('harga masuk')} />}
+        {pNow != null && <div className="absolute -top-1 h-3.5 w-0.5 rounded-full bg-foreground" style={{ left: `${at100(pNow)}%` }} title={t(closed ? 'harga keluar' : 'harga kini')} />}
       </div>
       {pEntry != null && (
         <div className="num mt-1 text-xs whitespace-nowrap text-muted">
-          masuk {price(pEntry)}
+          {t('masuk {p}', { p: price(pEntry) })}
           {move != null && <>
             <span className="mx-1 text-muted">·</span>
             <span className={move > 0.05 ? 'text-success' : move < -0.05 ? 'text-danger' : ''}>
-              {closed ? 'keluar ' : ''}{pct(move, 1)}</span>
+              {closed ? t('keluar ') : ''}{pct(move, 1)}</span>
           </>}
         </div>
       )}
@@ -174,11 +175,11 @@ export function DataTable({ label, columns, rows, rowKey, empty, dense, footer }
   return (
     <Table variant="secondary">
       <Table.ScrollContainer>
-        <Table.Content aria-label={label} className="min-w-[640px]">
+        <Table.Content aria-label={t(label)} className="min-w-[640px]">
           <Table.Header>
             {columns.map((c, i) => (
               <Table.Column key={c.key} id={c.key} isRowHeader={i === 0} className={c.align === 'end' ? 'text-end' : ''}>
-                {c.label}
+                {t(c.label)}
               </Table.Column>
             ))}
           </Table.Header>
@@ -206,11 +207,11 @@ export function DataTable({ label, columns, rows, rowKey, empty, dense, footer }
 export function Text({ label, value, onChange, placeholder, hint, type = 'text', mono, isInvalid, error, autoComplete, className = '' }) {
   return (
     <TextField value={value ?? ''} onChange={onChange} type={type} isInvalid={isInvalid} className={`flex flex-col gap-1 ${className}`}>
-      {label && <Label>{label}</Label>}
+      {label && <Label>{t(label)}</Label>}
       {/* variant="secondary": varian HeroUI untuk field di dalam Card/Surface. Varian bawaan
           (primary) berwarna sama persis dengan kartu dan tanpa garis tepi — tidak terlihat. */}
-      <Input variant="secondary" placeholder={placeholder} autoComplete={autoComplete} className={mono ? 'mono' : type === 'number' ? 'num' : ''} />
-      {isInvalid && error ? <Description className="text-danger">{error}</Description> : hint && <Description>{hint}</Description>}
+      <Input variant="secondary" placeholder={placeholder && t(placeholder)} autoComplete={autoComplete} className={mono ? 'mono' : type === 'number' ? 'num' : ''} />
+      {isInvalid && error ? <Description className="text-danger">{t(error)}</Description> : hint && <Description>{t(hint)}</Description>}
     </TextField>
   );
 }
@@ -218,13 +219,13 @@ export function Text({ label, value, onChange, placeholder, hint, type = 'text',
 export function Pick({ label, value, onChange, options, hint, className = '' }) {
   return (
     <Select variant="secondary" value={value} onChange={(v) => onChange(v)} className={`flex flex-col gap-1 ${className}`}>
-      {label && <Label>{label}</Label>}
+      {label && <Label>{t(label)}</Label>}
       <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-      {hint && <Description>{hint}</Description>}
+      {hint && <Description>{t(hint)}</Description>}
       <Select.Popover>
         <ListBox>
           {options.map(([id, text]) => (
-            <ListBox.Item key={id} id={id} textValue={text}>{text}<ListBox.ItemIndicator /></ListBox.Item>
+            <ListBox.Item key={id} id={id} textValue={t(text)}>{t(text)}<ListBox.ItemIndicator /></ListBox.Item>
           ))}
         </ListBox>
       </Select.Popover>
@@ -237,8 +238,8 @@ export function Toggle({ label, desc, value, onChange, isDisabled }) {
     <Switch isSelected={!!value} onChange={onChange} isDisabled={isDisabled}>
       <Switch.Control><Switch.Thumb /></Switch.Control>
       <Switch.Content>
-        <Label>{label}</Label>
-        {desc && <Description>{desc}</Description>}
+        <Label>{t(label)}</Label>
+        {desc && <Description>{t(desc)}</Description>}
       </Switch.Content>
     </Switch>
   );

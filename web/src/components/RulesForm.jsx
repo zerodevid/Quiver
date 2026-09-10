@@ -2,6 +2,7 @@ import { Fragment } from 'react';
 import { Separator } from '@heroui/react';
 import { SCHEMA } from '../rulesSchema';
 import { Text, Pick, Toggle } from './ui';
+import { useI18n } from '../i18n';
 
 const dig = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
 export function put(o, p, v) {
@@ -15,6 +16,7 @@ export function put(o, p, v) {
 // Form aturan berbasis skema. Field yang tidak berlaku untuk mode terpilih
 // disembunyikan; nilainya tetap tersimpan sehingga ganti mode bolak-balik aman.
 export default function RulesForm({ value, onChange }) {
+  const { t } = useI18n();
   if (!value) return null;
   return (
     <div className="flex flex-col gap-8">
@@ -25,7 +27,7 @@ export default function RulesForm({ value, onChange }) {
           <Fragment key={g.group}>
             {gi > 0 && <Separator />}
             <section>
-              <h3 className="mb-4 text-sm font-semibold">{g.group}</h3>
+              <h3 className="mb-4 text-sm font-semibold">{t(g.group)}</h3>
               <div className="grid gap-x-6 gap-y-5 md:grid-cols-2 xl:grid-cols-3">
                 {visible.map((f) => {
                   const v = dig(value, f.path);

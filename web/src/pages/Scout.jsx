@@ -3,8 +3,10 @@ import { Button, ProgressBar, toast } from '@heroui/react';
 import { get, post } from '../api';
 import { PageHeader, Panel, Stat, DataTable, Empty, PriceRange, Text, Pick } from '../components/ui';
 import { usd, tone } from '../fmt';
+import { useI18n } from '../i18n';
 
 export default function Scout() {
+  const { t } = useI18n();
   const [addr, setAddr] = useState('');
   const [blocks, setBlocks] = useState('900000');
   const [job, setJob] = useState(null);
@@ -37,23 +39,23 @@ export default function Scout() {
             isInvalid={addr !== '' && !valid} error="Alamat harus 0x diikuti 40 karakter hex." />
           <Pick label="Jendela pindai" value={blocks} onChange={setBlocks}
             options={[['450000', '~12 jam'], ['900000', '~1 hari'], ['2600000', '~3 hari'], ['6000000', '~7 hari']]} />
-          <Button onPress={run} isDisabled={!valid} isPending={job?.status === 'jalan'}>Periksa</Button>
+          <Button onPress={run} isDisabled={!valid} isPending={job?.status === 'jalan'}>{t('Periksa')}</Button>
         </div>
         {job?.status === 'jalan' && (
-          <ProgressBar value={job.progress || 2} size="sm" aria-label="Progres" className="mt-4">
+          <ProgressBar value={job.progress || 2} size="sm" aria-label={t('Progres')} className="mt-4">
             <ProgressBar.Track><ProgressBar.Fill /></ProgressBar.Track>
           </ProgressBar>
         )}
-        {job?.status === 'gagal' && <p className="mt-3 text-sm text-danger">Gagal: {job.error}</p>}
+        {job?.status === 'gagal' && <p className="mt-3 text-sm text-danger">{t('Gagal: {e}', { e: job.error })}</p>}
       </Panel>
 
       {r && (
         <>
           <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Stat label="Nilai posisi hidup" value={usd(r.totalValueUsd)} sub={`${r.positionsAlive} posisi`} />
-            <Stat label="Fee belum diklaim" value={usd(r.totalUnclaimedFeeUsd)} valueClass="text-success" sub={`${r.feeRatioPct.toFixed(2)}% dari nilai`} />
-            <Stat label="Sedang in-range" value={`${r.inRangePct.toFixed(0)}%`} sub={`median umur ${r.medianAgeHours.toFixed(1)} jam`} />
-            <Stat label="Ukuran & rentang khas" value={usd(r.medianPositionUsd, 0)} sub={`lebar median ${r.medianWidthPct.toFixed(0)}%`} />
+            <Stat label="Nilai posisi hidup" value={usd(r.totalValueUsd)} sub={t('{n} posisi hidup', { n: r.positionsAlive })} />
+            <Stat label="Fee belum diklaim" value={usd(r.totalUnclaimedFeeUsd)} valueClass="text-success" sub={t('{p}% dari nilai', { p: r.feeRatioPct.toFixed(2) })} />
+            <Stat label="Sedang in-range" value={`${r.inRangePct.toFixed(0)}%`} sub={t('median umur {h} jam', { h: r.medianAgeHours.toFixed(1) })} />
+            <Stat label="Ukuran & rentang khas" value={usd(r.medianPositionUsd, 0)} sub={t('lebar median {w}%', { w: r.medianWidthPct.toFixed(0) })} />
           </div>
           <div className="grid gap-4 lg:grid-cols-5">
             <Panel title="Pasangan" className="lg:col-span-2" bodyClass="p-0">
@@ -65,17 +67,17 @@ export default function Scout() {
                   { key: 'f', label: 'Fee', align: 'end', render: ([, v]) => <span className="text-success">{usd(v.feeUsd)}</span> },
                 ]} />
             </Panel>
-            <Panel title="Posisi hidup" desc={`${r.positionsClosed} posisi dilepas dalam jendela ini`} className="lg:col-span-3" bodyClass="p-0">
+            <Panel title="Posisi hidup" desc={t('{n} posisi dilepas dalam jendela ini', { n: r.positionsClosed })} className="lg:col-span-3" bodyClass="p-0">
               <DataTable label="Posisi hidup" rows={live} rowKey={(p) => p.tokenId}
                 empty={<Empty title="Tidak ada posisi hidup" />}
                 columns={[
                   { key: 'p', label: 'Pasangan', render: (p) => <div>{p.symbol0}/{p.symbol1}
-                    <span className={`ml-2 text-xs ${p.inRange ? 'text-success' : 'text-warning'}`}>{p.inRange ? 'in' : 'luar'}</span></div> },
+                    <span className={`ml-2 text-xs ${p.inRange ? 'text-success' : 'text-warning'}`}>{t(p.inRange ? 'in' : 'luar')}</span></div> },
                   { key: 'r', label: 'Rentang harga', render: (p) => <PriceRange lo={p.tickLower} hi={p.tickUpper} cur={p.curTick}
                     dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1} /> },
                   { key: 'v', label: 'Nilai', align: 'end', render: (p) => usd(p.valueUsd, 0) },
                   { key: 'f', label: 'Fee', align: 'end', render: (p) => <span className={tone(p.feeUsd)}>{usd(p.feeUsd)}</span> },
-                  { key: 'a', label: 'Umur', align: 'end', render: (p) => <span className="text-muted">{p.ageHours == null ? '—' : p.ageHours.toFixed(1) + ' j'}</span> },
+                  { key: 'a', label: 'Umur', align: 'end', render: (p) => <span className="text-muted">{p.ageHours == null ? '—' : p.ageHours.toFixed(1) + t(' j')}</span> },
                 ]} />
             </Panel>
           </div>

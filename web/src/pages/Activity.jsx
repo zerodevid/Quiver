@@ -2,8 +2,10 @@ import { useState } from 'react';
 import { usePoll } from '../hooks';
 import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Tag, Pick } from '../components/ui';
 import { usd, ago, short, AKSI, KEPUTUSAN } from '../fmt';
+import { useI18n, reason } from '../i18n';
 
 export default function Activity() {
+  const { t } = useI18n();
   const { data: d } = usePoll('/api/activity?limit=200', 8000);
   const [filter, setFilter] = useState('all');
   if (!d) return <Loading />;
@@ -33,7 +35,7 @@ export default function Activity() {
             { key: 'val', label: 'Nilai', align: 'end', render: (a) => (a.value_quote == null ? '—' : a.quote_symbol === 'ETH' ? `${a.value_quote.toFixed(4)} Ξ` : usd(a.value_quote)) },
             { key: 'dec', label: 'Keputusan', render: (a) => (
               <div className="max-w-sm"><Tag map={KEPUTUSAN} k={a.verdict} />
-                {a.reason && <div className="mt-1 truncate text-xs text-muted" title={a.reason}>{a.reason}</div>}</div>) },
+                {a.reason && <div className="mt-1 truncate text-xs text-muted" title={reason(a.reason)}>{reason(a.reason)}</div>}</div>) },
           ]} />
       </Panel>
     </>
