@@ -304,8 +304,8 @@ error RPC dibiarkan apa adanya karena memang bukan kalimat kita.
 Dua pemeriksaan yang dipakai saat mengembangkan (keduanya bersih):
 
 ```bash
-python3 /tmp/check-keys.py   # setiap t('…') di kode ada padanannya di kamus
-python3 /tmp/audit-i18n.py   # render tiap halaman di kedua bahasa, cari teks yang identik
+cd web && python3 check-keys.py   # setiap t('…') di kode ada padanannya di kamus
+cd web && python3 audit-i18n.py   # render tiap halaman di kedua bahasa, cari teks yang identik
 ```
 
 ## Tampilan (React + HeroUI v3)
