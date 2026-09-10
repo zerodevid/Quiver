@@ -30,6 +30,11 @@ export function initLocale() {
 }
 
 const EN = {
+  // ---- jual sisa memecoin ----
+  'Jual memecoin sisa setelah keluar': 'Sell leftover memecoin after exit',
+  'Token yang diterima saat menutup posisi dijual balik ke USDG/ETH lewat agregator Kyber': 'Tokens received when closing a position are sold back to USDG/ETH via the Kyber aggregator',
+  'Batas rugi jual sisa (bps)': 'Max loss when selling leftovers (bps)',
+  'Fee pool + dampak harga. Di atas batas ini token disimpan dan dicoba lagi nanti': 'Pool fee + price impact. Above this limit the tokens are kept and retried later',
   // ---- pembaruan riset wallet ----
   'menghitung ulang posisi {done} / {total}': 'recomputing positions {done} / {total}',
   'mencari posisi baru sejak pindai terakhir': 'looking for new positions since the last scan',

@@ -89,12 +89,17 @@ class Executor {
     const w = this.loadWallet();
     if (!w) throw new Error('tidak ada kunci privat — mode kirim butuh wallet');
     const from = w.address;
-    if (this.nonce == null) {
-      this.nonce = parseInt(await this.rpc.call('eth_getTransactionCount', [from, 'pending']), 16);
-    }
+    // Nonce dibaca ulang dari chain SETIAP kirim, bukan hanya sekali. Wallet ini bisa
+    // dipakai program lain (bot robinhood-lp di server yang sama); nonce yang disimpan
+    // di memori langsung basi begitu program itu mengirim satu transaksi.
+    const pending = parseInt(await this.rpc.call('eth_getTransactionCount', [from, 'pending']), 16);
+    this.nonce = this.nonce == null ? pending : Math.max(this.nonce, pending);
     const fees = await this.gasFees();
     let gasLimit;
-    try { gasLimit = (await this.estimateGas(tx)) * 13n / 10n; }
+    // gasMul: pengali batas gas. Default 1,3x; swap agregator butuh 2x karena router
+    // menjalankan swap lewat panggilan tingkat rendah yang estimasinya kurang.
+    const mul = BigInt(Math.round((tx.gasMul || 1.3) * 10));
+    try { gasLimit = (await this.estimateGas(tx)) * mul / 10n; }
     catch (e) { throw new Error(`estimasi gas gagal (transaksi kemungkinan akan revert): ${e.message}`); }
     const capGas = BigInt(this.cfg.gas?.max_gas_limit ?? 4_000_000);
     if (gasLimit > capGas) gasLimit = capGas;

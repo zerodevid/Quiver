@@ -5,6 +5,7 @@ const { ADDR, TOPIC, ABI } = require('./chain');
 const { Watcher } = require('./watcher');
 const { Positions } = require('./positions');
 const { Executor, isNative } = require('./executor');
+const { Kyber } = require('./kyber');
 const { rulesFor, planEntry, planExit } = require('./policy');
 const { enumerateV4, livePositions } = require('./scout');
 const m = require('./v3math');
@@ -19,6 +20,7 @@ class Engine {
     this.watcher = new Watcher({ rpc, store, chain, log: this.log, cfg });
     this.positions = new Positions({ rpc, store, chain, log: this.log });
     this.exec = new Executor({ rpc, store, chain, cfg, log: this.log });
+    this.kyber = new Kyber({ exec: this.exec, rpc, cfg, log: this.log });
     this.ethUsd = cfg.prices?.eth_usd || 2500;
     this.cursor = 0;
     this.head = 0;
@@ -372,11 +374,33 @@ class Engine {
     if (payHave <= 0n) {
       throw new Error(`saldo ${wantEth ? 'USDG' : 'ETH'} kosong — tidak ada kas untuk dijembatani`);
     }
-    const br = await this.chain.bestEthUsdgPool();
-    if (!br) throw new Error('pool jembatan ETH/USDG tidak ditemukan');
-
     // Butuh berapa? quoteTok WETH tetap dibeli sebagai ETH native lalu dibungkus.
     const shortEthLike = needQuoteRaw - have;
+    const slipBps = rules.swap.max_slippage_bps;
+
+    // Jalur utama: agregator Kyber. Kutipan arah BALIK (yang dibutuhkan -> yang dibayar)
+    // memberi taksiran berapa yang harus dibayar untuk mendapat shortEthLike.
+    const outTok = wantEth ? ADDR.native : ADDR.usdg;
+    const rev = await this.kyber.quote(outTok, payTok, shortEthLike);
+    if (rev && rev.amountOut > 0n) {
+      let payK = (rev.amountOut * BigInt(10_000 + slipBps)) / 10_000n;
+      if (payK > payHave) {
+        throw new Error(`kas kurang untuk jembatan: butuh ${payK} unit ${wantEth ? 'USDG' : 'ETH'}, punya ${payHave}`);
+      }
+      const r = await this.kyber.swap(payTok, outTok, payK, {
+        slippageBps: slipBps, maxLossBps: rules.swap.max_price_impact_bps, kind: 'bridge_swap', detail: { via: 'kyber', wantEth },
+      });
+      if (r) {
+        notes.push(`${wantEth ? 'jembatan USDG→ETH' : 'jembatan ETH→USDG'} via Kyber (${r.quote.dex})`);
+        return this.wrapIfWeth(quoteTok, needQuoteRaw, balOf, notes);
+      }
+      this.store.log('warn', 'Kyber tidak bisa merutekan jembatan — mencoba pool langsung');
+    }
+
+    // Cadangan: satu pool ETH/USDG langsung. Banyak pool ETH/USDG di chain ini menolak
+    // swap lewat hook-nya, jadi jalur ini hanya dipakai kalau Kyber tidak tersedia.
+    const br = await this.chain.bestEthUsdgPool();
+    if (!br) throw new Error('pool jembatan ETH/USDG tidak ditemukan');
     const price = m.priceFromSqrt(br.slot0.sqrtPriceX96, 18, 6); // USDG per ETH
     const slip = 1 + rules.swap.max_slippage_bps / 10000;
     let payRaw;
@@ -404,8 +428,11 @@ class Engine {
     const h = await this.exec.send(tx, { kind: 'bridge_swap', detail: { pool: br.poolId, wantEth } });
     if (!(await this.exec.waitReceipt(h)).ok) throw new Error(`swap jembatan gagal (${h})`);
     notes.push(wantEth ? 'jembatan USDG→ETH' : 'jembatan ETH→USDG');
+    return this.wrapIfWeth(quoteTok, needQuoteRaw, balOf, notes);
+  }
 
-    // kalau yang dibutuhkan WETH, bungkus hasil ETH-nya
+  // Kalau yang dibutuhkan WETH, bungkus hasil ETH jembatan.
+  async wrapIfWeth(quoteTok, needQuoteRaw, balOf, notes) {
     if (quoteTok === ADDR.weth) {
       const nat = await balOf(ADDR.native);
       const want = needQuoteRaw - (await balOf(quoteTok));
@@ -461,6 +488,17 @@ class Engine {
         : BigInt(Math.ceil((Number(short) / price1per0) * (1 + rules.swap.max_slippage_bps / 10000)));
       if (payRaw <= 0n) continue;
       if (payHave < payRaw) throw new Error(`saldo kurang untuk zap: butuh ~${payRaw} unit ${payTok.slice(0, 8)}…, punya ${payHave}`);
+      // Jalur utama: Kyber (rute terbaik lintas pool; banyak pool menolak swap langsung).
+      const buyTok = idx === 0 ? plan.token0 : plan.token1;
+      const kz = await this.kyber.swap(payTok, buyTok, payRaw, {
+        slippageBps: rules.swap.max_slippage_bps, maxLossBps: rules.swap.max_price_impact_bps,
+        kind: 'zap_swap', detail: { via: 'kyber', pool: plan.poolRef },
+      });
+      if (kz) {
+        notes.push(`zap ${idx === 0 ? 'beli token0' : 'beli token1'} via Kyber`);
+        bal = await this.exec.balances([plan.token0, plan.token1]);
+        continue;
+      }
       for (const a of await this.exec.ensureRouterAllowance(payTok)) {
         const h = await this.exec.send(a, { kind: a.kind });
         await this.exec.waitReceipt(h);
@@ -568,6 +606,11 @@ class Engine {
     const hash = await this.exec.send(tx, { kind: plan.full ? 'burn' : 'decrease', detail: { position: pos.id } });
     const rc = await this.exec.waitReceipt(hash, 90_000);
     if (!rc.ok) throw new Error(`keluar gagal (${hash})`);
+    // Jual memecoin yang BARU diterima dari transaksi keluar ini. Galatnya tidak boleh
+    // membatalkan pencatatan keluar — posisinya sudah benar-benar tertutup di chain.
+    let sold = null;
+    try { sold = await this.sellLeftover(pos, rc.receipt); }
+    catch (e) { this.store.log('error', `jual sisa #${pos.id}: ${e.message}`); }
     if (plan.full) {
       const live = this.positions.live.find((p) => p.id === pos.id);
       this.positions.markClosed(pos.id, {
@@ -578,12 +621,88 @@ class Engine {
       this.store.run('UPDATE positions SET liquidity=? WHERE id=?',
         (BigInt(pos.liquidity) - BigInt(plan.liquidity)).toString(), pos.id);
     }
-    return { txHash: hash, note: `${plan.full ? 'tutup penuh' : 'kurangi'} posisi #${pos.id}` };
+    return { txHash: hash, note: `${plan.full ? 'tutup penuh' : 'kurangi'} posisi #${pos.id}${sold ? ` · ${sold}` : ''}` };
+  }
+
+  // ---- jual sisa memecoin -------------------------------------------------
+  // Keluar dari posisi LP mengembalikan campuran aset kuotasi + memecoin, tergantung di
+  // mana harga berada. Memecoin itu bukan tujuan copy — dijual balik ke aset kuotasi
+  // pool yang sama. Yang dijual HANYA jumlah yang diterima dari tx keluar ini (dibaca dari
+  // log Transfer di receipt), bukan seluruh saldo: wallet ini bisa dipakai program lain
+  // yang memegang token yang sama.
+  async sellLeftover(pos, receipt) {
+    const rules = this.rulesFrom(pos.target);
+    if (!rules.exit.sell_leftover) return null;
+    // quoteSideOf mengembalikan objek {side, symbol, kind}, bukan angka.
+    const q = this.chain.quoteSideOf(pos.token0, pos.token1);
+    if (!q) return null;                            // pasangan tanpa aset kuotasi
+    const meme = String(q.side === 0 ? pos.token1 : pos.token0).toLowerCase();
+    const quote = String(q.side === 0 ? pos.token0 : pos.token1).toLowerCase();
+    // ETH/USDG, WETH/USDG, dst.: dua-duanya "uang" — tidak ada memecoin untuk dijual.
+    if (this.chain.quoteSideOf(meme, meme)) return null;
+    const me = this.exec.address().toLowerCase();
+    let got = 0n;
+    for (const l of receipt?.logs || []) {
+      if (l.address.toLowerCase() !== meme || l.topics[0] !== TOPIC.transfer || l.topics.length !== 3) continue;
+      if (('0x' + l.topics[2].slice(-40)).toLowerCase() === me) got += BigInt(l.data);
+    }
+    if (got === 0n) return null;
+    return this.sellToken({ posId: pos.id, target: pos.target, token: meme, quote, amount: got, tries: 0 });
+  }
+
+  // Jual `amount` token ke `quote` lewat Kyber. Gagal -> dicatat untuk dicoba ulang.
+  async sellToken(item) {
+    const rules = this.rulesFrom(item.target);
+    const bal = (await this.exec.balances([item.token])).get(item.token) || 0n;
+    const amount = bal < BigInt(item.amount) ? bal : BigInt(item.amount);
+    if (amount === 0n) { this.dropLeftover(item); return null; }
+    const meta = await this.chain.token(item.token);
+    const label = `${(Number(amount) / 10 ** (meta?.decimals ?? 18)).toPrecision(4)} ${meta?.symbol || item.token.slice(0, 8)}`;
+    try {
+      const r = await this.kyber.swap(item.token, item.quote, amount, {
+        slippageBps: rules.swap.max_slippage_bps, maxLossBps: rules.exit.sell_max_loss_bps,
+        kind: 'sell_leftover', detail: { position: item.posId },
+      });
+      if (!r) throw new Error('Kyber tidak menemukan rute');
+      this.dropLeftover(item);
+      const msg = `jual ${label} → $${(r.quote.usdOut || 0).toFixed(2)} (${r.quote.dex})`;
+      this.notify(`posisi #${item.posId}: ${msg}`);
+      return msg;
+    } catch (e) {
+      this.keepLeftover({ ...item, amount: amount.toString() }, e.message);
+      throw new Error(`${label} belum terjual: ${e.message}`);
+    }
+  }
+
+  leftovers() {
+    try { return JSON.parse(this.store.getState('leftovers', '[]') || '[]'); }
+    catch { return []; }
+  }
+  saveLeftovers(list) { this.store.setState('leftovers', JSON.stringify(list)); }
+  keepLeftover(item, why) {
+    const list = this.leftovers().filter((x) => !(x.posId === item.posId && x.token === item.token));
+    const tries = (item.tries || 0) + 1;
+    // Coba lagi dengan jeda makin panjang: 5, 10, 20, 40 menit... berhenti setelah 8 kali.
+    if (tries <= 8) list.push({ ...item, tries, next: Date.now() + 5 * 60_000 * 2 ** (tries - 1), why });
+    else this.store.log('warn', `berhenti mencoba menjual sisa posisi #${item.posId} (${item.token}) setelah ${tries - 1} kali: ${why}`);
+    this.saveLeftovers(list);
+  }
+  dropLeftover(item) {
+    this.saveLeftovers(this.leftovers().filter((x) => !(x.posId === item.posId && x.token === item.token)));
+  }
+  async retryLeftovers() {
+    if (this.dryRun() || !this.exec.address()) return;
+    for (const item of this.leftovers()) {
+      if (Date.now() < (item.next || 0)) continue;
+      try { await this.sellToken(item); }
+      catch (e) { this.store.log('warn', `coba ulang jual sisa #${item.posId}: ${e.message}`); }
+    }
   }
 
   // ---- pemeliharaan berkala ----------------------------------------------
   async syncPositions() {
     if (this.cfg.prices?.auto_eth_price !== false) this.ethUsd = await this.chain.ethUsd(this.ethUsd);
+    await this.retryLeftovers().catch((e) => this.store.log('error', `jual sisa: ${e.message}`));
     await this.positions.sync(this.ethUsd);
     const globalRules = rulesFor(this.cfg.rules);
     const triggers = this.positions.exitTriggers(globalRules);

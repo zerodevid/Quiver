@@ -39,6 +39,8 @@ const DEFAULTS = {
     stop_loss_pct: 0,
     take_profit_pct: 0,
     max_age_hours: 0,
+    sell_leftover: true,      // jual memecoin yang diterima saat keluar, balik ke aset kuotasi
+    sell_max_loss_bps: 1500,  // tolak jual kalau rute rugi > 15% (fee pool + dampak harga)
   },
   filters: {
     allow_hooks: false,
