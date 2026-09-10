@@ -903,6 +903,12 @@ class Engine {
 
   notify(msg) {
     const topic = this.cfg.notify?.ntfy_topic;
+    // Pendengar tambahan (bot Telegram) dipasang dari luar; ia menerima kabar
+    // penting yang sama dengan ntfy, tanpa perlu ikut mengintip semua baris log.
+    // Sengaja dipanggil SEBELUM baris lognya ditulis: baris itu memicu store.onLog
+    // dengan teks yang sama, dan pendengar hanya bisa menyaring gemanya kalau ia
+    // sudah tahu kabar apa yang barusan dikirim.
+    if (this.onNotify) { try { this.onNotify(msg); } catch { /* abaikan */ } }
     this.store.log('info', msg);
     if (!topic) return;
     fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body: `lpcopy: ${msg}` }).catch(() => {});

@@ -33,7 +33,7 @@ const LOGIN_PAGE = (err) => `<!doctype html><html lang="id" data-bs-theme="dark"
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
-function createServer({ engine, store, cfg, cfgPath, chain, rpc, log }) {
+function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }) {
   const pub = path.join(__dirname, '..', 'public');
   const scoutJobs = new Map();
   const walletJobs = new Map();
@@ -118,10 +118,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log }) {
     res.writeHead(code, h);
     res.end(s);
   };
-  const readBody = (req) => new Promise((resolve) => {
+  // Permintaan dari dalam proses (bot Telegram) membawa badannya langsung di
+  // req.__body — tidak ada stream yang bisa dibaca. Lihat callApi di bawah.
+  const readBody = (req) => (req.__body ? Promise.resolve(req.__body) : new Promise((resolve) => {
     let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); });
     req.on('end', () => { try { resolve(b ? JSON.parse(b) : {}); } catch { resolve({}); } });
-  });
+  }));
   const saveCfg = () => fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 
   const routes = {
@@ -353,6 +355,36 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log }) {
         .map((w) => { try { return { ...w, stats: JSON.parse(w.stats || '{}') }; } catch { return { ...w, stats: {} }; } }),
     }),
 
+    // ---- sisa memecoin yang belum terjual setelah keluar posisi ----
+    'GET /api/leftovers': () => {
+      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
+      return {
+        leftovers: engine.leftovers().map((it) => ({
+          ...it,
+          symbol: toks.get(String(it.token).toLowerCase())?.symbol || null,
+          decimals: toks.get(String(it.token).toLowerCase())?.decimals ?? 18,
+        })),
+      };
+    },
+    'POST /api/leftovers/retry': async () => {
+      if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
+      const list = engine.leftovers();
+      if (!list.length) return { ok: true, tried: 0 };
+      // Jadwal tunggu dilewati: ini permintaan manual, bukan percobaan otomatis.
+      engine.saveLeftovers(list.map((x) => ({ ...x, next: 0 })));
+      const errs = [];
+      for (const item of engine.leftovers()) {
+        try { await engine.sellToken(item); } catch (e) { errs.push(e.message); }
+      }
+      return { ok: true, tried: list.length, error: errs.length ? errs.join(' · ') : null };
+    },
+    'POST /api/leftovers/drop': async (req) => {
+      const b = await readBody(req);
+      const before = engine.leftovers().length;
+      engine.dropLeftover({ posId: Number(b.posId), token: String(b.token || '').toLowerCase() });
+      return engine.leftovers().length < before ? { ok: true } : { error: 'tidak ada di antrean' };
+    },
+
     'POST /api/positions/close': async (req) => {
       const b = await readBody(req);
       const pos = store.get("SELECT * FROM positions WHERE id=? AND status='open'", Number(b.id));
@@ -365,7 +397,20 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log }) {
     },
   };
 
-  Object.assign(routes, createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody }));
+  Object.assign(routes, createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody, telegram }));
+
+  // Pintu yang sama untuk pemanggil di dalam proses (bot Telegram). Sengaja lewat
+  // tabel rute yang persis dipakai browser: apa pun yang bisa dilakukan dasbor bisa
+  // dilakukan bot, dan validasi/penjagaannya cuma ditulis sekali. Gerbang token
+  // dilewati karena pemanggilnya sudah berada di dalam proses — Telegram punya
+  // gerbangnya sendiri (daftar chat yang diizinkan).
+  const callApi = async (method, pathname, body = {}, query = {}) => {
+    const key = `${method} ${pathname}`;
+    if (!routes[key]) throw new Error(`rute ${key} tidak ada`);
+    const url = new URL(`http://x${pathname}`);
+    for (const [k, v] of Object.entries(query)) if (v != null) url.searchParams.set(k, String(v));
+    return routes[key]({ __body: body, headers: {} }, url, {});
+  };
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
@@ -440,6 +485,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log }) {
     res.writeHead(200, headers);
     fs.createReadStream(file).pipe(res);
   });
+  server.api = callApi;
   return server;
 }
 

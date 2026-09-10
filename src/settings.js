@@ -81,7 +81,7 @@ async function probeRpc({ url, headers }) {
   return { ...out, usable: out.call.ok, suggest, summary: parts.join(' · ') };
 }
 
-function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody }) {
+function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody, telegram }) {
   const saveCfg = () => {
     fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
     try { fs.chmodSync(cfgPath, 0o600); } catch { /* abaikan */ }
@@ -125,6 +125,23 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody 
     });
   };
 
+  // Token bot Telegram = kendali penuh atas bot itu; ia tidak pernah dikirim utuh
+  // ke peramban, sama seperti kunci privat dan API key RPC.
+  const tgView = () => {
+    const t = cfg.telegram || {};
+    const pair = telegram?.pairCode && Date.now() < telegram.pairCode.exp
+      ? { code: telegram.pairCode.code, expiresInSec: Math.round((telegram.pairCode.exp - Date.now()) / 1000) } : null;
+    return {
+      hasToken: !!t.bot_token,
+      token: t.bot_token ? `${String(t.bot_token).split(':')[0]}:${MASK}` : '',
+      username: telegram?.me?.username || null,
+      running: !!telegram?.me,
+      chat_ids: (t.chat_ids || []).map(String),
+      notify: { penting: true, error: true, warn: true, info: false, ...(t.notify || {}) },
+      pair,
+    };
+  };
+
   const num = (v, lo, hi, name) => {
     const n = Number(v);
     if (!Number.isFinite(n) || n < lo || n > hi) throw new Error(`${name} harus di antara ${lo} dan ${hi}`);
@@ -161,6 +178,7 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody 
           reserve_eth: (cfg.gas?.native_reserve_wei ?? 2e15) / 1e18,
         },
         notify: { ntfy_topic: cfg.notify?.ntfy_topic || '' },
+        telegram: tgView(),
         loop: {
           poll_ms: cfg.loop?.poll_ms ?? 1500, max_block_span: cfg.loop?.max_block_span ?? 1500,
           sync_seconds: cfg.loop?.sync_seconds ?? 30,
@@ -302,6 +320,46 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody 
       } catch (e) { return { error: e.message }; }
       saveCfg();
       return { ok: true, restartNeeded: true };
+    },
+
+    // ---- bot Telegram ----
+    'POST /api/settings/telegram': async (req) => {
+      const b = await readBody(req);
+      const t = { ...(cfg.telegram || {}) };
+      if (b.bot_token !== undefined) {
+        const v = String(b.bot_token || '').trim();
+        if (v === '') t.bot_token = null;
+        else if (!/^\d{5,15}:[A-Za-z0-9_-]{20,}$/.test(v)) return { error: 'Token bot tidak berbentuk benar (contoh: 123456789:AAH…).' };
+        else t.bot_token = v;
+      }
+      if (Array.isArray(b.chat_ids)) t.chat_ids = [...new Set(b.chat_ids.map((x) => String(x).trim()).filter((x) => /^-?\d+$/.test(x)))];
+      if (b.notify && typeof b.notify === 'object') {
+        t.notify = { ...(t.notify || {}) };
+        for (const k of ['penting', 'error', 'warn', 'info']) if (k in b.notify) t.notify[k] = !!b.notify[k];
+      }
+      const tokenChanged = b.bot_token !== undefined && t.bot_token !== (cfg.telegram?.bot_token || null);
+      cfg.telegram = t;
+      saveCfg();
+      log('pengaturan Telegram diperbarui');
+      return { ok: true, telegram: tgView(), restartNeeded: tokenChanged };
+    },
+    'POST /api/settings/telegram/pair': async () => {
+      if (!cfg.telegram?.bot_token) return { error: 'Isi token bot dulu.' };
+      if (!telegram) return { error: 'Bot Telegram tidak aktif di proses ini.' };
+      const code = telegram.newPairCode();
+      log('kode sambung Telegram dibuat');
+      return { ok: true, code, expiresInSec: 900, username: telegram.me?.username || null };
+    },
+    'POST /api/settings/telegram/test': async () => {
+      if (!telegram) return { error: 'Bot Telegram tidak aktif di proses ini.' };
+      const ids = (cfg.telegram?.chat_ids || []).map(String);
+      if (!ids.length) return { error: 'Belum ada chat yang tersambung.' };
+      const errs = [];
+      for (const c of ids) {
+        try { await telegram.send(c, 'lpcopy: uji notifikasi dari halaman Pengaturan.'); }
+        catch (e) { errs.push(`${c}: ${e.message}`); }
+      }
+      return errs.length ? { error: errs.join(' · ') } : { ok: true, sent: ids.length };
     },
 
     // ---- token akses ----

@@ -24,6 +24,9 @@ export const SCHEMA = [
     { path: 'range.scale', label: 'Faktor lebar', type: 'number', step: 0.1, when: (r) => r.range.mode === 'scale' },
     { path: 'range.width_pct', label: 'Lebar ±%', type: 'number', step: 1, when: (r) => r.range.mode === 'width_pct' },
     { path: 'range.min_width_ticks', label: 'Lebar minimum (tick)', type: 'number', step: 10, when: (r) => r.range.mode !== 'full' },
+    { path: 'range.align', label: 'Pembulatan tick', type: 'select', options: [
+      ['nearest', 'Ke yang terdekat'], ['down', 'Ke bawah'], ['up', 'Ke atas']],
+      help: 'Tick harus kelipatan tickSpacing pool; ini menentukan arah pembulatannya', when: (r) => r.range.mode !== 'exact' },
   ] },
   { group: 'Posisi satu sisi', icon: 'ti-arrow-bar-to-right', fields: [
     { path: 'onesided.policy', label: 'Kalau rentang di luar harga kini', type: 'select', options: [
@@ -53,6 +56,8 @@ export const SCHEMA = [
     { path: 'filters.min_target_quote_usd', label: 'Abaikan posisi target di bawah (USD)', type: 'number', step: 5 },
     { path: 'filters.max_open_positions', label: 'Maksimum posisi terbuka', type: 'number', step: 1 },
     { path: 'filters.cooldown_seconds', label: 'Jeda antar salinan di pool sama (detik)', type: 'number', step: 5 },
+    { path: 'filters.min_pool_age_minutes', label: 'Umur pool minimum (menit)', type: 'number', step: 5, help: 'Pool yang baru dibuat sering jebakan; 0 = mati' },
+    { path: 'filters.max_fee_bps', label: 'Batas fee pool', type: 'number', step: 1000, help: 'Dalam satuan fee Uniswap: 3000 = 0,3%, 100000 = 10%' },
     { path: 'filters.quote_whitelist', label: 'Aset kuotasi diizinkan', type: 'list' },
     { path: 'filters.venues', label: 'Venue diizinkan', type: 'list' },
     { path: 'filters.token_blacklist', label: 'Daftar hitam token (alamat, pisah koma)', type: 'list' },

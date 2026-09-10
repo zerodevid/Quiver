@@ -286,6 +286,64 @@ kursor sudah terlanjur lewat.
 - `scout` hanya melihat sejauh jendela pindainya. Posisi yang dibuka sebelum jendela
   tidak terhitung, dan angka itu ditampilkan apa adanya di rapor.
 
+## Bot Telegram
+
+Seluruh isi dasbor juga bisa dijalankan dari obrolan Telegram — memantau, mengubah
+aturan, menyalakan LIVE, menutup posisi, meriset wallet. Bot **tidak punya logika
+sendiri**: setiap tombol memanggil rute API yang persis sama dengan yang dipakai
+peramban (`server.api`), jadi validasi dan pengamannya cuma ditulis sekali. Kalau
+dasbor menolak sesuatu, bot juga menolaknya.
+
+**Memasang**
+
+1. Buat bot lewat [@BotFather](https://t.me/BotFather), salin tokennya.
+2. Dasbor → **Pengaturan → Telegram** → tempel token → **Simpan token** → restart
+   bot (`pm2 restart lpcopy`). Bisa juga langsung di `config.json`:
+   ```json
+   "telegram": { "bot_token": "123456789:AA…", "chat_ids": [] }
+   ```
+3. **Buat kode sambung**, lalu kirim ke bot di Telegram: `/mulai KODE`.
+   Kode berlaku 15 menit dan hanya sekali pakai.
+
+Kalau belum ada chat yang tersambung, bot mencetak kode sambungnya sendiri ke log
+saat hidup — jadi memasang lewat SSH saja pun bisa:
+
+```
+telegram: belum ada chat terhubung. Kirim ke bot →  /mulai 3F9A21C0   (berlaku 15 menit)
+```
+
+**Menu**
+
+| | |
+|---|---|
+| 📊 Ringkasan | mode, posisi, PnL, blok tertinggal, alasan terbanyak dilewat, kesehatan RPC |
+| 💼 Posisi | daftar & detail (nilai, fee, PnL, IL, rentang, umur) + tutup posisi |
+| 🎯 Target | daftar, nyalakan/matikan, ganti nama, hapus, tambah, aturan khusus per target, riset |
+| 📜 Aktivitas | aksi target terakhir + keputusan bot & alasannya, berhalaman |
+| ⚙️ Aturan salin | keenam kelompok aturan, tiap kolomnya bisa diubah dari sini |
+| 🔧 Pengaturan | LIVE/simulasi, jeda, wallet, RPC (uji & tambah), gas, mesin, notifikasi, chat, token dasbor |
+| 🔎 Riset & 🔭 Scout | pindai wallet mana pun, hasilnya dikirim ke obrolan |
+| 🧹 Sisa jual | antrean memecoin sisa: coba jual sekarang atau keluarkan dari antrean |
+| 📝 Log · 🧾 Transaksi · 💵 Saldo | |
+
+Perintah cepat: `/ringkasan` `/posisi` `/target` `/aktivitas` `/aturan`
+`/pengaturan` `/saldo` `/sisa` `/log` `/tx` `/scout <alamat>` `/riset <alamat>`
+`/jeda` `/lanjut` `/bantuan`.
+
+**Kabar masuk otomatis** — LP disalin, posisi ditutup, galat, peringatan. Bisa
+dipilih per jenis di menu Notifikasi. Antreannya dibatasi supaya banjir log tidak
+menghajar batas kirim Telegram.
+
+**Yang sengaja TIDAK ada di Telegram**
+
+- Impor atau ekspor kunci privat. Riwayat obrolan tersimpan di server Telegram —
+  bukan tempat untuk kunci. Ganti wallet lewat dasbor.
+- Mengubah URL RPC yang mengandung API key (menambah endpoint biasa tetap bisa).
+
+Chat yang tersambung bisa melakukan **semua** yang dasbor bisa. Perlakukan daftar
+`chat_ids` seperti daftar orang yang memegang kunci dasbor: periksa berkala di
+**Pengaturan → Chat Telegram**, lepas yang tidak dikenali.
+
 ## Dwibahasa (Indonesia / Inggris)
 
 Pemilih bahasa ada di kaki sidebar; pilihannya disimpan di browser, dan bahasa awal
@@ -344,20 +402,29 @@ src/executor.js   pembangun & pengirim transaksi
 src/positions.js  sinkron posisi, PnL, IL, pemicu keluar
 src/scout.js      rapor wallet kandidat
 src/engine.js     orkestrator
-src/server.js     API + penyaji dashboard
+src/server.js     API + penyaji dashboard (server.api = pintu yang sama untuk bot)
+src/telegram.js   bot Telegram: seluruh dasbor lewat obrolan
 web/              tampilan React + HeroUI v3 (sumber); web/dist = hasil build
 public/           tampilan lama (Tabler) — cadangan kalau web/dist belum dibuild
 ```
 
 ## Uji edge case
 
-`node test/edge.js` menjalankan 21 skenario berisiko lewat mesin asli (policy,
+`node test/edge.js` menjalankan 28 skenario berisiko lewat mesin asli (policy,
 engine, watcher) dengan chain dan pengiriman transaksi dipalsukan — jadi bisa
 dijalankan kapan saja tanpa menyentuh dana. Yang diuji antara lain: target
 menambah ke posisi yang sudah dicermin, penarikan sebagian, NFT dipindahkan,
 penitipan ke kontrak otomasi, pool berhook, semua batas (jumlah posisi,
 eksposur, jeda, minimum), posisi satu sisi, saldo kurang, aksi ganda, dan
 antrean jual memecoin sisa.
+
+`node test/telegram.js` menguji bot Telegram dengan API Telegram dipalsukan tetapi
+tabel rute server yang asli. Uji intinya adalah penjelajah: ia menekan **setiap**
+tombol yang bisa dicapai dari menu utama dan menuntut tidak ada yang melempar
+galat, tidak ada layar kosong, dan tidak ada `undefined`/`NaN` yang bocor ke teks.
+Tombol yang memindahkan dana tidak ditekan, tapi keberadaannya tetap diperiksa.
+Ada juga uji yang mencocokkan menu aturan dengan `policy.js` di kedua arah, jadi
+aturan baru tidak bisa lupa dibuatkan menunya.
 
 Untuk menguji transaksi NYATA dari wallet target tanpa mengirim apa pun, lihat
 catatan di commit "dry-run cermin Bang GE": kode bot dijalankan apa adanya tetapi

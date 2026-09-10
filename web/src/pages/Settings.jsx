@@ -242,6 +242,105 @@ function SimpleForm({ title, desc, fields, initial, url, okText, extra }) {
   );
 }
 
+// ---------------- bot Telegram ----------------
+function TelegramTab({ d, reload }) {
+  const { t } = useI18n();
+  const tg = d.telegram || {};
+  const [tok, setTok] = useState('');
+  const [pair, setPair] = useState(tg.pair || null);
+  const [busy, setBusy] = useState('');
+  const save = async (key, body, ok) => {
+    setBusy(key);
+    const r = await post('/api/settings/telegram', body);
+    setBusy('');
+    say(r, ok);
+    if (!r.error) { setTok(''); reload(); }
+    return r;
+  };
+  const makeCode = async () => {
+    setBusy('pair');
+    const r = await post('/api/settings/telegram/pair', {});
+    setBusy('');
+    if (r.error) return toast.danger(r.error);
+    setPair(r);
+  };
+  const NOTIF = [
+    ['penting', 'Kabar penting (LP disalin / ditutup)'],
+    ['error', 'Galat'],
+    ['warn', 'Peringatan'],
+    ['info', 'Semua baris log'],
+  ];
+  return (
+    <Section title="Bot Telegram" desc="Kendalikan bot ini dari Telegram: semua yang bisa dilakukan dasbor, bisa dilakukan lewat obrolan.">
+      <div className="flex flex-wrap items-center gap-3">
+        <Chip size="sm" variant="soft" color={tg.running ? 'success' : tg.hasToken ? 'warning' : 'default'}>
+          {tg.running ? t('jalan') : tg.hasToken ? t('token terpasang, belum tersambung') : t('mati')}
+        </Chip>
+        {tg.username && <span className="mono text-sm">@{tg.username}</span>}
+        <span className="text-sm text-muted">{t('{n} chat berwenang', { n: tg.chat_ids?.length || 0 })}</span>
+      </div>
+
+      <Separator />
+      <div className="grid gap-5 md:grid-cols-2">
+        <Text label="Token bot" type="password" mono value={tok} onChange={setTok}
+          placeholder={tg.token || '123456789:AA…'}
+          hint={t('Dibuat lewat @BotFather di Telegram. Siapa pun yang punya token ini menguasai botnya — jangan dibagikan.')} />
+        <div className="flex items-end gap-2">
+          <Button onPress={() => save('tok', { bot_token: tok }, 'Token tersimpan — restart bot supaya berlaku')} isPending={busy === 'tok'} isDisabled={!tok}>{t('Simpan token')}</Button>
+          {tg.hasToken && <Button variant="outline" onPress={() => { if (confirm(t('Lepas token bot? Bot Telegram berhenti melayani.'))) save('rm', { bot_token: '' }, 'Token dilepas'); }}>{t('Lepas')}</Button>}
+        </div>
+      </div>
+
+      <Separator />
+      <div>
+        <div className="font-medium">{t('Sambungkan obrolan')}</div>
+        <p className="mb-3 mt-1 text-sm text-muted">
+          {t('Buat kode, lalu kirim ke bot di Telegram. Chat yang tersambung bisa melakukan semua yang dasbor bisa — termasuk menyalakan LIVE dan menutup posisi.')}
+        </p>
+        <Button variant="outline" onPress={makeCode} isPending={busy === 'pair'} isDisabled={!tg.hasToken}>{t('Buat kode sambung')}</Button>
+        {pair && (
+          <Card variant="secondary" className="mt-3"><Card.Content className="gap-2">
+            <div className="text-sm font-medium">{t('Kirim ini ke bot (berlaku {m} menit)', { m: Math.round((pair.expiresInSec || 900) / 60) })}</div>
+            <div className="flex items-center gap-2">
+              <code className="mono flex-1 break-all rounded bg-surface px-3 py-2">/mulai {pair.code}</code>
+              <Button variant="outline" onPress={() => { navigator.clipboard?.writeText(`/mulai ${pair.code}`); toast.success(t('Tersalin')); }}><Copy className="size-4" />{t('Salin')}</Button>
+            </div>
+          </Card.Content></Card>
+        )}
+      </div>
+
+      {!!tg.chat_ids?.length && (<>
+        <Separator />
+        <div>
+          <div className="mb-2 font-medium">{t('Chat berwenang')}</div>
+          <div className="flex flex-col gap-2">
+            {tg.chat_ids.map((c) => (
+              <div key={c} className="flex items-center justify-between gap-3 rounded border border-default px-3 py-2">
+                <span className="mono text-sm">{c}</span>
+                <Button size="sm" variant="ghost" onPress={() => { if (confirm(t('Lepas chat ini?'))) save('c' + c, { chat_ids: tg.chat_ids.filter((x) => x !== c) }, 'Chat dilepas'); }}>
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+          <Button variant="outline" className="mt-3" onPress={async () => say(await post('/api/settings/telegram/test', {}), 'Pesan uji terkirim')}>{t('Kirim uji')}</Button>
+        </div>
+      </>)}
+
+      <Separator />
+      <div>
+        <div className="mb-3 font-medium">{t('Kabar yang dikirim ke Telegram')}</div>
+        <div className="grid gap-4 md:grid-cols-2">
+          {NOTIF.map(([k, label]) => (
+            <Toggle key={k} label={label} value={tg.notify?.[k]}
+              onChange={(v) => save('n' + k, { notify: { ...tg.notify, [k]: v } }, 'Tersimpan')} />
+          ))}
+        </div>
+      </div>
+    </Section>
+  );
+}
+
 function SecurityTab() {
   const { t } = useI18n();
   const [tok, setTok] = useState(null);
@@ -285,7 +384,7 @@ export default function Settings() {
             <Tabs selectedKey={tab} onSelectionChange={setTab} orientation="vertical" variant="secondary" className="flex flex-col gap-6 md:flex-row">
               <Tabs.ListContainer className="md:w-48 md:shrink-0">
                 <Tabs.List aria-label={t('Bagian pengaturan')}>
-                  {[['wallet', 'Wallet & mode'], ['rpc', 'RPC'], ['gas', 'Gas'], ['notify', 'Notifikasi'], ['loop', 'Mesin'], ['security', 'Keamanan']].map(([id, label]) => (
+                  {[['wallet', 'Wallet & mode'], ['rpc', 'RPC'], ['gas', 'Gas'], ['notify', 'Notifikasi'], ['telegram', 'Telegram'], ['loop', 'Mesin'], ['security', 'Keamanan']].map(([id, label]) => (
                     <Tabs.Tab key={id} id={id} className="justify-start">{t(label)}<Tabs.Indicator /></Tabs.Tab>
                   ))}
                 </Tabs.List>
@@ -308,6 +407,7 @@ export default function Settings() {
                     fields={[['ntfy_topic', 'Topik ntfy', 'Siapa pun yang tahu nama topiknya bisa membaca notifikasinya — pakai nama yang sulit ditebak. Kosongkan untuk mematikan.', 'text']]}
                     extra={<Button variant="outline" onPress={async () => say(await post('/api/settings/notify/test', {}), 'Notifikasi uji terkirim')}>{t('Kirim uji')}</Button>} />
                 </Tabs.Panel>
+                <Tabs.Panel id="telegram"><TelegramTab d={d} reload={load} /></Tabs.Panel>
                 <Tabs.Panel id="loop">
                   <SimpleForm title="Mesin" desc="Berlaku setelah bot di-restart (pm2 restart lpcopy)." url="/api/settings/loop" okText="Tersimpan — restart bot supaya berlaku"
                     initial={{ ...d.loop, ...d.prices }} fields={[

@@ -7,6 +7,7 @@ const { Chain } = require('./pools');
 const { Engine } = require('./engine');
 const { createServer } = require('./server');
 const { scoutWallet } = require('./scout');
+const { Telegram } = require('./telegram');
 
 const ROOT = path.join(__dirname, '..');
 const CFG_PATH = process.env.LPCOPY_CONFIG || path.join(ROOT, 'config.json');
@@ -98,9 +99,18 @@ async function main() {
 
   const engine = new Engine({ rpc, store, chain, cfg, log });
 
+  // Bot Telegram memakai pintu API yang sama dengan dasbor (server.api). Ia dibuat
+  // lebih dulu supaya halaman Pengaturan bisa menampilkan status & kode sambungnya,
+  // tetapi baru menyentuh server saat sebuah tombol ditekan — saat itu server sudah ada.
+  let server;
+  const telegram = new Telegram({
+    cfg, cfgPath: CFG_PATH, store, engine, log,
+    api: (method, pathname, body, query) => server.api(method, pathname, body, query),
+  });
+
   // Server dinyalakan LEBIH DULU: inisialisasi bisa memakan puluhan detik kalau RPC
   // sedang lambat, dan dashboard harus tetap bisa dibuka selama pemanasan.
-  const server = createServer({ engine, store, cfg, cfgPath: CFG_PATH, chain, rpc, log });
+  server = createServer({ engine, store, cfg, cfgPath: CFG_PATH, chain, rpc, log, telegram });
   server.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
       log(`port ${cfg.server.port} sudah dipakai — kemungkinan lpcopy lain masih jalan.`);
@@ -111,6 +121,8 @@ async function main() {
   server.listen(cfg.server.port, cfg.server.host, () => {
     log(`dashboard: http://${cfg.server.host}:${cfg.server.port}`);
   });
+
+  telegram.start().catch((e) => log(`telegram: ${e.message}`));
 
   log('menyiapkan mesin…');
   await engine.init();
@@ -126,7 +138,7 @@ async function main() {
   setInterval(() => { try { engine.snapshotEquity(); } catch (e) { log(`equity: ${e.message}`); } }, eqMs);
   setInterval(() => store.prune(30), 3600_000);
 
-  process.on('SIGINT', () => { log('berhenti'); cleanup(); process.exit(0); });
+  process.on('SIGINT', () => { log('berhenti'); telegram.stop(); cleanup(); process.exit(0); });
 }
 
 main().catch((e) => { console.error('fatal:', e); process.exit(1); });

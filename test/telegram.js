@@ -1,0 +1,515 @@
+'use strict';
+// Uji bot Telegram.
+//
+// Yang dipalsukan hanya dua batas luar: API Telegram (fetch keluar) dan chain.
+// Sisanya kode asli — tabel rute server.js yang sama persis dipakai peramban, jadi
+// uji ini sekaligus membuktikan klaim utama modul telegram.js: bot memakai logika
+// dasbor, bukan salinannya.
+//
+// Uji intinya adalah PENJELAJAH: ia menekan setiap tombol yang bisa dicapai dari
+// menu utama, satu per satu, dan menuntut tidak ada satu pun yang melempar galat
+// atau menghasilkan layar kosong. Tombol yang memindahkan dana / menghapus sesuatu
+// sengaja tidak ditekan, tapi keberadaannya tetap diperiksa.
+//
+// Jalankan: node test/telegram.js
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { Store } = require('../src/db');
+const { createServer } = require('../src/server');
+const { Telegram, parseVal, showVal, RULE_GROUPS } = require('../src/telegram');
+const { ADDR } = require('../src/chain');
+
+const CHAT = '12345';
+const ASING = '99999';
+const TARGET = '0x3c926ee5e990b3999f1f656a9b18ff678ce82976';
+const ME = '0xe9c209fd02a1562761c99700fc3d126e64b981ee';
+const MEME = '0x7a492b0a2d630b94791af846c1842db9e623420c';
+
+let pass = 0, fail = 0;
+async function t(name, fn) {
+  try { await fn(); pass++; console.log(`  ok   ${name}`); }
+  catch (e) { fail++; console.log(`  GAGAL ${name}\n       ${e.message}`); }
+}
+
+// ---- dunia palsu ----------------------------------------------------------
+function build({ chats = [CHAT], dryRun = true } = {}) {
+  const store = new Store(':memory:');
+  const now = Date.now();
+  store.run('INSERT INTO targets(address,label,enabled,added_ts) VALUES(?,?,1,?)', TARGET, 'Bang GE', now);
+  for (const [a, sym, dec] of [[ADDR.usdg, 'USDG', 6], [ADDR.native, 'ETH', 18], [MEME, 'MEME', 18]]) {
+    store.run('INSERT INTO tokens(address,symbol,name,decimals,seen_ts) VALUES(?,?,?,?,?)', a, sym, sym, dec, now);
+  }
+  store.run(`INSERT INTO actions(id,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_lower,tick_upper,liquidity,value_quote,quote_symbol)
+    VALUES(1,?,100,'0xaa',0,?,'v4','increase','777','0xpool',?,?,3000,-600,600,'1000',200,'USDG')`, now, TARGET, ADDR.usdg, MEME);
+  store.run("INSERT INTO decisions(action_id,ts,verdict,reason,tx_hash) VALUES(1,?,'copy','mirror → $200','0xbb')", now);
+  store.run(`INSERT INTO positions(id,venue,token_id,pool_ref,token0,token1,fee,tick_spacing,tick_lower,tick_upper,liquidity,target,mirror_of,status,opened_ts,cost_quote,quote_symbol,tx_open)
+    VALUES(1,'v4','888','0xpool',?,?,3000,60,-600,600,'5000',?,'777','open',?,200,'USDG','0xcc')`, ADDR.usdg, MEME, TARGET, now - 3600_000);
+  store.run(`INSERT INTO positions(id,venue,token_id,pool_ref,token0,token1,status,closed_ts,cost_quote,out_quote,quote_symbol)
+    VALUES(2,'v4','889','0xpool',?,?,'closed',?,100,112,'USDG')`, ADDR.usdg, MEME, now - 7200_000);
+  store.log('info', 'uji: baris log');
+  store.run("INSERT INTO txs(hash,ts,kind,status,gas_quote) VALUES('0xdd',?,'mint','ok',0.01)", now);
+  store.run('INSERT INTO wallets(address,label,first_block,scanned_to,last_scan_ts,positions_n,stats) VALUES(?,?,1,100,?,2,?)',
+    TARGET, 'Bang GE', now, JSON.stringify({ pnlUsd: 42.5, winRatePct: 66 }));
+
+  const live = [{
+    id: 1, venue: 'v4', token_id: '888', pool_ref: '0xpool', token0: ADDR.usdg, token1: MEME,
+    fee: 3000, tick_lower: -600, tick_upper: 600, curTick: 0, liquidity: '5000',
+    symbol0: 'USDG', symbol1: 'MEME', target: TARGET, mirror_of: '777', tx_open: '0xcc',
+    valueUsd: 205, feeUsd: 1.5, costUsd: 200, pnlUsd: 6.5, pnlPct: 3.25, ilUsd: -1.2,
+    inRange: true, ageHours: 1, empty: false,
+  }];
+
+  const cfg = {
+    mode: { dry_run: dryRun }, rules: {}, gas: {}, loop: {}, prices: {},
+    chain: { endpoints: [{ url: 'https://rpc.contoh.test', max_batch: 40 }] },
+    wallet: { key_file: path.join(os.tmpdir(), 'lpcopy-uji-key') },
+    server: {}, notify: {},
+    telegram: { bot_token: '123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', chat_ids: [...chats] },
+  };
+  const cfgPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lpcopy-tg-')), 'config.json');
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+
+  const engine = {
+    cfg, store,
+    ethUsd: 2500, head: 1000, cursor: 998, headSpread: 0, lastError: null,
+    stats: { startedAt: Date.now() - 60_000, ticks: 12 },
+    dryRun: () => cfg.mode.dry_run !== false,
+    paused: () => store.getState('paused', '0') === '1',
+    positions: { live, lastSync: Date.now(), summary: () => ({ openCount: 1, exposureUsd: 205, costUsd: 200, feeUsd: 1.5, unrealizedUsd: 6.5, realizedUsd: 12, inRange: 1 }) },
+    watcher: { unsupported: new Map() },
+    exec: {
+      address: () => ME, keyPath: () => cfg.wallet.key_file, resetWallet: () => {},
+      balances: async () => new Map([[ADDR.native, 10n ** 17n], [ADDR.usdg, 150_000_000n], [ADDR.weth, 0n]]),
+    },
+    leftovers: () => [{ posId: 1, target: TARGET, token: MEME, quote: ADDR.usdg, amount: '1000', tries: 2, next: Date.now() + 600_000, why: 'rute rugi 18%' }],
+    saveLeftovers: () => {}, dropLeftover: () => {}, sellToken: async () => 'terjual',
+    executeExit: async () => ({ txHash: '0xee' }),
+  };
+  const rpc = { stats: () => [{ url: 'https://rpc.contoh.test', calls: 10, errors: 0, lastMs: 90 }], reconfigure: () => {} };
+  const chain = { slot0V4Many: async (ids) => ids.map(() => ({ tick: 0 })) };
+
+  let server;
+  const sent = [];
+  const bot = new Telegram({
+    cfg, cfgPath, store, engine, log: () => {},
+    api: (m, p, b, q) => server.api(m, p, b, q),
+  });
+  // API Telegram palsu: mencatat apa yang keluar, membalas seperti aslinya.
+  let msgId = 100;
+  bot.tg = async (method, params) => {
+    sent.push({ method, params });
+    if (method === 'sendMessage') return { message_id: ++msgId, chat: { id: params.chat_id }, text: params.text };
+    if (method === 'editMessageText') return { message_id: params.message_id, text: params.text };
+    if (method === 'getMe') return { username: 'lpcopy_uji_bot' };
+    return true;
+  };
+  server = createServer({ engine, store, cfg, cfgPath, chain, rpc, log: () => {}, telegram: bot });
+  return { bot, store, cfg, cfgPath, sent, engine, api: (m, p, b, q) => server.api(m, p, b, q), last: () => sent[sent.length - 1] };
+}
+
+const msg = (text, chat = CHAT) => ({ message: { chat: { id: Number(chat) }, text } });
+const cbq = (data, chat = CHAT) => ({ callback_query: { id: 'q1', data, message: { chat: { id: Number(chat) }, message_id: 100 } } });
+const outs = (sent) => sent.filter((x) => x.method === 'sendMessage' || x.method === 'editMessageText');
+const lastOut = (sent) => outs(sent).slice(-1)[0];
+const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().map((b) => b.callback_data);
+
+(async () => {
+  console.log('bot Telegram\n');
+
+  // ---- gerbang chat -------------------------------------------------------
+  await t('chat asing tidak dilayani dan tidak bocor apa pun', async () => {
+    const w = build();
+    await w.bot.handle(msg('/ringkasan', ASING));
+    const o = lastOut(w.sent);
+    assert.strictEqual(String(o.params.chat_id), ASING);
+    assert.match(o.params.text, /belum tersambung/i);
+    assert.ok(!/LIVE|SIMULASI|0x/.test(o.params.text), 'jawaban ke chat asing tidak boleh memuat keadaan bot');
+  });
+
+  await t('kode sambung salah ditolak, kode benar menyambungkan', async () => {
+    const w = build({ chats: [] });
+    const kode = w.bot.newPairCode();
+    await w.bot.handle(msg(`/mulai SALAH123`, ASING));
+    assert.match(lastOut(w.sent).params.text, /Kode salah/);
+    assert.ok(!w.bot.chats().includes(ASING));
+    await w.bot.handle(msg(`/mulai ${kode}`, ASING));
+    assert.ok(w.bot.chats().includes(ASING), 'chat harus tersambung setelah kode benar');
+    // dan tersimpan ke config, bukan cuma di memori
+    assert.ok(JSON.parse(fs.readFileSync(w.cfgPath, 'utf8')).telegram.chat_ids.includes(ASING));
+  });
+
+  await t('kode sekali pakai: tidak bisa dipakai chat kedua', async () => {
+    const w = build({ chats: [] });
+    const kode = w.bot.newPairCode();
+    await w.bot.handle(msg(`/mulai ${kode}`, ASING));
+    await w.bot.handle(msg(`/mulai ${kode}`, '77777'));
+    assert.ok(!w.bot.chats().includes('77777'), 'kode yang sudah dipakai tidak boleh berlaku lagi');
+  });
+
+  await t('kode kedaluwarsa ditolak', async () => {
+    const w = build({ chats: [] });
+    const kode = w.bot.newPairCode();
+    w.bot.pairCode.exp = Date.now() - 1;
+    await w.bot.handle(msg(`/mulai ${kode}`, ASING));
+    assert.match(lastOut(w.sent).params.text, /kedaluwarsa/i);
+    assert.ok(!w.bot.chats().includes(ASING));
+  });
+
+  await t('tombol dari chat asing ditolak tanpa memanggil API', async () => {
+    const w = build();
+    await w.bot.handle(cbq('o', ASING));
+    assert.strictEqual(outs(w.sent).length, 0, 'tidak boleh ada pesan terkirim');
+    assert.match(w.last().params.text, /tidak berwenang/i);
+  });
+
+  // ---- penjelajah menu ----------------------------------------------------
+  await t('setiap tombol yang bisa dicapai dari menu utama bekerja', async () => {
+    const w = build();
+    // Tidak ditekan: memindahkan dana, menghapus, atau mengganti rahasia.
+    const HINDARI = ['pC', 'tD', 'swG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr'];
+    const antre = ['h']; const sudah = new Set(); const layar = [];
+    while (antre.length) {
+      const data = antre.shift();
+      if (sudah.has(data)) continue;
+      sudah.add(data);
+      const n = w.sent.length;
+      await w.bot.handle(cbq(data));
+      const o = lastOut(w.sent);
+      assert.ok(o && w.sent.length > n, `tombol ${data} tidak menghasilkan apa-apa`);
+      assert.ok(o.params.text && o.params.text.length > 10, `layar ${data} kosong`);
+      assert.ok(!/undefined|NaN|\[object/.test(o.params.text), `layar ${data} bocor nilai mentah:\n${o.params.text}`);
+      layar.push(data);
+      for (const b of buttons(o)) if (!HINDARI.includes(String(b).split(':')[0])) antre.push(b);
+    }
+    assert.ok(layar.length > 40, `penjelajah cuma sampai ${layar.length} layar — terlalu sedikit`);
+    // layar penting benar-benar terlewati
+    for (const wajib of ['o', 'p', 'p:1', 't', `t:${TARGET}`, 'a:0', 'r', 'r:0', 's', 'sw', 'sr', 'sf:gas', 'sf:mesin', 'sn', 'sc', 'f', 'l', 'x', 'b'])
+      assert.ok(sudah.has(wajib), `layar ${wajib} tidak pernah tercapai`);
+  });
+
+  await t('semua perintah slash menjawab', async () => {
+    const w = build();
+    for (const c of ['/menu', '/ringkasan', '/posisi', '/target', '/aktivitas', '/aturan', '/pengaturan', '/saldo', '/sisa', '/log', '/tx', '/bantuan']) {
+      const n = outs(w.sent).length;
+      await w.bot.handle(msg(c));
+      assert.ok(outs(w.sent).length > n, `${c} tidak menjawab`);
+      assert.ok(lastOut(w.sent).params.text.length > 10, `${c} menjawab kosong`);
+    }
+  });
+
+  await t('perintah tak dikenal dijawab ramah, bukan galat', async () => {
+    const w = build();
+    await w.bot.handle(msg('/entahapa'));
+    assert.match(lastOut(w.sent).params.text, /tidak dikenal/i);
+  });
+
+  // ---- aksi yang mengubah keadaan ----------------------------------------
+  await t('jeda & lanjut mengubah keadaan mesin sungguhan', async () => {
+    const w = build();
+    await w.bot.handle(msg('/jeda'));
+    assert.strictEqual(w.store.getState('paused'), '1');
+    assert.match(lastOut(w.sent).params.text, /dijeda/i);
+    await w.bot.handle(msg('/lanjut'));
+    assert.strictEqual(w.store.getState('paused'), '0');
+  });
+
+  await t('sakelar target menyalakan & mematikan di basis data', async () => {
+    const w = build();
+    await w.bot.handle(cbq(`tt:${TARGET}`));
+    assert.strictEqual(w.store.get('SELECT enabled FROM targets WHERE address=?', TARGET).enabled, 0);
+    await w.bot.handle(cbq(`tt:${TARGET}`));
+    assert.strictEqual(w.store.get('SELECT enabled FROM targets WHERE address=?', TARGET).enabled, 1);
+  });
+
+  await t('tambah target lewat percakapan', async () => {
+    const w = build();
+    await w.bot.handle(cbq('ta'));
+    assert.match(lastOut(w.sent).params.text, /alamat wallet/i);
+    await w.bot.handle(msg('0xabcdefabcdefabcdefabcdefabcdefabcdefabcd Bang Set'));
+    const row = w.store.get('SELECT * FROM targets WHERE address=?', '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd');
+    assert.ok(row, 'target baru harus tersimpan');
+    assert.strictEqual(row.label, 'Bang Set');
+  });
+
+  await t('alamat ngawur ditolak dengan pesan, bukan tersimpan', async () => {
+    const w = build();
+    await w.bot.handle(cbq('ta'));
+    await w.bot.handle(msg('bukan-alamat'));
+    assert.match(lastOut(w.sent).params.text, /tidak valid/i);
+    assert.strictEqual(w.store.get('SELECT COUNT(*) n FROM targets').n, 1);
+  });
+
+  await t('ganti nama target', async () => {
+    const w = build();
+    await w.bot.handle(cbq(`tn:${TARGET}`));
+    await w.bot.handle(msg('Bang GE (utama)'));
+    assert.strictEqual(w.store.get('SELECT label FROM targets WHERE address=?', TARGET).label, 'Bang GE (utama)');
+  });
+
+  // ---- penyunting aturan --------------------------------------------------
+  await t('ubah angka aturan tersimpan ke config', async () => {
+    const w = build();
+    const gi = RULE_GROUPS.findIndex((g) => g.g === 'sizing');
+    const fi = RULE_GROUPS[gi].fields.findIndex((f) => f.k === 'max_quote_per_position_usd');
+    await w.bot.handle(cbq(`re:${gi}:${fi}`));
+    assert.match(lastOut(w.sent).params.text, /Batas per posisi/);
+    await w.bot.handle(msg('250'));
+    assert.strictEqual(w.cfg.rules.sizing.max_quote_per_position_usd, 250);
+    assert.strictEqual(JSON.parse(fs.readFileSync(w.cfgPath, 'utf8')).rules.sizing.max_quote_per_position_usd, 250);
+  });
+
+  await t('nilai di luar batas ditolak dan aturan lama tetap', async () => {
+    const w = build();
+    const gi = RULE_GROUPS.findIndex((g) => g.g === 'swap');
+    const fi = RULE_GROUPS[gi].fields.findIndex((f) => f.k === 'max_slippage_bps');
+    await w.bot.handle(cbq(`re:${gi}:${fi}`));
+    await w.bot.handle(msg('999999999'));
+    assert.match(lastOut(w.sent).params.text, /antara/i);
+    assert.strictEqual(w.cfg.rules.swap, undefined, 'aturan tidak boleh berubah kalau nilainya ditolak');
+  });
+
+  await t('sakelar boolean aturan berbalik', async () => {
+    const w = build();
+    const gi = RULE_GROUPS.findIndex((g) => g.g === 'exit');
+    const fi = RULE_GROUPS[gi].fields.findIndex((f) => f.k === 'follow_target');
+    await w.bot.handle(cbq(`rb:${gi}:${fi}`));
+    assert.strictEqual(w.cfg.rules.exit.follow_target, false);
+    await w.bot.handle(cbq(`rb:${gi}:${fi}`));
+    assert.strictEqual(w.cfg.rules.exit.follow_target, true);
+  });
+
+  await t('pilihan (mode ukuran) tersimpan lewat tombol', async () => {
+    const w = build();
+    const gi = RULE_GROUPS.findIndex((g) => g.g === 'sizing');
+    const fi = 0;
+    const oi = RULE_GROUPS[gi].fields[0].opts.findIndex(([k]) => k === 'mirror');
+    await w.bot.handle(cbq(`rv:${gi}:${fi}:${oi}`));
+    assert.strictEqual(w.cfg.rules.sizing.mode, 'mirror');
+  });
+
+  await t('aturan khusus per target tidak mengubah aturan umum', async () => {
+    const w = build();
+    const gi = RULE_GROUPS.findIndex((g) => g.g === 'sizing');
+    const fi = RULE_GROUPS[gi].fields.findIndex((f) => f.k === 'max_quote_per_position_usd');
+    await w.bot.handle(cbq(`ts:${TARGET}`));           // pindah lingkup ke target
+    await w.bot.handle(cbq(`re:${gi}:${fi}`));
+    await w.bot.handle(msg('75'));
+    const own = JSON.parse(w.store.get('SELECT rules FROM targets WHERE address=?', TARGET).rules);
+    assert.strictEqual(own.sizing.max_quote_per_position_usd, 75);
+    assert.strictEqual(w.cfg.rules.sizing, undefined, 'aturan umum tidak boleh ikut berubah');
+    // dan bisa dilepas lagi
+    await w.bot.handle(cbq(`rx:${gi}:${fi}`));
+    assert.strictEqual(w.store.get('SELECT rules FROM targets WHERE address=?', TARGET).rules, null);
+  });
+
+  await t('lingkup aturan terpisah antar chat', async () => {
+    const w = build({ chats: [CHAT, ASING] });
+    await w.bot.handle(cbq(`ts:${TARGET}`, CHAT));
+    assert.strictEqual(w.bot.sess(CHAT).scope, TARGET);
+    assert.strictEqual(w.bot.sess(ASING).scope, 'g');
+  });
+
+  // ---- pengaturan mesin ---------------------------------------------------
+  await t('ubah gas lewat bot tersimpan ke config', async () => {
+    const w = build();
+    await w.bot.handle(cbq('sfe:gas:0'));              // pengali harga gas
+    await w.bot.handle(msg('2'));
+    assert.strictEqual(w.cfg.gas.price_multiplier, 2);
+  });
+
+  await t('sakelar boolean pengaturan mesin berbalik', async () => {
+    const w = build();
+    const fi = require('../src/telegram').FORMS.mesin.fields.findIndex((f) => f.k === 'auto_eth_price');
+    // bawaannya menyala, jadi tekanan pertama mematikannya
+    await w.bot.handle(cbq(`sfb:mesin:${fi}`));
+    assert.strictEqual(w.cfg.prices.auto_eth_price, false);
+    await w.bot.handle(cbq(`sfb:mesin:${fi}`));
+    assert.strictEqual(w.cfg.prices.auto_eth_price, true);
+  });
+
+  await t('sakelar notifikasi Telegram tersimpan', async () => {
+    const w = build();
+    assert.strictEqual(w.bot.notifCfg().info, false);
+    await w.bot.handle(cbq('snb:info'));
+    assert.strictEqual(w.bot.notifCfg().info, true);
+  });
+
+  // ---- pengaman ------------------------------------------------------------
+  await t('mode LIVE butuh ketikan konfirmasi', async () => {
+    const w = build();
+    await w.bot.handle(cbq('sl'));
+    assert.match(lastOut(w.sent).params.text, /Ketik <code>LIVE<\/code>/);
+    await w.bot.handle(msg('iya'));                     // konfirmasi salah
+    assert.strictEqual(w.cfg.mode.dry_run, true, 'LIVE tidak boleh menyala tanpa konfirmasi tepat');
+    await w.bot.handle(cbq('sl'));
+    await w.bot.handle(msg('LIVE'));
+    assert.strictEqual(w.cfg.mode.dry_run, false);
+  });
+
+  await t('tutup posisi lewat dua langkah, dan ditolak saat simulasi', async () => {
+    const w = build();
+    await w.bot.handle(cbq('pc:1'));
+    assert.match(lastOut(w.sent).params.text, /Tutup posisi #1/);
+    assert.ok(buttons(lastOut(w.sent)).includes('pC:1'), 'harus ada tombol konfirmasi');
+    await w.bot.handle(cbq('pC:1'));
+    assert.match(lastOut(w.sent).params.text, /simulasi/i, 'mode simulasi harus menolak');
+  });
+
+  await t('tutup posisi sungguhan memanggil mesin saat LIVE', async () => {
+    const w = build({ dryRun: false });
+    let dipanggil = null;
+    w.engine.executeExit = async (plan, pos) => { dipanggil = { plan, pos }; return { txHash: '0xee' }; };
+    await w.bot.handle(cbq('pC:1'));
+    assert.ok(dipanggil, 'executeExit harus dipanggil');
+    assert.strictEqual(dipanggil.plan.full, true);
+    assert.strictEqual(dipanggil.pos.id, 1);
+    assert.match(lastOut(w.sent).params.text, /terkirim/i);
+  });
+
+  await t('bot tidak pernah menyediakan jalan impor/ekspor kunci privat', async () => {
+    const w = build();
+    await w.bot.handle(cbq('sw'));
+    const teks = lastOut(w.sent).params.text;
+    assert.match(teks, /sengaja tidak disediakan/i);
+    for (const b of buttons(lastOut(w.sent))) assert.ok(!/import|impor|export|ekspor/i.test(b));
+    // dan tidak ada rute impor yang bisa dicapai dari mana pun di bot
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'telegram.js'), 'utf8');
+    assert.ok(!src.includes('/api/settings/wallet/import'), 'telegram.js tidak boleh memanggil rute impor kunci');
+  });
+
+  await t('penggantian wallet tetap ditolak saat LIVE (aturan dasbor ikut berlaku)', async () => {
+    const w = build({ dryRun: false });
+    await w.bot.handle(cbq('swG'));
+    assert.match(lastOut(w.sent).params.text, /Matikan mode LIVE/i);
+  });
+
+  // ---- notifikasi ----------------------------------------------------------
+  await t('kabar penting dari mesin sampai ke chat', async () => {
+    const w = build();
+    await w.bot.start();
+    w.engine.notify = (m) => { w.engine.onNotify?.(m); };
+    w.engine.notify('LP disalin: USDG/MEME $200');
+    await new Promise((r) => setTimeout(r, 50));
+    const o = outs(w.sent).find((x) => /LP disalin/.test(x.params.text));
+    assert.ok(o, 'kabar penting harus terkirim');
+    assert.strictEqual(String(o.params.chat_id), CHAT);
+    w.bot.stop();
+  });
+
+  await t('galat ikut terkirim, baris info tidak (setelan bawaan)', async () => {
+    const w = build();
+    await w.bot.start();
+    w.store.log('error', 'uji: sesuatu meledak');
+    w.store.log('info', 'uji: kabar biasa');
+    await new Promise((r) => setTimeout(r, 50));
+    const teks = outs(w.sent).map((x) => x.params.text).join('\n');
+    assert.match(teks, /sesuatu meledak/);
+    assert.ok(!/kabar biasa/.test(teks), 'baris info tidak boleh dikirim kalau setelannya mati');
+    w.bot.stop();
+  });
+
+  await t('kabar penting tidak dikirim dua kali walau baris log dinyalakan', async () => {
+    const { Engine } = require('../src/engine');
+    const w = build();
+    await w.bot.start();
+    await w.bot.handle(cbq('snb:info'));                // nyalakan pengiriman baris log
+    // notify() ASLI dari mesin, supaya urutan "beri tahu pendengar lalu catat log"
+    // ikut teruji — kalau urutannya dibalik, gemanya lolos dan uji ini merah.
+    // teks yang tidak muncul di layar mana pun, supaya hitungannya bersih
+    Engine.prototype.notify.call(w.engine, 'kabar-uji-unik-9137');
+    const n = w.bot.queue.filter((x) => /9137/.test(x)).length
+      + outs(w.sent).filter((x) => /9137/.test(x.params.text)).length;
+    assert.strictEqual(n, 1, `kabar yang sama masuk antrean ${n} kali`);
+    // baris log biasa tetap ikut terkirim saat setelan itu menyala
+    Engine.prototype.notify.call(w.engine, 'kabar lain');
+    w.store.log('info', 'benar-benar baris log');
+    assert.ok(w.bot.queue.some((x) => /benar-benar baris log/.test(x)), 'baris log biasa harus tetap terkirim');
+    w.bot.stop();
+  });
+
+  await t('jadwal coba-ulang sisa ditulis sebagai waktu yang akan datang', async () => {
+    const w = build();
+    await w.bot.handle(cbq('f'));
+    const teks = lastOut(w.sent).params.text;
+    assert.match(teks, /coba lagi \d+ mnt lagi/, `teks jadwal salah:\n${teks}`);
+    assert.ok(!/0 dtk/.test(teks), 'waktu masa depan tidak boleh jadi "0 dtk"');
+  });
+
+  await t('banjir log tidak menumpuk antrean tanpa batas', async () => {
+    const w = build();
+    await w.bot.start();
+    for (let i = 0; i < 500; i++) w.store.log('error', `banjir ${i}`);
+    assert.ok(w.bot.queue.length <= 41, `antrean membengkak jadi ${w.bot.queue.length}`);
+    w.bot.stop();
+  });
+
+  // ---- pembacaan & penulisan nilai ---------------------------------------
+  await t('parseVal menerima bentuk manusiawi dan menolak yang ngawur', async () => {
+    const bps = { type: 'bps', lo: 0, hi: 10000 };
+    assert.strictEqual(parseVal(bps, '150'), 150);
+    assert.strictEqual(parseVal(bps, '1,5%'), 150);
+    assert.strictEqual(parseVal({ type: 'usd', lo: 0, hi: 1e9 }, '$1.5'), 1.5);
+    assert.deepStrictEqual(parseVal({ type: 'daftar' }, 'USDG, ETH'), ['USDG', 'ETH']);
+    assert.deepStrictEqual(parseVal({ type: 'daftar' }, '-'), []);
+    assert.strictEqual(parseVal({ type: 'int', lo: 0, hi: 100 }, '7,6'), 8);
+    assert.throws(() => parseVal({ type: 'num', lo: 0, hi: 10 }, 'abc'), /angka/);
+    assert.throws(() => parseVal({ type: 'num', lo: 0, hi: 10 }, '99'), /antara/);
+    assert.throws(() => parseVal({ type: 'pilih', opts: [['a', 'A']] }, 'z'), /pilihannya/);
+  });
+
+  await t('showVal menampilkan bps sebagai persen, bukan angka mentah', async () => {
+    assert.strictEqual(showVal({ type: 'bps' }, 150), '1,5%');
+    assert.strictEqual(showVal({ type: 'bps' }, 500), '5%');
+    assert.strictEqual(showVal({ type: 'bool' }, true), '✅ ya');
+    assert.strictEqual(showVal({ type: 'daftar' }, []), '(kosong)');
+    // pemisah ribuan Indonesia adalah titik: jangan sampai "1.000" dipangkas jadi "1."
+    assert.strictEqual(showVal({ type: 'int' }, 1000), '1.000');
+    assert.strictEqual(showVal({ type: 'int' }, 4000000), '4.000.000');
+    assert.strictEqual(showVal({ type: 'num' }, 0.004), '0,004');
+  });
+
+  await t('setiap kolom aturan benar-benar ada di mesin aturan', async () => {
+    const { DEFAULTS } = require('../src/policy');
+    for (const g of RULE_GROUPS) {
+      assert.ok(DEFAULTS[g.g], `kelompok ${g.g} tidak ada di policy.js`);
+      for (const f of g.fields) {
+        assert.ok(f.k in DEFAULTS[g.g], `aturan ${g.g}.${f.k} ada di menu tapi tidak dikenal policy.js`);
+      }
+    }
+    // dan sebaliknya: tidak ada aturan yang terlupa dari menu
+    for (const [g, obj] of Object.entries(DEFAULTS)) {
+      const grp = RULE_GROUPS.find((x) => x.g === g);
+      assert.ok(grp, `kelompok aturan ${g} belum punya menu di bot`);
+      for (const k of Object.keys(obj)) {
+        assert.ok(grp.fields.some((f) => f.k === k), `aturan ${g}.${k} belum bisa disetel dari bot`);
+      }
+    }
+  });
+
+  await t('data tombol muat di batas 64 byte Telegram', async () => {
+    const w = build();
+    const antre = ['h']; const sudah = new Set();
+    while (antre.length) {
+      const d = antre.shift();
+      if (sudah.has(d)) continue;
+      sudah.add(d);
+      assert.ok(Buffer.byteLength(d) <= 64, `callback_data terlalu panjang (${Buffer.byteLength(d)}): ${d}`);
+      if (['pC', 'tD', 'swG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr'].includes(d.split(':')[0])) continue;
+      await w.bot.handle(cbq(d));
+      for (const b of buttons(lastOut(w.sent))) antre.push(b);
+    }
+  });
+
+  await t('setiap pesan muat di batas 4096 karakter Telegram', async () => {
+    const w = build();
+    for (const d of ['h', 'o', 'p', 'p:1', 't', `t:${TARGET}`, 'a:0', 'r', 'r:5', 's', 'l', 'x', 'f', 'sr', 'sn', 'sc']) {
+      await w.bot.handle(cbq(d));
+      assert.ok(lastOut(w.sent).params.text.length <= 4096, `layar ${d} kepanjangan`);
+    }
+  });
+
+  console.log(`\n${pass} lulus, ${fail} gagal`);
+  process.exit(fail ? 1 : 0);
+})();

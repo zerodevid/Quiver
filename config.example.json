@@ -60,6 +60,17 @@
   "notify": {
     "ntfy_topic": null
   },
+  "telegram": {
+    "bot_token": null,
+    "chat_ids": [],
+    "notify": {
+      "penting": true,
+      "error": true,
+      "warn": true,
+      "info": false
+    },
+    "catatan": "Buat bot lewat @BotFather, tempel tokennya di sini (atau lewat dasbor -> Pengaturan -> Telegram). chat_ids diisi sendiri saat sebuah chat mengirim /mulai <kode>."
+  },
   "targets": [],
   "rules": {
     "sizing": {

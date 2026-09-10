@@ -215,6 +215,8 @@ class Store {
   }
   log(level, msg) {
     this.run('INSERT INTO logs(ts,level,msg) VALUES(?,?,?)', Date.now(), level, String(msg).slice(0, 2000));
+    // Pendengar opsional (bot Telegram) — kegagalannya tidak boleh menjatuhkan penulis log.
+    if (this.onLog) { try { this.onLog(level, String(msg)); } catch { /* abaikan */ } }
   }
   // buang log lama supaya file tidak membengkak
   prune(days = 30) {
