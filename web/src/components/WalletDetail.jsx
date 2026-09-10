@@ -16,6 +16,10 @@ const isAddr = (a) => /^0x[0-9a-f]{40}$/.test(a);
 
 function phaseText(j) {
   if (!j) return tt('Menyiapkan pemindaian…');
+  if (j.mode === 'refresh') {
+    if (j.phase === 'posisi') return tt('menghitung ulang posisi {done} / {total}', { done: j.done || 0, total: j.total || '?' });
+    return tt('mencari posisi baru sejak pindai terakhir');
+  }
   if (j.phase === 'transfer') return tt('Tahap 1 dari 2 — mencari posisi di chain ({p}%)', { p: j.progress || 0 });
   if (j.phase === 'posisi') return tt('Tahap 2 dari 2 — menghitung posisi {done} / {total}', { done: j.done || 0, total: j.total || '?' });
   return tt('Menyiapkan pemindaian…');
@@ -232,13 +236,21 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
     return d;
   }, [address, onChanged]);
 
-  const startScan = useCallback(async (win = blocks) => {
-    const r = await post('/api/wallet/scan', { address, blocks: Number(win) });
+  const startScan = useCallback(async (win = blocks, mode = 'full') => {
+    const r = await post('/api/wallet/scan', { address, blocks: Number(win), mode });
     if (r.error) { toast.danger(r.error); return false; }
     stopPoll();
     await fetchWallet();
     return true;
   }, [address, blocks, fetchWallet]);
+
+  // Server bisa memulai pembaruan sendiri (target baru beraksi, atau data basi).
+  // Poll pelan ini yang membuat halaman yang dibiarkan terbuka ikut terbarui;
+  // begitu ada pekerjaan berjalan, fetchWallet pindah ke poll cepat 2 detik.
+  useEffect(() => {
+    const slow = setInterval(() => { if (!document.hidden && !timer.current) fetchWallet(); }, 30000);
+    return () => clearInterval(slow);
+  }, [fetchWallet]);
 
   // muat saat alamat berganti; pindai otomatis kalau belum pernah
   useEffect(() => {
@@ -257,6 +269,10 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
 
   const job = data?.job;
   const running = job?.status === 'jalan';
+  // Kegagalan pembaruan latar (RPC sedang 429, dll.) cukup dicatat kecil — data
+  // tersimpan tetap tampil dan server akan mencoba lagi. Hanya pindai yang diminta
+  // pengguna yang layak kotak merah.
+  const bgFailed = job?.status === 'gagal' && job.reason && job.reason !== 'manual';
   const s = data?.stats || {};
 
   const makeTarget = async () => {
@@ -267,14 +283,20 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
   const toolbar = (
     <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
       <p className="text-sm text-muted">
-        {data?.found && !running
-          ? t('Dipindai {when} · blok {from}–{to}', { when: ago(data.lastScanTs), from: num(data.scannedFrom || 0), to: num(data.scannedTo || 0) })
+        {data?.found
+          ? t('Diperbarui {when} · blok {from}–{to}', { when: ago(data.lastScanTs), from: num(data.scannedFrom || 0), to: num(data.scannedTo || 0) })
           : t('Sekali dipindai, data disimpan — membuka lagi tidak memanggil chain.')}
+        {data?.found && <span className="block text-xs">{t('Diperbarui otomatis saat wallet ini beraksi, dan saat dibuka bila lebih dari 5 menit.')}</span>}
+        {bgFailed && <span className="block text-xs text-warning">{t('Pembaruan otomatis gagal: {e} — dicoba lagi sebentar lagi.', { e: job.error })}</span>}
       </p>
-      <div className="flex items-end gap-2">
+      <div className="flex flex-wrap items-end gap-2">
+        {data?.found && (
+          <Button isPending={running && job?.mode === 'refresh'} isDisabled={running} onPress={() => startScan(blocks, 'refresh')}>
+            <RefreshCw className="size-4" />{t('Perbarui')}</Button>
+        )}
         <Pick className="w-40" value={blocks} onChange={setBlocks} options={WINDOWS} />
-        <Button variant="outline" isPending={running} isDisabled={running} onPress={() => startScan()}>
-          <RefreshCw className="size-4" />{t('Pindai ulang')}</Button>
+        <Button variant="outline" isPending={running && job?.mode !== 'refresh'} isDisabled={running} onPress={() => startScan()}>
+          {t('Pindai ulang')}</Button>
       </div>
     </div>
   );
@@ -283,7 +305,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
   return (
     <>
       {toolbar}
-      {job?.status === 'gagal' && <div className="mb-6"><Notice status="danger" title="Pindai gagal">{t('{e} — coba pindai ulang.', { e: job.error })}</Notice></div>}
+      {job?.status === 'gagal' && !bgFailed && <div className="mb-6"><Notice status="danger" title="Pindai gagal">{t('{e} — coba pindai ulang.', { e: job.error })}</Notice></div>}
       {running && !data?.found ? <ScanProgress job={job} />
         : !data?.found ? (
           <Card><Card.Content className="flex-row items-center justify-between gap-4">

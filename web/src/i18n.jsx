@@ -30,6 +30,13 @@ export function initLocale() {
 }
 
 const EN = {
+  // ---- pembaruan riset wallet ----
+  'menghitung ulang posisi {done} / {total}': 'recomputing positions {done} / {total}',
+  'mencari posisi baru sejak pindai terakhir': 'looking for new positions since the last scan',
+  'Perbarui': 'Refresh',
+  'Diperbarui {when} · blok {from}–{to}': 'Updated {when} · blocks {from}–{to}',
+  'Diperbarui otomatis saat wallet ini beraksi, dan saat dibuka bila lebih dari 5 menit.': 'Updates automatically when this wallet acts, and on open if older than 5 minutes.',
+  'Pembaruan otomatis gagal: {e} — dicoba lagi sebentar lagi.': 'Automatic update failed: {e} — retrying shortly.',
   // ---- navigasi & kerangka ----
   'Pemantauan': 'Monitoring',
   'Copy': 'Copy',
@@ -235,7 +242,6 @@ const EN = {
   'Semua riwayat': 'Full history',
   'Sekali dipindai, data disimpan — membuka lagi tidak memanggil chain.':
     'Scanned once, the data is stored — opening it again does not call the chain.',
-  'Dipindai {when} · blok {from}–{to}': 'Scanned {when} · blocks {from}–{to}',
   'Wallet ini belum ada di database.': 'This wallet is not in the database yet.',
   'Memuat data wallet…': 'Loading wallet data…',
   'Mengambil riwayat wallet dari chain': 'Fetching wallet history from chain',

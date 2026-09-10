@@ -140,6 +140,11 @@ class Engine {
       const fresh = this.watcher.persist(acts);
       this.stats.actions += fresh.length;
       for (const a of fresh) await this.handle(a);
+      // Pendengar luar (dasbor) diberi tahu aksi baru — mis. untuk memperbarui riset
+      // wallet target. Galat pendengar tidak boleh mengganggu siklus copy.
+      if (fresh.length && this.onFreshActions) {
+        try { this.onFreshActions(fresh); } catch (e) { this.store.log('error', `onFreshActions: ${e.message}`); }
+      }
       this.failStreak = 0;
       if (this.span < maxSpan) this.span = Math.min(maxSpan, Math.ceil(this.span * 1.5));
     } catch (e) {

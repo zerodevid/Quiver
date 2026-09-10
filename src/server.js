@@ -39,6 +39,60 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log }) {
   const walletJobs = new Map();
   const research = new WalletResearch({ rpc, store, chain, log });
 
+  // Satu pintu untuk semua pemindaian wallet: tombol di dasbor, pembaruan otomatis
+  // saat halaman dibuka, dan pembaruan saat target terdeteksi beraksi. Satu wallet
+  // hanya boleh punya satu pekerjaan berjalan.
+  //   mode 'full'    — bangun ulang semua posisi di jendela `blocks`
+  //   mode 'refresh' — hanya blok sejak pindai terakhir + posisi yang masih terbuka
+  const startWalletJob = (addr, { mode = 'full', blocks = 900_000, reason = null } = {}) => {
+    if (walletJobs.get(addr)?.status === 'jalan') return walletJobs.get(addr);
+    const job = { status: 'jalan', mode, reason, phase: 'mulai', progress: 0, done: 0, total: 0, startedAt: Date.now(), error: null };
+    walletJobs.set(addr, job);
+    const onProgress = (p) => {
+      job.phase = p.phase; job.done = p.scanned; job.total = p.total;
+      job.progress = p.total ? Math.round((p.scanned / p.total) * 100) : 0;
+    };
+    const run = mode === 'refresh'
+      ? research.refresh(addr, { ethUsd: engine.ethUsd, onProgress })
+      : research.scan(addr, { blocks, ethUsd: engine.ethUsd, onProgress });
+    if (reason !== 'manual') log(`riset ${addr}: pembaruan ${mode} dimulai (${reason})`);
+    run.then((r) => {
+      job.status = 'selesai'; job.finishedAt = Date.now();
+      if (reason !== 'manual') log(`riset ${addr}: selesai ${((job.finishedAt - job.startedAt) / 1000).toFixed(0)} dtk, ${r?.positions?.length ?? 0} posisi dibaca`);
+    })
+      .catch((e) => { job.error = e.message; job.status = 'gagal'; job.finishedAt = Date.now(); log(`riset wallet ${addr}: ${e.message}`); });
+    return job;
+  };
+
+  // Riset dianggap basi setelah 5 menit; membukanya memicu pembaruan lanjutan di
+  // latar. Pembaruan yang GAGAL tidak diulang terus-menerus tiap poll — tunggu dulu.
+  const STALE_MS = 5 * 60_000;
+  const RETRY_AFTER_FAIL_MS = 2 * 60_000;
+  const maybeRefresh = (addr, w, reason) => {
+    const job = walletJobs.get(addr);
+    if (job?.status === 'jalan') return;
+    if (job?.status === 'gagal' && Date.now() - (job.finishedAt || 0) < RETRY_AFTER_FAIL_MS) return;
+    if (w && Date.now() - (w.last_scan_ts || 0) < STALE_MS) return;
+    startWalletJob(addr, { mode: 'refresh', reason });
+  };
+
+  // Target yang baru beraksi: perbarui risetnya ~20 detik kemudian (satu aksi
+  // rebalance biasanya berupa beberapa event beruntun — cukup satu pembaruan).
+  // Hanya untuk wallet yang sudah pernah dipindai; pindai pertama tetap manual.
+  const pendingRefresh = new Map();
+  engine.onFreshActions = (acts) => {
+    for (const target of new Set(acts.map((a) => a.target))) {
+      if (pendingRefresh.has(target)) continue;
+      if (!store.get('SELECT 1 FROM wallets WHERE address=?', target)) continue;
+      pendingRefresh.set(target, setTimeout(() => {
+        pendingRefresh.delete(target);
+        const job = walletJobs.get(target);
+        if (job?.status === 'jalan') return;
+        startWalletJob(target, { mode: 'refresh', reason: 'aksi' });
+      }, 20_000));
+    }
+  };
+
   // Gerbang token. Dasbor ini bisa menyalakan mode LIVE dan menutup posisi, jadi ia
   // tidak boleh terbuka begitu saja begitu diekspos ke internet. Token disimpan di
   // config; kalau kosong, gerbangnya mati (aman untuk 127.0.0.1 saja).
@@ -202,29 +256,22 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log }) {
       const b = await readBody(req);
       const addr = String(b.address || '').toLowerCase().trim();
       if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
-      if (walletJobs.get(addr)?.status === 'jalan') return { ok: true, status: 'jalan' };
-      const job = { status: 'jalan', phase: 'mulai', progress: 0, done: 0, total: 0, startedAt: Date.now(), error: null };
-      walletJobs.set(addr, job);
-      const blocks = Number(b.blocks || 900_000);
-      research.scan(addr, {
-        blocks, ethUsd: engine.ethUsd,
-        onProgress: (p) => {
-          job.phase = p.phase; job.done = p.scanned; job.total = p.total;
-          job.progress = p.total ? Math.round((p.scanned / p.total) * 100) : 0;
-        },
-      }).then(() => { job.status = 'selesai'; job.finishedAt = Date.now(); })
-        .catch((e) => { job.error = e.message; job.status = 'gagal'; log(`riset wallet ${addr}: ${e.message}`); });
-      return { ok: true, status: 'jalan' };
+      const mode = b.mode === 'refresh' ? 'refresh' : 'full';
+      const job = startWalletJob(addr, { mode, blocks: Number(b.blocks || 900_000), reason: 'manual' });
+      return { ok: true, status: job.status };
     },
 
     'GET /api/wallet': async (req, url) => {
       const addr = String(url.searchParams.get('address') || '').toLowerCase();
       if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
-      const job = walletJobs.get(addr);
       const w = store.get('SELECT * FROM wallets WHERE address=?', addr);
+      // Sudah pernah dipindai tapi basi -> perbarui di latar; halaman tetap langsung
+      // menampilkan data tersimpan dan melihat progresnya lewat `job`.
+      if (w) maybeRefresh(addr, w, 'basi');
+      const job = walletJobs.get(addr);
       const jobOut = job ? {
-        status: job.status, phase: job.phase, progress: job.progress, done: job.done, total: job.total,
-        startedAt: job.startedAt, finishedAt: job.finishedAt || null, error: job.error,
+        status: job.status, mode: job.mode, reason: job.reason, phase: job.phase, progress: job.progress,
+        done: job.done, total: job.total, startedAt: job.startedAt, finishedAt: job.finishedAt || null, error: job.error,
       } : null;
       if (!w) return { found: false, job: jobOut };
 

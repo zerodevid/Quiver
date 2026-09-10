@@ -115,8 +115,12 @@ class WalletResearch {
           const id = BigInt(l.topics[3]).toString();
           const bn = parseInt(l.blockNumber, 16);
           const from = asAddr(l.topics[1]);
-          const e = held.get(id) || { first: bn, last: bn, mintTx: null, acquiredByMint: false };
+          const li = parseInt(l.logIndex, 16);
+          const e = held.get(id) || { first: bn, last: bn, mintTx: null, acquiredByMint: false, heldNow: false, lastPos: -1 };
           e.first = Math.min(e.first, bn); e.last = Math.max(e.last, bn);
+          // Arah Transfer TERAKHIR menentukan apakah NFT masih di tangan wallet ini.
+          const pos = bn * 1e5 + li;
+          if (pos > e.lastPos) { e.lastPos = pos; e.heldNow = asAddr(l.topics[2]) === wallet; }
           if (from === ZERO && asAddr(l.topics[2]) === wallet) { e.mintTx = l.transactionHash; e.acquiredByMint = true; e.first = bn; }
           held.set(id, e);
         }
@@ -441,7 +445,12 @@ class WalletResearch {
       if (!info) continue;
       const span = held.get(id);
       try {
-        const pos = await this.buildPosition(wallet, id, info, { first: span.first, last: Math.min(head, span.last + 5) }, ethUsd);
+        // Posisi yang masih dipegang dibaca sampai head. Dulu berhenti di Transfer
+        // terakhir + 5 blok, sehingga penambahan, penarikan sebagian, dan klaim fee
+        // SETELAH mint tidak pernah terbaca — Transfer hanya muncul saat mint/burn/pindah
+        // tangan, sedangkan ModifyLiquidity bisa terjadi kapan saja di antaranya.
+        const last = span.heldNow ? head : Math.min(head, span.last + 5);
+        const pos = await this.buildPosition(wallet, id, info, { first: span.first, last }, ethUsd);
         if (pos) out.push(pos);
       } catch (e) { this.log(`posisi ${id} gagal: ${e.message}`); }
     }
@@ -449,15 +458,96 @@ class WalletResearch {
     return { wallet, positions: out, head, from };
   }
 
+  // ---- pembaruan lanjutan ---------------------------------------------------
+  // Pindai penuh membangun ulang SEMUA posisi di jendela — untuk wallet aktif itu
+  // ratusan posisi dan beberapa menit. Padahal sejak pindai terakhir yang berubah
+  // hanya dua jenis: posisi yang tersentuh Transfer sejak blok terakhir (baru dibuka,
+  // dibakar, pindah tangan) dan posisi yang masih terbuka (nilai & fee berjalan,
+  // atau ditutup tanpa burn yang tidak memunculkan Transfer). Hanya itu yang dibaca.
+  async refresh(wallet, { ethUsd = 2500, onProgress } = {}) {
+    wallet = wallet.toLowerCase();
+    const w = this.store.get('SELECT first_block, scanned_to FROM wallets WHERE address=?', wallet);
+    if (!w || w.scanned_to == null) return this.scan(wallet, { ethUsd, onProgress });
+    const head = await this.rpc.blockNumber();
+    // Tumpang tindih 2.000 blok (~3 menit): aman terhadap blok yang telat terindeks.
+    const from = Math.max(w.first_block || 0, w.scanned_to - 2000);
+    const held = await this.enumerate(wallet, from, head, onProgress);
+
+    const known = new Map(this.store.all(
+      'SELECT token_id, opened_block, status, pool_ref, token0, token1, fee, tick_spacing, hooks, tick_lower, tick_upper FROM wpositions WHERE wallet=?',
+      wallet).map((r) => [r.token_id, r]));
+    for (const [id, r] of known) {
+      if (r.status === 'open' && !held.has(id)) {
+        held.set(id, { first: r.opened_block ?? from, last: head, mintTx: null, acquiredByMint: false, heldNow: true });
+      }
+    }
+    // Posisi lama yang tersentuh lagi dibaca sejak pembukaannya, bukan sejak jendela
+    // ini — kalau tidak, modalnya hilang dan posisinya jadi "tidak lengkap".
+    for (const [id, e] of held) {
+      const r = known.get(id);
+      if (r?.opened_block != null) e.first = Math.min(e.first, r.opened_block);
+    }
+    const ids = [...held.keys()];
+    if (!ids.length) {
+      await this.persist(wallet, [], { from, head, ethUsd, partial: true });
+      return { wallet, positions: [], head, from, refreshed: 0 };
+    }
+
+    const infos = await this.poolKeys(ids, held);
+    // NFT yang sudah dibakar tidak bisa ditanya ke PositionManager, dan tx mint-nya
+    // mungkin di luar jendela ini — poolKey-nya sudah tersimpan dari pindai sebelumnya.
+    for (const id of ids) {
+      const r = known.get(id);
+      if (infos.has(id) || !r?.pool_ref || !r.token0) continue;
+      infos.set(id, {
+        poolId: r.pool_ref, tickLower: r.tick_lower, tickUpper: r.tick_upper,
+        poolKey: { currency0: r.token0, currency1: r.token1, fee: r.fee, tickSpacing: r.tick_spacing, hooks: r.hooks },
+      });
+    }
+    const out = [];
+    let done = 0;
+    for (const id of ids) {
+      const info = infos.get(id);
+      done++;
+      if (onProgress) onProgress({ phase: 'posisi', scanned: done, total: ids.length });
+      if (!info) continue;
+      const span = held.get(id);
+      try {
+        const last = span.heldNow ? head : Math.min(head, span.last + 5);
+        const pos = await this.buildPosition(wallet, id, info, { first: span.first, last }, ethUsd);
+        if (pos) out.push(pos);
+      } catch (e) { this.log(`posisi ${id} gagal: ${e.message}`); }
+    }
+    await this.persist(wallet, out, { from, head, ethUsd, partial: true });
+    return { wallet, positions: out, head, from, refreshed: out.length };
+  }
+
+  // Ringkasan dihitung dari SELURUH baris tersimpan, bukan hanya posisi yang baru
+  // dibaca: setelah pembaruan lanjutan yang dibaca cuma segelintir posisi, dan pindai
+  // ulang dengan jendela lebih pendek tidak menghapus posisi di luar jendelanya.
+  // Dengan begini angka ringkasan selalu sama dengan isi tabel.
+  statsFromDb(wallet) {
+    const rows = this.store.all(
+      'SELECT status, incomplete, pnl_q, invested_q, fees_q, live_value_q, live_fee_q FROM wpositions WHERE wallet=?', wallet);
+    // Nilai di DB sudah dalam USD saat disimpan, jadi quoteKind 'usd'.
+    return summarize(rows.map((r) => ({
+      status: r.status, incomplete: !!r.incomplete, quoteKind: 'usd',
+      pnlQ: r.pnl_q || 0, investedQ: r.invested_q || 0, feesQ: r.fees_q || 0,
+      liveValueQ: r.live_value_q || 0, liveFeeQ: r.live_fee_q || 0,
+    })));
+  }
+
   // ---- simpan -------------------------------------------------------------
-  async persist(wallet, positions, { from, head, ethUsd }) {
+  async persist(wallet, positions, { from, head, ethUsd, partial = false }) {
     const usd = (v, kind) => (kind === 'eth' ? v * ethUsd : v);
     // Buang sisa pindai lama di dalam jendela ini yang tidak muncul lagi (mis. hasil
     // pindai yang gagal di tengah jalan: posisi tanpa pasangan token dan serba nol).
     // Posisi di luar jendela ini dibiarkan — pindai yang lebih pendek tidak boleh
     // menghapus hasil pindai yang lebih panjang.
     const keep = new Set(positions.map((p) => p.tokenId));
-    const stale = this.store.all(
+    // Pembaruan lanjutan hanya membaca sebagian posisi — "tidak muncul lagi" di situ
+    // bukan berarti basi.
+    const stale = partial ? [] : this.store.all(
       'SELECT token_id FROM wpositions WHERE wallet=? AND (opened_block IS NULL OR opened_block >= ?)', wallet, from)
       .map((r) => r.token_id).filter((id) => !keep.has(id));
     // Baris tanpa pasangan token = sisa pindai yang gagal di tengah jalan; tidak
@@ -507,13 +597,13 @@ class WalletResearch {
           e.sqrt ? e.sqrt.toString() : null, usd(e.valueQ, p.quoteKind));
       }
     }
-    const stats = summarize(positions, ethUsd);
+    const stats = this.statsFromDb(wallet);
     this.store.run(
       `INSERT INTO wallets(address,first_block,scanned_to,last_scan_ts,stats,positions_n) VALUES(?,?,?,?,?,?)
        ON CONFLICT(address) DO UPDATE SET first_block=MIN(first_block,excluded.first_block),
          scanned_to=MAX(scanned_to,excluded.scanned_to), last_scan_ts=excluded.last_scan_ts,
          stats=excluded.stats, positions_n=excluded.positions_n`,
-      wallet, from, head, Date.now(), JSON.stringify(stats), positions.length);
+      wallet, from, head, Date.now(), JSON.stringify(stats), stats.positionsTotal);
     return stats;
   }
 }
