@@ -6,7 +6,7 @@ const { Watcher } = require('./watcher');
 const { Positions } = require('./positions');
 const { Executor, isNative } = require('./executor');
 const { Kyber } = require('./kyber');
-const { rulesFor, planEntry, planExit } = require('./policy');
+const { rulesFor, planEntry, planExit, quoteToUsd } = require('./policy');
 const { enumerateV4, livePositions } = require('./scout');
 const m = require('./v3math');
 
@@ -201,6 +201,9 @@ class Engine {
   }
 
   async handleEntry(act, rules) {
+    if (!act.token0 || !act.token1 || (act.venue === 'v4' && !act.poolKey)) {
+      return this.decide(act.id, 'skip', 'data pool posisi target tidak terbaca (NFT sudah dibakar?)');
+    }
     // sudah punya cermin posisi ini? berarti ini penambahan; ikut tambah lewat mint baru
     const cd = rules.filters.cooldown_seconds * 1000;
     const last = this.lastCopyAt.get(act.poolRef) || 0;
@@ -312,16 +315,29 @@ class Engine {
     }
   }
 
+  // poolKey posisi kita. Sumber utamanya baris DB sendiri — itu dicatat saat mint dan
+  // tidak bisa hilang. Chain hanya cadangan, dan hasilnya WAJIB diperiksa: untuk NFT
+  // yang sudah dibakar atau belum ada, getPoolAndPositionInfo TIDAK revert melainkan
+  // mengembalikan poolKey serba nol. Nol itu lolos diam-diam ke TAKE_PAIR dan membuat
+  // burn gagal dengan CurrencyNotSettled() — pesan yang sama sekali tidak menunjuk
+  // ke sebabnya. Terlihat saat dry-run mencerminkan Bang GE.
   async poolKeyOf(pos) {
     if (pos.venue !== 'v4') return null;
+    const ok = (pk) => pk && pk.currency1 && !/^0x0+$/i.test(pk.currency1);
+    const stored = {
+      currency0: pos.token0, currency1: pos.token1,
+      fee: pos.fee, tickSpacing: pos.tick_spacing, hooks: pos.hooks,
+    };
+    if (ok(stored) && stored.fee != null && stored.tickSpacing != null) return stored;
     if (!pos.token_id) return null;
     const [w] = await this.rpc.ethCallMany([{ to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPoolAndPositionInfo', [BigInt(pos.token_id)]) }]);
     if (!w || w === '0x') return null;
     const d = IF_POSM.decodeFunctionResult('getPoolAndPositionInfo', w);
-    return {
+    const pk = {
       currency0: d[0].currency0, currency1: d[0].currency1,
       fee: Number(d[0].fee), tickSpacing: Number(d[0].tickSpacing), hooks: d[0].hooks,
     };
+    return ok(pk) ? pk : null;
   }
 
   // ---- eksekusi -----------------------------------------------------------
@@ -552,7 +568,25 @@ class Engine {
     let L = BigInt(plan.liquidity);
     if (affordable < L) { L = (affordable * 99n) / 100n; notes.push('ukuran dipangkas ke saldo nyata'); }
     if (L <= 0n) throw new Error('saldo tidak cukup untuk membuka posisi apa pun');
-    const amt = m.amountsForLiquidity(s2.sqrtPriceX96, sa, sb, L);
+    let amt = m.amountsForLiquidity(s2.sqrtPriceX96, sa, sb, L);
+
+    // Batas per posisi dikunci ULANG di harga terkini. Harga bergerak antara saat
+    // rencana dibuat dan saat mint — termasuk karena zap kita sendiri — sehingga
+    // likuiditas yang sama bisa bernilai lebih dari batas yang diminta (terlihat
+    // $204,96 untuk batas $200 saat dry-run). Batas nominal harus ditepati.
+    if (plan.valueUsd > 0) {
+      const toksNow = await this.chain.tokens([plan.token0, plan.token1]);
+      const vNow = this.chain.valueInQuote({
+        sqrtPriceX96: s2.sqrtPriceX96, amount0: amt.amount0, amount1: amt.amount1,
+        dec0: toksNow[0].decimals, dec1: toksNow[1].decimals, token0: plan.token0, token1: plan.token1,
+      });
+      const usdNow = vNow ? quoteToUsd(vNow.value, vNow.kind, this.ethUsd) : 0;
+      if (usdNow > plan.valueUsd * 1.005) {
+        L = (L * BigInt(Math.round(plan.valueUsd * 1e6))) / BigInt(Math.round(usdNow * 1e6));
+        amt = m.amountsForLiquidity(s2.sqrtPriceX96, sa, sb, L);
+        notes.push(`disesuaikan ulang ke batas $${plan.valueUsd.toFixed(0)}`);
+      }
+    }
     const slip = BigInt(rules.swap.max_slippage_bps);
     const finalPlan = {
       ...plan, liquidity: L.toString(),
@@ -610,7 +644,10 @@ class Engine {
       cost0: amt.amount0.toString(), cost1: amt.amount1.toString(), costQuote: v?.value ?? plan.valueQuote,
     });
     const pair = `${toks[0].symbol}/${toks[1].symbol}`;
-    return { txHash: hash, positionId, note: `${adding ? 'tambah ' : ''}${pair} $${(v?.value ?? 0).toFixed(2)}${notes.length ? ' (' + notes.join(', ') + ')' : ''}` };
+    // v.value dinyatakan dalam aset kuotasi pool (bisa ETH), BUKAN dolar — dulu dicetak
+    // langsung dengan "$" sehingga posisi 0,079 ETH terbaca "$0,08" alih-alih ~$195.
+    const usdVal = quoteToUsd(v?.value ?? 0, v?.kind || 'usd', this.ethUsd);
+    return { txHash: hash, positionId, note: `${adding ? 'tambah ' : ''}${pair} $${usdVal.toFixed(2)}${notes.length ? ' (' + notes.join(', ') + ')' : ''}` };
   }
 
   async executeExit(plan, pos) {
@@ -622,9 +659,14 @@ class Engine {
       if (!poolKey) throw new Error('poolKey posisi tidak terbaca');
       tx = this.exec.buildV4Decrease({ ...plan, poolKey, tokenId: pos.token_id }, this.exec.deadline());
     }
+    // Saldo SEBELUM keluar: hasil penutupan diukur dari selisihnya, bukan dari data
+    // sinkronisasi berkala. Posisi yang dibuka lalu ditutup di antara dua sinkronisasi
+    // (30 detik) dulu tercatat hasil $0 — PnL-nya jadi seolah rugi total.
+    const before = await this.exec.balances([pos.token0, pos.token1]);
     const hash = await this.exec.send(tx, { kind: plan.full ? 'burn' : 'decrease', detail: { position: pos.id } });
     const rc = await this.exec.waitReceipt(hash, 90_000);
     if (!rc.ok) throw new Error(`keluar gagal (${hash})`);
+    const proceeds = await this.exitProceeds(pos, before, rc.receipt);
     // Jual memecoin yang BARU diterima dari transaksi keluar ini. Galatnya tidak boleh
     // membatalkan pencatatan keluar — posisinya sudah benar-benar tertutup di chain.
     let sold = null;
@@ -633,14 +675,39 @@ class Engine {
     if (plan.full) {
       const live = this.positions.live.find((p) => p.id === pos.id);
       this.positions.markClosed(pos.id, {
-        out0: live?.amount0, out1: live?.amount1,
-        outQuote: (live?.valueUsd || 0) + (live?.feeUsd || 0), txHash: hash,
+        out0: proceeds?.amount0 ?? live?.amount0, out1: proceeds?.amount1 ?? live?.amount1,
+        outQuote: proceeds?.valueQuote ?? ((live?.valueUsd || 0) + (live?.feeUsd || 0)), txHash: hash,
       });
     } else {
       this.store.run('UPDATE positions SET liquidity=? WHERE id=?',
         (BigInt(pos.liquidity) - BigInt(plan.liquidity)).toString(), pos.id);
     }
     return { txHash: hash, note: `${plan.full ? 'tutup penuh' : 'kurangi'} posisi #${pos.id}${sold ? ` · ${sold}` : ''}` };
+  }
+
+  // Berapa yang benar-benar masuk wallet dari transaksi keluar: selisih saldo, dengan
+  // gas dikembalikan untuk sisi ETH native (gas mengurangi saldo tapi bukan bagian
+  // dari hasil posisi). Nilainya dihitung di harga pool saat itu.
+  async exitProceeds(pos, before, receipt) {
+    try {
+      const after = await this.exec.balances([pos.token0, pos.token1]);
+      const d = (t) => {
+        let v = (after.get(String(t).toLowerCase()) || 0n) - (before.get(String(t).toLowerCase()) || 0n);
+        if (isNative(t) && receipt?.gasUsed && receipt?.effectiveGasPrice) {
+          v += BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice);
+        }
+        return v > 0n ? v : 0n;
+      };
+      const amount0 = d(pos.token0), amount1 = d(pos.token1);
+      if (amount0 === 0n && amount1 === 0n) return null;
+      const s = await this.chain.slot0V4(pos.pool_ref);
+      const toks = await this.chain.tokens([pos.token0, pos.token1]);
+      const v = s && this.chain.valueInQuote({
+        sqrtPriceX96: s.sqrtPriceX96, amount0, amount1,
+        dec0: toks[0].decimals, dec1: toks[1].decimals, token0: pos.token0, token1: pos.token1,
+      });
+      return { amount0: amount0.toString(), amount1: amount1.toString(), valueQuote: v ? v.value : null };
+    } catch (e) { this.store.log('warn', `hasil keluar #${pos.id} tidak terukur: ${e.message}`); return null; }
   }
 
   // ---- jual sisa memecoin -------------------------------------------------

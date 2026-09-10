@@ -88,7 +88,26 @@ class Kyber {
     if (!this.enabled() || amountIn <= 0n) return null;
     const me = this.exec.address();
     const nativeIn = String(tokenIn).toLowerCase() === ADDR.native;
+    // Kutipan Kyber cepat basi pada memecoin yang bergerak kencang: minOut sudah
+    // terkunci di dalam calldata, jadi harga yang bergeser lebih dari slippage membuat
+    // tx ditolak "Return amount is not enough". Ambil kutipan baru dan ulangi.
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const r = await this.attempt(tokenIn, tokenOut, amountIn, { slippageBps, maxLossBps, kind, detail, me, nativeIn });
+        if (r || attempt === 2) return r;
+      } catch (e) {
+        lastErr = e;
+        // Hanya harga basi yang layak diulang; gerbang keamanan & batas rugi tidak.
+        if (!/Return amount is not enough|not enough|slippage|revert/i.test(e.message) || /router Kyber tidak cocok|nilai ETH tx|menyimpang|rugi/.test(e.message)) throw e;
+        this.log(`swap Kyber percobaan ${attempt + 1} tertolak harga basi — kutipan ulang`);
+      }
+      await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+    }
+    throw lastErr || new Error('swap Kyber gagal setelah 3 percobaan');
+  }
 
+  async attempt(tokenIn, tokenOut, amountIn, { slippageBps, maxLossBps, kind, detail, me, nativeIn }) {
     // Rute kadang "tidak ditemukan" sesaat walau beberapa detik kemudian ada — coba 3 kali.
     let q = null, built = null;
     for (let i = 0; i < 3 && !built; i++) {

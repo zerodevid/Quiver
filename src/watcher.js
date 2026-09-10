@@ -192,9 +192,24 @@ class Watcher {
             currency0: d[0].currency0.toLowerCase(), currency1: d[0].currency1.toLowerCase(),
             fee: Number(d[0].fee), tickSpacing: Number(d[0].tickSpacing), hooks: d[0].hooks.toLowerCase(),
           };
+          // NFT yang sudah dibakar TIDAK revert — ia mengembalikan poolKey serba nol.
+          // Jangan disimpan: poolKey nol membuat aksi tampak sebagai pool 0x0/0x0.
+          if (/^0x0+$/.test(pk.currency1) && pk.fee === 0) return;
           this.v4Info.set(id, { poolKey: pk, poolId: computePoolId(d[0]) });
-        } catch { /* posisi sudah dibakar: poolKey nol */ }
+        } catch { /* tidak terbaca: diisi jalur cadangan di bawah */ }
       });
+    }
+    // Cadangan untuk NFT yang sudah dibakar saat dibaca — target buka-tutup cepat,
+    // atau rebalance mint+burn dalam satu tx. poolId ada di event ModifyLiquidity;
+    // poolKey-nya dicari dari calldata tx mint atau event Initialize.
+    for (const r of rows) {
+      if (this.v4Info.has(r.tokenId)) continue;
+      try {
+        const pk = await this.chain.poolKeyOfId(r.poolId, parseInt(r.l.blockNumber, 16), r.l.transactionHash);
+        if (pk && computePoolId(pk).toLowerCase() === r.poolId.toLowerCase()) {
+          this.v4Info.set(r.tokenId, { poolKey: pk, poolId: r.poolId });
+        }
+      } catch (e) { this.log(`poolKey #${r.tokenId} tidak terbaca: ${e.message}`); }
     }
     const outs = [];
     const poolIds = [...new Set(rows.map((r) => r.poolId))];
