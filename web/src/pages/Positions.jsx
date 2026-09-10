@@ -36,7 +36,10 @@ export default function Positions() {
             { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnlUsd, render: (p) => (<div className={tone(p.pnlUsd)}>{usd(p.pnlUsd)}<div className="text-xs">{pct(p.pnlPct)}</div></div>) },
             { key: 'il', label: 'IL', align: 'end', sort: (p) => p.ilUsd, render: (p) => <span className={tone(p.ilUsd)}>{p.ilUsd == null ? '—' : usd(p.ilUsd)}</span> },
             { key: 'age', label: 'Umur', sort: (p) => p.ageHours, render: (p) => <span className="text-muted">{age(p.ageHours)}</span> },
-            { key: 'tgt', label: 'Target', sort: (p) => p.target, render: (p) => <span className="mono text-muted">{short(p.target)}</span> },
+            { key: 'tgt', label: 'Target', sort: (p) => p.target, render: (p) => p.target
+              ? <span className="mono text-muted">{short(p.target)}</span>
+              // diadopsi dari wallet: dibuka manual atau oleh program lain, bukan salinan
+              : <span className="text-xs text-muted" title={t('Posisi ini sudah ada di wallet, tidak menyalin target mana pun. Bot hanya memantaunya; tutup manual kalau perlu.')}>{t('di luar bot')}</span> },
             { key: 'act', label: '', sortable: false, render: (p) => <Button size="sm" variant="danger" onPress={() => close(p.id)}>{t('Tutup')}</Button> },
           ]} />
       </Panel>

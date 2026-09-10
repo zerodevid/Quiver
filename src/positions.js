@@ -22,7 +22,7 @@ class Positions {
   }
 
   // Catat posisi baru hasil mint kita
-  record(plan, { tokenId, txHash, target, cost0, cost1, costQuote }) {
+  record(plan, { tokenId, txHash, target, cost0, cost1, costQuote, openedTs }) {
     const r = this.store.run(
       `INSERT INTO positions
        (venue,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,tick_lower,tick_upper,liquidity,
@@ -30,7 +30,7 @@ class Positions {
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       plan.venue, tokenId ?? null, plan.poolRef, plan.token0, plan.token1, plan.fee ?? null,
       plan.tickSpacing ?? null, plan.poolKey?.hooks ?? null, plan.tickLower, plan.tickUpper,
-      plan.liquidity, target ?? null, plan.mirrorOf ?? null, 'open', Date.now(),
+      plan.liquidity, target ?? null, plan.mirrorOf ?? null, 'open', openedTs ?? Date.now(),
       String(cost0 ?? plan.amount0), String(cost1 ?? plan.amount1), costQuote ?? plan.valueQuote,
       plan.quoteSymbol, txHash ?? null, Date.now());
     return Number(r.lastInsertRowid);

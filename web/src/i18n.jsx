@@ -30,6 +30,8 @@ export function initLocale() {
 }
 
 const EN = {
+  'di luar bot': 'outside bot',
+  'Posisi ini sudah ada di wallet, tidak menyalin target mana pun. Bot hanya memantaunya; tutup manual kalau perlu.': 'This position was already in the wallet and does not copy any target. The bot only tracks it; close it manually if needed.',
   // ---- jual sisa memecoin ----
   'Jual memecoin sisa setelah keluar': 'Sell leftover memecoin after exit',
   'Token yang diterima saat menutup posisi dijual balik ke USDG/ETH lewat agregator Kyber': 'Tokens received when closing a position are sold back to USDG/ETH via the Kyber aggregator',

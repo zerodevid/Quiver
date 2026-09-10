@@ -50,7 +50,7 @@ class Engine {
       this.ethUsd = await this.chain.ethUsd(this.ethUsd);
     }
     this.log(`mulai di blok ${this.cursor}; wallet ${addr || '(belum diisi — mode simulasi)'}; ETH $${this.ethUsd.toFixed(2)}`);
-    if (addr) await this.adoptOwnPositions(addr);
+    if (addr) { this.lastAdopt = Date.now(); await this.adoptOwnPositions(addr); }
     await this.backfillDecisions();
   }
 
@@ -88,28 +88,47 @@ class Engine {
     if (done) this.log(`menilai ulang ${done} aksi yang belum diputuskan`);
   }
 
-  // Rekonsiliasi dengan chain: kalau ada posisi v4 milik kita yang belum tercatat
-  // (mis. proses mati setelah mint terkirim tapi sebelum sempat dicatat), adopsi.
+  // Rekonsiliasi dengan chain: posisi v4 milik wallet yang belum tercatat diadopsi —
+  // baik yang dibuka di luar bot (manual, bot lain di wallet yang sama) maupun yang
+  // mint-nya terkirim tapi proses mati sebelum sempat dicatat.
+  //
+  // Pemindaian pertama mencakup SELURUH riwayat: Transfer NFT yang disaring alamat
+  // wallet itu murah (potongan 1 juta blok). Dulu jendelanya 600rb blok (~17 jam) dan
+  // hanya dijalankan saat start, sehingga posisi yang lebih tua tidak pernah tampil.
+  // Setelah itu cukup blok baru sejak pemindaian terakhir, dipanggil berkala.
   async adoptOwnPositions(addr) {
     try {
-      const blocks = this.cfg.loop?.adopt_blocks ?? 600_000;
-      const { held } = await enumerateV4(this.rpc, addr, this.head, blocks);
-      const ids = [...held.keys()];
-      if (!ids.length) return;
+      const me = addr.toLowerCase();
+      const head = await this.rpc.blockNumber();
+      const last = Number(this.store.getState('adopt_scanned_to', 0));
+      const blocks = last ? head - last + 2000 : (this.cfg.loop?.adopt_blocks ?? head);
+      const { held } = await enumerateV4(this.rpc, me, head, blocks, 1_000_000);
+      this.store.setState('adopt_scanned_to', head);
       const known = new Set(this.store.all("SELECT token_id FROM positions WHERE venue='v4' AND token_id IS NOT NULL").map((r) => r.token_id));
-      const missing = ids.filter((id) => !known.has(id));
+      let missing = [...held.keys()].filter((id) => !known.has(id));
+      if (!missing.length) return;
+      // Transfer bisa menipu (urutan dalam satu blok); pastikan pemiliknya sekarang kita.
+      const owners = await this.rpc.ethCallMany(missing.map((id) => ({
+        to: ADDR.posmV4, data: new ethers.Interface(ABI.posmV4).encodeFunctionData('ownerOf', [BigInt(id)]),
+      })));
+      missing = missing.filter((id, i) => owners[i] && owners[i] !== '0x' && ('0x' + owners[i].slice(-40)).toLowerCase() === me);
       if (!missing.length) return;
       const rows = await livePositions(this.rpc, this.chain, missing);
       let n = 0;
       for (const r of rows) {
         if (r.liquidity <= 0n) continue;
+        // Modal & waktu buka asli dari riset wallet (menu Wallet) kalau pernah dipindai;
+        // tanpa itu modal = nilai sekarang, sehingga PnL mulai dari nol saat diadopsi.
+        const w = this.store.get('SELECT invested_q, opened_ts FROM wpositions WHERE wallet=? AND token_id=?', me, r.tokenId);
+        const isEth = r.quoteSymbol === 'ETH' || r.quoteSymbol === 'WETH';
+        const cost = w?.invested_q > 0 ? (isEth ? w.invested_q / this.ethUsd : w.invested_q) : r.valueQuote;
         this.positions.record({
           venue: 'v4', poolRef: r.poolId, poolKey: r.poolKey,
           token0: r.poolKey.currency0, token1: r.poolKey.currency1, fee: r.poolKey.fee,
           tickSpacing: r.poolKey.tickSpacing, tickLower: r.tickLower, tickUpper: r.tickUpper,
           liquidity: r.liquidity.toString(), amount0: (r.amount0 ?? 0n).toString(), amount1: (r.amount1 ?? 0n).toString(),
           valueQuote: r.valueQuote, quoteSymbol: r.quoteSymbol, mirrorOf: null, target: null,
-        }, { tokenId: r.tokenId, txHash: null, target: null, costQuote: r.valueQuote });
+        }, { tokenId: r.tokenId, txHash: null, target: null, costQuote: cost, openedTs: w?.opened_ts || null });
         n++;
       }
       if (n) this.log(`mengadopsi ${n} posisi v4 milik wallet yang belum tercatat`);
@@ -702,6 +721,12 @@ class Engine {
   // ---- pemeliharaan berkala ----------------------------------------------
   async syncPositions() {
     if (this.cfg.prices?.auto_eth_price !== false) this.ethUsd = await this.chain.ethUsd(this.ethUsd);
+    // Posisi yang dibuka di luar bot muncul tanpa perlu restart (tiap 10 menit).
+    const addr = this.exec.address();
+    if (addr && Date.now() - (this.lastAdopt || 0) > 10 * 60_000) {
+      this.lastAdopt = Date.now();
+      await this.adoptOwnPositions(addr);
+    }
     await this.retryLeftovers().catch((e) => this.store.log('error', `jual sisa: ${e.message}`));
     await this.positions.sync(this.ethUsd);
     const globalRules = rulesFor(this.cfg.rules);
