@@ -1,0 +1,338 @@
+'use strict';
+// Uji edge case mesin copy-LP.
+//
+// Semua uji di sini memakai KODE ASLI (policy/engine/watcher). Yang dipalsukan hanya
+// batas luar: chain dan pengiriman transaksi. Tujuannya menjawab satu pertanyaan —
+// "kalau target melakukan X, apakah bot mengambil keputusan yang benar?" — untuk
+// bentuk-bentuk aksi yang jarang terjadi tetapi mahal kalau salah.
+//
+// Jalankan: node test/edge.js
+const assert = require('node:assert');
+const { Engine } = require('../src/engine');
+const { Store } = require('../src/db');
+const { ADDR } = require('../src/chain');
+const m = require('../src/v3math');
+
+const USDG = ADDR.usdg, ETH = ADDR.native;
+const MEME = '0x7a492b0a2d630b94791af846c1842db9e623420c';
+const POOL = '0x' + 'ab'.repeat(32);
+const TARGET = '0x3c926ee5e990b3999f1f656a9b18ff678ce82976';
+const ME = '0xe9c209fd02a1562761c99700fc3d126e64b981ee';
+
+// Harga pool dipatok di tengah rentang uji supaya posisi butuh kedua token.
+const TICK = 0;
+const SQRT = m.getSqrtRatioAtTick(TICK);
+
+function harness({ balances = {}, rules = {}, positions = [], targetLiquidityAfter = null } = {}) {
+  const store = new Store(':memory:');
+  store.run('INSERT INTO targets(address,label,enabled,added_ts) VALUES(?,?,1,?)', TARGET, 'uji', Date.now());
+  const tokens = {
+    [USDG]: { address: USDG, symbol: 'USDG', decimals: 6 },
+    [ETH]: { address: ETH, symbol: 'ETH', decimals: 18 },
+    [MEME]: { address: MEME, symbol: 'MEME', decimals: 18 },
+  };
+  const chain = {
+    tokens: async (list) => list.map((a) => tokens[String(a).toLowerCase()] || { address: a, symbol: '?', decimals: 18 }),
+    token: async (a) => tokens[String(a).toLowerCase()] || { address: a, symbol: '?', decimals: 18 },
+    slot0V4: async () => ({ sqrtPriceX96: SQRT, tick: TICK }),
+    slot0V3: async () => ({ sqrtPriceX96: SQRT, tick: TICK }),
+    poolLiquidity: async () => 10n ** 24n,
+    poolAgeMinutes: async () => 10_000,
+    ethUsd: async () => 2500,
+    quoteSideOf(t0, t1) {
+      const q = { [USDG]: { symbol: 'USDG', decimals: 6, kind: 'usd' }, [ETH]: { symbol: 'ETH', decimals: 18, kind: 'eth' } };
+      if (q[String(t0).toLowerCase()]) return { side: 0, ...q[String(t0).toLowerCase()] };
+      if (q[String(t1).toLowerCase()]) return { side: 1, ...q[String(t1).toLowerCase()] };
+      return null;
+    },
+    valueInQuote({ sqrtPriceX96, amount0, amount1, dec0, dec1, token0, token1 }) {
+      const q = this.quoteSideOf(token0, token1);
+      if (!q) return null;
+      const p1per0 = m.priceFromSqrt(sqrtPriceX96, dec0, dec1);
+      const a0 = Number(amount0) / 10 ** dec0, a1 = Number(amount1) / 10 ** dec1;
+      return { value: q.side === 0 ? a0 + a1 / p1per0 : a1 + a0 * p1per0, symbol: q.symbol, side: q.side, kind: q.kind };
+    },
+    blockTs: async (b) => b * 101,
+  };
+  const cfg = { mode: { dry_run: false, paused: false }, rules, gas: {}, loop: {} };
+  // getPositionLiquidity dipakai handleExit untuk menghitung L target SEBELUM aksi.
+  const rpc = {
+    ethCallMany: async (c) => c.map(() => (targetLiquidityAfter == null ? '0x' : '0x' + targetLiquidityAfter.toString(16).padStart(64, '0'))),
+    batch: async (c) => c.map(() => ({ result: null })), blockNumber: async () => 1e6, call: async () => null,
+  };
+  const eng = new Engine({ rpc, store, chain, cfg, log: () => {} });
+  eng.ethUsd = 2500;
+  const sent = [];
+  eng.exec.address = () => ME;
+  eng.exec.balances = async (list) => new Map(list.map((t) => [String(t).toLowerCase(), BigInt(balances[String(t).toLowerCase()] ?? 0)]));
+  eng.exec.send = async (tx, meta) => { sent.push({ kind: meta?.kind, tx }); return '0x' + (sent.length + '').padStart(64, '0'); };
+  eng.exec.waitReceipt = async () => ({ ok: true, receipt: { logs: [], gasUsed: '0x0', effectiveGasPrice: '0x0' } });
+  eng.exec.ensureAllowance = async () => [];
+  eng.exec.ensureRouterAllowance = async () => [];
+  eng.exec.deadline = () => 9e9;
+  eng.kyber.swap = async () => ({ hash: '0xswap', amountOut: 10n ** 24n, quote: { dex: 'uji', usdIn: 1, usdOut: 1 } });
+  eng.notify = () => {};
+  for (const p of positions) store.run(
+    `INSERT INTO positions(venue,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,tick_lower,tick_upper,liquidity,
+      target,mirror_of,status,opened_ts,cost0,cost1,cost_quote,quote_symbol,last_sync)
+     VALUES('v4',?,?,?,?,?,?,?,?,?,?,?,?,'open',?,'0','0',?,?,?)`,
+    p.tokenId, POOL, p.token0 || USDG, p.token1 || MEME, 3000, 60, ADDR.native,
+    p.tickLower ?? -600, p.tickUpper ?? 600, p.liquidity, TARGET, p.mirrorOf, Date.now(), p.cost ?? 100, 'USDG', Date.now());
+  return { eng, store, sent };
+}
+
+// Aksi target berbentuk seperti yang dihasilkan watcher.
+function action(over = {}) {
+  const liq = 10n ** 20n;
+  return {
+    id: null, ts: Date.now(), block: 1000, txHash: '0xtx', logIndex: 1,
+    target: TARGET, venue: 'v4', kind: 'increase', tokenId: '999',
+    poolRef: POOL, poolKey: { currency0: USDG, currency1: MEME, fee: 3000, tickSpacing: 60, hooks: ADDR.native },
+    token0: USDG, token1: MEME, fee: 3000, tickSpacing: 60, hooks: ADDR.native,
+    tickLower: -600, tickUpper: 600, liquidity: liq.toString(),
+    amount0: '0', amount1: '0', valueQuote: 400, quoteSymbol: 'USDG',
+    slot0: { sqrtPriceX96: SQRT, tick: TICK },
+    ...over,
+  };
+}
+const rec = (store, act) => {
+  const r = store.run(
+    `INSERT INTO actions(ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,
+      tick_lower,tick_upper,liquidity,amount0,amount1,value_quote,quote_symbol)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    act.ts, act.block, act.txHash + Math.random(), act.logIndex, act.target, act.venue, act.kind, act.tokenId,
+    act.poolRef, act.token0, act.token1, act.fee, act.tickSpacing, act.hooks, act.tickLower, act.tickUpper,
+    act.liquidity, act.amount0, act.amount1, act.valueQuote, act.quoteSymbol);
+  act.id = Number(r.lastInsertRowid);
+  return act;
+};
+const verdictOf = (store) => store.get('SELECT verdict, reason FROM decisions ORDER BY id DESC LIMIT 1');
+
+const RICH = { [USDG]: 10n ** 12n, [MEME]: 10n ** 30n, [ETH]: 10n ** 19n };
+let pass = 0, fail = 0;
+async function t(name, fn) {
+  try { await fn(); console.log('  OK   ' + name); pass++; }
+  catch (e) { console.log('  GAGAL ' + name + '\n        ' + e.message.split('\n')[0]); fail++; }
+}
+
+(async () => {
+  console.log('uji edge case mesin copy-LP\n');
+
+  await t('target menambah ke posisi yang sudah kita cermin -> menambah, bukan buka posisi baru', async () => {
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 19n).toString() }],
+    });
+    await eng.handle(rec(store, action()));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'copy', v.reason);
+    assert.match(v.reason, /menambah posisi/, v.reason);
+    assert.strictEqual(sent.filter((s) => s.kind === 'increase').length, 1, 'harus mengirim increase');
+    assert.strictEqual(store.all("SELECT id FROM positions WHERE status='open'").length, 1, 'tidak boleh ada posisi kedua');
+  });
+
+  await t('target menarik SEBAGIAN -> kita menarik proporsional, posisi tetap terbuka', async () => {
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
+      targetLiquidityAfter: 6n * 10n ** 19n,   // target menarik 40%, menyisakan 60%
+    });
+    const a = action({ kind: 'decrease', liquidity: (-4n * 10n ** 19n).toString() });
+    await eng.handle(rec(store, a));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'copy', v.reason);
+    assert.strictEqual(sent.filter((s) => s.kind === 'decrease').length, 1, 'harus decrease, bukan burn');
+    const p = store.get('SELECT status, liquidity FROM positions');
+    assert.strictEqual(p.status, 'open', 'posisi harus tetap terbuka');
+    assert.strictEqual(p.liquidity, (6n * 10n ** 19n).toString(), 'sisa L salah: ' + p.liquidity);
+  });
+
+  await t('target memindahkan NFT ke dompet lain -> kita tutup penuh', async () => {
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
+    });
+    await eng.handle(rec(store, action({ kind: 'transfer_out', poolRef: null, token0: null, token1: null })));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'copy', v.reason);
+    assert.strictEqual(sent.filter((s) => s.kind === 'burn').length, 1, 'harus burn');
+    assert.strictEqual(store.get('SELECT status FROM positions').status, 'closed');
+  });
+
+  await t('penitipan ke kontrak otomasi -> TIDAK dianggap keluar', async () => {
+    const { eng, store, sent } = harness({ balances: RICH, positions: [{ tokenId: '5', mirrorOf: '999', liquidity: '1' }] });
+    await eng.handle(rec(store, action({ kind: 'custody_out' })));
+    assert.strictEqual(verdictOf(store).verdict, 'skip');
+    assert.strictEqual(sent.length, 0, 'tidak boleh mengirim apa pun');
+    assert.strictEqual(store.get('SELECT status FROM positions').status, 'open');
+  });
+
+  await t('pool dengan hook ditolak selama allow_hooks mati', async () => {
+    const { eng, store } = harness({ balances: RICH });
+    const hook = '0x1111111111111111111111111111111111111111';
+    await eng.handle(rec(store, action({ hooks: hook, poolKey: { currency0: USDG, currency1: MEME, fee: 3000, tickSpacing: 60, hooks: hook } })));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'skip', v.reason);
+    assert.match(v.reason, /hook/i, v.reason);
+  });
+
+  await t('batas jumlah posisi terbuka dihormati', async () => {
+    const { eng, store } = harness({
+      balances: RICH, rules: { filters: { max_open_positions: 1 } },
+      positions: [{ tokenId: '7', mirrorOf: 'lain', liquidity: '1' }],
+    });
+    await eng.handle(rec(store, action()));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'skip', v.reason);
+    assert.match(v.reason, /posisi terbuka/i, v.reason);
+  });
+
+  await t('jeda antar-salinan di pool yang sama dihormati', async () => {
+    const { eng, store } = harness({ balances: RICH, rules: { filters: { cooldown_seconds: 60 } } });
+    eng.lastCopyAt.set(POOL, Date.now());
+    await eng.handle(rec(store, action()));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'skip', v.reason);
+    assert.match(v.reason, /cooldown/i, v.reason);
+  });
+
+  await t('batas eksposur total habis -> dilewati, bukan dipaksakan', async () => {
+    const { eng, store } = harness({
+      balances: RICH,
+      rules: { sizing: { mode: 'mirror', max_total_exposure_usd: 50, max_quote_per_position_usd: 200 } },
+      positions: [{ tokenId: '7', mirrorOf: 'lain', liquidity: (10n ** 20n).toString(), cost: 50 }],
+    });
+    await eng.handle(rec(store, action()));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'skip', v.reason);
+    assert.match(v.reason, /eksposur|minimum/i, v.reason);
+  });
+
+  await t('aksi keluar tanpa cermin -> dilewati diam-diam, tidak menutup posisi lain', async () => {
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      positions: [{ tokenId: '9', mirrorOf: 'posisi-lain', liquidity: (10n ** 20n).toString(), tickLower: -1200, tickUpper: 1200 }],
+    });
+    await eng.handle(rec(store, action({ kind: 'decrease', liquidity: '-1' })));
+    assert.strictEqual(verdictOf(store).verdict, 'skip');
+    assert.strictEqual(sent.length, 0);
+    assert.strictEqual(store.get('SELECT status FROM positions').status, 'open');
+  });
+
+  await t('pasangan dua aset kuotasi (ETH/USDG) -> tidak ada memecoin untuk dijual', async () => {
+    const { eng } = harness({ balances: RICH });
+    const r = await eng.sellLeftover(
+      { id: 1, target: TARGET, token0: ETH, token1: USDG, pool_ref: POOL },
+      { logs: [{ address: USDG, topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', '0x'.padEnd(66, '0'), '0x' + ME.slice(2).padStart(64, '0')], data: '0x' + (10n ** 6n).toString(16).padStart(64, '0') }] },
+    );
+    assert.strictEqual(r, null, 'tidak boleh menjual aset kuotasi');
+  });
+
+  await t('sisa memecoin yang gagal dijual masuk antrean coba-ulang', async () => {
+    const { eng, store } = harness({ balances: { ...RICH } });
+    eng.kyber.swap = async () => { throw new Error('rute tidak ada'); };
+    await assert.rejects(() => eng.sellToken({ posId: 1, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0 }));
+    const q = JSON.parse(store.getState('leftovers', '[]'));
+    assert.strictEqual(q.length, 1, 'harus tersimpan untuk dicoba lagi');
+    assert.strictEqual(q[0].tries, 1);
+    assert.ok(q[0].next > Date.now(), 'harus dijadwalkan ulang');
+  });
+
+  await t('antrean jual berhenti setelah 8 kali gagal, tidak selamanya', async () => {
+    const { eng, store } = harness({ balances: { ...RICH } });
+    eng.kyber.swap = async () => { throw new Error('rute tidak ada'); };
+    for (let i = 0; i < 9; i++) {
+      const q = JSON.parse(store.getState('leftovers', '[]'));
+      const item = q[0] || { posId: 1, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0 };
+      await eng.sellToken(item).catch(() => {});
+    }
+    assert.strictEqual(JSON.parse(store.getState('leftovers', '[]')).length, 0, 'harus berhenti mengantre');
+  });
+
+  await t('posisi satu sisi (rentang di atas harga) tetap disalin sebagai limit order', async () => {
+    const { eng, store, sent } = harness({ balances: RICH });
+    // rentang seluruhnya DI ATAS harga kini -> hanya butuh satu token
+    await eng.handle(rec(store, action({ tickLower: 6000, tickUpper: 12000 })));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'copy', v.reason);
+    assert.strictEqual(sent.filter((x) => x.kind === 'mint').length, 1);
+  });
+
+  await t('posisi satu sisi dilewati kalau aturannya begitu', async () => {
+    const { eng, store, sent } = harness({ balances: RICH, rules: { onesided: { policy: 'skip' } } });
+    await eng.handle(rec(store, action({ tickLower: 6000, tickUpper: 12000 })));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'skip', v.reason);
+    assert.match(v.reason, /satu sisi/i, v.reason);
+    assert.strictEqual(sent.length, 0);
+  });
+
+  await t('target sedang dimatikan -> tidak menyalin apa pun', async () => {
+    const { eng, store, sent } = harness({ balances: RICH });
+    store.run('UPDATE targets SET enabled=0 WHERE address=?', TARGET);
+    await eng.handle(rec(store, action()));
+    assert.strictEqual(verdictOf(store).verdict, 'skip');
+    assert.strictEqual(sent.length, 0);
+  });
+
+  await t('bot dijeda -> tidak menyalin apa pun', async () => {
+    const { eng, store, sent } = harness({ balances: RICH });
+    store.setState('paused', '1');
+    await eng.handle(rec(store, action()));
+    assert.match(verdictOf(store).reason, /dijeda/i);
+    assert.strictEqual(sent.length, 0);
+  });
+
+  await t('saldo tidak cukup -> galat jelas, tidak ada posisi tercatat', async () => {
+    const { eng, store } = harness({ balances: { [USDG]: 1n, [MEME]: 1n, [ETH]: 0n } });
+    eng.kyber.swap = async () => null;               // tidak ada rute penambal
+    eng.ensureQuoteAsset = async () => { throw new Error('saldo USDG kosong — tidak ada kas untuk dijembatani'); };
+    await eng.handle(rec(store, action()));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'error', v.reason);
+    assert.strictEqual(store.all("SELECT id FROM positions").length, 0, 'tidak boleh mencatat posisi yang gagal dibuka');
+  });
+
+  await t('hasil setelah dipotong batas di bawah minimum -> dilewati', async () => {
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      rules: { sizing: { mode: 'mirror', max_quote_per_position_usd: 3, min_quote_usd: 10 } },
+    });
+    await eng.handle(rec(store, action()));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'skip', v.reason);
+    assert.match(v.reason, /minimum/i, v.reason);
+    assert.strictEqual(sent.length, 0);
+  });
+
+  await t('aksi yang sama diproses dua kali -> tidak membuka posisi ganda', async () => {
+    const { eng, store, sent } = harness({ balances: RICH });
+    const a = rec(store, action());
+    await eng.handle(a);
+    await eng.handle(a);   // ulangi aksi yang sama persis
+    assert.strictEqual(store.all("SELECT id FROM positions WHERE status='open'").length, 1, 'harus tetap satu posisi');
+    assert.strictEqual(sent.filter((x) => x.kind === 'mint').length, 1, 'mint hanya sekali');
+    assert.strictEqual(sent.filter((x) => x.kind === 'increase').length, 0, 'tidak boleh menambah modal untuk aksi yang sama');
+    assert.strictEqual(store.all('SELECT id FROM decisions').length, 1, 'hanya satu keputusan per aksi');
+  });
+
+  await t('menutup posisi yang sudah tertutup -> dilewati, tidak mengirim tx', async () => {
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
+    });
+    store.run("UPDATE positions SET status='closed'");
+    await eng.handle(rec(store, action({ kind: 'decrease', liquidity: '-1' })));
+    assert.strictEqual(verdictOf(store).verdict, 'skip');
+    assert.strictEqual(sent.length, 0);
+  });
+
+  await t('receipt keluar tanpa log token -> tidak ada yang dijual, bukan galat', async () => {
+    const { eng } = harness({ balances: RICH });
+    const r = await eng.sellLeftover({ id: 1, target: TARGET, token0: USDG, token1: MEME, pool_ref: POOL }, { logs: [] });
+    assert.strictEqual(r, null);
+  });
+
+  console.log(`\n${pass} lulus, ${fail} gagal`);
+  process.exit(fail ? 1 : 0);
+})();

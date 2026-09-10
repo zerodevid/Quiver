@@ -182,11 +182,27 @@ class Positions {
     return outs;
   }
 
+  // Ringkasan posisi terbuka.
+  //
+  // Jumlah dan eksposur DIHITUNG DARI DB, bukan dari cache `live`. Cache itu hanya
+  // disegarkan tiap 30 detik; kalau dipakai sebagai sumber, posisi yang baru saja
+  // dibuka tidak terhitung — dan batas "maksimum posisi terbuka" serta "eksposur
+  // total" bisa ditembus beberapa kali berturut-turut oleh target yang cepat,
+  // persis batas yang dipasang untuk membatasi kerugian.
   summary(ethUsd) {
-    const open = this.live.filter((p) => !p.empty);
-    const val = open.reduce((s, p) => s + (p.valueUsd || 0), 0);
-    const fee = open.reduce((s, p) => s + (p.feeUsd || 0), 0);
-    const cost = open.reduce((s, p) => s + (p.costUsd || 0), 0);
+    const liveById = new Map(this.live.map((p) => [p.id, p]));
+    const rows = this.store.all("SELECT id, cost_quote, quote_symbol FROM positions WHERE status='open'")
+      .filter((r) => !liveById.get(r.id)?.empty);
+    let val = 0, fee = 0, cost = 0;
+    for (const r of rows) {
+      const k = r.quote_symbol === 'ETH' ? ethUsd : 1;
+      const c = (r.cost_quote || 0) * k;
+      cost += c;
+      const l = liveById.get(r.id);
+      if (l) { val += l.valueUsd || 0; fee += l.feeUsd || 0; }
+      else val += c;   // belum tersinkron: modal dipakai sebagai taksiran nilai
+    }
+    const open = rows.map((r) => liveById.get(r.id)).filter(Boolean).filter((p) => !p.empty);
     const closed = this.store.all("SELECT cost_quote, out_quote, quote_symbol FROM positions WHERE status='closed'");
     let realized = 0;
     for (const c of closed) {
@@ -194,7 +210,7 @@ class Positions {
       realized += ((c.out_quote || 0) - (c.cost_quote || 0)) * k;
     }
     return {
-      openCount: open.length, exposureUsd: val, costUsd: cost, feeUsd: fee,
+      openCount: rows.length, exposureUsd: val, costUsd: cost, feeUsd: fee,
       unrealizedUsd: val + fee - cost, realizedUsd: realized,
       inRange: open.filter((p) => p.inRange).length,
     };

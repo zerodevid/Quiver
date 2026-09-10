@@ -186,6 +186,10 @@ class Engine {
   }
 
   async handle(act) {
+    // Satu aksi hanya boleh diputuskan SEKALI. Tanpa ini, aksi yang sempat diproses
+    // lalu diproses lagi (mis. backfill setelah proses mati di tengah jalan) akan
+    // menambah modal untuk kedua kalinya ke posisi yang sama.
+    if (act.id != null && this.store.get('SELECT 1 FROM decisions WHERE action_id=?', act.id)) return;
     const t = this.store.get('SELECT * FROM targets WHERE address=?', act.target);
     if (!t) return;
     if (!t.enabled) return this.decide(act.id, 'skip', 'target sedang dimatikan');
@@ -268,9 +272,14 @@ class Engine {
     let pos = this.store.get(
       "SELECT * FROM positions WHERE status='open' AND mirror_of=? AND target=?", act.tokenId ?? '', act.target);
     if (!pos && act.poolRef && act.tickLower != null && act.tickUpper != null) {
+      // Cadangan: cocokkan lewat pool + rentang. Target bisa punya beberapa posisi
+      // identik di pool yang sama, jadi ambil yang TERTUA supaya deterministik, dan
+      // catat pemakaiannya — kalau jalur ini sering terpakai, berarti mirror_of tidak
+      // tercatat dengan benar saat masuk.
       pos = this.store.get(
-        "SELECT * FROM positions WHERE status='open' AND pool_ref=? AND target=? AND tick_lower=? AND tick_upper=?",
+        "SELECT * FROM positions WHERE status='open' AND pool_ref=? AND target=? AND tick_lower=? AND tick_upper=? ORDER BY id ASC LIMIT 1",
         act.poolRef, act.target, act.tickLower, act.tickUpper);
+      if (pos) this.store.log('warn', `cermin posisi dicocokkan lewat pool+rentang (bukan tokenId) untuk aksi #${act.tokenId} -> posisi #${pos.id}`);
     }
     if (!pos) return this.decide(act.id, 'skip', 'tidak ada cermin posisi yang cocok');
 

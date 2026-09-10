@@ -348,3 +348,19 @@ src/server.js     API + penyaji dashboard
 web/              tampilan React + HeroUI v3 (sumber); web/dist = hasil build
 public/           tampilan lama (Tabler) — cadangan kalau web/dist belum dibuild
 ```
+
+## Uji edge case
+
+`node test/edge.js` menjalankan 21 skenario berisiko lewat mesin asli (policy,
+engine, watcher) dengan chain dan pengiriman transaksi dipalsukan — jadi bisa
+dijalankan kapan saja tanpa menyentuh dana. Yang diuji antara lain: target
+menambah ke posisi yang sudah dicermin, penarikan sebagian, NFT dipindahkan,
+penitipan ke kontrak otomasi, pool berhook, semua batas (jumlah posisi,
+eksposur, jeda, minimum), posisi satu sisi, saldo kurang, aksi ganda, dan
+antrean jual memecoin sisa.
+
+Untuk menguji transaksi NYATA dari wallet target tanpa mengirim apa pun, lihat
+catatan di commit "dry-run cermin Bang GE": kode bot dijalankan apa adanya tetapi
+setiap `exec.send` dicegat dan dieksekusi berantai lewat `eth_simulateV1` pada
+satu blok yang dikunci, sehingga swap → mint → burn → jual sisa saling melihat
+perubahan state.

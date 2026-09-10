@@ -52,6 +52,22 @@ class Watcher {
     return new Set(this.targets().map((t) => t.address.toLowerCase()));
   }
 
+  // Peringatan sekali per target: target memakai router LP yang posisinya bukan NFT,
+  // sehingga tidak bisa dicermin. Tanpa ini, bot terlihat "sehat" padahal buta.
+  async warnIfTargetUnsupported(txHashes, targets) {
+    this.warnedUnsupported = this.warnedUnsupported || new Set();
+    const ask = txHashes.slice(0, 8);   // cukup sampel; ini jalur langka
+    const res = await this.rpc.batch(ask.map((h) => ({ method: 'eth_getTransactionByHash', params: [h] })));
+    for (const r of res) {
+      const from = r && !r.error ? String(r.result?.from || '').toLowerCase() : '';
+      if (!targets.has(from) || this.warnedUnsupported.has(from)) continue;
+      this.warnedUnsupported.add(from);
+      const msg = `PERHATIAN: target ${from} membuka/mengubah LP lewat router yang posisinya BUKAN NFT PositionManager — aksi seperti itu tidak bisa dicermin bot ini`;
+      this.log(msg);
+      this.store.log('warn', msg);
+    }
+  }
+
   ownerKey(venue, tokenId) { return `${venue}:${tokenId}`; }
 
   cacheOwner(venue, tokenId, owner) {
@@ -128,11 +144,16 @@ class Watcher {
 
     // 2. v4 ModifyLiquidity
     const v4Rows = [];
+    const unsupportedTx = new Set();
     for (const l of modLiq) {
       const sender = asAddr(l.topics[2]);
       if (sender !== ADDR.posmV4) {
         this.unsupported.set(sender, (this.unsupported.get(sender) || 0) + 1);
-        continue; // hook/kontrak lain: kepemilikannya tidak lewat NFT, tidak bisa dicermin
+        // Kepemilikannya tidak lewat NFT PositionManager, jadi tidak bisa dicermin.
+        // Kalau yang memakainya ternyata TARGET kita, itu harus berbunyi: artinya
+        // target pindah ke router jenis lain dan bot berhenti menyalinnya diam-diam.
+        unsupportedTx.add(l.transactionHash);
+        continue;
       }
       const b = ethers.getBytes(l.data);
       const w = (i) => BigInt(ethers.hexlify(b.slice(i * 32, i * 32 + 32)));
@@ -169,6 +190,10 @@ class Watcher {
         }
       }
     }
+
+    // Siapa pengirim transaksi LP yang tidak didukung itu? Kalau target, beri
+    // peringatan keras — sekali per target, supaya log tidak banjir.
+    if (unsupportedTx.size) await this.warnIfTargetUnsupported([...unsupportedTx], targets);
 
     await this.resolveOwners('v4', v4Rows.map((r) => r.tokenId));
 
