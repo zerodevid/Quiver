@@ -333,6 +333,50 @@ async function t(name, fn) {
     assert.strictEqual(r, null);
   });
 
+  await t('mint berhasil di chain tapi jawaban RPC hilang -> tidak dianggap gagal', async () => {
+    const { eng } = harness({ balances: RICH });
+    const { ethers } = require('ethers');
+    // pakai send() yang ASLI (harness menggantinya dengan pengirim palsu)
+    eng.exec.send = Object.getPrototypeOf(eng.exec).send.bind(eng.exec);
+    // wallet uji: cukup untuk menandatangani, kuncinya tidak pernah dipakai di mana pun
+    const w = ethers.Wallet.createRandom();
+    eng.exec.loadWallet = () => w;
+    eng.exec.gasFees = async () => ({ maxFeePerGas: 1n, maxPriorityFeePerGas: 1n });
+    eng.exec.estimateGas = async () => 21000n;
+    let asked = 0;
+    eng.exec.rpc = {
+      call: async (method) => {
+        if (method === 'eth_getTransactionCount') return '0x1';
+        if (method === 'eth_sendRawTransaction') throw new Error('nonce too low: address x, tx: 1 state: 2');
+        if (method === 'eth_getTransactionByHash') { asked++; return { hash: '0xada' }; }   // ternyata sudah masuk
+        return null;
+      },
+    };
+    const h = await eng.exec.send({ to: ME, data: '0x', value: '0' }, { kind: 'uji' });
+    assert.ok(h && h.startsWith('0x'), 'harus mengembalikan hash, bukan melempar');
+    assert.ok(asked > 0, 'harus memeriksa chain sebelum menyerah');
+  });
+
+  await t('mint yang benar-benar gagal tetap dilaporkan gagal', async () => {
+    const { eng } = harness({ balances: RICH });
+    const { ethers } = require('ethers');
+    eng.exec.send = Object.getPrototypeOf(eng.exec).send.bind(eng.exec);
+    eng.exec.txLanded = async () => false;   // percepat: tidak menunggu 6 kali
+    const w = ethers.Wallet.createRandom();
+    eng.exec.loadWallet = () => w;
+    eng.exec.gasFees = async () => ({ maxFeePerGas: 1n, maxPriorityFeePerGas: 1n });
+    eng.exec.estimateGas = async () => 21000n;
+    eng.exec.rpc = {
+      call: async (method) => {
+        if (method === 'eth_getTransactionCount') return '0x1';
+        if (method === 'eth_sendRawTransaction') throw new Error('insufficient funds');
+        if (method === 'eth_getTransactionByHash') return null;   // memang tidak masuk
+        return null;
+      },
+    };
+    await assert.rejects(() => eng.exec.send({ to: ME, data: '0x', value: '0' }, { kind: 'uji' }), /insufficient funds/);
+  });
+
   console.log(`\n${pass} lulus, ${fail} gagal`);
   process.exit(fail ? 1 : 0);
 })();

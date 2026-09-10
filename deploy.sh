@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 echo "build tampilan…"
 (cd web && npx vite build --logLevel warn)
 rsync -az --exclude node_modules --exclude data --exclude logs --exclude config.json \
-  src public package.json README.md lp ecosystem.config.cjs deploy.sh singapore:~/lpcopy/
+  src test public package.json README.md lp ecosystem.config.cjs deploy.sh singapore:~/lpcopy/
 ssh singapore 'mkdir -p ~/lpcopy/web'
 rsync -az --delete web/dist singapore:~/lpcopy/web/
 ssh singapore 'cd ~/lpcopy && npm install --omit=dev --silent 2>/dev/null; pm2 restart lpcopy >/dev/null && echo "pm2: lpcopy di-restart"'

@@ -122,17 +122,43 @@ class Engine {
         const w = this.store.get('SELECT invested_q, opened_ts FROM wpositions WHERE wallet=? AND token_id=?', me, r.tokenId);
         const isEth = r.quoteSymbol === 'ETH' || r.quoteSymbol === 'WETH';
         const cost = w?.invested_q > 0 ? (isEth ? w.invested_q / this.ethUsd : w.invested_q) : r.valueQuote;
+        // Posisi yatim: mint yang BERHASIL di chain tetapi gagal tercatat (jawaban RPC
+        // hilang, proses mati). Kalau ada rencana salinan yang gagal dengan pool dan
+        // rentang yang sama persis, posisi ini hampir pasti hasil rencana itu — pasangkan
+        // kembali ke targetnya supaya sinyal keluarnya tetap dicermin. Tanpa ini posisi
+        // menggantung sebagai "di luar bot" dan tidak pernah ditutup.
+        const link = this.linkOrphan(r);
         this.positions.record({
           venue: 'v4', poolRef: r.poolId, poolKey: r.poolKey,
           token0: r.poolKey.currency0, token1: r.poolKey.currency1, fee: r.poolKey.fee,
           tickSpacing: r.poolKey.tickSpacing, tickLower: r.tickLower, tickUpper: r.tickUpper,
           liquidity: r.liquidity.toString(), amount0: (r.amount0 ?? 0n).toString(), amount1: (r.amount1 ?? 0n).toString(),
-          valueQuote: r.valueQuote, quoteSymbol: r.quoteSymbol, mirrorOf: null, target: null,
-        }, { tokenId: r.tokenId, txHash: null, target: null, costQuote: cost, openedTs: w?.opened_ts || null });
+          valueQuote: r.valueQuote, quoteSymbol: r.quoteSymbol,
+          mirrorOf: link?.mirrorOf ?? null, target: link?.target ?? null,
+        }, { tokenId: r.tokenId, txHash: null, target: link?.target ?? null, costQuote: cost, openedTs: w?.opened_ts || null });
+        if (link) this.store.log('warn', `posisi #${r.tokenId} dipasangkan kembali ke target ${link.target.slice(0, 10)}… (cermin #${link.mirrorOf}) — mint berhasil tapi sempat tercatat gagal`);
         n++;
       }
       if (n) this.log(`mengadopsi ${n} posisi v4 milik wallet yang belum tercatat`);
     } catch (e) { this.store.log('error', `adopsi posisi: ${e.message}`); }
+  }
+
+  // Cari rencana salinan yang gagal yang cocok dengan posisi ini (pool + rentang).
+  // Hanya keputusan 24 jam terakhir yang dilihat, dan hanya yang belum punya posisi.
+  linkOrphan(r) {
+    const rows = this.store.all(
+      "SELECT d.id, d.plan, a.target FROM decisions d JOIN actions a ON a.id = d.action_id WHERE d.verdict='error' AND d.plan IS NOT NULL AND d.ts > ? ORDER BY d.id DESC LIMIT 50",
+      Date.now() - 86_400_000);
+    for (const row of rows) {
+      let plan = null;
+      try { plan = JSON.parse(row.plan); } catch { continue; }
+      if (!plan || plan.action === 'burn') continue;
+      if (String(plan.poolRef).toLowerCase() !== String(r.poolId).toLowerCase()) continue;
+      if (plan.tickLower !== r.tickLower || plan.tickUpper !== r.tickUpper) continue;
+      if (this.store.get("SELECT 1 FROM positions WHERE mirror_of=? AND target=? AND status='open'", plan.mirrorOf ?? '', row.target)) continue;
+      return { target: row.target, mirrorOf: plan.mirrorOf ?? null };
+    }
+    return null;
   }
 
   dryRun() { return this.cfg.mode?.dry_run !== false; }
@@ -803,6 +829,47 @@ class Engine {
     }
   }
 
+  // Jaring pengaman terakhir untuk sinyal keluar.
+  //
+  // Semua jalur deteksi bisa gagal: RPC melewatkan satu rentang, proses mati saat
+  // aksi datang, atau target keluar sebelum mint kita sempat tercatat. Kalau itu
+  // terjadi, posisi cermin kita menggantung selamanya sementara targetnya sudah
+  // pergi. Di sini kondisinya diperiksa dari sumber yang paling tidak bisa salah:
+  // likuiditas posisi TARGET di chain. Kalau sudah nol sementara punya kita masih
+  // terbuka, kita keluar.
+  //
+  // Butuh DUA pengamatan nol berturut-turut supaya pembacaan yang gagal sesaat atau
+  // rebalance tutup-lalu-buka dalam satu transaksi tidak memicu penutupan.
+  async reconcileExits() {
+    if (this.dryRun() || !this.exec.address()) return;
+    const rows = this.store.all(
+      "SELECT * FROM positions WHERE status='open' AND venue='v4' AND target IS NOT NULL AND mirror_of IS NOT NULL AND token_id IS NOT NULL");
+    if (!rows.length) { this.goneStreak = new Map(); return; }
+    this.goneStreak = this.goneStreak || new Map();
+    let res;
+    try {
+      res = await this.rpc.ethCallMany(rows.map((r) => ({
+        to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(r.mirror_of)]),
+      })));
+    } catch (e) { this.store.log('warn', `rekonsiliasi keluar: ${e.message}`); return; }
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const raw = res[i];
+      if (!raw || raw === '0x') { this.goneStreak.delete(r.id); continue; }   // tak terbaca: jangan bertindak
+      if (BigInt(raw) > 0n) { this.goneStreak.delete(r.id); continue; }       // target masih di dalam
+      const n = (this.goneStreak.get(r.id) || 0) + 1;
+      this.goneStreak.set(r.id, n);
+      if (n < 2) continue;
+      this.goneStreak.delete(r.id);
+      const msg = `posisi target #${r.mirror_of} sudah kosong tetapi cermin kita #${r.id} masih terbuka — menutup (sinyal keluar terlewat)`;
+      this.store.log('warn', msg);
+      try {
+        const out = await this.executeExit({ venue: 'v4', action: 'burn', full: true, liquidity: r.liquidity, tokenId: r.token_id }, r);
+        this.notify(`${msg} · ${out.note}`);
+      } catch (e) { this.store.log('error', `rekonsiliasi tutup #${r.id} gagal: ${e.message}`); }
+    }
+  }
+
   // ---- pemeliharaan berkala ----------------------------------------------
   async syncPositions() {
     if (this.cfg.prices?.auto_eth_price !== false) this.ethUsd = await this.chain.ethUsd(this.ethUsd);
@@ -813,6 +880,7 @@ class Engine {
       await this.adoptOwnPositions(addr);
     }
     await this.retryLeftovers().catch((e) => this.store.log('error', `jual sisa: ${e.message}`));
+    await this.reconcileExits().catch((e) => this.store.log('error', `rekonsiliasi keluar: ${e.message}`));
     await this.positions.sync(this.ethUsd);
     const globalRules = rulesFor(this.cfg.rules);
     const triggers = this.positions.exitTriggers(globalRules);

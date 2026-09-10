@@ -110,17 +110,45 @@ class Executor {
       nonce: this.nonce, gasLimit, ...fees,
     };
     const raw = await w.signTransaction(req);
+    // Hash transaksi yang sudah ditandatangani sudah pasti, sebelum dikirim ke mana pun.
+    // Ini yang membedakan "benar-benar gagal" dari "sudah masuk tapi jawabannya hilang".
+    const hash0 = ethers.keccak256(raw);
     let hash;
     try {
       hash = await this.rpc.call('eth_sendRawTransaction', [raw]);
     } catch (e) {
-      this.nonce = null;  // paksa sinkron ulang nonce di percobaan berikutnya
-      throw e;
+      // Pengiriman dicoba ke beberapa endpoint. Kalau siaran PERTAMA sudah masuk,
+      // percobaan berikutnya menjawab "nonce too low"/"already known" — dan dulu itu
+      // dianggap kegagalan, padahal transaksinya berhasil. Akibatnya fatal: posisi
+      // benar-benar terbuka di chain tapi tidak pernah tercatat bot (terjadi pada
+      // salinan pertama, 2026-09-10: mint $200 sukses, dicatat sebagai galat).
+      // Jadi: tanya chain dulu sebelum menyerah.
+      const landed = await this.txLanded(hash0);
+      if (!landed) {
+        this.nonce = null;  // paksa sinkron ulang nonce di percobaan berikutnya
+        throw e;
+      }
+      this.log(`kirim dijawab galat (${String(e.message).slice(0, 60)}) tetapi transaksi ${hash0.slice(0, 12)}… SUDAH masuk — dilanjutkan`);
+      hash = hash0;
     }
     this.nonce++;
     this.store.run('INSERT OR REPLACE INTO txs(hash,ts,kind,status,detail) VALUES(?,?,?,?,?)',
       hash, Date.now(), kind, 'pending', detail ? JSON.stringify(detail) : null);
     return hash;
+  }
+
+  // Apakah transaksi dengan hash ini sudah dikenal chain? Diberi beberapa detik karena
+  // endpoint yang menjawab bisa berbeda dari yang menerima siarannya.
+  async txLanded(hash, tries = 6) {
+    // tries kecil dipakai uji supaya cepat; produksi memakai bawaannya.
+    for (let i = 0; i < tries; i++) {
+      try {
+        const tx = await this.rpc.call('eth_getTransactionByHash', [hash]);
+        if (tx) return true;
+      } catch { /* endpoint sedang bermasalah: coba lagi */ }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    return false;
   }
 
   async waitReceipt(hash, timeoutMs = 60_000) {
