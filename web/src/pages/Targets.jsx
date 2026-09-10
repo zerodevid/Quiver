@@ -62,7 +62,7 @@ function TargetCard({ tg, onChanged }) {
       <Card.Content className="gap-4">
         <div className="flex flex-wrap items-center gap-4">
           <Switch isSelected={!!tg.enabled} onChange={(on) => toggle(tg, on, onChanged)} aria-label={t('Aktifkan target')}>
-            <Switch.Control><Switch.Thumb /></Switch.Control>
+            <Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
           </Switch>
           {/* Bagian kiri bisa diklik: membuka PnL, posisi, dan riwayat wallet ini */}
           <a href={href} className="group min-w-0 flex-1 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent">
@@ -150,8 +150,10 @@ function TargetDetail({ address, targets, reload }) {
         </div>
         <div className="flex items-center gap-3">
           <Switch isSelected={!!tg.enabled} onChange={(on) => toggle(tg, on, reload)}>
-            <Switch.Control><Switch.Thumb /></Switch.Control>
-            <Switch.Content><span className="text-sm">{t(tg.enabled ? 'Sedang dicopy' : 'Dimatikan')}</span></Switch.Content>
+            <Switch.Content>
+              <Switch.Control><Switch.Thumb /></Switch.Control>
+              <span className="text-sm">{t(tg.enabled ? 'Sedang dicopy' : 'Dimatikan')}</span>
+            </Switch.Content>
           </Switch>
           <Button variant={rulesOpen ? 'secondary' : 'outline'} onPress={() => setRulesOpen(!rulesOpen)}>
             <SlidersHorizontal className="size-4" />{t('Aturan')}</Button>

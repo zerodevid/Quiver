@@ -349,12 +349,15 @@ export function Pick({ label, value, onChange, options, hint, className = '' }) 
 
 export function Toggle({ label, desc, value, onChange, isDisabled }) {
   return (
+    // Switch.Content-lah elemen yang bisa diklik (ia yang membawa <input>); Switch
+    // sendiri cuma pembungkus. Kalau Switch.Control ditaruh di luar Content, sakelarnya
+    // tampak normal tapi mati. Description harus jadi saudara Content, bukan isinya.
     <Switch isSelected={!!value} onChange={onChange} isDisabled={isDisabled}>
-      <Switch.Control><Switch.Thumb /></Switch.Control>
       <Switch.Content>
+        <Switch.Control><Switch.Thumb /></Switch.Control>
         <Label>{t(label)}</Label>
-        {desc && <Description>{t(desc)}</Description>}
       </Switch.Content>
+      {desc && <Description>{t(desc)}</Description>}
     </Switch>
   );
 }
