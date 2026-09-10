@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>lpcopy</title>
+  <script>
+    // Pasang tema sebelum render supaya tidak berkedip terang dulu.
+    (function () {
+      try {
+        var t = localStorage.getItem('lpcopy-theme');
+        if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        var el = document.documentElement;
+        el.classList.add(t); el.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body class="bg-background text-foreground">
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>

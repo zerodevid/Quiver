@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>lpcopy</title>
+<script>
+  // Dijalankan sebelum CSS: tanpa ini halaman berkedip terang dulu sebelum tema gelap terpasang.
+  (function () {
+    try {
+      var t = localStorage.getItem('lpcopy-theme');
+      if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-bs-theme', t);
+    } catch (e) { /* localStorage diblokir: pakai terang */ }
+  })();
+</script>
+<link rel="stylesheet" href="/vendor/tabler.min.css">
+<link rel="stylesheet" href="/vendor/tabler-icons.min.css">
+<style>
+  /* Lapisan tipis di atas Tabler: font, angka, dan beberapa komponen kecil.
+     Sengaja tanpa gradien, bayangan tebal, atau warna tambahan — hanya token Tabler. */
+  @font-face {
+    font-family: "Inter Var";
+    src: url("/vendor/fonts/inter-var-latin.woff2") format("woff2");
+    font-weight: 100 900; font-style: normal; font-display: swap;
+  }
+  html { color-scheme: light; }
+  html[data-bs-theme="dark"] { color-scheme: dark; }
+  body { font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiased; }
+
+  /* Angka: Inter dengan digit tabular (lebar sama) — bukan monospace. */
+  .num { font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .mono { font-family: var(--tblr-font-monospace); font-size: .8125rem; letter-spacing: 0; }
+
+  /* Sidebar */
+  .navbar-vertical .navbar-brand { font-weight: 600; letter-spacing: -0.02em; font-size: 1.125rem; }
+  .brand-mark {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 1.75rem; height: 1.75rem; border-radius: .375rem;
+    background: var(--tblr-primary); color: #fff; font-size: .8rem; font-weight: 700; margin-right: .5rem;
+  }
+  .nav-group {
+    padding: 1rem 1rem .25rem; font-size: .6875rem; font-weight: 600;
+    letter-spacing: .06em; text-transform: uppercase; color: var(--tblr-secondary);
+  }
+  .sidebar-foot { border-top: 1px solid var(--tblr-border-color); padding: .875rem 1rem; }
+  .status-dot { width: .5rem; height: .5rem; border-radius: 50%; display: inline-block; margin-right: .4rem; }
+
+  /* Kartu angka */
+  .kpi .subheader { margin-bottom: .35rem; }
+  .kpi .kpi-value { font-size: 1.5rem; font-weight: 600; line-height: 1.2; }
+  .kpi .kpi-sub { font-size: .8125rem; color: var(--tblr-secondary); margin-top: .25rem; }
+
+  /* Bilah rentang */
+  .range-bar { position: relative; height: 6px; border-radius: 3px; background: var(--tblr-border-color); }
+  .range-bar .band { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--tblr-primary); opacity: .55; }
+  .range-bar .now { position: absolute; top: -3px; width: 2px; height: 12px; background: var(--tblr-body-color); }
+
+  .cell-narrow { white-space: nowrap; }
+  .reason { max-width: 28rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .table thead th { font-size: .6875rem; letter-spacing: .04em; }
+  .card-title { font-weight: 600; }
+  .datagrid-content { font-weight: 500; }
+  .page-header { margin-top: 0; }
+  .navbar-vertical .navbar-brand { justify-content: flex-start; }
+  .stat-grid { --tblr-datagrid-item-width: 9rem; }
+  #setMenu .list-group-item { text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ================= SIDEBAR ================= -->
+  <aside class="navbar navbar-vertical navbar-expand-lg border-end">
+    <div class="container-fluid">
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-menu" aria-label="Menu">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <h1 class="navbar-brand navbar-brand-autodark mb-0">
+        <a href="#ringkasan" class="text-reset text-decoration-none"><span class="brand-mark">LP</span>lpcopy</a>
+      </h1>
+      <div class="navbar-nav flex-row d-lg-none">
+        <button class="btn btn-icon btn-ghost-secondary" id="btnThemeMobile" aria-label="Ganti tema"><i class="ti ti-moon"></i></button>
+      </div>
+      <div class="collapse navbar-collapse" id="sidebar-menu">
+        <ul class="navbar-nav pt-lg-2" id="mainNav">
+          <li class="nav-group">Pemantauan</li>
+          <li class="nav-item"><a class="nav-link" href="#ringkasan"><span class="nav-link-icon"><i class="ti ti-layout-dashboard"></i></span><span class="nav-link-title">Ringkasan</span></a></li>
+          <li class="nav-item"><a class="nav-link" href="#posisi"><span class="nav-link-icon"><i class="ti ti-stack-2"></i></span><span class="nav-link-title">Posisi</span></a></li>
+          <li class="nav-item"><a class="nav-link" href="#aktivitas"><span class="nav-link-icon"><i class="ti ti-list-details"></i></span><span class="nav-link-title">Aktivitas</span></a></li>
+
+          <li class="nav-group">Copy</li>
+          <li class="nav-item"><a class="nav-link" href="#target"><span class="nav-link-icon"><i class="ti ti-users"></i></span><span class="nav-link-title">Target</span></a></li>
+          <li class="nav-item"><a class="nav-link" href="#aturan"><span class="nav-link-icon"><i class="ti ti-adjustments-horizontal"></i></span><span class="nav-link-title">Aturan</span></a></li>
+
+          <li class="nav-group">Riset</li>
+          <li class="nav-item"><a class="nav-link" href="#wallet"><span class="nav-link-icon"><i class="ti ti-wallet"></i></span><span class="nav-link-title">Wallet</span></a></li>
+          <li class="nav-item"><a class="nav-link" href="#scout"><span class="nav-link-icon"><i class="ti ti-radar"></i></span><span class="nav-link-title">Scout</span></a></li>
+
+          <li class="nav-group">Sistem</li>
+          <li class="nav-item"><a class="nav-link" href="#pengaturan"><span class="nav-link-icon"><i class="ti ti-settings"></i></span><span class="nav-link-title">Pengaturan</span></a></li>
+        </ul>
+
+        <div class="mt-auto sidebar-foot d-none d-lg-block">
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <span class="small text-secondary">Mode</span>
+            <span id="modeBadge" class="badge">…</span>
+          </div>
+          <div class="d-flex align-items-center justify-content-between mb-3">
+            <span class="small text-secondary">Wallet</span>
+            <span id="walletBadge" class="small mono text-secondary">…</span>
+          </div>
+          <div class="d-flex gap-2">
+            <button id="btnPause" class="btn btn-sm btn-outline-secondary flex-fill">…</button>
+            <button id="btnTheme" class="btn btn-sm btn-outline-secondary" style="width:2.25rem;flex:none" title="Ganti tema terang/gelap" aria-label="Ganti tema"><i class="ti ti-moon m-0"></i></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ================= ISI ================= -->
+  <div class="page-wrapper">
+    <div class="page-body">
+      <div class="container-xl">
+
+        <!-- RINGKASAN -->
+        <section data-page="ringkasan">
+          <div class="page-header mb-3">
+            <div class="row align-items-center">
+              <div class="col"><div class="page-pretitle">Pemantauan</div><h2 class="page-title">Ringkasan</h2></div>
+              <div class="col-auto text-secondary small" id="footClock"></div>
+            </div>
+          </div>
+
+          <div class="row row-deck row-cards mb-3">
+            <div class="col-sm-6 col-lg-3"><div class="card kpi"><div class="card-body">
+              <div class="subheader">Eksposur terbuka</div>
+              <div class="kpi-value num" id="kExposure">—</div>
+              <div class="kpi-sub" id="kExposureSub">—</div>
+            </div></div></div>
+            <div class="col-sm-6 col-lg-3"><div class="card kpi"><div class="card-body">
+              <div class="subheader">Fee terkumpul</div>
+              <div class="kpi-value num" id="kFees">—</div>
+              <div class="kpi-sub" id="kFeesSub">belum diklaim</div>
+            </div></div></div>
+            <div class="col-sm-6 col-lg-3"><div class="card kpi"><div class="card-body">
+              <div class="subheader">PnL belum terealisasi</div>
+              <div class="kpi-value num" id="kPnl">—</div>
+              <div class="kpi-sub">nilai + fee − modal</div>
+            </div></div></div>
+            <div class="col-sm-6 col-lg-3"><div class="card kpi"><div class="card-body">
+              <div class="subheader">PnL terealisasi</div>
+              <div class="kpi-value num" id="kReal">—</div>
+              <div class="kpi-sub">dari posisi tertutup</div>
+            </div></div></div>
+          </div>
+
+          <div class="row row-deck row-cards mb-3">
+            <div class="col-lg-8"><div class="card">
+              <div class="card-header"><h3 class="card-title">Nilai portofolio</h3></div>
+              <div class="card-body"><div id="chartEquity" style="height:15rem"></div></div>
+            </div></div>
+            <div class="col-lg-4"><div class="card">
+              <div class="card-header"><h3 class="card-title">Kesehatan mesin</h3></div>
+              <div class="card-body">
+                <div class="datagrid" style="--tblr-datagrid-item-width: 8rem">
+                  <div class="datagrid-item"><div class="datagrid-title">Blok terkini</div><div class="datagrid-content num" id="mHead">—</div></div>
+                  <div class="datagrid-item"><div class="datagrid-title">Tertinggal</div><div class="datagrid-content num" id="mLag">—</div></div>
+                  <div class="datagrid-item"><div class="datagrid-title">Aksi terdeteksi</div><div class="datagrid-content num" id="mActions">—</div></div>
+                  <div class="datagrid-item"><div class="datagrid-title">Disalin / dilewati</div><div class="datagrid-content num" id="mCopied">—</div></div>
+                  <div class="datagrid-item"><div class="datagrid-title">Harga ETH</div><div class="datagrid-content num" id="mEth">—</div></div>
+                  <div class="datagrid-item"><div class="datagrid-title">Latensi RPC</div><div class="datagrid-content num" id="mRpc">—</div></div>
+                </div>
+                <div id="mError" class="alert alert-warning mt-3 d-none mb-0 small"></div>
+              </div>
+            </div></div>
+          </div>
+
+          <div class="row row-cards">
+            <div class="col-lg-6"><div class="card">
+              <div class="card-header"><h3 class="card-title">Alasan terbanyak dilewati</h3></div>
+              <div class="table-responsive"><table class="table table-vcenter card-table"><tbody id="tblSkip"></tbody></table></div>
+            </div></div>
+            <div class="col-lg-6"><div class="card">
+              <div class="card-header"><h3 class="card-title">Transaksi terakhir</h3></div>
+              <div class="table-responsive"><table class="table table-vcenter card-table"><tbody id="tblTx"></tbody></table></div>
+            </div></div>
+          </div>
+        </section>
+
+        <!-- POSISI -->
+        <section data-page="posisi" hidden>
+          <div class="page-header mb-3">
+            <div class="row align-items-center">
+              <div class="col"><div class="page-pretitle">Pemantauan</div><h2 class="page-title">Posisi</h2></div>
+              <div class="col-auto text-secondary small" id="posMeta"></div>
+            </div>
+          </div>
+          <div class="card mb-3">
+            <div class="card-header"><h3 class="card-title">Posisi terbuka</h3></div>
+            <div class="table-responsive">
+              <table class="table table-vcenter card-table">
+                <thead><tr>
+                  <th>Pasangan</th><th>Rentang</th><th class="text-end">Nilai</th><th class="text-end">Fee</th>
+                  <th class="text-end">PnL</th><th class="text-end">IL</th><th>Umur</th><th>Target</th><th class="w-1"></th>
+                </tr></thead>
+                <tbody id="tblPositions"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h3 class="card-title">Posisi tertutup</h3></div>
+            <div class="table-responsive"><table class="table table-vcenter card-table">
+              <thead><tr><th>Posisi</th><th class="text-end">Modal</th><th class="text-end">Hasil</th><th class="text-end">PnL</th><th>Ditutup</th></tr></thead>
+              <tbody id="tblClosed"></tbody>
+            </table></div>
+          </div>
+        </section>
+
+        <!-- AKTIVITAS -->
+        <section data-page="aktivitas" hidden>
+          <div class="page-header mb-3">
+            <div class="row align-items-center">
+              <div class="col"><div class="page-pretitle">Pemantauan</div><h2 class="page-title">Aktivitas</h2>
+                <div class="text-secondary small mt-1">Setiap gerakan LP wallet target dan keputusan bot atasnya.</div></div>
+              <div class="col-auto">
+                <select class="form-select" id="filterVerdict">
+                  <option value="">Semua keputusan</option><option value="copy">Disalin</option>
+                  <option value="dry">Simulasi</option><option value="skip">Dilewati</option><option value="error">Gagal</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="table-responsive">
+              <table class="table table-vcenter card-table">
+                <thead><tr><th>Waktu</th><th>Target</th><th>Aksi</th><th>Pasangan</th><th>Rentang</th><th class="text-end">Nilai</th><th>Keputusan</th><th>Tx</th></tr></thead>
+                <tbody id="tblActivity"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- TARGET -->
+        <section data-page="target" hidden>
+          <div class="page-header mb-3">
+            <div class="row align-items-center">
+              <div class="col"><div class="page-pretitle">Copy</div><h2 class="page-title">Target</h2>
+                <div class="text-secondary small mt-1">Wallet yang posisi LP-nya dicermin. Masing-masing bisa dimatikan atau diberi aturan sendiri.</div></div>
+            </div>
+          </div>
+          <div class="row row-cards">
+            <div class="col-lg-4">
+              <div class="card">
+                <div class="card-header"><h3 class="card-title">Tambah wallet</h3></div>
+                <div class="card-body">
+                  <div class="mb-3"><label class="form-label">Alamat</label>
+                    <input class="form-control mono" id="newAddr" placeholder="0x…"></div>
+                  <div class="mb-3"><label class="form-label">Label <span class="text-secondary fw-normal">(opsional)</span></label>
+                    <input class="form-control" id="newLabel" placeholder="mis. LP pro #1"></div>
+                  <button class="btn btn-primary w-100" id="btnAddTarget">Tambah</button>
+                  <div class="form-hint mt-2">Aturan default dipakai sampai kamu setel sendiri per wallet.</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-8"><div id="targetList"></div></div>
+          </div>
+        </section>
+
+        <!-- ATURAN -->
+        <section data-page="aturan" hidden>
+          <div class="page-header mb-3">
+            <div class="row align-items-center">
+              <div class="col"><div class="page-pretitle">Copy</div><h2 class="page-title">Aturan default</h2>
+                <div class="text-secondary small mt-1">Berlaku untuk semua target yang tidak punya aturan sendiri.</div></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-body"><div id="rulesForm"></div></div>
+            <div class="card-footer d-flex align-items-center justify-content-end gap-3">
+              <span class="text-secondary small" id="rulesStatus"></span>
+              <button class="btn btn-primary" id="btnSaveRules">Simpan aturan</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- WALLET -->
+        <section data-page="wallet" hidden>
+          <div class="page-header mb-3">
+            <div class="row align-items-center">
+              <div class="col"><div class="page-pretitle">Riset</div><h2 class="page-title">Wallet</h2>
+                <div class="text-secondary small mt-1">PnL, fee, dan seluruh riwayat posisi LP wallet mana pun — dihitung langsung dari chain.</div></div>
+            </div>
+          </div>
+          <div class="card mb-3">
+            <div class="card-body">
+              <div class="row g-2 align-items-end">
+                <div class="col-lg-6"><label class="form-label">Alamat wallet</label>
+                  <input class="form-control mono" id="wAddr" placeholder="0x…"></div>
+                <div class="col-sm-6 col-lg-3"><label class="form-label">Jendela pindai</label>
+                  <select class="form-select" id="wBlocks">
+                    <option value="250000">~7 jam</option>
+                    <option value="900000" selected>~1 hari</option>
+                    <option value="2600000">~3 hari</option>
+                    <option value="6000000">~7 hari</option>
+                    <option value="100000000">Semua riwayat</option>
+                  </select></div>
+                <div class="col-sm-6 col-lg-3 d-flex gap-2">
+                  <button class="btn btn-primary flex-fill" id="btnWLoad">Buka</button>
+                  <button class="btn btn-outline-secondary btn-icon" id="btnWScan" title="Pindai ulang dari chain (ambil data terbaru)" aria-label="Pindai ulang"><i class="ti ti-refresh"></i></button>
+                </div>
+              </div>
+              <div class="form-hint mt-2" id="wHint">Sekali dipindai, data disimpan — membuka lagi tidak memanggil chain.</div>
+              <div id="wRecent" class="mt-3"></div>
+            </div>
+          </div>
+          <div id="wBody"></div>
+          <div class="text-secondary small mt-3">Pokok &amp; fee dibaca dari state pool dan posisi tepat di blok tiap kejadian (node arsip).
+            Posisi yang dibuka-tutup tanpa ada swap di rentangnya tercatat impas, bukan kalah.</div>
+        </section>
+
+        <!-- SCOUT -->
+        <section data-page="scout" hidden>
+          <div class="page-header mb-3">
+            <div class="row align-items-center">
+              <div class="col"><div class="page-pretitle">Riset</div><h2 class="page-title">Scout</h2>
+                <div class="text-secondary small mt-1">Potret cepat posisi yang sedang hidup: ukuran, lebar rentang, fee yang belum diklaim.</div></div>
+            </div>
+          </div>
+          <div class="card mb-3">
+            <div class="card-body">
+              <div class="row g-2 align-items-end">
+                <div class="col-lg-6"><label class="form-label">Alamat wallet</label>
+                  <input class="form-control mono" id="scoutAddr" placeholder="0x…"></div>
+                <div class="col-sm-6 col-lg-3"><label class="form-label">Jendela pindai</label>
+                  <select class="form-select" id="scoutBlocks">
+                    <option value="450000">~12 jam</option>
+                    <option value="900000" selected>~1 hari</option>
+                    <option value="2600000">~3 hari</option>
+                    <option value="6000000">~7 hari</option>
+                  </select></div>
+                <div class="col-sm-6 col-lg-3"><button class="btn btn-primary w-100" id="btnScout">Periksa</button></div>
+              </div>
+              <div class="progress progress-sm mt-3 d-none" id="scoutProgWrap"><div class="progress-bar" id="scoutProg" style="width:0%"></div></div>
+            </div>
+          </div>
+          <div id="scoutResult"></div>
+        </section>
+
+        <!-- PENGATURAN -->
+        <section data-page="pengaturan" hidden>
+          <div class="page-header mb-3">
+            <div class="row align-items-center">
+              <div class="col"><div class="page-pretitle">Sistem</div><h2 class="page-title">Pengaturan</h2></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="row g-0">
+              <div class="col-12 col-md-3 border-end">
+                <div class="card-body">
+                  <div class="list-group list-group-transparent" id="setMenu">
+                    <a href="#" data-set="wallet" class="list-group-item list-group-item-action d-flex align-items-center active"><i class="ti ti-wallet me-2"></i>Wallet &amp; mode</a>
+                    <a href="#" data-set="rpc" class="list-group-item list-group-item-action d-flex align-items-center"><i class="ti ti-server me-2"></i>RPC</a>
+                    <a href="#" data-set="gas" class="list-group-item list-group-item-action d-flex align-items-center"><i class="ti ti-gas-station me-2"></i>Gas</a>
+                    <a href="#" data-set="notify" class="list-group-item list-group-item-action d-flex align-items-center"><i class="ti ti-bell me-2"></i>Notifikasi</a>
+                    <a href="#" data-set="loop" class="list-group-item list-group-item-action d-flex align-items-center"><i class="ti ti-cpu me-2"></i>Mesin</a>
+                    <a href="#" data-set="security" class="list-group-item list-group-item-action d-flex align-items-center"><i class="ti ti-lock me-2"></i>Keamanan</a>
+                  </div>
+                </div>
+              </div>
+              <div class="col-12 col-md-9">
+                <div class="card-body" id="setPanel"><div class="text-secondary">Memuat…</div></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </div>
+
+    <footer class="footer footer-transparent d-print-none">
+      <div class="container-xl text-secondary small">
+        lpcopy · cermin posisi likuiditas Uniswap v3/v4 · Robinhood Chain (4663)
+      </div>
+    </footer>
+  </div>
+</div>
+<script src="/vendor/tabler.min.js"></script>
+<script src="/vendor/apexcharts.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

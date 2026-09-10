@@ -1,0 +1,62 @@
+export const usd = (v, d = 2) => (v == null || Number.isNaN(v)) ? '—'
+  : (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString('id-ID', { minimumFractionDigits: d, maximumFractionDigits: d });
+export const kUsd = (v) => (Math.abs(v) >= 1000 ? (v < 0 ? '−$' : '$') + (Math.abs(v) / 1000).toFixed(2) + 'k' : usd(v));
+export const pct = (v, d = 1) => (v == null ? '—'
+  : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toLocaleString('id-ID', { minimumFractionDigits: d, maximumFractionDigits: d }) + '%');
+export const num = (v, d = 0) => (v == null ? '—' : Number(v).toLocaleString('id-ID', { maximumFractionDigits: d }));
+export const short = (a) => (a ? a.slice(0, 6) + '…' + a.slice(-4) : '—');
+export const tone = (v) => (v > 0.005 ? 'text-success' : v < -0.005 ? 'text-danger' : '');
+export const widthPct = (lo, hi) => (1.0001 ** (hi - lo) - 1) * 100;
+
+// Harga token bisa 0,00000032 sampai 4.200 — jadi pakai angka penting, bukan
+// jumlah desimal tetap (0,00 tidak memberi tahu apa pun).
+export function price(p) {
+  if (p == null || !Number.isFinite(p) || p <= 0) return '—';
+  if (p >= 1e6) return p.toLocaleString('id-ID', { maximumFractionDigits: 0 });
+  if (p >= 1) return p.toLocaleString('id-ID', { maximumSignificantDigits: 6 });
+  if (p >= 1e-7) return p.toLocaleString('id-ID', { maximumSignificantDigits: 3 });
+  return p.toExponential(2).replace('.', ',');
+}
+
+// Harga dari sqrtPriceX96 (state pool yang tersimpan per kejadian).
+export function sqrtPrice(sqrtX96, dec0, dec1, quoteSide) {
+  if (!sqrtX96) return null;
+  const r = Number(sqrtX96) / 2 ** 96;
+  const p1per0 = r * r * 10 ** ((dec0 ?? 18) - (dec1 ?? 18));
+  if (!Number.isFinite(p1per0) || p1per0 <= 0) return null;
+  return quoteSide === 0 ? 1 / p1per0 : p1per0;
+}
+
+// Harga token spekulatif dalam aset kuotasi pool, dari nomor tick.
+// quoteSide 0 = token0 yang jadi kuotasi -> harga token1 adalah kebalikan tick.
+export function tickPrice(tick, dec0, dec1, quoteSide) {
+  const p1per0 = 1.0001 ** tick * 10 ** ((dec0 ?? 18) - (dec1 ?? 18));
+  return quoteSide === 0 ? 1 / p1per0 : p1per0;
+}
+export function ago(ts) {
+  if (!ts) return '—';
+  const s = (Date.now() - ts) / 1000;
+  if (s < 60) return `${Math.max(1, Math.round(s))} dtk lalu`;
+  if (s < 3600) return `${Math.round(s / 60)} mnt lalu`;
+  if (s < 86400) return `${(s / 3600).toFixed(1)} jam lalu`;
+  return `${(s / 86400).toFixed(1)} hari lalu`;
+}
+export const age = (h) => (h == null ? '—' : h < 1 ? `${Math.round(h * 60)} mnt` : h < 24 ? `${h.toFixed(1)} jam` : `${(h / 24).toFixed(1)} hari`);
+export const dur = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s} dtk` : `${Math.floor(s / 60)} mnt ${s % 60} dtk`; };
+
+// Label manusiawi untuk nilai mentah dari backend
+export const AKSI = {
+  increase: ['Tambah likuiditas', 'accent'], decrease: ['Kurangi likuiditas', 'warning'],
+  custody_out: ['Titip ke otomasi', 'default'], custody_in: ['Kembali dari otomasi', 'default'],
+  transfer_in: ['Terima posisi', 'default'], transfer_out: ['Kirim posisi', 'warning'],
+  mint: ['Buka posisi', 'accent'], collect: ['Klaim fee', 'success'],
+};
+export const KEPUTUSAN = {
+  copy: ['Disalin', 'success'], dry: ['Simulasi', 'accent'], skip: ['Dilewati', 'default'], error: ['Gagal', 'danger'],
+};
+export const TXKIND = {
+  mint: 'Buka posisi', increase: 'Tambah likuiditas', decrease: 'Kurangi', burn: 'Tutup posisi',
+  approve_erc20: 'Izin token', approve_permit2: 'Izin Permit2', zap_swap: 'Tukar (zap)',
+  bridge_swap: 'Tukar kas', wrap_eth: 'Bungkus ETH', unwrap_weth: 'Buka WETH',
+};
+export const TXSTATUS = { sukses: ['Sukses', 'success'], pending: ['Menunggu', 'warning'], gagal: ['Gagal', 'danger'] };

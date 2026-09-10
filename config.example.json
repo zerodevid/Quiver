@@ -1,0 +1,120 @@
+{
+  "chain": {
+    "endpoints": [
+      {
+        "url": "https://robinhood-rpc.publicnode.com",
+        "max_batch": 40,
+        "no_logs": true,
+        "catatan": "tercepat untuk eth_call (~90ms); getLogs ditolak di luar ~10 blok terakhir"
+      },
+      {
+        "url": "https://rpc.mainnet.chain.robinhood.com",
+        "max_batch": 40,
+        "catatan": "resmi: dukungan penuh, ~250ms, membalas 429 kalau dihajar beruntun"
+      },
+      {
+        "url": "https://rpc.ordofi.network",
+        "max_batch": 40,
+        "max_log_blocks": 3000,
+        "archive": true,
+        "catatan": "satu-satunya node arsip; getLogs HANYA rentang kecil (<=3000 blok)"
+      }
+    ],
+    "max_inflight": 4,
+    "dns_over_https": true
+  },
+  "wallet": {
+    "key_file": "~/.lpcopy/key"
+  },
+  "mode": {
+    "dry_run": true,
+    "paused": false
+  },
+  "loop": {
+    "poll_ms": 1500,
+    "max_block_span": 1500,
+    "sync_seconds": 30,
+    "equity_seconds": 300
+  },
+  "gas": {
+    "price_multiplier": 1.5,
+    "priority_wei": 10000000,
+    "max_gas_limit": 4000000,
+    "native_reserve_wei": 2000000000000000
+  },
+  "prices": {
+    "eth_usd": 2479,
+    "auto_eth_price": true
+  },
+  "server": {
+    "port": 8799,
+    "host": "127.0.0.1",
+    "auth_token": null
+  },
+  "db": {
+    "path": "data/lpcopy.db"
+  },
+  "scout": {
+    "blocks": 900000
+  },
+  "notify": {
+    "ntfy_topic": null
+  },
+  "targets": [],
+  "rules": {
+    "sizing": {
+      "mode": "fixed_quote",
+      "pct": 25,
+      "multiplier": 1,
+      "fixed_quote_usd": 10,
+      "fixed_quote_eth": 0.004,
+      "min_quote_usd": 5,
+      "max_quote_per_position_usd": 15,
+      "max_total_exposure_usd": 45,
+      "daily_budget_usd": 45
+    },
+    "range": {
+      "mode": "exact",
+      "scale": 1,
+      "width_pct": 25,
+      "align": "nearest",
+      "min_width_ticks": 0
+    },
+    "onesided": {
+      "policy": "copy",
+      "max_quote_usd": 15
+    },
+    "swap": {
+      "enabled": true,
+      "max_slippage_bps": 150,
+      "max_price_impact_bps": 500
+    },
+    "exit": {
+      "follow_target": true,
+      "follow_partial": true,
+      "out_of_range_minutes": 0,
+      "stop_loss_pct": 0,
+      "take_profit_pct": 0,
+      "max_age_hours": 0
+    },
+    "filters": {
+      "allow_hooks": false,
+      "quote_whitelist": [
+        "USDG",
+        "ETH",
+        "WETH"
+      ],
+      "token_blacklist": [],
+      "token_whitelist": [],
+      "min_pool_age_minutes": 0,
+      "min_target_quote_usd": 25,
+      "max_open_positions": 3,
+      "cooldown_seconds": 20,
+      "venues": [
+        "v4",
+        "v3"
+      ],
+      "max_fee_bps": 100000
+    }
+  }
+}

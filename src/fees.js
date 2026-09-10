@@ -1,0 +1,143 @@
+'use strict';
+// Hitung fee yang belum diklaim untuk posisi Uniswap v4, langsung dari storage
+// PoolManager lewat extsload. Layout diverifikasi di Robinhood Chain: L hasil baca
+// storage identik dengan getPositionLiquidity(tokenId).
+//
+// Tata letak Pool.State di dalam mapping _pools (slot 6):
+//   +0 slot0 | +1 feeGrowthGlobal0 | +2 feeGrowthGlobal1 | +3 liquidity
+//   +4 ticks | +5 tickBitmap | +6 positions
+const { ethers } = require('ethers');
+const { ADDR, ABI } = require('./chain');
+
+const coder = ethers.AbiCoder.defaultAbiCoder();
+const IF_EXT = new ethers.Interface(['function extsload(bytes32 slot) view returns (bytes32)']);
+const IF_NPM = new ethers.Interface(ABI.npmV3);
+const Q128 = 1n << 128n;
+const MOD = 1n << 256n;
+const sub = (a, b) => ((a - b) % MOD + MOD) % MOD;   // pengurangan yang membungkus, seperti Solidity
+
+const slotHex = (n) => '0x' + n.toString(16).padStart(64, '0');
+const poolBase = (poolId) => BigInt(ethers.keccak256(coder.encode(['bytes32', 'uint256'], [poolId, 6n])));
+const tickSlot = (base, tick) => BigInt(ethers.keccak256(coder.encode(['int24', 'uint256'], [tick, base + 4n])));
+function positionSlot(base, owner, tickLower, tickUpper, salt) {
+  const key = ethers.keccak256(ethers.solidityPacked(
+    ['address', 'int24', 'int24', 'bytes32'], [owner, tickLower, tickUpper, salt]));
+  return BigInt(ethers.keccak256(coder.encode(['bytes32', 'uint256'], [key, base + 6n])));
+}
+
+/**
+ * Fee belum diklaim untuk sekumpulan posisi v4.
+ * items: [{poolId, tickLower, tickUpper, tokenId}]
+ * curTickByPool: Map poolId -> tick sekarang
+ * Balikan sejajar: [{fee0, fee1, liquidity}]
+ */
+async function unclaimedV4(rpc, items, curTickByPool) {
+  if (!items.length) return [];
+  const calls = [];
+  const idx = [];
+  for (const it of items) {
+    const base = poolBase(it.poolId);
+    const salt = slotHex(BigInt(it.tokenId));
+    const ps = positionSlot(base, ADDR.posmV4, it.tickLower, it.tickUpper, salt);
+    const tl = tickSlot(base, it.tickLower), tu = tickSlot(base, it.tickUpper);
+    const slots = [
+      base + 1n, base + 2n,          // fgGlobal0, fgGlobal1
+      tl + 1n, tl + 2n,              // fgOutside di tickLower
+      tu + 1n, tu + 2n,              // fgOutside di tickUpper
+      ps, ps + 1n, ps + 2n,          // L, fgInside0Last, fgInside1Last
+    ];
+    idx.push([calls.length, slots.length]);
+    for (const s of slots) calls.push({ to: ADDR.poolManager, data: IF_EXT.encodeFunctionData('extsload', [slotHex(s)]) });
+  }
+  const res = await rpc.ethCallMany(calls);
+  const out = [];
+  items.forEach((it, i) => {
+    const [off] = idx[i];
+    const v = (k) => (res[off + k] && res[off + k] !== '0x' ? BigInt(res[off + k]) : 0n);
+    const fg0 = v(0), fg1 = v(1);
+    const lo0 = v(2), lo1 = v(3), hi0 = v(4), hi1 = v(5);
+    const L = v(6) & ((1n << 128n) - 1n);
+    const last0 = v(7), last1 = v(8);
+    const cur = curTickByPool.get(it.poolId);
+    if (cur == null || L === 0n) { out.push({ fee0: 0n, fee1: 0n, liquidity: L }); return; }
+    const below0 = cur >= it.tickLower ? lo0 : sub(fg0, lo0);
+    const below1 = cur >= it.tickLower ? lo1 : sub(fg1, lo1);
+    const above0 = cur < it.tickUpper ? hi0 : sub(fg0, hi0);
+    const above1 = cur < it.tickUpper ? hi1 : sub(fg1, hi1);
+    const inside0 = sub(sub(fg0, below0), above0);
+    const inside1 = sub(sub(fg1, below1), above1);
+    out.push({
+      fee0: (L * sub(inside0, last0)) / Q128,
+      fee1: (L * sub(inside1, last1)) / Q128,
+      liquidity: L,
+    });
+  });
+  return out;
+}
+
+/** v3: tokensOwed hanya diperbarui saat "poke", jadi kita simulasikan collect lewat eth_call. */
+async function unclaimedV3(rpc, tokenIds, owner) {
+  if (!tokenIds.length) return [];
+  const MAXU128 = (1n << 128n) - 1n;
+  const calls = tokenIds.map((id) => ({
+    to: ADDR.npmV3,
+    data: IF_NPM.encodeFunctionData('collect', [[id, owner, MAXU128, MAXU128]]),
+  }));
+  const res = await rpc.batch(calls.map((c) => ({ method: 'eth_call', params: [{ from: owner, to: c.to, data: c.data }, 'latest'] })));
+  return res.map((r) => {
+    if (!r || r.error || !r.result || r.result === '0x') return { fee0: 0n, fee1: 0n };
+    try {
+      const d = IF_NPM.decodeFunctionResult('collect', r.result);
+      return { fee0: BigInt(d[0]), fee1: BigInt(d[1]) };
+    } catch { return { fee0: 0n, fee1: 0n }; }
+  });
+}
+
+module.exports = { unclaimedV4, unclaimedV3, poolBase, positionSlot, tickSlot };
+
+/**
+ * Fee yang terkumpul pada sebuah posisi v4 TEPAT sebelum blok `block`, dibaca dari
+ * storage PoolManager lewat node arsip (state di block-1).
+ *
+ * Inilah jumlah yang dibayarkan ke pemilik saat modifyLiquidity di blok itu — di v4,
+ * setiap modifyLiquidity (tambah, kurangi, atau delta nol) menyelesaikan fee yang
+ * terutang. Diverifikasi: hasilnya identik sampai digit terakhir dengan
+ * "token keluar dikurangi pokok" pada transaksi yang tidak ter-netting.
+ *
+ * Kenapa perlu: rebalance otomatis menutup posisi lama dan membuka yang baru dalam
+ * satu unlock. Flash accounting me-netting dananya, jadi TIDAK ADA Transfer ERC20 —
+ * metode berbasis Transfer melihat nol dan fee-nya hilang.
+ *
+ * Balikan: { fee0, fee1, sqrtPriceX96, tick, liquidity } atau null.
+ */
+async function feesAtBlock(rpc, { poolId, tickLower, tickUpper, tokenId, block }) {
+  const base = poolBase(poolId);
+  const ps = positionSlot(base, ADDR.posmV4, tickLower, tickUpper, slotHex(BigInt(tokenId)));
+  const tl = tickSlot(base, tickLower), tu = tickSlot(base, tickUpper);
+  const slots = [base, base + 1n, base + 2n, tl + 1n, tl + 2n, tu + 1n, tu + 2n, ps, ps + 1n, ps + 2n];
+  const tag = '0x' + (block - 1).toString(16);
+  const res = await rpc.batch(slots.map((sl) => ({
+    method: 'eth_call',
+    params: [{ to: ADDR.poolManager, data: IF_EXT.encodeFunctionData('extsload', [slotHex(sl)]) }, tag],
+  })), { archive: true });
+  if (res.some((r) => !r || r.error || !r.result)) return null;
+  const v = res.map((r) => BigInt(r.result));
+  const [s0, g0, g1, lo0, lo1, hi0, hi1, Lw, last0, last1] = v;
+  const sqrtPriceX96 = s0 & ((1n << 160n) - 1n);
+  const tick = Number(BigInt.asIntN(24, (s0 >> 160n) & 0xffffffn));
+  const L = Lw & ((1n << 128n) - 1n);
+  if (sqrtPriceX96 === 0n) return null;
+  const below0 = tick >= tickLower ? lo0 : sub(g0, lo0);
+  const below1 = tick >= tickLower ? lo1 : sub(g1, lo1);
+  const above0 = tick < tickUpper ? hi0 : sub(g0, hi0);
+  const above1 = tick < tickUpper ? hi1 : sub(g1, hi1);
+  const in0 = sub(sub(g0, below0), above0);
+  const in1 = sub(sub(g1, below1), above1);
+  return {
+    fee0: L === 0n ? 0n : (L * sub(in0, last0)) / Q128,
+    fee1: L === 0n ? 0n : (L * sub(in1, last1)) / Q128,
+    sqrtPriceX96, tick, liquidity: L,
+  };
+}
+
+module.exports.feesAtBlock = feesAtBlock;

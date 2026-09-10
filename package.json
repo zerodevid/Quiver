@@ -1,0 +1,15 @@
+{
+  "name": "lpcopy",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Copy-LP untuk Robinhood Chain: cermin posisi likuiditas Uniswap v3/v4 dari wallet target, dengan dashboard",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node --no-warnings src/index.js",
+    "scout": "node --no-warnings src/scout.js"
+  },
+  "dependencies": {
+    "ethers": "^6.17.0"
+  }
+}

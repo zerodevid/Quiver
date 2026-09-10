@@ -1,0 +1,17 @@
+# Rahasia dan state — JANGAN pernah masuk repo.
+# config.json berisi token akses dasbor dan API key RPC;
+# data/ berisi kursor blok, posisi, dan hasil riset wallet.
+config.json
+data/
+logs/
+*.pid
+
+# Kunci privat wallet hidup di ~/.lpcopy/, di luar repo — dicantumkan sebagai jaring pengaman.
+key
+key.*
+*.mnemonic
+mnemonic.txt
+
+node_modules/
+web/dist/
+.DS_Store
