@@ -49,7 +49,9 @@ export const SCHEMA = [
     { path: 'exit.sell_leftover', label: 'Jual memecoin sisa setelah keluar', type: 'bool',
       help: 'Token yang diterima saat menutup posisi dijual balik ke USDG/ETH lewat agregator Kyber' },
     { path: 'exit.sell_max_loss_bps', label: 'Batas rugi jual sisa (bps)', type: 'number', step: 100, when: (r) => r.exit.sell_leftover,
-      help: 'Fee pool + dampak harga. Di atas batas ini token disimpan dan dicoba lagi nanti' },
+      help: 'Fee pool + dampak harga. Di atas batas ini token disimpan dan dikutip ulang terus sampai lolos' },
+    { path: 'exit.leftover_retry_sec', label: 'Cek ulang sisa tiap (detik)', type: 'number', step: 1, when: (r) => r.exit.sell_leftover,
+      help: 'Satu kutipan Kyber per token per interval; swap hanya dikirim kalau ruginya sudah di bawah batas. Minimal 1 — terlalu rapat bisa kena batas laju Kyber yang juga dipakai zap' },
   ] },
   { group: 'Saringan', icon: 'ti-filter', fields: [
     { path: 'filters.allow_hooks', label: 'Izinkan pool v4 dengan hook', type: 'bool', help: 'Hook bisa memblokir penarikan — default: tolak' },

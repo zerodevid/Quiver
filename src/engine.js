@@ -924,8 +924,32 @@ class Engine {
       return msg;
     } catch (e) {
       this.keepLeftover({ ...item, amount: amount.toString() }, e.message);
+      this.alertLeftover({ ...item, amount: amount.toString() }, label, e);
       throw new Error(`${label} belum terjual: ${e.message}`);
     }
+  }
+
+  // Token yang tidak bisa dijual = uang yang tersangkut. Dikabarkan KERAS pada
+  // kegagalan pertama, lalu diingatkan tiap 6 jam selama masih tersangkut — bukan
+  // tiap percobaan: antrean mengecek tiap beberapa detik, dan kabar yang sama
+  // ribuan kali hanya membuat orang kebal.
+  alertLeftover(item, label, e) {
+    const cur = this.leftovers().find((x) => x.posId === item.posId && x.token === item.token);
+    if (!cur) return;
+    const first = (cur.tries || 0) <= 1;
+    const due = Date.now() - (cur.alertedAt || 0) > 6 * 3600_000;
+    if (!first && !due) return;
+    this.saveLeftovers(this.leftovers().map((x) => (x.posId === item.posId && x.token === item.token ? { ...x, alertedAt: Date.now() } : x)));
+    this.notify(`SISA BELUM TERJUAL: ${label} dari posisi #${item.posId} — ${e.message}`, {
+      kind: 'leftover_stuck', positionId: item.posId, target: item.target, token: item.token,
+      label, amount: item.amount, why: e.message, tries: cur.tries, next: cur.next, retrySec: this.leftoverRetrySec(),
+      since: cur.since || null, reminder: !first,
+      usdIn: e.loss?.usdIn ?? null, usdOut: e.loss?.usdOut ?? null, lossBps: e.loss?.lossBps ?? null, maxLossBps: e.loss?.maxLossBps ?? null,
+    });
+  }
+  leftoverRetrySec() {
+    const n = Number(this.rulesFrom(null).exit.leftover_retry_sec);
+    return Number.isFinite(n) && n >= 1 ? n : 5;
   }
 
   leftovers() {
@@ -933,24 +957,56 @@ class Engine {
     catch { return []; }
   }
   saveLeftovers(list) { this.store.setState('leftovers', JSON.stringify(list)); }
+  // Item TIDAK pernah dibuang sendiri: uangnya masih tersangkut di wallet, jadi
+  // peringatan dasbor dan daftar token swap harus terus melihatnya sampai terjual
+  // atau dikeluarkan manual. `tries` cuma penghitung; jadwalnya tiap beberapa detik.
   keepLeftover(item, why) {
+    const old = this.leftovers().find((x) => x.posId === item.posId && x.token === item.token);
     const list = this.leftovers().filter((x) => !(x.posId === item.posId && x.token === item.token));
     const tries = (item.tries || 0) + 1;
-    // Coba lagi dengan jeda makin panjang: 5, 10, 20, 40 menit... berhenti setelah 8 kali.
-    if (tries <= 8) list.push({ ...item, tries, next: Date.now() + 5 * 60_000 * 2 ** (tries - 1), why });
-    else this.store.log('warn', `berhenti mencoba menjual sisa posisi #${item.posId} (${item.token}) setelah ${tries - 1} kali: ${why}`);
+    const next = Date.now() + this.leftoverRetrySec() * 1000;
+    list.push({ ...old, ...item, tries, next, why, since: old?.since || item.since || Date.now() });
     this.saveLeftovers(list);
+    return { tries, next };
   }
   dropLeftover(item) {
     this.saveLeftovers(this.leftovers().filter((x) => !(x.posId === item.posId && x.token === item.token)));
   }
+
+  // Dipanggil tiap detik (index.js). Tiap item dicek dengan SATU kutipan Kyber
+  // (bukan build + kirim): kalau ruginya masih di atas batas, cukup catat dan
+  // tunggu tick berikutnya. Baru kalau lolos, penjualan sungguhan dijalankan —
+  // dengan pengaman yang sama seperti biasa. Jadi memburu likuiditas yang
+  // sesaat membaik itu murah: satu HTTP ke Kyber per item per interval.
   async retryLeftovers() {
-    if (this.dryRun() || !this.exec.address()) return;
-    for (const item of this.leftovers()) {
-      if (Date.now() < (item.next || 0)) continue;
-      try { await this.sellToken(item); }
-      catch (e) { this.store.log('warn', `coba ulang jual sisa #${item.posId}: ${e.message}`, { quiet: true }); }   // masih di antrean
-    }
+    if (this.dryRun() || !this.exec.address() || this.leftoverBusy) return;
+    this.leftoverBusy = true;
+    try {
+      for (const item of this.leftovers()) {
+        if (Date.now() < (item.next || 0)) continue;
+        const rules = this.rulesFrom(item.target);
+        try {
+          const bal = (await this.exec.balances([item.token])).get(item.token) || 0n;
+          const amount = bal < BigInt(item.amount) ? bal : BigInt(item.amount);
+          if (amount === 0n) { this.dropLeftover(item); continue; }
+          const q = await this.kyber.quote(item.token, item.quote, amount);
+          const { Kyber } = require('./kyber');
+          const loss = q ? Kyber.lossBps(q) : null;
+          if (!q || (loss != null && loss > rules.exit.sell_max_loss_bps)) {
+            const why = !q ? 'Kyber tidak menemukan rute'
+              : `rute Kyber rugi ${(loss / 100).toFixed(1)}% (batas ${(rules.exit.sell_max_loss_bps / 100).toFixed(1)}%) — $${q.usdIn?.toFixed(2)} → $${q.usdOut?.toFixed(2)}`;
+            const e = new Error(why);
+            if (q) e.loss = { lossBps: loss, maxLossBps: rules.exit.sell_max_loss_bps, usdIn: q.usdIn, usdOut: q.usdOut, dex: q.dex };
+            // Kutipan terbaru disimpan supaya pita di dasbor menunjukkan angka kini.
+            this.keepLeftover({ ...item, amount: amount.toString(), lastLossBps: loss, lastUsdOut: q?.usdOut ?? null, lastUsdIn: q?.usdIn ?? null }, why);
+            const meta = await this.chain.token(item.token).catch(() => null);
+            this.alertLeftover(item, `${(Number(amount) / 10 ** (meta?.decimals ?? 18)).toPrecision(4)} ${meta?.symbol || item.token.slice(0, 8)}`, e);
+            continue;
+          }
+          await this.sellToken(item);
+        } catch (e) { this.store.log('warn', `coba ulang jual sisa #${item.posId}: ${e.message}`, { quiet: true }); }   // masih di antrean
+      }
+    } finally { this.leftoverBusy = false; }
   }
 
   // Jaring pengaman terakhir untuk sinyal keluar.
@@ -1011,7 +1067,6 @@ class Engine {
     // Semua langkah ini diulang tiap sinkron (30 detik) — galat sesaat tidak dikabarkan.
     const sekali = (key, label, p) => p.then(() => this.cleared(key, `${label}: berhasil lagi`))
       .catch((e) => this.trouble(key, `${label}: ${e.message}`, { after: 5, afterMs: 5 * 60_000 }));
-    await sekali('jual-sisa', 'jual sisa', this.retryLeftovers());
     await sekali('rekon', 'rekonsiliasi keluar', this.reconcileExits());
     await this.positions.sync(this.ethUsd);
     await sekali('kas', 'saldo kas', this.refreshCash());

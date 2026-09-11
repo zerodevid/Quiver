@@ -150,6 +150,9 @@ async function main() {
   setInterval(() => engine.tick().catch((e) => log(`tick: ${e.message}`)), pollMs);
   setInterval(() => engine.syncPositions().catch((e) => log(`sync: ${e.message}`)), syncMs);
   setInterval(() => engine.snapshotEquity().catch((e) => log(`equity: ${e.message}`)), eqMs);
+  // Memecoin sisa yang ditolak dijual diburu terus: tiap detik dilihat apakah
+  // jadwalnya (aturan `leftover_retry_sec`) sudah tiba; kalau ya, dikutip ulang.
+  setInterval(() => engine.retryLeftovers().catch((e) => log(`jual sisa: ${e.message}`)), 1000);
   setInterval(() => store.prune(30), 3600_000);
 
   process.on('SIGINT', () => { log('berhenti'); telegram.stop(); cleanup(); process.exit(0); });

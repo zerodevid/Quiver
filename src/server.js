@@ -47,6 +47,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   const manual = new Manual({ engine, store, chain, rpc, log });
   const market = new Market({ log });
 
+  // Antrean memecoin sisa yang belum terjual, dengan simbol & desimal supaya dasbor
+  // bisa menulis "688 rb DRIPPYPIGEON". Ikut di /api/overview: peringatannya
+  // harus tampil di SEMUA halaman, bukan cuma kalau kebetulan membuka Posisi.
+  const leftoverRows = () => {
+    const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
+    return engine.leftovers().map((it) => {
+      const t = toks.get(String(it.token).toLowerCase());
+      return { ...it, symbol: t?.symbol || null, decimals: t?.decimals ?? 18, amountNum: Number(it.amount || 0) / 10 ** (t?.decimals ?? 18) };
+    });
+  };
+
   // Token atau bukan? Wallet LP besar sering berupa KONTRAK (smart wallet, Safe),
   // jadi "punya kode" saja belum berarti token — yang menentukan adalah symbol() dan
   // decimals() yang menjawab. Metadata disimpan (chain.tokens) hanya kalau memang
@@ -249,6 +260,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         rpc: rpc.stats(),
         unsupportedSenders: [...engine.watcher.unsupported.entries()].map(([a, n]) => ({ address: a, n })),
         lastSync: engine.positions.lastSync,
+        leftovers: leftoverRows(), leftoverRetrySec: engine.leftoverRetrySec ? engine.leftoverRetrySec() : 5,
       };
     },
     // Portofolio milik kita: total sekarang, kurva pertumbuhan, PnL per hari, dan
@@ -866,16 +878,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     },
 
     // ---- sisa memecoin yang belum terjual setelah keluar posisi ----
-    'GET /api/leftovers': () => {
-      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
-      return {
-        leftovers: engine.leftovers().map((it) => ({
-          ...it,
-          symbol: toks.get(String(it.token).toLowerCase())?.symbol || null,
-          decimals: toks.get(String(it.token).toLowerCase())?.decimals ?? 18,
-        })),
-      };
-    },
+    'GET /api/leftovers': () => ({ leftovers: leftoverRows() }),
     'POST /api/leftovers/retry': async () => {
       if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
       const list = engine.leftovers();

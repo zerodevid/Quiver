@@ -115,7 +115,7 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
       address: () => ME, keyPath: () => cfg.wallet.key_file, resetWallet: () => {},
       balances: async () => new Map([[ADDR.native, 10n ** 17n], [ADDR.usdg, 150_000_000n], [ADDR.weth, 0n]]),
     },
-    leftovers: () => [{ posId: 1, target: TARGET, token: MEME, quote: ADDR.usdg, amount: '1000', tries: 2, next: Date.now() + 600_000, why: 'rute rugi 18%' }],
+    leftovers: () => [{ posId: 1, target: TARGET, token: MEME, quote: ADDR.usdg, amount: '1000', tries: 2, next: Date.now() + 5000, since: Date.now() - 90_000, why: 'rute rugi 18%' }],
     saveLeftovers: () => {}, dropLeftover: () => {}, sellToken: async () => 'terjual',
     executeExit: async () => ({ txHash: '0xee' }),
     rulesFrom: () => rulesFor(cfg.rules, null),
@@ -627,6 +627,36 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     w.bot.stop();
   });
 
+  await t('sisa yang DITOLAK dijual jadi kartu alarm: angka rugi, batas, jadwal, dan tombol jalan keluar', async () => {
+    const w = build();
+    await w.bot.start();
+    w.engine.notify('SISA BELUM TERJUAL: 6.882e+5 MEME dari posisi #1 — rute Kyber rugi 60.8% (batas 15.0%) — $229.44 → $90.01', {
+      kind: 'leftover_stuck', positionId: 1, token: MEME, label: '6.882e+5 MEME', why: 'rute Kyber rugi 60.8% (batas 15.0%) — $229.44 → $90.01',
+      tries: 1, next: Date.now() + 5000, retrySec: 5, usdIn: 229.44, usdOut: 90.01, lossBps: 6080, maxLossBps: 1500,
+    });
+    w.engine.notify('SISA BELUM TERJUAL: 6.882e+5 MEME dari posisi #1 — rute tidak ada', {
+      kind: 'leftover_stuck', positionId: 1, token: MEME, label: '6.882e+5 MEME', why: 'rute tidak ada', tries: 4321, retrySec: 5,
+      reminder: true, since: Date.now() - 6 * 3600_000,
+    });
+    await new Promise((r) => setTimeout(r, 1300));
+    const kartu = outs(w.sent).filter((x) => /SISA BELUM TERJUAL/.test(x.params.text));
+    assert.strictEqual(kartu.length, 2, 'dua kartu alarm harus terkirim');
+    const [a, b] = kartu.map((x) => x.params.text);
+    assert.match(a, /🚨/);
+    assert.match(a, /6\.882e\+5 MEME/);
+    assert.match(a, /60,8%/);
+    assert.match(a, /15,0%/);
+    assert.match(a, /\$229,44/);
+    assert.match(a, /\$90,01/);
+    assert.match(a, /tiap 5 dtk/);
+    assert.match(a, /sudah dicoba\s+1×/);
+    assert.match(b, /rute tidak ada/);
+    assert.match(b, /sejak/);
+    const tombol = JSON.stringify(kartu[0].params.reply_markup || {});
+    for (const cb of ['"fr"', '"sw"', '"f"', '"r"']) assert.ok(tombol.includes(cb), `tombol ${cb} harus ada`);
+    w.bot.stop();
+  });
+
   await t('kabar tanpa detail atau posisi yang tak dikenal tetap terkirim sebagai teks', async () => {
     const w = build();
     await w.bot.start();
@@ -740,12 +770,13 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     w.bot.stop();
   });
 
-  await t('jadwal coba-ulang sisa ditulis sebagai waktu yang akan datang', async () => {
+  await t('antrean sisa menyebut berapa kali sudah dicoba dan sejak kapan', async () => {
     const w = build();
     await w.bot.handle(cbq('f'));
     const teks = lastOut(w.sent).params.text;
-    assert.match(teks, /coba lagi \d+ mnt lagi/, `teks jadwal salah:\n${teks}`);
-    assert.ok(!/0 dtk/.test(teks), 'waktu masa depan tidak boleh jadi "0 dtk"');
+    assert.match(teks, /dicoba 2×/, `teks antrean salah:\n${teks}`);
+    assert.match(teks, /sejak \d+ (dtk|mnt) lalu/, `waktu mulai tersangkut harus tampil:\n${teks}`);
+    assert.match(teks, /rugi rute rugi 18%|rute rugi 18%/);
   });
 
   await t('banjir log tidak menumpuk antrean tanpa batas', async () => {

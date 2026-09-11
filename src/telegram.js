@@ -270,6 +270,8 @@ const RULE_GROUPS = [
       F.num('max_age_hours', 'Tutup setelah (jam)', { hi: 100000, help: '0 = mati.' }),
       F.bool('sell_leftover', 'Jual otomatis memecoin sisa'),
       F.bps('sell_max_loss_bps', 'Batas rugi saat menjual sisa', { when: (r) => r.exit.sell_leftover }),
+      F.int('leftover_retry_sec', 'Cek ulang sisa tiap (detik)', { lo: 1, hi: 3600, when: (r) => r.exit.sell_leftover,
+        help: 'Satu kutipan Kyber per token per interval; dijual begitu ruginya di bawah batas. Terlalu rapat bisa kena batas laju Kyber.' }),
     ],
   },
   {
@@ -1082,6 +1084,7 @@ class Telegram {
     if (detail.kind === 'entry') return this.kartuMasuk(detail, p);
     if (detail.kind === 'exit') return this.kartuKeluar(detail, p);
     if (detail.kind === 'leftover') return this.kartuSisa(detail, p);
+    if (detail.kind === 'leftover_stuck') return this.kartuSisaMacet(detail, p);
     return [`🔔 <b>${esc(msg)}</b>`, null];
   }
 
@@ -1183,6 +1186,38 @@ class Telegram {
       this.txBaris(d.txHash),
     ];
     return [cut(L.filter((x) => x != null).join('\n')), kb([[btn('🧹 Sisa jual', 'f'), btn('💵 Saldo', 'b')], [BACK_HOME]])];
+  }
+
+  // Memecoin sisa yang DITOLAK dijual: uangnya tersangkut di wallet sampai rutenya
+  // membaik atau pengguna turun tangan. Sengaja mencolok — ini satu-satunya kabar
+  // yang butuh keputusan orang, bukan sekadar laporan.
+  kartuSisaMacet(d, p) {
+    const pair = p ? `${p.symbol0}/${p.symbol1}` : `posisi #${d.positionId}`;
+    const rugi = d.lossBps != null ? `${nf(d.lossBps / 100, 1)}%` : null;
+    const batas = d.maxLossBps != null ? `${nf(d.maxLossBps / 100, 1)}%` : null;
+    const L = [
+      `🚨🚨 <b>SISA BELUM TERJUAL</b> · ${this.modeTag()}`,
+      `<b>${esc(pair)}</b> · posisi #${esc(d.positionId)}`,
+      '',
+      `⚠️ <b>${esc(d.label || '?')}</b> masih tersangkut di wallet${d.reminder && d.since ? ` sejak ${esc(ago(d.since))}` : ''}.`,
+      rugi ? `Bot menolak menjual: rutenya rugi <b>${rugi}</b>${batas ? ` (batas ${batas})` : ''}.` : `Bot belum bisa menjual: <i>${esc(d.why || '?')}</i>`,
+      '',
+      angka([
+        ['nilai token', usd(d.usdIn)],
+        ['bisa ditarik', usd(d.usdOut)],
+        ['rugi rute', rugi],
+        ['batas aturan', batas],
+        ['sudah dicoba', d.tries ? `${num(d.tries)}×` : null],
+      ]),
+      `🔁 Dikutip ulang <b>tiap ${esc(String(d.retrySec || 5))} dtk</b> — begitu ruginya turun ke bawah batas, langsung dijual.`,
+      '',
+      '<b>Pilihan:</b> tunggu likuiditas pulih, jual bertahap lewat Swap (porsi kecil = dampak harga kecil), atau naikkan batas rugi di Aturan → Keluar posisi.',
+    ];
+    return [cut(L.filter((x) => x != null).join('\n')), kb([
+      [btn('🔁 Coba jual sekarang', 'fr'), btn('🔁 Swap manual', 'sw')],
+      [btn('🧹 Antrean sisa', 'f'), btn('⚙️ Aturan', 'r')],
+      [BACK_HOME],
+    ])];
   }
 
   // ---- layar ---------------------------------------------------------------
@@ -1713,11 +1748,11 @@ class Telegram {
     if (!d.leftovers.length) L.push('Kosong — tidak ada sisa yang menunggu dijual.');
     for (const it of d.leftovers) {
       L.push(`• posisi #${it.posId} · <code>${esc(it.symbol || shortA(it.token))}</code>`);
-      L.push(`  percobaan ke-${it.tries || 0}${it.next ? ` · coba lagi ${esc(nanti(it.next))}` : ''}`);
+      L.push(`  dicoba ${num(it.tries || 0)}×${it.since ? ` sejak ${esc(ago(it.since))}` : ''}${it.lastLossBps != null ? ` · rugi kini ${nf(it.lastLossBps / 100, 1)}%` : ''}`);
       if (it.why) L.push(`  <i>${esc(it.why)}</i>`);
     }
     L.push('');
-    L.push('<i>Sisa muncul kalau memecoin hasil menutup posisi belum bisa dijual (rute rugi terlalu besar atau harga bergerak). Bot mencobanya lagi otomatis sampai 8 kali.</i>');
+    L.push('<i>Sisa muncul kalau memecoin hasil menutup posisi belum bisa dijual (rute rugi terlalu besar). Bot mengutip ulang tiap beberapa detik dan menjual begitu lolos batas.</i>');
     return [L.join('\n'), kb([
       d.leftovers.length ? [btn('🔁 Coba jual sekarang', 'fr')] : null,
       ...d.leftovers.map((it) => [btn(`🗑 Keluarkan #${it.posId} ${it.symbol || ''}`.slice(0, 38), `fd:${it.posId}:${it.token}`)]),

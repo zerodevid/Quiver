@@ -11,6 +11,7 @@ import { short } from './fmt';
 import { useI18n, LOCALES } from './i18n';
 import { QuiverMark } from './components/Logo';
 import { AlertBell, useTargetAlerts } from './components/TargetAlerts';
+import StuckAlert from './components/StuckAlert';
 
 import { Loading, ConfirmHost } from './components/ui';
 
@@ -197,6 +198,7 @@ export default function App() {
             </div>
           )}
 
+          <StuckAlert />
           <main className="mx-auto w-full max-w-[90rem] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
             <Suspense fallback={<Loading />}><Page key={page + (param || '')} param={param} /></Suspense>
           </main>

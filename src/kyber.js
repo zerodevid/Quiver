@@ -124,7 +124,11 @@ class Kyber {
 
     const loss = Kyber.lossBps(q);
     if (maxLossBps != null && loss != null && loss > maxLossBps) {
-      throw new Error(`rute Kyber rugi ${(loss / 100).toFixed(1)}% (batas ${(maxLossBps / 100).toFixed(1)}%) — $${q.usdIn?.toFixed(2)} → $${q.usdOut?.toFixed(2)}`);
+      const e = new Error(`rute Kyber rugi ${(loss / 100).toFixed(1)}% (batas ${(maxLossBps / 100).toFixed(1)}%) — $${q.usdIn?.toFixed(2)} → $${q.usdOut?.toFixed(2)}`);
+      // Angkanya ikut dibawa supaya peringatan "sisa belum terjual" bisa menampilkan
+      // nilai token vs yang bisa ditarik tanpa mengurai teks galat.
+      e.loss = { lossBps: loss, maxLossBps, usdIn: q.usdIn ?? null, usdOut: q.usdOut ?? null, dex: q.dex || null };
+      throw e;
     }
 
     // ---- pengaman ----

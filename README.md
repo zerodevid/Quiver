@@ -282,7 +282,7 @@ Both tiers respect `max_slippage_bps` and `max_price_impact_bps`; a swap that wo
 
 - `follow_target` / `follow_partial` — close (or partially close) when the target does.
 - `out_of_range_minutes`, `stop_loss_pct`, `take_profit_pct`, `max_age_hours` — independent triggers (`0` = disabled).
-- `sell_max_loss_bps` — bound on route loss when liquidating leftover memecoins.
+- `sell_max_loss_bps` — bound on route loss when liquidating leftover memecoins. A leftover the route refuses is never dropped: it is re-quoted every `leftover_retry_sec` seconds (default 5, one Kyber quote per token per tick) and sold the moment it clears the bound. A loud alert (red banner + alarm on the dashboard, 🚨 Telegram card) fires on the first refusal and every 6 h it stays stuck.
 
 ### Filters (`rules.filters`)
 

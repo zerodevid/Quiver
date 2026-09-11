@@ -238,15 +238,68 @@ async function t(name, fn) {
     assert.ok(q[0].next > Date.now(), 'harus dijadwalkan ulang');
   });
 
-  await t('antrean jual berhenti setelah 8 kali gagal, tidak selamanya', async () => {
+  await t('antrean jual tidak pernah menyerah: item tetap ada, dijadwalkan ulang tiap beberapa detik', async () => {
     const { eng, store } = harness({ balances: { ...RICH } });
     eng.kyber.swap = async () => { throw new Error('rute tidak ada'); };
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < 20; i++) {
       const q = JSON.parse(store.getState('leftovers', '[]'));
       const item = q[0] || { posId: 1, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0 };
       await eng.sellToken(item).catch(() => {});
     }
-    assert.strictEqual(JSON.parse(store.getState('leftovers', '[]')).length, 0, 'harus berhenti mengantre');
+    const q = JSON.parse(store.getState('leftovers', '[]'));
+    assert.strictEqual(q.length, 1, 'item harus tetap tersimpan — uangnya masih tersangkut');
+    assert.strictEqual(q[0].tries, 20);
+    assert.ok(q[0].since > 0, 'waktu mulai tersangkut dicatat');
+    assert.ok(q[0].next - Date.now() <= 5000 + 50 && q[0].next > Date.now(), 'dijadwalkan tiap 5 detik (bawaan), bukan menit');
+  });
+
+  await t('pemburu sisa: tiap tick cuma MENGUTIP; swap sungguhan hanya saat rugi sudah di bawah batas', async () => {
+    const { eng, store } = harness({ balances: { ...RICH } });
+    let usdOut = 40, quotes = 0, swaps = 0;
+    eng.kyber.quote = async () => { quotes++; return { usdIn: 100, usdOut, amountOut: 1n, dex: 'uji', routeSummary: {} }; };
+    eng.kyber.swap = async () => { swaps++; return { hash: '0xjual', amountOut: 1n, quote: { usdIn: 100, usdOut, dex: 'uji' } }; };
+    eng.saveLeftovers([{ posId: 1, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0, next: 0 }]);
+    await eng.retryLeftovers();
+    assert.strictEqual(quotes, 1, 'satu kutipan');
+    assert.strictEqual(swaps, 0, 'rugi 60% > 15%: jangan swap');
+    let q = JSON.parse(store.getState('leftovers', '[]'));
+    assert.strictEqual(q.length, 1);
+    assert.strictEqual(q[0].lastLossBps, 6000, 'kutipan terakhir disimpan untuk dasbor');
+    assert.match(q[0].why, /rugi 60\.0%/);
+    // Jadwal belum tiba -> tick berikutnya tidak mengutip lagi.
+    await eng.retryLeftovers();
+    assert.strictEqual(quotes, 1, 'belum jadwalnya: tidak ada kutipan baru');
+    // Likuiditas membaik: rugi 10% -> langsung dijual dan antrean kosong.
+    usdOut = 90;
+    eng.saveLeftovers(q.map((x) => ({ ...x, next: 0 })));
+    await eng.retryLeftovers();
+    assert.strictEqual(swaps, 1, 'rugi sudah di bawah batas: swap dikirim');
+    assert.strictEqual(JSON.parse(store.getState('leftovers', '[]')).length, 0, 'terjual: keluar dari antrean');
+  });
+
+  await t('sisa yang ditolak dijual dikabarkan KERAS sekali di awal, lalu diingatkan tiap 6 jam — bukan tiap tick', async () => {
+    const { eng, store } = harness({ balances: { ...RICH } });
+    const kabar = [];
+    eng.notify = (msg, d) => kabar.push(d);
+    eng.kyber.quote = async () => ({ usdIn: 229.44, usdOut: 90.01, amountOut: 1n, dex: 'uji', routeSummary: {} });
+    eng.saveLeftovers([{ posId: 9, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0, next: 0 }]);
+    for (let i = 0; i < 30; i++) {
+      eng.saveLeftovers(eng.leftovers().map((x) => ({ ...x, next: 0 })));
+      await eng.retryLeftovers();
+    }
+    let macet = kabar.filter((d) => d?.kind === 'leftover_stuck');
+    assert.strictEqual(macet.length, 1, 'hanya satu kabar untuk 30 kegagalan beruntun');
+    assert.strictEqual(macet[0].tries, 1);
+    assert.ok(Math.abs(macet[0].lossBps - 6077) < 1, String(macet[0].lossBps));
+    assert.strictEqual(macet[0].maxLossBps, 1500);
+    assert.strictEqual(macet[0].retrySec, 5);
+    assert.ok(/60\.8%/.test(macet[0].why), macet[0].why);
+    // Enam jam kemudian masih tersangkut -> pengingat.
+    eng.saveLeftovers(eng.leftovers().map((x) => ({ ...x, next: 0, alertedAt: Date.now() - 7 * 3600_000 })));
+    await eng.retryLeftovers();
+    macet = kabar.filter((d) => d?.kind === 'leftover_stuck');
+    assert.strictEqual(macet.length, 2, 'pengingat setelah 6 jam');
+    assert.strictEqual(macet[1].reminder, true);
   });
 
   await t('posisi satu sisi (rentang di atas harga) tetap disalin sebagai limit order', async () => {

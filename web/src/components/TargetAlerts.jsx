@@ -62,9 +62,28 @@ export function chime() {
   }
 }
 
+// Alarm: tiga nada persegi menurun, lebih kasar dan lebih lama dari chime — untuk
+// hal yang butuh tindakan (uang tersangkut), bukan sekadar kabar.
+export function alarm() {
+  const c = audio();
+  if (!c) return;
+  const now = c.currentTime;
+  for (const [freq, dt] of [[1046.5, 0], [783.99, 0.18], [523.25, 0.36], [1046.5, 0.7], [783.99, 0.88], [523.25, 1.06]]) {
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = 'square';
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, now + dt);
+    g.gain.exponentialRampToValueAtTime(0.12, now + dt + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dt + 0.17);
+    o.connect(g).connect(c.destination);
+    o.start(now + dt);
+    o.stop(now + dt + 0.18);
+  }
+}
+
 // ---- judul tab: "(3) Quiver" selama tab tidak dilihat ----------------------
 let unseen = 0, baseTitle = null;
-function bumpTitle(n) {
+export function bumpTitle(n) {
   if (!document.hidden) return;
   if (!unseen) baseTitle = document.title;
   unseen += n;
@@ -76,7 +95,7 @@ if (typeof document !== 'undefined') {
   });
 }
 
-const canDesktop = () => typeof Notification !== 'undefined' && window.isSecureContext;
+export const canDesktop = () => typeof Notification !== 'undefined' && window.isSecureContext;
 
 // ---- menampilkan satu kelompok peringatan ----------------------------------
 const who = (it) => it.targetLabel || short(it.target);
