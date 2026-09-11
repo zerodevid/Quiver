@@ -78,6 +78,7 @@ const tok = (n, d = 6) => {
 function ago(ts) {
   if (!ts) return '—';
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 5) return 'baru saja';
   if (s < 60) return `${s} dtk lalu`;
   if (s < 3600) return `${Math.round(s / 60)} mnt lalu`;
   if (s < 86400) return `${Math.round(s / 3600)} jam lalu`;
@@ -186,6 +187,17 @@ function rentang(p) {
   };
 }
 const cut = (s, n = 3800) => (s.length <= n ? s : s.slice(0, n) + '\n…(dipotong)');
+
+// Baris log yang didorong ke chat. Pesan mesin umumnya berbentuk "konteks: rincian"
+// (mis. "eksekusi masuk: saldo kurang"); konteksnya dijadikan judul supaya sekali
+// lirik sudah jelas bagian mana yang bermasalah, rinciannya di baris sendiri.
+function logBaris(level, msg) {
+  const [icon, jenis] = { error: ['⛔', 'Galat'], warn: ['⚠️', 'Peringatan'], info: ['ℹ️', 'Info'] }[level] || ['•', level];
+  const m = /^([^:\n]{2,40}):\s+([\s\S]+)$/.exec(String(msg ?? ''));
+  const judul = m ? `${jenis} · ${m[1]}` : jenis;
+  const isi = m ? m[2] : String(msg ?? '');
+  return cut(`${icon} <b>${esc(judul)}</b>\n${esc(isi)}`);
+}
 
 // ---- papan tombol ---------------------------------------------------------
 const btn = (text, data) => ({ text, callback_data: data });
@@ -452,18 +464,18 @@ class Telegram {
   }
 
   // Kabar keluar diantre: Telegram menolak lebih dari ~1 pesan/detik per chat.
-  push(text) {
+  push(text, keyboard = null) {
     if (!this.token() || !this.chats().length) return;
     if (this.queue.length > 40) return;              // banjir log: jangan menumpuk
-    this.queue.push(text);
+    this.queue.push({ text, keyboard });
     if (!this.sending) this.drain();
   }
   async drain() {
     this.sending = true;
     while (this.queue.length && !this.stopped) {
-      const text = this.queue.shift();
+      const { text, keyboard } = this.queue.shift();
       for (const c of this.chats()) {
-        try { await this.send(c, text); } catch (e) { this.log(`telegram kirim: ${e.message}`); }
+        try { await this.send(c, text, keyboard); } catch (e) { this.log(`telegram kirim: ${e.message}`); }
       }
       await sleep(1100);
     }
@@ -528,22 +540,27 @@ class Telegram {
     if (this.wired) return;
     this.wired = true;
     const prevNotify = this.engine.onNotify;
-    this.engine.onNotify = (msg) => {
-      if (prevNotify) prevNotify(msg);
+    this.engine.onNotify = (msg, detail) => {
+      if (prevNotify) prevNotify(msg, detail);
       // engine.notify() juga menulis baris log 'info' dengan teks yang sama. Kalau
       // pengiriman baris info sedang dinyalakan, kabar yang sama akan datang dua
       // kali — yang ini dicatat supaya penyaring log di bawah melewatinya.
       this.lastNotify = msg;
-      if (this.notifCfg().penting) this.push(`🔔 <b>${esc(msg)}</b>`);
+      if (!this.notifCfg().penting) return;
+      if (!detail?.kind) return this.push(`🔔 <b>${esc(msg)}</b>`);
+      // Kabar berdetail disusun jadi kartu (butuh baca API, jadi asinkron). Kalau
+      // penyusunannya gagal, teks polosnya tetap terkirim — kabar tidak boleh hilang.
+      this.kartu(msg, detail)
+        .catch((e) => { this.log(`telegram kartu: ${e.message}`); return [`🔔 <b>${esc(msg)}</b>`, null]; })
+        .then(([text, keyboard]) => this.push(text, keyboard));
     };
     const prevLog = this.store.onLog;
     this.store.onLog = (level, msg) => {
       if (prevLog) prevLog(level, msg);
       const n = this.notifCfg();
-      const icon = { error: '⛔', warn: '⚠️', info: 'ℹ️' }[level];
-      if (level === 'error' && n.error) this.push(`${icon} ${esc(msg)}`);
-      else if (level === 'warn' && n.warn) this.push(`${icon} ${esc(msg)}`);
-      else if (level === 'info' && n.info && msg !== this.lastNotify) this.push(`${icon} ${esc(msg)}`);
+      if (level === 'error' && n.error) this.push(logBaris(level, msg));
+      else if (level === 'warn' && n.warn) this.push(logBaris(level, msg));
+      else if (level === 'info' && n.info && msg !== this.lastNotify) this.push(logBaris(level, msg));
     };
   }
   stop() { this.stopped = true; this.gen++; try { this.ac?.abort(); } catch { /* abaikan */ } }
@@ -1039,23 +1056,165 @@ class Telegram {
     await this.api('POST', '/api/targets/rules', { address: cur.scope, rules: Object.keys(raw).length ? raw : null });
   }
 
-  // ---- layar ---------------------------------------------------------------
-  async home() {
-    const o = await this.api('GET', '/api/overview');
-    const mode = o.mode.dry_run ? '🧪 SIMULASI' : '🟢 LIVE';
-    const jeda = o.mode.paused ? ' · ⏸ dijeda' : '';
-    const s = o.summary;
-    const text = [
-      `<b>Quiver</b> — ${mode}${jeda}`,
-      `Wallet: <code>${esc(shortA(o.mode.wallet))}</code>`,
+  // ---- kabar penting (notifikasi terdorong) ----------------------------------
+  // Satu kartu per kejadian yang memindahkan dana. Angkanya dibaca ulang lewat API
+  // yang sama dengan dasbor supaya kartu dan layar tidak pernah berbeda pendapat.
+  async kartu(msg, detail) {
+    if (!detail || !detail.kind) return [`🔔 <b>${esc(msg)}</b>`, null];
+    let p = null;
+    if (detail.positionId != null) {
+      try { p = (await this.api('GET', '/api/position', null, { id: detail.positionId })).position || null; }
+      catch { p = null; }
+    }
+    if (detail.kind === 'entry') return this.kartuMasuk(detail, p);
+    if (detail.kind === 'exit') return this.kartuKeluar(detail, p);
+    if (detail.kind === 'leftover') return this.kartuSisa(detail, p);
+    return [`🔔 <b>${esc(msg)}</b>`, null];
+  }
+
+  // Baris "cermin dari": nama target kalau ada, alamat pendek, dan NFT yang diikuti.
+  targetBaris(detail, p) {
+    const addr = detail.target || p?.target;
+    if (!addr) return null;
+    const nama = p?.targetLabel;
+    const nft = detail.mirrorOf ?? p?.mirror_of;
+    return `${nama ? `<b>${esc(nama)}</b> ` : ''}<code>${esc(shortA(addr))}</code>${nft ? ` · NFT #${esc(nft)}` : ''}`;
+  }
+  txBaris(hash) { return hash ? `🔗 <code>${esc(shortH(hash))}</code>` : null; }
+  modeTag() { return this.engine.dryRun() ? '🧪 SIMULASI' : '🟢 LIVE'; }
+
+  kartuMasuk(d, p) {
+    const pair = p ? `${p.symbol0}/${p.symbol1}` : (d.pair || '?');
+    const venue = p?.venue ? esc(p.venue) : null;
+    const fee = p?.fee != null ? `fee ${trimZ(nf(p.fee / 10000, 2))}%` : null;
+    const nilai = d.valueUsd ?? p?.costUsd;
+    const L = [
+      `${d.adding ? '➕ <b>LP DITAMBAH</b>' : '🟢 <b>LP DISALIN</b>'} · ${this.modeTag()}`,
+      `<b>${esc(pair)}</b>${[venue, fee].filter(Boolean).map((x) => ` · ${x}`).join('')}`,
       '',
-      `💼 ${s.openCount} posisi terbuka · ${usd(s.exposureUsd)} · fee ${usd(s.feeUsd)}`,
-      `📈 Belum terealisasi ${sgn(s.unrealizedUsd)} · terealisasi ${sgn(s.realizedUsd)}`,
-      `🔗 Blok ${num(o.chain.head)} · tertinggal ${num(o.chain.lag)}`,
+      `💰 ${d.adding ? 'Ditambah' : 'Modal masuk'} <b>${usd(nilai)}</b>${d.adding && p?.costUsd != null ? ` · total modal ${usd(p.costUsd)}` : ''}`,
+    ];
+    // Rentang: posisi baru belum tersinkron, jadi harga kini diambil dari tick pool
+    // saat mint yang dibawa mesin — tanpa itu batangnya tidak bertitik.
+    const r = p ? rentang({ ...p, curTick: p.curTick ?? d.curTick ?? null }) : null;
+    if (r) {
+      L.push('');
+      L.push(`<b>${esc(r.judul)}</b>`);
+      L.push(r.bar);
+      L.push(r.kini ? `${esc(r.kini)}${r.ket ? ` — ${esc(r.ket)}` : ''}` : null);
+    }
+    const jejak = [
+      ['🎯', this.targetBaris(d, p)],
+      ['📝', d.reason ? esc(d.reason) : null],
+      ['⚙️', d.steps?.length ? esc(d.steps.join(' · ')) : null],
+      [null, this.txBaris(d.txHash)],
+    ].filter(([, v]) => v).map(([ic, v]) => (ic ? `${ic} ${v}` : v));
+    if (jejak.length) { L.push(''); L.push(...jejak); }
+    L.push(`<i>posisi #${esc(d.positionId)}${p?.token_id ? ` · NFT #${esc(p.token_id)}` : ''}</i>`);
+    return [cut(L.filter((x) => x != null).join('\n')), kb([
+      [btn('💼 Lihat posisi', `p:${d.positionId}`), btn('🔴 Tutup', `pc:${d.positionId}`)],
+      [btn('💼 Semua posisi', 'p'), BACK_HOME],
+    ])];
+  }
+
+  kartuKeluar(d, p) {
+    const pair = p ? `${p.symbol0}/${p.symbol1}` : `posisi #${d.positionId}`;
+    const pnl = p?.pnlUsd;
+    const judul = d.auto ? '🛡 <b>KELUAR MANDIRI</b>' : d.full ? '🔴 <b>LP DITUTUP</b>' : '➖ <b>LP DIKURANGI</b>';
+    const lama = p?.ageHours > 0 ? ` · dipegang ${esc(dur(p.ageHours * 3600))}` : '';
+    const L = [
+      `${judul} · ${this.modeTag()}`,
+      `<b>${esc(pair)}</b>${p?.token_id ? ` · NFT #${esc(p.token_id)}` : ''}${lama}`,
+      '',
+    ];
+    if (d.full && p?.empty) {
+      // Hasil bersih ditaruh di luar tabel supaya bisa ditebalkan.
+      L.push(`${pnl >= 0 ? '📈 Untung' : '📉 Rugi'} <b>${sgn(pnl)}</b>  ${pct(p.pnlPct)}`);
+      L.push(angka([
+        ['hasil', usd(p.outUsd ?? p.valueUsd)],
+        ['modal', usd(p.costUsd)],
+      ]));
+    } else if (p) {
+      // Tutup sebagian: nilai yang tersisa baru akurat setelah sinkron berikutnya.
+      L.push(angka([['modal awal', usd(p.costUsd)]]));
+    }
+    const jejak = [
+      ['📝', d.reason ? esc(d.reason) : null],
+      ['🧹', d.sold ? esc(d.sold) : null],
+      ['🎯', this.targetBaris(d, p)],
+      [null, this.txBaris(d.txHash)],
+    ].filter(([, v]) => v).map(([ic, v]) => (ic ? `${ic} ${v}` : v));
+    if (jejak.length) { if (L[L.length - 1] !== '') L.push(''); L.push(...jejak); }
+    L.push(`<i>posisi #${esc(d.positionId)}</i>`);
+    const rows = d.full
+      ? [[btn('💼 Posisi', 'p'), btn('💵 Saldo', 'b')], [btn('📜 Aktivitas', 'a:0'), BACK_HOME]]
+      : [[btn('💼 Lihat posisi', `p:${d.positionId}`), btn('💵 Saldo', 'b')], [BACK_HOME]];
+    return [cut(L.filter((x) => x != null).join('\n')), kb(rows)];
+  }
+
+  kartuSisa(d, p) {
+    const pair = p ? `${p.symbol0}/${p.symbol1}` : `posisi #${d.positionId}`;
+    const selisih = d.usdIn > 0 && d.usdOut != null ? ((d.usdOut - d.usdIn) / d.usdIn) * 100 : null;
+    const L = [
+      `🧹 <b>SISA TERJUAL</b> · ${this.modeTag()}`,
+      `<b>${esc(pair)}</b> · posisi #${esc(d.positionId)}`,
+      '',
+      `💰 Diterima <b>${usd(d.usdOut)}</b> dari ${esc(d.label || '?')}`,
+      angka([
+        ['nilai token', usd(d.usdIn)],
+        ['diterima', usd(d.usdOut)],
+        ['selisih', selisih != null ? pct(selisih) : null],
+        ['lewat', d.dex || null],
+        ['percobaan', d.tries ? `ke-${d.tries + 1}` : null],
+      ]),
+      this.txBaris(d.txHash),
+    ];
+    return [cut(L.filter((x) => x != null).join('\n')), kb([[btn('🧹 Sisa jual', 'f'), btn('💵 Saldo', 'b')], [BACK_HOME]])];
+  }
+
+  // ---- layar ---------------------------------------------------------------
+  // Kesehatan mesin dalam satu baris: yang pertama bermasalah yang disebut, supaya
+  // tidak perlu membaca tabel pemantauan untuk tahu apakah bot baik-baik saja.
+  kesehatan(o) {
+    const macet = o.lastSync && Date.now() - o.lastSync > 3 * 60_000;
+    const rpcIstirahat = (o.rpc || []).filter((r) => r.cooling).length;
+    if (o.mode.paused) return '⏸ <b>Dijeda</b> — aksi target tidak disalin';
+    if (o.chain.lag > 30) return `⚠️ <b>Tertinggal ${num(o.chain.lag)} blok</b> — aksi target terlambat terbaca`;
+    if (macet) return `⚠️ <b>Sinkron posisi macet</b> — terakhir ${esc(ago(o.lastSync))}`;
+    if (rpcIstirahat) return `⚠️ <b>${rpcIstirahat} RPC istirahat</b> — memakai cadangan`;
+    return `✅ Sehat · blok ${num(o.chain.head)}${o.chain.lag ? ` · tertinggal ${num(o.chain.lag)}` : ''}`;
+  }
+
+  // Portofolio 24 jam: nilai sekarang dan perubahan PnL dibanding titik terakhir
+  // sebelum jendela — rumus yang sama dengan grafik PnL di dasbor.
+  async porto24() {
+    try {
+      const p = await this.api('GET', '/api/portfolio', null, { range: '24h' });
+      const pts = (p.series || []).filter((e) => e.pnl != null);
+      const awal = p.baseline?.pnl ?? pts[0]?.pnl;
+      // Satu titik saja (cuma titik "sekarang") berarti belum ada riwayat: selisihnya
+      // pasti nol dan menyesatkan, jadi tidak ditampilkan.
+      const ada = p.baseline?.pnl != null ? pts.length >= 1 : pts.length >= 2;
+      return { ...p, delta24: ada ? pts[pts.length - 1].pnl - awal : null };
+    } catch { return null; }
+  }
+
+  async home() {
+    const [o, pf] = await Promise.all([this.api('GET', '/api/overview'), this.porto24()]);
+    const mode = o.mode.dry_run ? '🧪 SIMULASI' : '🟢 LIVE';
+    const s = o.summary;
+    const pnl = s.realizedUsd + s.unrealizedUsd;
+    const text = [
+      `<b>Quiver</b> · ${mode}`,
+      `<code>${esc(shortA(o.mode.wallet))}</code>`,
+      this.kesehatan(o),
+      '',
+      pf?.now?.cash ? `💰 Portofolio <b>${usd(pf.now.value)}</b>` : null,
+      `📈 PnL <b>${sgn(pnl)}</b>${pf?.delta24 != null ? ` · 24 jam ${sgn(pf.delta24)}` : ''}`,
+      `💼 ${s.openCount} posisi · ${usd(s.exposureUsd)}${s.openCount ? ` · ${s.inRange}/${s.openCount} in-range` : ''}`,
       '',
       '💡 <i>Tempel alamat token untuk langsung pasang LP.</i>',
-      'Pilih menu:',
-    ].join('\n');
+    ].filter((x) => x != null).join('\n');
     return [text, kb([
       [btn('📊 Ringkasan', 'o'), btn('💼 Posisi', 'p')],
       [btn('🎯 Target', 't'), btn('📜 Aktivitas', 'a:0')],
@@ -1069,46 +1228,92 @@ class Telegram {
   }
 
   async overview() {
-    const o = await this.api('GET', '/api/overview');
-    const s = o.summary, t = o.totals;
+    const [o, pf, pos] = await Promise.all([
+      this.api('GET', '/api/overview'), this.porto24(),
+      this.api('GET', '/api/positions').catch(() => ({ positions: [] })),
+    ]);
+    const s = o.summary, t = o.totals, now = pf?.now, st = pf?.stats;
+    const pnl = s.realizedUsd + s.unrealizedUsd;
+    const pnlPct = now?.capital > 0 ? (pnl / now.capital) * 100 : null;
     const L = [
-      '<b>📊 Ringkasan</b>',
-      `Mode: <b>${o.mode.dry_run ? '🧪 SIMULASI' : '🟢 LIVE'}</b>${o.mode.paused ? ' · ⏸ <b>dijeda</b>' : ''}`,
-      `<code>${esc(o.mode.wallet || '(belum ada wallet)')}</code>`,
+      `📊 <b>Ringkasan</b> · ${o.mode.dry_run ? '🧪 SIMULASI' : '🟢 LIVE'}`,
+      `<code>${esc(shortA(o.mode.wallet))}</code> · sinkron ${esc(ago(o.lastSync))}`,
+      this.kesehatan(o),
       '',
-      '<b>Posisi</b>',
-      angka([
-        ['terbuka', `${s.openCount}${s.openCount ? ` · ${s.inRange} in-range` : ''}`],
-        ['nilai', usd(s.exposureUsd)],
-        ['modal', usd(s.costUsd)],
-        ['fee belum diklaim', usd(s.feeUsd)],
-        ['belum terealisasi', sgn(s.unrealizedUsd)],
-        ['sudah terealisasi', sgn(s.realizedUsd)],
-      ]),
-      '<b>Pemantauan</b>',
-      angka([
-        ['aksi target terpantau', num(t.actions)],
-        ['disalin', num(t.copied)],
-        ['dilewat', num(t.skipped)],
-        ['galat', num(t.errors)],
-        ['blok kepala', num(o.chain.head)],
-        ['tertinggal', `${num(o.chain.lag)} blok`],
-        ['harga ETH', usd(o.chain.ethUsd, 0)],
-        ['sudah jalan', dur(o.stats.uptimeSec)],
-        ['sinkron terakhir', ago(o.lastSync)],
-      ]),
     ];
+
+    // 1. Uang: angka terbesar di atas, tebal; rinciannya di tabel yang lurus.
+    if (now?.cash) L.push(`💰 Portofolio <b>${usd(now.value)}</b>`);
+    L.push(`${pnl >= 0 ? '📈' : '📉'} PnL <b>${sgn(pnl)}</b>${pnlPct != null ? ` ${pct(pnlPct)}` : ''}${pf?.delta24 != null ? ` · 24 jam ${sgn(pf.delta24)}` : ''}`);
+    L.push(angka([
+      ['kas wallet', now?.cash ? usd(now.cash.usd) : null],
+      ['dalam posisi', usd(s.exposureUsd)],
+      ['fee belum diklaim', usd(s.feeUsd)],
+      ['modal posisi', usd(s.costUsd)],
+      ['belum terealisasi', sgn(s.unrealizedUsd)],
+      ['sudah terealisasi', sgn(s.realizedUsd)],
+    ]));
+
+    // 2. Posisi terbuka, terbesar dulu.
+    const open = (pos.positions || []).filter((p) => !p.empty).sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
+    L.push('');
+    L.push(`<b>💼 Posisi terbuka · ${open.length}</b>${open.length ? `  🟢 ${s.inRange} in · 🟡 ${open.length - s.inRange} luar` : ''}`);
+    if (open.length) {
+      L.push(kolom(open.slice(0, 6).map((p) => [
+        `${p.symbol0}/${p.symbol1}`.slice(0, 14), usd(p.valueUsd), sgn(p.pnlUsd), p.inRange ? 'in' : 'luar',
+      ]), 'lrrl'));
+      if (open.length > 6) L.push(`<i>+${open.length - 6} posisi lainnya</i>`);
+    } else L.push('<i>Belum ada posisi terbuka.</i>');
+
+    // 3. Rekam jejak posisi yang sudah ditutup.
+    if (st?.closedCount) {
+      L.push('');
+      L.push(`<b>🏆 Rekam jejak · ${num(st.closedCount)} ditutup</b>`);
+      L.push(angka([
+        ['menang / kalah', `${st.wins} / ${st.losses}`],
+        ['win rate', pct(st.winRatePct, 0).replace('+', '')],
+        ['rata-rata', sgn(st.avgPnl)],
+        ['terbaik', sgn(st.best)],
+        ['terburuk', sgn(st.worst)],
+        ['rata-rata dipegang', st.avgHoldHours != null ? dur(st.avgHoldHours * 3600) : null],
+      ]));
+    }
+
+    // 4. Per sumber: target mana yang menghasilkan.
+    const src = (pf?.byTarget || []).filter((g) => g.open || g.closed).slice(0, 5);
+    if (src.length) {
+      L.push('');
+      L.push('<b>🎯 Per sumber</b>');
+      L.push(kolom(src.map((g) => [
+        (g.label || (g.target ? shortA(g.target) : 'manual')).slice(0, 14),
+        `${g.open} buka`, sgn(g.realized + g.upnl),
+      ]), 'lrr'));
+    }
+
+    // 5. Mesin penyalin.
+    L.push('');
+    L.push('<b>🛰 Penyalinan</b>');
+    L.push(angka([
+      ['aksi target terpantau', num(t.actions)],
+      [o.mode.dry_run ? 'akan disalin (simulasi)' : 'disalin', num(o.mode.dry_run ? t.would : t.copied)],
+      ['dilewat', num(t.skipped)],
+      ['galat', t.errors ? num(t.errors) : null],
+    ]));
     if (o.skipReasons?.length) {
-      L.push('<b>Alasan terbanyak dilewat</b>');
-      L.push(kolom(o.skipReasons.slice(0, 5).map((r) => [`${r.n}×`, r.reason]), 'r'));
+      L.push('<i>Alasan terbanyak dilewat:</i>');
+      L.push(kolom(o.skipReasons.slice(0, 3).map((r) => [`${r.n}×`, String(r.reason).slice(0, 38)]), 'r'));
     }
     if ((o.rpc || []).some((r) => r.errors)) {
-      L.push('<b>RPC</b>');
-      L.push(kolom(o.rpc.map((r) => [hostOf(r.url), `${num(r.calls)} panggilan`, `${num(r.errors)} galat`, r.cooling ? 'istirahat' : '']), 'lrr'));
+      L.push('<i>RPC bermasalah:</i>');
+      L.push(kolom(o.rpc.filter((r) => r.errors).map((r) => [hostOf(r.url), `${num(r.errors)} galat`, r.cooling ? 'istirahat' : '']), 'lrl'));
     }
-    if (o.stats.lastError) { L.push(''); L.push(`⛔ Galat terakhir: <code>${esc(o.stats.lastError)}</code>`); }
-    return [L.filter((x) => x != null).join('\n'), kb([
-      [btn('💼 Posisi', 'p'), btn('📜 Aktivitas', 'a:0')],
+    L.push('');
+    L.push(`<i>ETH ${usd(o.chain.ethUsd, 0)} · jalan ${esc(dur(o.stats.uptimeSec))}</i>`);
+    if (o.stats.lastError) L.push(`⛔ Galat terakhir: <code>${esc(String(o.stats.lastError).slice(0, 200))}</code>`);
+
+    return [cut(L.filter((x) => x != null).join('\n')), kb([
+      [btn('💼 Posisi', 'p'), btn('🎯 Target', 't')],
+      [btn('📜 Aktivitas', 'a:0'), btn('💵 Saldo', 'b')],
       [btn('🔄 Segarkan', 'o'), BACK_HOME],
     ])];
   }

@@ -276,7 +276,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const id = Number(url.searchParams.get('id'));
       const row = store.get('SELECT * FROM positions WHERE id=?', id);
       if (!row) return { error: 'posisi tidak ditemukan' };
-      const live = engine.positions.live.find((p) => p.id === id);
+      // Baris yang sudah 'closed' di DB adalah kebenaran: hasil sinkron terakhir masih
+      // memuat posisi itu (nilai basi) sampai sinkron berikutnya, ~30 detik setelah tutup.
+      const live = row.status === 'closed' ? null : engine.positions.live.find((p) => p.id === id);
       const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
       const k = row.quote_symbol === 'ETH' || row.quote_symbol === 'WETH' ? engine.ethUsd : 1;
       const costUsd = (row.cost_quote || 0) * k;

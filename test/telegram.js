@@ -88,7 +88,7 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
   const live = [{
     id: 1, venue: 'v4', token_id: '888', pool_ref: '0xpool', token0: ADDR.usdg, token1: MEME,
     fee: 3000, tick_lower: -600, tick_upper: 600, curTick: 0, liquidity: '5000',
-    symbol0: 'USDG', symbol1: 'MEME', target: TARGET, mirror_of: '777', tx_open: '0xcc',
+    symbol0: 'USDG', symbol1: 'MEME', dec0: 6, dec1: 18, quoteSide: 0, target: TARGET, mirror_of: '777', tx_open: '0xcc',
     valueUsd: 205, feeUsd: 1.5, costUsd: 200, pnlUsd: 6.5, pnlPct: 3.25, ilUsd: -1.2,
     inRange: true, ageHours: 1, empty: false,
   }];
@@ -119,7 +119,7 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
     saveLeftovers: () => {}, dropLeftover: () => {}, sellToken: async () => 'terjual',
     executeExit: async () => ({ txHash: '0xee' }),
     rulesFrom: () => rulesFor(cfg.rules, null),
-    notify(msg) { if (this.onNotify) this.onNotify(msg); },
+    notify(msg, detail) { if (this.onNotify) this.onNotify(msg, detail); },
     dibuka: [], ditukar: [],
     executeEntry: async function (plan, act) { this.dibuka.push({ plan, act }); return { txHash: '0xmint', positionId: 9, note: 'USDG/MEME $50,00' }; },
     kyber: {
@@ -558,6 +558,115 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     w.bot.stop();
   });
 
+  await t('kabar LP disalin menjadi kartu: pasangan, nilai, rentang, target, tx, tombol', async () => {
+    const w = build({ dryRun: false });
+    await w.bot.start();
+    w.engine.notify('LP disalin: USDG/MEME $200,00', {
+      kind: 'entry', positionId: 1, txHash: '0xmint1234567890', adding: false, pair: 'USDG/MEME', valueUsd: 200,
+      curTick: 0, steps: ['bungkus 0.05000 ETH', 'zap beli token1 via Kyber'],
+      target: TARGET, mirrorOf: '777', reason: 'target membuka posisi baru',
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    const o = outs(w.sent).find((x) => /LP DISALIN/.test(x.params.text));
+    assert.ok(o, 'kartu harus terkirim');
+    const teks = o.params.text;
+    assert.match(teks, /🟢 LIVE/);
+    assert.match(teks, /<b>USDG\/MEME<\/b>/);
+    assert.match(teks, /\$200,00/);
+    assert.match(teks, /Rentang harga — MEME dalam USDG/);
+    assert.match(teks, /●/, 'batang rentang harus bertitik (harga kini dari tick mint)');
+    assert.match(teks, /Bang GE/, 'nama target harus tampil');
+    assert.match(teks, /NFT #777/);
+    assert.match(teks, /target membuka posisi baru/);
+    assert.match(teks, /bungkus 0.05000 ETH · zap beli token1 via Kyber/);
+    assert.match(teks, /0xmint1234/);
+    assert.ok(!/LP disalin:/.test(teks), 'teks polos lama tidak boleh ikut tercetak');
+    const tombol = o.params.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);
+    assert.ok(tombol.includes('p:1') && tombol.includes('pc:1'), `tombol posisi/tutup harus ada: ${tombol}`);
+    w.bot.stop();
+  });
+
+  await t('kabar LP ditutup menjadi kartu: hasil, modal, PnL, alasan, sisa terjual', async () => {
+    const w = build();
+    await w.bot.start();
+    w.engine.notify('LP ditutup: tutup penuh posisi #2', {
+      kind: 'exit', positionId: 2, txHash: '0xburn1234567890', full: true, sold: 'jual 1234 MEME → $4,20 (kyber)',
+      target: TARGET, mirrorOf: '778', reason: 'target menarik 100% likuiditas',
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    const o = outs(w.sent).find((x) => /LP DITUTUP/.test(x.params.text));
+    assert.ok(o, 'kartu harus terkirim');
+    const teks = o.params.text;
+    assert.match(teks, /🧪 SIMULASI/);
+    assert.match(teks, /<b>USDG\/MEME<\/b> · NFT #889/);
+    assert.match(teks, /📈 Untung <b>\+\$12,00<\/b>\s+\+12,0%/);
+    assert.match(teks, /hasil\s+\$112,00/);
+    assert.match(teks, /modal\s+\$100,00/);
+    assert.match(teks, /target menarik 100% likuiditas/);
+    assert.match(teks, /🧹 jual 1234 MEME → \$4,20/);
+    assert.match(teks, /0xburn1234/);
+    w.bot.stop();
+  });
+
+  await t('keluar mandiri dan sisa terjual punya kartunya sendiri', async () => {
+    const w = build();
+    await w.bot.start();
+    w.engine.notify('keluar mandiri #2: stop loss -12.0%', { kind: 'exit', positionId: 2, txHash: '0xee', full: true, auto: true, reason: 'stop loss -12.0%' });
+    w.engine.notify('posisi #1: jual 5.000 MEME → $4.20 (uji-dex)', { kind: 'leftover', positionId: 1, txHash: '0xswap', label: '5.000 MEME', usdIn: 5, usdOut: 4.2, dex: 'uji-dex', tries: 2 });
+    await new Promise((r) => setTimeout(r, 1300));
+    const teks = outs(w.sent).map((x) => x.params.text);
+    const keluar = teks.find((x) => /KELUAR MANDIRI/.test(x));
+    assert.ok(keluar, 'kartu keluar mandiri harus terkirim');
+    assert.match(keluar, /stop loss -12.0%/);
+    const sisa = teks.find((x) => /SISA TERJUAL/.test(x));
+    assert.ok(sisa, 'kartu sisa harus terkirim');
+    assert.match(sisa, /\$4,20/);
+    assert.match(sisa, /selisih\s+-16,0%/);
+    assert.match(sisa, /uji-dex/);
+    assert.match(sisa, /ke-3/);
+    w.bot.stop();
+  });
+
+  await t('kabar tanpa detail atau posisi yang tak dikenal tetap terkirim sebagai teks', async () => {
+    const w = build();
+    await w.bot.start();
+    w.engine.notify('kabar bebas tanpa detail');
+    w.engine.notify('LP ditutup: posisi #999', { kind: 'exit', positionId: 999, full: true, txHash: '0xzz' });
+    await new Promise((r) => setTimeout(r, 1300));
+    const teks = outs(w.sent).map((x) => x.params.text);
+    assert.ok(teks.some((x) => /🔔 <b>kabar bebas tanpa detail<\/b>/.test(x)), 'teks polos harus tetap terkirim');
+    assert.ok(teks.some((x) => /LP DITUTUP/.test(x) && /posisi #999/.test(x)), 'kartu tanpa data posisi tetap terkirim');
+    w.bot.stop();
+  });
+
+  await t('ringkasan: portofolio, PnL, posisi, rekam jejak, sumber, penyalinan', async () => {
+    const w = build();
+    w.engine.cash = { usdg: 150, eth: 0.1, weth: 0, usd: 400, ts: Date.now() };
+    await w.bot.handle(cbq('o'));
+    const teks = lastOut(w.sent).params.text;
+    assert.match(teks, /✅ Sehat/);
+    assert.match(teks, /💰 Portofolio <b>\$606,50<\/b>/, `nilai = kas + posisi + fee:\n${teks}`);
+    assert.match(teks, /PnL <b>\+\$18,50<\/b>/);
+    assert.match(teks, /kas wallet\s+\$400,00/);
+    assert.match(teks, /Posisi terbuka · 1/);
+    assert.match(teks, /USDG\/MEME\s+\$205,00\s+\+\$6,50\s+in/);
+    assert.match(teks, /Rekam jejak · 1 ditutup/);
+    assert.match(teks, /Bang GE\s+1 buka/);
+    assert.match(teks, /akan disalin \(simulasi\)/);
+    assert.ok(!/24 jam \+\$0,00/.test(teks), 'tanpa riwayat, perubahan 24 jam tidak boleh tampil sebagai nol');
+    assert.ok(!/0 dtk lalu/.test(teks), 'sinkron barusan ditulis "baru saja"');
+  });
+
+  await t('ringkasan: baris kesehatan menyebut masalah pertama yang ada', async () => {
+    const w = build();
+    w.engine.head = 1200; w.engine.cursor = 1000;
+    await w.bot.handle(cbq('o'));
+    assert.match(lastOut(w.sent).params.text, /⚠️ <b>Tertinggal 200 blok<\/b>/);
+    w.store.setState('paused', '1');
+    await w.bot.handle(cbq('h'));
+    assert.match(lastOut(w.sent).params.text, /⏸ <b>Dijeda<\/b>/);
+  });
+
   await t('galat ikut terkirim, baris info tidak (setelan bawaan)', async () => {
     const w = build();
     await w.bot.start();
@@ -566,6 +675,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     await new Promise((r) => setTimeout(r, 50));
     const teks = outs(w.sent).map((x) => x.params.text).join('\n');
     assert.match(teks, /sesuatu meledak/);
+    assert.match(teks, /⛔ <b>Galat · uji<\/b>\nsesuatu meledak/, 'konteks galat harus jadi judul');
     assert.ok(!/kabar biasa/.test(teks), 'baris info tidak boleh dikirim kalau setelannya mati');
     w.bot.stop();
   });
@@ -579,13 +689,13 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     // ikut teruji — kalau urutannya dibalik, gemanya lolos dan uji ini merah.
     // teks yang tidak muncul di layar mana pun, supaya hitungannya bersih
     Engine.prototype.notify.call(w.engine, 'kabar-uji-unik-9137');
-    const n = w.bot.queue.filter((x) => /9137/.test(x)).length
+    const n = w.bot.queue.filter((x) => /9137/.test(x.text)).length
       + outs(w.sent).filter((x) => /9137/.test(x.params.text)).length;
     assert.strictEqual(n, 1, `kabar yang sama masuk antrean ${n} kali`);
     // baris log biasa tetap ikut terkirim saat setelan itu menyala
     Engine.prototype.notify.call(w.engine, 'kabar lain');
     w.store.log('info', 'benar-benar baris log');
-    assert.ok(w.bot.queue.some((x) => /benar-benar baris log/.test(x)), 'baris log biasa harus tetap terkirim');
+    assert.ok(w.bot.queue.some((x) => /benar-benar baris log/.test(x.text)), 'baris log biasa harus tetap terkirim');
     w.bot.stop();
   });
 
@@ -652,7 +762,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     await w.bot.restart();
     await w.bot.restart();
     Engine.prototype.notify.call(w.engine, 'kabar-uji-unik-4412');
-    const n = w.bot.queue.filter((x) => /4412/.test(x)).length
+    const n = w.bot.queue.filter((x) => /4412/.test(x.text)).length
       + outs(w.sent).filter((x) => /4412/.test(x.params.text)).length;
     assert.strictEqual(n, 1, `kabar terkirim ${n} kali setelah tiga kali penyalaan`);
     w.bot.stop();

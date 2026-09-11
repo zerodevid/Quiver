@@ -286,7 +286,11 @@ class Engine {
       const r = await this.executeEntry(d.plan, act);
       this.lastCopyAt.set(act.poolRef, Date.now());
       this.decide(act.id, 'copy', `${d.reason} — ${r.note}`, d.plan, r.txHash, r.positionId);
-      this.notify(`LP disalin: ${r.note}`);
+      this.notify(`LP disalin: ${r.note}`, {
+        kind: 'entry', positionId: r.positionId, txHash: r.txHash, adding: !!r.adding,
+        pair: r.pair, valueUsd: r.valueUsd, curTick: r.curTick, steps: r.steps,
+        target: act.target, mirrorOf: act.tokenId, reason: d.reason,
+      });
     } catch (e) {
       this.stats.errors++;
       this.decide(act.id, 'error', String(e.message).slice(0, 300), d.plan);
@@ -325,6 +329,10 @@ class Engine {
       try {
         const r = await this.executeExit(planT, pos);
         this.decide(act.id, 'copy', `target memindahkan posisinya — ${r.note}`, planT, r.txHash, pos.id);
+        this.notify(`LP ditutup: target memindahkan posisinya — ${r.note}`, {
+          kind: 'exit', positionId: pos.id, txHash: r.txHash, full: true, sold: r.sold,
+          target: act.target, mirrorOf: act.tokenId, reason: 'target memindahkan posisinya',
+        });
       } catch (e) {
         this.stats.errors++;
         this.decide(act.id, 'error', String(e.message).slice(0, 300), planT);
@@ -346,7 +354,10 @@ class Engine {
     try {
       const r = await this.executeExit(d.plan, pos);
       this.decide(act.id, 'copy', `${d.reason} — ${r.note}`, d.plan, r.txHash, pos.id);
-      this.notify(`LP ditutup: ${r.note}`);
+      this.notify(`LP ditutup: ${r.note}`, {
+        kind: 'exit', positionId: pos.id, txHash: r.txHash, full: !!d.plan.full, sold: r.sold,
+        target: act.target, mirrorOf: act.tokenId, reason: d.reason,
+      });
     } catch (e) {
       this.stats.errors++;
       this.decide(act.id, 'error', String(e.message).slice(0, 300), d.plan);
@@ -695,7 +706,10 @@ class Engine {
     // v.value dinyatakan dalam aset kuotasi pool (bisa ETH), BUKAN dolar — dulu dicetak
     // langsung dengan "$" sehingga posisi 0,079 ETH terbaca "$0,08" alih-alih ~$195.
     const usdVal = quoteToUsd(v?.value ?? 0, v?.kind || 'usd', this.ethUsd);
-    return { txHash: hash, positionId, note: `${adding ? 'tambah ' : ''}${pair} $${usdVal.toFixed(2)}${notes.length ? ' (' + notes.join(', ') + ')' : ''}` };
+    return {
+      txHash: hash, positionId, adding: !!adding, pair, valueUsd: usdVal, curTick: s2.tick ?? null, steps: notes,
+      note: `${adding ? 'tambah ' : ''}${pair} $${usdVal.toFixed(2)}${notes.length ? ' (' + notes.join(', ') + ')' : ''}`,
+    };
   }
 
   async executeExit(plan, pos) {
@@ -718,7 +732,7 @@ class Engine {
     // Jual memecoin yang BARU diterima dari transaksi keluar ini. Galatnya tidak boleh
     // membatalkan pencatatan keluar — posisinya sudah benar-benar tertutup di chain.
     let sold = null;
-    try { sold = await this.sellLeftover(pos, rc.receipt); }
+    try { sold = await this.sellLeftover(pos, rc.receipt, { quiet: true }); }
     catch (e) { this.store.log('error', `jual sisa #${pos.id}: ${e.message}`); }
     if (plan.full) {
       const live = this.positions.live.find((p) => p.id === pos.id);
@@ -731,7 +745,7 @@ class Engine {
       this.store.run('UPDATE positions SET liquidity=? WHERE id=?',
         (BigInt(pos.liquidity) - BigInt(plan.liquidity)).toString(), pos.id);
     }
-    return { txHash: hash, note: `${plan.full ? 'tutup penuh' : 'kurangi'} posisi #${pos.id}${sold ? ` · ${sold}` : ''}` };
+    return { txHash: hash, sold, note: `${plan.full ? 'tutup penuh' : 'kurangi'} posisi #${pos.id}${sold ? ` · ${sold}` : ''}` };
   }
 
   // Berapa yang benar-benar masuk wallet dari transaksi keluar: selisih saldo, dengan
@@ -765,7 +779,7 @@ class Engine {
   // pool yang sama. Yang dijual HANYA jumlah yang diterima dari tx keluar ini (dibaca dari
   // log Transfer di receipt), bukan seluruh saldo: wallet ini bisa dipakai program lain
   // yang memegang token yang sama.
-  async sellLeftover(pos, receipt) {
+  async sellLeftover(pos, receipt, opts = {}) {
     const rules = this.rulesFrom(pos.target);
     if (!rules.exit.sell_leftover) return null;
     // quoteSideOf mengembalikan objek {side, symbol, kind}, bukan angka.
@@ -782,11 +796,13 @@ class Engine {
       if (('0x' + l.topics[2].slice(-40)).toLowerCase() === me) got += BigInt(l.data);
     }
     if (got === 0n) return null;
-    return this.sellToken({ posId: pos.id, target: pos.target, token: meme, quote, amount: got, tries: 0 });
+    return this.sellToken({ posId: pos.id, target: pos.target, token: meme, quote, amount: got, tries: 0 }, opts);
   }
 
   // Jual `amount` token ke `quote` lewat Kyber. Gagal -> dicatat untuk dicoba ulang.
-  async sellToken(item) {
+  // `quiet`: penjualan yang terjadi di dalam transaksi keluar sudah dilaporkan oleh
+  // kabar penutupan posisi — jangan kirim kabar kedua untuk hal yang sama.
+  async sellToken(item, { quiet = false } = {}) {
     const rules = this.rulesFrom(item.target);
     const bal = (await this.exec.balances([item.token])).get(item.token) || 0n;
     const amount = bal < BigInt(item.amount) ? bal : BigInt(item.amount);
@@ -801,7 +817,12 @@ class Engine {
       if (!r) throw new Error('Kyber tidak menemukan rute');
       this.dropLeftover(item);
       const msg = `jual ${label} → $${(r.quote.usdOut || 0).toFixed(2)} (${r.quote.dex})`;
-      this.notify(`posisi #${item.posId}: ${msg}`);
+      if (!quiet) {
+        this.notify(`posisi #${item.posId}: ${msg}`, {
+          kind: 'leftover', positionId: item.posId, txHash: r.hash, label, usdIn: r.quote.usdIn,
+          usdOut: r.quote.usdOut, dex: r.quote.dex, tries: item.tries || 0,
+        });
+      }
       return msg;
     } catch (e) {
       this.keepLeftover({ ...item, amount: amount.toString() }, e.message);
@@ -870,7 +891,10 @@ class Engine {
       this.store.log('warn', msg);
       try {
         const out = await this.executeExit({ venue: 'v4', action: 'burn', full: true, liquidity: r.liquidity, tokenId: r.token_id }, r);
-        this.notify(`${msg} · ${out.note}`);
+        this.notify(`${msg} · ${out.note}`, {
+          kind: 'exit', positionId: r.id, txHash: out.txHash, full: true, sold: out.sold, auto: true,
+          target: r.target, mirrorOf: r.mirror_of, reason: 'sinyal keluar terlewat — posisi target sudah kosong',
+        });
       } catch (e) { this.store.log('error', `rekonsiliasi tutup #${r.id} gagal: ${e.message}`); }
     }
   }
@@ -894,8 +918,11 @@ class Engine {
       if (t.pos.empty) { this.positions.markClosed(t.pos.id, { outQuote: 0, txHash: null }); continue; }
       if (this.dryRun() || !this.exec.address()) { this.store.log('info', `[simulasi] keluar #${t.pos.id}: ${t.reason}`); continue; }
       try {
-        await this.executeExit({ venue: t.pos.venue, action: 'burn', full: true, liquidity: t.pos.liquidity, tokenId: t.pos.token_id }, t.pos);
-        this.notify(`keluar mandiri #${t.pos.id}: ${t.reason}`);
+        const out = await this.executeExit({ venue: t.pos.venue, action: 'burn', full: true, liquidity: t.pos.liquidity, tokenId: t.pos.token_id }, t.pos);
+        this.notify(`keluar mandiri #${t.pos.id}: ${t.reason}`, {
+          kind: 'exit', positionId: t.pos.id, txHash: out.txHash, full: true, sold: out.sold, auto: true,
+          target: t.pos.target, mirrorOf: t.pos.mirror_of, reason: t.reason,
+        });
       } catch (e) { this.store.log('error', `keluar mandiri gagal #${t.pos.id}: ${e.message}`); }
     }
   }
@@ -952,14 +979,17 @@ class Engine {
     return rows.length;
   }
 
-  notify(msg) {
+  // `detail` (opsional) adalah data terstruktur kejadian itu — {kind:'entry'|'exit'|
+  // 'leftover', positionId, txHash, ...}. ntfy tetap menerima teks polos; pendengar
+  // yang bisa menata (bot Telegram) memakai detail untuk menyusun kartu yang rapi.
+  notify(msg, detail = null) {
     const topic = this.cfg.notify?.ntfy_topic;
     // Pendengar tambahan (bot Telegram) dipasang dari luar; ia menerima kabar
     // penting yang sama dengan ntfy, tanpa perlu ikut mengintip semua baris log.
     // Sengaja dipanggil SEBELUM baris lognya ditulis: baris itu memicu store.onLog
     // dengan teks yang sama, dan pendengar hanya bisa menyaring gemanya kalau ia
     // sudah tahu kabar apa yang barusan dikirim.
-    if (this.onNotify) { try { this.onNotify(msg); } catch { /* abaikan */ } }
+    if (this.onNotify) { try { this.onNotify(msg, detail); } catch { /* abaikan */ } }
     this.store.log('info', msg);
     if (!topic) return;
     fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body: `Quiver: ${msg}` }).catch(() => {});
