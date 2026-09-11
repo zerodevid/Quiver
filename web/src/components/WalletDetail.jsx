@@ -165,9 +165,18 @@ function TotalRow({ rows, open }) {
   );
 }
 
+// Pilihan jendela yang paling mendekati rentang blok yang sudah benar-benar
+// terpindai — supaya dropdown tidak berkata "~7 hari" saat datanya cuma 1 hari.
+const windowFor = (span) => {
+  const ids = WINDOWS.map(([id]) => Number(id));
+  const hit = ids.find((n) => n >= span * 0.9) ?? ids[ids.length - 1];
+  return String(hit);
+};
+
 export default function WalletDetail({ address, autoScan = true, showTargetButton = true, onChanged }) {
   const { t } = useI18n();
   const [blocks, setBlocks] = useState('900000');
+  const touched = useRef(false);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const timer = useRef(null);
@@ -179,6 +188,8 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
     const d = await get('/api/wallet?address=' + address);
     if (!alive.current) return d;
     setData(d);
+    // Dropdown mengikuti jendela yang tersimpan, selama pengguna belum menyentuhnya.
+    if (!touched.current && d.found && d.scannedFrom && d.scannedTo) setBlocks(windowFor(d.scannedTo - d.scannedFrom));
     const running = d.job?.status === 'jalan';
     if (running && !timer.current) timer.current = setInterval(() => fetchWallet(), 2000);
     if (!running && timer.current) { stopPoll(); onChanged?.(); }
@@ -203,7 +214,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
 
   // muat saat alamat berganti; pindai otomatis kalau belum pernah
   useEffect(() => {
-    alive.current = true;
+    alive.current = true; touched.current = false;
     setData(null); setLoading(true); stopPoll();
     (async () => {
       try {
@@ -224,6 +235,15 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
   const bgFailed = job?.status === 'gagal' && job.reason && job.reason !== 'manual';
   const s = data?.stats || {};
 
+  // Memilih jendela yang lebih lebar dari yang sudah terpindai = ingin melihat
+  // hari-hari sebelumnya; "Perbarui" tak pernah mundur, jadi langsung pindai penuh.
+  const pickWindow = (win) => {
+    touched.current = true;
+    setBlocks(win);
+    const scanned = (data?.scannedTo || 0) - (data?.scannedFrom || 0);
+    if (data?.found && !running && Number(win) > scanned * 1.1) startScan(win, 'full');
+  };
+
   const makeTarget = async () => {
     await post('/api/targets', { address, label: 'dari riset wallet' });
     toast.success(t('Ditambahkan sebagai target')); fetchWallet(); onChanged?.();
@@ -243,7 +263,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
           <Button size="sm" isPending={running && job?.mode === 'refresh'} isDisabled={running} onPress={() => startScan(blocks, 'refresh')}>
             <RefreshCw className="size-4" />{t('Perbarui')}</Button>
         )}
-        <Pick className="w-36" aria="Jendela pindai" value={blocks} onChange={setBlocks} options={WINDOWS} />
+        <Pick className="w-36" aria="Jendela pindai" value={blocks} onChange={pickWindow} options={WINDOWS} />
         <Button size="sm" variant="outline" isPending={running && job?.mode !== 'refresh'} isDisabled={running} onPress={() => startScan()}>
           {t('Pindai ulang')}</Button>
       </div>
