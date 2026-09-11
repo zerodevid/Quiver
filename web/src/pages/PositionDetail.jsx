@@ -13,6 +13,7 @@ import CandleChart from '../components/CandleChart';
 import { usePoll } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
+import AutoCompoundButton from '../components/AutoCompoundButton';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, ask } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice, widthPct, locale as fmtLocale } from '../fmt';
@@ -214,6 +215,7 @@ export default function PositionDetail({ id }) {
             </div>
           </div>
           {!closed && !p.empty && <>
+            <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} />
             <Button variant="secondary" isPending={claiming != null} isDisabled={closing != null || claiming != null} onPress={() => claim(p)}>{t('Claim fee')}</Button>
             <Button variant="danger-soft" isPending={closing != null} isDisabled={claiming != null || closing != null} onPress={() => close(p)}>{t('Tutup posisi')}</Button>
           </>}

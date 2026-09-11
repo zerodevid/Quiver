@@ -454,6 +454,8 @@ menghasilkan fee.
 
 **Claim fee:** buka Posisi → Claim fee, termasuk dari detail posisi Telegram. Setelah konfirmasi, fee diterima di wallet sebagai token pool, sementara likuiditas tetap terbuka. Claim dicatat terpisah dan tetap masuk PnL. Transaksi yang belum terkonfirmasi diperiksa ulang tanpa dikirim ulang. Jika saldo ETH native pada blok receipt tidak bisa diisolasi, transaksi tetap dilaporkan berhasil dengan pencatatan nominal menunggu sinkronisasi.
 
+**Auto-compound (v4):** tombol Auto-compound tersedia di posisi dasbor dan Telegram. Atur ON/OFF, minimum fee yang ditambahkan, dan interval pemeriksaan sendiri. Default OFF, $5, 30 menit. Bot berjalan hanya saat LIVE dan tidak dijeda. Fee langsung membiayai penambahan likuiditas dalam satu transaksi, tanpa setoran wallet atau swap; token fee yang tidak cocok dengan rasio LP masuk ke wallet. Siklus dengan fee yang bisa dipasangkan di bawah minimum dilewati. Slippage dan batas posisi/eksposur mengikuti Aturan. Hasil compound tetap keuntungan, bukan tambahan modal dari luar.
+
 Keduanya ada di `src/manual.js` dan memakai jalur eksekusi yang **sama** dengan
 penyalinan otomatis: `engine.executeEntry` untuk membuka posisi (jembatan kas, zap,
 izin, penguncian ulang nominal di harga terkini, pencatatan posisi) dan

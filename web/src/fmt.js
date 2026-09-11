@@ -64,7 +64,7 @@ export const dur = (ms) => {
 
 // Label yang dipakai berulang di beberapa tabel. Nilai kedua = warna chip.
 export const AKSI = {
-  increase: ['Tambah likuiditas', 'accent'], decrease: ['Kurangi likuiditas', 'warning'], claim_fees: ['Klaim fee', 'success'],
+  increase: ['Tambah likuiditas', 'accent'], decrease: ['Kurangi likuiditas', 'warning'], claim_fees: ['Klaim fee', 'success'], compound: ['Auto-compound', 'success'],
   custody_out: ['Titip ke otomasi', 'default'], custody_in: ['Kembali dari otomasi', 'default'],
   transfer_in: ['Terima posisi', 'default'], transfer_out: ['Kirim posisi', 'warning'],
   mint: ['Buka posisi', 'accent'], collect: ['Klaim fee', 'success'],
@@ -73,7 +73,7 @@ export const KEPUTUSAN = {
   copy: ['Disalin', 'success'], dry: ['Simulasi', 'accent'], skip: ['Dilewati', 'default'], error: ['Gagal', 'danger'],
 };
 export const TXKIND = {
-  mint: 'Buka posisi', increase: 'Tambah likuiditas', decrease: 'Kurangi', burn: 'Tutup posisi', claim_fees: 'Klaim fee',
+  mint: 'Buka posisi', increase: 'Tambah likuiditas', decrease: 'Kurangi', burn: 'Tutup posisi', claim_fees: 'Klaim fee', compound: 'Auto-compound',
   approve_erc20: 'Izin token', approve_permit2: 'Izin Permit2', zap_swap: 'Tukar (zap)',
   bridge_swap: 'Tukar kas', wrap_eth: 'Bungkus ETH', unwrap_weth: 'Buka WETH',
   approve_kyber: 'Izin Kyber', sell_leftover: 'Jual token sisa', swap_manual: 'Swap manual',

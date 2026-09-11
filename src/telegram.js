@@ -760,6 +760,16 @@ class Telegram {
       case 'b': return out(...(await this.saldo()));
       case 'p': return rest[0] ? out(...(await this.posisiDetail(rest[0]))) : out(...(await this.posisi()));
       case 'pc': return out(...(await this.tutupKonfirm(rest[0])));
+      case 'ac': return out(...(await this.compoundScreen(rest[0])));
+      case 'acT': {
+        const r = await this.api('POST', '/api/positions/compound', { id: Number(rest[0]), enabled: rest[1] === '1' });
+        if (r.error) return out(esc(note(r.error)), kb([[btn(tr("↩︎ Posisi"), `p:${rest[0]}`)]]));
+        return out(...(await this.compoundScreen(rest[0])));
+      }
+      case 'acM': return this.ask(chatId, { kind: 'compoundMin', posId: Number(rest[0]), retry: `ac:${rest[0]}` },
+        tr("Ketik minimum fee yang ditambahkan dalam USD, misalnya 5. Batas: 0,01 sampai 1.000.000."));
+      case 'acI': return this.ask(chatId, { kind: 'compoundInterval', posId: Number(rest[0]), retry: `ac:${rest[0]}` },
+        tr("Ketik interval pemeriksaan dalam menit, misalnya 30. Batas: 1 sampai 10.080 menit."));
       case 'pf': {
         const d = await this.api('GET', '/api/positions');
         const p = (d.positions || []).find((x) => String(x.id) === rest[0]);
@@ -1063,6 +1073,15 @@ class Telegram {
       }
       case 'poolCari': return this.screen(chatId, null, `mlp:0:${encodeURIComponent(text.trim().slice(0, 24))}`);
       case 'scanToken': return this.runScanPool(chatId, text);
+      case 'compoundMin':
+      case 'compoundInterval': {
+        const value = Number(String(text).trim().replace(',', '.'));
+        if (!Number.isFinite(value)) throw new Error(tr("nominal harus angka lebih dari nol"));
+        const field = p.kind === 'compoundMin' ? 'minUsd' : 'intervalMinutes';
+        const r = await this.api('POST', '/api/positions/compound', { id: p.posId, [field]: value });
+        if (r.error) throw new Error(note(r.error));
+        return this.screen(chatId, null, `ac:${p.posId}`);
+      }
       case 'lpUsd': {
         const n = Number(String(text).replace(/[$\s]/g, '').replace(',', '.'));
         if (!Number.isFinite(n) || n <= 0) throw new Error(tr("nominal harus angka lebih dari nol"));
@@ -1510,9 +1529,33 @@ class Telegram {
     ]);
     if (jejak) { L.push(''); L.push(jejak); }
     return [L.filter((x) => x != null).join('\n'), kb([
+      p.venue === 'v4' ? [btn(`♻️ Auto-compound · ${p.compound?.enabled ? 'ON' : 'OFF'}`, `ac:${p.id}`)] : null,
       [btn(tr("💰 Claim fee"), `pf:${p.id}`)],
       [btn(tr("🔴 Tutup posisi ini"), `pc:${p.id}`)],
       [btn(tr("↩︎ Posisi"), 'p'), BACK_HOME],
+    ])];
+  }
+
+  async compoundScreen(id) {
+    const r = await this.api('GET', '/api/positions/compound', {}, { id });
+    if (r.error) return [esc(note(r.error)), kb([[btn(tr("↩︎ Posisi"), `p:${id}`)]])];
+    const c = r.compound;
+    const L = [
+      tr("♻️ <b>Auto-compound posisi #{0}</b>", [esc(id)]),
+      tr("Fee ditambahkan ke posisi v4 yang sama. Hanya fee yang dipakai; gas dibayar dari wallet. Sisa token yang tidak cocok dengan rasio LP masuk ke wallet."),
+      '',
+      `Status: <b>${c.enabled ? 'ON' : 'OFF'}</b>`,
+      tr("Minimum ditambahkan: {0}", [usd(c.minUsd)]),
+      tr("Periksa setiap {0} menit", [c.intervalMinutes]),
+      tr("Total ditambahkan (perkiraan): {0}", [usd(c.compoundedUsd)]),
+      c.lastNote ? esc(note(tr(c.lastNote))) : null,
+      '',
+      tr("Berjalan saat LIVE dan bot tidak dijeda. Slippage serta batas posisi mengikuti Aturan. Mengaktifkan mengizinkan transaksi otomatis."),
+    ];
+    return [L.filter((x) => x != null).join('\n'), kb([
+      c.supported ? [btn(c.enabled ? tr("⏸ Matikan auto-compound") : tr("▶️ Aktifkan auto-compound"), `acT:${id}:${c.enabled ? 0 : 1}`)] : null,
+      c.supported ? [btn(tr("✏️ Minimum fee"), `acM:${id}`), btn(tr("⏱ Interval"), `acI:${id}`)] : null,
+      [btn(tr("↩︎ Posisi"), `p:${id}`)],
     ])];
   }
 

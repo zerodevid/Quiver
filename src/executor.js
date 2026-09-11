@@ -85,7 +85,15 @@ class Executor {
     }
   }
 
-  async send(tx, { kind = 'lain', detail = null } = {}) {
+  send(tx, options = {}) {
+    // Auto-compound, manual actions and the copier share one signer/nonce.
+    const run = (this.sendQueue || Promise.resolve()).then(() => this.sendTransaction(tx, options));
+    this.sendQueue = run.catch(() => {});
+    return run;
+  }
+
+  async sendTransaction(tx, { kind = 'lain', detail = null, guard = null } = {}) {
+    if (guard && !guard()) throw new Error('transaksi otomatis dibatalkan karena pengaturan berubah');
     const w = this.loadWallet();
     if (!w) throw new Error('tidak ada kunci privat — mode kirim butuh wallet');
     const from = w.address;
@@ -110,6 +118,7 @@ class Executor {
       nonce: this.nonce, gasLimit, ...fees,
     };
     const raw = await w.signTransaction(req);
+    if (guard && !guard()) throw new Error('transaksi otomatis dibatalkan karena pengaturan berubah');
     // Hash transaksi yang sudah ditandatangani sudah pasti, sebelum dikirim ke mana pun.
     // Ini yang membedakan "benar-benar gagal" dari "sudah masuk tapi jawabannya hilang".
     const hash0 = ethers.keccak256(raw);
@@ -323,6 +332,19 @@ class Executor {
 
   buildV4Collect(plan, deadlineSec) {
     return this.buildV4Decrease({ ...plan, liquidity: '0', full: false, amount0Min: 0, amount1Min: 0 }, deadlineSec);
+  }
+
+  // Fixed liquidity + TAKE_PAIR only: accrued fees fund the increase atomically.
+  // A token deficit reverts; there is no SETTLE, Permit2 pull, or native deposit.
+  buildV4Compound(plan, deadlineSec) {
+    const pk = plan.poolKey;
+    const params = [
+      coder.encode(['uint256', 'uint256', 'uint128', 'uint128', 'bytes'],
+        [plan.tokenId, plan.liquidity, plan.amount0Max, plan.amount1Max, '0x']),
+      coder.encode(['address', 'address', 'address'], [pk.currency0, pk.currency1, this.address()]),
+    ];
+    const unlock = coder.encode(['bytes', 'bytes[]'], [actionsHex([ACT.INCREASE_LIQUIDITY, ACT.TAKE_PAIR]), params]);
+    return { to: ADDR.posmV4, value: '0', data: IF_POSM.encodeFunctionData('modifyLiquidities', [unlock, deadlineSec]) };
   }
 
   buildV3Collect(plan) {

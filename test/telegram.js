@@ -327,7 +327,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
 
   await t('semua layar Telegram berbahasa Inggris dan callback tetap valid', async () => {
     const w = build(); w.bot.setLanguage(CHAT, 'en');
-    const skip = new Set(['pC', 'pF', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX', 'langSet']);
+    const skip = new Set(['pC', 'pF', 'acT', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX', 'langSet']);
     const queue = ['h']; const seen = new Set(); const screens = [];
     while (queue.length) {
       const data = queue.shift(); if (seen.has(data)) continue; seen.add(data);
@@ -370,7 +370,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
   await t('setiap tombol yang bisa dicapai dari menu utama bekerja', async () => {
     const w = build();
     // Tidak ditekan: memindahkan dana, menghapus, atau mengganti rahasia.
-    const HINDARI = ['pC', 'pF', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'];
+    const HINDARI = ['pC', 'pF', 'acT', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'];
     const antre = ['h']; const sudah = new Set(); const layar = [];
     while (antre.length) {
       const data = antre.shift();
@@ -1106,6 +1106,28 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.strictEqual(r.plan.singleSide, 'token0');
   });
 
+  await t('auto-compound bisa diatur per posisi dari Telegram', async () => {
+    const w = build();
+    await w.bot.handle(cbq('p:1'));
+    assert.ok(buttons(lastOut(w.sent)).includes('ac:1'));
+    await w.bot.handle(cbq('ac:1'));
+    assert.match(lastOut(w.sent).params.text, /OFF/);
+    await w.bot.handle(cbq('acM:1'));
+    await w.bot.handle(msg('2,5'));
+    await w.bot.handle(cbq('acI:1'));
+    await w.bot.handle(msg('60'));
+    await w.bot.handle(cbq('acT:1:1'));
+    let r = await w.api('GET', '/api/positions/compound', {}, { id: 1 });
+    assert.equal(r.compound.enabled, true);
+    assert.equal(r.compound.minUsd, 2.5);
+    assert.equal(r.compound.intervalMinutes, 60);
+    await w.bot.handle(cbq('acT:1:0'));
+    r = await w.api('GET', '/api/positions/compound', {}, { id: 1 });
+    assert.equal(r.compound.enabled, false);
+    assert.ok((await w.api('POST', '/api/positions/compound', { id: 1, intervalMinutes: 0 })).error);
+    assert.ok((await w.api('POST', '/api/positions/compound', { id: 2, enabled: true })).error);
+  });
+
   await t('claim fee Telegram meminta konfirmasi lalu memakai endpoint bersama', async () => {
     const w = build({ dryRun: false });
     const calls = [];
@@ -1703,7 +1725,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
       const d = antre.shift();
       if (sudah.has(d)) continue;
       sudah.add(d);
-      if (['pC', 'pF', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'].includes(d.split(':')[0])) continue;
+      if (['pC', 'pF', 'acT', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'].includes(d.split(':')[0])) continue;
       await w.bot.handle(cbq(d));
       const teks = lastOut(w.sent).params.text;
       const luarPre = teks.replace(/<pre>[\s\S]*?<\/pre>/g, '');
@@ -1756,7 +1778,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
       if (sudah.has(d)) continue;
       sudah.add(d);
       assert.ok(Buffer.byteLength(d) <= 64, `callback_data terlalu panjang (${Buffer.byteLength(d)}): ${d}`);
-      if (['pC', 'pF', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'].includes(d.split(':')[0])) continue;
+      if (['pC', 'pF', 'acT', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'].includes(d.split(':')[0])) continue;
       await w.bot.handle(cbq(d));
       for (const b of buttons(lastOut(w.sent))) antre.push(b);
     }

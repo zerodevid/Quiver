@@ -4,6 +4,7 @@
 // token dan nilainya, lalu catatan bot — keputusan atas aksi target yang memicunya
 // dan baris log yang menyebut posisi ini. Grafik harga tetap di halaman detail.
 import { useEffect, useState } from 'react';
+import PositionSnapshot from './PositionSnapshot';
 import { Button, Chip, Drawer, toast } from '@heroui/react';
 import { Copy, ExternalLink, X, ChartCandlestick } from 'lucide-react';
 import { get } from '../api';
@@ -18,6 +19,7 @@ const KIND = {
   increase: ['Tambah likuiditas', 'success'],
   decrease: ['Kurangi likuiditas', 'warning'],
   claim_fees: ['Klaim fee', 'success'],
+  compound: ['Auto-compound', 'success'],
   burn: ['Tutup posisi', 'danger'],
   zap_swap: ['Swap zap', 'accent'],
   bridge_swap: ['Swap kuotasi', 'accent'],
@@ -159,14 +161,15 @@ export default function PositionHistory({ id, onClose }) {
   const { t } = useI18n();
   const [d, setD] = useState(null);
   const [err, setErr] = useState(null);
+  const [revision, setRevision] = useState(0);
   useEffect(() => {
     if (!id) return;
     let alive = true;
-    setD(null); setErr(null);
+    setD((prev) => prev?.position?.id === Number(id) ? prev : null); setErr(null);
     get(`/api/position/history?id=${id}`).then((r) => { if (!alive) return; if (r.error) setErr(r.error); else setD(r); })
       .catch((e) => alive && setErr(e.message));
     return () => { alive = false; };
-  }, [id]);
+  }, [id, revision]);
 
   const p = d?.position;
   const closed = p?.status === 'closed';
@@ -207,6 +210,7 @@ export default function PositionHistory({ id, onClose }) {
                       sub={p.costUsd > 0 ? pct((p.feesUsd / p.costUsd) * 100, 2).replace('+', '') : null} />
                     <Stat label="Modal" value={usd(p.costUsd)} sub={closed ? t('hasil {v}', { v: usd(p.outUsd) }) : null} />
                   </div>
+                  <PositionSnapshot key={id} id={id} onUpdate={() => setRevision((v) => v + 1)} />
                   {closed && <div className="mb-4 rounded-lg border border-border p-3 text-sm">
                     <div className="flex justify-between gap-3"><span>{t('Hasil LP saat tutup (taksiran)')}</span><span className="num">{usd(p.closeUsd)}</span></div>
                     <div className="mt-1 flex justify-between gap-3"><span>{t('PnL LP saat tutup')}</span><span className={`num ${p.closeUsd != null ? tone(p.closeUsd - p.costUsd) : ''}`}>{usd(p.closeUsd != null ? p.closeUsd - p.costUsd : null)}</span></div>

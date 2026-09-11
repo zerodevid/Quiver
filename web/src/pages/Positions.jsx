@@ -8,6 +8,7 @@ import { TokenPair } from '../components/TokenIcon';
 // Halaman detail membawa pustaka grafik — dimuat hanya saat dibuka.
 const PositionDetail = lazy(() => import('./PositionDetail'));
 import PositionHistory from '../components/PositionHistory';
+import AutoCompoundButton from '../components/AutoCompoundButton';
 import { usd, pct, tone, age, ago, short, num } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -92,7 +93,8 @@ export default function Positions({ param }) {
               // diadopsi dari wallet: dibuka manual atau oleh program lain, bukan salinan
               : <span className="text-xs text-muted" title={t('Posisi ini sudah ada di wallet, tidak menyalin target mana pun. Bot hanya memantaunya; tutup manual kalau perlu.')}>{t('di luar bot')}</span> },
             { key: 'act', label: '', sortable: false, className: 'text-end', render: (p) => (
-              <div className="flex gap-2 justify-end">
+              <div className="flex flex-wrap gap-2 justify-end">
+                <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} />
                 <Button size="sm" variant="secondary" isPending={claiming === p.id} isDisabled={claiming != null || closing != null || p.empty} onPress={() => claim(p)}>{t('Claim fee')}</Button>
                 <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={closing != null || claiming != null} onPress={() => close(p)}>{t('Tutup')}</Button>
               </div>) },

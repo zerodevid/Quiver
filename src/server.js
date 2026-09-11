@@ -8,6 +8,7 @@ const { scoutWallet } = require('./scout');
 const { WalletResearch, summarize } = require('./wallet');
 const { createSettingsRoutes } = require('./settings');
 const { Manual } = require('./manual');
+const { Compound } = require('./compound');
 const { Holdings } = require('./holdings');
 const { Icons } = require('./icons');
 const { Market, TF } = require('./market');
@@ -46,6 +47,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   const walletJobs = new Map();
   const research = new WalletResearch({ rpc, store, chain, log });
   const manual = new Manual({ engine, store, chain, rpc, log });
+  const compound = engine.compound || new Compound(engine);
   const holdings = new Holdings({ rpc, store, chain, log });
   // Portofolio per wallet di-cache sebentar: halaman detail target di-poll, dan
   // tiap hitungan berarti puluhan eth_call + DexScreener.
@@ -366,7 +368,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         r.symbol0 = toks.get(r.token0) || null;
         r.symbol1 = toks.get(r.token1) || null;
       }
-      return { positions: engine.positions.live, closed };
+      return { positions: engine.positions.live.map((p) => ({ ...p, compound: compound.status(p) })), closed };
     },
     // Satu posisi untuk halaman detail. Yang terbuka diambil dari hasil sinkron terakhir
     // (nilai, fee, harga kini); yang sudah ditutup — atau baru dibuka dan belum
@@ -399,6 +401,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       };
       pos.exitSqrt = row.exit_sqrt || null;
       pos.claimedUsd = (row.claimed_quote || 0) * k;
+      pos.compound = compound.status(row);
       pos.outUsd = outUsd;
       pos.quoteKind = row.quote_symbol === 'ETH' || row.quote_symbol === 'WETH' ? 'eth' : 'usd';
       pos.targetLabel = row.target ? (store.get('SELECT label FROM targets WHERE address=?', row.target)?.label || null) : null;
@@ -457,6 +460,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
             ev.amount0 = claim.amount0; ev.amount1 = claim.amount1;
             ev.valueUsd = claim.value_quote * k; ev.feesUsd = ev.valueUsd;
           }
+        }
+        if (t.kind === 'compound') {
+          const run = store.get('SELECT reinvested_quote FROM compound_runs WHERE tx_hash=?', t.hash);
+          if (run) ev.valueUsd = run.reinvested_quote * k;
         }
         if (t.hash === row.tx_close) {
           ev.amount0 = d.closeProceeds?.amount0 ?? row.out0; ev.amount1 = d.closeProceeds?.amount1 ?? row.out1; ev.valueUsd = d.closeProceeds?.quote != null ? d.closeProceeds.quote * k : null; ev.feesUsd = (row.fees_quote || 0) * k;
@@ -1040,6 +1047,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       return engine.leftovers().length < before ? { ok: true } : { error: 'tidak ada di antrean' };
     },
 
+    'GET /api/positions/compound': (req, url) => {
+      const pos = store.get('SELECT * FROM positions WHERE id=?', Number(url.searchParams.get('id')));
+      return pos ? { compound: compound.status(pos) } : { error: 'posisi tidak ditemukan' };
+    },
+    'POST /api/positions/compound': async (req) => {
+      const b = await readBody(req);
+      const id = Number(b.id);
+      if (!Number.isSafeInteger(id) || id <= 0) return { error: 'ID posisi tidak valid' };
+      try { return { ok: true, compound: compound.configure(id, b) }; }
+      catch (e) { return { error: e.message }; }
+    },
     'POST /api/positions/claim': async (req) => {
       const b = await readBody(req);
       const id = Number(b.id);

@@ -248,6 +248,15 @@ function open(dbPath) {
     tx_hash TEXT PRIMARY KEY, position_id INTEGER NOT NULL, ts INTEGER NOT NULL,
     amount0 TEXT NOT NULL, amount1 TEXT NOT NULL, value_quote REAL NOT NULL
   )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS compound_settings (
+    position_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
+    min_usd REAL NOT NULL DEFAULT 5, interval_minutes INTEGER NOT NULL DEFAULT 30,
+    last_check INTEGER, last_tx TEXT, last_note TEXT
+  );
+  CREATE TABLE IF NOT EXISTS compound_runs (
+    tx_hash TEXT PRIMARY KEY, position_id INTEGER NOT NULL, ts INTEGER NOT NULL,
+    liquidity TEXT NOT NULL, reinvested_quote REAL NOT NULL
+  )`);
   if (!posCols.has('entry_sqrt')) {
     db.exec('ALTER TABLE positions ADD COLUMN entry_sqrt TEXT');
     db.exec('ALTER TABLE positions ADD COLUMN exit_sqrt TEXT');

@@ -6,6 +6,7 @@ const { Watcher } = require('./watcher');
 const { Positions } = require('./positions');
 const { Executor, isNative } = require('./executor');
 const { Kyber } = require('./kyber');
+const { Compound } = require('./compound');
 const { rulesFor, planEntry, planExit, quoteToUsd } = require('./policy');
 const { enumerateV4, livePositions } = require('./scout');
 const m = require('./v3math');
@@ -41,6 +42,7 @@ class Engine {
     this.head = 0;
     this.busy = false;
     this.exiting = new Set();      // id posisi yang transaksi keluarnya sedang berjalan
+    this.compound = new Compound(this);
     this.troubles = new Map();     // kunci -> galat beruntun yang sedang ditangani cadangan
     this.lastCopyAt = new Map();   // poolRef -> ts (cooldown)
     this.stats = { scanned: 0, actions: 0, copied: 0, skipped: 0, errors: 0, startedAt: Date.now() };
@@ -218,7 +220,7 @@ class Engine {
 
   // ---- satu siklus --------------------------------------------------------
   async tick() {
-    if (this.busy) return;
+    if (this.busy || this.compound?.running) return;
     // Semua endpoint sedang istirahat: jangan menambah beban, tunggu saja.
     if (this.rpc.allCooling()) return;
     this.busy = true;
@@ -609,6 +611,16 @@ class Engine {
 
   // Sediakan token yang kurang dengan swap dari sisi kuotasi, lalu mint.
   async executeEntry(plan, act) {
+    if (this.compound?.running) throw new Error('auto-compound sedang diproses — coba lagi sebentar');
+    if (plan.positionId && (this.exiting?.has(plan.positionId) || this.compound?.pending(plan.positionId))) {
+      throw new Error('posisi sedang diproses — tunggu konfirmasi transaksi');
+    }
+    this.activeEntries = (this.activeEntries || 0) + 1;
+    try { return await this.sendEntry(plan, act); }
+    finally { this.activeEntries--; }
+  }
+
+  async sendEntry(plan, act) {
     const rules = this.rulesFrom(act.target);
     const pk = plan.poolKey;
     const need0 = BigInt(plan.amount0Max), need1 = BigInt(plan.amount1Max);
@@ -845,6 +857,7 @@ class Engine {
   async claimFees(id) {
     if (this.dryRun() || !this.exec.address()) throw new Error('mode simulasi: tidak mengirim transaksi');
     if (this.exiting.has(id)) throw new Error('posisi ini sedang diproses');
+    if (this.compound?.pending(id)) throw new Error('compound sebelumnya belum selesai — tunggu konfirmasi');
     const pos = this.store.get("SELECT * FROM positions WHERE id=? AND status='open'", id);
     if (!pos || pos.token_id == null) throw new Error('posisi tidak ditemukan');
     if (!['v3', 'v4'].includes(pos.venue)) throw new Error('venue posisi tidak didukung');
@@ -925,7 +938,7 @@ class Engine {
 
   async reconcileFeeClaims() {
     const rows = this.store.all(`SELECT t.* FROM txs t LEFT JOIN fee_claims f ON f.tx_hash=t.hash
-      WHERE t.kind='claim_fees' AND t.status!='gagal' AND f.tx_hash IS NULL ORDER BY t.ts LIMIT 20`);
+      WHERE t.kind IN ('claim_fees','compound') AND t.status!='gagal' AND f.tx_hash IS NULL ORDER BY t.ts LIMIT 20`);
     for (const row of rows) {
       const id = JSON.parse(row.detail || '{}').position;
       if (this.exiting.has(id)) continue;
@@ -950,6 +963,8 @@ class Engine {
   // kedua yang pasti revert setelah tx pertama membakar NFT-nya — gas terbuang.
   async executeExit(plan, pos) {
     if (this.exiting.has(pos.id)) throw new Error('posisi ini sedang dalam proses ditutup');
+    const comp = this.compound?.pending(pos.id);
+    if (comp && comp.status !== 'sukses') throw new Error('compound sebelumnya belum selesai — tunggu konfirmasi');
     const claim = this.pendingFeeClaim(pos.id);
     if (claim && claim.status !== 'sukses') throw new Error('claim fee sebelumnya belum selesai — tunggu konfirmasi dan sinkronisasi');
     const cur = this.store.get('SELECT status FROM positions WHERE id=?', pos.id);
@@ -1303,6 +1318,7 @@ class Engine {
     // Semua langkah ini diulang tiap sinkron (30 detik) — galat sesaat tidak dikabarkan.
     const sekali = (key, label, p) => p.then(() => this.cleared(key, `${label}: berhasil lagi`))
       .catch((e) => this.trouble(key, `${label}: ${e.message}`, { after: 5, afterMs: 5 * 60_000 }));
+    await sekali('compound', 'pencatatan compound', this.compound.reconcile());
     await sekali('claim', 'pencatatan claim fee', this.reconcileFeeClaims());
     await sekali('rekon', 'rekonsiliasi keluar', this.reconcileExits());
     await this.positions.sync(this.ethUsd);
@@ -1327,6 +1343,7 @@ class Engine {
         this.trouble(`keluar:${t.pos.id}`, `keluar mandiri gagal #${t.pos.id}: ${e.message}`, { after: 2 });
       }
     }
+    await this.compound.tick(Date.now(), new Set(triggers.map((t) => t.pos.id)));
   }
 
   // ETH native di bawah cadangan gas tapi ada WETH: buka bungkus sampai cadangannya
