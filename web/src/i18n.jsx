@@ -30,6 +30,14 @@ export function initLocale() {
 }
 
 const EN = {
+  'Batas atas': 'Upper bound',
+  'Batas bawah': 'Lower bound',
+  'Dibulatkan ke tick pool: −{a}% / +{b}%.': 'Rounded to the pool\'s ticks: −{a}% / +{b}%.',
+  'Turun sampai (persen)': 'Down to (percent)',
+  'Naik sampai (persen)': 'Up to (percent)',
+  'Batas bawah harus 0 sampai di bawah 100% — turun 100% berarti harga nol.': 'The lower bound must be 0 to under 100% — down 100% means a price of zero.',
+  'Batas atas maksimal 100.000%.': 'The upper bound can be at most 100,000%.',
+  'Isi batas bawah atau batas atas.': 'Fill in the lower or the upper bound.',
   'Swap manual': 'Manual swap',
   'Jual token sisa': 'Sell leftover token',
   'Izin Kyber': 'Kyber approval',

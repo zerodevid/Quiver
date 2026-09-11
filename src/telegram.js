@@ -31,6 +31,24 @@ const shortA = (a) => (a ? `${String(a).slice(0, 6)}…${String(a).slice(-4)}` :
 const shortH = (h) => (h ? `${String(h).slice(0, 10)}…` : '—');
 // Buang nol di ekor pecahan: "1,50" -> "1,5", "1,00" -> "1". Angka tanpa koma
 // tidak disentuh — di format Indonesia "1.000" adalah seribu, bukan satu koma nol.
+// Rentang LP manual: "10 30" / "-10 +30" / "−10/+30" = turun 10%, naik 30%; "25" = ±25%.
+function parseRentang(text) {
+  const nums = String(text).replace(/[−–]/g, '-').replace(/,/g, '.').match(/[-+]?\d+(?:\.\d+)?/g) || [];
+  if (!nums.length || nums.length > 2) return { error: 'kirim satu angka (±) atau dua angka: batas bawah lalu batas atas, misal 10 30' };
+  const [a, b] = nums.map((x) => Math.abs(Number(x)));
+  const lowerPct = a, upperPct = nums.length === 2 ? b : a;
+  if (!(lowerPct >= 0 && lowerPct < 100)) return { error: 'batas bawah harus 0 sampai di bawah 100% — turun 100% berarti harga nol' };
+  if (!(upperPct >= 0 && upperPct <= 100000)) return { error: 'batas atas maksimal 100.000%' };
+  if (lowerPct === 0 && upperPct === 0) return { error: 'rentangnya kosong' };
+  return { lowerPct, upperPct };
+}
+// Sesi lama masih membawa widthPct (±X% simetris dalam tick) — tetap ditampilkan apa adanya.
+function rentangTeks(d) {
+  if (d.lowerPct == null && d.upperPct == null) return `±${trimZ(nf(d.widthPct ?? 25, 1))}%`;
+  const lo = d.lowerPct ?? 0, up = d.upperPct ?? 0;
+  return lo === up ? `±${trimZ(nf(lo, 2))}%` : `−${trimZ(nf(lo, 2))}% / +${trimZ(nf(up, 2))}%`;
+}
+
 const trimZ = (s) => (s.includes(',') ? s.replace(/,?0+$/, '') : s);
 const num = (n) => (n == null ? '—' : Number(n).toLocaleString('id-ID'));
 // Jumlah token: nol di ekor cuma bikin kolom ramai ("0,000000" -> "0"). Tetapi
@@ -799,7 +817,7 @@ class Telegram {
       case 'mlP': {
         const pool = (s.poolList || [])[+rest[0]];
         if (!pool) return out(...(await this.lpPools(chatId, 0)));
-        s.lp = { ...(s.lp || { usd: null, widthPct: 25 }), poolRef: pool.poolRef, pair: pool.pair };
+        s.lp = { ...(s.lp || { usd: null, lowerPct: 25, upperPct: 25 }), poolRef: pool.poolRef, pair: pool.pair };
         return out(...(await this.lpMenu(chatId)));
       }
       case 'mlc': return this.ask(chatId, { kind: 'poolCari', retry: 'mlp:0' }, 'Ketik nama pasangan yang dicari, misal <code>HOOKR</code> atau <code>USDG/ND4</code>.');
@@ -809,11 +827,17 @@ class Telegram {
       case 'mln': return this.ask(chatId, { kind: 'lpUsd', retry: 'ml' }, 'Berapa dolar yang mau dimasukkan?\n\n<i>Ini nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.</i>');
       case 'mlr': return out(...(await this.lpRange(chatId)));
       case 'mlw': {
-        s.lp = { ...(s.lp || {}), widthPct: Number(rest[0]), full: false };
+        const lo = Number(rest[0]), up = Number(rest[1] ?? rest[0]);
+        s.lp = { ...(s.lp || {}), lowerPct: lo, upperPct: up, widthPct: undefined, full: false };
         return out(...(await this.lpMenu(chatId)));
       }
       case 'mlF': { s.lp = { ...(s.lp || {}), full: true }; return out(...(await this.lpMenu(chatId))); }
-      case 'mlC': return this.ask(chatId, { kind: 'lpWidth', retry: 'mlr' }, 'Rentang ±berapa persen dari harga kini?\n\n<i>Makin sempit makin besar fee-nya, tapi makin cepat keluar rentang.</i>');
+      case 'mlC': return this.ask(chatId, { kind: 'lpWidth', retry: 'mlr' },
+        'Kirim <b>batas bawah</b> dan <b>batas atas</b> dalam persen dari harga kini.\n\n'
+        + '<code>10 30</code> → turun sampai −10%, naik sampai +30%\n'
+        + '<code>25</code> → ±25%\n'
+        + '<code>0 50</code> → mulai tepat di harga kini, naik sampai +50%\n\n'
+        + '<i>Makin sempit makin besar fee-nya, tapi makin cepat keluar rentang.</i>');
       case 'mlv': return out(...(await this.lpPreview(chatId)));
       case 'mlX': {
         const d = s.lp || {};
@@ -898,15 +922,15 @@ class Telegram {
         const n = Number(String(text).replace(/[$\s]/g, '').replace(',', '.'));
         if (!Number.isFinite(n) || n <= 0) throw new Error('nominal harus angka lebih dari nol');
         const se = this.sess(chatId);
-        se.lp = { ...(se.lp || { widthPct: 25 }), usd: n };
+        se.lp = { ...(se.lp || { lowerPct: 25, upperPct: 25 }), usd: n };
         return this.screen(chatId, null, 'ml', `✅ Nominal $${nf(n, 2)}\n\n`);
       }
       case 'lpWidth': {
-        const n = Number(String(text).replace(/[%\s]/g, '').replace(',', '.'));
-        if (!Number.isFinite(n) || n <= 0.1 || n > 10000) throw new Error('lebar harus antara 0,1 dan 10000 persen');
+        const r = parseRentang(text);
+        if (r.error) throw new Error(r.error);
         const se = this.sess(chatId);
-        se.lp = { ...(se.lp || {}), widthPct: n, full: false };
-        return this.screen(chatId, null, 'ml', `✅ Rentang ±${trimZ(nf(n, 1))}%\n\n`);
+        se.lp = { ...(se.lp || {}), lowerPct: r.lowerPct, upperPct: r.upperPct, widthPct: undefined, full: false };
+        return this.screen(chatId, null, 'ml', `✅ Rentang ${rentangTeks(se.lp)}\n\n`);
       }
       case 'swAmount': {
         const se = this.sess(chatId);
@@ -1444,7 +1468,7 @@ class Telegram {
       tabel([
         ['pool', d.pair || '— belum dipilih'],
         ['nominal', d.usd ? usd(d.usd) : '— belum diisi'],
-        ['rentang', d.full ? 'seluruh rentang harga' : `±${trimZ(nf(d.widthPct ?? 25, 1))}% dari harga kini`],
+        ['rentang', d.full ? 'seluruh rentang harga' : `${rentangTeks(d)} dari harga kini`],
       ]),
     ];
     if (this.engine.dryRun()) L.push('⚠️ Bot sedang di mode <b>simulasi</b> — pratinjau tetap jalan, tapi transaksi tidak akan dikirim.');
@@ -1541,12 +1565,14 @@ class Telegram {
       '<b>📐 Rentang harga</b>',
       'Fee hanya mengalir selama harga berada di dalam rentang. Sempit = fee lebih besar tapi lebih cepat keluar; lebar = lebih aman tapi encer.',
       '',
-      `Sekarang: <b>${d.full ? 'seluruh rentang' : `±${trimZ(nf(d.widthPct ?? 25, 1))}%`}</b>`,
+      `Sekarang: <b>${d.full ? 'seluruh rentang' : rentangTeks(d)}</b>`,
+      '',
+      '<i>Batas bawah dan atas boleh berbeda — misal turun 10%, naik 30%.</i>',
     ];
     return [L.join('\n'), kb([
-      [btn('±5%', 'mlw:5'), btn('±10%', 'mlw:10'), btn('±25%', 'mlw:25')],
-      [btn('±50%', 'mlw:50'), btn('±100%', 'mlw:100'), btn('seluruh rentang', 'mlF')],
-      [btn('✏️ Persen lain', 'mlC')],
+      [btn('±5%', 'mlw:5:5'), btn('±10%', 'mlw:10:10'), btn('±25%', 'mlw:25:25')],
+      [btn('±50%', 'mlw:50:50'), btn('½× – 2×', 'mlw:50:100'), btn('seluruh rentang', 'mlF')],
+      [btn('✏️ Atur bawah & atas', 'mlC')],
       [btn('↩︎ LP manual', 'ml')],
     ])];
   }
@@ -1774,4 +1800,4 @@ class Telegram {
   }
 }
 
-module.exports = { Telegram, parseVal, showVal, RULE_GROUPS, FORMS, COMMANDS, ALIAS, kolom, tabel, rentang, tickPrice, dur };
+module.exports = { Telegram, parseVal, showVal, RULE_GROUPS, FORMS, COMMANDS, ALIAS, kolom, tabel, rentang, tickPrice, dur, parseRentang, rentangTeks };

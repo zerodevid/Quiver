@@ -5,10 +5,37 @@ import { get, post } from '../api';
 import { useStatus } from '../App';
 import { PageHeader, Notice, PriceRange, Empty, KV } from '../components/ui';
 import { TokenPair } from '../components/TokenIcon';
-import { usd, num, ago } from '../fmt';
+import { usd, num, ago, price, tickPrice } from '../fmt';
 import { useI18n } from '../i18n';
 
-const LEBAR = [5, 10, 25, 50, 100];
+// Pilihan cepat rentang: [turun %, naik %, label]. Persennya dalam harga, jadi
+// "±50%" benar-benar setengah turun dan setengah naik; "½× – 2×" adalah rentang yang
+// dulu tertulis ±100% (dalam tick simetris, dalam harga tidak).
+const PRESET = [[5, 5, '±5%'], [10, 10, '±10%'], [25, 25, '±25%'], [50, 50, '±50%'], [50, 100, '½× – 2×']];
+
+// Teks rentang untuk ringkasan & konfirmasi.
+const fmtPct = (v) => num(Number(v), 2);
+const rentangLabel = (lo, up, full, t) => (full ? t('seluruh rentang')
+  : Number(lo) === Number(up) ? `±${fmtPct(lo)}%` : `−${fmtPct(lo)}% / +${fmtPct(up)}%`);
+
+// Satu kotak batas: tanda di depan, persen di belakang, harga hasilnya di bawah.
+function Batas({ label, tanda, value, onChange, harga, sym, invalid, disabled, aria }) {
+  const { t } = useI18n();
+  return (
+    <label className={`flex min-w-0 flex-1 flex-col gap-1.5 rounded-md border p-3 transition-colors
+      ${invalid ? 'border-danger/60' : 'border-border focus-within:border-accent'} ${disabled ? 'opacity-50' : ''}`}>
+      <span className="text-xs text-muted">{t(label)}</span>
+      <span className="flex items-baseline gap-1">
+        <span className="num text-lg font-semibold text-muted">{tanda}</span>
+        <input value={value} disabled={disabled} inputMode="decimal" aria-label={t(aria)} placeholder="0"
+          onChange={(e) => onChange(e.target.value.replace(/[^\d.,]/g, ''))}
+          className="num w-full min-w-0 bg-transparent text-lg font-semibold outline-none placeholder:text-muted/60" />
+        <span className="text-lg text-muted">%</span>
+      </span>
+      <span className="num h-4 truncate text-xs text-muted">{harga != null ? `≈ ${price(harga)}${sym ? ' ' + sym : ''}` : ''}</span>
+    </label>
+  );
+}
 
 // Tombol pilihan cepat. Dipakai untuk nominal dan lebar rentang — keduanya hampir
 // selalu diisi dari beberapa nilai yang itu-itu saja, jadi mengetik itu kerja sia-sia.
@@ -147,7 +174,8 @@ export default function ManualLp() {
   const [pool, setPool] = useState(null);
   const [gantiPool, setGantiPool] = useState(false);
   const [nominal, setNominal] = useState('');
-  const [lebar, setLebar] = useState(25);
+  const [turun, setTurun] = useState('25');
+  const [naik, setNaik] = useState('25');
   const [full, setFull] = useState(false);
   const [plan, setPlan] = useState(null);      // { preview, warnings } | { error }
   const [hitung, setHitung] = useState(false);
@@ -162,7 +190,13 @@ export default function ManualLp() {
   }, []);
 
   const usdNum = Number(String(nominal).replace(',', '.'));
-  const siap = !!pool && Number.isFinite(usdNum) && usdNum > 0;
+  const lo = Number(String(turun).replace(',', '.') || 0), up = Number(String(naik).replace(',', '.') || 0);
+  const loBad = !full && !(lo >= 0 && lo < 100);
+  const upBad = !full && !(up >= 0 && up <= 100000);
+  const kosong = !full && lo === 0 && up === 0;
+  const rentangOk = full || (!loBad && !upBad && !kosong);
+  const siap = !!pool && Number.isFinite(usdNum) && usdNum > 0 && rentangOk;
+  const body = { poolRef: pool?.poolRef, usd: usdNum, ...(full ? { full: true } : { lowerPct: lo, upperPct: up }) };
 
   // Pratinjau dihitung ulang sendiri setiap pilihan berubah — tidak ada tombol
   // "hitung". Balasan yang datang terlambat dibuang lewat nomor urut.
@@ -172,12 +206,12 @@ export default function ManualLp() {
     const mine = ++seq.current;
     setHitung(true);
     const id = setTimeout(async () => {
-      const r = await post('/api/manual/lp/plan', { poolRef: pool.poolRef, usd: usdNum, widthPct: lebar, full });
+      const r = await post('/api/manual/lp/plan', body);
       if (mine !== seq.current) return;
-      setPlan(r); setHitung(false);
+      setPlan({ ...r, _ref: body.poolRef }); setHitung(false);
     }, 350);
     return () => { clearTimeout(id); };
-  }, [pool?.poolRef, usdNum, lebar, full, siap]);
+  }, [pool?.poolRef, usdNum, lo, up, full, siap]);
 
   const kas = plan?.preview?.kasUsd ?? null;
   // Nominal terbesar yang masih lolos semua batas — supaya tombol "Maks" tidak
@@ -193,7 +227,7 @@ export default function ManualLp() {
 
   const buka = async () => {
     setKirim(true);
-    const r = await post('/api/manual/lp/open', { poolRef: pool.poolRef, usd: usdNum, widthPct: lebar, full });
+    const r = await post('/api/manual/lp/open', body);
     setKirim(false); setKonfirm(false);
     if (r.error) return toast.danger(r.error);
     setHasil(r);
@@ -202,6 +236,11 @@ export default function ManualLp() {
   };
 
   const p = plan?.preview;
+  // Harga kini (dalam aset kuotasi) dari pratinjau terakhir UNTUK POOL INI — dipakai
+  // menampilkan harga tiap batas selagi pengguna mengetik, sebelum pratinjau baru datang.
+  const pKini = p && plan._ref === pool?.poolRef ? p : null;
+  const hargaKini = pKini ? tickPrice(pKini.curTick, pKini.dec0, pKini.dec1, pKini.quoteSide) : null;
+  const symQ = pKini ? (pKini.quoteSide === 0 ? pKini.symbol0 : pKini.symbol1) : null;
   const dry = status?.mode?.dry_run !== false;
 
   if (hasil) {
@@ -282,8 +321,29 @@ export default function ManualLp() {
 
           <Langkah n={3} title="Rentang harga" done={siap}>
             <div className="flex flex-col gap-3">
-              <Chips value={full ? 'full' : lebar} onPick={(v) => { if (v === 'full') setFull(true); else { setFull(false); setLebar(v); } }}
-                options={[...LEBAR.map((v) => [v, `±${v}%`]), ['full', t('Seluruh rentang')]]} />
+              <Chips value={full ? 'full' : PRESET.find(([a, b]) => a === lo && b === up)?.[2]}
+                onPick={(v) => {
+                  if (v === 'full') return setFull(true);
+                  const [a, b] = PRESET.find((x) => x[2] === v);
+                  setFull(false); setTurun(String(a)); setNaik(String(b));
+                }}
+                options={[...PRESET.map(([, , l]) => [l, l]), ['full', t('Seluruh rentang')]]} />
+              {/* Batas bebas: mengetik di salah satu kotak otomatis keluar dari "seluruh rentang". */}
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Batas label="Batas bawah" aria="Turun sampai (persen)" tanda="−" value={full ? '' : turun} disabled={false}
+                  onChange={(v) => { setFull(false); setTurun(v); }} invalid={loBad}
+                  harga={hargaKini != null && !full && !loBad ? hargaKini * (1 - lo / 100) : null} sym={symQ} />
+                <Batas label="Batas atas" aria="Naik sampai (persen)" tanda="+" value={full ? '' : naik} disabled={false}
+                  onChange={(v) => { setFull(false); setNaik(v); }} invalid={upBad}
+                  harga={hargaKini != null && !full && !upBad ? hargaKini * (1 + up / 100) : null} sym={symQ} />
+              </div>
+              {(loBad || upBad || kosong) && (
+                <p className="text-xs text-danger">{t(loBad ? 'Batas bawah harus 0 sampai di bawah 100% — turun 100% berarti harga nol.'
+                  : upBad ? 'Batas atas maksimal 100.000%.' : 'Isi batas bawah atau batas atas.')}</p>
+              )}
+              {!full && p && !plan?.error && (Math.abs(p.lowerPct - lo) >= 0.05 || Math.abs(p.upperPct - up) >= 0.05) && (
+                <p className="text-xs text-muted">{t('Dibulatkan ke tick pool: −{a}% / +{b}%.', { a: num(p.lowerPct, 2), b: num(p.upperPct, 2) })}</p>
+              )}
               <p className="text-xs text-muted">
                 {t('Fee hanya mengalir selama harga ada di dalam rentang. Sempit = fee lebih besar tapi lebih cepat keluar; lebar = lebih aman tapi encer.')}
               </p>
@@ -344,7 +404,7 @@ export default function ManualLp() {
                 ) : (
                   <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/5 p-3">
                     <div className="text-sm font-medium">{t('Kirim transaksi sungguhan?')}</div>
-                    <div className="text-sm text-muted">{t('{v} ke {pair}, rentang {r}.', { v: usd(p.valueUsd), pair: p.pair, r: full ? t('seluruh rentang') : `±${lebar}%` })}</div>
+                    <div className="text-sm text-muted">{t('{v} ke {pair}, rentang {r}.', { v: usd(p.valueUsd), pair: p.pair, r: rentangLabel(lo, up, full, t) })}</div>
                     <div className="flex gap-2">
                       <Button className="flex-1" onPress={buka} isPending={kirim}>{t('Ya, buka sekarang')}</Button>
                       <Button variant="outline" onPress={() => setKonfirm(false)}>{t('Batal')}</Button>

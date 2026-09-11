@@ -749,6 +749,41 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.ok(Math.abs(a.preview.valueUsd - b.preview.valueUsd) < 1, 'nilainya tetap sama-sama $50');
   });
 
+  await t('rentang asimetris: turun 10% / naik 30% dari harga kini', async () => {
+    const w = build();
+    const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50, lowerPct: 10, upperPct: 30 });
+    assert.ok(!r.error, r.error);
+    // dibulatkan MELEBAR ke tick spacing: tidak pernah lebih sempit dari yang diminta
+    assert.ok(r.preview.lowerPct >= 10 - 1e-9 && r.preview.lowerPct < 12, `bawah ${r.preview.lowerPct}`);
+    assert.ok(r.preview.upperPct >= 30 - 1e-9 && r.preview.upperPct < 33, `atas ${r.preview.upperPct}`);
+    const bad = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50, lowerPct: 100, upperPct: 10 });
+    assert.match(bad.error || '', /batas bawah/);
+  });
+
+  await t('rentang Telegram: "10 30", "-10 +30", "−10/+30", "25"', async () => {
+    const { parseRentang, rentangTeks } = require('../src/telegram');
+    for (const x of ['10 30', '-10 +30', '−10/+30', '10% 30%', '10, 30']) {
+      assert.deepStrictEqual(parseRentang(x), { lowerPct: 10, upperPct: 30 }, x);
+    }
+    assert.deepStrictEqual(parseRentang('25'), { lowerPct: 25, upperPct: 25 });
+    assert.deepStrictEqual(parseRentang('2,5 7,5'), { lowerPct: 2.5, upperPct: 7.5 });
+    assert.ok(parseRentang('100 10').error);
+    assert.ok(parseRentang('0 0').error);
+    assert.ok(parseRentang('1 2 3').error);
+    assert.ok(parseRentang('lebar').error);
+    assert.strictEqual(rentangTeks({ lowerPct: 10, upperPct: 30 }), '−10% / +30%');
+    assert.strictEqual(rentangTeks({ lowerPct: 25, upperPct: 25 }), '±25%');
+    assert.strictEqual(rentangTeks({ widthPct: 25 }), '±25%', 'sesi lama');
+
+    const w = build();
+    await w.bot.handle(cbq('ml'));
+    await w.bot.handle(cbq('mlC'));
+    await w.bot.handle(msg('10 30'));
+    assert.match(lastOut(w.sent).params.text, /−10% \/ \+30%/);
+    const se = w.bot.sess(CHAT).lp;
+    assert.strictEqual(se.lowerPct, 10); assert.strictEqual(se.upperPct, 30);
+  });
+
   await t('LP manual menolak pool ber-hook selama hook belum diizinkan', async () => {
     const w = build();
     const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xhook', usd: 50 });
@@ -822,7 +857,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     await w.bot.handle(cbq('mlP:0'));
     await w.bot.handle(cbq('mln'));
     await w.bot.handle(msg('50'));
-    await w.bot.handle(cbq('mlw:10'));
+    await w.bot.handle(cbq('mlw:10:10'));
     const menu = lastOut(w.sent).params.text;
     assert.match(menu, /\$50/);
     assert.match(menu, /±10%/);

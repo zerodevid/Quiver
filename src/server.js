@@ -433,6 +433,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       return manual.planLp({
         poolRef: String(b.poolRef || ''), usd: Number(b.usd),
         widthPct: b.widthPct != null ? Number(b.widthPct) : 25,
+        lowerPct: b.lowerPct != null ? Number(b.lowerPct) : null,
+        upperPct: b.upperPct != null ? Number(b.upperPct) : null,
         tickLower: b.tickLower != null ? Math.round(Number(b.tickLower)) : null,
         tickUpper: b.tickUpper != null ? Math.round(Number(b.tickUpper)) : null,
         full: !!b.full,
@@ -444,6 +446,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const d = await manual.planLp({
         poolRef: String(b.poolRef || ''), usd: Number(b.usd),
         widthPct: b.widthPct != null ? Number(b.widthPct) : 25,
+        lowerPct: b.lowerPct != null ? Number(b.lowerPct) : null,
+        upperPct: b.upperPct != null ? Number(b.upperPct) : null,
         tickLower: b.tickLower != null ? Math.round(Number(b.tickLower)) : null,
         tickUpper: b.tickUpper != null ? Math.round(Number(b.tickUpper)) : null,
         full: !!b.full,

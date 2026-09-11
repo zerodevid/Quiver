@@ -23,6 +23,22 @@ const lc = (t) => String(t || '').toLowerCase();
 // fee. Tanpa ini pool bertanda dinamis terbaca "838,86%" — angka yang tidak pernah
 // ada dan bikin daftar hasil pindai tampak penuh jebakan.
 const DYNAMIC_FEE = 0x800000;
+
+// "Turun sampai X%, naik sampai Y%" dari harga kini -> tick mentah (belum
+// dibulatkan ke spacing). Persennya dalam HARGA YANG DILIHAT pengguna: token dalam
+// aset kuotasi. Harga itu naik bersama tick kalau kuotasinya token1, dan TURUN
+// kalau kuotasinya token0 — di situ batas bawah harga menjadi batas ATAS tick.
+function ticksFromPct({ curTick, quoteSide, lowerPct, upperPct }) {
+  const lo = Number(lowerPct ?? 0), up = Number(upperPct ?? 0);
+  if (!Number.isFinite(lo) || lo < 0 || lo >= 100) return { error: 'batas bawah harus 0 sampai di bawah 100%' };
+  if (!Number.isFinite(up) || up < 0 || up > 100000) return { error: 'batas atas harus 0 sampai 100.000%' };
+  if (lo === 0 && up === 0) return { error: 'rentangnya kosong — isi batas bawah atau batas atas' };
+  const LN = Math.log(1.0001);
+  const dTurun = Math.log(1 - lo / 100) / LN;   // <= 0
+  const dNaik = Math.log(1 + up / 100) / LN;    // >= 0
+  const [a, b] = quoteSide === 1 ? [curTick + dTurun, curTick + dNaik] : [curTick - dNaik, curTick - dTurun];
+  return { tickLower: Math.floor(a), tickUpper: Math.ceil(b) };
+}
 const feeDinamis = (f) => f != null && (Number(f) & DYNAMIC_FEE) !== 0;
 const feePctOf = (f) => (f == null || feeDinamis(f) ? null : Number(f) / 10000);
 
@@ -200,7 +216,7 @@ class Manual {
    * penyalinan otomatis untuk menghitung rentang dan menilai posisi.
    * Mengembalikan { error } atau { plan, preview, warnings }.
    */
-  async planLp({ poolRef, usd, widthPct = 25, tickLower = null, tickUpper = null, full = false }) {
+  async planLp({ poolRef, usd, widthPct = 25, lowerPct = null, upperPct = null, tickLower = null, tickUpper = null, full = false }) {
     const eng = this.engine;
     const p = await this.poolByRef(poolRef);
     if (!p) return { error: 'pool tidak dikenal — pilih dari daftar atau pantau dulu targetnya' };
@@ -223,6 +239,13 @@ class Manual {
       ? await this.chain.slot0V3(p.poolAddr || p.poolRef)
       : await this.chain.slot0V4(p.poolRef);
     if (!slot0) return { error: 'harga pool tidak terbaca sekarang' };
+
+    // Rentang asimetris (lihat ticksFromPct); dibulatkan melebar ke tick spacing di bawah.
+    if (!full && tickLower == null && tickUpper == null && (lowerPct != null || upperPct != null)) {
+      const r = ticksFromPct({ curTick: slot0.tick, quoteSide: p.quoteSide, lowerPct, upperPct });
+      if (r.error) return r;
+      ({ tickLower, tickUpper } = r);
+    }
 
     // Rentang: dihitung oleh planRange yang sama dengan jalur otomatis.
     const actLike = {
@@ -301,10 +324,17 @@ class Manual {
     if (kasUsd < valueUsd) return { error: `kas cuma $${kasUsd.toFixed(2)}, butuh ~$${valueUsd.toFixed(2)}` };
     if (kasUsd < valueUsd * 1.02) warnings.push('kas nyaris pas — sisakan sedikit untuk gas dan slippage');
 
+    // Persen efektif setelah dibulatkan ke tick spacing, dalam harga yang dilihat
+    // pengguna — "−10%" bisa jadi −10,4% di pool ber-spacing lebar.
+    const rasio = (t) => (p.quoteSide === 1 ? 1.0001 ** (t - slot0.tick) : 1.0001 ** (slot0.tick - t));
+    const [tHargaBawah, tHargaAtas] = p.quoteSide === 1 ? [range.tickLower, range.tickUpper] : [range.tickUpper, range.tickLower];
+    const lowerPctEff = (1 - rasio(tHargaBawah)) * 100, upperPctEff = (rasio(tHargaAtas) - 1) * 100;
+
     return {
       plan,
       warnings,
       preview: {
+        lowerPct: lowerPctEff, upperPct: upperPctEff,
         pair: p.pair, venue: p.venue, feePct: p.feePct, dynamicFee: p.dynamicFee,
         symbol0: p.symbol0, symbol1: p.symbol1, dec0: p.dec0, dec1: p.dec1, quoteSide: p.quoteSide,
         tickLower: range.tickLower, tickUpper: range.tickUpper, curTick: slot0.tick,
@@ -415,4 +445,4 @@ class Manual {
   }
 }
 
-module.exports = { Manual };
+module.exports = { ticksFromPct, Manual };
