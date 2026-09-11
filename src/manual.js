@@ -567,16 +567,36 @@ class Manual {
   }
 
   // ---- swap manual --------------------------------------------------------
+  // Token yang ditambahkan pengguna lewat alamat (halaman Swap). Disimpan di tabel
+  // state, bukan di browser, supaya ikut muncul di bot Telegram dan perangkat lain.
+  // Pemanggil wajib memastikan alamatnya memang token: daftar ini tidak memeriksa.
+  customTokens() {
+    try {
+      const v = JSON.parse(this.store.getState('swap_tokens', '[]'));
+      return Array.isArray(v) ? v.map(lc).filter((a) => /^0x[0-9a-f]{40}$/.test(a)) : [];
+    } catch { return []; }
+  }
+  addCustomToken(a) {
+    const list = this.customTokens().filter((x) => x !== lc(a));
+    this.store.setState('swap_tokens', JSON.stringify([lc(a), ...list].slice(0, 50)));
+  }
+  removeCustomToken(a) {
+    this.store.setState('swap_tokens', JSON.stringify(this.customTokens().filter((x) => x !== lc(a))));
+  }
+
   // Token yang masuk akal ditawarkan: aset kuotasi + token yang memang kita pegang
-  // (dari posisi terbuka dan antrean jual sisa). Saldo dibaca sekali, satu batch.
+  // (dari posisi terbuka dan antrean jual sisa) + token yang ditambahkan manual.
+  // Saldo dibaca sekali, satu batch.
   async held() {
     const eng = this.engine;
     const set = new Set([ADDR.native, ADDR.usdg, ADDR.weth]);
+    const custom = new Set(this.customTokens());
     for (const r of this.store.all("SELECT token0, token1 FROM positions WHERE status='open'")) {
       if (r.token0) set.add(lc(r.token0));
       if (r.token1) set.add(lc(r.token1));
     }
     for (const it of eng.leftovers()) if (it.token) set.add(lc(it.token));
+    for (const a of custom) set.add(a);
     const list = [...set];
     const [bal, metas] = await Promise.all([eng.exec.balances(list), this.chain.tokens(list)]);
     const byAddr = new Map(metas.map((t) => [lc(t.address), t]));
@@ -587,7 +607,7 @@ class Manual {
       return {
         address: a, symbol: meta.symbol || QUOTES[a]?.symbol || a.slice(0, 8), decimals: dec,
         raw: raw.toString(), amount: Number(raw) / 10 ** dec,
-        isQuote: !!QUOTES[a], native: isNative(a),
+        isQuote: !!QUOTES[a], native: isNative(a), custom: custom.has(a) && !QUOTES[a],
       };
     }).sort((x, y) => (y.isQuote ? 1 : 0) - (x.isQuote ? 1 : 0) || y.amount - x.amount);
   }
@@ -630,7 +650,7 @@ class Manual {
       amountIn: Number(BigInt(amountRaw)) / 10 ** (mi.decimals ?? 18),
       amountOut: Number(q.amountOut) / 10 ** (mo.decimals ?? 18),
       usdIn: q.usdIn, usdOut: q.usdOut, lossBps: loss, dex: q.dex,
-      maxLossBps: rules.exit.sell_max_loss_bps,
+      maxLossBps: rules.exit.sell_max_loss_bps, slippageBps: rules.swap.max_slippage_bps,
       tooLossy: loss != null && loss > rules.exit.sell_max_loss_bps,
     };
   }
@@ -641,14 +661,22 @@ class Manual {
     if (eng.dryRun()) throw new Error('mode simulasi: tidak mengirim transaksi');
     const rules = eng.rulesFrom(null);
     const [mi, mo] = await this.chain.tokens([tokenIn, tokenOut]);
+    const masuk = Number(BigInt(amountRaw)) / 10 ** (mi.decimals ?? 18);
+    // Token dan jumlahnya ikut dicatat di txs supaya riwayat di halaman Swap bisa
+    // menampilkan "0,5 ETH → 1.700 USDG", bukan cuma hash.
+    const detail = { tokenIn: lc(tokenIn), tokenOut: lc(tokenOut), symbolIn: mi.symbol, symbolOut: mo.symbol, amountIn: masuk };
     const r = await eng.kyber.swap(tokenIn, tokenOut, BigInt(amountRaw), {
       slippageBps: rules.swap.max_slippage_bps,
       maxLossBps: rules.exit.sell_max_loss_bps,
-      kind: 'swap_manual',
+      kind: 'swap_manual', detail,
     });
     if (!r) throw new Error('Kyber tidak menemukan rute');
     const keluar = Number(r.amountOut) / 10 ** (mo.decimals ?? 18);
-    const masuk = Number(BigInt(amountRaw)) / 10 ** (mi.decimals ?? 18);
+    try {
+      const row = this.store.get('SELECT detail FROM txs WHERE hash=?', r.hash);
+      const d = row?.detail ? JSON.parse(row.detail) : detail;
+      this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify({ ...d, amountOut: keluar }), r.hash);
+    } catch { /* riwayat saja — swap-nya sudah terkirim */ }
     const note = `${masuk.toPrecision(6)} ${mi.symbol} → ${keluar.toPrecision(6)} ${mo.symbol}`;
     eng.notify(`swap manual: ${note}`);
     return { txHash: r.hash, amountOut: r.amountOut.toString(), note, dex: r.quote?.dex || null };

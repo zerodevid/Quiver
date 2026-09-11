@@ -5,17 +5,16 @@
 // Dibuka dari lambang atau simbol token di mana pun di dasbor: #token/0x….
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@heroui/react';
-import { ArrowLeft, ExternalLink, Copy, Check } from 'lucide-react';
 import {
   ResponsiveContainer, ComposedChart, Bar, XAxis, YAxis, Tooltip as ReTooltip, CartesianGrid,
 } from 'recharts';
 import { usePoll } from '../hooks';
-import { Panel, Stat, KV, Dot, Empty, Loading, Segmented, DataTable, PriceRange } from '../components/ui';
+import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink } from '../components/ui';
 import TokenIcon, { TokenPair, PairName } from '../components/TokenIcon';
-import { Pair } from './Positions';
+import { BotPositions, WalletPositions, TargetMoves } from '../components/LpTables';
 import { Candle, CandleTip, MarketPanel, fmtT, kUsd } from './PositionDetail';
-import { usd, pct, tone, num, age, ago, short, price, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
-import { useI18n, reason } from '../i18n';
+import { usd, pct, tone, num, age, short, price, locale as fmtLocale } from '../fmt';
+import { useI18n } from '../i18n';
 
 const TFS = [['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam'], ['1d', '1 hari']];
 // Kira-kira satu hari per 5 menit, sepuluh hari per jam, sebulan per 4 jam.
@@ -53,29 +52,6 @@ function TokenChart({ m, tf }) {
   );
 }
 
-function CopyAddr({ address }) {
-  const { t } = useI18n();
-  const [done, setDone] = useState(false);
-  useEffect(() => { if (!done) return undefined; const id = setTimeout(() => setDone(false), 1500); return () => clearTimeout(id); }, [done]);
-  const copy = async () => { try { await navigator.clipboard.writeText(address); setDone(true); } catch { /* izin clipboard ditolak */ } };
-  return (
-    <button type="button" onClick={copy} title={address} aria-label={t('Salin alamat')}
-      className="inline-flex items-center gap-1 rounded px-1 font-mono text-muted transition-colors hover:bg-default hover:text-foreground">
-      {short(address)}{done ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
-    </button>
-  );
-}
-
-const ext = (href, label, muted) => (
-  <a key={href} href={href} target="_blank" rel="noreferrer"
-    className={`inline-flex items-center gap-1 hover:underline ${muted ? 'text-muted' : 'text-accent'}`}>{label} <ExternalLink className="size-3" /></a>
-);
-
-function goBack(e) {
-  e.preventDefault();
-  if (history.length > 1) history.back(); else location.hash = 'positions';
-}
-
 export default function TokenDetail({ param }) {
   const { t } = useI18n();
   const a = String(param || '').toLowerCase();
@@ -102,13 +78,11 @@ export default function TokenDetail({ param }) {
   const bal = d.balance;
   const born = pairs.reduce((m, p) => (p.pairCreatedAt && (!m || p.pairCreatedAt < m) ? p.pairCreatedAt : m), null);
 
-  const mine = [...d.open.map((p) => ({ ...p, status: 'open' })), ...d.closed];
-  const minePnl = sum(mine, (p) => p.pnlUsd);
 
   return (
     <>
       <div className="mb-5 border-b border-border pb-4">
-        <a href="#" onClick={goBack} className="mb-3 inline-flex items-center gap-1 text-xs text-muted hover:text-foreground"><ArrowLeft className="size-3.5" />{t('Kembali')}</a>
+        <BackLink />
         <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
           <div className="flex min-w-0 items-center gap-3">
             <TokenIcon address={tk.address} symbol={tk.symbol} size={36} />
@@ -126,10 +100,10 @@ export default function TokenDetail({ param }) {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-            {ext(`https://dexscreener.com/robinhood/${tk.address}`, 'DexScreener')}
-            {ext(`https://www.geckoterminal.com/robinhood/tokens/${tk.address}`, 'GeckoTerminal')}
-            {info?.websites?.map((w) => ext(w, t('Situs'), true))}
-            {info?.socials?.map((s) => ext(s.url, s.type || t('Sosial'), true))}
+            <ExtLink href={`https://dexscreener.com/robinhood/${tk.address}`}>DexScreener</ExtLink>
+            <ExtLink href={`https://www.geckoterminal.com/robinhood/tokens/${tk.address}`}>GeckoTerminal</ExtLink>
+            {info?.websites?.map((w) => <ExtLink key={w} href={w} muted>{t('Situs')}</ExtLink>)}
+            {info?.socials?.map((x) => <ExtLink key={x.url} href={x.url} muted>{x.type || t('Sosial')}</ExtLink>)}
           </div>
         </div>
       </div>
@@ -146,7 +120,7 @@ export default function TokenDetail({ param }) {
       <div className="grid items-start gap-3 lg:grid-cols-3">
         <Panel className="lg:col-span-2"
           title={t('Harga {s} dalam USD', { s: tk.symbol || '?' })}
-          desc={sel ? <span className="inline-flex items-center gap-1.5">{t('pool')} <PairName token0={sel.base.address} token1={sel.quote.address} symbol0={sel.base.symbol} symbol1={sel.quote.symbol} /> <span className="uppercase">{venueOf(sel)}</span></span> : null}
+          desc={sel ? <span className="inline-flex items-center gap-1.5">{t('pool')} <PairName token0={sel.base.address} token1={sel.quote.address} symbol0={sel.base.symbol} symbol1={sel.quote.symbol} pool={sel.pool} /> <span className="uppercase">{venueOf(sel)}</span></span> : null}
           action={sel && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}>
           {d.market?.error ? <Empty title="Data pasar tidak tersedia" sub={d.market.error} />
             : !sel ? <Empty title="Belum ada pool terindeks" sub="DexScreener belum mengenal pool untuk token ini." />
@@ -184,7 +158,7 @@ export default function TokenDetail({ param }) {
                 <div className="flex items-center gap-2.5">
                   <TokenPair token0={p.base.address} token1={p.quote.address} symbol0={p.base.symbol} symbol1={p.quote.symbol} size={20} />
                   <div>
-                    <PairName token0={p.base.address} token1={p.quote.address} symbol0={p.base.symbol} symbol1={p.quote.symbol} className="font-medium" />
+                    <PairName token0={p.base.address} token1={p.quote.address} symbol0={p.base.symbol} symbol1={p.quote.symbol} pool={p.pool} className="block font-medium" />
                     <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
                       <span className="uppercase">{venueOf(p)}</span><span>·</span><span className="mono">{short(p.pool)}</span>
                     </div>
@@ -208,95 +182,9 @@ export default function TokenDetail({ param }) {
         </Panel>
       )}
 
-      <Panel title={t('Posisi bot ({n})', { n: mine.length })} className="mt-4" bodyClass="p-0"
-        action={mine.length > 0 && <span className="text-xs"><span className="text-muted">PnL</span> <span className={`num font-medium ${tone(minePnl)}`}>{usd(minePnl)}</span></span>}>
-        <DataTable label="Posisi bot" rows={mine} rowKey={(p) => p.id} pageSize={10}
-          defaultSort={{ column: 'when', direction: 'descending' }}
-          empty={<Empty title="Bot belum pernah memegang token ini" />}
-          columns={[
-            { key: 'pair', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <Pair p={p} /> },
-            { key: 'st', label: 'Status', sort: (p) => p.status, render: (p) => (
-              <span className="inline-flex items-center gap-1.5 whitespace-nowrap"><Dot tone={p.status === 'open' ? 'success' : 'default'} />{t(p.status === 'open' ? 'Terbuka' : 'Ditutup')}</span>) },
-            { key: 'cost', label: 'Modal', align: 'end', sort: (p) => p.costUsd, render: (p) => usd(p.costUsd) },
-            { key: 'val', label: 'Nilai / hasil', align: 'end', sort: (p) => (p.status === 'open' ? p.valueUsd + (p.feeUsd || 0) : p.outUsd), render: (p) => (
-              p.status === 'open'
-                ? <div>{usd(p.valueUsd)}{p.feeUsd > 0.005 && <div className="text-xs text-success">+{usd(p.feeUsd)} fee</div>}</div>
-                : usd(p.outUsd)) },
-            { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnlUsd, render: (p) => (
-              <div className={tone(p.pnlUsd)}>{usd(p.pnlUsd)}<div className="text-xs">{p.pnlPct == null ? '' : pct(p.pnlPct, 2)}</div></div>) },
-            { key: 'when', label: 'Waktu', align: 'end', sort: (p) => p.closed_ts || p.opened_ts, render: (p) => (
-              <span className="whitespace-nowrap text-muted">{p.status === 'open' ? t('dibuka {w}', { w: ago(p.opened_ts) }) : t('ditutup {w}', { w: ago(p.closed_ts) })}</span>) },
-          ]} />
-      </Panel>
-
-      {d.wallets.length > 0 && (
-        <Panel title={t('Posisi wallet yang diriset ({n})', { n: d.wallets.length })} desc="Dari pemindaian halaman Wallet dan Target" className="mt-4" bodyClass="p-0">
-          <DataTable label="Posisi wallet" rows={d.wallets} rowKey={(p) => `${p.wallet}:${p.venue}:${p.token_id}`} searchable pageSize={15}
-            defaultSort={{ column: 'when', direction: 'descending' }}
-            columns={[
-              { key: 'w', label: 'Wallet', sort: (p) => p.walletLabel || p.wallet, search: (p) => `${p.walletLabel || ''} ${p.wallet}`, render: (p) => (
-                <a href={(p.isTarget ? '#targets/' : '#wallet/') + p.wallet} className="group block max-w-40" title={p.wallet}>
-                  {p.walletLabel && <div className="truncate font-medium group-hover:underline">{p.walletLabel}</div>}
-                  <div className="mono text-xs text-muted group-hover:text-foreground">{short(p.wallet)}</div>
-                </a>) },
-              { key: 'pair', label: 'Posisi / pool', sort: (p) => `${p.symbol0}/${p.symbol1}`, search: (p) => `${p.symbol0}/${p.symbol1} ${p.token_id}`, render: (p) => (
-                <div className="flex items-center gap-2.5">
-                  <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={20} />
-                  <div>
-                    <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} className="font-medium" />
-                    <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
-                      <span className="uppercase">{p.venue}</span><span>·</span><span className="mono">#{p.token_id}</span>
-                    </div>
-                  </div>
-                </div>) },
-              { key: 'st', label: 'Status', sort: (p) => p.status, render: (p) => (
-                <span className="inline-flex items-center gap-1.5 whitespace-nowrap"><Dot tone={p.status === 'open' ? 'success' : 'default'} />{t(p.status === 'open' ? 'Terbuka' : 'Ditutup')}</span>) },
-              { key: 'inv', label: 'Modal', align: 'end', sort: (p) => p.invested_q, render: (p) => usd(p.invested_q) },
-              { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnl_q, render: (p) => (
-                <div className={tone(p.pnl_q)}>{usd(p.pnl_q)}<div className="text-xs">{p.pnlPct == null ? '' : pct(p.pnlPct, 2)}</div></div>) },
-              { key: 'rng', label: 'Rentang harga', sortable: false, render: (p) => (
-                <PriceRange lo={p.tick_lower} hi={p.tick_upper} dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1} />) },
-              { key: 'when', label: 'Waktu', align: 'end', sort: (p) => p.closed_ts || p.opened_ts, render: (p) => (
-                <span className="whitespace-nowrap text-muted">{p.status === 'open' ? t('dibuka {w}', { w: ago(p.opened_ts) }) : t('ditutup {w}', { w: ago(p.closed_ts) })}</span>) },
-            ]} />
-        </Panel>
-      )}
-
-      {d.activity.length > 0 && (
-        <Panel title={t('Gerakan target ({n})', { n: d.activity.length })} className="mt-4" bodyClass="p-0">
-          <DataTable label="Gerakan target" rows={d.activity} rowKey={(x) => x.id} pageSize={15}
-            defaultSort={{ column: 'ts', direction: 'descending' }}
-            columns={[
-              { key: 'ts', label: 'Waktu', sort: (x) => x.ts, render: (x) => (
-                <span className="whitespace-nowrap text-muted" title={new Date(x.ts).toLocaleString(fmtLocale())}>{ago(x.ts)}</span>) },
-              { key: 'tgt', label: 'Target', sort: (x) => x.targetLabel || x.target, render: (x) => (
-                <a href={'#targets/' + x.target} className="group block max-w-40" title={x.target}>
-                  {x.targetLabel && <div className="truncate font-medium group-hover:underline">{x.targetLabel}</div>}
-                  <div className="mono text-xs text-muted">{short(x.target)}</div>
-                </a>) },
-              { key: 'kind', label: 'Aksi', sort: (x) => x.kind, render: (x) => (
-                <span className="whitespace-nowrap">{t(AKSI[x.kind]?.[0] || x.kind)} <span className="text-[0.6875rem] text-muted uppercase">{x.venue}</span></span>) },
-              { key: 'pair', label: 'Pasangan', sort: (x) => `${x.symbol0}/${x.symbol1}`, render: (x) => (
-                <PairName token0={x.token0} token1={x.token1} symbol0={x.symbol0} symbol1={x.symbol1} sep="/" className="font-medium" />) },
-              { key: 'val', label: 'Nilai', align: 'end', sort: (x) => x.value_quote, render: (x) => (
-                x.value_quote == null ? <span className="text-muted">—</span>
-                  : x.quote_symbol === 'ETH' || x.quote_symbol === 'WETH' ? `${x.value_quote.toFixed(4)} Ξ` : usd(x.value_quote)) },
-              { key: 'dec', label: 'Keputusan', sort: (x) => x.verdict, render: (x) => {
-                const k = KEPUTUSAN[x.verdict];
-                return (
-                  <div className="max-w-xs">
-                    <div className="flex items-center gap-1.5 font-medium">
-                      <Dot tone={k?.[1] || 'default'} />
-                      {x.position_id
-                        ? <a href={'#positions/' + x.position_id} className="hover:underline">{k ? t(k[0]) : (x.verdict || '—')}</a>
-                        : <span>{k ? t(k[0]) : (x.verdict || '—')}</span>}
-                    </div>
-                    {x.reason && <div className="mt-0.5 truncate text-xs text-muted" title={reason(x.reason)}>{reason(x.reason)}</div>}
-                  </div>);
-              } },
-            ]} />
-        </Panel>
-      )}
+      <BotPositions open={d.open} closed={d.closed} className="mt-4" />
+      <WalletPositions rows={d.wallets} className="mt-4" />
+      <TargetMoves rows={d.activity} className="mt-4" />
     </>
   );
 }

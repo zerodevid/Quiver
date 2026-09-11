@@ -82,7 +82,7 @@ const posCols = (open) => [
     <div className="flex items-center gap-2.5">
       <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={22} />
       <div>
-        <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} className="block font-medium" />
+        <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} className="block font-medium" />
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
           <span className="uppercase">{String(p.venue || 'v4')}</span><span>·</span>
           <span className="mono">#{p.token_id}</span>

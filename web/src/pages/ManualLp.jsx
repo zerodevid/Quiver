@@ -440,7 +440,7 @@ export default function ManualLp() {
               <div className="flex items-center gap-3">
                 <TokenPair token0={pool.token0} token1={pool.token1} symbol0={pool.symbol0} symbol1={pool.symbol1} size={30} />
                 <div className="min-w-0">
-                  <div className="text-base font-semibold"><PairName token0={pool.token0} token1={pool.token1} symbol0={pool.symbol0} symbol1={pool.symbol1} sep="/" /></div>
+                  <div className="text-base font-semibold"><PairName token0={pool.token0} token1={pool.token1} symbol0={pool.symbol0} symbol1={pool.symbol1} pool={pool.poolRef} sep="/" /></div>
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted">
                     <span className="uppercase">{pool.venue}</span><span>·</span>
                     <span>{pool.dynamicFee ? t('fee dinamis') : t('fee {p}%', { p: num(pool.feePct, 2) })}</span><span>·</span>

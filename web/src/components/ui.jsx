@@ -5,8 +5,8 @@ import {
   Card, Chip, EmptyState, Label, Description, TextField, Input, Select, ListBox,
   Switch, Table, Spinner, Alert, Pagination, AlertDialog, Button,
 } from '@heroui/react';
-import { Inbox, Search } from 'lucide-react';
-import { price, tickPrice, sqrtPrice, widthPct, pct } from '../fmt';
+import { Inbox, Search, ArrowLeft, Copy, Check, ExternalLink } from 'lucide-react';
+import { price, tickPrice, sqrtPrice, widthPct, pct, short } from '../fmt';
 import { translate as t } from '../i18n';
 
 export function PageHeader({ group, title, desc, children }) {
@@ -468,5 +468,39 @@ export function Segmented({ value, onChange, options, aria, size = 'md' }) {
         );
       })}
     </div>
+  );
+}
+
+// Alamat pendek yang bisa diklik untuk disalin utuh.
+export function CopyAddr({ address }) {
+  const [done, setDone] = useState(false);
+  useEffect(() => { if (!done) return undefined; const id = setTimeout(() => setDone(false), 1500); return () => clearTimeout(id); }, [done]);
+  const copy = async () => { try { await navigator.clipboard.writeText(address); setDone(true); } catch { /* izin clipboard ditolak */ } };
+  return (
+    <button type="button" onClick={copy} title={address} aria-label={t('Salin alamat')}
+      className="inline-flex items-center gap-1 rounded px-1 font-mono text-muted transition-colors hover:bg-default hover:text-foreground">
+      {short(address)}{done ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
+    </button>
+  );
+}
+
+// "← Kembali" ke halaman sebelumnya; dibuka langsung dari tautan: ke `fallback`.
+export function BackLink({ fallback = 'positions' }) {
+  const back = (e) => {
+    e.preventDefault();
+    if (history.length > 1) history.back(); else location.hash = fallback;
+  };
+  return (
+    <a href={'#' + fallback} onClick={back} className="mb-3 inline-flex items-center gap-1 text-xs text-muted hover:text-foreground">
+      <ArrowLeft className="size-3.5" />{t('Kembali')}
+    </a>
+  );
+}
+
+// Tautan ke situs luar (DexScreener, GeckoTerminal, situs token), tab baru.
+export function ExtLink({ href, muted, children }) {
+  return (
+    <a href={href} target="_blank" rel="noreferrer"
+      className={`inline-flex items-center gap-1 hover:underline ${muted ? 'text-muted' : 'text-accent'}`}>{children} <ExternalLink className="size-3" /></a>
   );
 }

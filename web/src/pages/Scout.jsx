@@ -75,7 +75,7 @@ export default function Scout() {
                 defaultSort={{ column: 'v', direction: 'descending' }}
                 empty={<Empty title="Tidak ada posisi hidup" />}
                 columns={[
-                  { key: 'p', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <div><PairName token0={p.poolKey?.currency0} token1={p.poolKey?.currency1} symbol0={p.symbol0} symbol1={p.symbol1} sep="/" />
+                  { key: 'p', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <div><PairName token0={p.poolKey?.currency0} token1={p.poolKey?.currency1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.poolId} sep="/" />
                     <span className={`ml-2 text-xs ${p.inRange ? 'text-success' : 'text-warning'}`}>{t(p.inRange ? 'in' : 'luar')}</span></div> },
                   { key: 'r', label: 'Rentang harga', sortable: false, render: (p) => <PriceRange lo={p.tickLower} hi={p.tickUpper} cur={p.curTick}
                     dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1} /> },

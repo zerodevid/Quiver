@@ -19,6 +19,10 @@ TOKENS = {"tokens":[
   {"address":"0x5fc5360d0400a0fd4f2af552add042d716f1d168","symbol":"USDG","decimals":6,"raw":"150000000","amount":150,"isQuote":True,"native":False},
   {"address":"0x0000000000000000000000000000000000000000","symbol":"ETH","decimals":18,"raw":"100000000000000000","amount":0.1,"isQuote":True,"native":True},
   {"address":"0x7a492b0a2d630b94791af846c1842db9e623420c","symbol":"MEME","decimals":18,"raw":"0","amount":0,"isQuote":False,"native":False}]}
+SWAPS = {"swaps":[
+  {"hash":"0x"+"ab"*32,"ts":1760000000000,"status":"sukses","error":None,"detail":{"tokenIn":"0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+   "tokenOut":"0x0000000000000000000000000000000000000000","symbolIn":"USDG","symbolOut":"ETH","amountIn":50,"amountOut":0.02}},
+  {"hash":"0x"+"cd"*32,"ts":1759990000000,"status":"gagal","error":"revert","detail":{"usdIn":20,"usdOut":19.8}}]}
 # overview dipalsukan LIVE hanya untuk satu kasus, supaya konfirmasi dua langkah ikut teruji
 LIVE = {"mode":{"dry_run":False,"paused":False,"wallet":"0x"+"11"*20},
  "chain":{"head":1,"cursor":1,"lag":0,"ethUsd":2500,"headSpread":0},
@@ -45,7 +49,8 @@ def cek(pg, lbl, lang, mode, live):
         else:
             r.fulfill(status=200, content_type='application/json', body=json.dumps(SCAN))
     pg.route('**/api/manual/pools/scan*', scan)
-    pg.route('**/api/manual/tokens', lambda r: r.fulfill(status=200, content_type='application/json', body=json.dumps(TOKENS)))
+    pg.route('**/api/manual/tokens*', lambda r: r.fulfill(status=200, content_type='application/json', body=json.dumps(TOKENS)))
+    pg.route('**/api/manual/swaps', lambda r: r.fulfill(status=200, content_type='application/json', body=json.dumps(SWAPS)))
     if live:
         pg.route('**/api/overview', lambda r: r.fulfill(status=200, content_type='application/json', body=json.dumps(LIVE)))
 

@@ -105,8 +105,23 @@ export function TokenSym({ address, symbol, className = '' }) {
   return <a href={href} onClick={stop} className={`hover:underline ${className}`}>{label}</a>;
 }
 
-// "USDG / OPAI" — tiap simbol menaut ke tokennya masing-masing.
-export function PairName({ token0, token1, symbol0, symbol1, sep = ' / ', className = '' }) {
+// Rute halaman detail pool: v4 = poolId (32 byte), v3 = alamat pool.
+export const poolHref = (ref) => {
+  const r = (ref || '').toLowerCase();
+  return /^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(r) ? `#pool/${r}` : null;
+};
+
+// "USDG / OPAI". Dengan `pool`, pasangan itu satu tautan ke halaman pool-nya (seperti
+// halaman pair DexScreener); tanpa pool, tiap simbol menaut ke tokennya sendiri.
+export function PairName({ token0, token1, symbol0, symbol1, pool, sep = ' / ', className = '' }) {
+  const href = poolHref(pool);
+  if (href) {
+    return (
+      <a href={href} onClick={stop} className={`whitespace-nowrap hover:underline ${className}`}>
+        {symbol0 || '?'}{sep}{symbol1 || '?'}
+      </a>
+    );
+  }
   return (
     <span className={`whitespace-nowrap ${className}`}>
       <TokenSym address={token0} symbol={symbol0} />{sep}<TokenSym address={token1} symbol={symbol1} />

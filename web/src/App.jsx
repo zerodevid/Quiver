@@ -25,8 +25,9 @@ const Scout = lazy(() => import('./pages/Scout'));
 const Settings = lazy(() => import('./pages/Settings'));
 const ManualLp = lazy(() => import('./pages/ManualLp'));
 const Swap = lazy(() => import('./pages/Swap'));
-// Tidak ada di menu: dibuka dari lambang/simbol token di mana pun (#token/0x…).
+// Tidak ada di menu: dibuka dari lambang token (#token/0x…) dan nama pasangan (#pool/0x…).
 const TokenDetail = lazy(() => import('./pages/TokenDetail'));
+const PoolDetail = lazy(() => import('./pages/PoolDetail'));
 
 // Status mesin dipoll SEKALI di sini lalu dibagi ke semua halaman.
 const StatusCtx = createContext(null);
@@ -54,7 +55,7 @@ const NAV = [
     ['settings', 'Pengaturan', SettingsIcon, Settings],
   ]],
 ];
-const PAGES = { ...Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C]))), token: TokenDetail };
+const PAGES = { ...Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C]))), token: TokenDetail, pool: PoolDetail };
 
 function NavLinks({ page, onPick }) {
   const { t } = useI18n();

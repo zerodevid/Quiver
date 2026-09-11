@@ -20,13 +20,13 @@ import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice, widthPct, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
 
-const TFS = [['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam'], ['1d', '1 hari']];
-const SECS = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
-const VIEWS = [['chart', 'Grafik'], ['dex', 'DexScreener']];
+export const TFS = [['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam'], ['1d', '1 hari']];
+export const SECS = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
+export const VIEWS = [['chart', 'Grafik'], ['dex', 'DexScreener']];
 
 // Rentang lilin dipilih supaya titik masuk masih terlihat: posisi berumur 50 menit
 // dilihat per 5 menit, posisi berumur seminggu per 4 jam.
-const tfFor = (ageHours) => {
+export const tfFor = (ageHours) => {
   const s = (ageHours || 0) * 3600;
   for (const tf of ['5m', '15m', '1h', '4h']) if (s / SECS[tf] <= 400) return tf;
   return '1d';
@@ -79,13 +79,15 @@ export function CandleTip({ active, payload, tf, quote }) {
   );
 }
 
-// Grafik lilin + rentang posisi + penanda masuk/keluar.
-function PriceChart({ p, m, tf }) {
+// Grafik lilin + rentang posisi + penanda masuk/keluar. Dipakai juga halaman pool:
+// tanpa posisi (tick_lower null) yang tergambar hanya lilin dan harga kini.
+export function PriceChart({ p, m, tf }) {
   const { t } = useI18n();
   const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
-  const a = at(p.tick_lower), b = at(p.tick_upper);
+  const hasRange = p.tick_lower != null && p.tick_upper != null;
+  const a = hasRange ? at(p.tick_lower) : null, b = hasRange ? at(p.tick_upper) : null;
   const [pLo, pHi] = a <= b ? [a, b] : [b, a];
-  const full = p.tick_lower <= -880000 && p.tick_upper >= 880000;
+  const full = hasRange && p.tick_lower <= -880000 && p.tick_upper >= 880000;
   const pEntry = sqrtPrice(p.entrySqrt, p.dec0, p.dec1, p.quoteSide);
   const pExit = sqrtPrice(p.exitSqrt, p.dec0, p.dec1, p.quoteSide);
   const pNow = p.curSqrt ? sqrtPrice(p.curSqrt, p.dec0, p.dec1, p.quoteSide) : (p.curTick != null ? at(p.curTick) : null);
@@ -129,7 +131,7 @@ function PriceChart({ p, m, tf }) {
   if (pEntry) vals.push(pEntry);
   if (pNow) vals.push(pNow);
   let lo = Math.min(...vals), hi = Math.max(...vals);
-  const bandOk = !full && pHi / pLo < 3.5;
+  const bandOk = hasRange && !full && pHi / pLo < 3.5;
   if (bandOk) { lo = Math.min(lo, pLo); hi = Math.max(hi, pHi); }
   const pad = (hi - lo || lo * 0.1) * 0.06;
   const dom = [Math.max(0, lo - pad), hi + pad];
@@ -148,7 +150,7 @@ function PriceChart({ p, m, tf }) {
               tick={{ fill: 'var(--muted)', fontSize: 11 }} tickFormatter={(v) => price(v)} />
             <ReTooltip content={<CandleTip tf={tf} quote={quote} />} cursor={{ stroke: 'var(--border)' }} isAnimationActive={false} />
             {/* rentang posisi */}
-            {!full && (
+            {hasRange && !full && (
               <ReferenceArea y1={pLo} y2={pHi} ifOverflow="hidden" fill="var(--accent)" fillOpacity={0.1} stroke="var(--accent)" strokeOpacity={0.35} strokeDasharray="3 3"
                 label={{ value: t('rentang'), position: 'insideTopLeft', ...lblStyle }} />
             )}
@@ -167,17 +169,17 @@ function PriceChart({ p, m, tf }) {
         </ResponsiveContainer>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-        {!full && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang posisi')}</span>}
-        <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 w-px border-l-2 border-dashed border-accent" />{t('saat masuk')}</span>
+        {hasRange && !full && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang posisi')}</span>}
+        {tEntry != null && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 w-px border-l-2 border-dashed border-accent" />{t('saat masuk')}</span>}
         {pEntry != null && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-px w-4 border-t border-dashed border-muted" />{t('harga masuk')}</span>}
-        {!bandOk && !full && <span>{t('rentang lebih lebar dari grafik — pita dipotong di tepi')}</span>}
+        {hasRange && !bandOk && !full && <span>{t('rentang lebih lebar dari grafik — pita dipotong di tepi')}</span>}
         <span className="ml-auto">{t('lilin {tf} · GeckoTerminal', { tf })}</span>
       </div>
     </div>
   );
 }
 
-function DexEmbed({ pool }) {
+export function DexEmbed({ pool }) {
   const dark = document.documentElement.classList.contains('dark');
   const q = new URLSearchParams({
     embed: '1', loadChartSettings: '0', trades: '0', tabs: '0', info: '0', chartLeftToolbar: '0',
@@ -193,7 +195,7 @@ function DexEmbed({ pool }) {
 }
 
 // Perubahan harga per jendela waktu dari DexScreener — satu baris chip kecil.
-function Changes({ pc }) {
+export function Changes({ pc }) {
   const { t } = useI18n();
   const items = [['m5', '5 mnt'], ['h1', '1 jam'], ['h6', '6 jam'], ['h24', '24 jam']].filter(([k]) => pc?.[k] != null);
   if (!items.length) return <span className="text-muted">—</span>;
@@ -285,7 +287,7 @@ export default function PositionDetail({ id }) {
           <div className="flex min-w-0 items-center gap-3">
             <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={30} />
             <div className="min-w-0">
-              <h1 className="text-xl font-semibold tracking-tight"><PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} sep="/" /></h1>
+              <h1 className="text-xl font-semibold tracking-tight"><PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} sep="/" /></h1>
               <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted">
                 <span>Uniswap {String(p.venue).toUpperCase()}</span><span>·</span>
                 <span className="num">{t('fee {f}%', { f: num(p.fee / 10000, 2) })}</span>
