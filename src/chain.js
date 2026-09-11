@@ -34,6 +34,9 @@ const TOPIC = {
   increaseLiq:     '0x3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f',
   decreaseLiq:     '0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4',
   collectV3:       '0x40d0efd1a53d60ecbf40971b9daf7dc90178c3aadc7aab1765632738fa8b8f01',
+  // Swap di kontrak pool v3 (bukan di NPM) — membawa sqrtPriceX96, dipakai riset v3
+  // untuk menilai kejadian pada harga di bloknya sendiri.
+  swapV3:          '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67',
   // ERC721 / ERC20
   transfer:        '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
   // pool v3 langsung (LP tanpa NFT manager)

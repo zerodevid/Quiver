@@ -23,6 +23,7 @@ const { ADDR, TOPIC, ABI, QUOTES } = require('./chain');
 const { computePoolId } = require('./pools');
 const { getLogsSafe } = require('./scout');
 const { unclaimedV4, feesAtBlock } = require('./fees');
+const { WalletV3 } = require('./walletv3');
 const m = require('./v3math');
 
 const IF_POSM = new ethers.Interface(ABI.posmV4);
@@ -36,6 +37,10 @@ class WalletResearch {
   constructor({ rpc, store, chain, log }) {
     this.rpc = rpc; this.store = store; this.chain = chain; this.log = log || (() => {});
     this.priceCache = new Map();
+    // Uniswap v3 punya jalur sendiri: event NPM-nya membawa jumlah token langsung,
+    // jadi rekonstruksinya tidak sama dengan v4. Wallet yang ber-LP di v3 dulu
+    // tampil KOSONG di halaman riset karena modul ini cuma membaca v4.
+    this.v3 = new WalletV3({ rpc, store, chain, log });
   }
 
   // ---- harga pool pada blok tertentu --------------------------------------
@@ -433,10 +438,11 @@ class WalletResearch {
     const from = Math.max(0, head - blocks);
     const held = await this.enumerate(wallet, from, head, onProgress);
     const ids = [...held.keys()];
-    if (!ids.length) return { wallet, positions: [], head, from };
-
-    const infos = await this.poolKeys(ids, held);
     const out = [];
+    // Tidak ada posisi v4 BUKAN berarti wallet ini tidak ber-LP: banyak yang hanya
+    // main di v3. Dulu di sini ada return lebih awal, sehingga jalur v3 tidak pernah
+    // dijalankan dan halaman risetnya kosong walau wallet-nya aktif.
+    const infos = ids.length ? await this.poolKeys(ids, held) : new Map();
     let done = 0;
     for (const id of ids) {
       const info = infos.get(id);
@@ -454,8 +460,15 @@ class WalletResearch {
         if (pos) out.push(pos);
       } catch (e) { this.log(`posisi ${id} gagal: ${e.message}`); }
     }
+    out.push(...await this.scanV3(wallet, { from, head, ethUsd, onProgress }));
     await this.persist(wallet, out, { from, head, ethUsd });
     return { wallet, positions: out, head, from };
+  }
+
+  // Kegagalan di jalur v3 tidak boleh menjatuhkan hasil v4 yang sudah terkumpul.
+  async scanV3(wallet, opts) {
+    try { return await this.v3.scan(wallet, opts); }
+    catch (e) { this.log(`riset v3 ${wallet.slice(0, 10)}…: ${e.message}`); return []; }
   }
 
   // ---- pembaruan lanjutan ---------------------------------------------------
@@ -488,12 +501,7 @@ class WalletResearch {
       if (r?.opened_block != null) e.first = Math.min(e.first, r.opened_block);
     }
     const ids = [...held.keys()];
-    if (!ids.length) {
-      await this.persist(wallet, [], { from, head, ethUsd, partial: true });
-      return { wallet, positions: [], head, from, refreshed: 0 };
-    }
-
-    const infos = await this.poolKeys(ids, held);
+    const infos = ids.length ? await this.poolKeys(ids, held) : new Map();
     // NFT yang sudah dibakar tidak bisa ditanya ke PositionManager, dan tx mint-nya
     // mungkin di luar jendela ini — poolKey-nya sudah tersimpan dari pindai sebelumnya.
     for (const id of ids) {
@@ -518,6 +526,9 @@ class WalletResearch {
         if (pos) out.push(pos);
       } catch (e) { this.log(`posisi ${id} gagal: ${e.message}`); }
     }
+    // Riset v3 murah (beberapa kueri saja), jadi pembaruan lanjutan pun membacanya
+    // dari awal riwayat — tidak ada keadaan sebagian yang perlu dijaga di sana.
+    out.push(...await this.scanV3(wallet, { from: w.first_block || 0, head, ethUsd, onProgress }));
     await this.persist(wallet, out, { from, head, ethUsd, partial: true });
     return { wallet, positions: out, head, from, refreshed: out.length };
   }

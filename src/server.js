@@ -320,14 +320,21 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
 
       // Tick harga sekarang untuk posisi yang masih berjalan — satu batch, hanya
       // untuk pool yang unik, supaya tampilan bisa menunjukkan posisi harga di rentang.
-      const poolIds = [...new Set(open.map((r) => r.pool_ref).filter(Boolean))];
-      if (poolIds.length) {
+      // pool_ref v4 adalah poolId (32 byte, dibaca dari storage PoolManager); pool_ref
+      // v3 adalah ALAMAT kontrak pool-nya. Dulu semuanya dilempar ke jalur v4, yang
+      // untuk v3 menghasilkan tick ngawur — penanda "harga kini" jadi salah tempat.
+      const byPool = new Map();
+      const idV4 = [...new Set(open.filter((r) => r.venue !== 'v3').map((r) => r.pool_ref).filter(Boolean))];
+      if (idV4.length) {
         try {
-          const slots = await chain.slot0V4Many(poolIds);
-          const byPool = new Map(poolIds.map((id, i) => [id, slots[i]]));
-          for (const r of open) r.curTick = byPool.get(r.pool_ref)?.tick ?? null;
+          const slots = await chain.slot0V4Many(idV4);
+          idV4.forEach((id, i) => byPool.set(id, slots[i]));
         } catch { /* harga kini tidak terbaca: bar tetap tampil tanpa penanda */ }
       }
+      for (const a of [...new Set(open.filter((r) => r.venue === 'v3').map((r) => r.pool_ref).filter(Boolean))]) {
+        try { byPool.set(a, await chain.slot0V3(a)); } catch { /* sama */ }
+      }
+      for (const r of open) r.curTick = byPool.get(r.pool_ref)?.tick ?? null;
 
       // profit harian untuk kalender
       const daily = {};

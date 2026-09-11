@@ -136,6 +136,53 @@ query terfilter alamat untuk **900rb blok dalam 0,34 detik**. Itulah kenapa enum
 memakai potongan 1 juta blok dan ordofi dibatasi 3.000 blok (cukup untuk mesin copy yang
 cuma memindai blok terbaru).
 
+### Uniswap v3
+
+Rekonstruksi v3 punya jalur sendiri (`src/walletv3.js`) dan justru lebih murah
+daripada v4: NonfungiblePositionManager memancarkan jumlah tokennya langsung dan
+memisahkan pokok dari fee dengan sendirinya —
+
+```
+IncreaseLiquidity(tokenId indexed, liquidity, amount0, amount1)   modal masuk
+DecreaseLiquidity(tokenId indexed, liquidity, amount0, amount1)   POKOK yang ditarik
+Collect(tokenId indexed, recipient, amount0, amount1)             yang benar-benar diterima
+```
+
+sehingga **fee = Collect − Decrease**, dihitung berjalan supaya klaim fee tanpa
+penarikan (Collect tanpa Decrease) ikut terbaca utuh. Ketiganya mengindeks tokenId,
+jadi seluruh riwayat sebuah wallet bisa diambil satu kueri per rombongan tokenId.
+
+Tiap kejadian dinilai pada harga pool **di bloknya sendiri** — memakai harga sekarang
+untuk modal yang disetor seminggu lalu menghasilkan PnL yang menyesatkan. Kalau harga
+blok itu sama sekali tidak terbaca, sisi kuotasi tetap dinilai persis (ia memang
+uangnya) dan posisinya ditandai taksiran; menilai seluruh kejadian nol akan membuat
+posisi tampak bermodal nol.
+
+**Sumber harga: event `Swap`, BUKAN node arsip** — kebalikan dari jalur v4, dan itu
+disengaja. Terukur pada satu posisi nyata: arsip menjawab `4,26e32` untuk blok keluar,
+sementara tiga `Swap` berturut-turut sesudahnya (jarak 9, 13, dan 92 blok) sepakat di
+`~2,0e33`, tanpa satu pun `Swap` di antaranya yang bisa menjelaskan selisih 4,7× itu —
+menarik likuiditas tidak menggerakkan harga di Uniswap v3. Beberapa menit kemudian
+node yang sama menolak blok itu (`missing trie node`), jadi jawaban sebelumnya berasal
+dari state yang sudah tidak utuh. Selisihnya bukan kosmetik: PnL wallet yang sama
+berayun dari **−$19rb ke +$231rb** tergantung sumber mana yang dipakai. Log event
+adalah bagian dari bloknya sendiri dan tidak bisa salah; arsip hanya dipakai kalau
+tidak ada `Swap` yang bisa ditemukan sama sekali.
+
+**Posisi yang NFT-nya sudah dibakar tetap masuk riwayat.** `positions()` tidak
+menjawab lagi untuk NFT yang dibakar, tetapi transaksi pembukaannya masih ada dan
+kontrak POOL memancarkan `Mint` di situ — alamat lognya ADALAH alamat poolnya, dan
+tick-nya ada di topiknya. Tanpa pemulihan ini, wallet yang rajin membakar NFT-nya
+kehilangan lebih dari separuh riwayatnya, dan yang tersisa condong ke posisi yang
+kebetulan belum dibakar. Pada wallet uji: 24 posisi terbaca menjadi **60**, persis
+jumlah NFT yang pernah dipegangnya.
+
+**Kenapa ini ada:** wallet yang hanya ber-LP di v3 dulu tampil KOSONG di halaman
+riset, walaupun aktif. Dua sebabnya: modul riset cuma membaca v4, dan `scan()` keluar
+lebih awal begitu daftar posisi v4-nya kosong sehingga jalur v3 tidak pernah
+dijalankan. Keduanya ada uji regresinya di `test/riset.js`.
+
+
 ## Yang bisa disetel
 
 Semua ada di dashboard (tab **Aturan**), bisa global maupun **per wallet target**.
@@ -528,6 +575,11 @@ menambah ke posisi yang sudah dicermin, penarikan sebagian, NFT dipindahkan,
 penitipan ke kontrak otomasi, pool berhook, semua batas (jumlah posisi,
 eksposur, jeda, minimum), posisi satu sisi, saldo kurang, aksi ganda, dan
 antrean jual memecoin sisa.
+
+`node test/riset.js` (11 uji) menguji riset wallet v3 dengan chain dipalsukan:
+pemisahan fee dari pokok, klaim fee tanpa penarikan, NFT yang berpindah tangan lalu
+kembali, penilaian pada harga blok kejadian vs penandaan taksiran — dan dua uji
+regresi untuk bug yang membuat wallet v3 tampil kosong.
 
 `node test/telegram.js` (80 uji) menguji bot Telegram dengan API Telegram dipalsukan tetapi
 tabel rute server yang asli. Uji intinya adalah penjelajah: ia menekan **setiap**
