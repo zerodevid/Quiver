@@ -297,13 +297,19 @@ dasbor menolak sesuatu, bot juga menolaknya.
 **Memasang**
 
 1. Buat bot lewat [@BotFather](https://t.me/BotFather), salin tokennya.
-2. Dasbor → **Pengaturan → Telegram** → tempel token → **Simpan token** → restart
-   bot (`pm2 restart lpcopy`). Bisa juga langsung di `config.json`:
+2. Dasbor → **Pengaturan → Telegram** → tempel token → **Simpan token**. Bot
+   langsung mulai mendengarkan, tanpa restart proses (sama seperti daftar RPC).
+   Bisa juga langsung di `config.json` lalu restart:
    ```json
    "telegram": { "bot_token": "123456789:AA…", "chat_ids": [] }
    ```
 3. **Buat kode sambung**, lalu kirim ke bot di Telegram: `/mulai KODE`.
    Kode berlaku 15 menit dan hanya sekali pakai.
+
+Token bisa dipasang atau diganti kapan saja selagi bot hidup: pendengar lama
+dihentikan lebih dulu (lewat penanda generasi + pembatalan permintaan yang sedang
+menggantung) supaya tidak pernah ada dua loop berebut antrean update yang sama.
+Token yang ditolak Telegram dilaporkan balik ke dasbor, bukan didiamkan.
 
 Kalau belum ada chat yang tersambung, bot mencetak kode sambungnya sendiri ke log
 saat hidup — jadi memasang lewat SSH saja pun bisa:
@@ -418,7 +424,7 @@ penitipan ke kontrak otomasi, pool berhook, semua batas (jumlah posisi,
 eksposur, jeda, minimum), posisi satu sisi, saldo kurang, aksi ganda, dan
 antrean jual memecoin sisa.
 
-`node test/telegram.js` menguji bot Telegram dengan API Telegram dipalsukan tetapi
+`node test/telegram.js` (44 uji) menguji bot Telegram dengan API Telegram dipalsukan tetapi
 tabel rute server yang asli. Uji intinya adalah penjelajah: ia menekan **setiap**
 tombol yang bisa dicapai dari menu utama dan menuntut tidak ada yang melempar
 galat, tidak ada layar kosong, dan tidak ada `undefined`/`NaN` yang bocor ke teks.

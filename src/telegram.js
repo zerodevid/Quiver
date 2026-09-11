@@ -258,6 +258,10 @@ class Telegram {
     this.offset = Number(store.getState('tg_offset', '0')) || 0;
     this.queue = []; this.sending = false; this.stopped = false; this.fails = 0;
     this.me = null;
+    // Token bisa dipasang/diganti dari dasbor selagi proses hidup. `gen` menandai
+    // generasi polling: begitu ia naik, loop lama berhenti sendiri saat permintaan
+    // yang sedang menggantung kembali (atau dibatalkan lewat `ac`).
+    this.gen = 0; this.ac = null; this.wired = false; this.startError = null;
   }
 
   // ---- dasar ---------------------------------------------------------------
@@ -280,7 +284,9 @@ class Telegram {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(params),
-      signal: AbortSignal.timeout(method === 'getUpdates' ? 70_000 : 25_000),
+      signal: method === 'getUpdates' && this.ac
+        ? AbortSignal.any([AbortSignal.timeout(70_000), this.ac.signal])
+        : AbortSignal.timeout(25_000),
     });
     const j = await r.json().catch(() => null);
     if (!j || !j.ok) throw new Error(j?.description || `HTTP ${r.status}`);
@@ -347,17 +353,43 @@ class Telegram {
 
   // ---- daur hidup ----------------------------------------------------------
   async start() {
-    if (!this.token()) { this.log('telegram: bot_token belum diisi — bot tidak dijalankan'); return; }
+    this.startError = null;
+    if (!this.token()) { this.log('telegram: bot_token belum diisi — bot tidak dijalankan'); return { ok: false, reason: 'tanpa token' }; }
+    this.stopped = false;
+    this.ac = new AbortController();
+    const gen = ++this.gen;
     try {
       this.me = await this.tg('getMe');
       await this.tg('setMyCommands', { commands: COMMANDS.map(([command, description]) => ({ command, description })) });
-    } catch (e) { this.log(`telegram: tidak bisa menghubungi Telegram (${e.message}) — tetap mencoba di latar`); }
+    } catch (e) {
+      this.startError = e.message;
+      this.log(`telegram: tidak bisa menghubungi Telegram (${e.message}) — tetap mencoba di latar`);
+    }
+    if (gen !== this.gen) return { ok: false, reason: 'dibatalkan' };   // keburu diganti lagi
     this.log(`telegram: bot ${this.me ? '@' + this.me.username : '(?)'} jalan · ${this.chats().length} chat terhubung`);
     if (!this.chats().length) {
       const c = this.newPairCode();
       this.log(`telegram: belum ada chat terhubung. Kirim ke bot →  /mulai ${c}   (berlaku 15 menit)`);
     }
-    // Kabar dari mesin ikut mengalir ke Telegram.
+    this.wire();
+    this.poll(gen);
+    return { ok: !this.startError, username: this.me?.username || null, error: this.startError };
+  }
+
+  // Menyalakan ulang dengan token yang baru disimpan, tanpa me-restart proses.
+  // Loop lama dihentikan dulu supaya tidak ada dua pendengar pada satu antrean update.
+  async restart() {
+    this.gen++;
+    try { this.ac?.abort(); } catch { /* belum ada permintaan berjalan */ }
+    this.me = null;
+    return this.start();
+  }
+
+  // Pengait ke mesin cuma dipasang sekali seumur proses — kalau tidak, tiap
+  // penyalaan ulang menambah satu lapis pembungkus dan kabar terkirim berlipat.
+  wire() {
+    if (this.wired) return;
+    this.wired = true;
     const prevNotify = this.engine.onNotify;
     this.engine.onNotify = (msg) => {
       if (prevNotify) prevNotify(msg);
@@ -376,16 +408,16 @@ class Telegram {
       else if (level === 'warn' && n.warn) this.push(`${icon} ${esc(msg)}`);
       else if (level === 'info' && n.info && msg !== this.lastNotify) this.push(`${icon} ${esc(msg)}`);
     };
-    this.poll();
   }
-  stop() { this.stopped = true; }
+  stop() { this.stopped = true; this.gen++; try { this.ac?.abort(); } catch { /* abaikan */ } }
 
-  async poll() {
-    while (!this.stopped) {
+  async poll(gen = this.gen) {
+    while (!this.stopped && gen === this.gen) {
       try {
         const ups = await this.tg('getUpdates', {
           offset: this.offset, timeout: 50, allowed_updates: ['message', 'callback_query'],
         });
+        if (gen !== this.gen) return;
         for (const u of ups) {
           this.offset = u.update_id + 1;
           this.store.setState('tg_offset', this.offset);
@@ -394,8 +426,10 @@ class Telegram {
           // duluan, jadi update yang sama tidak akan diproses dua kali.
           this.handle(u).catch((e) => this.log(`telegram tangani: ${e.message}`));
         }
+        if (gen !== this.gen) return;               // token diganti selagi menunggu
         this.fails = 0;
       } catch (e) {
+        if (gen !== this.gen || this.stopped) return;  // dihentikan sengaja, bukan galat
         this.fails++;
         // 409 = ada instance lain ikut polling token yang sama; jangan berisik.
         if (this.fails <= 3 || this.fails % 25 === 0) this.log(`telegram polling: ${e.message}`);

@@ -105,6 +105,11 @@ function build({ chats = [CHAT], dryRun = true } = {}) {
     if (method === 'getMe') return { username: 'lpcopy_uji_bot' };
     return true;
   };
+  // Loop polling asli diganti pencatat: uji tidak boleh meninggalkan loop berputar.
+  // Generasi yang diterima poll() tetap direkam, karena itulah yang membuktikan
+  // loop lama berhenti saat token diganti.
+  bot.polls = [];
+  bot.poll = async (gen = bot.gen) => { bot.polls.push(gen); };
   server = createServer({ engine, store, cfg, cfgPath, chain, rpc, log: () => {}, telegram: bot });
   return { bot, store, cfg, cfgPath, sent, engine, api: (m, p, b, q) => server.api(m, p, b, q), last: () => sent[sent.length - 1] };
 }
@@ -443,6 +448,110 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     for (let i = 0; i < 500; i++) w.store.log('error', `banjir ${i}`);
     assert.ok(w.bot.queue.length <= 41, `antrean membengkak jadi ${w.bot.queue.length}`);
     w.bot.stop();
+  });
+
+  // ---- memasang token tanpa restart proses --------------------------------
+  await t('bot yang hidup tanpa token langsung jalan begitu tokennya disimpan', async () => {
+    const w = build({ chats: [] });
+    w.cfg.telegram.bot_token = null;                 // persis keadaan proses yang hidup duluan
+    const r0 = await w.bot.start();
+    assert.strictEqual(r0.ok, false);
+    assert.strictEqual(w.bot.polls.length, 0, 'tanpa token tidak boleh ada polling');
+
+    const r = await w.api('POST', '/api/settings/telegram', { bot_token: '987654321:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' });
+    assert.ok(!r.error, r.error);
+    assert.strictEqual(r.telegram.running, true, 'dasbor harus melaporkan bot sudah jalan');
+    assert.strictEqual(w.bot.polls.length, 1, 'polling harus dimulai tanpa restart proses');
+    assert.ok(w.bot.me, 'getMe harus sudah dipanggil');
+    w.bot.stop();
+  });
+
+  await t('kode sambung yang dibuat setelah token disimpan benar-benar bisa dipakai', async () => {
+    const w = build({ chats: [] });
+    w.cfg.telegram.bot_token = null;
+    await w.bot.start();
+    await w.api('POST', '/api/settings/telegram', { bot_token: '987654321:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' });
+    const r = await w.api('POST', '/api/settings/telegram/pair', {});
+    assert.ok(r.code, 'kode harus terbuat');
+    await w.bot.handle(msg(`/mulai ${r.code}`, ASING));
+    assert.ok(w.bot.chats().includes(ASING), 'kode dari dasbor harus diterima bot');
+    w.bot.stop();
+  });
+
+  await t('ganti token menghentikan pendengar lama (tidak ada dua loop)', async () => {
+    const w = build();
+    await w.bot.start();
+    const gen1 = w.bot.polls.at(-1);
+    await w.api('POST', '/api/settings/telegram', { bot_token: '111111111:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCC' });
+    const gen2 = w.bot.polls.at(-1);
+    assert.ok(gen2 > gen1, 'generasi harus naik supaya loop lama berhenti sendiri');
+    assert.strictEqual(w.bot.gen, gen2, 'hanya generasi terakhir yang berlaku');
+    w.bot.stop();
+    assert.ok(w.bot.gen > gen2, 'stop() juga harus membatalkan generasi berjalan');
+  });
+
+  await t('menyalakan ulang tidak melipatgandakan kabar', async () => {
+    const { Engine } = require('../src/engine');
+    const w = build();
+    await w.bot.start();
+    await w.bot.restart();
+    await w.bot.restart();
+    Engine.prototype.notify.call(w.engine, 'kabar-uji-unik-4412');
+    const n = w.bot.queue.filter((x) => /4412/.test(x)).length
+      + outs(w.sent).filter((x) => /4412/.test(x.params.text)).length;
+    assert.strictEqual(n, 1, `kabar terkirim ${n} kali setelah tiga kali penyalaan`);
+    w.bot.stop();
+  });
+
+  await t('token yang ditolak Telegram dilaporkan, bukan didiamkan', async () => {
+    const w = build();
+    const asli = w.bot.tg.bind(w.bot);
+    w.bot.tg = async (m, p) => { if (m === 'getMe') throw new Error('401: Unauthorized'); return asli(m, p); };
+    const r = await w.api('POST', '/api/settings/telegram', { bot_token: '222222222:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDD' });
+    assert.match(r.error || '', /menolaknya|Unauthorized/i, 'galat dari Telegram harus sampai ke dasbor');
+    assert.strictEqual(w.cfg.telegram.bot_token, '222222222:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDD', 'token tetap tersimpan supaya bisa diperbaiki');
+    w.bot.stop();
+  });
+
+  await t('melepas token menghentikan bot', async () => {
+    const w = build();
+    await w.bot.start();
+    const n = w.bot.polls.length;
+    const r = await w.api('POST', '/api/settings/telegram', { bot_token: '' });
+    assert.ok(!r.error, r.error);
+    assert.strictEqual(r.telegram.hasToken, false);
+    assert.strictEqual(w.bot.polls.length, n, 'tanpa token tidak boleh ada polling baru');
+  });
+
+  await t('loop polling SUNGGUHAN berhenti sendiri begitu generasinya kedaluwarsa', async () => {
+    const { Telegram } = require('../src/telegram');
+    const w = build();
+    w.bot.poll = Telegram.prototype.poll.bind(w.bot);   // loop asli, bukan pencatat
+    const panggilan = [];
+    const asli = w.bot.tg.bind(w.bot);
+    w.bot.tg = async (m, p) => {
+      if (m !== 'getUpdates') return asli(m, p);
+      panggilan.push(w.bot.gen);                        // generasi milik loop yang memanggil
+      await new Promise((r) => setTimeout(r, 15));
+      return [];
+    };
+    const tunggu = (ms) => new Promise((r) => setTimeout(r, ms));
+    await w.bot.start();
+    await tunggu(70);
+    const genLama = w.bot.gen;
+    assert.ok(panggilan.filter((g) => g === genLama).length >= 2, 'loop pertama harus benar-benar berjalan');
+
+    const batas = panggilan.length;
+    await w.bot.restart();
+    await tunggu(90);
+    const sesudah = panggilan.slice(batas);
+    assert.ok(!sesudah.includes(genLama), `loop lama masih memanggil getUpdates ${sesudah.filter((g) => g === genLama).length}x setelah token diganti`);
+    assert.ok(sesudah.includes(w.bot.gen), 'loop baru harus mengambil alih');
+
+    w.bot.stop();
+    const akhir = panggilan.length;
+    await tunggu(90);
+    assert.strictEqual(panggilan.length, akhir, 'stop() harus benar-benar menghentikan polling');
   });
 
   // ---- pembacaan & penulisan nilai ---------------------------------------

@@ -48,7 +48,7 @@ const EN = {
   'Token bot': 'Bot token',
   'Dibuat lewat @BotFather di Telegram. Siapa pun yang punya token ini menguasai botnya — jangan dibagikan.': 'Created via @BotFather on Telegram. Anyone holding this token controls the bot — never share it.',
   'Simpan token': 'Save token',
-  'Token tersimpan — restart bot supaya berlaku': 'Token saved — restart the bot for it to take effect',
+  'Token tersimpan — bot langsung jalan': 'Token saved — the bot starts right away',
   'Lepas token bot? Bot Telegram berhenti melayani.': 'Remove the bot token? The Telegram bot stops responding.',
   'Token dilepas': 'Token removed',
   'Sambungkan obrolan': 'Connect a chat',

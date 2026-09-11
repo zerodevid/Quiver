@@ -341,7 +341,13 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
       cfg.telegram = t;
       saveCfg();
       log('pengaturan Telegram diperbarui');
-      return { ok: true, telegram: tgView(), restartNeeded: tokenChanged };
+      // Token baru langsung dipakai — tanpa restart proses, sama seperti daftar RPC.
+      // Tanpa ini bot diam saja setelah token disimpan dan tidak ada petunjuk kenapa.
+      if (tokenChanged && telegram) {
+        const r = await telegram.restart();
+        if (t.bot_token && r?.error) return { error: `Token tersimpan, tapi Telegram menolaknya: ${r.error}`, telegram: tgView() };
+      }
+      return { ok: true, telegram: tgView() };
     },
     'POST /api/settings/telegram/pair': async () => {
       if (!cfg.telegram?.bot_token) return { error: 'Isi token bot dulu.' };

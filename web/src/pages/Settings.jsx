@@ -286,7 +286,7 @@ function TelegramTab({ d, reload }) {
           placeholder={tg.token || '123456789:AA…'}
           hint={t('Dibuat lewat @BotFather di Telegram. Siapa pun yang punya token ini menguasai botnya — jangan dibagikan.')} />
         <div className="flex items-end gap-2">
-          <Button onPress={() => save('tok', { bot_token: tok }, 'Token tersimpan — restart bot supaya berlaku')} isPending={busy === 'tok'} isDisabled={!tok}>{t('Simpan token')}</Button>
+          <Button onPress={() => save('tok', { bot_token: tok }, 'Token tersimpan — bot langsung jalan')} isPending={busy === 'tok'} isDisabled={!tok}>{t('Simpan token')}</Button>
           {tg.hasToken && <Button variant="outline" onPress={() => { if (confirm(t('Lepas token bot? Bot Telegram berhenti melayani.'))) save('rm', { bot_token: '' }, 'Token dilepas'); }}>{t('Lepas')}</Button>}
         </div>
       </div>
