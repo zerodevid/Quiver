@@ -43,22 +43,82 @@ function Langkah({ n, title, done, children, action }) {
   );
 }
 
+const fee = (p) => (p.dynamicFee ? 'dinamis' : `${num(p.feePct, 2)}%`);
+
 function PilihPool({ pools, onPick }) {
   const { t } = useI18n();
   const [q, setQ] = useState('');
+  const [scan, setScan] = useState(null);     // hasil pindai dari alamat token
+  const [semua, setSemua] = useState(false);
+  const timer = useRef(null);
+  const token = q.trim().toLowerCase();
+  const isAlamat = /^0x[0-9a-f]{40}$/.test(token);
+  useEffect(() => () => clearInterval(timer.current), []);
+
+  const ambil = async (tok, all) => {
+    const d = await get(`/api/manual/pools/scan?token=${tok}${all ? '&all=1' : ''}`);
+    setScan({ token: tok, ...d });
+    return d;
+  };
+  const pindai = async () => {
+    setScan({ token, status: 'jalan', progress: 0 });
+    const r = await post('/api/manual/pools/scan', { token });
+    if (r.error) return setScan({ token, status: 'gagal', error: r.error });
+    clearInterval(timer.current);
+    timer.current = setInterval(async () => {
+      const d = await ambil(token, semua);
+      if (d.status !== 'jalan') clearInterval(timer.current);
+    }, 1500);
+  };
+  const gantiSemua = (v) => { setSemua(v); if (scan?.token) ambil(scan.token, v); };
+
+  // Hasil pindai menggantikan daftar hanya selagi kotak cari masih berisi alamat itu.
+  const pakaiScan = isAlamat && scan?.token === token && scan.status === 'selesai';
   const hasil = useMemo(() => {
+    if (pakaiScan) return scan.pools || [];
     const n = q.trim().toLowerCase();
     return n ? pools.filter((p) => p.pair.toLowerCase().includes(n)) : pools;
-  }, [pools, q]);
+  }, [pools, q, pakaiScan, scan]);
+
   return (
     <div className="flex flex-col gap-3">
       <div className="relative">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('Cari pasangan, mis. HOOKR')}
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('Cari pasangan, atau tempel alamat token')}
           className="h-9 w-full rounded-md border border-field-border bg-surface-secondary pl-8 pr-3 text-sm outline-none focus:border-accent" />
       </div>
+
+      {/* Alamat token: pool-nya dicari langsung dari chain, bukan dari yang sudah dikenal. */}
+      {isAlamat && (!scan || scan.token !== token) && (
+        <Button size="sm" onPress={pindai}>{t('Cari pool untuk token ini')}</Button>
+      )}
+      {scan?.token === token && scan.status === 'jalan' && (
+        <div className="flex items-center gap-2 text-sm text-muted"><Spinner size="sm" />{t('Mencari pool di chain… {p}%', { p: scan.progress || 0 })}</div>
+      )}
+      {scan?.token === token && scan.status === 'gagal' && (
+        <Notice status="danger" title={t('Pemindaian gagal')}>{scan.error}</Notice>
+      )}
+      {pakaiScan && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted">
+          <span>{t('{n} pool bisa dimasuki dari {total} yang ada', { n: (scan.pools || []).length, total: scan.total })}</span>
+          {!!scan.hidden && (
+            <button type="button" className="underline underline-offset-2" onClick={() => gantiSemua(!semua)}>
+              {semua ? t('Sembunyikan yang kosong') : t('Tampilkan semua')}
+            </button>
+          )}
+        </div>
+      )}
+      {pakaiScan && !!scan.hidden && !semua && (
+        <p className="text-xs text-muted">
+          {t('Yang disembunyikan: pool tanpa likuiditas, berfee dinamis, atau tidak dipasangkan USDG/ETH — masuk ke sana sama saja membuang gas.')}
+        </p>
+      )}
+
       <div className="max-h-80 overflow-y-auto rounded-md border border-border">
-        {!hasil.length ? <Empty title="Tidak ada pool yang cocok" sub="Pool muncul di sini setelah bot melihat target beraksi di dalamnya." /> : hasil.map((p) => (
+        {!hasil.length ? (
+          <Empty title={isAlamat ? 'Tidak ada pool yang bisa dimasuki' : 'Tidak ada pool yang cocok'}
+            sub={isAlamat ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.' : 'Tempel alamat token untuk mencari poolnya langsung dari chain.'} />
+        ) : hasil.map((p) => (
           <button key={p.poolRef} type="button" onClick={() => onPick(p)}
             className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2.5 text-start last:border-0 hover:bg-surface-secondary">
             <span className="flex min-w-0 items-center gap-2">
@@ -66,8 +126,8 @@ function PilihPool({ pools, onPick }) {
               {p.hasHooks && <Anchor className="size-3.5 shrink-0 text-warning" aria-label={t('pool memakai hook')} />}
             </span>
             <span className="flex shrink-0 items-center gap-3 text-sm text-muted">
-              <span className="num">{num(p.feePct, 2)}%</span>
-              <span className="hidden sm:inline">{p.lastTs ? ago(p.lastTs) : '—'}</span>
+              <span className="num">{fee(p)}</span>
+              <span className="hidden sm:inline">{p.kosong === true ? t('kosong') : p.lastTs ? ago(p.lastTs) : '—'}</span>
             </span>
           </button>
         ))}
@@ -182,7 +242,7 @@ export default function ManualLp() {
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                 <span className="text-lg font-semibold">{pool.pair}</span>
                 <Chip size="sm" variant="soft">{pool.venue}</Chip>
-                <Chip size="sm" variant="soft">{t('fee {p}%', { p: num(pool.feePct, 2) })}</Chip>
+<Chip size="sm" variant="soft">{pool.dynamicFee ? t('fee dinamis') : t('fee {p}%', { p: num(pool.feePct, 2) })}</Chip>
                 {pool.hasHooks && <Chip size="sm" variant="soft" color="warning">{t('pakai hook')}</Chip>}
                 <span className="text-sm text-muted">{pool.lastTs ? t('aksi terakhir {a}', { a: ago(pool.lastTs) }) : t('belum ada aksi terpantau')}</span>
               </div>

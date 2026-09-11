@@ -37,6 +37,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }) {
   const pub = path.join(__dirname, '..', 'public');
   const scoutJobs = new Map();
+  const poolScanJobs = new Map();
   const walletJobs = new Map();
   const research = new WalletResearch({ rpc, store, chain, log });
   const manual = new Manual({ engine, store, chain, rpc, log });
@@ -368,6 +369,36 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         withPrice: url.searchParams.get('price') === '1',
       }),
     }),
+    // Pindai pool dari alamat token. Dijadikan pekerjaan latar seperti scout: satu
+    // pemindaian rentang penuh makan belasan detik, terlalu lama untuk satu balasan HTTP.
+    'POST /api/manual/pools/scan': async (req) => {
+      const b = await readBody(req);
+      const token = String(b.token || '').toLowerCase().trim();
+      if (!/^0x[0-9a-f]{40}$/.test(token)) return { error: 'alamat token harus 0x diikuti 40 karakter hex' };
+      if (poolScanJobs.get(token)?.status === 'jalan') return { ok: true, status: 'jalan' };
+      const job = { status: 'jalan', progress: 0, startedAt: Date.now(), pools: null, error: null };
+      poolScanJobs.set(token, job);
+      manual.scanPools(token, {
+        onProgress: (p) => { job.progress = p.total ? Math.round((p.done / p.total) * 100) : 0; },
+      }).then((pools) => { job.pools = pools; job.status = 'selesai'; job.finishedAt = Date.now(); })
+        .catch((e) => { job.error = e.message; job.status = 'gagal'; job.finishedAt = Date.now(); });
+      return { ok: true, status: 'jalan' };
+    },
+    'GET /api/manual/pools/scan': (req, url) => {
+      const token = String(url.searchParams.get('token') || '').toLowerCase();
+      const j = poolScanJobs.get(token);
+      if (!j) return { status: 'kosong' };
+      const out = { status: j.status, progress: j.progress, error: j.error };
+      if (!j.pools) return out;
+      // Hasil mentah bisa ratusan pool dan hampir semuanya sampah: dibuat lalu
+      // ditinggalkan tanpa likuiditas, atau dipasangkan token yang bukan uang.
+      // Yang ditampilkan hanya yang benar-benar bisa dimasuki; sisanya dihitung saja.
+      const bisa = j.pools.filter((p) => p.quoteSide != null && p.kosong !== true && !p.dynamicFee);
+      const semua = url.searchParams.get('all') === '1';
+      const list = semua ? j.pools : (bisa.length ? bisa : j.pools.filter((p) => p.quoteSide != null));
+      return { ...out, pools: list, total: j.pools.length, hidden: j.pools.length - list.length };
+    },
+
     'POST /api/manual/lp/plan': async (req) => {
       const b = await readBody(req);
       return manual.planLp({

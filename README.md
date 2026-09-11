@@ -369,9 +369,30 @@ Pool tidak perlu dicari sendiri: daftarnya diambil dari pool yang sudah pernah
 terlihat saat memantau target, diurutkan dari yang paling baru beraksi. Rentang
 dihitung `policy.planRange` yang sama (`±X%` dari harga kini, atau seluruh rentang).
 
+**Pool dari alamat token.** Kalau tokennya belum pernah terlihat, tempel saja
+alamatnya: event `Initialize` v4 mengindeks KEDUA currency-nya, jadi seluruh pool
+sebuah token bisa dicari langsung dari chain dengan dua `eth_getLogs` bertopik —
+tanpa perlu menebak fee/tickSpacing/hooks-nya lebih dulu. Rentang penuh dicoba
+sekali (~12 detik di chain ini); kalau endpoint menolak, pemindaian mundur per
+potongan 400 rb blok. Pool yang ketemu langsung disimpan, jadi ia ikut muncul di
+daftar biasa seterusnya.
+
+Hasilnya perlu disaring keras. Satu memecoin nyata (FATCOIN) punya **287 pool**,
+dan hampir semuanya sampah: dibuat lalu ditinggalkan tanpa likuiditas, atau
+dipasangkan token yang bukan uang. Yang ditampilkan hanya pool berlikuiditas yang
+dipasangkan USDG/ETH; sisanya cuma dihitung, dengan tombol untuk menampilkan semua.
+
+**Penanda fee dinamis.** Uniswap v4 memakai bit tertinggi uint24 (`0x800000`)
+sebagai penanda "fee ditentukan hook saat transaksi berjalan", bukan sebagai angka
+fee. Tanpa menanganinya, pool bertanda itu terbaca **"fee 838,86%"** — angka yang
+tidak pernah ada, dan di daftar hasil pindai jumlahnya banyak. Sekarang ditampilkan
+sebagai "dinamis" dan ditolak LP manual: nilainya tidak bisa dihitung di muka.
+
 Penjagaan LP manual — perintah manual bisa salah ketik juga:
 
 - pool ber-hook ditolak selama `filters.allow_hooks` mati;
+- pool berfee dinamis ditolak, dan `filters.max_fee_bps` ikut berlaku — pool
+  ber-fee 35%, 88%, bahkan 99% benar-benar ada di chain ini;
 - batas per posisi, eksposur total, dan jumlah posisi terbuka tetap berlaku, dan
   pesannya menyebut batas mana yang menghalangi;
 - kas diperiksa lebih dulu (ETH + USDG + WETH, karena `executeEntry` bisa
@@ -508,7 +529,7 @@ penitipan ke kontrak otomasi, pool berhook, semua batas (jumlah posisi,
 eksposur, jeda, minimum), posisi satu sisi, saldo kurang, aksi ganda, dan
 antrean jual memecoin sisa.
 
-`node test/telegram.js` (72 uji) menguji bot Telegram dengan API Telegram dipalsukan tetapi
+`node test/telegram.js` (80 uji) menguji bot Telegram dengan API Telegram dipalsukan tetapi
 tabel rute server yang asli. Uji intinya adalah penjelajah: ia menekan **setiap**
 tombol yang bisa dicapai dari menu utama dan menuntut tidak ada yang melempar
 galat, tidak ada layar kosong, dan tidak ada `undefined`/`NaN` yang bocor ke teks.

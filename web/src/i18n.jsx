@@ -30,6 +30,19 @@ export function initLocale() {
 }
 
 const EN = {
+  'Cari pasangan, atau tempel alamat token': 'Search a pair, or paste a token address',
+  'Cari pool untuk token ini': 'Find pools for this token',
+  'Mencari pool di chain… {p}%': 'Searching pools on-chain… {p}%',
+  'Pemindaian gagal': 'Scan failed',
+  '{n} pool bisa dimasuki dari {total} yang ada': '{n} pools you can enter, out of {total} that exist',
+  'Tampilkan semua': 'Show all',
+  'Sembunyikan yang kosong': 'Hide the empty ones',
+  'Yang disembunyikan: pool tanpa likuiditas, berfee dinamis, atau tidak dipasangkan USDG/ETH — masuk ke sana sama saja membuang gas.': 'Hidden: pools with no liquidity, with a dynamic fee, or not paired with USDG/ETH — entering those just burns gas.',
+  'Tidak ada pool yang bisa dimasuki': 'No pool you can enter',
+  'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.': 'This token has no liquid pool paired with USDG or ETH yet.',
+  'Tempel alamat token untuk mencari poolnya langsung dari chain.': 'Paste a token address to find its pools straight from the chain.',
+  'fee dinamis': 'dynamic fee',
+  'kosong': 'empty',
   'Nyalakan LIVE dulu': 'Switch to LIVE first',
   'Belum ada aset yang bisa ditukar': 'Nothing to swap yet',
   'Wallet bot kosong. Isi dengan ETH atau USDG dulu — alamatnya ada di Pengaturan.': 'The bot wallet is empty. Fund it with ETH or USDG first — the address is under Settings.',

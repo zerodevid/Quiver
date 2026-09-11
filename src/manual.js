@@ -13,11 +13,18 @@
 // berlaku kalau disetel — itu memang aturan atas posisi kita sendiri.
 const { ethers } = require('ethers');
 const m = require('./v3math');
-const { ADDR, QUOTES } = require('./chain');
+const { ADDR, QUOTES, TOPIC } = require('./chain');
 const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd } = require('./policy');
 
 const isNative = (t) => String(t).toLowerCase() === ADDR.native;
 const lc = (t) => String(t || '').toLowerCase();
+
+// Uniswap v4 memakai bit tertinggi uint24 sebagai penanda FEE DINAMIS, bukan angka
+// fee. Tanpa ini pool bertanda dinamis terbaca "838,86%" — angka yang tidak pernah
+// ada dan bikin daftar hasil pindai tampak penuh jebakan.
+const DYNAMIC_FEE = 0x800000;
+const feeDinamis = (f) => f != null && (Number(f) & DYNAMIC_FEE) !== 0;
+const feePctOf = (f) => (f == null || feeDinamis(f) ? null : Number(f) / 10000);
 
 class Manual {
   constructor({ engine, store, chain, rpc, log }) {
@@ -45,7 +52,7 @@ class Manual {
       out.push({
         poolRef: r.pool_ref, venue: r.venue, pair, symbol0: r.s0 || '?', symbol1: r.s1 || '?',
         dec0: r.d0 ?? 18, dec1: r.d1 ?? 18,
-        token0: r.token0, token1: r.token1, fee: r.fee, feePct: r.fee != null ? r.fee / 10000 : null,
+        token0: r.token0, token1: r.token1, fee: r.fee, feePct: feePctOf(r.fee), dynamicFee: feeDinamis(r.fee),
         tickSpacing: r.tick_spacing, hooks: r.hooks,
         hasHooks: !!(r.hooks && !/^0x0+$/i.test(r.hooks)),
         quoteSymbol: qs?.symbol || null, quoteSide: qs?.side ?? null,
@@ -76,10 +83,115 @@ class Manual {
       poolRef: r.pool_ref, venue: r.venue, token0: r.token0, token1: r.token1,
       fee: r.fee, tickSpacing: r.tick_spacing, hooks: r.hooks, poolAddr: r.pool_addr,
       symbol0: t0.symbol, symbol1: t1.symbol, dec0: t0.decimals, dec1: t1.decimals,
-      pair: `${t0.symbol}/${t1.symbol}`,
+      pair: `${t0.symbol}/${t1.symbol}`, feePct: feePctOf(r.fee), dynamicFee: feeDinamis(r.fee),
       hasHooks: !!(r.hooks && !/^0x0+$/i.test(r.hooks)),
       quoteSymbol: qs?.symbol || null, quoteSide: qs?.side ?? null, quoteKind: qs?.kind || null,
     };
+  }
+
+  // ---- pindai pool dari alamat token ---------------------------------------
+  /**
+   * Mencari semua pool v4 yang memuat sebuah token, langsung dari chain.
+   *
+   * Event Initialize v4 mengindeks KEDUA currency-nya, jadi pool bisa dicari dari
+   * sisi tokennya tanpa perlu tahu fee/tickSpacing/hooks-nya lebih dulu:
+   *   Initialize(PoolId indexed id, Currency indexed c0, Currency indexed c1,
+   *              uint24 fee, int24 tickSpacing, IHooks hooks, uint160 sqrtP, int24 tick)
+   * Sisanya ada di data, dengan layout yang sama seperti yang sudah dipakai pools.js.
+   *
+   * Rentang penuh dicoba sekali dulu — kueri sudah tersaring topik, jadi hasilnya
+   * sedikit dan endpoint resmi sanggup. Kalau ditolak, mundur per potongan.
+   */
+  async scanPools(token, { onProgress = () => {} } = {}) {
+    const t = lc(token);
+    if (!/^0x[0-9a-f]{40}$/.test(t)) throw new Error('alamat token harus 0x diikuti 40 karakter hex');
+    const head = await this.rpc.blockNumber();
+    const pad = (a) => '0x' + a.replace(/^0x/, '').padStart(64, '0');
+    const hex = (n) => '0x' + Math.max(0, n).toString(16);
+    const found = new Map();
+
+    const serap = (logs) => {
+      for (const l of logs) {
+        const b = ethers.getBytes(l.data);
+        const w = (i) => BigInt(ethers.hexlify(b.slice(i * 32, i * 32 + 32)));
+        found.set(l.topics[1], {
+          poolRef: l.topics[1], venue: 'v4',
+          token0: ('0x' + l.topics[2].slice(-40)).toLowerCase(),
+          token1: ('0x' + l.topics[3].slice(-40)).toLowerCase(),
+          fee: Number(w(0)),
+          tickSpacing: Number(BigInt.asIntN(24, w(1))),
+          hooks: '0x' + ethers.hexlify(b.slice(2 * 32 + 12, 3 * 32)).slice(2),
+          firstBlock: parseInt(l.blockNumber, 16),
+        });
+      }
+    };
+
+    // Dua kueri: token sebagai currency0, lalu sebagai currency1. Urutan currency
+    // di v4 ditentukan nilai alamatnya, jadi keduanya harus dicoba.
+    const sisi = [[pad(t), null], [null, pad(t)]];
+    const CHUNK = 400_000;
+    const potong = Math.ceil(head / CHUNK);
+    let langkah = 0;
+    for (const [c0, c1] of sisi) {
+      const topics = [TOPIC.initializeV4, null, c0, c1];
+      try {
+        serap(await this.rpc.getLogs({ address: ADDR.poolManager, topics, fromBlock: '0x0', toBlock: hex(head) }));
+        langkah += potong;
+        onProgress({ done: langkah, total: potong * 2 });
+        continue;
+      } catch { /* endpoint menolak rentang sebesar itu — mundur per potongan */ }
+      for (let hi = head; hi > 0;) {
+        const lo = Math.max(0, hi - CHUNK);
+        try {
+          serap(await this.rpc.getLogs({ address: ADDR.poolManager, topics, fromBlock: hex(lo), toBlock: hex(hi) }));
+        } catch { /* satu potongan gagal: jangan menggagalkan seluruh pemindaian */ }
+        langkah++;
+        onProgress({ done: langkah, total: potong * 2 });
+        if (lo === 0) break;
+        hi = lo - 1;
+      }
+    }
+
+    const list = [...found.values()];
+    if (!list.length) return [];
+
+    // Simpan supaya pool ini ikut muncul di daftar biasa seterusnya, dan ambil
+    // metadata tokennya (nama dipakai di mana-mana).
+    for (const p of list) {
+      this.store.run(
+        `INSERT INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block)
+         VALUES(?,?,?,?,?,?,?,?)
+         ON CONFLICT(pool_ref) DO UPDATE SET
+           token0=excluded.token0, token1=excluded.token1, fee=excluded.fee,
+           tick_spacing=excluded.tick_spacing, hooks=excluded.hooks,
+           first_block=COALESCE(pools.first_block, excluded.first_block)`,
+        p.poolRef, 'v4', p.token0, p.token1, p.fee, p.tickSpacing, p.hooks, p.firstBlock);
+    }
+    const metas = await this.chain.tokens([...new Set(list.flatMap((p) => [p.token0, p.token1]))]);
+    const byAddr = new Map(metas.map((m) => [lc(m.address), m]));
+
+    // Likuiditas dibaca supaya pool kosong bisa ditandai — pool yang pernah dibuat
+    // lalu ditinggalkan tidak jarang, dan masuk ke sana sama saja membuang gas.
+    let liq = [];
+    try { liq = await Promise.all(list.map((p) => this.chain.poolLiquidity(p.poolRef).catch(() => null))); }
+    catch { liq = []; }
+
+    return list.map((p, i) => {
+      const qs = this.chain.quoteSideOf(p.token0, p.token1);
+      const s0 = byAddr.get(p.token0)?.symbol || '?';
+      const s1 = byAddr.get(p.token1)?.symbol || '?';
+      return {
+        ...p, pair: `${s0}/${s1}`, symbol0: s0, symbol1: s1,
+        dec0: byAddr.get(p.token0)?.decimals ?? 18, dec1: byAddr.get(p.token1)?.decimals ?? 18,
+        feePct: feePctOf(p.fee), dynamicFee: feeDinamis(p.fee),
+        hasHooks: !!(p.hooks && !/^0x0+$/i.test(p.hooks)),
+        quoteSymbol: qs?.symbol || null, quoteSide: qs?.side ?? null,
+        liquidity: liq[i] != null ? String(liq[i]) : null,
+        kosong: liq[i] != null ? BigInt(liq[i]) === 0n : null,
+      };
+    }).sort((a, b) => (b.quoteSide != null) - (a.quoteSide != null)
+      || (a.kosong === true) - (b.kosong === true)
+      || b.firstBlock - a.firstBlock);
   }
 
   // ---- rencana LP manual --------------------------------------------------
@@ -97,6 +209,12 @@ class Manual {
     const rules = eng.rulesFrom(null);
     if (p.hasHooks && !rules.filters.allow_hooks) {
       return { error: `pool ini memakai hook ${String(p.hooks).slice(0, 10)}… — hook bisa mengunci penarikan. Nyalakan "Izinkan pool ber-hook" di Aturan kalau memang disengaja.` };
+    }
+    if (feeDinamis(p.fee)) {
+      return { error: `pool ini memakai fee dinamis (ditentukan hook-nya saat transaksi berjalan) — tidak bisa dinilai di muka` };
+    }
+    if (p.fee != null && p.fee > rules.filters.max_fee_bps) {
+      return { error: `fee pool ${(p.fee / 10000).toFixed(2)}% di atas batas ${(rules.filters.max_fee_bps / 10000).toFixed(2)}%. Ubah "Batas fee pool" di Aturan kalau memang disengaja.` };
     }
     const nominal = Number(usd);
     if (!Number.isFinite(nominal) || nominal <= 0) return { error: 'nominal harus angka lebih dari nol' };
@@ -187,7 +305,7 @@ class Manual {
       plan,
       warnings,
       preview: {
-        pair: p.pair, venue: p.venue, feePct: p.fee != null ? p.fee / 10000 : null,
+        pair: p.pair, venue: p.venue, feePct: p.feePct, dynamicFee: p.dynamicFee,
         symbol0: p.symbol0, symbol1: p.symbol1, dec0: p.dec0, dec1: p.dec1, quoteSide: p.quoteSide,
         tickLower: range.tickLower, tickUpper: range.tickUpper, curTick: slot0.tick,
         valueUsd, amount0: est.amount0.toString(), amount1: est.amount1.toString(),

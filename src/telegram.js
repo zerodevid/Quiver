@@ -803,6 +803,9 @@ class Telegram {
         return out(...(await this.lpMenu(chatId)));
       }
       case 'mlc': return this.ask(chatId, { kind: 'poolCari', retry: 'mlp:0' }, 'Ketik nama pasangan yang dicari, misal <code>HOOKR</code> atau <code>USDG/ND4</code>.');
+      case 'mla': return this.ask(chatId, { kind: 'scanToken', retry: 'mlp:0' },
+        'Kirim <b>alamat token</b>-nya. Bot akan mencari sendiri semua pool yang memuat token itu, langsung dari chain.\n\n<i>Contoh:</i> <code>0x12d5ee7917ca430073c3a638ee1e6f0648a98a01</code>');
+      case 'mls': return out(...(await this.lpHasilPindai(chatId, rest[0], rest[1] === 'all')));
       case 'mln': return this.ask(chatId, { kind: 'lpUsd', retry: 'ml' }, 'Berapa dolar yang mau dimasukkan?\n\n<i>Ini nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.</i>');
       case 'mlr': return out(...(await this.lpRange(chatId)));
       case 'mlw': {
@@ -890,6 +893,7 @@ class Telegram {
         return this.screen(chatId, null, 'sr', '✅ Endpoint ditambahkan.\n\n');
       }
       case 'poolCari': return this.screen(chatId, null, `mlp:0:${encodeURIComponent(text.trim().slice(0, 24))}`);
+      case 'scanToken': return this.runScanPool(chatId, text);
       case 'lpUsd': {
         const n = Number(String(text).replace(/[$\s]/g, '').replace(',', '.'));
         if (!Number.isFinite(n) || n <= 0) throw new Error('nominal harus angka lebih dari nol');
@@ -1463,17 +1467,71 @@ class Telegram {
     else {
       L.push(`${d.pools.length} pool dikenal, diurutkan dari yang paling baru beraksi.`);
       L.push(kolom(hal.map((p) => [
-        p.pair, `${trimZ(nf(p.feePct ?? 0, 2))}%`, p.hasHooks ? 'hook' : '', p.lastTs ? ago(p.lastTs) : '',
+        p.pair, p.dynamicFee ? 'dinamis' : `${trimZ(nf(p.feePct ?? 0, 2))}%`, p.hasHooks ? 'hook' : '', p.lastTs ? ago(p.lastTs) : '',
       ]), 'lr'));
     }
-    const rows = hal.map((p, i) => [btn(`${p.hasHooks ? '🪝 ' : ''}${p.pair} · ${trimZ(nf(p.feePct ?? 0, 2))}%`.slice(0, 40), `mlP:${off + i}`)]);
+    const rows = hal.map((p, i) => [btn(`${p.hasHooks ? '🪝 ' : ''}${p.pair} · ${p.dynamicFee ? 'dinamis' : trimZ(nf(p.feePct ?? 0, 2)) + '%'}`.slice(0, 40), `mlP:${off + i}`)]);
     const nav = [];
     if (off > 0) nav.push(btn('⬅️', `mlp:${Math.max(0, off - 8)}:${cari}`));
     if (off + 8 < d.pools.length) nav.push(btn('➡️', `mlp:${off + 8}:${cari}`));
     return [L.filter((x) => x != null).join('\n'), kb([
       ...rows, nav.length ? nav : null,
       [btn('🔎 Cari pasangan', 'mlc')],
+      [btn('➕ Dari alamat token', 'mla')],
       [btn('↩︎ LP manual', 'ml')],
+    ])];
+  }
+
+  // Mencari pool sebuah token langsung dari chain. Pesannya disunting selama
+  // pemindaian berjalan supaya terlihat masih hidup — bisa belasan detik.
+  async runScanPool(chatId, tokenRaw) {
+    const token = String(tokenRaw).trim().toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(token)) {
+      return this.send(chatId, '❌ Alamat token harus 0x diikuti 40 karakter hex.', kb([[btn('↩︎ Coba lagi', 'mla'), BACK_HOME]]));
+    }
+    const r0 = await this.api('POST', '/api/manual/pools/scan', { token });
+    if (r0.error) return this.send(chatId, `❌ ${esc(r0.error)}`, kb([[BACK_HOME]]));
+    const m = await this.send(chatId, `🔎 Mencari pool untuk <code>${esc(shortA(token))}</code>…`);
+    for (let i = 0; i < 120; i++) {
+      await sleep(2000);
+      const j = await this.api('GET', '/api/manual/pools/scan', {}, { token });
+      if (j.status === 'jalan') {
+        if (i % 3 === 0) await this.edit(chatId, m.message_id, `🔎 Mencari pool untuk <code>${esc(shortA(token))}</code>… ${j.progress || 0}%`);
+        continue;
+      }
+      if (j.status === 'gagal') return this.edit(chatId, m.message_id, `❌ Pemindaian gagal: <code>${esc(j.error)}</code>`, kb([[btn('↩︎ Pilih pool', 'mlp:0'), BACK_HOME]]));
+      const [text, keyboard] = await this.lpHasilPindai(chatId, token, false);
+      return this.edit(chatId, m.message_id, text, keyboard);
+    }
+    return this.edit(chatId, m.message_id, '⏳ Pemindaian masih berjalan — buka lagi sebentar lagi.', kb([[btn('🔄 Periksa', `mls:${token}`), BACK_HOME]]));
+  }
+
+  async lpHasilPindai(chatId, token, semua) {
+    const j = await this.api('GET', '/api/manual/pools/scan', {}, { token, all: semua ? '1' : '' });
+    if (j.status === 'kosong') return ['Pemindaian itu sudah tidak tersimpan. Kirim alamatnya lagi.', kb([[btn('➕ Dari alamat token', 'mla')], [BACK_HOME]])];
+    if (j.status === 'jalan') return [`🔎 Masih memindai… ${j.progress || 0}%`, kb([[btn('🔄 Periksa lagi', `mls:${token}`)], [BACK_HOME]])];
+    if (j.status === 'gagal') return [`❌ ${esc(j.error)}`, kb([[btn('➕ Coba token lain', 'mla')], [BACK_HOME]])];
+
+    const list = j.pools || [];
+    const s = this.sess(chatId);
+    s.poolList = list;                              // indeks tombol menunjuk daftar ini
+    const L = [`<b>🔎 Pool untuk</b> <code>${esc(shortA(token))}</code>`];
+    if (!list.length) {
+      L.push('\nTidak ada pool yang bisa dimasuki untuk token ini.');
+      if (j.total) L.push(`<i>${j.total} pool ditemukan, semuanya tanpa likuiditas atau tanpa aset kuotasi.</i>`);
+    } else {
+      L.push(`${list.length} pool bisa dimasuki${j.hidden ? ` · ${j.hidden} disembunyikan` : ''} (dari ${j.total} yang ada).`);
+      L.push(kolom(list.slice(0, 10).map((p) => [
+        p.pair, p.dynamicFee ? 'dinamis' : `${trimZ(nf(p.feePct ?? 0, 2))}%`, p.hasHooks ? 'hook' : '',
+      ]), 'lr'));
+      if (j.hidden) L.push('<i>Yang disembunyikan: pool tanpa likuiditas, berfee dinamis, atau tidak dipasangkan USDG/ETH — masuk ke sana sama saja membuang gas.</i>');
+    }
+    const rows = list.slice(0, 10).map((p, i) => [btn(
+      `${p.hasHooks ? '🪝 ' : ''}${p.pair} · ${p.dynamicFee ? 'dinamis' : trimZ(nf(p.feePct ?? 0, 2)) + '%'}`.slice(0, 40), `mlP:${i}`)]);
+    return [L.filter((x) => x != null).join('\n'), kb([
+      ...rows,
+      j.hidden && !semua ? [btn(`👁 Tampilkan semua (${j.total})`, `mls:${token}:all`)] : null,
+      [btn('➕ Token lain', 'mla'), btn('↩︎ Pilih pool', 'mlp:0')],
     ])];
   }
 
@@ -1503,7 +1561,7 @@ class Telegram {
     const rg = rentang(p);
     const L = [
       `<b>👁 Pratinjau — ${esc(p.pair)}</b>`,
-      `${esc(p.venue)} · fee ${trimZ(nf(p.feePct ?? 0, 2))}% · ${p.side === 'both' ? 'dua sisi' : 'satu sisi'}`,
+      `${esc(p.venue)} · fee ${p.dynamicFee ? 'dinamis' : trimZ(nf(p.feePct ?? 0, 2)) + '%'} · ${p.side === 'both' ? 'dua sisi' : 'satu sisi'}`,
       '',
       angka([
         ['nilai posisi', usd(p.valueUsd)],

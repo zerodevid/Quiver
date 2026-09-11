@@ -21,7 +21,7 @@ const { rulesFor } = require('../src/policy');
 const mm = require('../src/v3math');
 const { createServer } = require('../src/server');
 const { Telegram, parseVal, showVal, RULE_GROUPS } = require('../src/telegram');
-const { ADDR } = require('../src/chain');
+const { ADDR, TOPIC } = require('../src/chain');
 
 const CHAT = '12345';
 const ASING = '99999';
@@ -36,7 +36,18 @@ async function t(name, fn) {
 }
 
 // ---- dunia palsu ----------------------------------------------------------
-function build({ chats = [CHAT], dryRun = true } = {}) {
+// Satu log Initialize v4 seperti yang benar-benar dipancarkan PoolManager:
+// tiga topik terindeks (poolId, currency0, currency1) + fee/tickSpacing/hooks/harga di data.
+const pad32 = (a) => '0x' + String(a).replace(/^0x/, '').toLowerCase().padStart(64, '0');
+const word = (n) => BigInt.asUintN(256, BigInt(n)).toString(16).padStart(64, '0');
+const initLog = ({ id, c0, c1, fee, ts, hooks = ADDR.native, block = 500 }) => ({
+  address: ADDR.poolManager,
+  topics: [TOPIC.initializeV4, id, pad32(c0), pad32(c1)],
+  data: '0x' + word(fee) + word(ts) + pad32(hooks).slice(2) + word(0) + word(0),
+  blockNumber: '0x' + block.toString(16),
+});
+
+function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tolakRentangPenuh = false } = {}) {
   const store = new Store(':memory:');
   const now = Date.now();
   store.run('INSERT INTO targets(address,label,enabled,added_ts) VALUES(?,?,1,?)', TARGET, 'Bang GE', now);
@@ -101,7 +112,23 @@ function build({ chats = [CHAT], dryRun = true } = {}) {
       swap: async function (a, b, amt) { return { hash: '0xswap', amountOut: BigInt(amt) * 2n, quote: { dex: 'uji-dex', usdIn: 50, usdOut: 49.5 } }; },
     },
   };
-  const rpc = { stats: () => [{ url: 'https://rpc.contoh.test', calls: 10, errors: 0, lastMs: 90 }], reconfigure: () => {} };
+  const kueri = [];
+  const rpc = {
+    stats: () => [{ url: 'https://rpc.contoh.test', calls: 10, errors: 0, lastMs: 90 }], reconfigure: () => {},
+    blockNumber: async () => 1_000_000,
+    getLogs: async (f) => {
+      kueri.push(f);
+      const from = parseInt(f.fromBlock, 16), to = parseInt(f.toBlock, 16);
+      if (tolakRentangPenuh && to - from > 500_000) throw new Error('query returned more than 10000 results');
+      return initLogs.filter((l) => {
+        const b = parseInt(l.blockNumber, 16);
+        if (b < from || b > to) return false;
+        if (f.topics[2] && l.topics[2] !== f.topics[2]) return false;
+        if (f.topics[3] && l.topics[3] !== f.topics[3]) return false;
+        return true;
+      });
+    },
+  };
 
   // Chain palsu yang cukup lengkap untuk LP manual: harga pool, metadata token, dan
   // penilaian posisi memakai matematika v3 yang asli.
@@ -115,6 +142,7 @@ function build({ chats = [CHAT], dryRun = true } = {}) {
     slot0V4Many: async (ids) => ids.map(() => ({ sqrtPriceX96: SQRT, tick: 0 })),
     slot0V4: async () => ({ sqrtPriceX96: SQRT, tick: 0 }),
     slot0V3: async () => ({ sqrtPriceX96: SQRT, tick: 0 }),
+    poolLiquidity: async (id) => (kosong.includes(id) ? 0n : 10n ** 20n),
     tokens: async (list) => list.map((a) => meta[String(a).toLowerCase()] || { address: a, symbol: '?', decimals: 18 }),
     token: async (a) => meta[String(a).toLowerCase()] || { address: a, symbol: '?', decimals: 18 },
     quoteSideOf(t0, t1) {
@@ -153,7 +181,7 @@ function build({ chats = [CHAT], dryRun = true } = {}) {
   bot.polls = [];
   bot.poll = async (gen = bot.gen) => { bot.polls.push(gen); };
   server = createServer({ engine, store, cfg, cfgPath, chain, rpc, log: () => {}, telegram: bot });
-  return { bot, store, cfg, cfgPath, sent, engine, chainStub: chain, api: (m, p, b, q) => server.api(m, p, b, q), last: () => sent[sent.length - 1] };
+  return { bot, store, cfg, cfgPath, sent, engine, chainStub: chain, kueri, api: (m, p, b, q) => server.api(m, p, b, q), last: () => sent[sent.length - 1] };
 }
 
 const msg = (text, chat = CHAT) => ({ message: { chat: { id: Number(chat) }, text } });
@@ -804,6 +832,148 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.match(pratinjau, /Pratinjau/);
     assert.match(pratinjau, /Rentang harga/);
     assert.match(pratinjau, /simulasi/i, 'mode simulasi harus diberitahukan sebelum tombol buka');
+  });
+
+  // ---- pindai pool dari alamat token -----------------------------------------
+  const P1 = '0x' + '11'.repeat(32), P2 = '0x' + '22'.repeat(32), P3 = '0x' + '33'.repeat(32),
+    P4 = '0x' + '44'.repeat(32), P5 = '0x' + '55'.repeat(32);
+  const LOGS = [
+    initLog({ id: P1, c0: ADDR.usdg, c1: MEME, fee: 3000, ts: 60, block: 900 }),          // bagus
+    initLog({ id: P2, c0: ADDR.native, c1: MEME, fee: 10000, ts: 200, block: 800 }),      // bagus
+    initLog({ id: P3, c0: ADDR.usdg, c1: MEME, fee: 5000, ts: 100, block: 700 }),         // kosong
+    initLog({ id: P4, c0: MEME, c1: '0x' + 'ab'.repeat(20), fee: 0x800000, ts: 8, hooks: '0x' + 'cd'.repeat(20), block: 600 }),
+    initLog({ id: P5, c0: ADDR.usdg, c1: MEME, fee: 0x800000, ts: 8, hooks: '0x' + 'ef'.repeat(20), block: 500 }),
+  ];
+
+  await t('pindai pool: event Initialize didekode utuh', async () => {
+    const w = build({ initLogs: LOGS, kosong: [P3] });
+    const { Manual } = require('../src/manual');
+    const man = new Manual({ engine: w.engine, store: w.store, chain: w.chainStub, rpc: w.engine.rpcStub || null, log: () => {} });
+    man.rpc = w.kueri && null;                              // dipakai lewat api saja
+    const r = await w.api('POST', '/api/manual/pools/scan', { token: MEME });
+    assert.ok(!r.error, r.error);
+    let j;
+    for (let i = 0; i < 40 && (!j || j.status === 'jalan'); i++) {
+      await new Promise((x) => setTimeout(x, 25));
+      j = await w.api('GET', '/api/manual/pools/scan', {}, { token: MEME, all: '1' });
+    }
+    assert.strictEqual(j.status, 'selesai', j.error);
+    assert.strictEqual(j.total, 5, 'kelima pool harus ketemu');
+    const p1 = j.pools.find((x) => x.poolRef === P1);
+    assert.ok(p1, 'pool pertama harus ada');
+    assert.strictEqual(p1.fee, 3000);
+    assert.strictEqual(p1.tickSpacing, 60);
+    assert.strictEqual(p1.token0, ADDR.usdg);
+    assert.strictEqual(p1.token1, MEME);
+    assert.strictEqual(p1.hasHooks, false);
+    assert.strictEqual(p1.pair, 'USDG/MEME');
+    const p4 = j.pools.find((x) => x.poolRef === P4);
+    assert.strictEqual(p4.hasHooks, true, 'hooks harus terbaca dari data');
+    assert.strictEqual(p4.hooks, '0x' + 'cd'.repeat(20));
+  });
+
+  await t('penanda fee dinamis tidak dibaca sebagai 838,86%', async () => {
+    const w = build({ initLogs: LOGS, kosong: [P3] });
+    await w.api('POST', '/api/manual/pools/scan', { token: MEME });
+    let j;
+    for (let i = 0; i < 40 && (!j || j.status === 'jalan'); i++) {
+      await new Promise((x) => setTimeout(x, 25));
+      j = await w.api('GET', '/api/manual/pools/scan', {}, { token: MEME, all: '1' });
+    }
+    const p4 = j.pools.find((x) => x.poolRef === P4);
+    assert.strictEqual(p4.dynamicFee, true, '0x800000 adalah penanda fee dinamis, bukan angka fee');
+    assert.strictEqual(p4.feePct, null, 'fee dinamis tidak punya persentase di muka');
+    const p1 = j.pools.find((x) => x.poolRef === P1);
+    assert.strictEqual(p1.dynamicFee, false);
+    assert.strictEqual(p1.feePct, 0.3);
+  });
+
+  await t('pool sampah disembunyikan, tapi tetap dihitung', async () => {
+    const w = build({ initLogs: LOGS, kosong: [P3] });
+    await w.api('POST', '/api/manual/pools/scan', { token: MEME });
+    let j;
+    for (let i = 0; i < 40 && (!j || j.status === 'jalan'); i++) {
+      await new Promise((x) => setTimeout(x, 25));
+      j = await w.api('GET', '/api/manual/pools/scan', {}, { token: MEME });
+    }
+    const ref = j.pools.map((p) => p.poolRef);
+    assert.ok(ref.includes(P1) && ref.includes(P2), 'pool berlikuiditas & berkuotasi harus tampil');
+    assert.ok(!ref.includes(P3), 'pool tanpa likuiditas harus disembunyikan');
+    assert.ok(!ref.includes(P4), 'pool tanpa aset kuotasi harus disembunyikan');
+    assert.ok(!ref.includes(P5), 'pool berfee dinamis harus disembunyikan');
+    assert.strictEqual(j.total, 5);
+    assert.strictEqual(j.hidden, 3, 'yang disembunyikan tetap dihitung supaya user tahu ada sisanya');
+    const semua = await w.api('GET', '/api/manual/pools/scan', {}, { token: MEME, all: '1' });
+    assert.strictEqual(semua.pools.length, 5, 'all=1 menampilkan semuanya');
+  });
+
+  await t('pool hasil pindai tersimpan dan muncul di daftar biasa', async () => {
+    const w = build({ initLogs: LOGS, kosong: [P3] });
+    await w.api('POST', '/api/manual/pools/scan', { token: MEME });
+    for (let i = 0; i < 40; i++) {
+      await new Promise((x) => setTimeout(x, 25));
+      if ((await w.api('GET', '/api/manual/pools/scan', {}, { token: MEME })).status !== 'jalan') break;
+    }
+    const daftar = (await w.api('GET', '/api/manual/pools')).pools.map((p) => p.poolRef);
+    assert.ok(daftar.includes(P1), 'pool hasil pindai harus ikut di daftar pool yang dikenal');
+    // …dan bisa langsung dipakai merencanakan posisi
+    const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: P1, usd: 50, widthPct: 25 });
+    assert.ok(!r.error, r.error);
+    assert.strictEqual(r.preview.pair, 'USDG/MEME');
+  });
+
+  await t('endpoint yang menolak rentang penuh dijawab dengan memotong', async () => {
+    const w = build({ initLogs: LOGS, kosong: [P3], tolakRentangPenuh: true });
+    await w.api('POST', '/api/manual/pools/scan', { token: MEME });
+    let j;
+    for (let i = 0; i < 200 && (!j || j.status === 'jalan'); i++) {
+      await new Promise((x) => setTimeout(x, 25));
+      j = await w.api('GET', '/api/manual/pools/scan', {}, { token: MEME, all: '1' });
+    }
+    assert.strictEqual(j.status, 'selesai', j.error);
+    assert.strictEqual(j.total, 5, 'hasilnya harus sama walau lewat jalur potongan');
+    assert.ok(w.kueri.length > 4, `harus ada banyak kueri potongan, cuma ada ${w.kueri.length}`);
+  });
+
+  await t('LP manual menolak pool berfee dinamis dan fee di atas batas', async () => {
+    const w = build({ initLogs: LOGS, kosong: [] });
+    await w.api('POST', '/api/manual/pools/scan', { token: MEME });
+    for (let i = 0; i < 40; i++) {
+      await new Promise((x) => setTimeout(x, 25));
+      if ((await w.api('GET', '/api/manual/pools/scan', {}, { token: MEME })).status !== 'jalan') break;
+    }
+    w.cfg.rules = { filters: { allow_hooks: true } };       // hook diizinkan, fee tetap tidak
+    const dinamis = await w.api('POST', '/api/manual/lp/plan', { poolRef: P5, usd: 50 });
+    assert.match(dinamis.error || '', /fee dinamis/i, dinamis.error);
+
+    // satuan fee Uniswap: 1000 = 0,1%, sedangkan pool P1 ber-fee 3000 = 0,3%
+    w.cfg.rules = { filters: { max_fee_bps: 1000 } };
+    const mahal = await w.api('POST', '/api/manual/lp/plan', { poolRef: P1, usd: 50 });
+    assert.match(mahal.error || '', /di atas batas/i, mahal.error);
+  });
+
+  await t('alamat token ngawur ditolak sebelum menyentuh chain', async () => {
+    const w = build();
+    const r = await w.api('POST', '/api/manual/pools/scan', { token: 'bukan-alamat' });
+    assert.match(r.error || '', /alamat token/i);
+    assert.strictEqual(w.kueri.length, 0, 'tidak boleh ada kueri chain untuk alamat ngawur');
+  });
+
+  await t('layar hasil pindai di bot bisa dipilih langsung', async () => {
+    const w = build({ initLogs: LOGS, kosong: [P3] });
+    await w.bot.handle(cbq('mla'));
+    assert.match(lastOut(w.sent).params.text, /alamat token/i);
+    await w.bot.handle(msg(MEME));
+    // runScanPool menunggu 2 dtk per putaran; pekerjaannya sendiri selesai seketika
+    await new Promise((x) => setTimeout(x, 2300));
+    const teks = lastOut(w.sent).params.text;
+    assert.match(teks, /USDG\/MEME/, `hasil pindai tidak tampil:\n${teks}`);
+    assert.match(teks, /disembunyikan/, 'jumlah yang disembunyikan harus disebut');
+    const tombol = buttons(lastOut(w.sent)).filter((b) => b.startsWith('mlP:'));
+    assert.ok(tombol.length >= 2, 'tiap pool hasil pindai harus punya tombol');
+    await w.bot.handle(cbq(tombol[0]));
+    assert.match(lastOut(w.sent).params.text, /LP manual/, 'memilih pool harus kembali ke menu LP');
+    assert.ok(/USDG\/MEME|ETH\/MEME/.test(lastOut(w.sent).params.text), 'pool terpilih harus tercatat');
   });
 
   // ---- swap manual -----------------------------------------------------------

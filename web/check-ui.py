@@ -9,6 +9,12 @@ PLAN = {"plan":{"liquidity":"1"},"warnings":["rentangnya sempit — fee besar ta
 QUOTE = {"symbolIn":"USDG","symbolOut":"ETH","amountIn":50,"amountOut":0.0201,
   "usdIn":50,"usdOut":49.6,"lossBps":80,"dex":"kyber-v4+orvex","maxLossBps":1500,"tooLossy":False}
 QUOTE_BAD = dict(QUOTE, lossBps=3200, tooLossy=True, usdOut=34)
+SCAN = {"status":"selesai","progress":100,"total":287,"hidden":283,"pools":[
+ {"poolRef":"0x"+"11"*32,"pair":"FATCOIN/USDG","venue":"v4","fee":3011,"feePct":0.3011,"dynamicFee":False,
+  "hasHooks":False,"kosong":False,"quoteSide":1,"symbol0":"FATCOIN","symbol1":"USDG","lastTs":None},
+ {"poolRef":"0x"+"22"*32,"pair":"ETH/FATCOIN","venue":"v4","fee":10000,"feePct":1.0,"dynamicFee":False,
+  "hasHooks":True,"kosong":False,"quoteSide":0,"symbol0":"ETH","symbol1":"FATCOIN","lastTs":None}]}
+ALAMAT = '0x12d5ee7917ca430073c3a638ee1e6f0648a98a01'
 TOKENS = {"tokens":[
   {"address":"0x5fc5360d0400a0fd4f2af552add042d716f1d168","symbol":"USDG","decimals":6,"raw":"150000000","amount":150,"isQuote":True,"native":False},
   {"address":"0x0000000000000000000000000000000000000000","symbol":"ETH","decimals":18,"raw":"100000000000000000","amount":0.1,"isQuote":True,"native":True},
@@ -22,9 +28,9 @@ LIVE = {"mode":{"dry_run":False,"paused":False,"wallet":"0x"+"11"*20},
 
 KATA = {
  'id': {'pool':'Pilih pool','nominal':'Nominal','rentang':'Rentang harga','ganti':'Ganti',
-        'dari':'Dari','ke':'Ke','biaya':'Biaya rute','buka':'Buka posisi','konfirm':'sungguhan','tukar':'Tukar','live':'Nyalakan LIVE'},
+        'dari':'Dari','ke':'Ke','biaya':'Biaya rute','buka':'Buka posisi','konfirm':'sungguhan','tukar':'Tukar','live':'Nyalakan LIVE','cari':'Cari pool untuk token ini'},
  'en': {'pool':'Pick a pool','nominal':'Amount','rentang':'Price range','ganti':'Change',
-        'dari':'From','ke':'To','biaya':'Route cost','buka':'Open ','konfirm':'real transaction','tukar':'Swap','live':'Switch to LIVE'},
+        'dari':'From','ke':'To','biaya':'Route cost','buka':'Open ','konfirm':'real transaction','tukar':'Swap','live':'Switch to LIVE','cari':'Find pools for this token'},
 }
 errs=[]
 
@@ -33,6 +39,12 @@ def cek(pg, lbl, lang, mode, live):
     pg.route('**/api/manual/lp/plan', lambda r: r.fulfill(status=200, content_type='application/json', body=json.dumps(PLAN)))
     pg.route('**/api/manual/swap/quote', lambda r: r.fulfill(status=200, content_type='application/json',
              body=json.dumps(QUOTE_BAD if mode=='bad' else QUOTE)))
+    def scan(r):
+        if r.request.method == 'POST':
+            r.fulfill(status=200, content_type='application/json', body=json.dumps({"ok":True,"status":"jalan"}))
+        else:
+            r.fulfill(status=200, content_type='application/json', body=json.dumps(SCAN))
+    pg.route('**/api/manual/pools/scan*', scan)
     pg.route('**/api/manual/tokens', lambda r: r.fulfill(status=200, content_type='application/json', body=json.dumps(TOKENS)))
     if live:
         pg.route('**/api/overview', lambda r: r.fulfill(status=200, content_type='application/json', body=json.dumps(LIVE)))
@@ -42,6 +54,24 @@ def cek(pg, lbl, lang, mode, live):
     body = pg.inner_text('body')
     for k in ('pool','nominal','rentang'):
         if K[k] not in body: errs.append(f'{lbl} LP: tidak ada "{K[k]}"')
+    # ---- cari pool dari alamat token (dilakukan lebih dulu: belum ada yang dipilih,
+    # jadi pemilihnya masih terbuka dan halaman tidak perlu dimuat ulang) ----
+    pg.locator('input[placeholder]').first.fill(ALAMAT); pg.wait_for_timeout(300)
+    tombol = pg.locator('button').filter(has_text=K['cari'])
+    if tombol.count()==0:
+        errs.append(f'{lbl} LP: tombol cari pool tidak muncul untuk alamat token')
+    else:
+        tombol.first.click(); pg.wait_for_timeout(2200)
+        b3 = pg.inner_text('body')
+        if 'FATCOIN/USDG' not in b3: errs.append(f'{lbl} LP: hasil pindai tidak tampil')
+        if '287' not in b3: errs.append(f'{lbl} LP: jumlah pool yang ada tidak disebut')
+        hasilp = pg.locator('div.max-h-80 button')
+        if hasilp.count() != 2: errs.append(f'{lbl} LP: hasil pindai harusnya 2 baris, ada {hasilp.count()}')
+    # kotak cari dikosongkan -> kembali ke daftar pool yang dikenal
+    pg.locator('input[placeholder]').first.fill(''); pg.wait_for_timeout(400)
+    if 'FATCOIN/USDG' in pg.inner_text('body') and pg.locator('div.max-h-80 button').count() == 2:
+        errs.append(f'{lbl} LP: hasil pindai tidak hilang saat kotak cari dikosongkan')
+
     pools = pg.locator('div.max-h-80 button')
     if pools.count() == 0:
         errs.append(f'{lbl} LP: daftar pool kosong'); return
