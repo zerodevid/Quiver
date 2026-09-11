@@ -667,6 +667,47 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.match(lastOut(w.sent).params.text, /⏸ <b>Dijeda<\/b>/);
   });
 
+  await t('galat yang ditangani cadangan tidak dikirim; macet terus = satu peringatan, lalu satu kabar pulih', async () => {
+    const { Engine } = require('../src/engine');
+    const w = build();
+    await w.bot.start();
+    const eng = Object.assign(Object.create(Engine.prototype), { store: w.store, troubles: new Map() });
+    // empat kali gagal: ditangani cadangan -> diam
+    for (let i = 0; i < 4; i++) eng.trouble('tick', `tick: eth_getLogs: historical state is not available — rentang -> 750`, { after: 5 });
+    await new Promise((r) => setTimeout(r, 30));
+    const kirim = () => w.bot.queue.map((x) => x.text).concat(outs(w.sent).map((x) => x.params.text)).filter((x) => /getLogs|pemindaian/.test(x));
+    assert.strictEqual(kirim().length, 0, `galat sesaat tidak boleh dikirim:\n${kirim().join('\n')}`);
+    assert.ok(w.store.all("SELECT 1 FROM logs WHERE msg LIKE 'tick:%'").length >= 4, 'galat tetap tercatat di log');
+    // kelima: cadangan dianggap gagal -> satu peringatan, kali berikutnya diam lagi
+    eng.trouble('tick', 'tick: eth_getLogs: historical state is not available — rentang -> 375', { after: 5 });
+    eng.trouble('tick', 'tick: eth_getLogs: historical state is not available — rentang -> 150', { after: 5 });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.strictEqual(kirim().length, 1, `harus tepat satu peringatan:\n${kirim().join('\n')}`);
+    assert.match(kirim()[0], /⛔ <b>Galat · tick<\/b>[\s\S]*gagal 5× berturut-turut/);
+    // pulih -> satu kabar, dan hitungan mulai dari nol
+    eng.cleared('tick', 'pemindaian blok: kembali normal, kursor di blok 1000');
+    eng.cleared('tick', 'pemindaian blok: kembali normal');
+    await new Promise((r) => setTimeout(r, 1200));
+    const semua = kirim();
+    assert.strictEqual(semua.length, 2, `harus ada satu kabar pulih:\n${semua.join('\n')}`);
+    assert.match(semua[1], /✅ <b>Pulih · pemindaian blok<\/b>\nkembali normal, kursor di blok 1000 — pulih setelah 6× gagal/);
+    // gagal sesaat tanpa pernah memperingatkan -> pulihnya juga diam
+    eng.trouble('kas', 'saldo kas: RPC 429', { after: 5 });
+    eng.cleared('kas', 'saldo kas: berhasil lagi');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(!kirim().concat(w.bot.queue.map((x) => x.text)).some((x) => /saldo kas/.test(x)), 'pulih tanpa peringatan tidak dikabarkan');
+    w.bot.stop();
+  });
+
+  await t('galat tanpa cadangan (mis. eksekusi masuk) tetap langsung dikirim', async () => {
+    const w = build();
+    await w.bot.start();
+    w.store.log('error', 'eksekusi masuk: saldo USDG kurang');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(w.bot.queue.concat(outs(w.sent).map((x) => ({ text: x.params.text }))).some((x) => /saldo USDG kurang/.test(x.text)));
+    w.bot.stop();
+  });
+
   await t('galat ikut terkirim, baris info tidak (setelan bawaan)', async () => {
     const w = build();
     await w.bot.start();

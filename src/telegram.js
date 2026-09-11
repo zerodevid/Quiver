@@ -193,7 +193,7 @@ const cut = (s, n = 3800) => (s.length <= n ? s : s.slice(0, n) + '\n…(dipoton
 // (mis. "eksekusi masuk: saldo kurang"); konteksnya dijadikan judul supaya sekali
 // lirik sudah jelas bagian mana yang bermasalah, rinciannya di baris sendiri.
 function logBaris(level, msg) {
-  const [icon, jenis] = { error: ['⛔', 'Galat'], warn: ['⚠️', 'Peringatan'], info: ['ℹ️', 'Info'] }[level] || ['•', level];
+  const [icon, jenis] = { error: ['⛔', 'Galat'], warn: ['⚠️', 'Peringatan'], info: ['ℹ️', 'Info'], pulih: ['✅', 'Pulih'] }[level] || ['•', level];
   const m = /^([^:\n]{2,40}):\s+([\s\S]+)$/.exec(String(msg ?? ''));
   const judul = m ? `${jenis} · ${m[1]}` : jenis;
   const isi = m ? m[2] : String(msg ?? '');
@@ -555,9 +555,15 @@ class Telegram {
         .then(([text, keyboard]) => this.push(text, keyboard));
     };
     const prevLog = this.store.onLog;
-    this.store.onLog = (level, msg) => {
-      if (prevLog) prevLog(level, msg);
+    this.store.onLog = (level, msg, meta) => {
+      if (prevLog) prevLog(level, msg, meta);
       const n = this.notifCfg();
+      // Masalah yang sedang ditangani jalan cadangan (RPC berpindah endpoint, tick
+      // mengulang rentang, antrean coba-ulang): cukup di log dan dasbor. Mesin sendiri
+      // yang mengirim satu peringatan kalau cadangannya terus gagal.
+      if (meta?.quiet) return;
+      // Kabar pulih menutup peringatan galat — ikut setelan galat, bukan setelan info.
+      if (meta?.recovered) { if (n.error) this.push(logBaris('pulih', msg)); return; }
       if (level === 'error' && n.error) this.push(logBaris(level, msg));
       else if (level === 'warn' && n.warn) this.push(logBaris(level, msg));
       else if (level === 'info' && n.info && msg !== this.lastNotify) this.push(logBaris(level, msg));

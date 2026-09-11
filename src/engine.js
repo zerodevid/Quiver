@@ -18,6 +18,15 @@ const fmtUnits = (raw, dec) => {
   return n >= 1 ? n.toFixed(2) : String(Number(n.toPrecision(3)));
 };
 
+// Durasi singkat untuk kabar: "45 dtk", "3 mnt", "1 jam 20 mnt".
+function lamanya(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} dtk`;
+  if (s < 3600) return `${Math.round(s / 60)} mnt`;
+  const j = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  return m ? `${j} jam ${m} mnt` : `${j} jam`;
+}
+
 class Engine {
   constructor({ rpc, store, chain, cfg, log }) {
     this.rpc = rpc; this.store = store; this.chain = chain; this.cfg = cfg;
@@ -31,6 +40,7 @@ class Engine {
     this.head = 0;
     this.busy = false;
     this.exiting = new Set();      // id posisi yang transaksi keluarnya sedang berjalan
+    this.troubles = new Map();     // kunci -> galat beruntun yang sedang ditangani cadangan
     this.lastCopyAt = new Map();   // poolRef -> ts (cooldown)
     this.stats = { scanned: 0, actions: 0, copied: 0, skipped: 0, errors: 0, startedAt: Date.now() };
     this.lastError = null;
@@ -149,7 +159,8 @@ class Engine {
         n++;
       }
       if (n) this.log(`mengadopsi ${n} posisi v4 milik wallet yang belum tercatat`);
-    } catch (e) { this.store.log('error', `adopsi posisi: ${e.message}`); }
+      this.cleared('adopsi', 'adopsi posisi: berhasil lagi');
+    } catch (e) { this.trouble('adopsi', `adopsi posisi: ${e.message}`, { after: 3 }); }   // diulang tiap 10 menit
   }
 
   // Cari rencana salinan yang gagal yang cocok dengan posisi ini (pool + rentang).
@@ -168,6 +179,37 @@ class Engine {
       return { target: row.target, mirrorOf: plan.mirrorOf ?? null };
     }
     return null;
+  }
+
+  // ---- galat yang punya jalan cadangan -------------------------------------
+  // Banyak galat di sini sudah ditangani sendiri: tick yang gagal mengulang rentang
+  // blok yang sama (lebih kecil) di tick berikutnya, sinkron diulang tiap 30 detik,
+  // sisa memecoin masuk antrean coba-ulang. Galat seperti itu tetap dicatat, tetapi
+  // `quiet` — tidak didorong ke chat. Baru kalau cadangannya terus gagal (`after` kali
+  // berturut-turut DAN selama `afterMs`) satu peringatan dikirim, lalu satu kabar
+  // pulih begitu berhasil lagi.
+  trouble(key, msg, { after = 3, afterMs = 0, level = 'error' } = {}) {
+    const now = Date.now();
+    let t = this.troubles.get(key);
+    // Galat lama yang tidak pernah "pulih" (mis. pemicu keluar yang hilang sendiri)
+    // tidak boleh ikut dihitung: jeda 15 menit tanpa galat = hitungan mulai dari nol.
+    if (!t || now - t.last > 15 * 60_000) t = { n: 0, since: now, alerted: false };
+    t.n++; t.last = now;
+    this.troubles.set(key, t);
+    if (!t.alerted && t.n >= after && now - t.since >= afterMs) {
+      t.alerted = true;
+      this.store.log(level, `${msg} — sudah gagal ${t.n}× berturut-turut selama ${lamanya(now - t.since)}, jalan cadangan belum berhasil`);
+    } else {
+      this.store.log(level, msg, { quiet: true });
+    }
+  }
+  // Panggil setelah langkah yang sama berhasil. `okMsg` null = pulih tanpa kabar
+  // (mis. keluar mandiri: kartu penutupan posisi sudah jadi kabarnya).
+  cleared(key, okMsg) {
+    const t = this.troubles.get(key);
+    if (!t) return;
+    this.troubles.delete(key);
+    if (t.alerted && okMsg) this.store.log('info', `${okMsg} — pulih setelah ${t.n}× gagal (${lamanya(Date.now() - t.since)})`, { recovered: true });
   }
 
   dryRun() { return this.cfg.mode?.dry_run !== false; }
@@ -202,13 +244,17 @@ class Engine {
         try { this.onFreshActions(fresh); } catch (e) { this.store.log('error', `onFreshActions: ${e.message}`); }
       }
       this.failStreak = 0;
+      this.cleared('tick', `pemindaian blok: kembali normal, kursor di blok ${this.cursor}`);
       if (this.span < maxSpan) this.span = Math.min(maxSpan, Math.ceil(this.span * 1.5));
     } catch (e) {
       this.stats.errors++;
       this.failStreak++;
       this.span = Math.max(150, Math.floor(this.span / 2));
       this.lastError = `${String(e.message).slice(0, 250)} (rentang dikecilkan ke ${this.span} blok)`;
-      this.store.log('error', `tick: ${e.message} — rentang -> ${this.span}`);
+      // Cadangan: kursor tidak maju, jadi rentang yang sama diulang (dikecilkan) di tick
+      // berikutnya dan RPC berpindah endpoint — tidak ada blok yang terlewat. Kabari
+      // hanya kalau pemindaian macet ≥ 5 kali dan ≥ 3 menit berturut-turut.
+      this.trouble('tick', `tick: ${e.message} — rentang -> ${this.span}`, { after: 5, afterMs: 3 * 60_000 });
       // beri jeda tambahan supaya tidak menghajar endpoint yang sedang marah
       if (this.failStreak > 2) await new Promise((r) => setTimeout(r, Math.min(15000, 1000 * this.failStreak)));
     } finally { this.busy = false; }
@@ -509,7 +555,7 @@ class Engine {
         notes.push(`${wantEth ? 'jembatan USDG→ETH' : 'jembatan ETH→USDG'} via Kyber (${r.quote.dex})`);
         return this.wrapIfWeth(quoteTok, needQuoteRaw, balOf, notes);
       }
-      this.store.log('warn', 'Kyber tidak bisa merutekan jembatan — mencoba pool langsung');
+      this.store.log('warn', 'Kyber tidak bisa merutekan jembatan — mencoba pool langsung', { quiet: true });
     }
 
     // Cadangan: satu pool ETH/USDG langsung. Banyak pool ETH/USDG di chain ini menolak
@@ -783,7 +829,9 @@ class Engine {
     // membatalkan pencatatan keluar — posisinya sudah benar-benar tertutup di chain.
     let sold = null;
     try { sold = await this.sellLeftover(pos, rc.receipt, { quiet: true }); }
-    catch (e) { this.store.log('error', `jual sisa #${pos.id}: ${e.message}`); }
+    // Gagal jual masuk antrean coba-ulang (keepLeftover); yang dikabarkan hanya kalau
+    // antrean menyerah.
+    catch (e) { this.store.log('error', `jual sisa #${pos.id}: ${e.message}`, { quiet: true }); }
     if (plan.full) {
       const live = this.positions.live.find((p) => p.id === pos.id);
       this.positions.markClosed(pos.id, {
@@ -820,7 +868,7 @@ class Engine {
         dec0: toks[0].decimals, dec1: toks[1].decimals, token0: pos.token0, token1: pos.token1,
       });
       return { amount0: amount0.toString(), amount1: amount1.toString(), valueQuote: v ? v.value : null, sqrt: s?.sqrtPriceX96 ?? null };
-    } catch (e) { this.store.log('warn', `hasil keluar #${pos.id} tidak terukur: ${e.message}`); return null; }
+    } catch (e) { this.store.log('warn', `hasil keluar #${pos.id} tidak terukur: ${e.message}`, { quiet: true }); return null; }   // cadangan: angka sinkron terakhir
   }
 
   // ---- jual sisa memecoin -------------------------------------------------
@@ -901,7 +949,7 @@ class Engine {
     for (const item of this.leftovers()) {
       if (Date.now() < (item.next || 0)) continue;
       try { await this.sellToken(item); }
-      catch (e) { this.store.log('warn', `coba ulang jual sisa #${item.posId}: ${e.message}`); }
+      catch (e) { this.store.log('warn', `coba ulang jual sisa #${item.posId}: ${e.message}`, { quiet: true }); }   // masih di antrean
     }
   }
 
@@ -927,7 +975,8 @@ class Engine {
       res = await this.rpc.ethCallMany(rows.map((r) => ({
         to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(r.mirror_of)]),
       })));
-    } catch (e) { this.store.log('warn', `rekonsiliasi keluar: ${e.message}`); return; }
+    } catch (e) { this.trouble('rekon-baca', `rekonsiliasi keluar: ${e.message}`, { after: 5, afterMs: 5 * 60_000, level: 'warn' }); return; }
+    this.cleared('rekon-baca', 'rekonsiliasi keluar: RPC terbaca lagi');
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       const raw = res[i];
@@ -945,7 +994,8 @@ class Engine {
           kind: 'exit', positionId: r.id, txHash: out.txHash, full: true, sold: out.sold, auto: true,
           target: r.target, mirrorOf: r.mirror_of, reason: 'sinyal keluar terlewat — posisi target sudah kosong',
         });
-      } catch (e) { this.store.log('error', `rekonsiliasi tutup #${r.id} gagal: ${e.message}`); }
+        this.cleared(`rekon:${r.id}`, null);
+      } catch (e) { this.trouble(`rekon:${r.id}`, `rekonsiliasi tutup #${r.id} gagal: ${e.message}`, { after: 2 }); }
     }
   }
 
@@ -958,10 +1008,13 @@ class Engine {
       this.lastAdopt = Date.now();
       await this.adoptOwnPositions(addr);
     }
-    await this.retryLeftovers().catch((e) => this.store.log('error', `jual sisa: ${e.message}`));
-    await this.reconcileExits().catch((e) => this.store.log('error', `rekonsiliasi keluar: ${e.message}`));
+    // Semua langkah ini diulang tiap sinkron (30 detik) — galat sesaat tidak dikabarkan.
+    const sekali = (key, label, p) => p.then(() => this.cleared(key, `${label}: berhasil lagi`))
+      .catch((e) => this.trouble(key, `${label}: ${e.message}`, { after: 5, afterMs: 5 * 60_000 }));
+    await sekali('jual-sisa', 'jual sisa', this.retryLeftovers());
+    await sekali('rekon', 'rekonsiliasi keluar', this.reconcileExits());
     await this.positions.sync(this.ethUsd);
-    await this.refreshCash().catch((e) => this.store.log('error', `saldo kas: ${e.message}`));
+    await sekali('kas', 'saldo kas', this.refreshCash());
     const globalRules = rulesFor(this.cfg.rules);
     const triggers = this.positions.exitTriggers(globalRules);
     for (const t of triggers) {
@@ -974,7 +1027,12 @@ class Engine {
           kind: 'exit', positionId: t.pos.id, txHash: out.txHash, full: true, sold: out.sold, auto: true,
           target: t.pos.target, mirrorOf: t.pos.mirror_of, reason: t.reason,
         });
-      } catch (e) { this.store.log('error', `keluar mandiri gagal #${t.pos.id}: ${e.message}`); }
+        this.cleared(`keluar:${t.pos.id}`, null);                   // kartu penutupan = kabarnya
+      } catch (e) {
+        // Pemicunya masih berlaku, jadi diulang di sinkron berikutnya. Dua kali gagal
+        // (~1 menit) sudah dikabarkan: dana sedang tidak terlindungi stop-loss.
+        this.trouble(`keluar:${t.pos.id}`, `keluar mandiri gagal #${t.pos.id}: ${e.message}`, { after: 2 });
+      }
     }
   }
 
@@ -996,7 +1054,7 @@ class Engine {
       if (!(await this.exec.waitReceipt(h)).ok) throw new Error(`tx ${h} gagal`);
       notes.push(`isi gas: buka bungkus ${fmtUnits(amt, 18)} WETH`);
     } catch (e) {
-      this.store.log('warn', `isi gas dari WETH gagal: ${e.message}`);
+      this.store.log('warn', `isi gas dari WETH gagal: ${e.message}`, { quiet: true });   // dicoba lagi di transaksi berikutnya
     }
   }
 
