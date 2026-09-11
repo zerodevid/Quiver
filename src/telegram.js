@@ -33,8 +33,16 @@ const shortH = (h) => (h ? `${String(h).slice(0, 10)}…` : '—');
 // tidak disentuh — di format Indonesia "1.000" adalah seribu, bukan satu koma nol.
 const trimZ = (s) => (s.includes(',') ? s.replace(/,?0+$/, '') : s);
 const num = (n) => (n == null ? '—' : Number(n).toLocaleString('id-ID'));
-// Jumlah token: nol di ekor cuma bikin kolom ramai ("0,000000" -> "0").
-const tok = (n, d = 6) => (n == null ? '—' : trimZ(nf(n, d)));
+// Jumlah token: nol di ekor cuma bikin kolom ramai ("0,000000" -> "0"). Tetapi
+// jumlah yang lebih kecil dari presisi kolom TIDAK boleh ikut jadi "0" — itu
+// membaca seperti tidak ada tokennya sama sekali; pakai angka penting.
+const tok = (n, d = 6) => {
+  if (n == null || !Number.isFinite(Number(n))) return '—';
+  const x = Number(n);
+  if (x === 0) return '0';
+  if (Math.abs(x) < 10 ** -d) return (x < 0 ? '−' : '') + harga(Math.abs(x));
+  return trimZ(nf(x, d));
+};
 
 function ago(ts) {
   if (!ts) return '—';
@@ -707,15 +715,15 @@ class Telegram {
         return this.ask(chatId, { kind: 'live', retry: 's' },
           '⚠️ <b>Menyalakan mode LIVE</b>\n\nMulai saat itu bot mengirim transaksi sungguhan memakai dana di wallet bot.\n\nKetik <code>LIVE</code> untuk mengonfirmasi.');
       }
-      case 'sw': return out(...(await this.walletScreen()));
-      case 'swg': return out('🔑 <b>Buat wallet baru?</b>\n\nKunci lama otomatis dicadangkan (tidak dihapus), lalu bot memakai alamat baru. Dana di alamat lama <b>tidak</b> ikut pindah.\n\nHanya bisa saat mode simulasi.',
-        kb([[btn('✅ Ya, buat baru', 'swG')], [btn('↩︎ Batal', 'sw')]]));
-      case 'swG': {
+      case 'wb': return out(...(await this.walletScreen()));
+      case 'wbg': return out('🔑 <b>Buat wallet baru?</b>\n\nKunci lama otomatis dicadangkan (tidak dihapus), lalu bot memakai alamat baru. Dana di alamat lama <b>tidak</b> ikut pindah.\n\nHanya bisa saat mode simulasi.',
+        kb([[btn('✅ Ya, buat baru', 'wbG')], [btn('↩︎ Batal', 'wb')]]));
+      case 'wbG': {
         const r = await this.api('POST', '/api/settings/wallet/generate', { replace: true });
-        if (r.error) return out(`❌ ${esc(r.error)}`, kb([[btn('↩︎ Kembali', 'sw')]]));
-        return out(`✅ Wallet baru: <code>${esc(r.address)}</code>\nFrasa pemulihan disimpan di server (<code>${esc(r.mnemonicFile)}</code>) dan sengaja tidak dikirim lewat Telegram.`, kb([[btn('↩︎ Wallet', 'sw')], [BACK_HOME]]));
+        if (r.error) return out(`❌ ${esc(r.error)}`, kb([[btn('↩︎ Kembali', 'wb')]]));
+        return out(`✅ Wallet baru: <code>${esc(r.address)}</code>\nFrasa pemulihan disimpan di server (<code>${esc(r.mnemonicFile)}</code>) dan sengaja tidak dikirim lewat Telegram.`, kb([[btn('↩︎ Wallet', 'wb')], [BACK_HOME]]));
       }
-      case 'swr': return this.ask(chatId, { kind: 'lepasWallet', retry: 'sw' }, 'Untuk melepas wallet, kirim alamatnya persis (kunci dicadangkan, tidak dihapus).');
+      case 'wbr': return this.ask(chatId, { kind: 'lepasWallet', retry: 'wb' }, 'Untuk melepas wallet, kirim alamatnya persis (kunci dicadangkan, tidak dihapus).');
 
       case 'sr': {
         if (!rest[0]) return out(...(await this.rpcScreen()));
@@ -785,6 +793,56 @@ class Telegram {
         return out(...(await this.leftovers()));
       }
 
+      // ---- LP manual ----
+      case 'ml': return out(...(await this.lpMenu(chatId)));
+      case 'mlp': return out(...(await this.lpPools(chatId, Number(rest[0] || 0), rest[1] || '')));
+      case 'mlP': {
+        const pool = (s.poolList || [])[+rest[0]];
+        if (!pool) return out(...(await this.lpPools(chatId, 0)));
+        s.lp = { ...(s.lp || { usd: null, widthPct: 25 }), poolRef: pool.poolRef, pair: pool.pair };
+        return out(...(await this.lpMenu(chatId)));
+      }
+      case 'mlc': return this.ask(chatId, { kind: 'poolCari', retry: 'mlp:0' }, 'Ketik nama pasangan yang dicari, misal <code>HOOKR</code> atau <code>USDG/ND4</code>.');
+      case 'mln': return this.ask(chatId, { kind: 'lpUsd', retry: 'ml' }, 'Berapa dolar yang mau dimasukkan?\n\n<i>Ini nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.</i>');
+      case 'mlr': return out(...(await this.lpRange(chatId)));
+      case 'mlw': {
+        s.lp = { ...(s.lp || {}), widthPct: Number(rest[0]), full: false };
+        return out(...(await this.lpMenu(chatId)));
+      }
+      case 'mlF': { s.lp = { ...(s.lp || {}), full: true }; return out(...(await this.lpMenu(chatId))); }
+      case 'mlC': return this.ask(chatId, { kind: 'lpWidth', retry: 'mlr' }, 'Rentang ±berapa persen dari harga kini?\n\n<i>Makin sempit makin besar fee-nya, tapi makin cepat keluar rentang.</i>');
+      case 'mlv': return out(...(await this.lpPreview(chatId)));
+      case 'mlX': {
+        const d = s.lp || {};
+        if (ack) await ack('Membuka posisi…');
+        await out('⏳ Membuka posisi… <i>(jembatan kas, zap, lalu mint — bisa sampai satu menit)</i>');
+        const r = await this.api('POST', '/api/manual/lp/open', d);
+        if (r.error) return out(`⛔ <b>Gagal membuka LP</b>\n<code>${esc(r.error)}</code>`, kb([[btn('↩︎ LP manual', 'ml'), BACK_HOME]]));
+        s.lp = null;
+        return out(`✅ <b>LP dibuka</b>\n${esc(r.note)}\ntx <code>${esc(shortH(r.tx))}</code>`, kb([[btn('💼 Lihat posisi', 'p')], [BACK_HOME]]));
+      }
+
+      // ---- swap manual ----
+      case 'sw': return out(...(await this.swapMenu(chatId)));
+      case 'swf': case 'swt': return out(...(await this.swapPick(chatId, head === 'swf' ? 'from' : 'to')));
+      case 'swF': case 'swT': {
+        const tok = (s.tokenList || [])[+rest[0]];
+        if (!tok) return out(...(await this.swapMenu(chatId)));
+        s.sw = { ...(s.sw || {}), [head === 'swF' ? 'from' : 'to']: tok.address, [head === 'swF' ? 'symFrom' : 'symTo']: tok.symbol };
+        return out(...(await this.swapMenu(chatId)));
+      }
+      case 'swn': return this.ask(chatId, { kind: 'swAmount', retry: 'sw' }, 'Berapa yang mau ditukar?\n\nBoleh angka (<code>0,05</code>), persen (<code>50%</code>), atau <code>semua</code>.');
+      case 'swq': return out(...(await this.swapQuote(chatId, ack)));
+      case 'swX': {
+        const d = s.sw || {};
+        if (ack) await ack('Menukar…');
+        await out('⏳ Menukar lewat Kyber…');
+        const r = await this.api('POST', '/api/manual/swap', { tokenIn: d.from, tokenOut: d.to, amount: d.amount });
+        if (r.error) return out(`⛔ <b>Swap gagal</b>\n<code>${esc(r.error)}</code>`, kb([[btn('↩︎ Swap', 'sw'), BACK_HOME]]));
+        s.sw = { ...d, amount: null };
+        return out(`✅ <b>Swap selesai</b>\n${esc(r.note)}${r.dex ? `\nlewat ${esc(r.dex)}` : ''}\ntx <code>${esc(shortH(r.tx))}</code>`, kb([[btn('💵 Saldo', 'b'), btn('🔁 Swap lagi', 'sw')], [BACK_HOME]]));
+      }
+
       case 'k': return this.ask(chatId, { kind: 'scout' }, 'Kirim alamat wallet yang mau dipotret.');
       case 'w': return this.ask(chatId, { kind: 'riset' }, 'Kirim alamat wallet yang mau diriset.');
       case 'wl': return out(...(await this.walletList()));
@@ -817,7 +875,7 @@ class Telegram {
       case 'lepasWallet': {
         const r = await this.api('POST', '/api/settings/wallet/remove', { confirm: text.trim().toLowerCase() });
         if (r.error) throw new Error(r.error);
-        return this.screen(chatId, null, 'sw', '✅ Wallet dilepas (kunci dicadangkan).\n\n');
+        return this.screen(chatId, null, 'wb', '✅ Wallet dilepas (kunci dicadangkan).\n\n');
       }
       case 'ntfy': {
         const r = await this.api('POST', '/api/settings/notify', { ntfy_topic: text.trim() === '-' ? '' : text.trim() });
@@ -830,6 +888,26 @@ class Telegram {
         const r = await this.api('POST', '/api/settings/rpc', { endpoints: list });
         if (r.error) throw new Error(r.error);
         return this.screen(chatId, null, 'sr', '✅ Endpoint ditambahkan.\n\n');
+      }
+      case 'poolCari': return this.screen(chatId, null, `mlp:0:${encodeURIComponent(text.trim().slice(0, 24))}`);
+      case 'lpUsd': {
+        const n = Number(String(text).replace(/[$\s]/g, '').replace(',', '.'));
+        if (!Number.isFinite(n) || n <= 0) throw new Error('nominal harus angka lebih dari nol');
+        const se = this.sess(chatId);
+        se.lp = { ...(se.lp || { widthPct: 25 }), usd: n };
+        return this.screen(chatId, null, 'ml', `✅ Nominal $${nf(n, 2)}\n\n`);
+      }
+      case 'lpWidth': {
+        const n = Number(String(text).replace(/[%\s]/g, '').replace(',', '.'));
+        if (!Number.isFinite(n) || n <= 0.1 || n > 10000) throw new Error('lebar harus antara 0,1 dan 10000 persen');
+        const se = this.sess(chatId);
+        se.lp = { ...(se.lp || {}), widthPct: n, full: false };
+        return this.screen(chatId, null, 'ml', `✅ Rentang ±${trimZ(nf(n, 1))}%\n\n`);
+      }
+      case 'swAmount': {
+        const se = this.sess(chatId);
+        se.sw = { ...(se.sw || {}), amount: String(text).trim() };
+        return this.screen(chatId, null, 'swq');
       }
       case 'rule': {
         const grp = RULE_GROUPS[p.gi], spec = grp.fields[p.fi];
@@ -904,6 +982,7 @@ class Telegram {
       [btn('📊 Ringkasan', 'o'), btn('💼 Posisi', 'p')],
       [btn('🎯 Target', 't'), btn('📜 Aktivitas', 'a:0')],
       [btn('⚙️ Aturan salin', 'r'), btn('🔧 Pengaturan', 's')],
+      [btn('➕ LP manual', 'ml'), btn('🔁 Swap', 'sw')],
       [btn('🔎 Riset wallet', 'w'), btn('🔭 Scout', 'k')],
       [btn('🧹 Sisa jual', 'f'), btn('💵 Saldo', 'b')],
       [btn('📝 Log', 'l'), btn('🧾 Transaksi', 'x')],
@@ -1209,7 +1288,7 @@ class Telegram {
     return [L.join('\n'), kb([
       [btn(st.mode.dry_run ? '🟢 Nyalakan LIVE' : '🧪 Kembali ke simulasi', 'sl')],
       [btn(st.mode.paused ? '▶️ Lanjutkan' : '⏸ Jeda penyalinan', 'sp')],
-      [btn('🔑 Wallet bot', 'sw'), btn('🌐 RPC', 'sr')],
+      [btn('🔑 Wallet bot', 'wb'), btn('🌐 RPC', 'sr')],
       [btn('⛽ Gas', 'sf:gas'), btn('🔧 Mesin', 'sf:mesin')],
       [btn('🔔 Notifikasi', 'sn'), btn('💬 Chat Telegram', 'sc')],
       [btn('🔐 Ganti token dasbor', 'sk')],
@@ -1244,8 +1323,8 @@ class Telegram {
       '<i>Impor kunci privat lewat Telegram sengaja tidak disediakan — riwayat chat tersimpan di server Telegram. Pakai dasbor untuk itu.</i>',
     ];
     return [L.filter((x) => x != null).join('\n'), kb([
-      [btn('🆕 Buat wallet baru', 'swg')],
-      [btn('🗑 Lepas wallet', 'swr')],
+      [btn('🆕 Buat wallet baru', 'wbg')],
+      [btn('🗑 Lepas wallet', 'wbr')],
       [btn('↩︎ Pengaturan', 's'), BACK_HOME],
     ])];
   }
@@ -1347,6 +1426,181 @@ class Telegram {
       d.leftovers.length ? [btn('🔁 Coba jual sekarang', 'fr')] : null,
       ...d.leftovers.map((it) => [btn(`🗑 Keluarkan #${it.posId} ${it.symbol || ''}`.slice(0, 38), `fd:${it.posId}:${it.token}`)]),
       [btn('🔄 Segarkan', 'f'), BACK_HOME],
+    ])];
+  }
+
+  // ---- LP manual -----------------------------------------------------------
+  async lpMenu(chatId) {
+    const d = this.sess(chatId).lp || {};
+    const siap = d.poolRef && d.usd > 0;
+    const L = [
+      '<b>➕ LP manual</b>',
+      'Membuka posisi sendiri, di luar penyalinan target. Jalur eksekusinya sama: kas dijembatani, token ditukar seperlunya, lalu mint.',
+      '',
+      tabel([
+        ['pool', d.pair || '— belum dipilih'],
+        ['nominal', d.usd ? usd(d.usd) : '— belum diisi'],
+        ['rentang', d.full ? 'seluruh rentang harga' : `±${trimZ(nf(d.widthPct ?? 25, 1))}% dari harga kini`],
+      ]),
+    ];
+    if (this.engine.dryRun()) L.push('⚠️ Bot sedang di mode <b>simulasi</b> — pratinjau tetap jalan, tapi transaksi tidak akan dikirim.');
+    return [L.filter((x) => x != null).join('\n'), kb([
+      [btn(`🏊 ${d.pair ? 'Ganti pool' : 'Pilih pool'}`, 'mlp:0')],
+      [btn('💵 Nominal', 'mln'), btn('📐 Rentang', 'mlr')],
+      siap ? [btn('👁 Pratinjau & buka', 'mlv')] : null,
+      [btn('↩︎ Menu', 'h')],
+    ])];
+  }
+
+  async lpPools(chatId, off = 0, cari = '') {
+    const q = decodeURIComponent(cari || '');
+    const d = await this.api('GET', '/api/manual/pools', {}, { q, limit: 60 });
+    const s = this.sess(chatId);
+    s.poolList = d.pools;                       // indeks tombol menunjuk ke daftar ini
+    const hal = d.pools.slice(off, off + 8);
+    const L = [`<b>🏊 Pilih pool</b>${q ? ` — cari "${esc(q)}"` : ''}`];
+    if (!d.pools.length) L.push('\nBelum ada pool yang dikenal. Pool muncul di sini setelah bot melihat target beraksi di dalamnya.');
+    else {
+      L.push(`${d.pools.length} pool dikenal, diurutkan dari yang paling baru beraksi.`);
+      L.push(kolom(hal.map((p) => [
+        p.pair, `${trimZ(nf(p.feePct ?? 0, 2))}%`, p.hasHooks ? 'hook' : '', p.lastTs ? ago(p.lastTs) : '',
+      ]), 'lr'));
+    }
+    const rows = hal.map((p, i) => [btn(`${p.hasHooks ? '🪝 ' : ''}${p.pair} · ${trimZ(nf(p.feePct ?? 0, 2))}%`.slice(0, 40), `mlP:${off + i}`)]);
+    const nav = [];
+    if (off > 0) nav.push(btn('⬅️', `mlp:${Math.max(0, off - 8)}:${cari}`));
+    if (off + 8 < d.pools.length) nav.push(btn('➡️', `mlp:${off + 8}:${cari}`));
+    return [L.filter((x) => x != null).join('\n'), kb([
+      ...rows, nav.length ? nav : null,
+      [btn('🔎 Cari pasangan', 'mlc')],
+      [btn('↩︎ LP manual', 'ml')],
+    ])];
+  }
+
+  async lpRange(chatId) {
+    const d = this.sess(chatId).lp || {};
+    const L = [
+      '<b>📐 Rentang harga</b>',
+      'Fee hanya mengalir selama harga berada di dalam rentang. Sempit = fee lebih besar tapi lebih cepat keluar; lebar = lebih aman tapi encer.',
+      '',
+      `Sekarang: <b>${d.full ? 'seluruh rentang' : `±${trimZ(nf(d.widthPct ?? 25, 1))}%`}</b>`,
+    ];
+    return [L.join('\n'), kb([
+      [btn('±5%', 'mlw:5'), btn('±10%', 'mlw:10'), btn('±25%', 'mlw:25')],
+      [btn('±50%', 'mlw:50'), btn('±100%', 'mlw:100'), btn('seluruh rentang', 'mlF')],
+      [btn('✏️ Persen lain', 'mlC')],
+      [btn('↩︎ LP manual', 'ml')],
+    ])];
+  }
+
+  async lpPreview(chatId) {
+    const d = this.sess(chatId).lp || {};
+    const r = await this.api('POST', '/api/manual/lp/plan', d);
+    if (r.error) {
+      return [`⛔ <b>Belum bisa dibuka</b>\n${esc(r.error)}`, kb([[btn('↩︎ LP manual', 'ml'), BACK_HOME]])];
+    }
+    const p = r.preview;
+    const rg = rentang(p);
+    const L = [
+      `<b>👁 Pratinjau — ${esc(p.pair)}</b>`,
+      `${esc(p.venue)} · fee ${trimZ(nf(p.feePct ?? 0, 2))}% · ${p.side === 'both' ? 'dua sisi' : 'satu sisi'}`,
+      '',
+      angka([
+        ['nilai posisi', usd(p.valueUsd)],
+        [p.symbol0, tok(Number(p.amount0) / 10 ** p.dec0, 6)],
+        [p.symbol1, tok(Number(p.amount1) / 10 ** p.dec1, 6)],
+        ['kas tersedia', usd(p.kasUsd)],
+      ]),
+    ];
+    if (rg) {
+      L.push(`<b>${esc(rg.judul)}</b>`);
+      L.push(rg.bar);
+      if (rg.kini) L.push(`${esc(rg.kini)}${rg.ket ? ` — ${esc(rg.ket)}` : ''}`);
+    }
+    for (const w of r.warnings || []) L.push(`⚠️ ${esc(w)}`);
+    const live = !this.engine.dryRun();
+    L.push('');
+    L.push(live
+      ? 'Transaksi dikirim sungguhan dari wallet bot. Posisi ini tidak mencermin siapa pun — ia tidak akan ikut ditutup saat target keluar.'
+      : '⚠️ Mode <b>simulasi</b>: tombol di bawah akan ditolak.');
+    return [L.filter((x) => x != null).join('\n'), kb([
+      [btn('✅ Buka posisi sekarang', 'mlX')],
+      [btn('💵 Ubah nominal', 'mln'), btn('📐 Ubah rentang', 'mlr')],
+      [btn('↩︎ LP manual', 'ml')],
+    ])];
+  }
+
+  // ---- swap manual ----------------------------------------------------------
+  async swapMenu(chatId) {
+    const s = this.sess(chatId);
+    const d = s.sw || {};
+    const t = await this.api('GET', '/api/manual/tokens');
+    s.tokenList = t.tokens;
+    const punya = t.tokens.filter((x) => x.amount > 0);
+    const L = [
+      '<b>🔁 Swap</b>',
+      'Menukar lewat agregator Kyber — rute yang sama dipakai bot untuk zap dan menjual sisa.',
+      '',
+      tabel([
+        ['dari', d.symFrom || '— belum dipilih'],
+        ['ke', d.symTo || '— belum dipilih'],
+        ['jumlah', d.amount || '— belum diisi'],
+      ]),
+      '<b>Saldo</b>',
+      punya.length ? angka(punya.map((x) => [x.symbol, tok(x.amount, 6)])) : 'Semua saldo kosong.',
+    ];
+    if (this.engine.dryRun()) L.push('⚠️ Bot sedang di mode <b>simulasi</b> — kutipan tetap jalan, tapi transaksi tidak akan dikirim.');
+    return [L.filter((x) => x != null).join('\n'), kb([
+      [btn('📤 Dari', 'swf'), btn('📥 Ke', 'swt')],
+      [btn('🔢 Jumlah', 'swn')],
+      d.from && d.to && d.amount ? [btn('👁 Kutipan & tukar', 'swq')] : null,
+      [btn('↩︎ Menu', 'h')],
+    ])];
+  }
+
+  async swapPick(chatId, sisi) {
+    const s = this.sess(chatId);
+    const t = await this.api('GET', '/api/manual/tokens');
+    s.tokenList = t.tokens;
+    // Sisi "dari" hanya menawarkan yang benar-benar ada saldonya; sisi "ke" boleh apa saja.
+    const pilih = sisi === 'from' ? t.tokens.filter((x) => x.amount > 0) : t.tokens;
+    const L = [
+      `<b>${sisi === 'from' ? '📤 Ditukar dari' : '📥 Ditukar ke'}</b>`,
+      sisi === 'from' ? 'Hanya token yang ada saldonya.' : 'Aset kuotasi dan token yang pernah kita pegang.',
+      '',
+      pilih.length ? angka(pilih.map((x) => [x.symbol, tok(x.amount, 6)])) : 'Tidak ada pilihan.',
+    ];
+    const rows = pilih.map((x) => [btn(`${x.symbol} · ${tok(x.amount, 4)}`.slice(0, 40),
+      `${sisi === 'from' ? 'swF' : 'swT'}:${t.tokens.indexOf(x)}`)]);
+    return [L.filter((x) => x != null).join('\n'), kb([...rows, [btn('↩︎ Swap', 'sw')]])];
+  }
+
+  async swapQuote(chatId, ack) {
+    const d = this.sess(chatId).sw || {};
+    if (!d.from || !d.to || !d.amount) return this.swapMenu(chatId);
+    if (ack) await ack('Mengambil kutipan…');
+    const q = await this.api('POST', '/api/manual/swap/quote', { tokenIn: d.from, tokenOut: d.to, amount: d.amount });
+    if (q.error) return [`⛔ ${esc(q.error)}`, kb([[btn('↩︎ Swap', 'sw'), BACK_HOME]])];
+    const L = [
+      `<b>👁 ${esc(q.symbolIn)} → ${esc(q.symbolOut)}</b>`,
+      '',
+      angka([
+        ['dikirim', `${tok(q.amountIn, 6)} ${q.symbolIn}`],
+        ['diterima', `${tok(q.amountOut, 6)} ${q.symbolOut}`],
+        ['nilai masuk', q.usdIn != null ? usd(q.usdIn) : null],
+        ['nilai keluar', q.usdOut != null ? usd(q.usdOut) : null],
+        ['biaya rute', q.lossBps != null ? `${trimZ(nf(q.lossBps / 100, 2))}%` : null],
+      ]),
+      q.dex ? `<i>lewat ${esc(q.dex)}</i>` : null,
+    ];
+    if (q.tooLossy) {
+      L.push('');
+      L.push(`⛔ Rute ini rugi ${trimZ(nf(q.lossBps / 100, 1))}%, di atas batas ${trimZ(nf(q.maxLossBps / 100, 1))}% — bot akan menolaknya. Kecilkan jumlahnya atau naikkan batas di Aturan → Keluar posisi.`);
+    }
+    return [L.filter((x) => x != null).join('\n'), kb([
+      q.tooLossy ? null : [btn('✅ Tukar sekarang', 'swX')],
+      [btn('🔢 Ubah jumlah', 'swn'), btn('🔄 Kutipan ulang', 'swq')],
+      [btn('↩︎ Swap', 'sw')],
     ])];
   }
 

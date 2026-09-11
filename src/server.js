@@ -7,6 +7,7 @@ const { rulesFor, DEFAULTS } = require('./policy');
 const { scoutWallet } = require('./scout');
 const { WalletResearch, summarize } = require('./wallet');
 const { createSettingsRoutes } = require('./settings');
+const { Manual } = require('./manual');
 const { QUOTES } = require('./chain');
 
 // Sisi mana dari pool yang merupakan aset kuotasi (0 atau 1); null kalau tidak dikenal.
@@ -38,6 +39,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   const scoutJobs = new Map();
   const walletJobs = new Map();
   const research = new WalletResearch({ rpc, store, chain, log });
+  const manual = new Manual({ engine, store, chain, rpc, log });
 
   // Satu pintu untuk semua pemindaian wallet: tombol di dasbor, pembaruan otomatis
   // saat halaman dibuka, dan pembaruan saat target terdeteksi beraksi. Satu wallet
@@ -354,6 +356,69 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       wallets: store.all('SELECT address,label,scanned_to,last_scan_ts,positions_n,stats FROM wallets ORDER BY last_scan_ts DESC LIMIT 50')
         .map((w) => { try { return { ...w, stats: JSON.parse(w.stats || '{}') }; } catch { return { ...w, stats: {} }; } }),
     }),
+
+    // ---- LP manual & swap manual ----
+    // Rencana TIDAK pernah dikirim balik lalu dieksekusi apa adanya: /open menyusun
+    // ulang rencananya dari masukan yang sama, di harga terkini, sehingga semua
+    // pemeriksaan (batas, hook, kas) berjalan lagi tepat sebelum transaksi dibuat.
+    'GET /api/manual/pools': async (req, url) => ({
+      pools: await manual.pools({
+        q: url.searchParams.get('q') || '',
+        limit: Math.min(100, Number(url.searchParams.get('limit') || 40)),
+        withPrice: url.searchParams.get('price') === '1',
+      }),
+    }),
+    'POST /api/manual/lp/plan': async (req) => {
+      const b = await readBody(req);
+      return manual.planLp({
+        poolRef: String(b.poolRef || ''), usd: Number(b.usd),
+        widthPct: b.widthPct != null ? Number(b.widthPct) : 25,
+        tickLower: b.tickLower != null ? Math.round(Number(b.tickLower)) : null,
+        tickUpper: b.tickUpper != null ? Math.round(Number(b.tickUpper)) : null,
+        full: !!b.full,
+      });
+    },
+    'POST /api/manual/lp/open': async (req) => {
+      const b = await readBody(req);
+      if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
+      const d = await manual.planLp({
+        poolRef: String(b.poolRef || ''), usd: Number(b.usd),
+        widthPct: b.widthPct != null ? Number(b.widthPct) : 25,
+        tickLower: b.tickLower != null ? Math.round(Number(b.tickLower)) : null,
+        tickUpper: b.tickUpper != null ? Math.round(Number(b.tickUpper)) : null,
+        full: !!b.full,
+      });
+      if (d.error) return d;
+      try {
+        const r = await manual.openLp(d.plan);
+        return { ok: true, tx: r.txHash, positionId: r.positionId, note: r.note };
+      } catch (e) {
+        log(`LP manual: ${e.message}`);
+        return { error: e.message };
+      }
+    },
+    'GET /api/manual/tokens': async () => ({ tokens: await manual.held() }),
+    'POST /api/manual/swap/quote': async (req) => {
+      const b = await readBody(req);
+      try {
+        const raw = await manual.amountRaw(b.tokenIn, b.amount);
+        if (raw <= 0n) return { error: 'jumlah nol — saldonya kosong?' };
+        return { ...(await manual.quoteSwap({ tokenIn: b.tokenIn, tokenOut: b.tokenOut, amountRaw: raw })), amountRaw: raw.toString() };
+      } catch (e) { return { error: e.message }; }
+    },
+    'POST /api/manual/swap': async (req) => {
+      const b = await readBody(req);
+      if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
+      try {
+        const raw = await manual.amountRaw(b.tokenIn, b.amount);
+        if (raw <= 0n) return { error: 'jumlah nol — saldonya kosong?' };
+        const r = await manual.doSwap({ tokenIn: b.tokenIn, tokenOut: b.tokenOut, amountRaw: raw });
+        return { ok: true, tx: r.txHash, note: r.note, dex: r.dex };
+      } catch (e) {
+        log(`swap manual: ${e.message}`);
+        return { error: e.message };
+      }
+    },
 
     // ---- sisa memecoin yang belum terjual setelah keluar posisi ----
     'GET /api/leftovers': () => {

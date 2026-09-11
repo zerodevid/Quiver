@@ -17,6 +17,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Store } = require('../src/db');
+const { rulesFor } = require('../src/policy');
+const mm = require('../src/v3math');
 const { createServer } = require('../src/server');
 const { Telegram, parseVal, showVal, RULE_GROUPS } = require('../src/telegram');
 const { ADDR } = require('../src/chain');
@@ -48,6 +50,10 @@ function build({ chats = [CHAT], dryRun = true } = {}) {
     VALUES(1,'v4','888','0xpool',?,?,3000,60,-600,600,'5000',?,'777','open',?,200,'USDG','0xcc')`, ADDR.usdg, MEME, TARGET, now - 3600_000);
   store.run(`INSERT INTO positions(id,venue,token_id,pool_ref,token0,token1,status,closed_ts,cost_quote,out_quote,quote_symbol)
     VALUES(2,'v4','889','0xpool',?,?,'closed',?,100,112,'USDG')`, ADDR.usdg, MEME, now - 7200_000);
+  store.run(`INSERT INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block,first_ts)
+    VALUES('0xpool','v4',?,?,3000,60,?,1,?)`, ADDR.usdg, MEME, ADDR.native, now - 86400_000);
+  store.run(`INSERT INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block,first_ts)
+    VALUES('0xhook','v4',?,?,10000,200,'0x00000000000000000000000000000000000000ff',1,?)`, ADDR.usdg, MEME, now - 86400_000);
   store.log('info', 'uji: baris log');
   store.run("INSERT INTO txs(hash,ts,kind,status,gas_quote) VALUES('0xdd',?,'mint','ok',0.01)", now);
   store.run('INSERT INTO wallets(address,label,first_block,scanned_to,last_scan_ts,positions_n,stats) VALUES(?,?,1,100,?,2,?)',
@@ -86,9 +92,45 @@ function build({ chats = [CHAT], dryRun = true } = {}) {
     leftovers: () => [{ posId: 1, target: TARGET, token: MEME, quote: ADDR.usdg, amount: '1000', tries: 2, next: Date.now() + 600_000, why: 'rute rugi 18%' }],
     saveLeftovers: () => {}, dropLeftover: () => {}, sellToken: async () => 'terjual',
     executeExit: async () => ({ txHash: '0xee' }),
+    rulesFrom: () => rulesFor(cfg.rules, null),
+    notify(msg) { if (this.onNotify) this.onNotify(msg); },
+    dibuka: [], ditukar: [],
+    executeEntry: async function (plan, act) { this.dibuka.push({ plan, act }); return { txHash: '0xmint', positionId: 9, note: 'USDG/MEME $50,00' }; },
+    kyber: {
+      quote: async (a, b, amt) => ({ amountOut: BigInt(amt) * 2n, usdIn: 50, usdOut: 49.5, dex: 'uji-dex', routeSummary: {} }),
+      swap: async function (a, b, amt) { return { hash: '0xswap', amountOut: BigInt(amt) * 2n, quote: { dex: 'uji-dex', usdIn: 50, usdOut: 49.5 } }; },
+    },
   };
   const rpc = { stats: () => [{ url: 'https://rpc.contoh.test', calls: 10, errors: 0, lastMs: 90 }], reconfigure: () => {} };
-  const chain = { slot0V4Many: async (ids) => ids.map(() => ({ tick: 0 })) };
+
+  // Chain palsu yang cukup lengkap untuk LP manual: harga pool, metadata token, dan
+  // penilaian posisi memakai matematika v3 yang asli.
+  const SQRT = mm.getSqrtRatioAtTick(0);
+  const meta = {
+    [ADDR.usdg]: { address: ADDR.usdg, symbol: 'USDG', decimals: 6 },
+    [ADDR.native]: { address: ADDR.native, symbol: 'ETH', decimals: 18 },
+    [MEME]: { address: MEME, symbol: 'MEME', decimals: 18 },
+  };
+  const chain = {
+    slot0V4Many: async (ids) => ids.map(() => ({ sqrtPriceX96: SQRT, tick: 0 })),
+    slot0V4: async () => ({ sqrtPriceX96: SQRT, tick: 0 }),
+    slot0V3: async () => ({ sqrtPriceX96: SQRT, tick: 0 }),
+    tokens: async (list) => list.map((a) => meta[String(a).toLowerCase()] || { address: a, symbol: '?', decimals: 18 }),
+    token: async (a) => meta[String(a).toLowerCase()] || { address: a, symbol: '?', decimals: 18 },
+    quoteSideOf(t0, t1) {
+      const q = { [ADDR.usdg]: { symbol: 'USDG', decimals: 6, kind: 'usd' }, [ADDR.native]: { symbol: 'ETH', decimals: 18, kind: 'eth' } };
+      if (q[String(t0).toLowerCase()]) return { side: 0, ...q[String(t0).toLowerCase()] };
+      if (q[String(t1).toLowerCase()]) return { side: 1, ...q[String(t1).toLowerCase()] };
+      return null;
+    },
+    valueInQuote({ sqrtPriceX96, amount0, amount1, dec0, dec1, token0, token1 }) {
+      const q = this.quoteSideOf(token0, token1);
+      if (!q) return null;
+      const p1per0 = mm.priceFromSqrt(sqrtPriceX96, dec0, dec1);
+      const a0 = Number(amount0) / 10 ** dec0, a1 = Number(amount1) / 10 ** dec1;
+      return { value: q.side === 0 ? a0 + a1 / p1per0 : a1 + a0 * p1per0, symbol: q.symbol, side: q.side, kind: q.kind };
+    },
+  };
 
   let server;
   const sent = [];
@@ -111,7 +153,7 @@ function build({ chats = [CHAT], dryRun = true } = {}) {
   bot.polls = [];
   bot.poll = async (gen = bot.gen) => { bot.polls.push(gen); };
   server = createServer({ engine, store, cfg, cfgPath, chain, rpc, log: () => {}, telegram: bot });
-  return { bot, store, cfg, cfgPath, sent, engine, api: (m, p, b, q) => server.api(m, p, b, q), last: () => sent[sent.length - 1] };
+  return { bot, store, cfg, cfgPath, sent, engine, chainStub: chain, api: (m, p, b, q) => server.api(m, p, b, q), last: () => sent[sent.length - 1] };
 }
 
 const msg = (text, chat = CHAT) => ({ message: { chat: { id: Number(chat) }, text } });
@@ -173,7 +215,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
   await t('setiap tombol yang bisa dicapai dari menu utama bekerja', async () => {
     const w = build();
     // Tidak ditekan: memindahkan dana, menghapus, atau mengganti rahasia.
-    const HINDARI = ['pC', 'tD', 'swG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr'];
+    const HINDARI = ['pC', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'];
     const antre = ['h']; const sudah = new Set(); const layar = [];
     while (antre.length) {
       const data = antre.shift();
@@ -190,7 +232,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     }
     assert.ok(layar.length > 40, `penjelajah cuma sampai ${layar.length} layar — terlalu sedikit`);
     // layar penting benar-benar terlewati
-    for (const wajib of ['o', 'p', 'p:1', 't', `t:${TARGET}`, 'a:0', 'r', 'r:0', 's', 'sw', 'sr', 'sf:gas', 'sf:mesin', 'sn', 'sc', 'f', 'l', 'x', 'b'])
+    for (const wajib of ['o', 'p', 'p:1', 't', `t:${TARGET}`, 'a:0', 'r', 'r:0', 's', 'wb', 'sr', 'sf:gas', 'sf:mesin', 'sn', 'sc', 'f', 'l', 'x', 'b', 'ml', 'sw'])
       assert.ok(sudah.has(wajib), `layar ${wajib} tidak pernah tercapai`);
   });
 
@@ -431,7 +473,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
 
   await t('bot tidak pernah menyediakan jalan impor/ekspor kunci privat', async () => {
     const w = build();
-    await w.bot.handle(cbq('sw'));
+    await w.bot.handle(cbq('wb'));
     const teks = lastOut(w.sent).params.text;
     assert.match(teks, /sengaja tidak disediakan/i);
     for (const b of buttons(lastOut(w.sent))) assert.ok(!/import|impor|export|ekspor/i.test(b));
@@ -442,7 +484,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
 
   await t('penggantian wallet tetap ditolak saat LIVE (aturan dasbor ikut berlaku)', async () => {
     const w = build({ dryRun: false });
-    await w.bot.handle(cbq('swG'));
+    await w.bot.handle(cbq('wbG'));
     assert.match(lastOut(w.sent).params.text, /Matikan mode LIVE/i);
   });
 
@@ -653,6 +695,197 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     }
   });
 
+  // ---- LP manual -----------------------------------------------------------
+  await t('rencana LP manual: nominal dan rentang dihitung benar', async () => {
+    const w = build();
+    const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50, widthPct: 25 });
+    assert.ok(!r.error, r.error);
+    assert.strictEqual(r.plan.action, 'mint');
+    assert.strictEqual(r.plan.target, null, 'LP manual tidak boleh mencermin siapa pun');
+    assert.strictEqual(r.plan.mirrorOf, null);
+    assert.ok(Math.abs(r.preview.valueUsd - 50) < 0.5, `nilai ${r.preview.valueUsd}, minta $50`);
+    // ±25% pada tick 0 -> ln(1,25)/ln(1,0001) ≈ 2231 tick, dibulatkan ke kelipatan 60
+    assert.ok(r.plan.tickLower <= -2220 && r.plan.tickLower >= -2280, `tickLower ${r.plan.tickLower}`);
+    assert.ok(r.plan.tickUpper >= 2220 && r.plan.tickUpper <= 2280, `tickUpper ${r.plan.tickUpper}`);
+    assert.strictEqual(Math.abs(r.plan.tickLower % 60), 0, 'tick harus kelipatan tickSpacing');
+    assert.strictEqual(Math.abs(r.plan.tickUpper % 60), 0);
+    assert.strictEqual(r.preview.side, 'both');
+  });
+
+  await t('rentang lebih sempit menghasilkan likuiditas lebih padat', async () => {
+    const w = build();
+    const a = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50, widthPct: 5 });
+    const b = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50, widthPct: 50 });
+    assert.ok(BigInt(a.plan.liquidity) > BigInt(b.plan.liquidity),
+      'nominal sama di rentang lebih sempit harus memberi L lebih besar');
+    assert.ok(Math.abs(a.preview.valueUsd - b.preview.valueUsd) < 1, 'nilainya tetap sama-sama $50');
+  });
+
+  await t('LP manual menolak pool ber-hook selama hook belum diizinkan', async () => {
+    const w = build();
+    const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xhook', usd: 50 });
+    assert.match(r.error || '', /hook/i, 'pool ber-hook harus ditolak');
+    assert.ok(!r.plan);
+    // …dan diizinkan kalau user memang menyalakannya
+    w.cfg.rules = { filters: { allow_hooks: true } };
+    const r2 = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xhook', usd: 50 });
+    assert.ok(!r2.error, r2.error);
+  });
+
+  await t('LP manual menghormati batas yang sudah disetel', async () => {
+    const w = build();
+    w.cfg.rules = { sizing: { max_quote_per_position_usd: 30 } };
+    const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50 });
+    assert.match(r.error || '', /batas per posisi/i, r.error);
+    assert.match(r.error || '', /\$30/, 'pesannya harus menyebut batas yang menghalangi');
+
+    w.cfg.rules = { filters: { max_open_positions: 1 } };   // sudah ada 1 posisi terbuka
+    const r2 = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 10 });
+    assert.match(r2.error || '', /posisi terbuka/i, r2.error);
+  });
+
+  await t('LP manual menolak kalau kas tidak cukup', async () => {
+    const w = build();
+    w.engine.exec.balances = async (list) => new Map(list.map((t2) => [String(t2).toLowerCase(), 0n]));
+    const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50 });
+    assert.match(r.error || '', /kas cuma/i, r.error);
+  });
+
+  await t('LP manual: pool tidak dikenal ditolak, bukan melempar', async () => {
+    const w = build();
+    const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xtidakada', usd: 50 });
+    assert.match(r.error || '', /tidak dikenal/i);
+    for (const usd of [0, -5, NaN]) {
+      const bad = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd });
+      assert.ok(bad.error, `nominal ${usd} harus ditolak`);
+    }
+  });
+
+  await t('LP manual ditolak di mode simulasi', async () => {
+    const w = build();
+    const r = await w.api('POST', '/api/manual/lp/open', { poolRef: '0xpool', usd: 50 });
+    assert.match(r.error || '', /simulasi/i);
+    assert.strictEqual(w.engine.dibuka.length, 0, 'tidak boleh ada eksekusi di mode simulasi');
+  });
+
+  await t('LP manual LIVE menyusun ulang rencana sebelum mengirim', async () => {
+    const w = build({ dryRun: false });
+    const r = await w.api('POST', '/api/manual/lp/open', { poolRef: '0xpool', usd: 50, widthPct: 10 });
+    assert.ok(r.ok, r.error);
+    assert.strictEqual(w.engine.dibuka.length, 1, 'executeEntry harus dipanggil sekali');
+    const { plan, act } = w.engine.dibuka[0];
+    assert.strictEqual(act.target, null, 'act manual tidak punya target');
+    assert.ok(act.slot0, 'harga pool harus ikut supaya taksiran zap benar');
+    assert.strictEqual(plan.venue, 'v4');
+    assert.ok(Math.abs(plan.valueUsd - 50) < 0.5);
+    // rencana yang dieksekusi adalah hasil hitung ulang server, bukan kiriman klien
+    const palsu = await w.api('POST', '/api/manual/lp/open', { poolRef: '0xpool', usd: 50, liquidity: '999999999999', valueUsd: 1 });
+    assert.ok(palsu.ok, palsu.error);
+    assert.notStrictEqual(w.engine.dibuka[1].plan.liquidity, '999999999999', 'rencana kiriman klien tidak boleh dipakai');
+  });
+
+  await t('layar LP manual menuntun langkah demi langkah', async () => {
+    const w = build();
+    await w.bot.handle(cbq('ml'));
+    assert.match(lastOut(w.sent).params.text, /belum dipilih/);
+    await w.bot.handle(cbq('mlp:0'));
+    assert.match(lastOut(w.sent).params.text, /Pilih pool/);
+    assert.ok(buttons(lastOut(w.sent)).some((b) => b.startsWith('mlP:')), 'pool harus punya tombol');
+    await w.bot.handle(cbq('mlP:0'));
+    await w.bot.handle(cbq('mln'));
+    await w.bot.handle(msg('50'));
+    await w.bot.handle(cbq('mlw:10'));
+    const menu = lastOut(w.sent).params.text;
+    assert.match(menu, /\$50/);
+    assert.match(menu, /±10%/);
+    assert.ok(buttons(lastOut(w.sent)).includes('mlv'), 'tombol pratinjau harus muncul setelah lengkap');
+    await w.bot.handle(cbq('mlv'));
+    const pratinjau = lastOut(w.sent).params.text;
+    assert.match(pratinjau, /Pratinjau/);
+    assert.match(pratinjau, /Rentang harga/);
+    assert.match(pratinjau, /simulasi/i, 'mode simulasi harus diberitahukan sebelum tombol buka');
+  });
+
+  // ---- swap manual -----------------------------------------------------------
+  await t('"semua" menyisakan cadangan gas untuk ETH native', async () => {
+    const w = build();
+    const { Manual } = require('../src/manual');
+    const man = new Manual({ engine: w.engine, store: w.store, chain: w.chainStub, rpc: {}, log: () => {} });
+    const raw = await man.amountRaw(ADDR.native, 'semua');
+    const cadangan = BigInt(w.cfg.gas.native_reserve_wei ?? 2_000_000_000_000_000);
+    assert.strictEqual(raw, 10n ** 17n - cadangan, 'ETH native harus menyisakan cadangan gas');
+    // token biasa tidak perlu cadangan
+    const usdgRaw = await man.amountRaw(ADDR.usdg, 'semua');
+    assert.strictEqual(usdgRaw, 150_000_000n);
+  });
+
+  await t('jumlah swap: persen, angka, dan yang melebihi saldo', async () => {
+    const w = build();
+    const { Manual } = require('../src/manual');
+    const man = new Manual({ engine: w.engine, store: w.store, chain: w.chainStub, rpc: {}, log: () => {} });
+    assert.strictEqual(await man.amountRaw(ADDR.usdg, '50%'), 75_000_000n);
+    assert.strictEqual(await man.amountRaw(ADDR.usdg, '10'), 10_000_000n);
+    await assert.rejects(() => man.amountRaw(ADDR.usdg, '9999'), /saldo cuma/);
+    await assert.rejects(() => man.amountRaw(ADDR.usdg, 'abc'), /angka/);
+    await assert.rejects(() => man.amountRaw(ADDR.usdg, '150%'), /antara 0 dan 100/);
+  });
+
+  await t('kutipan swap menampilkan biaya rute dan menolak yang terlalu rugi', async () => {
+    const w = build();
+    const q = await w.api('POST', '/api/manual/swap/quote', { tokenIn: ADDR.usdg, tokenOut: MEME, amount: '10' });
+    assert.ok(!q.error, q.error);
+    assert.strictEqual(q.symbolIn, 'USDG');
+    assert.strictEqual(q.symbolOut, 'MEME');
+    assert.ok(q.lossBps > 0, 'biaya rute harus terhitung');
+    assert.strictEqual(q.tooLossy, false);
+
+    // rute yang merugi jauh melewati batas harus ditandai, bukan diam-diam dijalankan
+    w.engine.kyber.quote = async (a, b, amt) => ({ amountOut: BigInt(amt), usdIn: 50, usdOut: 20, dex: 'jelek', routeSummary: {} });
+    const buruk = await w.api('POST', '/api/manual/swap/quote', { tokenIn: ADDR.usdg, tokenOut: MEME, amount: '10' });
+    assert.strictEqual(buruk.tooLossy, true, `rugi ${buruk.lossBps} bps harusnya ditandai`);
+  });
+
+  await t('swap ditolak di mode simulasi, dijalankan saat LIVE', async () => {
+    const w = build();
+    const r = await w.api('POST', '/api/manual/swap', { tokenIn: ADDR.usdg, tokenOut: MEME, amount: '10' });
+    assert.match(r.error || '', /simulasi/i);
+
+    const w2 = build({ dryRun: false });
+    let dipakai = null;
+    w2.engine.kyber.swap = async (ti, to, amt, opt) => { dipakai = { ti, to, amt, opt }; return { hash: '0xswap', amountOut: 5n * 10n ** 18n, quote: { dex: 'uji' } }; };
+    const r2 = await w2.api('POST', '/api/manual/swap', { tokenIn: ADDR.usdg, tokenOut: MEME, amount: '10' });
+    assert.ok(r2.ok, r2.error);
+    assert.strictEqual(dipakai.amt, 10_000_000n, 'jumlah harus diubah ke satuan mentah token');
+    assert.strictEqual(dipakai.opt.kind, 'swap_manual');
+    assert.ok(dipakai.opt.maxLossBps > 0, 'batas rugi harus ikut dipasang');
+    assert.match(r2.note, /USDG/);
+  });
+
+  await t('layar swap menuntun langkah demi langkah', async () => {
+    const w = build();
+    await w.bot.handle(cbq('sw'));
+    assert.match(lastOut(w.sent).params.text, /belum dipilih/);
+    await w.bot.handle(cbq('swf'));
+    assert.ok(buttons(lastOut(w.sent)).some((b) => b.startsWith('swF:')), 'harus ada pilihan token');
+    await w.bot.handle(cbq('swF:0'));
+    await w.bot.handle(cbq('swt'));
+    await w.bot.handle(cbq('swT:1'));
+    await w.bot.handle(cbq('swn'));
+    await w.bot.handle(msg('10'));
+    const teks = lastOut(w.sent).params.text;
+    assert.match(teks, /dikirim|diterima/, `kutipan tidak muncul:\n${teks}`);
+  });
+
+  await t('sisi "dari" hanya menawarkan token yang ada saldonya', async () => {
+    const w = build();
+    w.engine.exec.balances = async (list) => new Map(list.map((t2) => [String(t2).toLowerCase(),
+      String(t2).toLowerCase() === ADDR.usdg ? 5_000_000n : 0n]));
+    await w.bot.handle(cbq('swf'));
+    const tombol = buttons(lastOut(w.sent)).filter((b) => b.startsWith('swF:'));
+    assert.strictEqual(tombol.length, 1, 'hanya USDG yang punya saldo');
+    assert.match(lastOut(w.sent).params.text, /USDG/);
+  });
+
   // ---- kerapian tampilan ---------------------------------------------------
   await t('kolom benar-benar lurus, termasuk saat isinya perlu di-escape', async () => {
     const { kolom } = require('../src/telegram');
@@ -735,7 +968,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
       const d = antre.shift();
       if (sudah.has(d)) continue;
       sudah.add(d);
-      if (['pC', 'tD', 'swG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr'].includes(d.split(':')[0])) continue;
+      if (['pC', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'].includes(d.split(':')[0])) continue;
       await w.bot.handle(cbq(d));
       const teks = lastOut(w.sent).params.text;
       const luarPre = teks.replace(/<pre>[\s\S]*?<\/pre>/g, '');
@@ -743,6 +976,40 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
         assert.ok(!/\S {3,}\S/.test(baris), `layar ${d} mencoba meluruskan dengan spasi di luar <pre>:\n  "${baris}"`);
       }
       for (const b of buttons(lastOut(w.sent))) antre.push(b);
+    }
+  });
+
+  await t('jumlah token kecil tidak pernah tampil sebagai nol', async () => {
+    const w = build();
+    await w.bot.handle(cbq('ml'));
+    const { Manual } = require('../src/manual');
+    void Manual;
+    // 2,5e-11 token: bukan nol, jadi tidak boleh dibaca "tidak punya".
+    const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50, widthPct: 25 });
+    assert.ok(BigInt(r.plan.amount1) > 0n, 'prasyarat: amount1 harus bukan nol');
+    w.sess = w.bot.sess(CHAT);
+    w.sess.lp = { poolRef: '0xpool', usd: 50, widthPct: 25 };
+    await w.bot.handle(cbq('mlv'));
+    const teks = lastOut(w.sent).params.text;
+    const baris = teks.split('\n').find((x) => x.includes('MEME'));
+    assert.ok(baris && !/MEME\s+0$/.test(baris), `jumlah bukan-nol tampil sebagai nol: "${baris}"`);
+  });
+
+  await t('tidak ada dua layar yang memakai kode tombol sama', async () => {
+    // Dua `case` bernilai sama dalam satu switch diterima diam-diam oleh JS: yang
+    // kedua tidak akan pernah jalan. Itu persis yang terjadi saat menu Swap dan
+    // layar Wallet sama-sama memakai 'sw' — penjelajah tidak bisa melihatnya
+    // karena keduanya menghasilkan layar yang sah.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'telegram.js'), 'utf8');
+    const blok = {
+      tombol: src.slice(src.indexOf('async screen('), src.indexOf('// ---- jawaban atas pertanyaan')),
+      perintah: src.slice(src.indexOf('switch (cmd) {'), src.indexOf('async onCallback')),
+    };
+    for (const [nama, teks] of Object.entries(blok)) {
+      assert.ok(teks.length > 100, `blok ${nama} tidak ketemu`);
+      const label = [...teks.matchAll(/case '([^']+)':/g)].map((m) => m[1]);
+      const dobel = [...new Set(label.filter((x, i) => label.indexOf(x) !== i))];
+      assert.deepStrictEqual(dobel, [], `kode ${nama} dipakai dua kali: ${dobel.join(', ')} — yang kedua tidak akan pernah jalan`);
     }
   });
 
@@ -754,7 +1021,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
       if (sudah.has(d)) continue;
       sudah.add(d);
       assert.ok(Buffer.byteLength(d) <= 64, `callback_data terlalu panjang (${Buffer.byteLength(d)}): ${d}`);
-      if (['pC', 'tD', 'swG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr'].includes(d.split(':')[0])) continue;
+      if (['pC', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'].includes(d.split(':')[0])) continue;
       await w.bot.handle(cbq(d));
       for (const b of buttons(lastOut(w.sent))) antre.push(b);
     }

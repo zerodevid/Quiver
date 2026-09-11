@@ -328,6 +328,8 @@ telegram: belum ada chat terhubung. Kirim ke bot →  /start 3F9A21C0   (berlaku
 | 📜 Aktivitas | aksi target terakhir + keputusan bot & alasannya, berhalaman |
 | ⚙️ Aturan salin | keenam kelompok aturan, tiap kolomnya bisa diubah dari sini |
 | 🔧 Pengaturan | LIVE/simulasi, jeda, wallet, RPC (uji & tambah), gas, mesin, notifikasi, chat, token dasbor |
+| ➕ LP manual | buka posisi sendiri: pilih pool, nominal, rentang — pratinjau dulu |
+| 🔁 Swap | tukar aset lewat Kyber, dengan kutipan dan biaya rute sebelum konfirmasi |
 | 🔎 Riset & 🔭 Scout | pindai wallet mana pun, hasilnya dikirim ke obrolan |
 | 🧹 Sisa jual | antrean memecoin sisa: coba jual sekarang atau keluarkan dari antrean |
 | 📝 Log · 🧾 Transaksi · 💵 Saldo | |
@@ -354,6 +356,41 @@ sama persis dengan dasbor (`web/src/fmt.js`), termasuk pembalikan saat aset kuot
 ada di token0. Bentuknya batang: `0,00949 ────────●────── 0,0156` plus jarak ke tepi
 terdekat, yaitu berapa persen harga harus bergerak sebelum posisi berhenti
 menghasilkan fee.
+
+### LP manual & swap manual
+
+Keduanya ada di `src/manual.js` dan memakai jalur eksekusi yang **sama** dengan
+penyalinan otomatis: `engine.executeEntry` untuk membuka posisi (jembatan kas, zap,
+izin, penguncian ulang nominal di harga terkini, pencatatan posisi) dan
+`engine.kyber.swap` untuk menukar. Tidak ada jalur pengiriman transaksi kedua yang
+harus ikut dirawat.
+
+Pool tidak perlu dicari sendiri: daftarnya diambil dari pool yang sudah pernah
+terlihat saat memantau target, diurutkan dari yang paling baru beraksi. Rentang
+dihitung `policy.planRange` yang sama (`±X%` dari harga kini, atau seluruh rentang).
+
+Penjagaan LP manual — perintah manual bisa salah ketik juga:
+
+- pool ber-hook ditolak selama `filters.allow_hooks` mati;
+- batas per posisi, eksposur total, dan jumlah posisi terbuka tetap berlaku, dan
+  pesannya menyebut batas mana yang menghalangi;
+- kas diperiksa lebih dulu (ETH + USDG + WETH, karena `executeEntry` bisa
+  menjembatani antar keduanya);
+- rencana **tidak pernah** dikirim balik lalu dieksekusi apa adanya: `/open`
+  menyusun ulang rencananya dari masukan yang sama di harga terkini, jadi semua
+  pemeriksaan berjalan lagi tepat sebelum transaksi dibuat.
+
+Posisi manual disimpan dengan `target` NULL. Akibatnya `reconcileExits` melewatinya
+(tidak ada target untuk diikuti keluar), tetapi aturan keluar mandiri (stop loss,
+take profit, umur, di luar rentang) **tetap** berlaku kalau disetel — itu memang
+aturan atas posisi kita sendiri.
+
+Swap menerima `semua`, persen (`50%`), atau angka; untuk ETH native cadangan gas
+selalu disisakan. Kutipan menampilkan biaya rute, dan rute yang rugi melebihi
+`exit.sell_max_loss_bps` ditolak dengan alasannya.
+
+Rutenya (`/api/manual/*`) ada di server, jadi dasbor bisa memakainya juga — untuk
+sekarang kedua fitur ini baru punya tampilan di Telegram.
 
 **Yang sengaja TIDAK ada di Telegram**
 
@@ -424,6 +461,7 @@ src/positions.js  sinkron posisi, PnL, IL, pemicu keluar
 src/scout.js      rapor wallet kandidat
 src/engine.js     orkestrator
 src/server.js     API + penyaji dashboard (server.api = pintu yang sama untuk bot)
+src/manual.js     LP manual & swap manual (memakai jalur eksekusi yang sama)
 src/telegram.js   bot Telegram: seluruh dasbor lewat obrolan
 web/              tampilan React + HeroUI v3 (sumber); web/dist = hasil build
 public/           tampilan lama (Tabler) — cadangan kalau web/dist belum dibuild
@@ -439,7 +477,7 @@ penitipan ke kontrak otomasi, pool berhook, semua batas (jumlah posisi,
 eksposur, jeda, minimum), posisi satu sisi, saldo kurang, aksi ganda, dan
 antrean jual memecoin sisa.
 
-`node test/telegram.js` (55 uji) menguji bot Telegram dengan API Telegram dipalsukan tetapi
+`node test/telegram.js` (72 uji) menguji bot Telegram dengan API Telegram dipalsukan tetapi
 tabel rute server yang asli. Uji intinya adalah penjelajah: ia menekan **setiap**
 tombol yang bisa dicapai dari menu utama dan menuntut tidak ada yang melempar
 galat, tidak ada layar kosong, dan tidak ada `undefined`/`NaN` yang bocor ke teks.
