@@ -99,7 +99,7 @@ def cek(pg, lbl, lang, mode, live):
             errs.append(f'{lbl} LP: mode simulasi tidak menawarkan jalan ke Pengaturan')
         else:
             jalan.first.click(); pg.wait_for_timeout(400)
-            if 'pengaturan' not in pg.url: errs.append(f'{lbl} LP: tombol simulasi tidak membawa ke Pengaturan')
+            if 'settings' not in pg.url: errs.append(f'{lbl} LP: tombol simulasi tidak membawa ke Pengaturan')
 
     # ---- Swap ----
     pg.goto(B+'/#swap', wait_until='domcontentloaded'); pg.wait_for_timeout(1900)
@@ -132,7 +132,10 @@ with sync_playwright() as p:
             pg.add_init_script(f"try{{localStorage.setItem('lpcopy-lang','{lang}')}}catch(e){{}}")
             lbl=f'{nama}/{dv}/{lang}/{mode}{"/LIVE" if live else ""}'
             pg.on('pageerror', lambda e, l=lbl: errs.append(f'{l} pageerror: {e}'))
-            pg.on('console', lambda mm, l=lbl: errs.append(f'{l} console: {mm.text[:160]}') if mm.type=='error' else None)
+            # Logo token yang memang tidak ada menjawab 404 — itu jalur normal
+            # (lambang cadangan dibangkitkan dari alamat), bukan galat halaman.
+            pg.on('console', lambda mm, l=lbl: errs.append(f'{l} console: {mm.text[:160]}')
+                  if mm.type=='error' and '/api/icon' not in mm.location.get('url','') and 'api/icon' not in mm.text else None)
             try: cek(pg, lbl, lang, mode, live)
             except Exception as e: errs.append(f'{lbl} GAGAL: {str(e)[:160]}')
             pg.close()
