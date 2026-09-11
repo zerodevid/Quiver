@@ -2,6 +2,9 @@
 # config.json berisi token akses dasbor dan API key RPC;
 # data/ berisi kursor blok, posisi, dan hasil riset wallet.
 config.json
+.env
+.env.*
+!.env.example
 data/
 logs/
 *.pid

@@ -404,6 +404,12 @@ const EN = {
   'Koneksi ke server terputus sebelum ada jawaban. Transaksinya mungkin tetap diproses — cek lagi posisinya sebentar lagi.':
     'The connection to the server dropped before it answered. The transaction may still go through — check the position again shortly.',
   'lebar {w}%': 'width {w}%',
+  // ---- rahasia lewat .env ----
+  'dari .env': 'from .env',
+  '{what} diatur lewat': '{what} is set by',
+  'di berkas .env server. Ubah di sana lalu restart bot.': 'in the server’s .env file. Change it there, then restart the bot.',
+  'Kunci wallet': 'Wallet key',
+  'Token akses': 'Access token',
 
   // ---- aktivitas ----
   'Setiap gerakan LP wallet target dan keputusan bot atasnya.':

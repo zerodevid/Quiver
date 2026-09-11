@@ -17,6 +17,7 @@
 //    lewat konfirmasi.
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const { writeCfg } = require('./env');
 
 const API = 'https://api.telegram.org/bot';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -418,8 +419,7 @@ class Telegram {
   chats() { return (this.cfg.telegram?.chat_ids || []).map(String); }
   notifCfg() { return { penting: true, error: true, warn: true, info: false, ...(this.cfg.telegram?.notify || {}) }; }
   saveCfg() {
-    fs.writeFileSync(this.cfgPath, JSON.stringify(this.cfg, null, 2), { mode: 0o600 });
-    try { fs.chmodSync(this.cfgPath, 0o600); } catch { /* abaikan */ }
+    writeCfg(this.cfgPath, this.cfg);        // nilai dari .env tidak ikut tertulis
   }
   sess(chatId) {
     if (!this.sessions.has(chatId)) this.sessions.set(chatId, { scope: 'g', pending: null });

@@ -38,12 +38,14 @@ function WalletTab({ d, reload }) {
     return r;
   };
   return (
-    <Section title="Wallet bot" desc={<>{t('Pakai wallet khusus bot, jangan wallet utama. Kunci privat disimpan di server')} (<span className="mono">{w.keyFile}</span>) {t('dan tidak pernah ditampilkan lagi.')}</>}>
+    <Section title="Wallet bot" desc={<>{t('Pakai wallet khusus bot, jangan wallet utama. Kunci privat disimpan di server')} (<span className="mono">{w.fromEnv ? `.env · ${w.fromEnv}` : w.keyFile}</span>) {t('dan tidak pernah ditampilkan lagi.')}</>}>
       {w.address ? (
         <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-3">
           <div className="sm:col-span-2"><dt className="text-xs text-muted">{t('Alamat')}</dt><dd className="mono mt-0.5 break-all">{w.address}</dd></div>
           <div><dt className="text-xs text-muted">{t('Izin berkas kunci')}</dt><dd className="mt-1">
-            <Chip size="sm" variant="soft" color={w.perms === '600' ? 'success' : 'danger'}>{w.perms === '600' ? t('600 · aman') : t('{p} · terlalu longgar', { p: w.perms || '?' })}</Chip></dd></div>
+            {w.fromEnv
+              ? <Chip size="sm" variant="soft" color="success">{t('dari .env')}</Chip>
+              : <Chip size="sm" variant="soft" color={w.perms === '600' ? 'success' : 'danger'}>{w.perms === '600' ? t('600 · aman') : t('{p} · terlalu longgar', { p: w.perms || '?' })}</Chip>}</dd></div>
           <div><dt className="text-xs text-muted">ETH</dt><dd className="num mt-0.5 font-medium">{amt(w.balances?.eth, 6)}</dd></div>
           <div><dt className="text-xs text-muted">USDG</dt><dd className="num mt-0.5 font-medium">{amt(w.balances?.usdg, 2)}</dd></div>
           <div><dt className="text-xs text-muted">WETH</dt><dd className="num mt-0.5 font-medium">{amt(w.balances?.weth, 6)}</dd></div>
@@ -68,7 +70,8 @@ function WalletTab({ d, reload }) {
       </div>
 
       <Separator />
-      {!m.dry_run ? <Notice status="warning">{t('Matikan mode LIVE dulu untuk mengganti wallet.')}</Notice> : (
+      {w.fromEnv ? <EnvNotice name={w.fromEnv} what="Kunci wallet" />
+        : !m.dry_run ? <Notice status="warning">{t('Matikan mode LIVE dulu untuk mengganti wallet.')}</Notice> : (
         <>
           <div className="grid gap-6 md:grid-cols-2">
             <div className="flex flex-col gap-3">
@@ -225,20 +228,32 @@ function RpcTab({ d, setD }) {
 }
 
 // ---------------- form sederhana ----------------
-function SimpleForm({ title, desc, fields, initial, url, okText, extra }) {
+function SimpleForm({ title, desc, fields, initial, url, okText, extra, envName }) {
   const { t } = useI18n();
   const [v, setV] = useState(initial);
   const [busy, setBusy] = useState(false);
   const save = async () => { setBusy(true); say(await post(url, v), okText); setBusy(false); };
   return (
     <Section title={title} desc={desc}>
+      {envName && <EnvNotice name={envName} what={title} />}
       <div className="grid gap-5 md:grid-cols-2">
         {fields.map(([k, label, hint, type]) => (type === 'bool'
           ? <Toggle key={k} label={label} desc={hint} value={v[k]} onChange={(x) => setV({ ...v, [k]: x })} />
-          : <Text key={k} label={label} hint={hint} type={type || 'number'} mono={type === 'text'} value={String(v[k] ?? '')} onChange={(x) => setV({ ...v, [k]: x })} />))}
+          : <Text key={k} label={label} hint={hint} type={type || 'number'} mono={type === 'text'} value={String(v[k] ?? '')} onChange={(x) => setV({ ...v, [k]: x })} isDisabled={!!envName} />))}
       </div>
-      <div className="flex gap-2"><Button onPress={save} isPending={busy}>{t('Simpan')}</Button>{extra}</div>
+      <div className="flex gap-2">{!envName && <Button onPress={save} isPending={busy}>{t('Simpan')}</Button>}{extra}</div>
     </Section>
+  );
+}
+
+// Kolom yang diatur lewat .env: dasbor menolak mengubahnya (akan tertimpa lagi saat
+// restart), jadi yang ditampilkan adalah di mana mengubahnya.
+function EnvNotice({ name, what }) {
+  const { t } = useI18n();
+  return (
+    <Notice>
+      {t('{what} diatur lewat', { what: t(what) })} <span className="mono">{name}</span> {t('di berkas .env server. Ubah di sana lalu restart bot.')}
+    </Notice>
   );
 }
 
@@ -281,7 +296,7 @@ function TelegramTab({ d, reload }) {
       </div>
 
       <Separator />
-      <div className="grid gap-5 md:grid-cols-2">
+      {tg.fromEnv ? <EnvNotice name={tg.fromEnv} what="Token bot" /> : <div className="grid gap-5 md:grid-cols-2">
         <Text label="Token bot" type="password" mono value={tok} onChange={setTok}
           placeholder={tg.token || '123456789:AA…'}
           hint={t('Dibuat lewat @BotFather di Telegram. Siapa pun yang punya token ini menguasai botnya — jangan dibagikan.')} />
@@ -289,7 +304,7 @@ function TelegramTab({ d, reload }) {
           <Button onPress={() => save('tok', { bot_token: tok }, 'Token tersimpan — bot langsung jalan')} isPending={busy === 'tok'} isDisabled={!tok}>{t('Simpan token')}</Button>
           {tg.hasToken && <Button variant="outline" onPress={async () => { if (await ask({ title: t('Lepas token bot? Bot Telegram berhenti melayani.'), confirm: t('Lepas'), danger: true })) save('rm', { bot_token: '' }, 'Token dilepas'); }}>{t('Lepas')}</Button>}
         </div>
-      </div>
+      </div>}
 
       <Separator />
       <div>
@@ -341,7 +356,7 @@ function TelegramTab({ d, reload }) {
   );
 }
 
-function SecurityTab() {
+function SecurityTab({ d }) {
   const { t } = useI18n();
   const [tok, setTok] = useState(null);
   const rotate = async () => {
@@ -355,7 +370,8 @@ function SecurityTab() {
       <div>
         <div className="font-medium">{t('Ganti token akses')}</div>
         <p className="mb-3 mt-1 text-sm text-muted">{t('Token lama langsung tidak berlaku; perangkat lain harus masuk ulang. Browser ini tetap masuk.')}</p>
-        <Button variant="danger" onPress={rotate}>{t('Buat token baru')}</Button>
+        {d?.authFromEnv ? <EnvNotice name={d.authFromEnv} what="Token akses" />
+          : <Button variant="danger" onPress={rotate}>{t('Buat token baru')}</Button>}
       </div>
       {tok && (
         <Card variant="secondary"><Card.Content className="gap-2">
@@ -402,7 +418,7 @@ export default function Settings() {
                     ]} />
                 </Tabs.Panel>
                 <Tabs.Panel id="notify">
-                  <SimpleForm title="Notifikasi" url="/api/settings/notify" okText="Topik tersimpan" initial={d.notify}
+                  <SimpleForm title="Notifikasi" url="/api/settings/notify" okText="Topik tersimpan" initial={d.notify} envName={d.notify?.fromEnv}
                     desc="Kabar tiap posisi disalin atau ditutup, lewat ntfy.sh. Pasang aplikasi ntfy di HP lalu langganan topik yang sama."
                     fields={[['ntfy_topic', 'Topik ntfy', 'Siapa pun yang tahu nama topiknya bisa membaca notifikasinya — pakai nama yang sulit ditebak. Kosongkan untuk mematikan.', 'text']]}
                     extra={<Button variant="outline" onPress={async () => say(await post('/api/settings/notify/test', {}), 'Notifikasi uji terkirim')}>{t('Kirim uji')}</Button>} />
@@ -418,7 +434,7 @@ export default function Settings() {
                       ['auto_eth_price', 'Ambil harga ETH dari chain', null, 'bool'],
                     ]} />
                 </Tabs.Panel>
-                <Tabs.Panel id="security"><SecurityTab /></Tabs.Panel>
+                <Tabs.Panel id="security"><SecurityTab d={d} /></Tabs.Panel>
               </div>
             </Tabs>
           </Card.Content>

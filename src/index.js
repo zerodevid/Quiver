@@ -8,8 +8,13 @@ const { Engine } = require('./engine');
 const { createServer } = require('./server');
 const { scoutWallet } = require('./scout');
 const { Telegram } = require('./telegram');
+const { loadDotEnv, applyEnv, defaultEnvPath } = require('./env');
 
 const ROOT = path.join(__dirname, '..');
+// .env dimuat PALING AWAL: ia juga boleh berisi LPCOPY_CONFIG.
+let DOTENV;
+try { DOTENV = loadDotEnv(defaultEnvPath(ROOT)); }
+catch (e) { console.error(`.env: ${e.message}`); process.exit(1); }
 const CFG_PATH = process.env.LPCOPY_CONFIG || path.join(ROOT, 'config.json');
 
 function loadCfg() {
@@ -21,6 +26,7 @@ const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 
 async function main() {
   const cfg = loadCfg();
+  const envMeta = applyEnv(cfg);
   const cmd = process.argv[2] || 'run';
   const store = new Store(cfg.db.path);
   const logFile = path.join(ROOT, 'logs', 'lpcopy.log');
@@ -30,6 +36,13 @@ async function main() {
     console.log(line);
     try { fs.appendFileSync(logFile, line + '\n'); } catch { /* abaikan */ }
   };
+  // Hanya NAMA variabel yang dicatat — nilainya tidak pernah masuk log.
+  if (DOTENV.file) {
+    const ext = DOTENV.external.length ? ` · ${DOTENV.external.join(', ')} memakai nilai dari luar .env` : '';
+    log(`.env dimuat: ${DOTENV.keys.length ? DOTENV.keys.join(', ') : 'belum ada yang diisi'}${ext}`);
+    if (DOTENV.loose) log(`peringatan: izin ${DOTENV.file} terlalu longgar — jalankan: chmod 600 ${DOTENV.file}`);
+  }
+  if (envMeta.missing.length) log(`peringatan: RPC merujuk variabel yang tidak ada: ${[...new Set(envMeta.missing)].join(', ')}`);
   const rpc = new RpcPool(cfg.chain.endpoints, log, {
     max_inflight: cfg.chain.max_inflight || 3,
     dns_over_https: cfg.chain.dns_over_https !== false,

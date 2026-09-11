@@ -12,6 +12,7 @@ const { Icons } = require('./icons');
 const { Market, TF } = require('./market');
 const { Positions } = require('./positions');
 const { QUOTES } = require('./chain');
+const { writeCfg } = require('./env');
 
 // Sisi mana dari pool yang merupakan aset kuotasi (0 atau 1); null kalau tidak dikenal.
 // Menentukan arah harga yang ditampilkan: selalu "harga token spekulatif dalam kuotasi".
@@ -131,7 +132,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); });
     req.on('end', () => { try { resolve(b ? JSON.parse(b) : {}); } catch { resolve({}); } });
   }));
-  const saveCfg = () => fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  // Lewat writeCfg: nilai dari .env tidak boleh ikut tertulis ke config.json.
+  const saveCfg = () => writeCfg(cfgPath, cfg);
 
   // Logo token dari GeckoTerminal, disimpan di sebelah database. Pemanasan pertama
   // ditunda sebentar supaya tidak berebut jaringan dengan sinkronisasi awal mesin.

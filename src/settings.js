@@ -16,6 +16,7 @@ const crypto = require('node:crypto');
 const { ethers } = require('ethers');
 const { RpcPool } = require('./rpc');
 const { ADDR, TOPIC, CHAIN_ID } = require('./chain');
+const { writeCfg, envName, privateKeyFromEnv } = require('./env');
 
 const MASK = '••••';
 
@@ -82,9 +83,13 @@ async function probeRpc({ url, headers }) {
 }
 
 function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody, telegram }) {
-  const saveCfg = () => {
-    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-    try { fs.chmodSync(cfgPath, 0o600); } catch { /* abaikan */ }
+  // Lewat writeCfg: nilai dari .env tidak boleh ikut tertulis ke config.json.
+  const saveCfg = () => writeCfg(cfgPath, cfg);
+  // Kolom yang diatur .env akan ditimpa lagi saat restart — mengubahnya dari dasbor
+  // cuma menipu, jadi ditolak dengan petunjuk di mana mengubahnya.
+  const lockedByEnv = (dotted) => {
+    const n = envName(cfg, dotted);
+    return n ? { error: `Diatur lewat ${n} di .env — ubah di berkas itu lalu restart.` } : null;
   };
   const exec = engine.exec;
 
@@ -106,7 +111,10 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
     log(`kunci wallet diganti -> ${addr}${bak ? ` (kunci lama dicadangkan: ${path.basename(bak)})` : ''}`);
     return { address: addr, backup: bak ? path.basename(bak) : null };
   };
-  const refuseIfLive = () => (!engine.dryRun() ? { error: 'Matikan mode LIVE dulu sebelum mengganti wallet.' } : null);
+  const refuseIfLive = () => {
+    if (privateKeyFromEnv()) return { error: 'Kunci wallet diatur lewat LPCOPY_PRIVATE_KEY di .env — ganti atau hapus di berkas itu lalu restart.' };
+    return !engine.dryRun() ? { error: 'Matikan mode LIVE dulu sebelum mengganti wallet.' } : null;
+  };
 
   const rpcView = () => {
     // Urutan rpc.eps selalu sama dengan cfg.chain.endpoints (dibuat dari daftar yang
@@ -133,6 +141,7 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
       ? { code: telegram.pairCode.code, expiresInSec: Math.round((telegram.pairCode.exp - Date.now()) / 1000) } : null;
     return {
       hasToken: !!t.bot_token,
+      fromEnv: envName(cfg, 'telegram.bot_token'),
       token: t.bot_token ? `${String(t.bot_token).split(':')[0]}:${MASK}` : '',
       username: telegram?.me?.username || null,
       running: !!telegram?.me,
@@ -168,7 +177,12 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
       const backups = fs.existsSync(path.dirname(p))
         ? fs.readdirSync(path.dirname(p)).filter((f) => f.startsWith(path.basename(p) + '.bak-')).length : 0;
       return {
-        wallet: { address: addr, keyFile: cfg.wallet?.key_file || '~/.lpcopy/key', hasKey: fs.existsSync(p), perms, balances, backups },
+        wallet: {
+          address: addr, keyFile: cfg.wallet?.key_file || '~/.lpcopy/key',
+          hasKey: privateKeyFromEnv() || fs.existsSync(p), perms, balances, backups,
+          // Kunci dari .env mengalahkan berkas kunci; tombol ganti/lepas tidak berlaku.
+          fromEnv: privateKeyFromEnv() ? 'LPCOPY_PRIVATE_KEY' : null,
+        },
         mode: { dry_run: engine.dryRun(), paused: engine.paused() },
         rpc: rpcView(),
         gas: {
@@ -177,7 +191,8 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
           max_gas_limit: cfg.gas?.max_gas_limit ?? 4_000_000,
           reserve_eth: (cfg.gas?.native_reserve_wei ?? 2e15) / 1e18,
         },
-        notify: { ntfy_topic: cfg.notify?.ntfy_topic || '' },
+        notify: { ntfy_topic: cfg.notify?.ntfy_topic || '', fromEnv: envName(cfg, 'notify.ntfy_topic') },
+        authFromEnv: envName(cfg, 'server.auth_token'),
         telegram: tgView(),
         loop: {
           poll_ms: cfg.loop?.poll_ms ?? 1500, max_block_span: cfg.loop?.max_block_span ?? 1500,
@@ -295,6 +310,7 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
     },
     'POST /api/settings/notify': async (req) => {
       const b = await readBody(req);
+      const locked = lockedByEnv('notify.ntfy_topic'); if (locked) return locked;
       const t = String(b.ntfy_topic || '').trim();
       if (t && !/^[A-Za-z0-9_\-]{4,64}$/.test(t)) return { error: 'Topik ntfy: 4–64 karakter huruf/angka/-/_' };
       cfg.notify = { ...(cfg.notify || {}), ntfy_topic: t || null };
@@ -327,6 +343,7 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
       const b = await readBody(req);
       const t = { ...(cfg.telegram || {}) };
       if (b.bot_token !== undefined) {
+        const locked = lockedByEnv('telegram.bot_token'); if (locked) return locked;
         const v = String(b.bot_token || '').trim();
         if (v === '') t.bot_token = null;
         else if (!/^\d{5,15}:[A-Za-z0-9_-]{20,}$/.test(v)) return { error: 'Token bot tidak berbentuk benar (contoh: 123456789:AAH…).' };
@@ -370,6 +387,7 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
 
     // ---- token akses ----
     'POST /api/settings/token/rotate': async (req, url, res) => {
+      const locked = lockedByEnv('server.auth_token'); if (locked) return locked;
       const tok = crypto.randomBytes(18).toString('base64url');
       cfg.server = { ...(cfg.server || {}), auth_token: tok };
       saveCfg();

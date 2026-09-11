@@ -359,9 +359,9 @@ function Pager({ page, pages, total, pageSize, onChange }) {
 }
 
 // ---- field form ----
-export function Text({ label, value, onChange, placeholder, hint, type = 'text', mono, isInvalid, error, autoComplete, className = '', aria }) {
+export function Text({ label, value, onChange, placeholder, hint, type = 'text', mono, isInvalid, isDisabled, error, autoComplete, className = '', aria }) {
   return (
-    <TextField value={value ?? ''} onChange={onChange} type={type} isInvalid={isInvalid} aria-label={aria ? t(aria) : undefined} className={`flex flex-col gap-1 ${className}`}>
+    <TextField value={value ?? ''} onChange={onChange} type={type} isInvalid={isInvalid} isDisabled={isDisabled} aria-label={aria ? t(aria) : undefined} className={`flex flex-col gap-1 ${className}`}>
       {label && <Label>{t(label)}</Label>}
       {/* variant="secondary": varian HeroUI untuk field di dalam Card/Surface. Varian bawaan
           (primary) berwarna sama persis dengan kartu dan tanpa garis tepi — tidak terlihat. */}
