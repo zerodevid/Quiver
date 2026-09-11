@@ -363,13 +363,13 @@ function Pager({ page, pages, total, pageSize, onChange }) {
 }
 
 // ---- field form ----
-export function Text({ label, value, onChange, placeholder, hint, type = 'text', mono, isInvalid, isDisabled, error, autoComplete, className = '', aria }) {
+export function Text({ label, value, onChange, placeholder, hint, type = 'text', mono, isInvalid, isDisabled, error, autoComplete, className = '', aria, step }) {
   return (
     <TextField value={value ?? ''} onChange={onChange} type={type} isInvalid={isInvalid} isDisabled={isDisabled} aria-label={aria ? t(aria) : undefined} className={`flex flex-col gap-1 ${className}`}>
       {label && <Label>{t(label)}</Label>}
       {/* variant="secondary": varian HeroUI untuk field di dalam Card/Surface. Varian bawaan
           (primary) berwarna sama persis dengan kartu dan tanpa garis tepi — tidak terlihat. */}
-      <Input variant="secondary" placeholder={placeholder && t(placeholder)} autoComplete={autoComplete} className={mono ? 'mono' : type === 'number' ? 'num' : ''} />
+      <Input step={type === 'number' ? (step ?? 'any') : undefined} variant="secondary" placeholder={placeholder && t(placeholder)} autoComplete={autoComplete} className={mono ? 'mono' : type === 'number' ? 'num' : ''} />
       {isInvalid && error ? <Description className="text-danger">{t(error)}</Description> : hint && <Description>{t(hint)}</Description>}
     </TextField>
   );
@@ -378,9 +378,9 @@ export function Text({ label, value, onChange, placeholder, hint, type = 'text',
 // `aria` dipakai saat field sengaja tanpa label terlihat (mis. pemilih token di
 // kartu swap, yang labelnya sudah dibawa judul kotaknya) — pembaca layar tetap
 // butuh nama.
-export function Pick({ label, value, onChange, options, hint, className = '', aria }) {
+export function Pick({ label, value, onChange, options, hint, className = '', aria, isDisabled }) {
   return (
-    <Select variant="secondary" value={value} onChange={(v) => onChange(v)} aria-label={aria ? t(aria) : undefined}
+    <Select variant="secondary" isDisabled={isDisabled} value={value} onChange={(v) => onChange(v)} aria-label={aria ? t(aria) : undefined}
       className={`flex flex-col gap-1 ${className}`}>
       {label && <Label>{t(label)}</Label>}
       <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>

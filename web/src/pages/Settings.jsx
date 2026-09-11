@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Chip, Checkbox, Separator, Tabs, toast } from '@heroui/react';
-import { Pencil, Activity as Pulse, Trash2, KeyRound, Copy } from 'lucide-react';
+import { Pencil, Activity as Pulse, Trash2, KeyRound, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck } from 'lucide-react';
+import SettingInfo from '../components/SettingInfo';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { PageHeader, Loading, Notice, Text, Pick, Toggle, ask } from '../components/ui';
@@ -9,10 +10,20 @@ import { useI18n, translate as tt } from '../i18n';
 
 const amt = (v, d = 4) => (v == null ? '—' : Number(v).toLocaleString(fmtLocale(), { maximumFractionDigits: d }));
 
+const SETTINGS_NAV = [
+  ['wallet', 'Wallet & mode', 'Dana dan mode transaksi', Wallet],
+  ['rpc', 'RPC', 'Koneksi ke jaringan', Network],
+  ['gas', 'Gas', 'Biaya dan cadangan transaksi', Fuel],
+  ['notify', 'Notifikasi', 'Kabar ke ponsel lewat ntfy', Bell],
+  ['telegram', 'Telegram', 'Hubungkan bot dan chat', MessageCircle],
+  ['loop', 'Mesin', 'Pemindaian dan harga ETH', Settings2],
+  ['security', 'Keamanan', 'Akses masuk dasbor', ShieldCheck],
+];
+
 function Section({ title, desc, children }) {
   return (
     <div className="flex flex-col gap-5">
-      <div><h2 className="text-base font-semibold tracking-tight">{tt(title)}</h2>{desc && <p className="mt-1 text-sm text-muted">{typeof desc === 'string' ? tt(desc) : desc}</p>}</div>
+      <div className="border-b border-border pb-5"><div className="flex items-center justify-between gap-3"><h2 className="text-lg font-semibold tracking-tight">{tt(title)}</h2>{desc && <SettingInfo title={title}>{desc}</SettingInfo>}</div>{desc && <p className="mt-1 max-w-prose text-sm leading-relaxed text-muted">{typeof desc === 'string' ? tt(desc) : desc}</p>}</div>
       {children}
     </div>
   );
@@ -59,8 +70,8 @@ function WalletTab({ d, reload }) {
           <div className="text-sm text-muted">{t(m.dry_run ? 'Bot memutuskan dan mencatat, tapi tidak mengirim transaksi.' : 'Bot mengirim transaksi sungguhan dari wallet di atas.')}</div>
         </div>
         {m.dry_run ? (
-          <div className="flex items-end gap-2">
-            <Text placeholder="ketik LIVE" value={liveTxt} onChange={setLiveTxt} className="w-32" />
+          <div className="flex flex-wrap items-end gap-2">
+            <Text label="Konfirmasi LIVE" placeholder="ketik LIVE" value={liveTxt} onChange={setLiveTxt} className="w-32" />
             <Button variant="danger" isDisabled={!w.address || liveTxt !== 'LIVE'} isPending={busy === 'live'}
               onPress={() => act('live', '/api/settings/live', { live: true, confirm: liveTxt }, 'Mode LIVE menyala')}>{t('Nyalakan LIVE')}</Button>
           </div>
@@ -76,7 +87,7 @@ function WalletTab({ d, reload }) {
           <div className="grid gap-6 md:grid-cols-2">
             <div className="flex flex-col gap-3">
               <div className="font-medium">{t('Impor kunci privat')}</div>
-              <Text type="password" mono placeholder="0x… (64 karakter hex)" value={pk} onChange={setPk} autoComplete="off" />
+              <Text label="Kunci privat" type="password" mono placeholder="0x… (64 karakter hex)" value={pk} onChange={setPk} autoComplete="off" />
               <Button variant="outline" className="w-fit" isDisabled={!pk} isPending={busy === 'imp'}
                 onPress={async () => { const r = await act('imp', '/api/settings/wallet/import', { privateKey: pk, replace }, (x) => tt('Wallet {a} terpasang', { a: x.address })); if (!r.error) setPk(''); }}>
                 <KeyRound className="size-4" />{t('Impor')}</Button>
@@ -96,7 +107,7 @@ function WalletTab({ d, reload }) {
             <div className="flex flex-col gap-3 rounded-md border border-border p-4">
               <div className="font-medium">{t('Lepas wallet')}</div>
               <div className="flex flex-wrap items-end gap-2">
-                <Text mono placeholder="ketik alamat wallet untuk konfirmasi" value={rm} onChange={setRm} className="min-w-72 flex-1" />
+                <Text label="Konfirmasi alamat wallet" mono placeholder="ketik alamat wallet untuk konfirmasi" value={rm} onChange={setRm} className="w-full min-w-0 flex-1" />
                 <Button variant="danger" isDisabled={rm.toLowerCase() !== w.address} isPending={busy === 'rm'}
                   onPress={() => act('rm', '/api/settings/wallet/remove', { confirm: rm }, 'Wallet dilepas, kunci dicadangkan')}>{t('Lepas')}</Button>
               </div>
@@ -228,20 +239,53 @@ function RpcTab({ d, setD }) {
 }
 
 // ---------------- form sederhana ----------------
-function SimpleForm({ title, desc, fields, initial, url, okText, extra, envName }) {
+function SimpleForm({ title, desc, fields, initial, url, okText, extra, envName, onSaved }) {
   const { t } = useI18n();
   const [v, setV] = useState(initial);
+  const [saved, setSaved] = useState(initial);
   const [busy, setBusy] = useState(false);
-  const save = async () => { setBusy(true); say(await post(url, v), okText); setBusy(false); };
+  const [error, setError] = useState('');
+  const dirty = fields.some(([k]) => String(v[k] ?? '') !== String(saved[k] ?? ''));
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
+  const save = async (event) => {
+    event.preventDefault();
+    if (busy || !dirty) return;
+    setBusy(true); setError('');
+    try {
+      const r = await post(url, v);
+      if (r.error) { setError(r.error); return; }
+      setSaved({ ...v }); onSaved?.(v); toast.success(t(okText));
+    } catch { setError(t('Tidak dapat menyimpan. Periksa koneksi lalu coba lagi.')); }
+    finally { setBusy(false); }
+  };
   return (
     <Section title={title} desc={desc}>
       {envName && <EnvNotice name={envName} what={title} />}
-      <div className="grid gap-5 md:grid-cols-2">
-        {fields.map(([k, label, hint, type]) => (type === 'bool'
-          ? <Toggle key={k} label={label} desc={hint} value={v[k]} onChange={(x) => setV({ ...v, [k]: x })} />
-          : <Text key={k} label={label} hint={hint} type={type || 'number'} mono={type === 'text'} value={String(v[k] ?? '')} onChange={(x) => setV({ ...v, [k]: x })} isDisabled={!!envName} />))}
-      </div>
-      <div className="flex gap-2">{!envName && <Button onPress={save} isPending={busy}>{t('Simpan')}</Button>}{extra}</div>
+      <form onSubmit={save} className="flex flex-col gap-5">
+        <fieldset disabled={busy} className="grid min-w-0 gap-4 md:grid-cols-2">
+          {fields.map(([k, label, hint, type]) => (
+            <div key={k} className="flex items-start gap-1 rounded-xl border border-border bg-surface-secondary/30 p-4">
+              <div className="min-w-0 flex-1">{type === 'bool'
+                ? <Toggle label={label} value={v[k]} onChange={(x) => setV({ ...v, [k]: x })} isDisabled={!!envName || busy} />
+                : <Text label={label} type={type || 'number'} mono={type === 'text'} value={String(v[k] ?? '')} onChange={(x) => setV({ ...v, [k]: x })} isDisabled={!!envName || busy} />}</div>
+              {hint && <SettingInfo title={label}>{hint}</SettingInfo>}
+            </div>
+          ))}
+        </fieldset>
+        {error && <div role="alert"><Notice status="danger">{error}</Notice></div>}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+          <span role="status" className="text-sm text-muted">{t(envName ? 'Diatur oleh server' : dirty ? 'Ada perubahan belum disimpan' : 'Semua perubahan tersimpan')}</span>
+          <div className="flex flex-wrap gap-2">{!envName && <>
+            {dirty && <Button variant="ghost" isDisabled={busy} onPress={() => { setV({ ...saved }); setError(''); }}>{t('Batal')}</Button>}
+            <Button type="submit" isDisabled={!dirty || busy} isPending={busy}>{t('Simpan perubahan')}</Button>
+          </>}{extra}</div>
+        </div>
+      </form>
     </Section>
   );
 }
@@ -388,50 +432,60 @@ export default function Settings() {
   const { t } = useI18n();
   const [d, setD] = useState(null);
   const [tab, setTab] = useState('wallet');
-  const load = useCallback(() => get('/api/settings').then(setD), []);
+  const [loadError, setLoadError] = useState('');
+  const load = useCallback(async () => {
+    setLoadError('');
+    try { const data = await get('/api/settings'); if (data.error) setLoadError(data.error); else setD(data); }
+    catch { setLoadError('Tidak dapat memuat pengaturan. Periksa koneksi lalu coba lagi.'); }
+  }, []);
   useEffect(() => { load(); }, [load]);
 
   return (
     <>
-      <PageHeader group="Sistem" title="Pengaturan" />
-      {!d ? <Loading /> : (
+      <PageHeader group="Sistem" title="Pengaturan" desc="Atur bot sesuai kebutuhan. Pilih bagian, lalu klik ikon informasi untuk memahami setiap pengaturan.">
+        {d && <Chip variant="soft" color={d.mode.dry_run ? 'default' : 'warning'}>{t(d.mode.dry_run ? 'Mode simulasi' : 'Mode LIVE')}</Chip>}
+      </PageHeader>
+      {loadError ? <Notice status="danger"><div className="flex flex-wrap items-center gap-3">{t(loadError)}<Button variant="outline" onPress={load}>{t('Coba lagi')}</Button></div></Notice> : !d ? <Loading /> : (
         <Card>
           <Card.Content>
             <Tabs selectedKey={tab} onSelectionChange={setTab} orientation="vertical" variant="secondary" className="flex flex-col gap-6 md:flex-row">
-              <Tabs.ListContainer className="md:w-48 md:shrink-0">
-                <Tabs.List aria-label={t('Bagian pengaturan')}>
-                  {[['wallet', 'Wallet & mode'], ['rpc', 'RPC'], ['gas', 'Gas'], ['notify', 'Notifikasi'], ['telegram', 'Telegram'], ['loop', 'Mesin'], ['security', 'Keamanan']].map(([id, label]) => (
-                    <Tabs.Tab key={id} id={id} className="justify-start">{t(label)}<Tabs.Indicator /></Tabs.Tab>
+              <Tabs.ListContainer className="md:w-60 md:shrink-0">
+                <Tabs.List aria-label={t('Bagian pengaturan')} className="grid! grid-cols-2 md:flex! md:flex-col">
+                  {SETTINGS_NAV.map(([id, label, description, Icon]) => (
+                    <Tabs.Tab key={id} id={id} className="min-h-16 justify-start gap-3 px-3 py-3 text-left">
+                      <Icon className="size-5 shrink-0" aria-hidden="true" />
+                      <span className="min-w-0 whitespace-normal"><span className="block font-medium">{t(label)}</span><span className="mt-0.5 block text-xs font-normal text-muted">{t(description)}</span></span><Tabs.Indicator />
+                    </Tabs.Tab>
                   ))}
                 </Tabs.List>
               </Tabs.ListContainer>
               <div className="min-w-0 flex-1">
                 <Tabs.Panel id="wallet"><WalletTab d={d} reload={load} /></Tabs.Panel>
                 <Tabs.Panel id="rpc"><RpcTab d={d} setD={setD} /></Tabs.Panel>
-                <Tabs.Panel id="gas">
+                <Tabs.Panel id="gas" shouldForceMount className="data-[inert]:hidden">
                   <SimpleForm title="Gas" desc="Berlaku untuk transaksi berikutnya, tanpa restart." url="/api/settings/gas" okText="Pengaturan gas tersimpan"
-                    initial={d.gas} fields={[
+                    onSaved={(gas) => setD((prev) => ({ ...prev, gas }))} initial={d.gas} fields={[
                       ['price_multiplier', 'Pengali harga gas', 'Harga gas jaringan × angka ini. 1,5 = 50% di atas harga saat itu.'],
-                      ['priority_gwei', 'Priority fee (gwei)'],
-                      ['max_gas_limit', 'Batas gas per transaksi'],
+                      ['priority_gwei', 'Priority fee (gwei)', 'Biaya prioritas tambahan per unit gas, dalam gwei. Ini bukan total biaya transaksi.'],
+                      ['max_gas_limit', 'Batas gas per transaksi', 'Jumlah maksimum unit gas untuk satu transaksi, bukan jumlah ETH. Batas terlalu kecil dapat membuat transaksi gagal.'],
                       ['reserve_eth', 'Cadangan ETH untuk gas', 'ETH sebanyak ini tidak pernah dipakai untuk LP maupun swap.'],
                     ]} />
                 </Tabs.Panel>
-                <Tabs.Panel id="notify">
+                <Tabs.Panel id="notify" shouldForceMount className="data-[inert]:hidden">
                   <SimpleForm title="Notifikasi" url="/api/settings/notify" okText="Topik tersimpan" initial={d.notify} envName={d.notify?.fromEnv}
                     desc="Kabar tiap posisi disalin atau ditutup, lewat ntfy.sh. Pasang aplikasi ntfy di HP lalu langganan topik yang sama."
                     fields={[['ntfy_topic', 'Topik ntfy', 'Siapa pun yang tahu nama topiknya bisa membaca notifikasinya — pakai nama yang sulit ditebak. Kosongkan untuk mematikan.', 'text']]}
                     extra={<Button variant="outline" onPress={async () => say(await post('/api/settings/notify/test', {}), 'Notifikasi uji terkirim')}>{t('Kirim uji')}</Button>} />
                 </Tabs.Panel>
                 <Tabs.Panel id="telegram"><TelegramTab d={d} reload={load} /></Tabs.Panel>
-                <Tabs.Panel id="loop">
+                <Tabs.Panel id="loop" shouldForceMount className="data-[inert]:hidden">
                   <SimpleForm title="Mesin" desc="Berlaku setelah bot di-restart (pm2 restart lpcopy)." url="/api/settings/loop" okText="Tersimpan — restart bot supaya berlaku"
                     initial={{ ...d.loop, ...d.prices }} fields={[
-                      ['poll_ms', 'Interval pindai (ms)', 'Seberapa sering blok baru diperiksa.'],
+                      ['poll_ms', 'Interval pindai (ms)', 'Seberapa sering blok baru diperiksa. 1.500 ms = 1,5 detik. Nilai lebih kecil menambah permintaan RPC.'],
                       ['max_block_span', 'Blok per pindai', 'Maks 3.000 — batas getLogs endpoint arsip.'],
-                      ['sync_seconds', 'Sinkron posisi (detik)'],
+                      ['sync_seconds', 'Sinkron posisi (detik)', 'Jeda pemeriksaan ulang posisi bot terhadap data jaringan. Nilai lebih kecil menambah permintaan RPC.'],
                       ['eth_usd', 'Harga ETH cadangan (USD)', 'Dipakai hanya kalau harga dari pool ETH/USDG gagal dibaca.'],
-                      ['auto_eth_price', 'Ambil harga ETH dari chain', null, 'bool'],
+                      ['auto_eth_price', 'Ambil harga ETH dari chain', 'Aktif: gunakan harga dari pool ETH/USDG. Nonaktif: gunakan harga ETH cadangan yang diisi di atas.', 'bool'],
                     ]} />
                 </Tabs.Panel>
                 <Tabs.Panel id="security"><SecurityTab d={d} /></Tabs.Panel>
