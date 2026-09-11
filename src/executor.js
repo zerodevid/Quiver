@@ -115,9 +115,9 @@ class Executor {
     const hash0 = ethers.keccak256(raw);
     let hash;
     try {
-      hash = await this.rpc.call('eth_sendRawTransaction', [raw]);
+      hash = this.rpc.sendRaw ? await this.rpc.sendRaw(raw) : await this.rpc.call('eth_sendRawTransaction', [raw]);
     } catch (e) {
-      // Pengiriman dicoba ke beberapa endpoint. Kalau siaran PERTAMA sudah masuk,
+      // Pengiriman disiarkan ke beberapa endpoint. Kalau siaran PERTAMA sudah masuk,
       // percobaan berikutnya menjawab "nonce too low"/"already known" — dan dulu itu
       // dianggap kegagalan, padahal transaksinya berhasil. Akibatnya fatal: posisi
       // benar-benar terbuka di chain tapi tidak pernah tercatat bot (terjadi pada
@@ -126,6 +126,7 @@ class Executor {
       const landed = await this.txLanded(hash0);
       if (!landed) {
         this.nonce = null;  // paksa sinkron ulang nonce di percobaan berikutnya
+        e.txHash = hash0;   // pemanggil yang mengulang bisa memastikan tx ini memang tidak masuk
         throw e;
       }
       this.log(`kirim dijawab galat (${String(e.message).slice(0, 60)}) tetapi transaksi ${hash0.slice(0, 12)}… SUDAH masuk — dilanjutkan`);

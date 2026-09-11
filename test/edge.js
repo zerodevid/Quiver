@@ -147,6 +147,85 @@ async function t(name, fn) {
     assert.strictEqual(p.liquidity, (6n * 10n ** 19n).toString(), 'sisa L salah: ' + p.liquidity);
   });
 
+  // ---- retry keluar ------------------------------------------------------
+  // Sinyal keluar hanya diputuskan sekali; kalau siarannya gagal, posisi kita
+  // tertinggal terbuka. Diulang — tapi hanya selama tx keluarnya belum terkirim.
+  const exitHarness = (sendFn) => {
+    const h = harness({
+      balances: RICH,
+      positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
+      targetLiquidityAfter: 6n * 10n ** 19n,
+    });
+    h.eng.exitRetryWaits = [1, 1, 1];
+    h.eng.chainLiquidity = async () => 10n ** 20n;   // posisi kita di chain belum berubah
+    h.eng.exec.txLanded = async () => false;
+    let n = 0;
+    h.eng.exec.send = async (tx, meta) => sendFn(++n, meta, h);
+    h.tries = () => n;
+    return h;
+  };
+  const decreaseAct = () => action({ kind: 'decrease', liquidity: (-4n * 10n ** 19n).toString() });
+
+  await t('siaran keluar ditolak RPC sekali -> diulang dan berhasil', async () => {
+    const h = exitHarness((n, meta) => {
+      if (n === 1) throw Object.assign(new Error('eth_sendRawTransaction: Method not found'), { txHash: '0xaa' });
+      h.sent.push({ kind: meta?.kind });
+      return '0x' + 'bb'.repeat(32);
+    });
+    await h.eng.handle(rec(h.store, decreaseAct()));
+    const v = verdictOf(h.store);
+    assert.strictEqual(v.verdict, 'copy', v.reason);
+    assert.strictEqual(h.tries(), 2);
+    assert.strictEqual(h.store.get('SELECT liquidity FROM positions').liquidity, (6n * 10n ** 19n).toString());
+  });
+
+  await t('siaran keluar gagal terus -> menyerah setelah 4 percobaan, dicatat galat', async () => {
+    const h = exitHarness(() => { throw new Error('eth_sendRawTransaction: Method not found'); });
+    await h.eng.handle(rec(h.store, decreaseAct()));
+    assert.strictEqual(verdictOf(h.store).verdict, 'error');
+    assert.strictEqual(h.tries(), 4);
+  });
+
+  await t('tx keluar yang dianggap gagal ternyata masuk -> TIDAK dikirim ulang', async () => {
+    const h = exitHarness(() => { throw Object.assign(new Error('timeout'), { txHash: '0xaa' }); });
+    h.eng.exec.txLanded = async () => true;
+    await h.eng.handle(rec(h.store, decreaseAct()));
+    const v = verdictOf(h.store);
+    assert.strictEqual(v.verdict, 'error');
+    assert.match(v.reason, /ternyata masuk/);
+    assert.strictEqual(h.tries(), 1);
+  });
+
+  await t('likuiditas kita di chain sudah berkurang -> TIDAK dikirim ulang', async () => {
+    const h = exitHarness(() => { throw new Error('timeout'); });
+    h.eng.chainLiquidity = async () => 6n * 10n ** 19n;
+    await h.eng.handle(rec(h.store, decreaseAct()));
+    assert.match(verdictOf(h.store).reason, /sudah berubah/);
+    assert.strictEqual(h.tries(), 1);
+  });
+
+  await t('tx keluar terkirim tapi revert -> TIDAK diulang', async () => {
+    const h = exitHarness(() => '0x' + 'cc'.repeat(32));
+    h.eng.exec.waitReceipt = async () => ({ ok: false, receipt: {} });
+    await h.eng.handle(rec(h.store, decreaseAct()));
+    assert.match(verdictOf(h.store).reason, /revert/);
+    assert.strictEqual(h.tries(), 1);
+  });
+
+  await t('RpcPool.sendRaw: satu endpoint "Method not found" -> endpoint lain menyiarkan', async () => {
+    const { RpcPool } = require('../src/rpc');
+    const pool = new RpcPool([{ url: 'https://baca.example' }, { url: 'https://kirim.example' }], () => {});
+    pool.resolve = async () => [];
+    pool.post = async (url) => (url.includes('baca')
+      ? { jsonrpc: '2.0', id: 1, error: { code: -32601, message: 'Method not found' } }
+      : { jsonrpc: '2.0', id: 1, result: '0xhash' });
+    assert.strictEqual(await pool.sendRaw('0x02'), '0xhash');
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(pool.eps[0].noSend, true, 'endpoint baca-saja harus ditandai');
+    pool.post = async () => ({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'insufficient funds' } });
+    await assert.rejects(() => pool.sendRaw('0x02'), /insufficient funds/);
+  });
+
   await t('target memindahkan NFT ke dompet lain -> kita tutup penuh', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,

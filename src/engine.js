@@ -11,6 +11,7 @@ const { enumerateV4, livePositions } = require('./scout');
 const m = require('./v3math');
 
 const IF_POSM = new ethers.Interface(ABI.posmV4);
+const IF_NPM = new ethers.Interface(ABI.npmV3);
 const asAddr = (t) => ('0x' + t.slice(-40)).toLowerCase();
 // Jumlah mentah -> teks untuk pesan: 2 desimal di atas 1, 3 angka penting di bawahnya.
 const fmtUnits = (raw, dec) => {
@@ -385,7 +386,7 @@ class Engine {
       if (!rules.exit.follow_target) return this.decide(act.id, 'skip', 'ikut-keluar dimatikan');
       if (this.dryRun() || !this.exec.address()) return this.decide(act.id, 'dry', 'target memindahkan posisinya', planT);
       try {
-        const r = await this.executeExit(planT, pos);
+        const r = await this.executeExitRetry(planT, pos);
         this.decide(act.id, 'copy', `target memindahkan posisinya — ${r.note}`, planT, r.txHash, pos.id);
         this.notify(`LP ditutup: target memindahkan posisinya — ${r.note}`, {
           kind: 'exit', positionId: pos.id, txHash: r.txHash, full: true, sold: r.sold,
@@ -410,7 +411,7 @@ class Engine {
     if (d.verdict !== 'copy') return this.decide(act.id, 'skip', d.reason);
     if (this.dryRun() || !this.exec.address()) return this.decide(act.id, 'dry', d.reason, d.plan);
     try {
-      const r = await this.executeExit(d.plan, pos);
+      const r = await this.executeExitRetry(d.plan, pos);
       this.decide(act.id, 'copy', `${d.reason} — ${r.note}`, d.plan, r.txHash, pos.id);
       this.notify(`LP ditutup: ${r.note}`, {
         kind: 'exit', positionId: pos.id, txHash: r.txHash, full: !!d.plan.full, sold: r.sold,
@@ -958,25 +959,66 @@ class Engine {
     finally { this.exiting.delete(pos.id); }
   }
 
-  async sendExit(plan, pos) {
-    // Keluar juga butuh gas. Diisi SEBELUM saldo "sebelum" dibaca, supaya unwrap-nya
-    // tidak terhitung sebagai hasil penutupan posisi berpasangan ETH.
-    const gasNotes = [];
-    await this.topUpGas(gasNotes);
-    if (gasNotes.length) this.store.log('info', `sebelum tutup #${pos.id}: ${gasNotes.join(', ')}`);
-    let tx;
-    if (pos.venue === 'v3') {
-      tx = this.exec.buildV3Decrease({ ...plan, tokenId: pos.token_id }, this.exec.deadline());
-    } else {
-      const poolKey = await this.poolKeyOf(pos);
-      if (!poolKey) throw new Error('poolKey posisi tidak terbaca');
-      tx = this.exec.buildV4Decrease({ ...plan, poolKey, tokenId: pos.token_id }, this.exec.deadline());
+  // Sinyal keluar target hanya diputuskan SEKALI (lihat handle), jadi gangguan RPC
+  // sesaat dulu berarti posisi kita tertinggal terbuka selamanya. Diulang di sini —
+  // tetapi HANYA kalau transaksi keluarnya belum pernah terkirim (`notSent`). Galat
+  // setelah terkirim (revert, receipt telat) tidak diulang: posisinya mungkin sudah
+  // berubah, dan rekonsiliasi yang mengurusnya.
+  async executeExitRetry(plan, pos, { waits = this.exitRetryWaits || [3000, 10_000, 30_000] } = {}) {
+    for (let i = 0; ; i++) {
+      try { return await this.executeExit(plan, pos); }
+      catch (e) {
+        if (!e.notSent || i >= waits.length) throw e;
+        this.store.log('warn', `keluar #${pos.id} belum terkirim (${String(e.message).slice(0, 160)}) — coba lagi dalam ${waits[i] / 1000} dtk (${i + 2}/${waits.length + 1})`, { quiet: true });
+        await new Promise((r) => setTimeout(r, waits[i]));
+        // Penjaga terakhir sebelum mengirim ulang: tx yang tadi dianggap tidak masuk
+        // mungkin baru terlihat sekarang, dan likuiditas kita di chain tidak boleh lebih
+        // kecil dari catatan (lebih besar boleh: compound menambahnya).
+        // Kalau salah satu meleset, mengirim lagi bisa menarik dua kali.
+        if (e.txHash && await this.exec.txLanded(e.txHash, 2)) {
+          throw new Error(`transaksi keluar ${e.txHash} ternyata masuk — tidak dikirim ulang, rekonsiliasi yang mencatat`);
+        }
+        const L = await this.chainLiquidity(pos);
+        if (L != null && L < BigInt(pos.liquidity)) {
+          throw new Error(`likuiditas posisi #${pos.id} di chain sudah berubah — tidak dikirim ulang`);
+        }
+      }
     }
-    // Saldo SEBELUM keluar: hasil penutupan diukur dari selisihnya, bukan dari data
-    // sinkronisasi berkala. Posisi yang dibuka lalu ditutup di antara dua sinkronisasi
-    // (30 detik) dulu tercatat hasil $0 — PnL-nya jadi seolah rugi total.
-    const before = await this.exec.balances([pos.token0, pos.token1]);
-    const hash = await this.exec.send(tx, { kind: plan.full ? 'burn' : 'decrease', detail: { position: pos.id } });
+  }
+
+  // Likuiditas posisi kita menurut chain; null kalau tidak terbaca.
+  async chainLiquidity(pos) {
+    try {
+      if (pos.venue === 'v3') {
+        const [w] = await this.rpc.ethCallMany([{ to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('positions', [BigInt(pos.token_id)]) }]);
+        return w && w !== '0x' ? BigInt(IF_NPM.decodeFunctionResult('positions', w)[7]) : null;
+      }
+      const [w] = await this.rpc.ethCallMany([{ to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(pos.token_id)]) }]);
+      return w && w !== '0x' ? BigInt(w) : null;
+    } catch { return null; }
+  }
+
+  async sendExit(plan, pos) {
+    let tx, before, hash;
+    try {
+      // Keluar juga butuh gas. Diisi SEBELUM saldo "sebelum" dibaca, supaya unwrap-nya
+      // tidak terhitung sebagai hasil penutupan posisi berpasangan ETH.
+      const gasNotes = [];
+      await this.topUpGas(gasNotes);
+      if (gasNotes.length) this.store.log('info', `sebelum tutup #${pos.id}: ${gasNotes.join(', ')}`);
+      if (pos.venue === 'v3') {
+        tx = this.exec.buildV3Decrease({ ...plan, tokenId: pos.token_id }, this.exec.deadline());
+      } else {
+        const poolKey = await this.poolKeyOf(pos);
+        if (!poolKey) throw new Error('poolKey posisi tidak terbaca');
+        tx = this.exec.buildV4Decrease({ ...plan, poolKey, tokenId: pos.token_id }, this.exec.deadline());
+      }
+      // Saldo SEBELUM keluar: hasil penutupan diukur dari selisihnya, bukan dari data
+      // sinkronisasi berkala. Posisi yang dibuka lalu ditutup di antara dua sinkronisasi
+      // (30 detik) dulu tercatat hasil $0 — PnL-nya jadi seolah rugi total.
+      before = await this.exec.balances([pos.token0, pos.token1]);
+      hash = await this.exec.send(tx, { kind: plan.full ? 'burn' : 'decrease', detail: { position: pos.id } });
+    } catch (e) { e.notSent = true; throw e; }   // belum ada tx keluar di chain: aman diulang
     const rc = await this.exec.waitReceipt(hash, 90_000);
     if (rc.timeout) throw new Error(`belum terkonfirmasi setelah 90 detik — tx ${hash} mungkin masih diproses, cek lagi sebentar`);
     if (!rc.ok) throw new Error(`transaksi keluar revert (${hash})`);

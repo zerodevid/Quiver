@@ -68,6 +68,9 @@ class RpcPool {
       // endpoint resmi membalas "metadata is not found", publicnode 403.
       archive: !!e.archive,
       maxLogBlocks: e.max_log_blocks || 0,
+      // Endpoint baca-saja yang menolak eth_sendRawTransaction ("Method not found").
+      // Bisa diset di config; kalau tidak, ditandai sendiri saat pertama kali menolak.
+      noSend: !!e.no_send,
       fails: 0, cooldownUntil: 0, calls: 0, errors: 0, lastMs: 0, inflight: 0,
     };
   }
@@ -259,6 +262,46 @@ class RpcPool {
     return r.result;
   }
 
+  // Siaran transaksi yang sudah ditandatangani. Lewat `call` biasa, galat JSON-RPC
+  // dari SATU endpoint (mis. "Method not found" dari endpoint baca-saja) langsung jadi
+  // kegagalan total — balasan 200 berisi error dianggap jawaban sah, jadi kolam tidak
+  // pindah endpoint. Akibatnya exit target gagal disalin padahal endpoint lain
+  // sanggup menyiarkannya. Raw tx yang sama selalu punya hash yang sama, jadi
+  // menyiarkannya ke SEMUA endpoint sekaligus aman (tidak mungkin terkirim dua kali)
+  // dan paling tahan gangguan. Tidak lewat antrean inflight: siaran jangan sampai
+  // menunggu di belakang getLogs yang berat.
+  async sendRaw(raw, { timeoutMs = 20_000 } = {}) {
+    let eps = this.eps.filter((e) => !e.noSend);
+    if (!eps.length) eps = this.eps;
+    const errs = [];
+    const one = async (ep) => {
+      const host = new URL(ep.url).hostname;
+      ep.inflight++;
+      try {
+        const ips = await this.resolve(host);
+        const body = JSON.stringify({ jsonrpc: '2.0', id: this.id++, method: 'eth_sendRawTransaction', params: [raw] });
+        const res = await this.post(ep.url, body, timeoutMs, ips, ep.headers);
+        ep.calls++;
+        if (res?.error) {
+          const msg = res.error.message || JSON.stringify(res.error);
+          if (res.error.code === -32601 || /method not found|method .{0,40}(not supported|not available|does not exist|not allowed|disabled)/i.test(msg)) {
+            ep.noSend = true;
+            this.log(`rpc ${host} tidak menerima siaran transaksi (${msg}) — dilewati untuk kirim`);
+          }
+          throw new Error(msg);
+        }
+        if (!res?.result) throw new Error('tidak ada hash dalam balasan');
+        return res.result;
+      } catch (e) {
+        ep.errors++;
+        errs.push(`${host}: ${e.message}`);
+        throw e;
+      } finally { ep.inflight--; }
+    };
+    try { return await Promise.any(eps.map(one)); }
+    catch { throw new Error(`eth_sendRawTransaction: ${errs.join(' | ')}`); }
+  }
+
   hasArchive() { return this.eps.some((e) => e.archive); }
 
   // eth_call di blok lampau — hanya dikirim ke endpoint arsip.
@@ -323,7 +366,7 @@ class RpcPool {
     return this.eps.map((e) => ({
       host: new URL(e.url).hostname, calls: e.calls, errors: e.errors,
       lastMs: e.lastMs, cooling: e.cooldownUntil > Date.now(),
-      noLogs: e.noLogs, maxLogBlocks: e.maxLogBlocks, archive: e.archive, inflight: e.inflight, url: e.url,
+      noLogs: e.noLogs, noSend: e.noSend, maxLogBlocks: e.maxLogBlocks, archive: e.archive, inflight: e.inflight, url: e.url,
     }));
   }
 }
