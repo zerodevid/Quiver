@@ -1,11 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <!-- Quiver: monogram Q emas di lencana hijau hutan, dua warna solid. Lingkarannya
-       mulut quiver dilihat dari atas; ekor Q-nya ujung berbulu (fletching) anak panah
-       di dalamnya. Sumber yang sama dengan web/src/components/Logo.jsx. -->
+       mulut quiver dilihat dari atas; tiga ekor berbulu (fletching) anak panah
+       mengipas keluar darinya. Sumber yang sama dengan web/src/components/Logo.jsx. -->
   <rect width="64" height="64" rx="15" fill="#14382A"/>
   <g fill="none" stroke="#D9AE45" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="30" cy="30" r="15"/>
-    <path d="M36 36 L51.5 51.5"/>
-    <path d="M45.5 45.5 L46.5 52.5 M45.5 45.5 L52.5 46.5"/>
+    <circle cx="24.5" cy="24.5" r="13.5"/>
+    <path d="M32.1 27 L51.6 33.3 M51.6 33.3 L57.6 30.9 M51.6 33.3 L55 38.8"/>
+    <path d="M30.2 30.2 L44.7 44.7 M44.7 44.7 L51.1 45.2 M44.7 44.7 L45.2 51.1"/>
+    <path d="M27 32.1 L33.3 51.6 M33.3 51.6 L38.8 55 M33.3 51.6 L30.9 57.6"/>
   </g>
 </svg>
