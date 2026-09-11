@@ -271,8 +271,22 @@ function PilihPool({ pools, onPick }) {
 
       <div className="max-h-80 overflow-y-auto rounded-md border border-border">
         {!hasil.length ? (
-          <Empty title={isAlamat ? 'Tidak ada pool yang bisa dimasuki' : 'Tidak ada pool yang cocok'}
-            sub={isAlamat ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.' : 'Tempel alamat token untuk mencari poolnya langsung dari chain.'} />
+          <div>
+            <Empty title={isAlamat ? 'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki' : 'Tidak ada pool yang cocok'}
+              sub={isAlamat ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.' : 'Tempel alamat token untuk mencari poolnya langsung dari chain.'} />
+            {pakaiScan && scan.lainnya?.length > 0 && (
+              <div className="border-t border-border px-3 py-3 text-sm">
+                <div className="mb-1.5 font-medium">{t('Diperdagangkan di tempat lain')}</div>
+                {scan.lainnya.map((x) => (
+                  <div key={x.address || x.name} className="flex justify-between gap-3 py-0.5 text-muted">
+                    <span className="truncate"><span className="text-foreground">{x.dex}</span> · {x.name}</span>
+                    <span className="num shrink-0">{usd(x.reserveUsd, 0)}</span>
+                  </div>
+                ))}
+                <p className="mt-2 text-xs text-muted">{t('Bot hanya bisa membuka LP di Uniswap v3/v4 (likuiditas terkonsentrasi dengan rentang harga). Pool gaya v2 tidak punya rentang maupun NFT posisi.')}</p>
+              </div>
+            )}
+          </div>
         ) : hasil.map((p) => (
           <button key={p.poolRef} type="button" onClick={() => onPick(p)}
             className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2 text-start last:border-0 hover:bg-default/50">

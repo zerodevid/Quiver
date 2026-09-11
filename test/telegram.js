@@ -47,7 +47,22 @@ const initLog = ({ id, c0, c1, fee, ts, hooks = ADDR.native, block = 500 }) => (
   blockNumber: '0x' + block.toString(16),
 });
 
-function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tolakRentangPenuh = false } = {}) {
+// PoolCreated v3 di factory: token0, token1, fee di topik; tickSpacing & alamat pool di data.
+const FACTORY = '0x' + 'fa'.repeat(20);
+const createdLog = ({ pool, t0, t1, fee, ts, block = 600 }) => ({
+  address: FACTORY,
+  topics: [TOPIC.poolCreatedV3, pad32(t0), pad32(t1), '0x' + word(fee)],
+  data: '0x' + word(ts) + pad32(pool).slice(2),
+  blockNumber: '0x' + block.toString(16),
+});
+
+// "Diperdagangkan di mana lagi" memanggil GeckoTerminal — di tes diganti isian tetap.
+const { Manual: ManualKelas } = require('../src/manual');
+let PASAR_LAIN = null;
+ManualKelas.prototype.pasarLain = async () => PASAR_LAIN;
+
+function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tolakRentangPenuh = false, pasarLain = null } = {}) {
+  PASAR_LAIN = pasarLain;
   const store = new Store(':memory:');
   const now = Date.now();
   store.run('INSERT INTO targets(address,label,enabled,added_ts) VALUES(?,?,1,?)', TARGET, 'Bang GE', now);
@@ -123,6 +138,7 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
       return a === MEME || a === KONTRAK ? '0x6080604052' : '0x';
     },
     ethCallMany: async (items) => items.map((it) => {
+      if (it.data === '0x1a686502') return '0x' + word(kosong.includes(String(it.to).toLowerCase()) ? 0 : 10n ** 20n);   // liquidity() v3
       if (String(it.to).toLowerCase() !== MEME) return null;
       const abi = require('ethers').AbiCoder.defaultAbiCoder();
       return it.data === '0x95d89b41' ? abi.encode(['string'], ['MEME']) : abi.encode(['uint8'], [18]);
@@ -134,8 +150,8 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
       return initLogs.filter((l) => {
         const b = parseInt(l.blockNumber, 16);
         if (b < from || b > to) return false;
-        if (f.topics[2] && l.topics[2] !== f.topics[2]) return false;
-        if (f.topics[3] && l.topics[3] !== f.topics[3]) return false;
+        if (f.address && String(l.address).toLowerCase() !== String(f.address).toLowerCase()) return false;
+        for (let i = 0; i < f.topics.length; i++) if (f.topics[i] && l.topics[i] !== f.topics[i]) return false;
         return true;
       });
     },
@@ -153,6 +169,7 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
     slot0V4Many: async (ids) => ids.map(() => ({ sqrtPriceX96: SQRT, tick: 0 })),
     slot0V4: async () => ({ sqrtPriceX96: SQRT, tick: 0 }),
     slot0V3: async () => ({ sqrtPriceX96: SQRT, tick: 0 }),
+    factoryV3: async () => FACTORY,
     poolLiquidity: async (id) => (kosong.includes(id) ? 0n : 10n ** 20n),
     tokens: async (list) => list.map((a) => meta[String(a).toLowerCase()] || { address: a, symbol: '?', decimals: 18 }),
     token: async (a) => meta[String(a).toLowerCase()] || { address: a, symbol: '?', decimals: 18 },
@@ -1103,6 +1120,63 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     await w.bot.handle(msg(P1));
     assert.doesNotMatch(lastOut(w.sent).params.text || '', /Memeriksa|Pasang LP/, 'poolId tidak boleh diperlakukan sebagai alamat');
     assert.ok(w.sent.length > n);
+  });
+
+  // ---- pool Uniswap v3 ---------------------------------------------------------
+  const V3A = '0x' + 'a3'.repeat(20), V3B = '0x' + 'b3'.repeat(20);
+  const pindai = async (w, token) => {
+    await w.api('POST', '/api/manual/pools/scan', { token });
+    let j;
+    for (let i = 0; i < 60 && (!j || j.status === 'jalan'); i++) {
+      await new Promise((x) => setTimeout(x, 20));
+      j = await w.api('GET', '/api/manual/pools/scan', {}, { token });
+    }
+    return j;
+  };
+
+  await t('pindai pool menemukan pool Uniswap v3 juga', async () => {
+    const w = build({ initLogs: [...LOGS,
+      createdLog({ pool: V3A, t0: ADDR.usdg, t1: MEME, fee: 3000, ts: 60 }),
+      createdLog({ pool: V3B, t0: MEME, t1: '0x' + '99'.repeat(20), fee: 500, ts: 10 }),   // tanpa kuotasi
+    ], kosong: [P3] });
+    const j = await pindai(w, MEME);
+    assert.strictEqual(j.status, 'selesai', j.error);
+    const v3 = j.pools.find((p) => p.poolRef === V3A);
+    assert.ok(v3, 'pool v3 harus ketemu');
+    assert.strictEqual(v3.venue, 'v3');
+    assert.strictEqual(v3.fee, 3000);
+    assert.strictEqual(v3.tickSpacing, 60);
+    assert.strictEqual(v3.pair, 'USDG/MEME');
+    assert.strictEqual(v3.kosong, false, 'likuiditas v3 dibaca dari liquidity() pool');
+    assert.ok(!j.pools.some((p) => p.poolRef === V3B), 'pool v3 tanpa aset kuotasi disembunyikan');
+    assert.ok(j.pools.some((p) => p.venue === 'v4'), 'pool v4 tetap ada');
+    // pool v3 hasil pindai tersimpan dan bisa langsung direncanakan
+    const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: V3A, usd: 50, lowerPct: 10, upperPct: 10 });
+    assert.ok(!r.error, r.error);
+    assert.strictEqual(r.plan.venue, 'v3');
+    assert.strictEqual(r.plan.poolKey, null);
+    assert.ok(r.plan.tickLower % 60 === 0 && r.plan.tickUpper % 60 === 0, `dibulatkan ke tick spacing v3: ${r.plan.tickLower}…${r.plan.tickUpper}`);
+  });
+
+  await t('tempel token yang cuma punya pool v3: kartu LP tetap terbuka', async () => {
+    const w = build({ initLogs: [createdLog({ pool: V3A, t0: ADDR.usdg, t1: MEME, fee: 10000, ts: 200 })] });
+    w.bot.jedaPindai = [5, 5];
+    await w.bot.handle(msg(MEME));
+    const teks = lastOut(w.sent).params.text;
+    assert.match(teks, /Pasang LP — USDG\/MEME/);
+    assert.match(teks, /v3 · fee 1%/);
+  });
+
+  await t('token tanpa pool v3/v4: disebutkan diperdagangkan di mana', async () => {
+    const w = build({ initLogs: [], pasarLain: [{ dex: 'Pons V2', dexId: 'pons-v2', name: 'MEME / USDG', address: '0xb8ca', reserveUsd: 3948.9 }] });
+    w.bot.jedaPindai = [5, 5];
+    await w.bot.handle(msg(MEME));
+    const teks = lastOut(w.sent).params.text;
+    assert.match(teks, /Uniswap v3\/v4/);
+    assert.match(teks, /Pons V2 — MEME \/ USDG · likuiditas \$3,9rb/);
+    assert.match(teks, /gaya v2/);
+    const j = await w.api('GET', '/api/manual/pools/scan', {}, { token: MEME });
+    assert.strictEqual(j.lainnya[0].dex, 'Pons V2', 'dasbor web mendapat data yang sama');
   });
 
   await t('endpoint yang menolak rentang penuh dijawab dengan memotong', async () => {

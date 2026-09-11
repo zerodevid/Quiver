@@ -42,6 +42,19 @@ function parseRentang(text) {
   if (lowerPct === 0 && upperPct === 0) return { error: 'rentangnya kosong' };
   return { lowerPct, upperPct };
 }
+// Di mana token itu diperdagangkan kalau bukan di Uniswap v3/v4 (data GeckoTerminal).
+function pasarLainTeks(lainnya) {
+  if (!lainnya?.length) return [];
+  const nf0 = (n) => (n >= 1000 ? `$${nf(n / 1000, 1)}rb` : `$${nf(n, 0)}`);
+  return [
+    '',
+    '<b>Diperdagangkan di:</b>',
+    ...lainnya.map((x) => `• ${esc(x.dex)} — ${esc(x.name)} · likuiditas ${nf0(x.reserveUsd)}`),
+    '',
+    '<i>Bot hanya bisa membuka LP di Uniswap v3/v4 (likuiditas terkonsentrasi dengan rentang harga). Pool gaya v2 seperti Pons V2 tidak punya rentang, NFT posisi, maupun fee terpisah — cara kerjanya lain sama sekali.</i>',
+  ];
+}
+
 // Sesi lama masih membawa widthPct (±X% simetris dalam tick) — tetap ditampilkan apa adanya.
 function rentangTeks(d) {
   if (d.lowerPct == null && d.upperPct == null) return `±${trimZ(nf(d.widthPct ?? 25, 1))}%`;
@@ -858,7 +871,7 @@ class Telegram {
       }
       case 'mlc': return this.ask(chatId, { kind: 'poolCari', retry: 'mlp:0' }, 'Ketik nama pasangan yang dicari, misal <code>HOOKR</code> atau <code>USDG/ND4</code>.');
       case 'mla': return this.ask(chatId, { kind: 'scanToken', retry: 'mlp:0' },
-        'Kirim <b>alamat token</b>-nya. Bot akan mencari sendiri semua pool yang memuat token itu, langsung dari chain.\n\n<i>Contoh:</i> <code>0x12d5ee7917ca430073c3a638ee1e6f0648a98a01</code>');
+        'Kirim <b>alamat token</b>-nya. Bot akan mencari sendiri semua pool Uniswap v3 & v4 yang memuat token itu, langsung dari chain.\n\n<i>Contoh:</i> <code>0x12d5ee7917ca430073c3a638ee1e6f0648a98a01</code>');
       case 'mls': return out(...(await this.lpHasilPindai(chatId, rest[0], rest[1] === 'all')));
       case 'mln': return this.ask(chatId, { kind: 'lpUsd', retry: 'ml' }, 'Berapa dolar yang mau dimasukkan?\n\n<i>Ini nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.</i>');
       case 'mlr': return out(...(await this.lpRange(chatId)));
@@ -1590,9 +1603,10 @@ class Telegram {
       return this.edit(chatId, msgId, [
         `<b>${esc(sym)}</b> <code>${esc(shortA(token))}</code>`,
         '',
-        'Belum ada pool yang bisa dimasuki untuk token ini.',
-        j.total ? `<i>${j.total} pool ditemukan, tapi semuanya kosong, berfee dinamis, atau tidak dipasangkan USDG/ETH.</i>` : '<i>Tidak ada pool Uniswap v4 untuk token ini.</i>',
-      ].join('\n'), kb([[BACK_HOME]]));
+        'Belum ada pool Uniswap v3/v4 yang bisa dimasuki untuk token ini.',
+        j.total ? `<i>${j.total} pool ditemukan, tapi semuanya kosong, berfee dinamis, atau tidak dipasangkan USDG/ETH.</i>` : null,
+        ...pasarLainTeks(j.lainnya),
+      ].filter((x) => x != null).join('\n'), kb([[BACK_HOME]]));
     }
     const s = this.sess(chatId);
     const prev = s.lp || {};
@@ -1724,8 +1738,9 @@ class Telegram {
     s.poolList = list;                              // indeks tombol menunjuk daftar ini
     const L = [`<b>🔎 Pool untuk</b> <code>${esc(shortA(token))}</code>`];
     if (!list.length) {
-      L.push('\nTidak ada pool yang bisa dimasuki untuk token ini.');
+      L.push('\nTidak ada pool Uniswap v3/v4 yang bisa dimasuki untuk token ini.');
       if (j.total) L.push(`<i>${j.total} pool ditemukan, semuanya tanpa likuiditas atau tanpa aset kuotasi.</i>`);
+      L.push(...pasarLainTeks(j.lainnya));
     } else {
       L.push(`${list.length} pool bisa dimasuki${j.hidden ? ` · ${j.hidden} disembunyikan` : ''} (dari ${j.total} yang ada).`);
       L.push(kolom(list.slice(0, 10).map((p) => [

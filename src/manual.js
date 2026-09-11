@@ -107,7 +107,7 @@ class Manual {
 
   // ---- pindai pool dari alamat token ---------------------------------------
   /**
-   * Mencari semua pool v4 yang memuat sebuah token, langsung dari chain.
+   * Mencari semua pool Uniswap v4 DAN v3 yang memuat sebuah token, langsung dari chain.
    *
    * Event Initialize v4 mengindeks KEDUA currency-nya, jadi pool bisa dicari dari
    * sisi tokennya tanpa perlu tahu fee/tickSpacing/hooks-nya lebih dulu:
@@ -126,43 +126,68 @@ class Manual {
     const hex = (n) => '0x' + Math.max(0, n).toString(16);
     const found = new Map();
 
-    const serap = (logs) => {
+    const word = (l, i) => BigInt(ethers.hexlify(ethers.getBytes(l.data).slice(i * 32, i * 32 + 32)));
+    const addrT = (x) => ('0x' + x.slice(-40)).toLowerCase();
+    const serapV4 = (logs) => {
       for (const l of logs) {
-        const b = ethers.getBytes(l.data);
-        const w = (i) => BigInt(ethers.hexlify(b.slice(i * 32, i * 32 + 32)));
         found.set(l.topics[1], {
           poolRef: l.topics[1], venue: 'v4',
-          token0: ('0x' + l.topics[2].slice(-40)).toLowerCase(),
-          token1: ('0x' + l.topics[3].slice(-40)).toLowerCase(),
-          fee: Number(w(0)),
-          tickSpacing: Number(BigInt.asIntN(24, w(1))),
-          hooks: '0x' + ethers.hexlify(b.slice(2 * 32 + 12, 3 * 32)).slice(2),
+          token0: addrT(l.topics[2]), token1: addrT(l.topics[3]),
+          fee: Number(word(l, 0)),
+          tickSpacing: Number(BigInt.asIntN(24, word(l, 1))),
+          hooks: '0x' + ethers.hexlify(ethers.getBytes(l.data).slice(2 * 32 + 12, 3 * 32)).slice(2),
+          firstBlock: parseInt(l.blockNumber, 16),
+        });
+      }
+    };
+    // Uniswap v3: PoolCreated(address indexed token0, address indexed token1,
+    // uint24 indexed fee, int24 tickSpacing, address pool) di kontrak factory.
+    // Pool v3 dirujuk lewat ALAMAT kontraknya (poolRef = pool), sama seperti di
+    // jalur penyalinan.
+    const serapV3 = (logs) => {
+      for (const l of logs) {
+        const pool = ('0x' + word(l, 1).toString(16).padStart(40, '0')).toLowerCase();
+        found.set(pool, {
+          poolRef: pool, poolAddr: pool, venue: 'v3',
+          token0: addrT(l.topics[1]), token1: addrT(l.topics[2]),
+          fee: Number(BigInt(l.topics[3])),
+          tickSpacing: Number(BigInt.asIntN(24, word(l, 0))),
+          hooks: null,
           firstBlock: parseInt(l.blockNumber, 16),
         });
       }
     };
 
-    // Dua kueri: token sebagai currency0, lalu sebagai currency1. Urutan currency
-    // di v4 ditentukan nilai alamatnya, jadi keduanya harus dicoba.
-    const sisi = [[pad(t), null], [null, pad(t)]];
+    // Token bisa di sisi mana pun (urutan ditentukan nilai alamat), jadi tiap
+    // venue ditanya dua kali. v4 mengindeks kedua currency di topik 2 & 3; v3 di 1 & 2.
+    let factory = null;
+    try { factory = await this.chain.factoryV3(); } catch { /* v3 dilewati, v4 tetap jalan */ }
+    const kueri = [
+      [ADDR.poolManager, [TOPIC.initializeV4, null, pad(t), null], serapV4],
+      [ADDR.poolManager, [TOPIC.initializeV4, null, null, pad(t)], serapV4],
+      ...(factory ? [
+        [factory, [TOPIC.poolCreatedV3, pad(t), null], serapV3],
+        [factory, [TOPIC.poolCreatedV3, null, pad(t)], serapV3],
+      ] : []),
+    ];
     const CHUNK = 400_000;
     const potong = Math.ceil(head / CHUNK);
+    const total = potong * kueri.length;
     let langkah = 0;
-    for (const [c0, c1] of sisi) {
-      const topics = [TOPIC.initializeV4, null, c0, c1];
+    for (const [address, topics, serap] of kueri) {
       try {
-        serap(await this.rpc.getLogs({ address: ADDR.poolManager, topics, fromBlock: '0x0', toBlock: hex(head) }));
+        serap(await this.rpc.getLogs({ address, topics, fromBlock: '0x0', toBlock: hex(head) }));
         langkah += potong;
-        onProgress({ done: langkah, total: potong * 2 });
+        onProgress({ done: langkah, total });
         continue;
       } catch { /* endpoint menolak rentang sebesar itu — mundur per potongan */ }
       for (let hi = head; hi > 0;) {
         const lo = Math.max(0, hi - CHUNK);
         try {
-          serap(await this.rpc.getLogs({ address: ADDR.poolManager, topics, fromBlock: hex(lo), toBlock: hex(hi) }));
+          serap(await this.rpc.getLogs({ address, topics, fromBlock: hex(lo), toBlock: hex(hi) }));
         } catch { /* satu potongan gagal: jangan menggagalkan seluruh pemindaian */ }
         langkah++;
-        onProgress({ done: langkah, total: potong * 2 });
+        onProgress({ done: langkah, total });
         if (lo === 0) break;
         hi = lo - 1;
       }
@@ -175,13 +200,14 @@ class Manual {
     // metadata tokennya (nama dipakai di mana-mana).
     for (const p of list) {
       this.store.run(
-        `INSERT INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block)
-         VALUES(?,?,?,?,?,?,?,?)
+        `INSERT INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks,pool_addr,first_block)
+         VALUES(?,?,?,?,?,?,?,?,?)
          ON CONFLICT(pool_ref) DO UPDATE SET
            token0=excluded.token0, token1=excluded.token1, fee=excluded.fee,
            tick_spacing=excluded.tick_spacing, hooks=excluded.hooks,
+           pool_addr=COALESCE(excluded.pool_addr, pools.pool_addr),
            first_block=COALESCE(pools.first_block, excluded.first_block)`,
-        p.poolRef, 'v4', p.token0, p.token1, p.fee, p.tickSpacing, p.hooks, p.firstBlock);
+        p.poolRef, p.venue, p.token0, p.token1, p.fee, p.tickSpacing, p.hooks, p.poolAddr || null, p.firstBlock);
     }
     const metas = await this.chain.tokens([...new Set(list.flatMap((p) => [p.token0, p.token1]))]);
     const byAddr = new Map(metas.map((m) => [lc(m.address), m]));
@@ -189,8 +215,12 @@ class Manual {
     // Likuiditas dibaca supaya pool kosong bisa ditandai — pool yang pernah dibuat
     // lalu ditinggalkan tidak jarang, dan masuk ke sana sama saja membuang gas.
     let liq = [];
-    try { liq = await Promise.all(list.map((p) => this.chain.poolLiquidity(p.poolRef).catch(() => null))); }
-    catch { liq = []; }
+    try {
+      liq = await Promise.all(list.map((p) => (p.venue === 'v3'
+        ? this.rpc.ethCallMany([{ to: p.poolRef, data: '0x1a686502' }])   // liquidity()
+          .then(([w]) => (w && w !== '0x' ? BigInt(w) : null)).catch(() => null)
+        : this.chain.poolLiquidity(p.poolRef).catch(() => null))));
+    } catch { liq = []; }
 
     return list.map((p, i) => {
       const qs = this.chain.quoteSideOf(p.token0, p.token1);
@@ -208,6 +238,25 @@ class Manual {
     }).sort((a, b) => (b.quoteSide != null) - (a.quoteSide != null)
       || (a.kosong === true) - (b.kosong === true)
       || b.firstBlock - a.firstBlock);
+  }
+
+  // Token yang tidak punya pool Uniswap v3/v4 yang bisa dimasuki biasanya tetap
+  // diperdagangkan di tempat lain (mis. Pons V2 — pool gaya v2 tanpa rentang harga).
+  // Daripada cuma "tidak ada pool", sebutkan di mana — datanya dari GeckoTerminal.
+  async pasarLain(token, fetchImpl = globalThis.fetch) {
+    try {
+      const r = await fetchImpl(`https://api.geckoterminal.com/api/v2/networks/robinhood/tokens/${lc(token)}/pools?page=1`,
+        { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
+      if (!r.ok) return null;
+      const j = await r.json();
+      const nama = (id) => String(id || '?').replace(/-robinhood$/, '').split('-')
+        .map((w) => (/^v\d$/i.test(w) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
+      return (j.data || []).slice(0, 5).map((d) => ({
+        dex: nama(d.relationships?.dex?.data?.id), dexId: d.relationships?.dex?.data?.id || null,
+        name: d.attributes?.name || '?', address: d.attributes?.address || null,
+        reserveUsd: Number(d.attributes?.reserve_in_usd) || 0,
+      }));
+    } catch { return null; }
   }
 
   // ---- rencana LP manual --------------------------------------------------

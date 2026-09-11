@@ -30,6 +30,9 @@ export function initLocale() {
 }
 
 const EN = {
+  'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki': 'No Uniswap v3/v4 pool you can enter',
+  'Diperdagangkan di tempat lain': 'Traded elsewhere',
+  'Bot hanya bisa membuka LP di Uniswap v3/v4 (likuiditas terkonsentrasi dengan rentang harga). Pool gaya v2 tidak punya rentang maupun NFT posisi.': 'The bot can only open LP on Uniswap v3/v4 (concentrated liquidity with a price range). v2-style pools have no range and no position NFT.',
   'Batas atas': 'Upper bound',
   'Batas bawah': 'Lower bound',
   'Dibulatkan ke tick pool: −{a}% / +{b}%.': 'Rounded to the pool\'s ticks: −{a}% / +{b}%.',

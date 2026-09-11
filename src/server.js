@@ -141,6 +141,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     setInterval(warmIcons, 30 * 60_000).unref?.();
   }
 
+  // Pool hasil pindai yang benar-benar bisa dimasuki: berpasangan aset kuotasi,
+  // berlikuiditas, dan fee-nya bisa dinilai di muka.
+  const bisaDimasuki = (p) => p.quoteSide != null && p.kosong !== true && !p.dynamicFee;
+
   const routes = {
     'GET /api/overview': () => {
       const s = engine.positions.summary(engine.ethUsd);
@@ -495,7 +499,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       poolScanJobs.set(token, job);
       manual.scanPools(token, {
         onProgress: (p) => { job.progress = p.total ? Math.round((p.done / p.total) * 100) : 0; },
-      }).then((pools) => { job.pools = pools; job.status = 'selesai'; job.finishedAt = Date.now(); })
+      }).then(async (pools) => {
+        if (!pools.some(bisaDimasuki)) job.lainnya = await manual.pasarLain(token);
+        job.pools = pools; job.status = 'selesai'; job.finishedAt = Date.now();
+      })
         .catch((e) => { job.error = e.message; job.status = 'gagal'; job.finishedAt = Date.now(); });
       return { ok: true, status: 'jalan' };
     },
@@ -508,10 +515,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // Hasil mentah bisa ratusan pool dan hampir semuanya sampah: dibuat lalu
       // ditinggalkan tanpa likuiditas, atau dipasangkan token yang bukan uang.
       // Yang ditampilkan hanya yang benar-benar bisa dimasuki; sisanya dihitung saja.
-      const bisa = j.pools.filter((p) => p.quoteSide != null && p.kosong !== true && !p.dynamicFee);
+      const bisa = j.pools.filter(bisaDimasuki);
       const semua = url.searchParams.get('all') === '1';
       const list = semua ? j.pools : (bisa.length ? bisa : j.pools.filter((p) => p.quoteSide != null));
-      return { ...out, pools: list, total: j.pools.length, hidden: j.pools.length - list.length };
+      return { ...out, pools: list, total: j.pools.length, hidden: j.pools.length - list.length, lainnya: j.lainnya || null };
     },
 
     'POST /api/manual/lp/plan': async (req) => {

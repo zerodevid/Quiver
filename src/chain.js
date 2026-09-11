@@ -37,6 +37,8 @@ const TOPIC = {
   // Swap di kontrak pool v3 (bukan di NPM) — membawa sqrtPriceX96, dipakai riset v3
   // untuk menilai kejadian pada harga di bloknya sendiri.
   swapV3:          '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67',
+  // PoolCreated(address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool)
+  poolCreatedV3:   '0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118',
   // ERC721 / ERC20
   transfer:        '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
   // pool v3 langsung (LP tanpa NFT manager)
