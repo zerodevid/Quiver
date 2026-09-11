@@ -623,7 +623,7 @@ class Engine {
     };
 
     // 0. Pastikan kas sudah ada di aset kuotasi pool INI (bisa beda dari kas kita).
-    if (plan.quoteSide != null) {
+    if (plan.quoteSide != null && !(avail(plan.token0) >= need0 && avail(plan.token1) >= need1)) {
       const qTok = plan.quoteSide === 0 ? plan.token0 : plan.token1;
       const qMeta = await this.chain.token(qTok);
       const needQuoteRaw = BigInt(Math.ceil((plan.valueQuote || 0) * 1.05 * 10 ** (qMeta?.decimals ?? 18)));
@@ -633,16 +633,53 @@ class Engine {
       }
     }
 
-    // 1. tutup kekurangan lewat swap
-    for (const [idx, tok, need] of [[0, plan.token0, need0], [1, plan.token1, need1]]) {
+    const sa = m.getSqrtRatioAtTick(plan.tickLower), sb = m.getSqrtRatioAtTick(plan.tickUpper);
+    const toksNow = await this.chain.tokens([plan.token0, plan.token1]);
+    let s2, desiredL = BigInt(plan.liquidity);
+    const refreshNeeds = async () => {
+      s2 = plan.venue === 'v3'
+        ? await this.chain.slot0V3(plan.poolRef)
+        : await this.chain.slot0V4(plan.poolRef);
+      if (!s2 || s2.sqrtPriceX96 <= 0n) throw new Error('gagal membaca harga pool dari RPC');
+      if (plan.singleSide && ((plan.singleSide === 'token0' && s2.sqrtPriceX96 > sa)
+        || (plan.singleSide === 'token1' && s2.sqrtPriceX96 < sb))) {
+        throw new Error('harga sudah masuk rentang satu sisi — buat pratinjau baru sebelum membuka LP');
+      }
+      let amounts = m.amountsForLiquidity(s2.sqrtPriceX96, sa, sb, desiredL);
+      if (plan.valueUsd > 0) {
+        const value = this.chain.valueInQuote({
+          sqrtPriceX96: s2.sqrtPriceX96, ...amounts,
+          dec0: toksNow[0].decimals, dec1: toksNow[1].decimals,
+          token0: plan.token0, token1: plan.token1,
+        });
+        const usd = value ? quoteToUsd(value.value, value.kind, this.ethUsd) : 0;
+        if (!(usd > 0) || !Number.isFinite(usd)) throw new Error('gagal menghitung nilai posisi pada harga terbaru');
+        if (usd > plan.valueUsd) {
+          desiredL = desiredL * BigInt(Math.floor(plan.valueUsd * 1e6)) / BigInt(Math.ceil(usd * 1e6));
+          amounts = m.amountsForLiquidity(s2.sqrtPriceX96, sa, sb, desiredL);
+        }
+      }
+      return amounts;
+    };
+
+    // Hitung ulang setelah bridge DAN setiap zap. Maksimal dua swap agar harga
+    // bergerak tidak membuat bot terus membeli/menjual bolak-balik.
+    for (let swaps = 0; ; swaps++) {
+      const needs = await refreshNeeds();
+      const idx = avail(plan.token0) < needs.amount0 ? 0 : avail(plan.token1) < needs.amount1 ? 1 : null;
+      if (idx == null) break;
+      const affordableNow = m.liquidityForAmounts(s2.sqrtPriceX96, sa, sb, avail(plan.token0), avail(plan.token1));
+      if (swaps > 0 && affordableNow * 100n >= desiredL * 95n) break;
+      if (swaps >= 2) throw new Error('harga berubah setelah swap; kebutuhan token belum terpenuhi — LP belum dibuka, dana tetap di wallet');
+      const tok = idx === 0 ? plan.token0 : plan.token1;
+      const need = idx === 0 ? needs.amount0 : needs.amount1;
       const have = avail(tok);
-      if (have >= need) continue;
       const short = need - have;
       if (!rules.swap.enabled) throw new Error(`kurang ${short} unit token${idx} dan auto-swap dimatikan`);
       const payTok = idx === 0 ? plan.token1 : plan.token0;
       const payHave = avail(payTok);
       // taksir berapa yang harus dibayar, pakai harga pool + slippage
-      const s = act.slot0 || await this.chain.slot0V4(plan.poolRef);
+      const s = s2;
       const price1per0 = Number(s.sqrtPriceX96) ** 2 / Number(m.Q96) ** 2; // mentah, tanpa desimal
       const payRaw = idx === 0
         ? BigInt(Math.ceil(Number(short) * price1per0 * (1 + rules.swap.max_slippage_bps / 10000)))
@@ -695,14 +732,10 @@ class Engine {
     }
 
     // 2. sesuaikan L dengan saldo nyata setelah swap (lebih aman dari slippage)
-    const s2 = plan.venue === 'v3'
-      ? await this.chain.slot0V3(plan.poolRef)
-      : await this.chain.slot0V4(plan.poolRef);
-    const sa = m.getSqrtRatioAtTick(plan.tickLower), sb = m.getSqrtRatioAtTick(plan.tickUpper);
     const affordable = m.liquidityForAmounts(s2.sqrtPriceX96, sa, sb, avail(plan.token0), avail(plan.token1));
-    let L = BigInt(plan.liquidity);
+    let L = desiredL;
     if (affordable < L) { L = (affordable * 99n) / 100n; notes.push('ukuran dipangkas ke saldo nyata'); }
-    if (L <= 0n) throw new Error('saldo tidak cukup untuk membuka posisi apa pun');
+    if (L <= 0n) throw new Error('saldo token pool tidak mencukupi pada harga terbaru — LP belum dibuka, dana tetap di wallet');
     let amt = m.amountsForLiquidity(s2.sqrtPriceX96, sa, sb, L);
 
     // Batas per posisi dikunci ULANG di harga terkini. Harga bergerak antara saat
@@ -731,11 +764,24 @@ class Engine {
 
     // 3. izin + mint
     for (const tok of [plan.token0, plan.token1]) {
+      if (BigInt(tok === plan.token0 ? finalPlan.amount0Max : finalPlan.amount1Max) === 0n) continue;
       for (const a of await this.exec.ensureAllowance(tok, { forV4: plan.venue !== 'v3' })) {
         const h = await this.exec.send(a, { kind: a.kind });
         await this.exec.waitReceipt(h);
       }
     }
+    // Approval bisa memakan beberapa blok. Jangan kirim mint dengan kebutuhan
+    // token lama setelah harga berubah selama menunggu receipt approval.
+    await refreshNeeds();
+    bal = await this.exec.balances([plan.token0, plan.token1]);
+    const latestAmounts = m.amountsForLiquidity(s2.sqrtPriceX96, sa, sb, L);
+    if (L > desiredL || latestAmounts.amount0 > avail(plan.token0)
+      || latestAmounts.amount1 > avail(plan.token1)
+      || latestAmounts.amount0 > BigInt(finalPlan.amount0Max)
+      || latestAmounts.amount1 > BigInt(finalPlan.amount1Max)) {
+      throw new Error('harga berubah sebelum mint; kebutuhan token atau batas nilai berubah — LP belum dibuka, dana tetap di wallet');
+    }
+    amt = latestAmounts;
     const adding = plan.action === 'increase' && plan.tokenId;
     const tx = adding
       ? (plan.venue === 'v3'

@@ -236,7 +236,12 @@ class Executor {
     }
     if (erc.length) {
       const res = await this.rpc.ethCallMany(erc.map((t) => ({ to: t, data: IF_ERC20.encodeFunctionData('balanceOf', [owner]) })));
-      erc.forEach((t, i) => out.set(t.toLowerCase(), res[i] && res[i] !== '0x' ? BigInt(res[i]) : 0n));
+      erc.forEach((t, i) => {
+        if (!res[i] || !/^0x[0-9a-fA-F]{64}$/.test(res[i])) {
+          throw new Error(`gagal membaca saldo token ${t} dari RPC`);
+        }
+        out.set(t.toLowerCase(), BigInt(res[i]));
+      });
     }
     return out;
   }
