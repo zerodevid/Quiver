@@ -3,16 +3,14 @@
 // posisi wallet yang pernah diriset, dan gerakan target di token ini.
 //
 // Dibuka dari lambang atau simbol token di mana pun di dasbor: #token/0x….
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@heroui/react';
-import {
-  ResponsiveContainer, ComposedChart, Bar, XAxis, YAxis, Tooltip as ReTooltip, CartesianGrid,
-} from 'recharts';
+import CandleChart from '../components/CandleChart';
 import { usePoll } from '../hooks';
 import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink } from '../components/ui';
 import TokenIcon, { TokenPair, PairName } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves } from '../components/LpTables';
-import { Candle, CandleTip, MarketPanel, fmtT, kUsd } from './PositionDetail';
+import { MarketPanel, kUsd } from './PositionDetail';
 import { usd, pct, tone, num, age, short, price, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -30,26 +28,9 @@ const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
 const fmtAmt = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleString(fmtLocale(), { maximumSignificantDigits: v >= 1000 ? 7 : 5 }));
 
 function TokenChart({ m, tf }) {
-  const data = useMemo(() => (m?.ohlcv?.candles || []).filter((c) => c.o > 0 && c.h > 0 && c.l > 0 && c.c > 0), [m]);
   if (m?.ohlcv?.error) return <Empty title="Grafik harga tidak tersedia" sub={m.ohlcv.error} />;
-  if (!data.length) return <Empty title="Belum ada lilin harga" sub="GeckoTerminal belum punya riwayat harga untuk pool ini." />;
-  const lo = Math.min(...data.map((c) => c.l)), hi = Math.max(...data.map((c) => c.h));
-  const pad = (hi - lo || lo * 0.1) * 0.06;
-  return (
-    <div className="h-80 sm:h-96">
-      <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barCategoryGap="20%">
-          <CartesianGrid stroke="var(--border)" strokeDasharray="2 4" vertical={false} />
-          <XAxis dataKey="t" type="category" tickLine={false} axisLine={false} minTickGap={56} interval="preserveStartEnd"
-            tick={{ fill: 'var(--muted)', fontSize: 11 }} tickFormatter={(v) => fmtT(v, tf)} />
-          <YAxis domain={[Math.max(0, lo - pad), hi + pad]} width={68} tickLine={false} axisLine={false} orientation="right"
-            tick={{ fill: 'var(--muted)', fontSize: 11 }} tickFormatter={(v) => price(v)} />
-          <ReTooltip content={<CandleTip tf={tf} quote="USD" />} cursor={{ stroke: 'var(--border)' }} isAnimationActive={false} />
-          <Bar dataKey={(d) => [d.l, d.h]} shape={<Candle />} isAnimationActive={false} />
-        </ComposedChart>
-      </ResponsiveContainer>
-    </div>
-  );
+  if (!m?.ohlcv?.candles?.length) return <Empty title="Belum ada lilin harga" sub="GeckoTerminal belum punya riwayat harga untuk pool ini." />;
+  return <CandleChart candles={m.ohlcv.candles} tf={tf} quote="USD" />;
 }
 
 export default function TokenDetail({ param }) {

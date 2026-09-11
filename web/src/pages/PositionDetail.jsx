@@ -9,10 +9,7 @@
 import { useMemo, useState } from 'react';
 import { Button } from '@heroui/react';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
-import {
-  ResponsiveContainer, ComposedChart, Bar, XAxis, YAxis, Tooltip as ReTooltip,
-  CartesianGrid, ReferenceLine, ReferenceArea,
-} from 'recharts';
+import CandleChart from '../components/CandleChart';
 import { usePoll } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, ask } from '../components/ui';
@@ -31,53 +28,10 @@ export const tfFor = (ageHours) => {
   for (const tf of ['5m', '15m', '1h', '4h']) if (s / SECS[tf] <= 400) return tf;
   return '1d';
 };
-export const fmtT = (ts, tf) => (SECS[tf] >= 86400
-  ? new Date(ts).toLocaleDateString(fmtLocale(), { day: 'numeric', month: 'short' })
-  : new Date(ts).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }));
 const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
 const qty = (raw, dec) => (raw == null ? null : Number(raw) / 10 ** (dec ?? 18));
 const fmtQty = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleString(fmtLocale(), { maximumSignificantDigits: v >= 1000 ? 6 : 4 }));
 export const kUsd = (v) => (v == null ? '—' : Math.abs(v) >= 1e6 ? usd(v / 1e6, 2) + 'M' : Math.abs(v) >= 1e4 ? usd(v / 1e3, 1) + 'k' : usd(v));
-
-// Satu lilin. Bar-nya membentang low→high (sumbu), badan open→close dihitung dari
-// proporsi di dalamnya — tanpa perlu akses ke skala sumbu.
-export function Candle({ x, y, width, height, payload }) {
-  if (!payload || !(payload.h > 0)) return null;
-  const { o, c, h, l } = payload;
-  const span = h - l;
-  const yOf = (v) => (span > 0 ? y + (height * (h - v)) / span : y);
-  const yo = yOf(o), yc = yOf(c);
-  const top = Math.min(yo, yc), bh = Math.max(1, Math.abs(yo - yc));
-  const cx = x + width / 2;
-  const color = c >= o ? 'var(--success)' : 'var(--danger)';
-  const bw = Math.max(1.5, Math.min(9, width * 0.72));
-  return (
-    <g>
-      <line x1={cx} x2={cx} y1={y} y2={y + height} stroke={color} strokeWidth={1} />
-      <rect x={cx - bw / 2} y={top} width={bw} height={bh} fill={color} />
-    </g>
-  );
-}
-
-export function CandleTip({ active, payload, tf, quote }) {
-  const { t } = useI18n();
-  const d = payload?.[0]?.payload;
-  if (!active || !d) return null;
-  const chg = d.o > 0 ? ((d.c / d.o) - 1) * 100 : null;
-  return (
-    <div className="rounded-md border border-border bg-surface px-3 py-2 text-xs shadow-sm">
-      <div className="mb-1 font-medium">{fmtT(d.t, tf)}</div>
-      <div className="num grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
-        <span className="text-muted">O</span><span className="text-end">{price(d.o)}</span>
-        <span className="text-muted">H</span><span className="text-end">{price(d.h)}</span>
-        <span className="text-muted">L</span><span className="text-end">{price(d.l)}</span>
-        <span className="text-muted">C</span><span className={`text-end ${tone(chg)}`}>{price(d.c)}{chg != null && <span className="ml-1">{pct(chg, 1)}</span>}</span>
-        <span className="text-muted">{t('Vol')}</span><span className="text-end">{usd(d.v, 0)}</span>
-      </div>
-      {quote && <div className="mt-1 text-muted">{t('harga dalam {q}', { q: quote })}</div>}
-    </div>
-  );
-}
 
 // Grafik lilin + rentang posisi + penanda masuk/keluar. Dipakai juga halaman pool:
 // tanpa posisi (tick_lower null) yang tergambar hanya lilin dan harga kini.
@@ -85,14 +39,14 @@ export function PriceChart({ p, m, tf }) {
   const { t } = useI18n();
   const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
   const hasRange = p.tick_lower != null && p.tick_upper != null;
-  const a = hasRange ? at(p.tick_lower) : null, b = hasRange ? at(p.tick_upper) : null;
-  const [pLo, pHi] = a <= b ? [a, b] : [b, a];
   const full = hasRange && p.tick_lower <= -880000 && p.tick_upper >= 880000;
+  const a = hasRange ? at(p.tick_lower) : null, b = hasRange ? at(p.tick_upper) : null;
+  const range = hasRange && !full ? { lo: Math.min(a, b), hi: Math.max(a, b) } : null;
   const pEntry = sqrtPrice(p.entrySqrt, p.dec0, p.dec1, p.quoteSide);
   const pExit = sqrtPrice(p.exitSqrt, p.dec0, p.dec1, p.quoteSide);
   const pNow = p.curSqrt ? sqrtPrice(p.curSqrt, p.dec0, p.dec1, p.quoteSide) : (p.curTick != null ? at(p.curTick) : null);
 
-  const data = useMemo(() => {
+  const candles = useMemo(() => {
     let cs = m?.ohlcv?.candles || [];
     if (!cs.length) return [];
     // GeckoTerminal diminta memakai token spekulatif sebagai dasar harga; kalau ia
@@ -111,68 +65,21 @@ export function PriceChart({ p, m, tf }) {
   }, [m, p.baseToken, pNow, pEntry]);
 
   if (m?.ohlcv?.error) return <Empty title="Grafik harga tidak tersedia" sub={m.ohlcv.error} />;
-  if (!data.length) return <Empty title="Belum ada lilin harga" sub="GeckoTerminal belum punya riwayat harga untuk pool ini." />;
+  if (!candles.length) return <Empty title="Belum ada lilin harga" sub="GeckoTerminal belum punya riwayat harga untuk pool ini." />;
 
-  // Penanda waktu dipasang pada lilin yang memuatnya (sumbu kategori).
-  const snap = (ts) => {
-    if (!ts) return null;
-    const secs = SECS[tf] * 1000;
-    let best = null;
-    for (const c of data) { if (c.t <= ts && c.t + secs > ts) return c.t; if (c.t <= ts) best = c.t; }
-    return best ?? data[0].t;
-  };
-  const tEntry = snap(p.opened_ts), tExit = p.status === 'closed' ? snap(p.closed_ts) : null;
-  const before = p.opened_ts && data[0].t > p.opened_ts;   // masuk sebelum lilin pertama
-
-  // Batas sumbu Y: lilin + harga masuk; rentang posisi ikut kalau tidak terlalu
-  // lebar (rentang 10× akan meremas lilin jadi garis datar). Kalau tidak ikut, pita
-  // rentang dipotong di tepi grafik — seluruh latar berarti "di dalam rentang".
-  const vals = data.flatMap((c) => [c.l, c.h]);
-  if (pEntry) vals.push(pEntry);
-  if (pNow) vals.push(pNow);
-  let lo = Math.min(...vals), hi = Math.max(...vals);
-  const bandOk = hasRange && !full && pHi / pLo < 3.5;
-  if (bandOk) { lo = Math.min(lo, pLo); hi = Math.max(hi, pHi); }
-  const pad = (hi - lo || lo * 0.1) * 0.06;
-  const dom = [Math.max(0, lo - pad), hi + pad];
+  const closed = p.status === 'closed';
   const quote = p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null;
-  const lblStyle = { fill: 'var(--muted)', fontSize: 10 };
-
   return (
     <div>
-      <div className="h-80 sm:h-96">
-        <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barCategoryGap="20%">
-            <CartesianGrid stroke="var(--border)" strokeDasharray="2 4" vertical={false} />
-            <XAxis dataKey="t" type="category" tickLine={false} axisLine={false} minTickGap={56} interval="preserveStartEnd"
-              tick={{ fill: 'var(--muted)', fontSize: 11 }} tickFormatter={(v) => fmtT(v, tf)} />
-            <YAxis domain={dom} width={68} tickLine={false} axisLine={false} orientation="right"
-              tick={{ fill: 'var(--muted)', fontSize: 11 }} tickFormatter={(v) => price(v)} />
-            <ReTooltip content={<CandleTip tf={tf} quote={quote} />} cursor={{ stroke: 'var(--border)' }} isAnimationActive={false} />
-            {/* rentang posisi */}
-            {hasRange && !full && (
-              <ReferenceArea y1={pLo} y2={pHi} ifOverflow="hidden" fill="var(--accent)" fillOpacity={0.1} stroke="var(--accent)" strokeOpacity={0.35} strokeDasharray="3 3"
-                label={{ value: t('rentang'), position: 'insideTopLeft', ...lblStyle }} />
-            )}
-            {/* harga masuk (mendatar) & saat masuk (tegak) */}
-            {pEntry != null && <ReferenceLine y={pEntry} ifOverflow="hidden" stroke="var(--muted)" strokeDasharray="2 3"
-              label={{ value: t('masuk {p}', { p: price(pEntry) }), position: 'insideBottomLeft', ...lblStyle }} />}
-            {tEntry != null && <ReferenceLine x={tEntry} stroke="var(--accent)" strokeWidth={1.5} strokeDasharray="5 3"
-              label={{ value: before ? t('masuk (sebelum grafik)') : t('masuk'), position: before ? 'insideTopLeft' : 'insideTopRight', fill: 'var(--accent)', fontSize: 10, fontWeight: 500 }} />}
-            {tExit != null && <ReferenceLine x={tExit} stroke="var(--warning)" strokeDasharray="4 3"
-              label={{ value: t('keluar'), position: 'insideTopRight', fill: 'var(--warning)', fontSize: 10 }} />}
-            {pExit != null && <ReferenceLine y={pExit} ifOverflow="hidden" stroke="var(--warning)" strokeDasharray="2 3" />}
-            {/* harga kini */}
-            {pNow != null && p.status !== 'closed' && <ReferenceLine y={pNow} ifOverflow="hidden" stroke="var(--foreground)" strokeOpacity={0.5} />}
-            <Bar dataKey={(d) => [d.l, d.h]} shape={<Candle />} isAnimationActive={false} />
-          </ComposedChart>
-        </ResponsiveContainer>
-      </div>
+      <CandleChart candles={candles} tf={tf} quote={quote} range={range}
+        entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: pEntry } : null}
+        exit={closed ? { t: p.closed_ts, p: pExit } : null}
+        now={closed ? null : pNow} />
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-        {hasRange && !full && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang posisi')}</span>}
-        {tEntry != null && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 w-px border-l-2 border-dashed border-accent" />{t('saat masuk')}</span>}
+        {range && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang posisi')}</span>}
+        {p.opened_ts && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 w-px border-l-2 border-dashed border-accent" />{t('saat masuk')}</span>}
         {pEntry != null && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-px w-4 border-t border-dashed border-muted" />{t('harga masuk')}</span>}
-        {hasRange && !bandOk && !full && <span>{t('rentang lebih lebar dari grafik — pita dipotong di tepi')}</span>}
+        {full && <span>{t('Seluruh rentang')}</span>}
         <span className="ml-auto">{t('lilin {tf} · GeckoTerminal', { tf })}</span>
       </div>
     </div>

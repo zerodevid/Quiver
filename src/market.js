@@ -117,7 +117,9 @@ class Market {
       const j = await this.json(`${GT}${ref}/ohlcv/${frame}?${q}`);
       if (!j) return { error: 'pool ini belum terindeks di GeckoTerminal' };
       const list = j?.data?.attributes?.ohlcv_list || [];
-      const candles = list.map(([t, o, h, l, c, v]) => ({ t: t * 1000, o, h, l, c, v })).sort((a, b) => a.t - b.t);
+      // Sesekali ada dua lilin berwaktu sama: yang muncul belakangan menang.
+      const byT = new Map(list.map(([t, o, h, l, c, v]) => [t, { t: t * 1000, o, h, l, c, v }]));
+      const candles = [...byT.values()].sort((a, b) => a.t - b.t);
       return {
         tf, secs, candles,
         base: j?.meta?.base ? { address: String(j.meta.base.address || '').toLowerCase(), symbol: j.meta.base.symbol } : null,

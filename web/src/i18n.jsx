@@ -942,6 +942,8 @@ const EN = {
   'Grafik': 'Chart',
   'Rentang lilin': 'Candle interval',
   'Semua posisi': 'All positions',
+  'dalam {q}': 'in {q}',
+  'Skala harga': 'Price scale',
   'Posisi tidak ditemukan': 'Position not found',
   'fee {f}%': 'fee {f}%',
   'ditutup {w}': 'closed {w}',
