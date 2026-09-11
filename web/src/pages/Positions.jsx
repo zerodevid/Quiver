@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from 'react';
 import { Button } from '@heroui/react';
 import { usePoll } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
+import { useClaimFees } from '../useClaimFees';
 import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Dot, ask } from '../components/ui';
 import { TokenPair } from '../components/TokenIcon';
 // Halaman detail membawa pustaka grafik — dimuat hanya saat dibuka.
@@ -51,6 +52,7 @@ export default function Positions({ param }) {
   // #positions/123 -> detail satu posisi. Poll daftar dimatikan selama detail terbuka.
   const { data: d, reload } = usePoll(param ? null : '/api/positions', 10000);
   const { close, closing } = useClosePosition(reload);
+  const { claim, claiming } = useClaimFees(reload);
   // Klik baris -> laci riwayat posisi (transaksi & catatan bot).
   const [hist, setHist] = useState(null);
   if (param) return <Suspense fallback={<Loading />}><PositionDetail id={param} /></Suspense>;
@@ -90,7 +92,10 @@ export default function Positions({ param }) {
               // diadopsi dari wallet: dibuka manual atau oleh program lain, bukan salinan
               : <span className="text-xs text-muted" title={t('Posisi ini sudah ada di wallet, tidak menyalin target mana pun. Bot hanya memantaunya; tutup manual kalau perlu.')}>{t('di luar bot')}</span> },
             { key: 'act', label: '', sortable: false, className: 'text-end', render: (p) => (
-              <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={closing != null} onPress={() => close(p)}>{t('Tutup')}</Button>) },
+              <div className="flex gap-2 justify-end">
+                <Button size="sm" variant="secondary" isPending={claiming === p.id} isDisabled={claiming != null || closing != null || p.empty} onPress={() => claim(p)}>{t('Claim fee')}</Button>
+                <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={closing != null || claiming != null} onPress={() => close(p)}>{t('Tutup')}</Button>
+              </div>) },
           ]} />
       </Panel>
       <Panel title={t('Posisi tertutup ({n})', { n: closed.length })} bodyClass="p-0"

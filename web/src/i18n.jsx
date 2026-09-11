@@ -31,6 +31,18 @@ export function initLocale() {
 }
 
 const EN = {
+  'Claim fee': 'Claim fees',
+  "1 sisi · bawah −25%": "1 side · below −25%",
+  "1 sisi · atas +25%": "1 side · above +25%",
+  "Perkiraan fee {v}. Fee masuk ke wallet dalam token pool. Likuiditas tetap terbuka; gas tetap dibayar.": "Estimated fees {v}. Fees go to your wallet in the pool tokens. Liquidity stays open; gas still applies.",
+  "Claim fee gagal": "Fee claim failed",
+  "Claim fee masih diproses": "Fee claim pending",
+  "Fee sudah diklaim": "Fees claimed",
+  "Pencatatan nominal menunggu sinkronisasi.": "Amount accounting is awaiting sync.",
+  "Status claim belum pasti": "Claim status uncertain",
+  "Koneksi terputus. Cek lagi sebelum mencoba ulang.": "Connection lost. Check the status before trying again.",
+  "Satu sisi: pilih batas bawah atau atas 0%. Hanya satu token disetor; fee mulai saat harga masuk rentang. Auto-swap bisa diperlukan untuk menyediakan token itu.": "Single-sided: set either bound to 0%. Only one token is deposited; fees start when the price enters the range. Auto-swap may be needed to obtain that token.",
+  "Fee diklaim sebelumnya": "Previously claimed fees",
   "Tentukan modal awal salinan: likuiditas sama, persentase, kelipatan, atau nominal tetap. Hasilnya tetap dibatasi batas per posisi, eksposur, anggaran harian, dan saldo.": "Choose the initial copy size: identical liquidity, a percentage, a multiplier, or a fixed amount. Per-position limits, exposure, daily budget, and available balance still apply.",
   "50 berarti menyalin 50% likuiditas target; 100 berarti sama dengan target, sebelum batas modal diterapkan.": "50 copies 50% of target liquidity; 100 matches the target, before capital limits apply.",
   "0,5 berarti setengah likuiditas target; 2 berarti dua kali lipat, sebelum batas modal diterapkan.": "0.5 means half the target liquidity; 2 means twice as much, before capital limits apply.",

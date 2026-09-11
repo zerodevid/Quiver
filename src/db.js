@@ -243,6 +243,11 @@ function open(dbPath) {
     db.exec('UPDATE equity SET wallet_quote = NULL');
   }
   const posCols = new Set(db.prepare('PRAGMA table_info(positions)').all().map((c) => c.name));
+  if (!posCols.has('claimed_quote')) db.exec('ALTER TABLE positions ADD COLUMN claimed_quote REAL DEFAULT 0');
+  db.exec(`CREATE TABLE IF NOT EXISTS fee_claims (
+    tx_hash TEXT PRIMARY KEY, position_id INTEGER NOT NULL, ts INTEGER NOT NULL,
+    amount0 TEXT NOT NULL, amount1 TEXT NOT NULL, value_quote REAL NOT NULL
+  )`);
   if (!posCols.has('entry_sqrt')) {
     db.exec('ALTER TABLE positions ADD COLUMN entry_sqrt TEXT');
     db.exec('ALTER TABLE positions ADD COLUMN exit_sqrt TEXT');

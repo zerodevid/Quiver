@@ -835,12 +835,122 @@ class Engine {
     };
   }
 
+  pendingFeeClaim(id) {
+    return this.store.get(`SELECT t.* FROM txs t LEFT JOIN fee_claims f ON f.tx_hash=t.hash
+      WHERE t.kind='claim_fees' AND t.status!='gagal' AND f.tx_hash IS NULL
+      AND json_extract(t.detail,'$.position')=? ORDER BY t.ts LIMIT 1`, id);
+  }
+
+  async claimFees(id) {
+    if (this.dryRun() || !this.exec.address()) throw new Error('mode simulasi: tidak mengirim transaksi');
+    if (this.exiting.has(id)) throw new Error('posisi ini sedang diproses');
+    const pos = this.store.get("SELECT * FROM positions WHERE id=? AND status='open'", id);
+    if (!pos || pos.token_id == null) throw new Error('posisi tidak ditemukan');
+    if (!['v3', 'v4'].includes(pos.venue)) throw new Error('venue posisi tidak didukung');
+    this.exiting.add(id);
+    try {
+      // Sesudah timeout/restart, selesaikan transaksi lama dahulu. Jangan kirim ulang.
+      const pending = this.pendingFeeClaim(id);
+      let hash = pending?.hash;
+      if (!hash) {
+        const iface = new ethers.Interface(pos.venue === 'v3' ? ABI.npmV3 : ABI.posmV4);
+        const [ownerData] = await this.rpc.ethCallMany([{ to: pos.venue === 'v3' ? ADDR.npmV3 : ADDR.posmV4,
+          data: iface.encodeFunctionData('ownerOf', [pos.token_id]) }]);
+        const owner = iface.decodeFunctionResult('ownerOf', ownerData)[0].toLowerCase();
+        if (owner !== this.exec.address().toLowerCase()) throw new Error('NFT posisi bukan milik wallet bot');
+        await this.topUpGas([]);
+        const poolKey = pos.venue === 'v4' ? await this.poolKeyOf(pos) : null;
+        if (pos.venue === 'v4' && !poolKey) throw new Error('poolKey posisi tidak terbaca');
+        const plan = { tokenId: pos.token_id, poolKey };
+        const tx = pos.venue === 'v4' ? this.exec.buildV4Collect(plan, this.exec.deadline()) : this.exec.buildV3Collect(plan);
+        hash = await this.exec.send(tx, { kind: 'claim_fees', detail: { position: id, wallet: owner } });
+      }
+      const rc = await this.exec.waitReceipt(hash, 90_000);
+      if (rc.timeout) return { ok: false, pending: true, tx: hash };
+      if (!rc.ok) throw new Error(`claim fee revert (${hash})`);
+      let result;
+      try { result = await this.recordFeeClaim(pos, hash, rc.receipt); }
+      catch (e) {
+        this.store.log('warn', `claim fee ${hash} berhasil, pencatatan menunggu: ${e.message}`, { quiet: true });
+        return { ok: true, tx: hash, accountingPending: true };
+      }
+      try { await this.positions.sync(this.ethUsd); } catch { /* sinkron berikutnya mencoba lagi */ }
+      return { ok: true, tx: hash, ...result };
+    } finally { this.exiting.delete(id); }
+  }
+
+  async recordFeeClaim(pos, hash, receipt) {
+    if (this.store.get('SELECT tx_hash FROM fee_claims WHERE tx_hash=?', hash)) return {};
+    const detail = JSON.parse(this.store.get('SELECT detail FROM txs WHERE hash=?', hash)?.detail || '{}');
+    const owner = String(detail.wallet || this.exec.address()).toLowerCase();
+    const amount = async (token) => {
+      if (!isNative(token)) {
+        let value = 0n;
+        for (const l of receipt.logs || []) {
+          if (l.address.toLowerCase() !== token.toLowerCase() || l.topics[0] !== TOPIC.transfer || l.topics.length !== 3) continue;
+          if (asAddr(l.topics[2]) === owner) value += BigInt(l.data);
+          if (asAddr(l.topics[1]) === owner) value -= BigInt(l.data);
+        }
+        return value > 0n ? value : 0n;
+      }
+      // ETH native tidak punya Transfer. Baca saldo historis di blok receipt
+      // agar retry setelah timeout tidak menghitung aktivitas wallet di blok lain.
+      const bn = BigInt(receipt.blockNumber);
+      const before = BigInt(await this.rpc.call('eth_getBalance', [owner, ethers.toQuantity(bn - 1n)]));
+      const after = BigInt(await this.rpc.call('eth_getBalance', [owner, ethers.toQuantity(bn)]));
+      const block = await this.rpc.call('eth_getBlockByNumber', [ethers.toQuantity(bn), true]);
+      const others = (block?.transactions || []).filter((t) => t.hash !== hash
+        && (String(t.from).toLowerCase() === owner || String(t.to).toLowerCase() === owner));
+      if (!block || others.length) throw new Error('saldo ETH pada blok claim tidak dapat diisolasi');
+      const value = after - before + BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice);
+      return value > 0n ? value : 0n;
+    };
+    const amount0 = await amount(pos.token0), amount1 = await amount(pos.token1);
+    const slot = pos.venue === 'v3' ? await this.chain.slot0V3(pos.pool_ref) : await this.chain.slot0V4(pos.pool_ref);
+    const [t0, t1] = await this.chain.tokens([pos.token0, pos.token1]);
+    const value = slot && this.chain.valueInQuote({ sqrtPriceX96: slot.sqrtPriceX96, amount0, amount1,
+      dec0: t0.decimals, dec1: t1.decimals, token0: pos.token0, token1: pos.token1 });
+    if (!value) throw new Error('nilai fee belum terbaca');
+    this.store.db.exec('BEGIN IMMEDIATE');
+    try {
+      const r = this.store.run('INSERT OR IGNORE INTO fee_claims(tx_hash,position_id,ts,amount0,amount1,value_quote) VALUES(?,?,?,?,?,?)',
+        hash, pos.id, Date.now(), String(amount0), String(amount1), value.value);
+      if (Number(r.changes)) this.store.run(`UPDATE positions SET claimed_quote=COALESCE(claimed_quote,0)+?,
+        out_quote=out_quote+CASE WHEN status='closed' THEN ? ELSE 0 END, fees_quote=0 WHERE id=?`, value.value, value.value, pos.id);
+      this.store.db.exec('COMMIT');
+    } catch (e) { this.store.db.exec('ROLLBACK'); throw e; }
+    return { amount0: String(amount0), amount1: String(amount1), claimedUsd: quoteToUsd(value.value, value.kind, this.ethUsd) };
+  }
+
+  async reconcileFeeClaims() {
+    const rows = this.store.all(`SELECT t.* FROM txs t LEFT JOIN fee_claims f ON f.tx_hash=t.hash
+      WHERE t.kind='claim_fees' AND t.status!='gagal' AND f.tx_hash IS NULL ORDER BY t.ts LIMIT 20`);
+    for (const row of rows) {
+      const id = JSON.parse(row.detail || '{}').position;
+      if (this.exiting.has(id)) continue;
+      const pos = this.store.get('SELECT * FROM positions WHERE id=?', id);
+      if (!pos) continue;
+      this.exiting.add(id);
+      try {
+        const rc = await this.rpc.call('eth_getTransactionReceipt', [row.hash]);
+        if (!rc) continue;
+        const ok = BigInt(rc.status) === 1n;
+        this.store.run('UPDATE txs SET status=? WHERE hash=?', ok ? 'sukses' : 'gagal', row.hash);
+        if (ok) await this.recordFeeClaim(pos, row.hash, rc);
+      } catch (e) {
+        this.store.log('warn', `pencatatan claim fee ${row.hash}: ${e.message}`, { quiet: true });
+      } finally { this.exiting.delete(id); }
+    }
+  }
+
   // Satu posisi hanya boleh punya satu transaksi keluar yang sedang berjalan. Tutup
   // manual (dasbor/Telegram) menunggu receipt sampai 90 detik; tanpa penjaga ini
   // pemicu keluar mandiri, rekonsiliasi, atau klik kedua di selang itu mengirim tx
   // kedua yang pasti revert setelah tx pertama membakar NFT-nya — gas terbuang.
   async executeExit(plan, pos) {
     if (this.exiting.has(pos.id)) throw new Error('posisi ini sedang dalam proses ditutup');
+    const claim = this.pendingFeeClaim(pos.id);
+    if (claim && claim.status !== 'sukses') throw new Error('claim fee sebelumnya belum selesai — tunggu konfirmasi dan sinkronisasi');
     const cur = this.store.get('SELECT status FROM positions WHERE id=?', pos.id);
     if (cur && cur.status !== 'open') throw new Error('posisi sudah tertutup');
     this.exiting.add(pos.id);
@@ -914,7 +1024,7 @@ class Engine {
       };
       const amount0 = d(pos.token0), amount1 = d(pos.token1);
       if (amount0 === 0n && amount1 === 0n) return null;
-      const s = await this.chain.slot0V4(pos.pool_ref);
+      const s = pos.venue === 'v3' ? await this.chain.slot0V3(pos.pool_ref) : await this.chain.slot0V4(pos.pool_ref);
       const toks = await this.chain.tokens([pos.token0, pos.token1]);
       const v = s && this.chain.valueInQuote({
         sqrtPriceX96: s.sqrtPriceX96, amount0, amount1,
@@ -1151,6 +1261,7 @@ class Engine {
     // Semua langkah ini diulang tiap sinkron (30 detik) — galat sesaat tidak dikabarkan.
     const sekali = (key, label, p) => p.then(() => this.cleared(key, `${label}: berhasil lagi`))
       .catch((e) => this.trouble(key, `${label}: ${e.message}`, { after: 5, afterMs: 5 * 60_000 }));
+    await sekali('claim', 'pencatatan claim fee', this.reconcileFeeClaims());
     await sekali('rekon', 'rekonsiliasi keluar', this.reconcileExits());
     await this.positions.sync(this.ethUsd);
     await sekali('kas', 'saldo kas', this.refreshCash());

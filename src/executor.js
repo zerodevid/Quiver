@@ -226,16 +226,16 @@ class Executor {
   }
 
   // ---- saldo --------------------------------------------------------------
-  async balances(tokens) {
+  async balances(tokens, block = 'latest') {
     const owner = this.address();
     if (!owner) return new Map();
     const out = new Map();
     const erc = tokens.filter((t) => !isNative(t));
     if (tokens.some(isNative)) {
-      out.set(ADDR.native, BigInt(await this.rpc.call('eth_getBalance', [owner, 'latest'])));
+      out.set(ADDR.native, BigInt(await this.rpc.call('eth_getBalance', [owner, block])));
     }
     if (erc.length) {
-      const res = await this.rpc.ethCallMany(erc.map((t) => ({ to: t, data: IF_ERC20.encodeFunctionData('balanceOf', [owner]) })));
+      const res = await this.rpc.ethCallMany(erc.map((t) => ({ to: t, data: IF_ERC20.encodeFunctionData('balanceOf', [owner]) })), block);
       erc.forEach((t, i) => {
         if (!res[i] || !/^0x[0-9a-fA-F]{64}$/.test(res[i])) {
           throw new Error(`gagal membaca saldo token ${t} dari RPC`);
@@ -318,6 +318,15 @@ class Executor {
     params.push(coder.encode(['address', 'address', 'address'], [pk.currency0, pk.currency1, owner]));
     const unlockData = coder.encode(['bytes', 'bytes[]'], [actionsHex(acts), params]);
     return { to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('modifyLiquidities', [unlockData, deadlineSec]), value: '0' };
+  }
+
+  buildV4Collect(plan, deadlineSec) {
+    return this.buildV4Decrease({ ...plan, liquidity: '0', full: false, amount0Min: 0, amount1Min: 0 }, deadlineSec);
+  }
+
+  buildV3Collect(plan) {
+    return { to: ADDR.npmV3, value: '0', data: IF_NPM.encodeFunctionData('collect',
+      [[plan.tokenId, this.address(), (1n << 128n) - 1n, (1n << 128n) - 1n]]) };
   }
 
   // ---- v3 -----------------------------------------------------------------

@@ -11,7 +11,7 @@ import { useI18n } from '../i18n';
 // Pilihan cepat rentang: [turun %, naik %, label]. Persennya dalam harga, jadi
 // "±50%" benar-benar setengah turun dan setengah naik; "½× – 2×" adalah rentang yang
 // dulu tertulis ±100% (dalam tick simetris, dalam harga tidak).
-const PRESET = [[5, 5, '±5%'], [10, 10, '±10%'], [25, 25, '±25%'], [50, 50, '±50%'], [50, 100, '½× – 2×']];
+const PRESET = [[5, 5, '±5%'], [10, 10, '±10%'], [25, 25, '±25%'], [50, 50, '±50%'], [50, 100, '½× – 2×'], [25, 0, '1 sisi · bawah −25%'], [0, 25, '1 sisi · atas +25%']];
 
 // Teks rentang untuk ringkasan & konfirmasi.
 const fmtPct = (v) => num(Number(v), 2);
@@ -484,7 +484,8 @@ export default function ManualLp() {
                   const [a, b] = PRESET.find((x) => x[2] === v);
                   setFull(false); setTurun(String(a)); setNaik(String(b));
                 }}
-                options={[...PRESET.map(([, , l]) => [l, l]), ['full', t('Seluruh rentang')]]} />
+                options={[...PRESET.map(([, , l]) => [l, t(l)]), ['full', t('Seluruh rentang')]]} />
+              <p className="text-xs text-muted">{t('Satu sisi: pilih batas bawah atau atas 0%. Hanya satu token disetor; fee mulai saat harga masuk rentang. Auto-swap bisa diperlukan untuk menyediakan token itu.')}</p>
               {/* Batas bebas: mengetik di salah satu kotak otomatis keluar dari "seluruh rentang". */}
               <div className="flex flex-col gap-2 sm:flex-row">
                 <Batas label="Batas bawah" aria="Turun sampai (persen)" tanda="−" value={full ? '' : turun} disabled={false}

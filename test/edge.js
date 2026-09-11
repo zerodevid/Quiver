@@ -337,7 +337,7 @@ async function t(name, fn) {
   });
 
   await t('jembatan gagal di tengah eksekusi -> galat jelas, tidak ada posisi tercatat', async () => {
-    const { eng, store } = harness({ balances: RICH });
+    const { eng, store } = harness({ balances: { ...RICH, [MEME]: 0n } });
     eng.kyber.swap = async () => null;               // tidak ada rute penambal
     eng.ensureQuoteAsset = async () => { throw new Error('kas kurang untuk jembatan: butuh 0.07 ETH untuk 170.00 USDG, punya 0.01 ETH'); };
     await eng.handle(rec(store, action()));

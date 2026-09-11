@@ -311,6 +311,8 @@ Safety rails that apply in LIVE mode:
 - Actions older than `loop.stale_action_seconds` (default 300 s) discovered after downtime are **skipped, never executed** — a stale LP signal is not a signal.
 - Position-size caps, exposure caps, cooldowns, and filters are re-evaluated **immediately before** every transaction is built.
 - Manual LP and swap plans are **never executed as submitted**; the server rebuilds the plan from the same inputs at the current price so every check runs again.
+- **Single-sided manual LP:** choose “1 side · below” or “1 side · above”, or set one percentage bound to zero. Tick rounding keeps the range outside the current price; only one pool token is deposited. Existing token balances are used first. Auto-swap can acquire a missing token, and fees accrue only once price enters the range. Available in the dashboard and Telegram.
+- **Claim fees:** use **Positions → Claim fees**, or the fee button in a Telegram position detail. Confirmation sends the pool tokens to the bot wallet without removing liquidity (v4 uses `DECREASE_LIQUIDITY(0)` + `TAKE_PAIR`; v3 uses `collect`). Claims are recorded separately, included in PnL, and pending receipts are reconciled without resending. If native ETH accounting cannot be isolated at the receipt block, the transaction is still reported as successful with accounting pending.
 - **One exit per position at a time.** While a close is waiting for its receipt (up to 90 s), auto-exit triggers, the exit reconciler, and repeated clicks cannot send a second burn that would revert and waste gas. A receipt timeout is reported as *not confirmed yet*, not as a failure.
 
 ---

@@ -12,6 +12,7 @@ import { ArrowLeft, ExternalLink } from 'lucide-react';
 import CandleChart from '../components/CandleChart';
 import { usePoll } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
+import { useClaimFees } from '../useClaimFees';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, ask } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice, widthPct, locale as fmtLocale } from '../fmt';
@@ -145,6 +146,7 @@ export default function PositionDetail({ id }) {
   const [tfPick, setTf] = useState(null);
   const [view, setView] = useState('chart');
   const { close, closing } = useClosePosition(reload);
+  const { claim, claiming } = useClaimFees(reload);
   const tf = tfPick || (p ? tfFor(p.ageHours) : '1h');
   // Cukup lilin supaya titik masuk terlihat, plus sedikit sebelum masuk sebagai konteks.
   // Posisi yang sudah ditutup dibingkai di sekitar masa hidupnya: sedikit setelah
@@ -211,7 +213,10 @@ export default function PositionDetail({ id }) {
               </div>
             </div>
           </div>
-          {!closed && !p.empty && <Button variant="danger-soft" isPending={closing != null} onPress={() => close(p)}>{t('Tutup posisi')}</Button>}
+          {!closed && !p.empty && <>
+            <Button variant="secondary" isPending={claiming != null} isDisabled={closing != null || claiming != null} onPress={() => claim(p)}>{t('Claim fee')}</Button>
+            <Button variant="danger-soft" isPending={closing != null} isDisabled={claiming != null || closing != null} onPress={() => close(p)}>{t('Tutup posisi')}</Button>
+          </>}
         </div>
       </div>
 
@@ -260,6 +265,7 @@ export default function PositionDetail({ id }) {
                 </div>
               </KV>
               {!full && <KV label="Lebar rentang">{t('{w}% ({x}×)', { w: num(widthPct(p.tick_lower, p.tick_upper), 0), x: (pHi / pLo).toFixed(2) })}</KV>}
+              <KV label="Fee diklaim sebelumnya">{usd(p.claimedUsd || 0)}</KV>
               <KV label="Tick"><span className="mono">{p.tick_lower} … {p.tick_upper}{p.curTick != null && !closed && <span className="text-muted"> · {t('kini')} {p.curTick}</span>}</span></KV>
               <KV label={closed ? 'Diterima saat keluar' : 'Isi sekarang'}>
                 <div className="flex flex-col items-end">

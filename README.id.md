@@ -450,6 +450,10 @@ menghasilkan fee.
 
 ### LP manual & swap manual
 
+**Satu sisi:** pilih “1 sisi · bawah” atau “1 sisi · atas”, atau isi salah satu batas persen dengan 0. Pembulatan tick menjaga rentang di luar harga sekarang, sehingga hanya satu token pool yang disetor. Saldo token yang sudah ada dipakai lebih dulu; auto-swap bisa menyediakan token yang kurang. Fee mulai diperoleh saat harga masuk rentang. Pilihan ini tersedia di dasbor dan Telegram.
+
+**Claim fee:** buka Posisi → Claim fee, termasuk dari detail posisi Telegram. Setelah konfirmasi, fee diterima di wallet sebagai token pool, sementara likuiditas tetap terbuka. Claim dicatat terpisah dan tetap masuk PnL. Transaksi yang belum terkonfirmasi diperiksa ulang tanpa dikirim ulang. Jika saldo ETH native pada blok receipt tidak bisa diisolasi, transaksi tetap dilaporkan berhasil dengan pencatatan nominal menunggu sinkronisasi.
+
 Keduanya ada di `src/manual.js` dan memakai jalur eksekusi yang **sama** dengan
 penyalinan otomatis: `engine.executeEntry` untuk membuka posisi (jembatan kas, zap,
 izin, penguncian ulang nominal di harga terkini, pencatatan posisi) dan

@@ -232,6 +232,41 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.ok(!/LIVE|SIMULASI|0x/.test(o.params.text), 'jawaban ke chat asing tidak boleh memuat keadaan bot');
   });
 
+  await t('input dapat dibatalkan lewat tombol, perintah, dan navigasi', async () => {
+    for (const action of [msg('/cancel'), msg('/batal'), msg('/menu'), cbq('cancelInput'), cbq('h'), msg('/positions')]) {
+      const w = build();
+      await w.bot.handle(cbq('ta'));
+      assert.ok(w.bot.sess(CHAT).pending);
+      assert.ok(buttons(lastOut(w.sent)).includes('cancelInput'));
+      await w.bot.handle(action);
+      assert.strictEqual(w.bot.sess(CHAT).pending, null);
+      await w.bot.handle(msg('bukan alamat'));
+      assert.strictEqual(w.bot.sess(CHAT).pending, null);
+    }
+  });
+
+  await t('input gagal bisa diisi ulang tanpa membuka menu dari awal', async () => {
+    const w = build();
+    await w.bot.handle(cbq('mln'));
+    await w.bot.handle(msg('bukan angka'));
+    assert.ok(buttons(lastOut(w.sent)).includes('inputRetry'));
+    await w.bot.handle(cbq('inputRetry'));
+    assert.strictEqual(w.bot.sess(CHAT).pending.kind, 'lpUsd');
+    await w.bot.handle(msg('50'));
+    assert.strictEqual(w.bot.sess(CHAT).lp.usd, 50);
+    assert.strictEqual(w.bot.sess(CHAT).pending, null);
+  });
+
+  await t('navigasi menghapus isian ulang agar tombol lama tidak membuka input', async () => {
+    const w = build();
+    await w.bot.handle(cbq('mln'));
+    await w.bot.handle(msg('salah'));
+    await w.bot.handle(msg('/menu'));
+    await w.bot.handle(cbq('inputRetry'));
+    assert.strictEqual(w.bot.sess(CHAT).pending, null);
+    assert.ok(buttons(lastOut(w.sent)).includes('t'));
+  });
+
   await t('kode sambung salah ditolak, kode benar menyambungkan', async () => {
     const w = build({ chats: [] });
     const kode = w.bot.newPairCode();
@@ -292,7 +327,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
 
   await t('semua layar Telegram berbahasa Inggris dan callback tetap valid', async () => {
     const w = build(); w.bot.setLanguage(CHAT, 'en');
-    const skip = new Set(['pC', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX', 'langSet']);
+    const skip = new Set(['pC', 'pF', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX', 'langSet']);
     const queue = ['h']; const seen = new Set(); const screens = [];
     while (queue.length) {
       const data = queue.shift(); if (seen.has(data)) continue; seen.add(data);
@@ -335,7 +370,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
   await t('setiap tombol yang bisa dicapai dari menu utama bekerja', async () => {
     const w = build();
     // Tidak ditekan: memindahkan dana, menghapus, atau mengganti rahasia.
-    const HINDARI = ['pC', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'];
+    const HINDARI = ['pC', 'pF', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'];
     const antre = ['h']; const sudah = new Set(); const layar = [];
     while (antre.length) {
       const data = antre.shift();
@@ -1058,6 +1093,34 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.ok(Math.abs(a.preview.valueUsd - b.preview.valueUsd) < 1, 'nilainya tetap sama-sama $50');
   });
 
+  await t('satu sisi tersedia di LP manual dan shortcut Telegram', async () => {
+    const w = build();
+    await w.bot.handle(cbq('mlr'));
+    assert.ok(buttons(lastOut(w.sent)).includes('mlw:25:0'));
+    assert.ok(buttons(lastOut(w.sent)).includes('mlw:0:25'));
+    await w.bot.handle(cbq('mlw:25:0'));
+    assert.strictEqual(w.bot.sess(CHAT).lp.upperPct, 0);
+    const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50, lowerPct: 25, upperPct: 0 });
+    assert.ok(!r.error, r.error);
+    assert.strictEqual(r.plan.amount1, '0');
+    assert.strictEqual(r.plan.singleSide, 'token0');
+  });
+
+  await t('claim fee Telegram meminta konfirmasi lalu memakai endpoint bersama', async () => {
+    const w = build({ dryRun: false });
+    const calls = [];
+    w.engine.claimFees = async (id) => { calls.push(id); return { ok: true, tx: '0xclaim', claimedUsd: 1.5 }; };
+    await w.bot.handle(cbq('p:1'));
+    assert.ok(buttons(lastOut(w.sent)).includes('pf:1'));
+    await w.bot.handle(cbq('pf:1'));
+    assert.deepStrictEqual(calls, []);
+    assert.ok(buttons(lastOut(w.sent)).includes('pF:1'));
+    await w.bot.handle(cbq('pF:1'));
+    assert.deepStrictEqual(calls, [1]);
+    assert.match(lastOut(w.sent).params.text, /tetap terbuka/);
+    assert.ok((await w.api('POST', '/api/positions/claim', { id: -1 })).error);
+  });
+
   await t('rentang asimetris: turun 10% / naik 30% dari harga kini', async () => {
     const w = build();
     const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50, lowerPct: 10, upperPct: 30 });
@@ -1640,7 +1703,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
       const d = antre.shift();
       if (sudah.has(d)) continue;
       sudah.add(d);
-      if (['pC', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'].includes(d.split(':')[0])) continue;
+      if (['pC', 'pF', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'].includes(d.split(':')[0])) continue;
       await w.bot.handle(cbq(d));
       const teks = lastOut(w.sent).params.text;
       const luarPre = teks.replace(/<pre>[\s\S]*?<\/pre>/g, '');
@@ -1693,7 +1756,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
       if (sudah.has(d)) continue;
       sudah.add(d);
       assert.ok(Buffer.byteLength(d) <= 64, `callback_data terlalu panjang (${Buffer.byteLength(d)}): ${d}`);
-      if (['pC', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'].includes(d.split(':')[0])) continue;
+      if (['pC', 'pF', 'tD', 'wbG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr', 'mlX', 'swX'].includes(d.split(':')[0])) continue;
       await w.bot.handle(cbq(d));
       for (const b of buttons(lastOut(w.sent))) antre.push(b);
     }

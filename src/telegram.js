@@ -391,13 +391,14 @@ const COMMANDS = [
   ['research', 'Full PnL research on a wallet'],
   ['pause', 'Pause copying'],
   ['resume', 'Resume copying'],
+  ['cancel', 'Cancel current input'],
   ['help', 'List every command'],
 ];
 const ALIAS = {
   mulai: 'start', ringkasan: 'summary', status: 'summary', posisi: 'positions',
   target: 'targets', aktivitas: 'activity', aturan: 'rules', pengaturan: 'settings',
   saldo: 'balance', sisa: 'leftovers', log: 'logs', riset: 'research',
-  jeda: 'pause', lanjut: 'resume', bantuan: 'help',
+  jeda: 'pause', lanjut: 'resume', bantuan: 'help', batal: 'cancel',
 };
 
 // Perintah penyambungan: /start <kode>. Dipakai juga oleh tautan dalam t.me.
@@ -650,7 +651,11 @@ class Telegram {
     if (s.pending && !text.startsWith('/')) {
       const p = s.pending; s.pending = null;
       try { return await this.answer(chatId, p, text); }
-      catch (e) { return this.send(chatId, `❌ ${esc(note(e.message))}`, kb([[btn(tr("↩︎ Coba lagi"), p.retry || 'h'), BACK_HOME]])); }
+      catch (e) {
+        s.retryInput = p;
+        return this.send(chatId, tr("⚠️ <b>Belum berhasil</b>\n{0}\n\nPilih Isi ulang untuk memperbaiki jawaban Anda.", [esc(note(e.message))]),
+          kb([[btn(tr("✏️ Isi ulang"), 'inputRetry'), btn(tr("↩︎ Batal"), 'cancelInput')]]));
+      }
     }
     // Alamat ditempel begitu saja (atau tautan DexScreener/GeckoTerminal yang memuatnya):
     // token -> langsung ke kartu pasang LP; wallet -> pilihan riset / jadikan target.
@@ -665,7 +670,9 @@ class Telegram {
     const cmd = ALIAS[raw] || raw;
     const arg = text.split(/\s+/).slice(1).join(' ').trim();
     const go = (d) => this.screen(chatId, null, d);
+    if (cmd !== 'cancel') { s.pending = null; s.retryInput = null; }
     switch (cmd) {
+      case 'cancel': return go('cancelInput');
       case 'start': case 'menu': return go('h');
       case 'summary': return go('o');
       case 'positions': return go('p');
@@ -687,7 +694,7 @@ class Telegram {
         if (arg) return this.runRiset(chatId, arg);
         return this.ask(chatId, { kind: 'riset' }, tr("Kirim alamat wallet yang mau diriset (PnL, posisi, riwayat)."));
       case 'help':
-        return this.send(chatId, tr("<b>Perintah</b>\n{0}\n\nSemua ini juga ada tombolnya di /menu.\n\n💡 Tempel <b>alamat token</b> kapan saja → langsung ke layar pasang LP. Tempel <b>alamat wallet</b> → riset PnL atau jadikan target.", [COMMANDS.map(([c, d]) => `/${c} — ${esc(d)}`).join('\n')]), kb([[BACK_HOME]]));
+        return this.send(chatId, tr("<b>Perintah</b>\n{0}\n\nSemua ini juga ada tombolnya di /menu.\n\n💡 Tempel <b>alamat token</b> kapan saja → langsung ke layar pasang LP. Tempel <b>alamat wallet</b> → riset PnL atau jadikan target.", [COMMANDS.map(([c, d]) => `/${c} — ${esc(tr(d))}`).join('\n')]), kb([[BACK_HOME]]));
       default:
         return this.send(chatId, tr("Perintah tidak dikenal. /bantuan untuk daftarnya."), kb([[BACK_HOME]]));
     }
@@ -719,8 +726,10 @@ class Telegram {
 
   // Menanyakan sesuatu ke user; jawabannya ditangani di answer().
   ask(chatId, pending, text) {
-    this.sess(chatId).pending = pending;
-    return this.send(chatId, tr("{0}\n\n<i>Kirim /menu untuk membatalkan.</i>", [text]));
+    this.sess(chatId).pending = { ...pending, prompt: text };
+    this.sess(chatId).retryInput = null;
+    return this.send(chatId, tr("{0}\n\n<i>Balas dengan teks. /cancel untuk membatalkan.</i>", [text]),
+      kb([[btn(tr("↩︎ Batal"), 'cancelInput')]]));
   }
 
   // ---- pemetaan layar ------------------------------------------------------
@@ -729,7 +738,15 @@ class Telegram {
     const out = (text, keyboard) => (msgId ? this.edit(chatId, msgId, prefix + text, keyboard) : this.send(chatId, prefix + text, keyboard));
     const s = this.sess(chatId);
 
+    const input = s.pending || s.retryInput;
+    s.pending = null;
+    s.retryInput = null;
     switch (head) {
+      case 'inputRetry':
+        if (input?.prompt) return this.ask(chatId, input, input.prompt);
+        return this.screen(chatId, msgId, 'h', tr("Sesi input sudah berakhir. Pilih tindakan dari menu.\n\n"));
+      case 'cancelInput':
+        return this.screen(chatId, msgId, input?.retry || 'h', tr("Input dibatalkan.\n\n"));
       case 'lang': return out('<b>Language / Bahasa</b>\nChoose your language. Pilih bahasa Anda.', kb([
         [btn((this.language(chatId) === 'en' ? '✓ ' : '') + 'English', 'langSet:en'), btn((this.language(chatId) === 'id' ? '✓ ' : '') + 'Bahasa Indonesia', 'langSet:id')],
         [BACK_HOME],
@@ -743,6 +760,23 @@ class Telegram {
       case 'b': return out(...(await this.saldo()));
       case 'p': return rest[0] ? out(...(await this.posisiDetail(rest[0]))) : out(...(await this.posisi()));
       case 'pc': return out(...(await this.tutupKonfirm(rest[0])));
+      case 'pf': {
+        const d = await this.api('GET', '/api/positions');
+        const p = (d.positions || []).find((x) => String(x.id) === rest[0]);
+        if (!p) return out(tr("Posisi #{0} tidak ada di daftar terbuka.", [esc(rest[0])]), kb([[BACK_HOME]]));
+        return out(tr("💰 <b>Claim fee posisi #{0}?</b>\nPerkiraan fee: {1}. Fee dikirim ke wallet dalam token pool. Likuiditas tetap terbuka; gas tetap dibayar.", [esc(p.id), usd(p.feeUsd)]),
+          kb([[btn(tr("✅ Claim fee"), `pF:${p.id}`)], [btn(tr("↩︎ Posisi"), `p:${p.id}`)]]));
+      }
+      case 'pF': {
+        if (ack) await ack(tr("Mengirim transaksi…"));
+        await out(tr("⏳ Mengklaim fee… menunggu konfirmasi di chain."));
+        const r = await this.api('POST', '/api/positions/claim', { id: Number(rest[0]) });
+        const message = r.error ? tr("❌ Claim fee gagal: {0}", [esc(note(r.error))])
+          : r.pending ? tr("⏳ Claim fee masih diproses. Cek lagi sebentar. Tx: {0}", [esc(r.tx)])
+          : r.accountingPending ? tr("✅ Fee sudah diklaim. Pencatatan nominal menunggu sinkronisasi. Tx: {0}", [esc(r.tx)])
+          : tr("✅ Fee diklaim ke wallet. Posisi tetap terbuka. Tx: {0}", [esc(r.tx)]);
+        return out(message, kb([[btn(tr("↩︎ Posisi"), `p:${rest[0]}`), BACK_HOME]]));
+      }
       case 'pC': {
         if (ack) await ack(tr("Mengirim transaksi…"));
         // Server baru menjawab setelah receipt diterima (bisa ~1 menit); tanpa pesan
@@ -1286,12 +1320,13 @@ class Telegram {
       `<b>Quiver</b> · ${mode}`,
       `<code>${esc(shortA(o.mode.wallet))}</code>`,
       this.kesehatan(o),
+      o.mode.dry_run ? tr("Mode simulasi: transaksi salin tidak dikirim ke chain.") : tr("Mode LIVE: transaksi menggunakan dana wallet."),
       '',
       pf?.now?.cash ? tr("💰 Portofolio <b>{0}</b>", [usd(pf.now.value)]) : null,
       `📈 PnL <b>${sgn(pnl)}</b>${pf?.delta24 != null ? tr(" · 24 jam {0}", [sgn(pf.delta24)]) : ''}`,
       tr("💼 {0} posisi · {1}{2}", [s.openCount, usd(s.exposureUsd), s.openCount ? ` · ${s.inRange}/${s.openCount} in-range` : '']),
       '',
-      tr("💡 <i>Tempel alamat token untuk langsung pasang LP.</i>"),
+      tr("Pilih <b>Target</b> untuk mengikuti wallet, atau <b>LP manual</b> untuk membuka posisi sendiri.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap.</i>"),
     ].filter((x) => x != null).join('\n');
     return [text, kb([
       [btn(tr("📊 Ringkasan"), 'o'), btn(tr("💼 Posisi"), 'p')],
@@ -1475,6 +1510,7 @@ class Telegram {
     ]);
     if (jejak) { L.push(''); L.push(jejak); }
     return [L.filter((x) => x != null).join('\n'), kb([
+      [btn(tr("💰 Claim fee"), `pf:${p.id}`)],
       [btn(tr("🔴 Tutup posisi ini"), `pc:${p.id}`)],
       [btn(tr("↩︎ Posisi"), 'p'), BACK_HOME],
     ])];
@@ -1961,6 +1997,7 @@ class Telegram {
     return [L.filter((x) => x != null).join('\n'), kb([
       [...[25, 50, 100].map((v) => btn(pilih(d.usd === v, `$${v}`), `qkn:${v}`)), btn('✏️ $', 'qkN')],
       RG.map(([a, b, l]) => btn(pilih(!d.full && d.lowerPct === a && d.upperPct === b, l), `qkw:${a}:${b}`)),
+      [btn(tr("1 sisi · bawah −25%"), 'qkw:25:0'), btn(tr("1 sisi · atas +25%"), 'qkw:0:25')],
       [btn(pilih(!!d.full, tr("seluruh rentang")), 'qkF'), btn(tr("✏️ bawah & atas"), 'qkC')],
       list.length > 1 ? [btn(tr("🏊 Ganti pool ({0})", [list.length]), 'qkp')] : null,
       nilai != null && live ? [btn(tr("✅ Buka posisi {0}", [usd(nilai)]), 'qkY')] : null,
@@ -2052,9 +2089,11 @@ class Telegram {
       tr("Sekarang: <b>{0}</b>", [d.full ? tr("seluruh rentang") : rentangTeks(d)]),
       '',
       tr("<i>Batas bawah dan atas boleh berbeda — misal turun 10%, naik 30%.</i>"),
+      tr("Satu sisi: isi 25 0 atau 0 25. Hanya satu token disetor; fee mulai saat harga masuk rentang. Auto-swap bisa diperlukan untuk menyediakan token itu."),
     ];
     return [L.join('\n'), kb([
       [btn('±5%', 'mlw:5:5'), btn('±10%', 'mlw:10:10'), btn('±25%', 'mlw:25:25')],
+      [btn(tr("1 sisi · bawah −25%"), 'mlw:25:0'), btn(tr("1 sisi · atas +25%"), 'mlw:0:25')],
       [btn('±50%', 'mlw:50:50'), btn('½× – 2×', 'mlw:50:100'), btn(tr("seluruh rentang"), 'mlF')],
       [btn(tr("✏️ Atur bawah & atas"), 'mlC')],
       [btn(tr("↩︎ LP manual"), 'ml')],

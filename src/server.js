@@ -398,6 +398,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         empty: row.status === 'closed',
       };
       pos.exitSqrt = row.exit_sqrt || null;
+      pos.claimedUsd = (row.claimed_quote || 0) * k;
       pos.outUsd = outUsd;
       pos.quoteKind = row.quote_symbol === 'ETH' || row.quote_symbol === 'WETH' ? 'eth' : 'usd';
       pos.targetLabel = row.target ? (store.get('SELECT label FROM targets WHERE address=?', row.target)?.label || null) : null;
@@ -450,6 +451,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           targetUsd: dec?.value_quote > 0 ? dec.value_quote * (dec.quote_symbol === 'ETH' || dec.quote_symbol === 'WETH' ? engine.ethUsd : 1) : null,
         };
         if (t.hash === row.tx_open) { ev.amount0 = row.cost0; ev.amount1 = row.cost1; ev.valueUsd = (row.cost_quote || 0) * k; ev.kind = ev.kind === 'increase' ? 'increase' : 'mint'; }
+        if (t.kind === 'claim_fees') {
+          const claim = store.get('SELECT * FROM fee_claims WHERE tx_hash=?', t.hash);
+          if (claim) {
+            ev.amount0 = claim.amount0; ev.amount1 = claim.amount1;
+            ev.valueUsd = claim.value_quote * k; ev.feesUsd = ev.valueUsd;
+          }
+        }
         if (t.hash === row.tx_close) {
           ev.amount0 = d.closeProceeds?.amount0 ?? row.out0; ev.amount1 = d.closeProceeds?.amount1 ?? row.out1; ev.valueUsd = d.closeProceeds?.quote != null ? d.closeProceeds.quote * k : null; ev.feesUsd = (row.fees_quote || 0) * k;
           if (ev.kind !== 'decrease') ev.kind = 'burn';
@@ -1032,6 +1040,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       return engine.leftovers().length < before ? { ok: true } : { error: 'tidak ada di antrean' };
     },
 
+    'POST /api/positions/claim': async (req) => {
+      const b = await readBody(req);
+      const id = Number(b.id);
+      if (!Number.isSafeInteger(id) || id <= 0) return { error: 'ID posisi tidak valid' };
+      try { return await engine.claimFees(id); }
+      catch (e) { return { error: e.message }; }
+    },
     'POST /api/positions/close': async (req) => {
       const b = await readBody(req);
       const pos = store.get("SELECT * FROM positions WHERE id=? AND status='open'", Number(b.id));

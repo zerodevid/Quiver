@@ -289,11 +289,15 @@ class Manual {
       : await this.chain.slot0V4(p.poolRef);
     if (!slot0) return { error: 'harga pool tidak terbaca sekarang' };
 
-    // Rentang asimetris (lihat ticksFromPct); dibulatkan melebar ke tick spacing di bawah.
+    let singleSide = null;
+    // Batas 0% berarti satu sisi. Pembulatan batas dekat harga harus menjauh
+    // dari harga, supaya spacing tidak menyisipkan kebutuhan token kedua.
     if (!full && tickLower == null && tickUpper == null && (lowerPct != null || upperPct != null)) {
       const r = ticksFromPct({ curTick: slot0.tick, quoteSide: p.quoteSide, lowerPct, upperPct });
       if (r.error) return r;
       ({ tickLower, tickUpper } = r);
+      if (Number(lowerPct ?? 0) === 0) singleSide = p.quoteSide === 1 ? 'token0' : 'token1';
+      else if (Number(upperPct ?? 0) === 0) singleSide = p.quoteSide === 1 ? 'token1' : 'token0';
     }
 
     // Rentang: dihitung oleh planRange yang sama dengan jalur otomatis.
@@ -311,9 +315,19 @@ class Manual {
         tickSpacing: sp,
       };
       if (range.tickUpper <= range.tickLower) range.tickUpper = range.tickLower + sp;
+      if (singleSide === 'token0') {
+        range.tickLower = m.alignTick(slot0.tick + 1, sp, 'up');
+        range.tickUpper = Math.max(range.tickUpper, range.tickLower + sp);
+      } else if (singleSide === 'token1') {
+        range.tickUpper = m.alignTick(slot0.tick, sp, 'down');
+        range.tickLower = Math.min(range.tickLower, range.tickUpper - sp);
+      }
     } else {
       range = planRange({ ...rules, range: { ...rules.range, mode: full ? 'full' : 'width_pct', width_pct: widthPct } }, actLike, slot0.tick);
     }
+
+    if (!Number.isInteger(range.tickLower) || !Number.isInteger(range.tickUpper)
+      || range.tickLower < m.MIN_TICK || range.tickUpper > m.MAX_TICK) return { error: 'rentang melewati batas tick Uniswap' };
 
     // Likuiditas yang bernilai persis `nominal` dolar, diturunkan dari satu
     // pengukuran acuan — nilai posisi linear terhadap L pada rentang yang sama.
@@ -342,7 +356,7 @@ class Manual {
       amount0: est.amount0.toString(), amount1: est.amount1.toString(),
       amount0Max: pad(est.amount0).toString(), amount1Max: pad(est.amount1).toString(),
       valueQuote: est.value, quoteSymbol: p.quoteSymbol, quoteKind: p.quoteKind, quoteSide: p.quoteSide,
-      valueUsd, side,
+      valueUsd, side, singleSide,
       mirrorOf: null, target: null, manual: true,
       curTick: slot0.tick,
     };
@@ -362,15 +376,20 @@ class Manual {
       return { error: `sudah ada ${sum.openCount} posisi terbuka (batas ${rules.filters.max_open_positions}).` };
     }
     if (valueUsd < s.min_quote_usd) warnings.push(`di bawah minimum biasa ($${s.min_quote_usd}) — biaya gas bisa memakan porsi besar`);
-    if (side !== 'both') warnings.push(`rentangnya seluruhnya di ${side === 'below' ? 'bawah' : 'atas'} harga kini — posisi berisi satu token saja (seperti limit order)`);
+    if (side !== 'both') warnings.push('posisi satu sisi — fee baru diperoleh saat harga masuk rentang');
     if (p.fee != null && p.fee >= 30000) warnings.push(`fee pool ${(p.fee / 10000).toFixed(2)}% — tinggi, hanya sepadan kalau ramai`);
 
     // Kas: executeEntry bisa menjembatani ETH<->USDG, jadi yang diperiksa total nilainya.
     // Token pasangan pool ikut dibaca: yang sudah dipegang mengecilkan zap.
     const bal = await eng.exec.balances(this.daftarSaldo(p));
     const { kasUsd } = this.saldoDari(bal, p, slot0);
-    if (kasUsd < valueUsd) return { error: `kas cuma $${kasUsd.toFixed(2)}, butuh ~$${valueUsd.toFixed(2)}` };
-    if (kasUsd < valueUsd * 1.02) warnings.push('kas nyaris pas — sisakan sedikit untuk gas dan slippage');
+    const available = (t) => {
+      const raw = bal.get(lc(t)) || 0n;
+      return isNative(t) ? (raw > this.gasReserve() ? raw - this.gasReserve() : 0n) : raw;
+    };
+    const funded = available(p.token0) >= BigInt(plan.amount0Max) && available(p.token1) >= BigInt(plan.amount1Max);
+    if (!funded && kasUsd < valueUsd) return { error: `kas cuma $${kasUsd.toFixed(2)}, butuh ~$${valueUsd.toFixed(2)}` };
+    if (!funded && kasUsd < valueUsd * 1.02) warnings.push('kas nyaris pas — sisakan sedikit untuk gas dan slippage');
 
     const sim = this.simulasiSwap({ p, plan, slot0, bal, rules });
     warnings.push(...sim.masalah);
@@ -494,7 +513,8 @@ class Manual {
     const qTok = lc(plan.quoteSide === 0 ? plan.token0 : plan.token1);
     const qDec = QUOTES[qTok]?.decimals ?? 18;
     const needQ = BigInt(Math.ceil((plan.valueQuote || 0) * 1.05 * 10 ** qDec));
-    if (needQ > 0n && avail(qTok) < needQ) {
+    const funded = avail(plan.token0) >= BigInt(plan.amount0Max) && avail(plan.token1) >= BigInt(plan.amount1Max);
+    if (!funded && needQ > 0n && avail(qTok) < needQ) {
       if (qTok === ADDR.weth || qTok === ADDR.native) {
         const lain = qTok === ADDR.weth ? ADDR.native : ADDR.weth;
         const want = needQ - avail(qTok), ada = avail(lain);

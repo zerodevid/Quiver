@@ -41,7 +41,7 @@ class Positions {
   // quote-nya (di harga tutup) sudah termasuk dalam outQuote.
   markClosed(id, { out0, out1, outQuote, txHash, exitSqrt, left = null }) {
     this.store.run(
-      `UPDATE positions SET status='closed', closed_ts=?, out0=?, out1=?, out_quote=?, tx_close=?, exit_sqrt=?, liquidity='0',
+      `UPDATE positions SET status='closed', closed_ts=?, out0=?, out1=?, out_quote=? + COALESCE(claimed_quote,0), tx_close=?, exit_sqrt=?, liquidity='0',
          left_token=?, left_amount=?, left_quote=? WHERE id=?`,
       Date.now(), String(out0 ?? 0), String(out1 ?? 0), outQuote ?? 0, txHash ?? null,
       exitSqrt != null ? String(exitSqrt) : null,
@@ -272,7 +272,8 @@ class Positions {
       const costUsd = toUsd(r.cost_quote) ?? 0;
       const valUsd = toUsd(valueQuote) ?? 0;
       const feeUsd = toUsd(feeQuote) ?? 0;
-      const pnlUsd = valUsd + feeUsd - costUsd;
+      const claimedUsd = toUsd(r.claimed_quote) ?? 0;
+      const pnlUsd = valUsd + feeUsd + claimedUsd - costUsd;
 
       // HODL: kalau modal awal dibiarkan sebagai token, berapa nilainya sekarang?
       // Selisihnya = impermanent loss.
@@ -299,7 +300,7 @@ class Positions {
         curTick: s?.tick ?? null, inRange,
         curSqrt: s?.sqrtPriceX96 != null ? s.sqrtPriceX96.toString() : null,
         entrySqrt: Positions.entrySqrtOf(r),
-        valueUsd: valUsd, feeUsd, costUsd, pnlUsd,
+        valueUsd: valUsd, feeUsd, claimedUsd, costUsd, pnlUsd,
         pnlPct: costUsd > 0 ? (pnlUsd / costUsd) * 100 : 0,
         ilUsd: hodlUsd != null ? valUsd - hodlUsd : null,
         ageHours: (Date.now() - (r.opened_ts || Date.now())) / 3600000,
@@ -349,7 +350,7 @@ class Positions {
   // persis batas yang dipasang untuk membatasi kerugian.
   summary(ethUsd) {
     const liveById = new Map(this.live.map((p) => [p.id, p]));
-    const rows = this.store.all("SELECT id, cost_quote, quote_symbol FROM positions WHERE status='open'")
+    const rows = this.store.all("SELECT id, cost_quote, quote_symbol, claimed_quote FROM positions WHERE status='open'")
       .filter((r) => !liveById.get(r.id)?.empty);
     let val = 0, fee = 0, cost = 0;
     for (const r of rows) {
@@ -362,7 +363,7 @@ class Positions {
     }
     const open = rows.map((r) => liveById.get(r.id)).filter(Boolean).filter((p) => !p.empty);
     const closed = this.store.all("SELECT cost_quote, out_quote, quote_symbol FROM positions WHERE status='closed'");
-    let realized = 0;
+    let realized = rows.reduce((sum, r) => sum + (r.claimed_quote || 0) * (['ETH', 'WETH'].includes(r.quote_symbol) ? ethUsd : 1), 0);
     for (const c of closed) {
       const k = c.quote_symbol === 'ETH' ? ethUsd : 1;
       realized += ((c.out_quote || 0) - (c.cost_quote || 0)) * k;

@@ -17,6 +17,7 @@ const KIND = {
   mint: ['Buka posisi', 'success'],
   increase: ['Tambah likuiditas', 'success'],
   decrease: ['Kurangi likuiditas', 'warning'],
+  claim_fees: ['Klaim fee', 'success'],
   burn: ['Tutup posisi', 'danger'],
   zap_swap: ['Swap zap', 'accent'],
   bridge_swap: ['Swap kuotasi', 'accent'],
