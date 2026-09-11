@@ -33,6 +33,7 @@ class Engine {
     this.span = cfg.loop?.max_block_span || 1500;
     this.failStreak = 0;
     this.headSpread = 0;
+    this.cash = null;              // saldo kas terakhir, lihat refreshCash()
   }
 
   rulesFrom(targetAddr) {
@@ -882,6 +883,7 @@ class Engine {
     await this.retryLeftovers().catch((e) => this.store.log('error', `jual sisa: ${e.message}`));
     await this.reconcileExits().catch((e) => this.store.log('error', `rekonsiliasi keluar: ${e.message}`));
     await this.positions.sync(this.ethUsd);
+    await this.refreshCash().catch((e) => this.store.log('error', `saldo kas: ${e.message}`));
     const globalRules = rulesFor(this.cfg.rules);
     const triggers = this.positions.exitTriggers(globalRules);
     for (const t of triggers) {
@@ -894,11 +896,46 @@ class Engine {
     }
   }
 
-  snapshotEquity() {
+  // Kas di wallet (USDG + ETH + WETH) dalam USD. Dibaca ulang tiap sinkron posisi,
+  // di detik yang sama dengan nilai posisi: kalau kas basi sementara posisi segar,
+  // total portofolio menghitung dana dua kali sesaat setelah posisi dibuka.
+  async refreshCash() {
+    if (!this.exec.address()) { this.cash = null; return null; }
+    const b = await this.exec.balances([ADDR.native, ADDR.usdg, ADDR.weth]);
+    const eth = Number(b.get(ADDR.native) || 0n) / 1e18;
+    const weth = Number(b.get(ADDR.weth) || 0n) / 1e18;
+    const usdg = Number(b.get(ADDR.usdg) || 0n) / 1e6;
+    this.cash = { usdg, eth, weth, usd: usdg + (eth + weth) * this.ethUsd, ts: Date.now() };
+    return this.cash;
+  }
+
+  async snapshotEquity() {
     const s = this.positions.summary(this.ethUsd);
+    let cash = this.cash;
+    if (this.exec.address() && (!cash || Date.now() - cash.ts > 120_000)) cash = await this.refreshCash().catch(() => null);
+    const w = cash ? cash.usd : null;   // tidak terbaca = NULL, bukan 0
     this.store.run(
-      'INSERT OR REPLACE INTO equity(ts,wallet_quote,positions_quote,total_quote,realized_quote,fees_quote,open_positions) VALUES(?,?,?,?,?,?,?)',
-      Date.now(), 0, s.exposureUsd, s.exposureUsd + s.feeUsd, s.realizedUsd, s.feeUsd, s.openCount);
+      'INSERT OR REPLACE INTO equity(ts,wallet_quote,positions_quote,total_quote,realized_quote,fees_quote,open_positions,pnl_quote) VALUES(?,?,?,?,?,?,?,?)',
+      Date.now(), w, s.exposureUsd, (w || 0) + s.exposureUsd + s.feeUsd, s.realizedUsd, s.feeUsd, s.openCount,
+      s.realizedUsd + s.unrealizedUsd);
+  }
+
+  // Titik ekuitas dari sebelum kolom pnl_quote ada. PnL-nya bisa direkonstruksi dari
+  // yang sudah tercatat: terealisasi + nilai posisi + fee − modal posisi yang sedang
+  // terbuka saat itu (diturunkan dari waktu buka/tutup tiap posisi).
+  backfillEquityPnl() {
+    const rows = this.store.all('SELECT ts, positions_quote, fees_quote, realized_quote FROM equity WHERE pnl_quote IS NULL');
+    if (!rows.length) return 0;
+    const pos = this.store.all("SELECT opened_ts, closed_ts, cost_quote, quote_symbol FROM positions WHERE status IN ('open','closed')");
+    for (const r of rows) {
+      let cost = 0;
+      for (const p of pos) {
+        if (p.opened_ts <= r.ts && (!p.closed_ts || p.closed_ts > r.ts)) cost += (p.cost_quote || 0) * (p.quote_symbol === 'ETH' ? this.ethUsd : 1);
+      }
+      this.store.run('UPDATE equity SET pnl_quote=? WHERE ts=?',
+        (r.realized_quote || 0) + (r.positions_quote || 0) + (r.fees_quote || 0) - cost, r.ts);
+    }
+    return rows.length;
   }
 
   notify(msg) {

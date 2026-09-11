@@ -127,6 +127,7 @@ async function main() {
   log('menyiapkan mesin…');
   await engine.init();
   await engine.syncPositions();
+  try { const n = engine.backfillEquityPnl(); if (n) log(`ekuitas: PnL kumulatif direkonstruksi untuk ${n} titik lama`); } catch (e) { log(`ekuitas: ${e.message}`); }
 
   const pollMs = cfg.loop?.poll_ms || 1500;
   const syncMs = (cfg.loop?.sync_seconds || 30) * 1000;
@@ -135,7 +136,7 @@ async function main() {
 
   setInterval(() => engine.tick().catch((e) => log(`tick: ${e.message}`)), pollMs);
   setInterval(() => engine.syncPositions().catch((e) => log(`sync: ${e.message}`)), syncMs);
-  setInterval(() => { try { engine.snapshotEquity(); } catch (e) { log(`equity: ${e.message}`); } }, eqMs);
+  setInterval(() => engine.snapshotEquity().catch((e) => log(`equity: ${e.message}`)), eqMs);
   setInterval(() => store.prune(30), 3600_000);
 
   process.on('SIGINT', () => { log('berhenti'); telegram.stop(); cleanup(); process.exit(0); });

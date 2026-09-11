@@ -165,6 +165,92 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         lastSync: engine.positions.lastSync,
       };
     },
+    // Portofolio milik kita: total sekarang, kurva pertumbuhan, PnL per hari, dan
+    // kinerja per sumber (target yang disalin / manual). Terpisah dari /api/overview
+    // karena overview dipoll tiap 5 detik — data ini cukup tiap setengah menit.
+    'GET /api/portfolio': (req, url) => {
+      const SPAN = { '24h': 864e5, '7d': 7 * 864e5, '30d': 30 * 864e5, all: 0 };
+      const range = url.searchParams.get('range') in SPAN ? url.searchParams.get('range') : '7d';
+      const now = Date.now();
+      const from = SPAN[range] ? now - SPAN[range] : 0;
+      const eth = engine.ethUsd;
+      const k = (q) => (q === 'ETH' ? eth : 1);
+      const s = engine.positions.summary(eth);
+      const cash = engine.cash;
+      const value = (cash?.usd || 0) + s.exposureUsd + s.feeUsd;
+      const pnl = s.realizedUsd + s.unrealizedUsd;
+
+      // Satu titik tiap 5 menit = 8.640 titik per 30 hari, jauh lebih rapat daripada
+      // piksel grafiknya. Ambil titik terakhir tiap ember; titik pertama tetap ikut.
+      const rows = store.all(`SELECT ts, wallet_quote AS cash, positions_quote AS pos, fees_quote AS fee,
+        total_quote AS total, pnl_quote AS pnl, open_positions AS n FROM equity WHERE ts >= ? ORDER BY ts`, from);
+      const MAX = 360;
+      let series = rows;
+      if (rows.length > MAX) {
+        const step = rows.length / MAX;
+        series = [rows[0]];
+        for (let i = 1; i <= MAX; i++) series.push(rows[Math.min(rows.length - 1, Math.floor(i * step) - 1)]);
+      }
+      // Titik "sekarang" supaya ujung grafik sama dengan angka di kartu, bukan
+      // tertinggal sampai 5 menit di belakangnya.
+      if (engine.positions.lastSync) {
+        series = [...series, { ts: now, cash: cash ? cash.usd : null, pos: s.exposureUsd, fee: s.feeUsd, total: value, pnl, n: s.openCount, live: true }];
+      }
+      // Titik terakhir SEBELUM jendela: patokan "berubah berapa dalam rentang ini".
+      const baseline = from ? store.get('SELECT ts, pnl_quote AS pnl, total_quote AS total, wallet_quote AS cash FROM equity WHERE ts < ? ORDER BY ts DESC LIMIT 1', from) || null : null;
+
+      // Posisi tertutup: bahan kalender (dikelompokkan per hari di browser, pakai
+      // zona waktu pengguna) dan statistik menang/kalah.
+      const closed = store.all("SELECT target, opened_ts, closed_ts, cost_quote, out_quote, quote_symbol FROM positions WHERE status='closed' AND closed_ts IS NOT NULL ORDER BY closed_ts")
+        .map((p) => ({ ...p, pnl: ((p.out_quote || 0) - (p.cost_quote || 0)) * k(p.quote_symbol) }));
+      const pnls = closed.map((p) => p.pnl);
+      const wins = pnls.filter((x) => x > 0).length;
+      const holds = closed.filter((p) => p.opened_ts).map((p) => (p.closed_ts - p.opened_ts) / 3600000);
+
+      // Per sumber: target yang disalin, atau '' untuk posisi manual / di luar bot.
+      const live = new Map(engine.positions.live.map((p) => [p.id, p]));
+      const labels = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
+      const by = new Map();
+      const grp = (t) => {
+        const key = t || '';
+        if (!by.has(key)) by.set(key, { target: key || null, label: key ? labels.get(key) || null : null, open: 0, value: 0, upnl: 0, closed: 0, wins: 0, realized: 0 });
+        return by.get(key);
+      };
+      for (const r of store.all("SELECT id, target, cost_quote, quote_symbol FROM positions WHERE status='open'")) {
+        const l = live.get(r.id);
+        if (l?.empty) continue;
+        const g = grp(r.target);
+        g.open++;
+        g.value += l ? (l.valueUsd || 0) + (l.feeUsd || 0) : (r.cost_quote || 0) * k(r.quote_symbol);
+        g.upnl += l?.pnlUsd || 0;
+      }
+      for (const p of closed) {
+        const g = grp(p.target);
+        g.closed++; g.realized += p.pnl; if (p.pnl > 0) g.wins++;
+      }
+
+      return {
+        range, from, series, baseline,
+        now: {
+          value, cash, positionsUsd: s.exposureUsd, feeUsd: s.feeUsd, costUsd: s.costUsd,
+          pnl, realizedUsd: s.realizedUsd, unrealizedUsd: s.unrealizedUsd,
+          // Modal bersih ≈ yang pernah disetor: nilai sekarang dikurangi seluruh laba.
+          // Tanpa saldo kas (mode tanpa wallet) tidak bisa dihitung.
+          capital: cash ? value - pnl : null,
+          openCount: s.openCount, inRange: s.inRange,
+        },
+        stats: {
+          closedCount: closed.length, wins, losses: closed.length - wins,
+          winRatePct: closed.length ? (wins / closed.length) * 100 : null,
+          avgPnl: closed.length ? pnls.reduce((a, b) => a + b, 0) / closed.length : null,
+          best: closed.length ? Math.max(...pnls) : null,
+          worst: closed.length ? Math.min(...pnls) : null,
+          avgHoldHours: holds.length ? holds.reduce((a, b) => a + b, 0) / holds.length : null,
+        },
+        closed: closed.map((p) => [p.closed_ts, p.pnl]),
+        byTarget: [...by.values()].sort((a, b) => (b.realized + b.upnl) - (a.realized + a.upnl)),
+      };
+    },
     'GET /api/positions': () => {
       // Posisi tertutup cuma menyimpan alamat token; tanpa simbol, tabelnya hanya
       // deretan nomor NFT yang tidak bisa dikenali.
@@ -462,6 +548,26 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       }
     },
     'GET /api/manual/tokens': async () => ({ tokens: await manual.held() }),
+
+    // Alamat yang ditempel pengguna: token (untuk dipasangi LP) atau wallet (untuk
+    // diriset / dijadikan target)? Wallet LP besar sering berupa KONTRAK (smart
+    // wallet, Safe), jadi "punya kode" saja belum berarti token — yang menentukan
+    // adalah symbol() dan decimals() yang menjawab. Metadata token baru disimpan
+    // hanya kalau memang token, supaya tabel tokens tidak kemasukan alamat wallet.
+    'GET /api/address': async (req, url) => {
+      const a = String(url.searchParams.get('a') || '').trim().toLowerCase();
+      if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat harus 0x diikuti 40 karakter hex' };
+      const tgt = store.get('SELECT label FROM targets WHERE address=?', a);
+      const riset = store.get('SELECT address FROM wallets WHERE address=?', a);
+      const base = { address: a, isTarget: !!tgt, targetLabel: tgt?.label || null, researched: !!riset };
+      const code = await rpc.call('eth_getCode', [a, 'latest']);
+      if (!code || code === '0x') return { ...base, kind: 'wallet' };
+      const [sym, dec] = await rpc.ethCallMany([{ to: a, data: '0x95d89b41' }, { to: a, data: '0x313ce567' }]);
+      const d = dec && dec.length >= 66 ? Number(BigInt(dec.slice(0, 66))) : null;
+      if (!sym || sym === '0x' || d == null || d > 36) return { ...base, kind: 'contract' };
+      const t = await chain.tokens([a]).then((x) => x[0]).catch(() => null);
+      return { ...base, kind: 'token', symbol: t?.symbol || '?', name: t?.name || '', decimals: t?.decimals ?? d };
+    },
     'POST /api/manual/swap/quote': async (req) => {
       const b = await readBody(req);
       try {

@@ -109,10 +109,15 @@ CREATE TABLE IF NOT EXISTS txs (
   error      TEXT, detail TEXT
 );
 
+-- wallet_quote: kas di wallet (USDG + ETH + WETH, USD); NULL = tidak terbaca.
+-- total_quote = kas + nilai posisi + fee belum diklaim.
+-- pnl_quote   = PnL kumulatif (terealisasi + belum terealisasi) — kurva pertumbuhan
+--               yang tidak ikut melonjak saat dana disetor/ditarik.
 CREATE TABLE IF NOT EXISTS equity (
   ts             INTEGER PRIMARY KEY,
   wallet_quote   REAL, positions_quote REAL, total_quote REAL,
-  realized_quote REAL, fees_quote REAL, open_positions INTEGER
+  realized_quote REAL, fees_quote REAL, open_positions INTEGER,
+  pnl_quote      REAL
 );
 
 -- ---- riset wallet: posisi & PnL wallet mana pun (bukan cuma milik kita) ----
@@ -197,6 +202,14 @@ function open(dbPath) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   db.exec(SCHEMA);
+  // CREATE TABLE IF NOT EXISTS tidak menambah kolom ke tabel yang sudah ada.
+  const eqCols = new Set(db.prepare('PRAGMA table_info(equity)').all().map((c) => c.name));
+  if (!eqCols.has('pnl_quote')) {
+    db.exec('ALTER TABLE equity ADD COLUMN pnl_quote REAL');
+    // Sebelum kolom ini ada, wallet_quote selalu ditulis 0 tanpa pernah diukur —
+    // itu "tidak diketahui", bukan "kas kosong".
+    db.exec('UPDATE equity SET wallet_quote = NULL');
+  }
   return db;
 }
 

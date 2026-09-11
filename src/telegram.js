@@ -593,6 +593,13 @@ class Telegram {
       try { return await this.answer(chatId, p, text); }
       catch (e) { return this.send(chatId, `❌ ${esc(e.message)}`, kb([[btn('↩︎ Coba lagi', p.retry || 'h'), BACK_HOME]])); }
     }
+    // Alamat ditempel begitu saja (atau tautan DexScreener/GeckoTerminal yang memuatnya):
+    // token -> langsung ke kartu pasang LP; wallet -> pilihan riset / jadikan target.
+    // (?![0-9a-f]) mencegah poolId v4 (64 hex) terbaca sebagai alamat 40 hex.
+    if (!text.startsWith('/') && text.length <= 300) {
+      const a = text.match(/0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/)?.[0];
+      if (a) return this.tempel(chatId, a.toLowerCase());
+    }
     if (!text.startsWith('/')) return this.screen(chatId, null, 'h');
 
     const raw = text.slice(1).split(/[\s@]/)[0].toLowerCase();
@@ -620,7 +627,7 @@ class Telegram {
         if (arg) return this.runRiset(chatId, arg);
         return this.ask(chatId, { kind: 'riset' }, 'Kirim alamat wallet yang mau diriset (PnL, posisi, riwayat).');
       case 'help':
-        return this.send(chatId, `<b>Perintah</b>\n${COMMANDS.map(([c, d]) => `/${c} — ${esc(d)}`).join('\n')}\n\nSemua ini juga ada tombolnya di /menu.`, kb([[BACK_HOME]]));
+        return this.send(chatId, `<b>Perintah</b>\n${COMMANDS.map(([c, d]) => `/${c} — ${esc(d)}`).join('\n')}\n\nSemua ini juga ada tombolnya di /menu.\n\n💡 Tempel <b>alamat token</b> kapan saja → langsung ke layar pasang LP. Tempel <b>alamat wallet</b> → riset PnL atau jadikan target.`, kb([[BACK_HOME]]));
       default:
         return this.send(chatId, 'Perintah tidak dikenal. /bantuan untuk daftarnya.', kb([[BACK_HOME]]));
     }
@@ -812,7 +819,36 @@ class Telegram {
       }
 
       // ---- LP manual ----
-      case 'ml': return out(...(await this.lpMenu(chatId)));
+      case 'ml': s.lpAsal = 'ml'; return out(...(await this.lpMenu(chatId)));
+
+      // ---- kartu pasang LP (alamat token ditempel) ----
+      case 'qk': return out(...(await this.lpKartu(chatId)));
+      case 'qkn': s.lp = { ...(s.lp || {}), usd: Number(rest[0]) }; return out(...(await this.lpKartu(chatId)));
+      case 'qkN': s.lpAsal = 'qk';
+        return this.ask(chatId, { kind: 'lpUsd', retry: 'qk' }, 'Berapa dolar yang mau dimasukkan?\n\n<i>Ini nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.</i>');
+      case 'qkw': s.lp = { ...(s.lp || {}), lowerPct: Number(rest[0]), upperPct: Number(rest[1]), widthPct: undefined, full: false };
+        return out(...(await this.lpKartu(chatId)));
+      case 'qkF': s.lp = { ...(s.lp || {}), full: true }; return out(...(await this.lpKartu(chatId)));
+      case 'qkC': s.lpAsal = 'qk';
+        return this.ask(chatId, { kind: 'lpWidth', retry: 'qk' },
+          'Kirim <b>batas bawah</b> dan <b>batas atas</b> dalam persen dari harga kini.\n\n'
+          + '<code>10 30</code> → turun sampai −10%, naik sampai +30%\n'
+          + '<code>25</code> → ±25%');
+      case 'qkp': return out(...this.lpKartuPool(chatId));
+      case 'qkP': {
+        const pool = (s.qkPools || [])[+rest[0]];
+        if (pool) s.lp = { ...(s.lp || {}), poolRef: pool.poolRef, pair: pool.pair };
+        return out(...(await this.lpKartu(chatId)));
+      }
+      case 'qkY': return out(...this.lpKartuYakin(chatId));
+
+      // ---- alamat wallet yang ditempel ----
+      case 'adT': {
+        if (!/^0x[0-9a-f]{40}$/.test(s.alamat || '')) return out('Alamatnya sudah tidak tersimpan — tempel lagi.', kb([[BACK_HOME]]));
+        const r = await this.api('POST', '/api/targets', { address: s.alamat, label: null });
+        if (r.error) return out(`❌ ${esc(r.error)}`, kb([[BACK_HOME]]));
+        return out(`✅ <code>${esc(shortA(s.alamat))}</code> sekarang diikuti.\n<i>Aturan default dipakai sampai kamu setel sendiri.</i>`, kb([[btn('🎯 Daftar target', 't'), BACK_HOME]]));
+      }
       case 'mlp': return out(...(await this.lpPools(chatId, Number(rest[0] || 0), rest[1] || '')));
       case 'mlP': {
         const pool = (s.poolList || [])[+rest[0]];
@@ -844,7 +880,7 @@ class Telegram {
         if (ack) await ack('Membuka posisi…');
         await out('⏳ Membuka posisi… <i>(jembatan kas, zap, lalu mint — bisa sampai satu menit)</i>');
         const r = await this.api('POST', '/api/manual/lp/open', d);
-        if (r.error) return out(`⛔ <b>Gagal membuka LP</b>\n<code>${esc(r.error)}</code>`, kb([[btn('↩︎ LP manual', 'ml'), BACK_HOME]]));
+        if (r.error) return out(`⛔ <b>Gagal membuka LP</b>\n<code>${esc(r.error)}</code>`, kb([[s.lpAsal === 'qk' ? btn('↩︎ Kembali', 'qk') : btn('↩︎ LP manual', 'ml'), BACK_HOME]]));
         s.lp = null;
         return out(`✅ <b>LP dibuka</b>\n${esc(r.note)}\ntx <code>${esc(shortH(r.tx))}</code>`, kb([[btn('💼 Lihat posisi', 'p')], [BACK_HOME]]));
       }
@@ -923,14 +959,14 @@ class Telegram {
         if (!Number.isFinite(n) || n <= 0) throw new Error('nominal harus angka lebih dari nol');
         const se = this.sess(chatId);
         se.lp = { ...(se.lp || { lowerPct: 25, upperPct: 25 }), usd: n };
-        return this.screen(chatId, null, 'ml', `✅ Nominal $${nf(n, 2)}\n\n`);
+        return this.screen(chatId, null, se.lpAsal === 'qk' ? 'qk' : 'ml', `✅ Nominal $${nf(n, 2)}\n\n`);
       }
       case 'lpWidth': {
         const r = parseRentang(text);
         if (r.error) throw new Error(r.error);
         const se = this.sess(chatId);
         se.lp = { ...(se.lp || {}), lowerPct: r.lowerPct, upperPct: r.upperPct, widthPct: undefined, full: false };
-        return this.screen(chatId, null, 'ml', `✅ Rentang ${rentangTeks(se.lp)}\n\n`);
+        return this.screen(chatId, null, se.lpAsal === 'qk' ? 'qk' : 'ml', `✅ Rentang ${rentangTeks(se.lp)}\n\n`);
       }
       case 'swAmount': {
         const se = this.sess(chatId);
@@ -1004,6 +1040,7 @@ class Telegram {
       `📈 Belum terealisasi ${sgn(s.unrealizedUsd)} · terealisasi ${sgn(s.realizedUsd)}`,
       `🔗 Blok ${num(o.chain.head)} · tertinggal ${num(o.chain.lag)}`,
       '',
+      '💡 <i>Tempel alamat token untuk langsung pasang LP.</i>',
       'Pilih menu:',
     ].join('\n');
     return [text, kb([
@@ -1464,6 +1501,7 @@ class Telegram {
     const L = [
       '<b>➕ LP manual</b>',
       'Membuka posisi sendiri, di luar penyalinan target. Jalur eksekusinya sama: kas dijembatani, token ditukar seperlunya, lalu mint.',
+      '💡 <i>Paling cepat: tempel alamat token di chat ini kapan saja.</i>',
       '',
       tabel([
         ['pool', d.pair || '— belum dipilih'],
@@ -1504,6 +1542,151 @@ class Telegram {
       [btn('➕ Dari alamat token', 'mla')],
       [btn('↩︎ LP manual', 'ml')],
     ])];
+  }
+
+  // ---- alamat ditempel ------------------------------------------------------
+  async tempel(chatId, a) {
+    const m = await this.send(chatId, `🔎 Memeriksa <code>${esc(shortA(a))}</code>…`);
+    const info = await this.api('GET', '/api/address', {}, { a });
+    if (info.error) return this.edit(chatId, m.message_id, `❌ ${esc(info.error)}`, kb([[BACK_HOME]]));
+    if (info.kind === 'token') return this.pasangLp(chatId, m.message_id, a, info);
+
+    const s = this.sess(chatId);
+    s.alamat = a;
+    const L = [
+      `<b>👛 ${info.kind === 'contract' ? 'Kontrak' : 'Wallet'}</b> <code>${esc(a)}</code>`,
+      info.kind === 'contract' ? 'Bukan token — kemungkinan smart wallet. Mau diapakan?' : 'Ini alamat wallet, bukan token. Mau diapakan?',
+      info.isTarget ? `\n🎯 Sudah diikuti${info.targetLabel ? ` sebagai <b>${esc(info.targetLabel)}</b>` : ''}.` : null,
+    ];
+    return this.edit(chatId, m.message_id, L.filter((x) => x != null).join('\n'), kb([
+      [btn('🔎 Riset PnL', `wr:${a}`), info.isTarget ? btn('🎯 Daftar target', 't') : btn('➕ Jadikan target', 'adT')],
+      [BACK_HOME],
+    ]));
+  }
+
+  // Menunggu pemindaian pool selesai sambil menyunting pesan progres.
+  async tungguPindai(chatId, msgId, token, judul) {
+    const [awal, jeda] = this.jedaPindai || [800, 2000];
+    for (let i = 0; i < 120; i++) {
+      await sleep(i === 0 ? awal : jeda);
+      const j = await this.api('GET', '/api/manual/pools/scan', {}, { token });
+      if (j.status !== 'jalan') return j;
+      if (i % 3 === 1) await this.edit(chatId, msgId, `${judul}… ${j.progress || 0}%`).catch(() => {});
+    }
+    return { status: 'lama' };
+  }
+
+  async pasangLp(chatId, msgId, token, info) {
+    const sym = info.symbol || '?';
+    const judul = `🔎 Mencari pool <b>${esc(sym)}</b>`;
+    await this.edit(chatId, msgId, `${judul}…`);
+    const r0 = await this.api('POST', '/api/manual/pools/scan', { token });
+    if (r0.error) return this.edit(chatId, msgId, `❌ ${esc(r0.error)}`, kb([[BACK_HOME]]));
+    const j = await this.tungguPindai(chatId, msgId, token, judul);
+    if (j.status === 'gagal') return this.edit(chatId, msgId, `❌ Pemindaian gagal: <code>${esc(j.error)}</code>`, kb([[BACK_HOME]]));
+    if (j.status === 'lama') return this.edit(chatId, msgId, '⏳ Pemindaian masih berjalan — tempel lagi alamatnya sebentar lagi.', kb([[BACK_HOME]]));
+    const list = j.pools || [];
+    if (!list.length) {
+      return this.edit(chatId, msgId, [
+        `<b>${esc(sym)}</b> <code>${esc(shortA(token))}</code>`,
+        '',
+        'Belum ada pool yang bisa dimasuki untuk token ini.',
+        j.total ? `<i>${j.total} pool ditemukan, tapi semuanya kosong, berfee dinamis, atau tidak dipasangkan USDG/ETH.</i>` : '<i>Tidak ada pool Uniswap v4 untuk token ini.</i>',
+      ].join('\n'), kb([[BACK_HOME]]));
+    }
+    const s = this.sess(chatId);
+    const prev = s.lp || {};
+    s.qkPools = list;
+    s.lpToken = { address: token, symbol: sym, name: info.name || '' };
+    s.lpAsal = 'qk';
+    // Nominal & rentang terakhir dibawa: menempel beberapa token berturut-turut tidak
+    // perlu mengisi ulang semuanya.
+    s.lp = {
+      poolRef: list[0].poolRef, pair: list[0].pair, usd: prev.usd ?? null,
+      lowerPct: prev.lowerPct ?? 25, upperPct: prev.upperPct ?? 25, full: !!prev.full,
+    };
+    const [text, keyboard] = await this.lpKartu(chatId);
+    return this.edit(chatId, msgId, text, keyboard);
+  }
+
+  // Satu layar berisi semuanya: pool, nominal, rentang, pratinjau, dan tombol buka.
+  // Setiap tombol menyunting layar ini di tempat.
+  async lpKartu(chatId) {
+    const s = this.sess(chatId);
+    const d = s.lp || {};
+    const list = s.qkPools || [];
+    if (!d.poolRef) return ['Sesinya sudah habis (bot baru dimulai ulang). Tempel lagi alamat tokennya.', kb([[BACK_HOME]])];
+    const pool = list.find((p) => p.poolRef === d.poolRef);
+    const tk = s.lpToken || {};
+    const L = [`<b>➕ Pasang LP — ${esc(d.pair || '?')}</b>`];
+    if (tk.address) L.push(`<code>${esc(tk.address)}</code>`);
+    if (pool) {
+      L.push([pool.venue, pool.dynamicFee ? 'fee dinamis' : `fee ${trimZ(nf(pool.feePct ?? 0, 2))}%`, pool.hasHooks ? '🪝 hook' : null,
+        list.length > 1 ? `${list.length - 1} pool lain` : null].filter(Boolean).join(' · '));
+    }
+    L.push('');
+    L.push(tabel([
+      ['nominal', d.usd > 0 ? usd(d.usd) : '— pilih di bawah'],
+      ['rentang', d.full ? 'seluruh rentang' : `${rentangTeks(d)} dari harga kini`],
+    ]));
+
+    let nilai = null;
+    if (d.usd > 0) {
+      const r = await this.api('POST', '/api/manual/lp/plan', d);
+      if (r.error) L.push(`⛔ ${esc(r.error)}`);
+      else {
+        const p = r.preview;
+        nilai = p.valueUsd;
+        L.push(angka([
+          [p.symbol0, tok(Number(p.amount0) / 10 ** p.dec0, 6)],
+          [p.symbol1, tok(Number(p.amount1) / 10 ** p.dec1, 6)],
+          ['kas tersedia', usd(p.kasUsd)],
+        ]));
+        const rg = rentang(p);
+        if (rg) {
+          L.push(`<b>${esc(rg.judul)}</b>`);
+          L.push(rg.bar);
+          if (rg.kini) L.push(`${esc(rg.kini)}${rg.ket ? ` — ${esc(rg.ket)}` : ''}`);
+        }
+        for (const w of r.warnings || []) L.push(`⚠️ ${esc(w)}`);
+      }
+    } else {
+      L.push('<i>Pilih nominal — pratinjau muncul di sini.</i>');
+    }
+    const live = !this.engine.dryRun();
+    if (!live) L.push('\n⚠️ Mode <b>simulasi</b> — pratinjau jalan, tapi posisi tidak bisa dibuka dari sini.');
+
+    const pilih = (on, label) => (on ? `✓ ${label}` : label);
+    const RG = [[10, 10, '±10%'], [25, 25, '±25%'], [50, 50, '±50%'], [50, 100, '½×–2×']];
+    return [L.filter((x) => x != null).join('\n'), kb([
+      [...[25, 50, 100].map((v) => btn(pilih(d.usd === v, `$${v}`), `qkn:${v}`)), btn('✏️ $', 'qkN')],
+      RG.map(([a, b, l]) => btn(pilih(!d.full && d.lowerPct === a && d.upperPct === b, l), `qkw:${a}:${b}`)),
+      [btn(pilih(!!d.full, 'seluruh rentang'), 'qkF'), btn('✏️ bawah & atas', 'qkC')],
+      list.length > 1 ? [btn(`🏊 Ganti pool (${list.length})`, 'qkp')] : null,
+      nilai != null && live ? [btn(`✅ Buka posisi ${usd(nilai)}`, 'qkY')] : null,
+      [btn('🔄 Segarkan', 'qk'), BACK_HOME],
+    ])];
+  }
+
+  lpKartuPool(chatId) {
+    const s = this.sess(chatId);
+    const list = (s.qkPools || []).slice(0, 12);
+    const cur = s.lp?.poolRef;
+    return [`<b>🏊 Pilih pool</b> untuk <b>${esc(s.lpToken?.symbol || '?')}</b>`, kb([
+      ...list.map((p, i) => [btn(`${p.poolRef === cur ? '✓ ' : ''}${p.hasHooks ? '🪝 ' : ''}${p.pair} · ${p.dynamicFee ? 'dinamis' : trimZ(nf(p.feePct ?? 0, 2)) + '%'}${p.kosong ? ' · kosong' : ''}`.slice(0, 44), `qkP:${i}`)]),
+      [btn('↩︎ Kembali', 'qk')],
+    ])];
+  }
+
+  lpKartuYakin(chatId) {
+    const d = this.sess(chatId).lp || {};
+    if (!d.poolRef || !(d.usd > 0)) return ['Nominal atau pool belum dipilih.', kb([[btn('↩︎ Kembali', 'qk')]])];
+    return [[
+      '<b>Kirim transaksi sungguhan?</b>',
+      '',
+      tabel([['pool', d.pair], ['nominal', usd(d.usd)], ['rentang', d.full ? 'seluruh rentang' : rentangTeks(d)]]),
+      'Kas dijembatani, token ditukar seperlunya, lalu mint — bisa sampai satu menit. Posisi ini tidak ikut ditutup saat target mana pun keluar.',
+    ].join('\n'), kb([[btn('✅ Ya, buka sekarang', 'mlX')], [btn('↩︎ Batal', 'qk')]])];
   }
 
   // Mencari pool sebuah token langsung dari chain. Pesannya disunting selama

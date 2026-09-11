@@ -116,6 +116,17 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
   const rpc = {
     stats: () => [{ url: 'https://rpc.contoh.test', calls: 10, errors: 0, lastMs: 90 }], reconfigure: () => {},
     blockNumber: async () => 1_000_000,
+    // Alamat yang ditempel: MEME = token, KONTRAK = smart wallet, sisanya wallet biasa.
+    call: async (method, params) => {
+      if (method !== 'eth_getCode') throw new Error('tidak didukung: ' + method);
+      const a = String(params[0]).toLowerCase();
+      return a === MEME || a === KONTRAK ? '0x6080604052' : '0x';
+    },
+    ethCallMany: async (items) => items.map((it) => {
+      if (String(it.to).toLowerCase() !== MEME) return null;
+      const abi = require('ethers').AbiCoder.defaultAbiCoder();
+      return it.data === '0x95d89b41' ? abi.encode(['string'], ['MEME']) : abi.encode(['uint8'], [18]);
+    }),
     getLogs: async (f) => {
       kueri.push(f);
       const from = parseInt(f.fromBlock, 16), to = parseInt(f.toBlock, 16);
@@ -185,6 +196,7 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
 }
 
 const msg = (text, chat = CHAT) => ({ message: { chat: { id: Number(chat) }, text } });
+const KONTRAK = '0x' + 'c0'.repeat(20);
 const cbq = (data, chat = CHAT) => ({ callback_query: { id: 'q1', data, message: { chat: { id: Number(chat) }, message_id: 100 } } });
 const outs = (sent) => sent.filter((x) => x.method === 'sendMessage' || x.method === 'editMessageText');
 const lastOut = (sent) => outs(sent).slice(-1)[0];
@@ -955,6 +967,107 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: P1, usd: 50, widthPct: 25 });
     assert.ok(!r.error, r.error);
     assert.strictEqual(r.preview.pair, 'USDG/MEME');
+  });
+
+  // ---- tempel alamat --------------------------------------------------------
+  const tempelWorld = (opts = {}) => {
+    const w = build({ initLogs: LOGS, kosong: [P3], ...opts });
+    w.bot.jedaPindai = [5, 5];
+    return w;
+  };
+
+  await t('tempel alamat token langsung membuka kartu pasang LP', async () => {
+    const w = tempelWorld();
+    await w.bot.handle(msg(MEME));
+    const o = lastOut(w.sent);
+    assert.match(o.params.text, /Pasang LP/);
+    assert.match(o.params.text, /USDG\/MEME/);
+    assert.match(o.params.text, /pilih di bawah/, 'nominal belum dipilih harus diberi tahu');
+    const b = buttons(o);
+    for (const x of ['qkn:25', 'qkn:50', 'qkn:100', 'qkN', 'qkw:25:25', 'qkF', 'qkC', 'qkp']) assert.ok(b.includes(x), `tombol ${x} harus ada`);
+    assert.ok(!b.includes('qkY'), 'tombol buka tidak muncul sebelum nominal dipilih');
+  });
+
+  await t('kartu LP: nominal & rentang diubah di tempat, pratinjau ikut', async () => {
+    const w = tempelWorld();
+    await w.bot.handle(msg(MEME));
+    await w.bot.handle(cbq('qkn:50'));
+    let teks = lastOut(w.sent).params.text;
+    assert.match(teks, /\$50/);
+    assert.match(teks, /kas tersedia/, 'pratinjau muncul setelah nominal dipilih');
+    assert.ok(buttons(lastOut(w.sent)).some((x) => x === 'qkn:50'), 'tombol tetap ada');
+    assert.ok(lastOut(w.sent).params.reply_markup.inline_keyboard.flat().some((x) => x.text === '✓ $50'), 'pilihan aktif ditandai');
+    await w.bot.handle(cbq('qkw:10:30'));
+    teks = lastOut(w.sent).params.text;
+    assert.match(teks, /−10% \/ \+30%/);
+    assert.match(teks, /simulasi/i, 'mode simulasi diberitahukan');
+    assert.ok(!buttons(lastOut(w.sent)).includes('qkY'), 'mode simulasi: tidak ada tombol buka');
+  });
+
+  await t('kartu LP: ketik nominal sendiri kembali ke kartu, bukan ke menu LP', async () => {
+    const w = tempelWorld();
+    await w.bot.handle(msg(MEME));
+    await w.bot.handle(cbq('qkN'));
+    await w.bot.handle(msg('75'));
+    const teks = lastOut(w.sent).params.text;
+    assert.match(teks, /Pasang LP/);
+    assert.match(teks, /\$75/);
+  });
+
+  await t('kartu LP mode LIVE: buka → yakin → posisi dibuka dengan rentang yang dipilih', async () => {
+    const w = tempelWorld({ dryRun: false });
+    await w.bot.handle(msg(MEME));
+    await w.bot.handle(cbq('qkn:50'));
+    await w.bot.handle(cbq('qkw:10:30'));
+    assert.ok(buttons(lastOut(w.sent)).includes('qkY'), 'tombol buka harus ada di LIVE');
+    await w.bot.handle(cbq('qkY'));
+    assert.match(lastOut(w.sent).params.text, /sungguhan/);
+    assert.strictEqual(w.engine.dibuka.length, 0, 'belum ada transaksi sebelum dikonfirmasi');
+    await w.bot.handle(cbq('mlX'));
+    assert.strictEqual(w.engine.dibuka.length, 1);
+    const pl = w.engine.dibuka[0].plan;
+    // Diukur dalam HARGA yang dilihat: pool ini berkuotasi token0 (USDG), jadi harga
+    // MEME turun saat tick naik — batas atas harga ada di tickLower.
+    const harga = (t) => (pl.quoteSide === 1 ? 1.0001 ** t : 1.0001 ** -t);
+    const [bawah, atas] = [harga(pl.tickLower), harga(pl.tickUpper)].sort((a, b) => a - b);
+    assert.ok(bawah <= 0.9 && bawah > 0.88, `batas bawah ${bawah}`);
+    assert.ok(atas >= 1.3 && atas < 1.32, `batas atas ${atas}`);
+  });
+
+  await t('kartu LP: ganti pool', async () => {
+    const w = tempelWorld();
+    await w.bot.handle(msg(MEME));
+    await w.bot.handle(cbq('qkp'));
+    const b = buttons(lastOut(w.sent)).filter((x) => x.startsWith('qkP:'));
+    assert.ok(b.length >= 2, 'pilihan pool harus ada');
+    const sebelum = w.bot.sess(CHAT).lp.poolRef;
+    await w.bot.handle(cbq('qkP:1'));
+    assert.notStrictEqual(w.bot.sess(CHAT).lp.poolRef, sebelum);
+    assert.match(lastOut(w.sent).params.text, /Pasang LP/);
+  });
+
+  await t('tempel alamat wallet: riset atau jadikan target, bukan LP', async () => {
+    const w = tempelWorld();
+    const DOMPET = '0x' + 'ab'.repeat(20);
+    await w.bot.handle(msg(DOMPET));
+    const o = lastOut(w.sent);
+    assert.match(o.params.text, /wallet, bukan token/);
+    assert.ok(buttons(o).includes('wr:' + DOMPET));
+    await w.bot.handle(cbq('adT'));
+    assert.ok(w.store.get('SELECT 1 x FROM targets WHERE address=?', DOMPET), 'target ditambahkan');
+    await w.bot.handle(msg(KONTRAK));
+    assert.match(lastOut(w.sent).params.text, /Kontrak/);
+    assert.strictEqual(w.store.get("SELECT COUNT(*) n FROM tokens WHERE symbol='?'").n, 0, 'alamat bukan-token tidak masuk tabel tokens');
+  });
+
+  await t('alamat di dalam tautan terbaca; poolId 64 hex tidak dikira alamat', async () => {
+    const w = tempelWorld();
+    await w.bot.handle(msg(`https://dexscreener.com/robinhood/${MEME}`));
+    assert.match(lastOut(w.sent).params.text, /Pasang LP/);
+    const n = w.sent.length;
+    await w.bot.handle(msg(P1));
+    assert.doesNotMatch(lastOut(w.sent).params.text || '', /Memeriksa|Pasang LP/, 'poolId tidak boleh diperlakukan sebagai alamat');
+    assert.ok(w.sent.length > n);
   });
 
   await t('endpoint yang menolak rentang penuh dijawab dengan memotong', async () => {
