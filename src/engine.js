@@ -25,6 +25,7 @@ class Engine {
     this.cursor = 0;
     this.head = 0;
     this.busy = false;
+    this.exiting = new Set();      // id posisi yang transaksi keluarnya sedang berjalan
     this.lastCopyAt = new Map();   // poolRef -> ts (cooldown)
     this.stats = { scanned: 0, actions: 0, copied: 0, skipped: 0, errors: 0, startedAt: Date.now() };
     this.lastError = null;
@@ -712,7 +713,20 @@ class Engine {
     };
   }
 
+  // Satu posisi hanya boleh punya satu transaksi keluar yang sedang berjalan. Tutup
+  // manual (dasbor/Telegram) menunggu receipt sampai 90 detik; tanpa penjaga ini
+  // pemicu keluar mandiri, rekonsiliasi, atau klik kedua di selang itu mengirim tx
+  // kedua yang pasti revert setelah tx pertama membakar NFT-nya — gas terbuang.
   async executeExit(plan, pos) {
+    if (this.exiting.has(pos.id)) throw new Error('posisi ini sedang dalam proses ditutup');
+    const cur = this.store.get('SELECT status FROM positions WHERE id=?', pos.id);
+    if (cur && cur.status !== 'open') throw new Error('posisi sudah tertutup');
+    this.exiting.add(pos.id);
+    try { return await this.sendExit(plan, pos); }
+    finally { this.exiting.delete(pos.id); }
+  }
+
+  async sendExit(plan, pos) {
     let tx;
     if (pos.venue === 'v3') {
       tx = this.exec.buildV3Decrease({ ...plan, tokenId: pos.token_id }, this.exec.deadline());
@@ -727,7 +741,8 @@ class Engine {
     const before = await this.exec.balances([pos.token0, pos.token1]);
     const hash = await this.exec.send(tx, { kind: plan.full ? 'burn' : 'decrease', detail: { position: pos.id } });
     const rc = await this.exec.waitReceipt(hash, 90_000);
-    if (!rc.ok) throw new Error(`keluar gagal (${hash})`);
+    if (rc.timeout) throw new Error(`belum terkonfirmasi setelah 90 detik — tx ${hash} mungkin masih diproses, cek lagi sebentar`);
+    if (!rc.ok) throw new Error(`transaksi keluar revert (${hash})`);
     const proceeds = await this.exitProceeds(pos, before, rc.receipt);
     // Jual memecoin yang BARU diterima dari transaksi keluar ini. Galatnya tidak boleh
     // membatalkan pencatatan keluar — posisinya sudah benar-benar tertutup di chain.
@@ -885,7 +900,7 @@ class Engine {
       if (BigInt(raw) > 0n) { this.goneStreak.delete(r.id); continue; }       // target masih di dalam
       const n = (this.goneStreak.get(r.id) || 0) + 1;
       this.goneStreak.set(r.id, n);
-      if (n < 2) continue;
+      if (n < 2 || this.exiting.has(r.id)) continue;
       this.goneStreak.delete(r.id);
       const msg = `posisi target #${r.mirror_of} sudah kosong tetapi cermin kita #${r.id} masih terbuka — menutup (sinyal keluar terlewat)`;
       this.store.log('warn', msg);
@@ -915,6 +930,7 @@ class Engine {
     const globalRules = rulesFor(this.cfg.rules);
     const triggers = this.positions.exitTriggers(globalRules);
     for (const t of triggers) {
+      if (this.exiting.has(t.pos.id)) continue;
       if (t.pos.empty) { this.positions.markClosed(t.pos.id, { outQuote: 0, txHash: null }); continue; }
       if (this.dryRun() || !this.exec.address()) { this.store.log('info', `[simulasi] keluar #${t.pos.id}: ${t.reason}`); continue; }
       try {

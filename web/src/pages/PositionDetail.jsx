@@ -7,14 +7,14 @@
 // pihak ketiga tidak bisa digambari. Tampilan DexScreener tetap tersedia sebagai
 // pilihan kedua untuk melihat transaksi dan indikator lain.
 import { useMemo, useState } from 'react';
-import { Button, toast } from '@heroui/react';
+import { Button } from '@heroui/react';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
 import {
   ResponsiveContainer, ComposedChart, Bar, XAxis, YAxis, Tooltip as ReTooltip,
   CartesianGrid, ReferenceLine, ReferenceArea,
 } from 'recharts';
 import { usePoll } from '../hooks';
-import { post } from '../api';
+import { useClosePosition } from '../useClosePosition';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, ask } from '../components/ui';
 import { TokenPair } from '../components/TokenIcon';
 import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice, widthPct, locale as fmtLocale } from '../fmt';
@@ -235,6 +235,7 @@ export default function PositionDetail({ id }) {
   const p = d?.position;
   const [tfPick, setTf] = useState(null);
   const [view, setView] = useState('chart');
+  const { close, closing } = useClosePosition(reload);
   const tf = tfPick || (p ? tfFor(p.ageHours) : '1h');
   // Cukup lilin supaya titik masuk terlihat, plus sedikit sebelum masuk sebagai konteks.
   // Posisi yang sudah ditutup dibingkai di sekitar masa hidupnya: sedikit setelah
@@ -273,18 +274,6 @@ export default function PositionDetail({ id }) {
     }
   }
 
-  const close = async () => {
-    const ok = await ask({
-      title: t('Tutup posisi {pair}?', { pair }),
-      body: t('Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v}.', { v: usd(p.valueUsd) }),
-      confirm: t('Tutup posisi'), danger: true,
-    });
-    if (!ok) return;
-    const r = await post('/api/positions/close', { id: p.id });
-    r.error ? toast.danger(t('Gagal: {e}', { e: r.error })) : toast.success(t('Terkirim: {tx}', { tx: short(r.tx) }));
-    reload();
-  };
-
   const amt0 = qty(p.amount0, p.dec0), amt1 = qty(p.amount1, p.dec1);
   const fee0 = qty(p.fee0, p.dec0), fee1 = qty(p.fee1, p.dec1);
   const cost0 = qty(p.cost0, p.dec0), cost1 = qty(p.cost1, p.dec1);
@@ -314,7 +303,7 @@ export default function PositionDetail({ id }) {
               </div>
             </div>
           </div>
-          {!closed && !p.empty && <Button variant="danger-soft" onPress={close}>{t('Tutup posisi')}</Button>}
+          {!closed && !p.empty && <Button variant="danger-soft" isPending={closing != null} onPress={() => close(p)}>{t('Tutup posisi')}</Button>}
         </div>
       </div>
 

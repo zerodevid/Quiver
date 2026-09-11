@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react';
-import { Button, toast } from '@heroui/react';
+import { Button } from '@heroui/react';
 import { usePoll } from '../hooks';
-import { post } from '../api';
+import { useClosePosition } from '../useClosePosition';
 import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Dot, ask } from '../components/ui';
 import { TokenPair } from '../components/TokenIcon';
 // Halaman detail membawa pustaka grafik — dimuat hanya saat dibuka.
@@ -46,19 +46,9 @@ export default function Positions({ param }) {
   const { t } = useI18n();
   // #positions/123 -> detail satu posisi. Poll daftar dimatikan selama detail terbuka.
   const { data: d, reload } = usePoll(param ? null : '/api/positions', 10000);
+  const { close, closing } = useClosePosition(reload);
   if (param) return <Suspense fallback={<Loading />}><PositionDetail id={param} /></Suspense>;
   if (!d) return <Loading />;
-  const close = async (p) => {
-    const ok = await ask({
-      title: t('Tutup posisi {pair}?', { pair: `${p.symbol0}/${p.symbol1}` }),
-      body: t('Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v}.', { v: usd(p.valueUsd) }),
-      confirm: t('Tutup posisi'), danger: true,
-    });
-    if (!ok) return;
-    const r = await post('/api/positions/close', { id: p.id });
-    r.error ? toast.danger(t('Gagal: {e}', { e: r.error })) : toast.success(t('Terkirim: {tx}', { tx: short(r.tx) }));
-    reload();
-  };
   const open = d.positions, closed = d.closed;
   const openPnl = sum(open, (p) => p.pnlUsd);
   const closedPnl = sum(closed, (c) => (c.out_quote || 0) - (c.cost_quote || 0));
@@ -93,7 +83,7 @@ export default function Positions({ param }) {
               // diadopsi dari wallet: dibuka manual atau oleh program lain, bukan salinan
               : <span className="text-xs text-muted" title={t('Posisi ini sudah ada di wallet, tidak menyalin target mana pun. Bot hanya memantaunya; tutup manual kalau perlu.')}>{t('di luar bot')}</span> },
             { key: 'act', label: '', sortable: false, className: 'text-end', render: (p) => (
-              <Button size="sm" variant="danger-soft" onPress={() => close(p)}>{t('Tutup')}</Button>) },
+              <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={closing != null} onPress={() => close(p)}>{t('Tutup')}</Button>) },
           ]} />
       </Panel>
       <Panel title={t('Posisi tertutup ({n})', { n: closed.length })} bodyClass="p-0"

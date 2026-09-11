@@ -373,7 +373,16 @@ const EN = {
   'Belum ada posisi tertutup': 'No closed positions yet',
   'Tutup posisi ini sekarang?': 'Close this position now?',
   'Gagal: {e}': 'Failed: {e}',
-  'Terkirim: {tx}': 'Sent: {tx}',
+  'Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v} + fee {f}.':
+    'Liquidity is withdrawn and fees are claimed in one transaction. Current value {v} + {f} in fees.',
+  'Menutup posisi {pair}…': 'Closing {pair}…',
+  'Menunggu konfirmasi di chain, bisa sampai 1–2 menit.': 'Waiting for on-chain confirmation, this can take 1–2 minutes.',
+  'Posisi {pair} ditutup': '{pair} position closed',
+  'Diterima {v}': 'Received {v}',
+  'Gagal menutup {pair}': 'Failed to close {pair}',
+  'Status penutupan {pair} belum pasti': 'Closing {pair}: status unknown',
+  'Koneksi ke server terputus sebelum ada jawaban. Transaksinya mungkin tetap diproses — cek lagi posisinya sebentar lagi.':
+    'The connection to the server dropped before it answered. The transaction may still go through — check the position again shortly.',
   'lebar {w}%': 'width {w}%',
 
   // ---- aktivitas ----

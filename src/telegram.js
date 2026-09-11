@@ -707,9 +707,16 @@ class Telegram {
       case 'pc': return out(...(await this.tutupKonfirm(rest[0])));
       case 'pC': {
         if (ack) await ack('Mengirim transaksi…');
+        // Server baru menjawab setelah receipt diterima (bisa ~1 menit); tanpa pesan
+        // antara, layar konfirmasi terlihat macet dan tombolnya mengundang klik ulang.
+        if (msgId) await out(`⏳ Menutup posisi #${esc(rest[0])}… menunggu konfirmasi di chain.`);
         const r = await this.api('POST', '/api/positions/close', { id: Number(rest[0]) });
         if (r.error) return out(`❌ Gagal menutup posisi #${esc(rest[0])}\n<code>${esc(r.error)}</code>`, kb([[btn('↩︎ Posisi', 'p'), BACK_HOME]]));
-        return out(`✅ Perintah tutup posisi #${esc(rest[0])} terkirim.\nTx: <code>${esc(shortH(r.tx))}</code>`, kb([[btn('↩︎ Posisi', 'p'), BACK_HOME]]));
+        const hasil = [
+          r.outUsd != null && `Diterima ${usd(r.outUsd)}`,
+          r.pnlUsd != null && `PnL ${sgn(r.pnlUsd)}`,
+        ].filter(Boolean).join(' · ');
+        return out(`✅ Posisi #${esc(rest[0])} ditutup.${hasil ? `\n${hasil}` : ''}${r.sold ? `\n${esc(r.sold)}` : ''}\nTx: <code>${esc(shortH(r.tx))}</code>`, kb([[btn('↩︎ Posisi', 'p'), BACK_HOME]]));
       }
       case 't': return rest[0] ? out(...(await this.targetDetail(rest[0]))) : out(...(await this.targets()));
       case 'tt': {

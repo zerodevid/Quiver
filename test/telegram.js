@@ -525,7 +525,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.ok(dipanggil, 'executeExit harus dipanggil');
     assert.strictEqual(dipanggil.plan.full, true);
     assert.strictEqual(dipanggil.pos.id, 1);
-    assert.match(lastOut(w.sent).params.text, /terkirim/i);
+    assert.match(lastOut(w.sent).params.text, /ditutup/i);
   });
 
   await t('bot tidak pernah menyediakan jalan impor/ekspor kunci privat', async () => {

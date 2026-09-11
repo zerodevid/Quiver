@@ -693,8 +693,18 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
       try {
         const r = await engine.executeExit({ venue: pos.venue, action: 'burn', full: true, liquidity: pos.liquidity, tokenId: pos.token_id }, pos);
-        return { ok: true, tx: r.txHash };
-      } catch (e) { return { error: e.message }; }
+        store.log('info', `tutup manual: ${r.note}`);
+        // Hasil dibaca dari baris yang baru ditutup, dengan konversi yang sama seperti
+        // GET /api/position, supaya angka di notifikasi cocok dengan halaman detail.
+        const row = store.get('SELECT out_quote, cost_quote, quote_symbol FROM positions WHERE id=?', pos.id);
+        const k = row?.quote_symbol === 'ETH' || row?.quote_symbol === 'WETH' ? engine.ethUsd : 1;
+        const outUsd = row?.out_quote != null ? row.out_quote * k : null;
+        const pnlUsd = outUsd != null && row.cost_quote != null ? outUsd - row.cost_quote * k : null;
+        return { ok: true, tx: r.txHash, outUsd, pnlUsd, sold: r.sold || null };
+      } catch (e) {
+        store.log('error', `tutup manual #${pos.id} gagal: ${e.message}`);
+        return { error: e.message };
+      }
     },
   };
 
