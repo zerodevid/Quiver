@@ -386,6 +386,35 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       }
       return { activity: rows };
     },
+    // Umpan untuk peringatan "target membuka posisi" di dasbor (toast + suara).
+    // Dipoll tiap beberapa detik, jadi sengaja ringan: panggilan pertama (tanpa
+    // `after`) cuma mengembalikan id terakhir sebagai titik awal, supaya membuka
+    // dasbor tidak memutar ulang semua riwayat. Aksi lama yang baru tercatat —
+    // backfill setelah mesin mati — disaring lewat umurnya, bukan id-nya.
+    'GET /api/feed': (req, url) => {
+      const lastId = store.get('SELECT COALESCE(MAX(id),0) AS id FROM actions')?.id || 0;
+      const raw = url.searchParams.get('after');
+      if (raw == null || !Number.isFinite(Number(raw))) return { lastId, items: [] };
+      const rows = store.all(`
+        SELECT a.id, a.ts, a.target, a.venue, a.token_id, a.token0, a.token1, a.fee, a.tick_lower, a.tick_upper,
+               a.value_quote, a.quote_symbol, d.verdict, d.reason, d.position_id,
+               EXISTS(SELECT 1 FROM actions b WHERE b.target = a.target AND b.token_id = a.token_id
+                      AND b.kind = 'increase' AND b.id < a.id) AS adding
+        FROM actions a LEFT JOIN decisions d ON d.action_id = a.id
+        WHERE a.id > ? AND a.kind = 'increase' AND a.ts > ?
+        ORDER BY a.id LIMIT 20`, Number(raw), Date.now() - 15 * 60_000);
+      const toks = new Map(store.all('SELECT address,symbol FROM tokens').map((t) => [t.address, t.symbol]));
+      const labels = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
+      const items = rows.map((r) => ({
+        id: r.id, ts: r.ts, target: r.target, targetLabel: labels.get(r.target) || null,
+        venue: r.venue, fee: r.fee, adding: !!r.adding,
+        token0: r.token0, token1: r.token1, symbol0: toks.get(r.token0) || null, symbol1: toks.get(r.token1) || null,
+        valueUsd: r.value_quote == null ? null
+          : r.value_quote * (r.quote_symbol === 'ETH' || r.quote_symbol === 'WETH' ? engine.ethUsd : 1),
+        verdict: r.verdict || null, reason: r.reason || null, positionId: r.position_id || null,
+      }));
+      return { lastId, items };
+    },
     'GET /api/rules': () => ({ rules: rulesFor(cfg.rules), defaults: DEFAULTS, raw: cfg.rules || {} }),
     'POST /api/rules': async (req) => {
       const b = await readBody(req);

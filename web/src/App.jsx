@@ -10,6 +10,7 @@ import { post } from './api';
 import { short } from './fmt';
 import { useI18n, LOCALES } from './i18n';
 import { QuiverMark } from './components/Logo';
+import { AlertBell, useTargetAlerts } from './components/TargetAlerts';
 
 import { Loading, ConfirmHost } from './components/ui';
 
@@ -121,6 +122,7 @@ function StatusFoot({ status, reload, theme, toggleTheme }) {
         <Button size="sm" variant="outline" isIconOnly aria-label={t('Ganti tema')} onPress={toggleTheme}>
           {theme === 'dark' ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
         </Button>
+        <AlertBell placement="top" />
         {/* Pemilih bahasa: dua pilihan saja, jadi cukup satu tombol berganti. */}
         <div className="flex rounded-md border border-border p-0.5" role="group" aria-label={t('Bahasa')}>
           {Object.entries(LOCALES).map(([k, name]) => (
@@ -156,6 +158,7 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const { data: status, reload } = usePoll('/api/overview', 5000);
   const Page = PAGES[page] || Overview;
+  useTargetAlerts();
 
   return (
     <StatusCtx.Provider value={{ status, reload }}>
@@ -175,6 +178,7 @@ export default function App() {
             <Brand />
             <div className="flex items-center gap-1">
               <span className="mr-2"><ModeBadge m={status?.mode} /></span>
+              <AlertBell placement="bottom" variant="ghost" iconClass="size-4" />
               <Button size="sm" variant="ghost" isIconOnly aria-label={t('Ganti tema')} onPress={toggleTheme}>
                 {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
               </Button>
