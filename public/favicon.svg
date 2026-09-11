@@ -1,20 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- Quiver: siluet wadah panah yang miring dengan tiga anak panah mencuat, emas di
-       lencana arang, dua warna solid. Garis tipis di badan = bibir wadah (ruang negatif).
+  <!-- Quiver: wadah panah miring dengan tiga anak panah, dan satu panah tren naik dari
+       belakangnya — siluet emas satu warna di lencana arang. Bentuk padat (bukan garis)
+       supaya tetap terbaca kecil; garis tipis di badan = bibir wadah (ruang negatif),
+       dan pinggiran warna latar memisahkan badan dari batang panah tren.
        Sumber yang sama dengan web/src/components/Logo.jsx. -->
   <rect width="64" height="64" rx="15" fill="#1F2329"/>
-  <g transform="rotate(-18 32 32)">
-    <rect x="19.5" y="30" width="25" height="27" rx="6" fill="#D9AE45"/>
-    <rect x="19.5" y="36.5" width="25" height="2.8" fill="#1F2329"/>
-    <g stroke="#D9AE45" stroke-width="3.6" stroke-linecap="round">
-      <path d="M25.5 33 L25.5 16"/>
-      <path d="M32 33 L32 10.5"/>
-      <path d="M38.5 33 L38.5 13.5"/>
+  <g transform="translate(32 32) rotate(45) scale(0.76) translate(-29.375 -25.5)">
+    <path d="M37.25 64 L37.25 5.5" stroke="#D9AE45" stroke-width="7.5" stroke-linecap="round" fill="none"/>
+    <path d="M25.75 7.5 L37.25 -7 L48.75 7.5 Z" fill="#D9AE45"/>
+    <g fill="#1F2329" stroke="#1F2329" stroke-width="5.2" stroke-linejoin="round">
+      <rect x="10" y="30" width="24" height="28" rx="5.5"/>
     </g>
     <g fill="#D9AE45">
-      <path d="M20.7 17 L25.5 11 L30.3 17 Z"/>
-      <path d="M27.2 11.5 L32 5.5 L36.8 11.5 Z"/>
-      <path d="M33.7 14.5 L38.5 8.5 L43.3 14.5 Z"/>
+      <rect x="10" y="30" width="24" height="28" rx="5.5"/>
+      <path d="M15 15 L10.8 20.5 L15 25 L19.2 20.5 Z"/>
+      <path d="M22.0 6 L17.8 11.5 L22.0 16 L26.2 11.5 Z"/>
+      <path d="M29 10 L24.8 15.5 L29 20 L33.2 15.5 Z"/>
     </g>
+    <g stroke="#D9AE45" fill="none">
+      <path d="M15 33 L15 22" stroke-width="3.4" stroke-linecap="round"/>
+      <path d="M22.0 33 L22.0 13" stroke-width="3.4" stroke-linecap="round"/>
+      <path d="M29 33 L29 17" stroke-width="3.4" stroke-linecap="round"/>
+    </g>
+    <rect x="10" y="36.5" width="24" height="2.6" fill="#1F2329"/>
   </g>
 </svg>
