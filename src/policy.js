@@ -4,6 +4,10 @@
 const m = require('./v3math');
 const { QUOTES } = require('./chain');
 
+// Ruang untuk selisih kurs jembatan USDG<->ETH terhadap harga ETH yang kita pakai
+// (diperbarui tiap 30 detik). Terukur ~0,05% di kondisi normal; 1% untuk pasar bergerak.
+const BRIDGE_MARGIN_BPS = 100;
+
 const DEFAULTS = {
   sizing: {
     mode: 'pct',              // mirror | pct | multiplier | fixed_quote
@@ -203,6 +207,18 @@ function planEntry(act, ctx) {
   if (usd > roomTotal) caps.push(['sisa jatah eksposur total', Math.max(0, roomTotal)]);
   const roomDay = s.daily_budget_usd - ctx.spentTodayUsd;
   if (usd > roomDay) caps.push(['sisa anggaran harian', Math.max(0, roomDay)]);
+  // Kas nyata ({usdg, eth}; null = tidak dibatasi). Eksekusi menyiapkan 105% nilai
+  // posisi di aset kuotasi pool. Kas di aset kuotasi LAIN harus dijembatani dulu, dan
+  // jembatan itu memakan ruang slippage plus selisih kurs Kyber terhadap harga ETH kita
+  // (BRIDGE_MARGIN_BPS) — tanpa ruang itu ukuran yang pas-pasan lolos di sini lalu
+  // gagal "kas kurang untuk jembatan".
+  if (ctx.cash) {
+    const ethAsUsd = ctx.cash.eth * ethUsd;
+    const [same, other] = q.kind === 'eth' ? [ethAsUsd, ctx.cash.usdg] : [ctx.cash.usdg, ethAsUsd];
+    const bridge = 1 + (rules.swap.max_slippage_bps + BRIDGE_MARGIN_BPS) / 10000;
+    const roomCash = (same + other / bridge) / 1.05;
+    if (usd > roomCash) caps.push(['kas tersedia', Math.max(0, roomCash)]);
+  }
   let capNote = null;
   if (caps.length) {
     const [why, lim] = caps.sort((a, b) => a[1] - b[1])[0];
@@ -212,7 +228,9 @@ function planEntry(act, ctx) {
     usd = quoteToUsd(est.value || 0, q.kind, ethUsd);
     capNote = `dipotong oleh ${why} ($${lim.toFixed(2)})`;
   }
-  if (usd < s.min_quote_usd) return skip(`hasilnya $${usd.toFixed(2)} (< minimum $${s.min_quote_usd})`);
+  if (usd < s.min_quote_usd) {
+    return skip(`hasilnya $${usd.toFixed(2)} (< minimum $${s.min_quote_usd})${capNote ? ` — ${capNote}` : ''}`);
+  }
 
   const slipBps = BigInt(rules.swap.max_slippage_bps);
   const pad = (x) => (x * (10000n + slipBps)) / 10000n;

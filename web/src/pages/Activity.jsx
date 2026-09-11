@@ -9,6 +9,12 @@ import { useI18n, reason } from '../i18n';
 const IKON = { increase: Plus, mint: Plus, decrease: Minus, collect: CircleDollarSign };
 const WARNA = { increase: 'text-accent', mint: 'text-accent', decrease: 'text-warning', collect: 'text-success' };
 
+// Ukuran posisi kita dalam USD dari rencana keputusan (hanya rencana masuk yang punya).
+function ukuranKita(a) {
+  if (!a.plan) return null;
+  try { const v = JSON.parse(a.plan).valueUsd; return Number.isFinite(v) ? v : null; } catch { return null; }
+}
+
 export default function Activity() {
   const { t } = useI18n();
   const { data: d } = usePoll('/api/activity?limit=200', 8000);
@@ -50,8 +56,17 @@ export default function Activity() {
               ? <PriceRange lo={a.tick_lower} hi={a.tick_upper} dec0={a.dec0} dec1={a.dec1}
                   quoteSide={a.quoteSide} symbol0={a.symbol0} symbol1={a.symbol1} />
               : <span className="text-muted">—</span>) },
-            { key: 'val', label: 'Nilai', align: 'end', sort: (a) => a.value_quote, render: (a) => (a.value_quote == null ? <span className="text-muted">—</span>
-              : a.quote_symbol === 'ETH' ? `${a.value_quote.toFixed(4)} Ξ` : usd(a.value_quote)) },
+            { key: 'val', label: 'Nilai', align: 'end', sort: (a) => a.value_quote, render: (a) => {
+              // Nilai = posisi TARGET. Ukuran kita (setelah batas) di bawahnya — tanpa itu
+              // "$1.000 · Gagal: kas kurang" terbaca seolah bot mencoba masuk $1.000.
+              const kita = ukuranKita(a);
+              return (
+                <div className="whitespace-nowrap">
+                  {a.value_quote == null ? <span className="text-muted">—</span>
+                    : a.quote_symbol === 'ETH' ? `${a.value_quote.toFixed(4)} Ξ` : usd(a.value_quote)}
+                  {kita != null && <div className="text-xs text-muted">{t('kita {v}', { v: usd(kita) })}</div>}
+                </div>);
+            } },
             { key: 'dec', label: 'Keputusan', sort: (a) => a.verdict, search: (a) => `${a.verdict || ''} ${a.reason || ''}`, render: (a) => {
               const k = KEPUTUSAN[a.verdict];
               return (

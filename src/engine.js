@@ -1,7 +1,7 @@
 'use strict';
 // Mesin utama: deteksi -> keputusan -> (swap) -> eksekusi -> pencatatan.
 const { ethers } = require('ethers');
-const { ADDR, TOPIC, ABI } = require('./chain');
+const { ADDR, QUOTES, TOPIC, ABI } = require('./chain');
 const { Watcher } = require('./watcher');
 const { Positions } = require('./positions');
 const { Executor, isNative } = require('./executor');
@@ -12,6 +12,11 @@ const m = require('./v3math');
 
 const IF_POSM = new ethers.Interface(ABI.posmV4);
 const asAddr = (t) => ('0x' + t.slice(-40)).toLowerCase();
+// Jumlah mentah -> teks untuk pesan: 2 desimal di atas 1, 3 angka penting di bawahnya.
+const fmtUnits = (raw, dec) => {
+  const n = Number(raw) / 10 ** dec;
+  return n >= 1 ? n.toFixed(2) : String(Number(n.toPrecision(3)));
+};
 
 class Engine {
   constructor({ rpc, store, chain, cfg, log }) {
@@ -259,9 +264,15 @@ class Engine {
       } catch { /* kalau tidak terbaca, jangan halangi */ }
     }
     const toks = await this.chain.tokens([act.token0, act.token1]);
+    // Mode live: ukuran juga dibatasi kas nyata, supaya posisi yang sedikit kelebihan
+    // dari saldo dibuka lebih kecil alih-alih gagal di tengah jembatan. Mode simulasi
+    // sengaja tidak — wallet uji sering kosong, dan simulasinya jadi tidak berguna.
+    const live = !this.dryRun() && this.exec.address();
+    const cash = live ? await this.spendableCash().catch(() => null) : null;
     const ctx = {
       chain: this.chain, rules, slot0: act.slot0, dec0: toks[0].decimals, dec1: toks[1].decimals,
       ethUsd: this.ethUsd, openExposureUsd: sum.exposureUsd, spentTodayUsd: spent, openCount: sum.openCount,
+      cash,
     };
     const d = planEntry(act, ctx);
     if (d.verdict !== 'copy') return this.decide(act.id, 'skip', d.reason);
@@ -455,10 +466,30 @@ class Engine {
     if (!rules.swap.enabled) throw new Error('kas ada di aset kuotasi lain dan auto-swap dimatikan');
     const wantEth = quoteTok === ADDR.native || quoteTok === ADDR.weth;
     const payTok = wantEth ? ADDR.usdg : ADDR.native;
-    const payHave = await balOf(payTok);
+    // Kas ETH = ETH native di atas cadangan gas + WETH. WETH baru dibuka bungkusnya
+    // tepat sebelum swap (lihat unwrapFor). Dulu hanya ETH native yang dihitung, jadi
+    // wallet berisi 0,07 WETH dan ETH native di bawah cadangan gagal dengan
+    // "saldo ETH kosong" padahal kasnya ada.
+    const payHave = wantEth ? await balOf(ADDR.usdg) : (await balOf(ADDR.native)) + (await balOf(ADDR.weth));
+    const qSym = QUOTES[quoteTok]?.symbol || '?';
+    const qAmt = (raw) => fmtUnits(raw, QUOTES[quoteTok]?.decimals ?? 18);
+    const payName = wantEth ? 'USDG' : 'ETH+WETH';
+    const payAmt = (raw) => `${fmtUnits(raw, wantEth ? 6 : 18)} ${wantEth ? 'USDG' : 'ETH'}`;
+    const reserveNote = wantEth ? '' : ` di atas cadangan gas ${fmtUnits(gasReserve, 18)} ETH`;
     if (payHave <= 0n) {
-      throw new Error(`saldo ${wantEth ? 'USDG' : 'ETH'} kosong — tidak ada kas untuk dijembatani`);
+      throw new Error(`kas kurang: butuh ${qAmt(needQuoteRaw)} ${qSym}, punya ${qAmt(have)} ${qSym} — saldo ${payName}${reserveNote} kosong, tidak ada kas untuk dijembatani`);
     }
+    const tooShort = (pay) => new Error(
+      `kas kurang untuk jembatan: butuh ${payAmt(pay)} untuk ${qAmt(needQuoteRaw - have)} ${qSym}, punya ${payAmt(payHave)}${wantEth ? '' : ` (ETH+WETH${reserveNote})`}`);
+    const unwrapFor = async (pay) => {
+      if (wantEth) return;
+      const nat = await balOf(ADDR.native);
+      if (nat >= pay) return;
+      const amt = pay - nat;
+      const h = await this.exec.send(this.exec.buildUnwrapWeth(amt), { kind: 'unwrap_weth' });
+      if (!(await this.exec.waitReceipt(h)).ok) throw new Error('buka bungkus WETH gagal');
+      notes.push(`buka bungkus ${fmtUnits(amt, 18)} WETH`);
+    };
     // Butuh berapa? quoteTok WETH tetap dibeli sebagai ETH native lalu dibungkus.
     const shortEthLike = needQuoteRaw - have;
     const slipBps = rules.swap.max_slippage_bps;
@@ -469,9 +500,8 @@ class Engine {
     const rev = await this.kyber.quote(outTok, payTok, shortEthLike);
     if (rev && rev.amountOut > 0n) {
       let payK = (rev.amountOut * BigInt(10_000 + slipBps)) / 10_000n;
-      if (payK > payHave) {
-        throw new Error(`kas kurang untuk jembatan: butuh ${payK} unit ${wantEth ? 'USDG' : 'ETH'}, punya ${payHave}`);
-      }
+      if (payK > payHave) throw tooShort(payK);
+      await unwrapFor(payK);
       const r = await this.kyber.swap(payTok, outTok, payK, {
         slippageBps: slipBps, maxLossBps: rules.swap.max_price_impact_bps, kind: 'bridge_swap', detail: { via: 'kyber', wantEth },
       });
@@ -492,9 +522,7 @@ class Engine {
     if (wantEth) payRaw = BigInt(Math.ceil((Number(shortEthLike) / 1e18) * price * 1e6 * slip));
     else payRaw = BigInt(Math.ceil((Number(shortEthLike) / 1e6 / price) * 1e18 * slip));
     if (payRaw <= 0n) return notes;
-    if (payRaw > payHave) {
-      throw new Error(`kas kurang untuk jembatan: butuh ${payRaw} unit ${wantEth ? 'USDG' : 'ETH'}, punya ${payHave}`);
-    }
+    if (payRaw > payHave) throw tooShort(payRaw);
     const zeroForOne = !wantEth;   // jual ETH(currency0) -> beli USDG
     if (rules.swap.max_price_impact_bps > 0) {
       const impact = m.priceImpactBps(br.slot0.sqrtPriceX96, br.liquidity, payRaw, zeroForOne);
@@ -508,6 +536,7 @@ class Engine {
         await this.exec.waitReceipt(h);
       }
     }
+    await unwrapFor(payRaw);
     const minOut = (shortEthLike * (10000n - BigInt(rules.swap.max_slippage_bps))) / 10000n;
     const tx = this.exec.buildSwapV4(br.poolKey, zeroForOne, payRaw, minOut, this.exec.deadline());
     const h = await this.exec.send(tx, { kind: 'bridge_swap', detail: { pool: br.poolId, wantEth } });
@@ -537,6 +566,8 @@ class Engine {
     const pk = plan.poolKey;
     const need0 = BigInt(plan.amount0Max), need1 = BigInt(plan.amount1Max);
     const gasReserve = BigInt(this.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000); // 0,002 ETH
+    const notes = [];
+    await this.topUpGas(notes);
 
     let bal = await this.exec.balances([plan.token0, plan.token1]);
     const avail = (t) => {
@@ -544,7 +575,6 @@ class Engine {
       if (isNative(t)) b = b > gasReserve ? b - gasReserve : 0n;
       return b;
     };
-    const notes = [];
 
     // 0. Pastikan kas sudah ada di aset kuotasi pool INI (bisa beda dari kas kita).
     if (plan.quoteSide != null) {
@@ -727,6 +757,11 @@ class Engine {
   }
 
   async sendExit(plan, pos) {
+    // Keluar juga butuh gas. Diisi SEBELUM saldo "sebelum" dibaca, supaya unwrap-nya
+    // tidak terhitung sebagai hasil penutupan posisi berpasangan ETH.
+    const gasNotes = [];
+    await this.topUpGas(gasNotes);
+    if (gasNotes.length) this.store.log('info', `sebelum tutup #${pos.id}: ${gasNotes.join(', ')}`);
     let tx;
     if (pos.venue === 'v3') {
       tx = this.exec.buildV3Decrease({ ...plan, tokenId: pos.token_id }, this.exec.deadline());
@@ -941,6 +976,40 @@ class Engine {
         });
       } catch (e) { this.store.log('error', `keluar mandiri gagal #${t.pos.id}: ${e.message}`); }
     }
+  }
+
+  // ETH native di bawah cadangan gas tapi ada WETH: buka bungkus sampai cadangannya
+  // penuh lagi. Tanpa ini wallet yang kasnya berupa WETH pelan-pelan kehabisan gas —
+  // padahal yang paling butuh gas justru transaksi keluar. Gagal di sini tidak
+  // menghentikan entry maupun keluar: sisa ETH native mungkin masih cukup.
+  async topUpGas(notes) {
+    const reserve = BigInt(this.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000);
+    try {
+      const b = await this.exec.balances([ADDR.native, ADDR.weth]);
+      const nat = b.get(ADDR.native) || 0n, weth = b.get(ADDR.weth) || 0n;
+      if (nat >= reserve || weth <= 0n) return;
+      const amt = weth < reserve - nat ? weth : reserve - nat;
+      // Di bawah 1/10 cadangan tidak sepadan dengan gas unwrap-nya sendiri — tanpa batas
+      // ini debu WETH memicu satu transaksi sia-sia di setiap entry dan exit.
+      if (amt * 10n < reserve) return;
+      const h = await this.exec.send(this.exec.buildUnwrapWeth(amt), { kind: 'unwrap_weth' });
+      if (!(await this.exec.waitReceipt(h)).ok) throw new Error(`tx ${h} gagal`);
+      notes.push(`isi gas: buka bungkus ${fmtUnits(amt, 18)} WETH`);
+    } catch (e) {
+      this.store.log('warn', `isi gas dari WETH gagal: ${e.message}`);
+    }
+  }
+
+  // Kas yang bisa dipakai membuka posisi: USDG, dan ETH/WETH di atas cadangan gas (dalam
+  // ETH). Dipisah per aset karena kas di aset kuotasi LAIN harus dijembatani dulu —
+  // policy memotongnya lebih dalam. Sengaja dibaca segar (bukan this.cash yang bisa
+  // berumur dua menit) karena hasilnya menentukan ukuran transaksi.
+  async spendableCash() {
+    const reserve = BigInt(this.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000);
+    const b = await this.exec.balances([ADDR.native, ADDR.usdg, ADDR.weth]);
+    const ethLike = (b.get(ADDR.native) || 0n) + (b.get(ADDR.weth) || 0n);
+    const eth = ethLike > reserve ? ethLike - reserve : 0n;
+    return { usdg: Number(b.get(ADDR.usdg) || 0n) / 1e6, eth: Number(eth) / 1e18 };
   }
 
   // Kas di wallet (USDG + ETH + WETH) dalam USD. Dibaca ulang tiap sinkron posisi,

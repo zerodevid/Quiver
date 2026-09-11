@@ -483,6 +483,13 @@ class Manual {
     };
     const fmt = (t, raw) => { const k = this.kaki(t, raw, p, slot0); return `${k.amount.toPrecision(4)} ${k.symbol}`; };
 
+    // 0a. isi gas dari WETH kalau ETH native di bawah cadangan (engine.topUpGas)
+    if (get(ADDR.native) < reserve && get(ADDR.weth) > 0n) {
+      const kurang = reserve - get(ADDR.native), ada = get(ADDR.weth);
+      const amt = ada < kurang ? ada : kurang;
+      if (amt * 10n >= reserve) catat('buka_bungkus', ADDR.weth, amt, ADDR.native, amt, { gas: true });
+    }
+
     // 0. kas ke aset kuotasi pool ini (engine.ensureQuoteAsset)
     const qTok = lc(plan.quoteSide === 0 ? plan.token0 : plan.token1);
     const qDec = QUOTES[qTok]?.decimals ?? 18;
@@ -501,8 +508,15 @@ class Manual {
         const pay = wantEth
           ? BigInt(Math.ceil((Number(short) / 1e18) * eng.ethUsd * 1e6 * k))
           : BigInt(Math.ceil((Number(short) / 1e6 / eng.ethUsd) * 1e18 * k));
+        // Kas ETH untuk jembatan = ETH native di atas cadangan + WETH (dibuka seperlunya).
+        const bisa = wantEth ? avail(payTok) : avail(ADDR.native) + get(ADDR.weth);
         if (!rules.swap.enabled) masalah.push('kas ada di aset kuotasi lain dan auto-swap dimatikan — pembukaan akan berhenti');
-        else if (avail(payTok) < pay) masalah.push(`kas kurang untuk jembatan: butuh ~${fmt(payTok, pay)}, bisa dipakai ${fmt(payTok, avail(payTok))}`);
+        else if (bisa < pay) masalah.push(`kas kurang untuk jembatan: butuh ~${fmt(payTok, pay)}, bisa dipakai ${fmt(payTok, bisa)}${wantEth ? '' : ' (ETH+WETH)'}`);
+        if (!wantEth && rules.swap.enabled && avail(ADDR.native) < pay && get(ADDR.weth) > 0n) {
+          const kurang = pay - avail(ADDR.native), ada = get(ADDR.weth);
+          const amt = ada < kurang ? ada : kurang;
+          catat('buka_bungkus', ADDR.weth, amt, ADDR.native, amt);
+        }
         catat('jembatan', payTok, pay, outTok, short, { maxLossBps: rules.swap.max_price_impact_bps, taksiran: true });
         if (qTok === ADDR.weth) {
           const want = needQ - avail(qTok), ada = avail(ADDR.native);

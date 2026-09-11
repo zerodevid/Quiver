@@ -283,14 +283,157 @@ async function t(name, fn) {
     assert.strictEqual(sent.length, 0);
   });
 
-  await t('saldo tidak cukup -> galat jelas, tidak ada posisi tercatat', async () => {
-    const { eng, store } = harness({ balances: { [USDG]: 1n, [MEME]: 1n, [ETH]: 0n } });
+  await t('jembatan gagal di tengah eksekusi -> galat jelas, tidak ada posisi tercatat', async () => {
+    const { eng, store } = harness({ balances: RICH });
     eng.kyber.swap = async () => null;               // tidak ada rute penambal
-    eng.ensureQuoteAsset = async () => { throw new Error('saldo USDG kosong — tidak ada kas untuk dijembatani'); };
+    eng.ensureQuoteAsset = async () => { throw new Error('kas kurang untuk jembatan: butuh 0.07 ETH untuk 170.00 USDG, punya 0.01 ETH'); };
     await eng.handle(rec(store, action()));
     const v = verdictOf(store);
     assert.strictEqual(v.verdict, 'error', v.reason);
     assert.strictEqual(store.all("SELECT id FROM positions").length, 0, 'tidak boleh mencatat posisi yang gagal dibuka');
+  });
+
+  // Wallet persis seperti di server saat Bang GE masuk $1.000 (batas $200): kas
+  // sebagian besar berupa WETH, ETH native di bawah cadangan gas. Dulu: "saldo ETH
+  // kosong — tidak ada kas untuk dijembatani" padahal ada ~$173 WETH.
+  const e18 = (x) => BigInt(Math.round(x * 1e18));
+  const WALLET_SERVER = { [USDG]: 36_107_783n, [ADDR.weth]: e18(0.069436618), [ETH]: e18(0.000861055) };
+  // Saldo yang ikut berubah oleh unwrap dan swap Kyber — tanpa ini langkah sesudah
+  // jembatan (zap, mint) membaca saldo lama dan hasilnya tidak bermakna.
+  // `kurs` = harga ETH di Kyber (USDG per ETH); bot sendiri menilai ETH di 2500.
+  function dompetHidup(eng, sent, awal, kurs = 2500n) {
+    const bal = new Map(Object.entries(awal).map(([k, v]) => [k.toLowerCase(), BigInt(v)]));
+    const get = (a) => bal.get(String(a).toLowerCase()) || 0n;
+    const add = (a, x) => bal.set(String(a).toLowerCase(), get(a) + x);
+    // USDG<->MEME 1:1 dalam unit mentah (harga pool di tick 0).
+    const conv = (a, b, x) => {
+      a = String(a).toLowerCase(); b = String(b).toLowerCase();
+      if (a === ETH && b === USDG) return (x * kurs) / 10n ** 12n;
+      if (a === USDG && b === ETH) return (x * 10n ** 12n) / kurs;
+      return x;
+    };
+    eng.exec.balances = async (list) => new Map(list.map((a) => [String(a).toLowerCase(), get(a)]));
+    eng.exec.send = async (tx, meta) => {
+      if (meta?.kind === 'unwrap_weth') { const amt = BigInt('0x' + tx.data.slice(10)); add(ADDR.weth, -amt); add(ETH, amt); }
+      sent.push({ kind: meta?.kind, tx });
+      return '0x' + (sent.length + '').padStart(64, '0');
+    };
+    eng.kyber.quote = async (a, b, x) => ({ amountOut: conv(a, b, x) });
+    eng.kyber.swap = async (a, b, x, o) => {
+      if (get(a) < x) throw new Error(`swap melebihi saldo ${a}`);
+      const out = conv(a, b, x);
+      add(a, -x); add(b, out);
+      sent.push({ kind: o?.kind || 'swap', from: a, to: b, amountIn: x });
+      return { hash: '0xswap', amountOut: out, quote: { dex: 'uji', usdIn: 1, usdOut: 1 } };
+    };
+    return { get };
+  }
+
+  await t('kas berupa WETH + ETH native di bawah cadangan -> WETH dipakai, posisi terbuka', async () => {
+    const { eng, store, sent } = harness({ rules: { sizing: { mode: 'mirror', max_quote_per_position_usd: 200, max_total_exposure_usd: 400 } } });
+    const w = dompetHidup(eng, sent, WALLET_SERVER);
+    await eng.handle(rec(store, action({ valueQuote: 1000 })));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'copy', v.reason);
+    assert.match(v.reason, /kas tersedia/, 'kas ~$206 tidak cukup untuk $200 + cadangan — ukurannya harus dipotong ke kas');
+    const kinds = sent.map((x) => x.kind);
+    assert.ok(kinds.includes('unwrap_weth'), kinds.join(','));
+    assert.ok(sent.some((x) => x.kind === 'bridge_swap' && x.from === ETH), 'jembatan ETH -> USDG harus jalan');
+    assert.ok(w.get(ETH) >= 1_900_000_000_000_000n, `cadangan gas harus terisi lagi, tersisa ${w.get(ETH)}`);
+    const plan = JSON.parse(store.get('SELECT plan FROM decisions ORDER BY id DESC LIMIT 1').plan);
+    assert.ok(plan.valueUsd > 150 && plan.valueUsd < 200, `ukuran ${plan.valueUsd}`);
+    assert.strictEqual(store.all("SELECT id FROM positions WHERE status='open'").length, 1);
+  });
+
+  await t('kurs Kyber 0,8% lebih buruk dari harga ETH bot -> ukuran pas-pasan tetap terbayar', async () => {
+    const { eng, store, sent } = harness({ rules: { sizing: { mode: 'mirror', max_quote_per_position_usd: 200, max_total_exposure_usd: 400 } } });
+    dompetHidup(eng, sent, WALLET_SERVER, 2480n);
+    await eng.handle(rec(store, action({ valueQuote: 1000 })));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'copy', v.reason);
+  });
+
+  await t('kas di aset kuotasi pool sendiri tidak dipotong ruang jembatan', async () => {
+    const { eng, store, sent } = harness({ rules: { sizing: { mode: 'mirror', max_quote_per_position_usd: 500, max_total_exposure_usd: 1000 } } });
+    dompetHidup(eng, sent, { [USDG]: 210_000_000n, [ETH]: e18(0.002) });
+    await eng.handle(rec(store, action({ valueQuote: 1000 })));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'copy', v.reason);
+    const plan = JSON.parse(store.get('SELECT plan FROM decisions ORDER BY id DESC LIMIT 1').plan);
+    assert.ok(Math.abs(plan.valueUsd - 200) < 0.5, `210 USDG / 1,05 = $200, dapat ${plan.valueUsd}`);
+    assert.ok(!sent.some((x) => x.kind === 'bridge_swap'), 'tidak perlu jembatan');
+  });
+
+  await t('kas sedikit -> alasan "di bawah minimum" menyebut kas sebagai penyebabnya', async () => {
+    const { eng, store, sent } = harness({ balances: { [USDG]: 3_000_000n } });
+    await eng.handle(rec(store, action()));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'skip', v.reason);
+    assert.match(v.reason, /minimum.*kas tersedia/, v.reason);
+    assert.strictEqual(sent.length, 0);
+  });
+
+  await t('debu WETH tidak memicu unwrap isi gas', async () => {
+    const { eng, sent } = harness({});
+    dompetHidup(eng, sent, { [ADDR.weth]: 10_000_000_000n, [ETH]: e18(0.0005) });
+    const notes = [];
+    await eng.topUpGas(notes);
+    assert.strictEqual(sent.length, 0, sent.map((x) => x.kind).join(','));
+  });
+
+  await t('keluar dengan ETH native di bawah cadangan -> gas diisi dari WETH dulu, lalu burn', async () => {
+    const { eng, store, sent } = harness({ positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }] });
+    dompetHidup(eng, sent, { ...RICH, [ETH]: e18(0.0005), [ADDR.weth]: e18(0.05) });
+    await eng.handle(rec(store, action({ kind: 'transfer_out', poolRef: null, token0: null, token1: null })));
+    assert.strictEqual(verdictOf(store).verdict, 'copy', verdictOf(store).reason);
+    assert.deepStrictEqual(sent.map((x) => x.kind).slice(0, 2), ['unwrap_weth', 'burn']);
+  });
+
+  await t('isi gas gagal (RPC mati) -> keluar TETAP jalan', async () => {
+    const { eng, store, sent } = harness({ balances: RICH, positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }] });
+    const bal0 = eng.exec.balances;
+    let first = true;
+    eng.exec.balances = async (list) => {
+      if (first && list.includes(ADDR.weth)) { first = false; throw new Error('RPC 429'); }
+      return bal0(list);
+    };
+    await eng.handle(rec(store, action({ kind: 'transfer_out', poolRef: null, token0: null, token1: null })));
+    assert.strictEqual(verdictOf(store).verdict, 'copy', verdictOf(store).reason);
+    assert.strictEqual(sent.filter((s) => s.kind === 'burn').length, 1);
+    assert.strictEqual(store.get('SELECT status FROM positions').status, 'closed');
+  });
+
+  await t('kas kosong -> dilewati dengan alasan jelas, tanpa transaksi', async () => {
+    const { eng, store, sent } = harness({ balances: { [ETH]: e18(0.0015) } });
+    await eng.handle(rec(store, action()));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'skip', v.reason);
+    assert.match(v.reason, /kas tersedia/, v.reason);
+    assert.strictEqual(sent.length, 0);
+  });
+
+  await t('mode simulasi tidak dibatasi kas (wallet uji boleh kosong)', async () => {
+    const { eng, store } = harness({ balances: {} });
+    eng.cfg.mode.dry_run = true;
+    eng.exec.simulate = async () => ({ ok: true, gas: 1 });
+    await eng.handle(rec(store, action()));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'dry', v.reason);
+    assert.doesNotMatch(v.reason, /kas tersedia/, v.reason);
+  });
+
+  await t('jembatan kurang kas -> pesan dalam satuan manusia, bukan wei', async () => {
+    const { eng, sent } = harness({});
+    dompetHidup(eng, sent, { [ADDR.weth]: e18(0.01), [ETH]: e18(0.001) });
+    const plan = { quoteSide: 0, token0: USDG, token1: MEME };
+    const rules = { swap: { enabled: true, max_slippage_bps: 100, max_price_impact_bps: 500 } };
+    await assert.rejects(() => eng.ensureQuoteAsset(plan, rules, 200_000_000n), (e) => {
+      assert.match(e.message, /butuh 0\.0808 ETH untuk 200\.00 USDG, punya 0\.01 ETH/, e.message);
+      assert.match(e.message, /ETH\+WETH di atas cadangan gas 0\.002 ETH/, e.message);
+      assert.doesNotMatch(e.message, /\d{10,}/, 'tidak boleh ada angka mentah');
+      return true;
+    });
+    assert.strictEqual(sent.length, 0, 'tidak ada yang dikirim kalau kasnya memang kurang');
   });
 
   await t('hasil setelah dipotong batas di bawah minimum -> dilewati', async () => {
