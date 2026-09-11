@@ -69,7 +69,7 @@
       "warn": true,
       "info": false
     },
-    "catatan": "Buat bot lewat @BotFather, tempel tokennya di sini (atau lewat dasbor -> Pengaturan -> Telegram). chat_ids diisi sendiri saat sebuah chat mengirim /mulai <kode>."
+    "catatan": "Buat bot lewat @BotFather, tempel tokennya di sini (atau lewat dasbor -> Pengaturan -> Telegram). chat_ids diisi sendiri saat sebuah chat mengirim /start <kode>."
   },
   "targets": [],
   "rules": {

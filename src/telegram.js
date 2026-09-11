@@ -230,24 +230,37 @@ const askHint = (spec) => {
   return `Kirim angka antara ${spec.lo} dan ${spec.hi}.`;
 };
 
+// Nama perintah dibuat Inggris supaya cepat diketik dan cocok dengan kebiasaan bot
+// Telegram lain; isi layarnya tetap Indonesia. Nama lama yang berbahasa Indonesia
+// tetap diterima diam-diam (ALIAS) — tidak ditampilkan di menu, tapi tidak
+// mematahkan petunjuk atau kebiasaan yang sudah terlanjur dipakai.
 const COMMANDS = [
-  ['menu', 'Menu utama'],
-  ['ringkasan', 'Keadaan bot sekarang'],
-  ['posisi', 'Posisi yang sedang terbuka'],
-  ['target', 'Wallet yang diikuti'],
-  ['aktivitas', 'Aksi target terakhir'],
-  ['aturan', 'Aturan salin'],
-  ['pengaturan', 'Wallet, RPC, gas, mesin'],
-  ['saldo', 'Saldo wallet bot'],
-  ['sisa', 'Antrean jual memecoin sisa'],
-  ['log', 'Catatan terakhir'],
-  ['tx', 'Transaksi terakhir'],
-  ['scout', 'Potret cepat posisi sebuah wallet'],
-  ['riset', 'Riset PnL sebuah wallet'],
-  ['jeda', 'Hentikan sementara penyalinan'],
-  ['lanjut', 'Lanjutkan penyalinan'],
-  ['bantuan', 'Daftar perintah'],
+  ['menu', 'Main menu'],
+  ['summary', 'How the bot is doing right now'],
+  ['positions', 'Open positions'],
+  ['targets', 'Wallets being copied'],
+  ['activity', 'Latest target actions'],
+  ['rules', 'Copy rules'],
+  ['settings', 'Wallet, RPC, gas, engine'],
+  ['balance', 'Bot wallet balance'],
+  ['leftovers', 'Leftover memecoin sell queue'],
+  ['logs', 'Recent log lines'],
+  ['tx', 'Recent transactions'],
+  ['scout', 'Quick snapshot of any wallet'],
+  ['research', 'Full PnL research on a wallet'],
+  ['pause', 'Pause copying'],
+  ['resume', 'Resume copying'],
+  ['help', 'List every command'],
 ];
+const ALIAS = {
+  mulai: 'start', ringkasan: 'summary', status: 'summary', posisi: 'positions',
+  target: 'targets', aktivitas: 'activity', aturan: 'rules', pengaturan: 'settings',
+  saldo: 'balance', sisa: 'leftovers', log: 'logs', riset: 'research',
+  jeda: 'pause', lanjut: 'resume', bantuan: 'help',
+};
+
+// Perintah penyambungan: /start <kode>. Dipakai juga oleh tautan dalam t.me.
+const PAIR_RE = /^\/(?:start|mulai)(?:@\S+)?\s+(\S+)/i;
 
 class Telegram {
   constructor({ cfg, cfgPath, store, engine, api, log }) {
@@ -369,7 +382,7 @@ class Telegram {
     this.log(`telegram: bot ${this.me ? '@' + this.me.username : '(?)'} jalan · ${this.chats().length} chat terhubung`);
     if (!this.chats().length) {
       const c = this.newPairCode();
-      this.log(`telegram: belum ada chat terhubung. Kirim ke bot →  /mulai ${c}   (berlaku 15 menit)`);
+      this.log(`telegram: belum ada chat terhubung. Kirim ke bot →  /start ${c}   (berlaku 15 menit)`);
     }
     this.wire();
     this.poll(gen);
@@ -448,7 +461,7 @@ class Telegram {
     const chatId = String(msg.chat.id);
     const text = String(msg.text || '').trim();
     if (!this.chats().includes(chatId)) {
-      const m = text.match(/^\/mulai(?:@\S+)?\s+(\S+)/i);
+      const m = text.match(PAIR_RE);
       if (m) {
         const r = this.tryPair(chatId, m[1]);
         if (r.error) return this.send(chatId, `❌ ${esc(r.error)}`);
@@ -459,7 +472,7 @@ class Telegram {
       if (!this.told) this.told = new Set();
       if (this.told.has(chatId)) return;
       this.told.add(chatId);
-      return this.send(chatId, 'Chat ini belum tersambung ke lpcopy.\n\nBuka dasbor → <b>Pengaturan</b> → <b>Telegram</b> → <i>Buat kode</i>, lalu kirim di sini:\n<code>/mulai KODE</code>');
+      return this.send(chatId, 'Chat ini belum tersambung ke lpcopy.\n\nBuka dasbor → <b>Pengaturan</b> → <b>Telegram</b> → <i>Buat kode</i>, lalu kirim di sini:\n<code>/start KODE</code>');
     }
 
     const s = this.sess(chatId);
@@ -471,30 +484,31 @@ class Telegram {
     }
     if (!text.startsWith('/')) return this.screen(chatId, null, 'h');
 
-    const cmd = text.slice(1).split(/[\s@]/)[0].toLowerCase();
+    const raw = text.slice(1).split(/[\s@]/)[0].toLowerCase();
+    const cmd = ALIAS[raw] || raw;
     const arg = text.split(/\s+/).slice(1).join(' ').trim();
     const go = (d) => this.screen(chatId, null, d);
     switch (cmd) {
-      case 'start': case 'mulai': case 'menu': return go('h');
-      case 'ringkasan': case 'status': return go('o');
-      case 'posisi': return go('p');
-      case 'target': return go('t');
-      case 'aktivitas': return go('a:0');
-      case 'aturan': return go('r');
-      case 'pengaturan': return go('s');
-      case 'saldo': return go('b');
-      case 'sisa': return go('f');
-      case 'log': return go('l');
+      case 'start': case 'menu': return go('h');
+      case 'summary': return go('o');
+      case 'positions': return go('p');
+      case 'targets': return go('t');
+      case 'activity': return go('a:0');
+      case 'rules': return go('r');
+      case 'settings': return go('s');
+      case 'balance': return go('b');
+      case 'leftovers': return go('f');
+      case 'logs': return go('l');
       case 'tx': return go('x');
-      case 'jeda': return this.setPause(chatId, null, true);
-      case 'lanjut': return this.setPause(chatId, null, false);
+      case 'pause': return this.setPause(chatId, null, true);
+      case 'resume': return this.setPause(chatId, null, false);
       case 'scout':
         if (arg) return this.runScout(chatId, arg);
         return this.ask(chatId, { kind: 'scout' }, 'Kirim alamat wallet yang mau dipotret.\n<i>Contoh:</i> <code>0x3c92…2976</code>');
-      case 'riset':
+      case 'research':
         if (arg) return this.runRiset(chatId, arg);
         return this.ask(chatId, { kind: 'riset' }, 'Kirim alamat wallet yang mau diriset (PnL, posisi, riwayat).');
-      case 'bantuan': case 'help':
+      case 'help':
         return this.send(chatId, `<b>Perintah</b>\n${COMMANDS.map(([c, d]) => `/${c} — ${esc(d)}`).join('\n')}\n\nSemua ini juga ada tombolnya di /menu.`, kb([[BACK_HOME]]));
       default:
         return this.send(chatId, 'Perintah tidak dikenal. /bantuan untuk daftarnya.', kb([[BACK_HOME]]));
@@ -1193,7 +1207,7 @@ class Telegram {
     L.push('Chat di daftar ini bisa melakukan <b>semua</b> yang dasbor bisa, termasuk menyalakan LIVE dan menutup posisi. Lepaskan chat yang tidak kamu kenali.');
     if (this.pairCode && Date.now() < this.pairCode.exp) {
       L.push('');
-      L.push(`Kode sambung aktif: <code>/mulai ${esc(this.pairCode.code)}</code>`);
+      L.push(`Kode sambung aktif: <code>/start ${esc(this.pairCode.code)}</code>`);
     }
     return [L.join('\n'), kb([
       ...ids.map((c) => [btn(`🗑 Lepas ${c}`, `scd:${c}`)]),
@@ -1331,4 +1345,4 @@ class Telegram {
   }
 }
 
-module.exports = { Telegram, parseVal, showVal, RULE_GROUPS, FORMS };
+module.exports = { Telegram, parseVal, showVal, RULE_GROUPS, FORMS, COMMANDS, ALIAS };

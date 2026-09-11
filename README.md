@@ -303,7 +303,7 @@ dasbor menolak sesuatu, bot juga menolaknya.
    ```json
    "telegram": { "bot_token": "123456789:AA…", "chat_ids": [] }
    ```
-3. **Buat kode sambung**, lalu kirim ke bot di Telegram: `/mulai KODE`.
+3. **Buat kode sambung**, lalu kirim ke bot di Telegram: `/start KODE`.
    Kode berlaku 15 menit dan hanya sekali pakai.
 
 Token bisa dipasang atau diganti kapan saja selagi bot hidup: pendengar lama
@@ -315,7 +315,7 @@ Kalau belum ada chat yang tersambung, bot mencetak kode sambungnya sendiri ke lo
 saat hidup — jadi memasang lewat SSH saja pun bisa:
 
 ```
-telegram: belum ada chat terhubung. Kirim ke bot →  /mulai 3F9A21C0   (berlaku 15 menit)
+telegram: belum ada chat terhubung. Kirim ke bot →  /start 3F9A21C0   (berlaku 15 menit)
 ```
 
 **Menu**
@@ -332,9 +332,10 @@ telegram: belum ada chat terhubung. Kirim ke bot →  /mulai 3F9A21C0   (berlaku
 | 🧹 Sisa jual | antrean memecoin sisa: coba jual sekarang atau keluarkan dari antrean |
 | 📝 Log · 🧾 Transaksi · 💵 Saldo | |
 
-Perintah cepat: `/ringkasan` `/posisi` `/target` `/aktivitas` `/aturan`
-`/pengaturan` `/saldo` `/sisa` `/log` `/tx` `/scout <alamat>` `/riset <alamat>`
-`/jeda` `/lanjut` `/bantuan`.
+Perintah cepat (nama Inggris supaya cepat diketik; isi layarnya tetap Indonesia):
+`/summary` `/positions` `/targets` `/activity` `/rules` `/settings` `/balance`
+`/leftovers` `/logs` `/tx` `/scout <alamat>` `/research <alamat>` `/pause`
+`/resume` `/help`. Nama lama berbahasa Indonesia tetap diterima diam-diam.
 
 **Kabar masuk otomatis** — LP disalin, posisi ditutup, galat, peringatan. Bisa
 dipilih per jenis di menu Notifikasi. Antreannya dibatasi supaya banjir log tidak

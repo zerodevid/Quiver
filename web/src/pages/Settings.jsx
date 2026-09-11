@@ -302,8 +302,8 @@ function TelegramTab({ d, reload }) {
           <Card variant="secondary" className="mt-3"><Card.Content className="gap-2">
             <div className="text-sm font-medium">{t('Kirim ini ke bot (berlaku {m} menit)', { m: Math.round((pair.expiresInSec || 900) / 60) })}</div>
             <div className="flex items-center gap-2">
-              <code className="mono flex-1 break-all rounded bg-surface px-3 py-2">/mulai {pair.code}</code>
-              <Button variant="outline" onPress={() => { navigator.clipboard?.writeText(`/mulai ${pair.code}`); toast.success(t('Tersalin')); }}><Copy className="size-4" />{t('Salin')}</Button>
+              <code className="mono flex-1 break-all rounded bg-surface px-3 py-2">/start {pair.code}</code>
+              <Button variant="outline" onPress={() => { navigator.clipboard?.writeText(`/start ${pair.code}`); toast.success(t('Tersalin')); }}><Copy className="size-4" />{t('Salin')}</Button>
             </div>
           </Card.Content></Card>
         )}

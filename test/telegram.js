@@ -136,10 +136,10 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
   await t('kode sambung salah ditolak, kode benar menyambungkan', async () => {
     const w = build({ chats: [] });
     const kode = w.bot.newPairCode();
-    await w.bot.handle(msg(`/mulai SALAH123`, ASING));
+    await w.bot.handle(msg('/start SALAH123', ASING));
     assert.match(lastOut(w.sent).params.text, /Kode salah/);
     assert.ok(!w.bot.chats().includes(ASING));
-    await w.bot.handle(msg(`/mulai ${kode}`, ASING));
+    await w.bot.handle(msg(`/start ${kode}`, ASING));
     assert.ok(w.bot.chats().includes(ASING), 'chat harus tersambung setelah kode benar');
     // dan tersimpan ke config, bukan cuma di memori
     assert.ok(JSON.parse(fs.readFileSync(w.cfgPath, 'utf8')).telegram.chat_ids.includes(ASING));
@@ -148,8 +148,8 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
   await t('kode sekali pakai: tidak bisa dipakai chat kedua', async () => {
     const w = build({ chats: [] });
     const kode = w.bot.newPairCode();
-    await w.bot.handle(msg(`/mulai ${kode}`, ASING));
-    await w.bot.handle(msg(`/mulai ${kode}`, '77777'));
+    await w.bot.handle(msg(`/start ${kode}`, ASING));
+    await w.bot.handle(msg(`/start ${kode}`, '77777'));
     assert.ok(!w.bot.chats().includes('77777'), 'kode yang sudah dipakai tidak boleh berlaku lagi');
   });
 
@@ -157,7 +157,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     const w = build({ chats: [] });
     const kode = w.bot.newPairCode();
     w.bot.pairCode.exp = Date.now() - 1;
-    await w.bot.handle(msg(`/mulai ${kode}`, ASING));
+    await w.bot.handle(msg(`/start ${kode}`, ASING));
     assert.match(lastOut(w.sent).params.text, /kedaluwarsa/i);
     assert.ok(!w.bot.chats().includes(ASING));
   });
@@ -196,12 +196,68 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
 
   await t('semua perintah slash menjawab', async () => {
     const w = build();
-    for (const c of ['/menu', '/ringkasan', '/posisi', '/target', '/aktivitas', '/aturan', '/pengaturan', '/saldo', '/sisa', '/log', '/tx', '/bantuan']) {
+    for (const c of ['/menu', '/summary', '/positions', '/targets', '/activity', '/rules', '/settings', '/balance', '/leftovers', '/logs', '/tx', '/help']) {
       const n = outs(w.sent).length;
       await w.bot.handle(msg(c));
       assert.ok(outs(w.sent).length > n, `${c} tidak menjawab`);
       assert.ok(lastOut(w.sent).params.text.length > 10, `${c} menjawab kosong`);
     }
+  });
+
+  await t('setiap perintah di menu Telegram benar-benar ditangani', async () => {
+    const { COMMANDS } = require('../src/telegram');
+    const w = build();
+    for (const [c] of COMMANDS) {
+      if (c === 'scout' || c === 'research') continue;   // keduanya bertanya dulu, diuji terpisah
+      const n = outs(w.sent).length;
+      await w.bot.handle(msg('/' + c));
+      assert.ok(outs(w.sent).length > n, `/${c} ada di menu tapi tidak menjawab`);
+      assert.ok(!/tidak dikenal/i.test(lastOut(w.sent).params.text), `/${c} terdaftar di menu tapi tidak punya penanganan`);
+    }
+  });
+
+  await t('nama perintah semuanya Inggris', async () => {
+    const { COMMANDS } = require('../src/telegram');
+    const INDO = ['ringkasan', 'posisi', 'target', 'aktivitas', 'aturan', 'pengaturan', 'saldo', 'sisa', 'riset', 'jeda', 'lanjut', 'bantuan', 'mulai'];
+    for (const [c, d] of COMMANDS) {
+      assert.ok(/^[a-z][a-z0-9_]{0,31}$/.test(c), `nama perintah "${c}" tidak sah menurut Telegram`);
+      assert.ok(!INDO.includes(c), `perintah /${c} masih berbahasa Indonesia`);
+      assert.ok(d && d.length <= 256, `keterangan /${c} kosong atau kepanjangan`);
+    }
+    // dan daftar itulah yang benar-benar didaftarkan ke Telegram
+    const w = build();
+    await w.bot.start();
+    const daftar = w.sent.find((x) => x.method === 'setMyCommands');
+    assert.ok(daftar, 'setMyCommands harus dipanggil saat bot menyala');
+    assert.deepStrictEqual(daftar.params.commands.map((x) => x.command), COMMANDS.map(([c]) => c));
+    w.bot.stop();
+  });
+
+  await t('nama Indonesia yang lama tetap diterima diam-diam', async () => {
+    const w = build();
+    for (const [lama, baru] of [['/ringkasan', '/summary'], ['/posisi', '/positions'], ['/bantuan', '/help']]) {
+      await w.bot.handle(msg(baru));
+      const a = lastOut(w.sent).params.text;
+      await w.bot.handle(msg(lama));
+      const b = lastOut(w.sent).params.text;
+      assert.strictEqual(b.slice(0, 40), a.slice(0, 40), `${lama} tidak lagi setara dengan ${baru}`);
+    }
+    // …tapi tidak muncul di menu yang dilihat user
+    const { COMMANDS } = require('../src/telegram');
+    assert.ok(!COMMANDS.some(([c]) => c === 'ringkasan'));
+  });
+
+  await t('penyambungan memakai /start, dan bentuk lamanya masih jalan', async () => {
+    for (const perintah of ['/start', '/mulai']) {
+      const w = build({ chats: [] });
+      const kode = w.bot.newPairCode();
+      await w.bot.handle(msg(`${perintah} ${kode}`, ASING));
+      assert.ok(w.bot.chats().includes(ASING), `${perintah} <kode> harus menyambungkan chat`);
+    }
+    // petunjuk yang ditunjukkan ke user harus menyebut /start
+    const w = build({ chats: [] });
+    await w.bot.handle(msg('/summary', ASING));
+    assert.match(lastOut(w.sent).params.text, /\/start KODE/);
   });
 
   await t('perintah tak dikenal dijawab ramah, bukan galat', async () => {
@@ -213,10 +269,10 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
   // ---- aksi yang mengubah keadaan ----------------------------------------
   await t('jeda & lanjut mengubah keadaan mesin sungguhan', async () => {
     const w = build();
-    await w.bot.handle(msg('/jeda'));
+    await w.bot.handle(msg('/pause'));
     assert.strictEqual(w.store.getState('paused'), '1');
     assert.match(lastOut(w.sent).params.text, /dijeda/i);
-    await w.bot.handle(msg('/lanjut'));
+    await w.bot.handle(msg('/resume'));
     assert.strictEqual(w.store.getState('paused'), '0');
   });
 
@@ -473,7 +529,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     await w.api('POST', '/api/settings/telegram', { bot_token: '987654321:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' });
     const r = await w.api('POST', '/api/settings/telegram/pair', {});
     assert.ok(r.code, 'kode harus terbuat');
-    await w.bot.handle(msg(`/mulai ${r.code}`, ASING));
+    await w.bot.handle(msg(`/start ${r.code}`, ASING));
     assert.ok(w.bot.chats().includes(ASING), 'kode dari dasbor harus diterima bot');
     w.bot.stop();
   });
