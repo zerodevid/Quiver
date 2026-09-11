@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS positions (
   fees_quote    REAL DEFAULT 0,
   quote_symbol  TEXT,
   tx_open       TEXT, tx_close TEXT,
+  entry_sqrt    TEXT, exit_sqrt TEXT,  -- harga pool (sqrtPriceX96) saat masuk & keluar
   last_sync     INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pos_status ON positions(status);
@@ -209,6 +210,11 @@ function open(dbPath) {
     // Sebelum kolom ini ada, wallet_quote selalu ditulis 0 tanpa pernah diukur —
     // itu "tidak diketahui", bukan "kas kosong".
     db.exec('UPDATE equity SET wallet_quote = NULL');
+  }
+  const posCols = new Set(db.prepare('PRAGMA table_info(positions)').all().map((c) => c.name));
+  if (!posCols.has('entry_sqrt')) {
+    db.exec('ALTER TABLE positions ADD COLUMN entry_sqrt TEXT');
+    db.exec('ALTER TABLE positions ADD COLUMN exit_sqrt TEXT');
   }
   return db;
 }

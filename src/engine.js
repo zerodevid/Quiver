@@ -121,6 +121,8 @@ class Engine {
         // Modal & waktu buka asli dari riset wallet (menu Wallet) kalau pernah dipindai;
         // tanpa itu modal = nilai sekarang, sehingga PnL mulai dari nol saat diadopsi.
         const w = this.store.get('SELECT invested_q, opened_ts FROM wpositions WHERE wallet=? AND token_id=?', me, r.tokenId);
+        // Harga pool saat posisi itu dibuka, kalau riset wallet sempat mencatat kejadiannya.
+        const ev0 = this.store.get('SELECT sqrt_price FROM wevents WHERE wallet=? AND token_id=? AND sqrt_price IS NOT NULL ORDER BY block LIMIT 1', me, r.tokenId);
         const isEth = r.quoteSymbol === 'ETH' || r.quoteSymbol === 'WETH';
         const cost = w?.invested_q > 0 ? (isEth ? w.invested_q / this.ethUsd : w.invested_q) : r.valueQuote;
         // Posisi yatim: mint yang BERHASIL di chain tetapi gagal tercatat (jawaban RPC
@@ -136,7 +138,7 @@ class Engine {
           liquidity: r.liquidity.toString(), amount0: (r.amount0 ?? 0n).toString(), amount1: (r.amount1 ?? 0n).toString(),
           valueQuote: r.valueQuote, quoteSymbol: r.quoteSymbol,
           mirrorOf: link?.mirrorOf ?? null, target: link?.target ?? null,
-        }, { tokenId: r.tokenId, txHash: null, target: link?.target ?? null, costQuote: cost, openedTs: w?.opened_ts || null });
+        }, { tokenId: r.tokenId, txHash: null, target: link?.target ?? null, costQuote: cost, openedTs: w?.opened_ts || null, entrySqrt: ev0?.sqrt_price || null });
         if (link) this.store.log('warn', `posisi #${r.tokenId} dipasangkan kembali ke target ${link.target.slice(0, 10)}… (cermin #${link.mirrorOf}) — mint berhasil tapi sempat tercatat gagal`);
         n++;
       }
@@ -687,6 +689,7 @@ class Engine {
     const positionId = adding ? plan.positionId : this.positions.record(finalPlan, {
       tokenId, txHash: hash, target: plan.target,
       cost0: amt.amount0.toString(), cost1: amt.amount1.toString(), costQuote: v?.value ?? plan.valueQuote,
+      entrySqrt: s2.sqrtPriceX96,
     });
     const pair = `${toks[0].symbol}/${toks[1].symbol}`;
     // v.value dinyatakan dalam aset kuotasi pool (bisa ETH), BUKAN dolar — dulu dicetak
@@ -722,6 +725,7 @@ class Engine {
       this.positions.markClosed(pos.id, {
         out0: proceeds?.amount0 ?? live?.amount0, out1: proceeds?.amount1 ?? live?.amount1,
         outQuote: proceeds?.valueQuote ?? ((live?.valueUsd || 0) + (live?.feeUsd || 0)), txHash: hash,
+        exitSqrt: proceeds?.sqrt ?? live?.curSqrt ?? null,
       });
     } else {
       this.store.run('UPDATE positions SET liquidity=? WHERE id=?',
@@ -751,7 +755,7 @@ class Engine {
         sqrtPriceX96: s.sqrtPriceX96, amount0, amount1,
         dec0: toks[0].decimals, dec1: toks[1].decimals, token0: pos.token0, token1: pos.token1,
       });
-      return { amount0: amount0.toString(), amount1: amount1.toString(), valueQuote: v ? v.value : null };
+      return { amount0: amount0.toString(), amount1: amount1.toString(), valueQuote: v ? v.value : null, sqrt: s?.sqrtPriceX96 ?? null };
     } catch (e) { this.store.log('warn', `hasil keluar #${pos.id} tidak terukur: ${e.message}`); return null; }
   }
 

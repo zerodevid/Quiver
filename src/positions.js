@@ -22,24 +22,43 @@ class Positions {
   }
 
   // Catat posisi baru hasil mint kita
-  record(plan, { tokenId, txHash, target, cost0, cost1, costQuote, openedTs }) {
+  // entrySqrt: harga pool saat mint — dipakai halaman detail untuk menandai titik masuk.
+  record(plan, { tokenId, txHash, target, cost0, cost1, costQuote, openedTs, entrySqrt }) {
     const r = this.store.run(
       `INSERT INTO positions
        (venue,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,tick_lower,tick_upper,liquidity,
-        target,mirror_of,status,opened_ts,cost0,cost1,cost_quote,quote_symbol,tx_open,last_sync)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        target,mirror_of,status,opened_ts,cost0,cost1,cost_quote,quote_symbol,tx_open,entry_sqrt,last_sync)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       plan.venue, tokenId ?? null, plan.poolRef, plan.token0, plan.token1, plan.fee ?? null,
       plan.tickSpacing ?? null, plan.poolKey?.hooks ?? null, plan.tickLower, plan.tickUpper,
       plan.liquidity, target ?? null, plan.mirrorOf ?? null, 'open', openedTs ?? Date.now(),
       String(cost0 ?? plan.amount0), String(cost1 ?? plan.amount1), costQuote ?? plan.valueQuote,
-      plan.quoteSymbol, txHash ?? null, Date.now());
+      plan.quoteSymbol, txHash ?? null, entrySqrt != null ? String(entrySqrt) : null, Date.now());
     return Number(r.lastInsertRowid);
   }
 
-  markClosed(id, { out0, out1, outQuote, txHash }) {
+  markClosed(id, { out0, out1, outQuote, txHash, exitSqrt }) {
     this.store.run(
-      `UPDATE positions SET status='closed', closed_ts=?, out0=?, out1=?, out_quote=?, tx_close=?, liquidity='0' WHERE id=?`,
-      Date.now(), String(out0 ?? 0), String(out1 ?? 0), outQuote ?? 0, txHash ?? null, id);
+      `UPDATE positions SET status='closed', closed_ts=?, out0=?, out1=?, out_quote=?, tx_close=?, exit_sqrt=?, liquidity='0' WHERE id=?`,
+      Date.now(), String(out0 ?? 0), String(out1 ?? 0), outQuote ?? 0, txHash ?? null,
+      exitSqrt != null ? String(exitSqrt) : null, id);
+  }
+
+  // Harga masuk untuk posisi yang dicatat sebelum kolom entry_sqrt ada: diturunkan
+  // balik dari jumlah token yang disetor. Di dalam rentang, amount1 = L·(√P − √A),
+  // jadi √P = √A + amount1/L. Semua token di satu sisi = harga di luar rentang saat
+  // mint; batas rentangnya yang dipakai.
+  static entrySqrtOf(r) {
+    if (r.entry_sqrt) return r.entry_sqrt;
+    try {
+      const L = BigInt(r.liquidity || '0'), c0 = BigInt(r.cost0 || '0'), c1 = BigInt(r.cost1 || '0');
+      if (L <= 0n || r.tick_lower == null || r.tick_upper == null) return null;
+      const a = m.getSqrtRatioAtTick(r.tick_lower), b = m.getSqrtRatioAtTick(r.tick_upper);
+      if (c1 === 0n) return c0 > 0n ? a.toString() : null;
+      if (c0 === 0n) return b.toString();
+      const p = a + (c1 * m.Q96) / L;
+      return (p < a ? a : p > b ? b : p).toString();
+    } catch { return null; }
   }
 
   // ---- sinkronisasi -------------------------------------------------------
@@ -141,6 +160,8 @@ class Positions {
         amount0: amount0.toString(), amount1: amount1.toString(),
         fee0: f.fee0.toString(), fee1: f.fee1.toString(),
         curTick: s?.tick ?? null, inRange,
+        curSqrt: s?.sqrtPriceX96 != null ? s.sqrtPriceX96.toString() : null,
+        entrySqrt: Positions.entrySqrtOf(r),
         valueUsd: valUsd, feeUsd, costUsd, pnlUsd,
         pnlPct: costUsd > 0 ? (pnlUsd / costUsd) * 100 : 0,
         ilUsd: hodlUsd != null ? valUsd - hodlUsd : null,

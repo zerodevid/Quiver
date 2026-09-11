@@ -370,7 +370,7 @@ telegram: belum ada chat terhubung. Kirim ke bot →  /start 3F9A21C0   (berlaku
 | | |
 |---|---|
 | 📊 Ringkasan | mode, posisi, PnL, blok tertinggal, alasan terbanyak dilewat, kesehatan RPC |
-| 💼 Posisi | daftar & detail (nilai, fee, PnL, IL, rentang, umur) + tutup posisi |
+| 💼 Posisi | daftar (nilai, fee, PnL, IL, rentang, umur) + tutup posisi. Klik pasangan → halaman detail: grafik lilin pool dengan rentang posisi & titik masuk/keluar ditandai (GeckoTerminal), tampilan DexScreener, statistik pasar, isi posisi |
 | 🎯 Target | daftar, nyalakan/matikan, ganti nama, hapus, tambah, aturan khusus per target, riset |
 | 📜 Aktivitas | aksi target terakhir + keputusan bot & alasannya, berhalaman |
 | ⚙️ Aturan salin | keenam kelompok aturan, tiap kolomnya bisa diubah dari sini |
@@ -559,6 +559,7 @@ src/scout.js      rapor wallet kandidat
 src/engine.js     orkestrator
 src/server.js     API + penyaji dashboard (server.api = pintu yang sama untuk bot)
 src/manual.js     LP manual & swap manual (memakai jalur eksekusi yang sama)
+src/market.js     data pasar pihak ketiga (DexScreener, lilin GeckoTerminal) untuk detail posisi, di-cache
 src/telegram.js   bot Telegram: seluruh dasbor lewat obrolan
 web/              tampilan React + HeroUI v3 (sumber); web/dist = hasil build
                   halaman: Ringkasan, Posisi, Aktivitas, Target, Aturan,

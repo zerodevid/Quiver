@@ -1,8 +1,11 @@
+import { lazy, Suspense } from 'react';
 import { Button, toast } from '@heroui/react';
 import { usePoll } from '../hooks';
 import { post } from '../api';
 import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Dot, ask } from '../components/ui';
 import { TokenPair } from '../components/TokenIcon';
+// Halaman detail membawa pustaka grafik — dimuat hanya saat dibuka.
+const PositionDetail = lazy(() => import('./PositionDetail'));
 import { usd, pct, tone, age, ago, short, num } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -20,14 +23,15 @@ function Totals({ items }) {
   );
 }
 
-// Dipakai juga panel "Posisi aktif" di Ringkasan.
+// Dipakai juga panel "Posisi aktif" di Ringkasan. Nama pasangan menaut ke halaman
+// detail posisi (grafik harga, titik masuk, data pasar).
 export function Pair({ p }) {
   const { t } = useI18n();
   return (
     <div className="flex items-center gap-2.5">
       <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={20} />
       <div className="min-w-0">
-        <div className="font-medium whitespace-nowrap">{p.symbol0 || '?'}/{p.symbol1 || '?'}</div>
+        <a href={'#positions/' + p.id} className="font-medium whitespace-nowrap hover:underline">{p.symbol0 || '?'}/{p.symbol1 || '?'}</a>
         <div className="mt-0.5 flex items-center gap-1.5 text-xs whitespace-nowrap text-muted">
           <span className="uppercase">{p.venue}</span><span>·</span><span className="num">{num(p.fee / 10000, 2)}%</span>
           {p.inRange != null && <><span>·</span><Dot tone={p.inRange ? 'success' : 'warning'} />
@@ -38,9 +42,11 @@ export function Pair({ p }) {
   );
 }
 
-export default function Positions() {
+export default function Positions({ param }) {
   const { t } = useI18n();
-  const { data: d, reload } = usePoll('/api/positions', 10000);
+  // #positions/123 -> detail satu posisi. Poll daftar dimatikan selama detail terbuka.
+  const { data: d, reload } = usePoll(param ? null : '/api/positions', 10000);
+  if (param) return <Suspense fallback={<Loading />}><PositionDetail id={param} /></Suspense>;
   if (!d) return <Loading />;
   const close = async (p) => {
     const ok = await ask({
@@ -99,7 +105,7 @@ export default function Positions() {
             { key: 'pair', label: 'Pasangan', sort: (c) => `${c.symbol0}/${c.symbol1}`, search: (c) => `${c.symbol0}/${c.symbol1} ${c.token_id}`, render: (c) => (
               <div className="flex items-center gap-2.5">
                 <TokenPair token0={c.token0} token1={c.token1} symbol0={c.symbol0} symbol1={c.symbol1} size={20} />
-                <div><div className="font-medium whitespace-nowrap">{c.symbol0 || '?'}/{c.symbol1 || '?'}</div>
+                <div><a href={'#positions/' + c.id} className="font-medium whitespace-nowrap hover:underline">{c.symbol0 || '?'}/{c.symbol1 || '?'}</a>
                   <div className="mono mt-0.5 text-xs text-muted">{String(c.venue || '').toUpperCase()} · #{c.token_id}</div></div>
               </div>) },
             { key: 'cost', label: 'Modal', align: 'end', sort: (c) => c.cost_quote, render: (c) => usd(c.cost_quote) },

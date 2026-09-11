@@ -9,6 +9,8 @@ const { WalletResearch, summarize } = require('./wallet');
 const { createSettingsRoutes } = require('./settings');
 const { Manual } = require('./manual');
 const { Icons } = require('./icons');
+const { Market, TF } = require('./market');
+const { Positions } = require('./positions');
 const { QUOTES } = require('./chain');
 
 // Sisi mana dari pool yang merupakan aset kuotasi (0 atau 1); null kalau tidak dikenal.
@@ -42,6 +44,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   const walletJobs = new Map();
   const research = new WalletResearch({ rpc, store, chain, log });
   const manual = new Manual({ engine, store, chain, rpc, log });
+  const market = new Market({ log });
 
   // Satu pintu untuk semua pemindaian wallet: tombol di dasbor, pembaruan otomatis
   // saat halaman dibuka, dan pembaruan saat target terdeteksi beraksi. Satu wallet
@@ -265,6 +268,55 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         r.symbol1 = toks.get(r.token1) || null;
       }
       return { positions: engine.positions.live, closed };
+    },
+    // Satu posisi untuk halaman detail. Yang terbuka diambil dari hasil sinkron terakhir
+    // (nilai, fee, harga kini); yang sudah ditutup — atau baru dibuka dan belum
+    // tersinkron — dari basis data, dihias secukupnya supaya bentuknya sama.
+    'GET /api/position': (req, url) => {
+      const id = Number(url.searchParams.get('id'));
+      const row = store.get('SELECT * FROM positions WHERE id=?', id);
+      if (!row) return { error: 'posisi tidak ditemukan' };
+      const live = engine.positions.live.find((p) => p.id === id);
+      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
+      const k = row.quote_symbol === 'ETH' || row.quote_symbol === 'WETH' ? engine.ethUsd : 1;
+      const costUsd = (row.cost_quote || 0) * k;
+      const outUsd = row.status === 'closed' ? (row.out_quote || 0) * k : null;
+      const pos = live ? { ...live } : {
+        ...row,
+        symbol0: toks.get(row.token0)?.symbol || '?', symbol1: toks.get(row.token1)?.symbol || '?',
+        dec0: toks.get(row.token0)?.decimals ?? 18, dec1: toks.get(row.token1)?.decimals ?? 18,
+        quoteSide: quoteSideOf(row.token0, row.token1),
+        entrySqrt: Positions.entrySqrtOf(row),
+        curTick: null, curSqrt: null, inRange: null,
+        amount0: row.status === 'closed' ? row.out0 : null, amount1: row.status === 'closed' ? row.out1 : null,
+        fee0: null, fee1: null,
+        costUsd, valueUsd: outUsd ?? costUsd, feeUsd: 0,
+        pnlUsd: outUsd != null ? outUsd - costUsd : 0,
+        pnlPct: outUsd != null && costUsd > 0 ? ((outUsd - costUsd) / costUsd) * 100 : 0,
+        ageHours: ((row.closed_ts || Date.now()) - (row.opened_ts || Date.now())) / 3600000,
+        empty: row.status === 'closed',
+      };
+      pos.exitSqrt = row.exit_sqrt || null;
+      pos.outUsd = outUsd;
+      pos.quoteKind = row.quote_symbol === 'ETH' || row.quote_symbol === 'WETH' ? 'eth' : 'usd';
+      pos.targetLabel = row.target ? (store.get('SELECT label FROM targets WHERE address=?', row.target)?.label || null) : null;
+      // Token spekulatif = yang bukan aset kuotasi; dasar harga di grafik.
+      pos.baseToken = pos.quoteSide === 0 ? row.token1 : pos.quoteSide === 1 ? row.token0 : row.token0;
+      return { position: pos, ethUsd: engine.ethUsd, syncedAt: engine.positions.lastSync };
+    },
+    // Statistik pool (DexScreener) dan lilin harga (GeckoTerminal) untuk halaman detail.
+    'GET /api/market': async (req, url) => {
+      const pool = String(url.searchParams.get('pool') || '').toLowerCase();
+      if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(pool)) return { error: 'pool tidak valid' };
+      const tf = TF[url.searchParams.get('tf')] ? url.searchParams.get('tf') : '1h';
+      const token = String(url.searchParams.get('token') || '').toLowerCase();
+      const limit = Number(url.searchParams.get('limit') || 300);
+      const before = Number(url.searchParams.get('before')) || null;
+      const [pair, ohlcv] = await Promise.all([
+        market.pair(pool),
+        market.candles(pool, tf, { limit, token: /^0x[0-9a-f]{40}$/.test(token) ? token : null, before }),
+      ]);
+      return { pair, ohlcv, tfs: Object.keys(TF) };
     },
     'GET /api/targets': () => {
       const rows = store.all('SELECT * FROM targets ORDER BY added_ts');
