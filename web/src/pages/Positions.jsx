@@ -20,7 +20,8 @@ function Totals({ items }) {
   );
 }
 
-function Pair({ p }) {
+// Dipakai juga panel "Posisi aktif" di Ringkasan.
+export function Pair({ p }) {
   const { t } = useI18n();
   return (
     <div className="flex items-center gap-2.5">

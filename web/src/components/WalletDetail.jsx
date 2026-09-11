@@ -7,6 +7,7 @@ import { RefreshCw, Plus, Check } from 'lucide-react';
 import { get, post } from '../api';
 import { Panel, DataTable, Empty, Loading, PriceRange, Pick, Notice, Stat, KV } from './ui';
 import { TokenPair } from './TokenIcon';
+import PnlCalendar from './PnlCalendar';
 import { usd, kUsd, pct, tone, ago, dur, num, age } from '../fmt';
 import { useI18n, translate as tt } from '../i18n';
 
@@ -57,51 +58,6 @@ function ScanProgress({ job, compact }) {
       </div>
       <p className="text-sm text-muted">{t('Wallet yang aktif bisa butuh beberapa menit (tiap posisi dibaca state-nya di blok kejadian). Halaman ini boleh ditinggal — hasilnya disimpan dan tinggal dibuka lagi.')}</p>
     </Card.Content></Card>
-  );
-}
-
-function Calendar({ daily }) {
-  const { t, locale } = useI18n();
-  const days = Object.keys(daily).sort();
-  // Hook harus dipanggil sebelum return bersyarat (aturan hooks React).
-  const [ym, setYm] = useState(() => {
-    const last = days.length ? new Date(days[days.length - 1] + 'T00:00:00') : new Date();
-    return [last.getFullYear(), last.getMonth()];
-  });
-  if (!days.length) return <Empty title="Belum ada posisi tertutup di jendela ini" />;
-  const [y, mo] = ym;
-  const first = new Date(y, mo, 1), lastDay = new Date(y, mo + 1, 0).getDate();
-  const prefix = `${y}-${String(mo + 1).padStart(2, '0')}`;
-  const total = Object.entries(daily).filter(([k]) => k.startsWith(prefix)).reduce((a, [, v]) => a + v, 0);
-  const shift = (n) => { const d = new Date(y, mo + n, 1); setYm([d.getFullYear(), d.getMonth()]); };
-  const cells = [];
-  for (let i = 0; i < first.getDay(); i++) cells.push(<div key={'e' + i} />);
-  for (let d = 1; d <= lastDay; d++) {
-    const v = daily[`${prefix}-${String(d).padStart(2, '0')}`];
-    cells.push(
-      <div key={d} className={`flex min-h-14 flex-col justify-between rounded-md border p-1.5 ${v == null ? 'border-border/60'
-        : v > 0.005 ? 'border-success/30 bg-success/10' : v < -0.005 ? 'border-danger/30 bg-danger/10' : 'border-border bg-default/50'}`}>
-        <span className="text-[0.6875rem] text-muted">{d}</span>
-        {v != null && <span className={`num truncate text-[0.6875rem] font-semibold ${tone(v)}`}>{kUsd(v)}</span>}
-      </div>,
-    );
-  }
-  return (
-    <div>
-      <div className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" isIconOnly aria-label={t('Bulan sebelumnya')} onPress={() => shift(-1)}>‹</Button>
-          <span className="w-36 text-center text-sm font-medium">{first.toLocaleDateString(locale === 'en' ? 'en-US' : 'id-ID', { month: 'long', year: 'numeric' })}</span>
-          <Button size="sm" variant="ghost" isIconOnly aria-label={t('Bulan berikutnya')} onPress={() => shift(1)}>›</Button>
-        </div>
-        <span className="text-sm text-muted">{t('Total bulan ini')} <span className={`num font-medium ${tone(total)}`}>{usd(total)}</span></span>
-      </div>
-      <div className="grid grid-cols-7 gap-1">
-        {(locale === 'en' ? ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] : ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'])
-          .map((n) => <div key={n} className="pb-1 text-center text-xs text-muted">{n}</div>)}
-        {cells}
-      </div>
-    </div>
   );
 }
 
@@ -326,7 +282,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
                   : <Button size="sm" variant="outline" onPress={makeTarget}><Plus className="size-3.5" />{t('Jadikan target')}</Button>)}>
                 <Details s={s} />
               </Panel>
-              <Panel title="Riwayat profit harian" className="lg:col-span-3"><Calendar daily={data.daily} /></Panel>
+              <Panel title="Riwayat profit harian" className="lg:col-span-3"><PnlCalendar daily={data.daily} /></Panel>
             </div>
 
             <Panel title={t('Posisi berjalan ({n})', { n: data.open.length })} className="mb-4" bodyClass="p-0"

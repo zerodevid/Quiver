@@ -923,18 +923,28 @@ class Engine {
   // Titik ekuitas dari sebelum kolom pnl_quote ada. PnL-nya bisa direkonstruksi dari
   // yang sudah tercatat: terealisasi + nilai posisi + fee − modal posisi yang sedang
   // terbuka saat itu (diturunkan dari waktu buka/tutup tiap posisi).
+  //
+  // Posisi ADOPSI membawa opened_ts dari chain, jauh sebelum ia masuk database — di
+  // titik-titik sebelum diadopsi ia belum ikut dinilai, jadi modalnya juga tidak boleh
+  // dikurangkan. Jumlah posisi terbuka yang tercatat di titik itu (open_positions)
+  // yang menentukan: kelebihan kandidat dibuang dari yang id-nya terbesar, karena
+  // id mengikuti urutan masuk database.
+  //
+  // Versi 1 belum memperhitungkan adopsi; titik lama (kas NULL) dihitung ulang sekali.
   backfillEquityPnl() {
-    const rows = this.store.all('SELECT ts, positions_quote, fees_quote, realized_quote FROM equity WHERE pnl_quote IS NULL');
-    if (!rows.length) return 0;
-    const pos = this.store.all("SELECT opened_ts, closed_ts, cost_quote, quote_symbol FROM positions WHERE status IN ('open','closed')");
+    const V = '2';
+    const redo = this.store.getState('equity_pnl_backfill') !== V;
+    const rows = this.store.all(`SELECT ts, positions_quote, fees_quote, realized_quote, open_positions FROM equity
+      WHERE pnl_quote IS NULL${redo ? ' OR wallet_quote IS NULL' : ''}`);
+    const pos = this.store.all("SELECT id, opened_ts, closed_ts, cost_quote, quote_symbol FROM positions WHERE status IN ('open','closed') ORDER BY id");
     for (const r of rows) {
-      let cost = 0;
-      for (const p of pos) {
-        if (p.opened_ts <= r.ts && (!p.closed_ts || p.closed_ts > r.ts)) cost += (p.cost_quote || 0) * (p.quote_symbol === 'ETH' ? this.ethUsd : 1);
-      }
+      const cand = pos.filter((p) => p.opened_ts <= r.ts && (!p.closed_ts || p.closed_ts > r.ts))
+        .slice(0, Math.max(0, r.open_positions ?? Infinity));
+      const cost = cand.reduce((a, p) => a + (p.cost_quote || 0) * (p.quote_symbol === 'ETH' ? this.ethUsd : 1), 0);
       this.store.run('UPDATE equity SET pnl_quote=? WHERE ts=?',
         (r.realized_quote || 0) + (r.positions_quote || 0) + (r.fees_quote || 0) - cost, r.ts);
     }
+    if (redo) this.store.setState('equity_pnl_backfill', V);
     return rows.length;
   }
 

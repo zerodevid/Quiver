@@ -61,7 +61,8 @@ export function Panel({ title, desc, action, children, className = '', bodyClass
             {title && <h2 className="text-sm font-semibold tracking-tight">{t(title)}</h2>}
             {desc && <p className="mt-0.5 text-xs text-muted">{t(desc)}</p>}
           </div>
-          {action && <div className="shrink-0">{action}</div>}
+          {/* max-w-full: di HP isi action (mis. dua Segmented) boleh membungkus, bukan menjebol kartu */}
+          {action && <div className="max-w-full shrink-0">{action}</div>}
         </div>
       )}
       <div className={bodyClass.includes('p-0') ? bodyClass : `p-4 ${bodyClass}`}>{children}</div>
