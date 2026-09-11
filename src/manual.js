@@ -317,12 +317,14 @@ class Manual {
     if (p.fee != null && p.fee >= 30000) warnings.push(`fee pool ${(p.fee / 10000).toFixed(2)}% — tinggi, hanya sepadan kalau ramai`);
 
     // Kas: executeEntry bisa menjembatani ETH<->USDG, jadi yang diperiksa total nilainya.
-    const bal = await eng.exec.balances([ADDR.native, ADDR.usdg, ADDR.weth]);
-    const kasUsd = (Number(bal.get(ADDR.native) || 0n) / 1e18) * eng.ethUsd
-      + Number(bal.get(ADDR.usdg) || 0n) / 1e6
-      + (Number(bal.get(ADDR.weth) || 0n) / 1e18) * eng.ethUsd;
+    // Token pasangan pool ikut dibaca: yang sudah dipegang mengecilkan zap.
+    const bal = await eng.exec.balances(this.daftarSaldo(p));
+    const { kasUsd } = this.saldoDari(bal, p, slot0);
     if (kasUsd < valueUsd) return { error: `kas cuma $${kasUsd.toFixed(2)}, butuh ~$${valueUsd.toFixed(2)}` };
     if (kasUsd < valueUsd * 1.02) warnings.push('kas nyaris pas — sisakan sedikit untuk gas dan slippage');
+
+    const sim = this.simulasiSwap({ p, plan, slot0, bal, rules });
+    warnings.push(...sim.masalah);
 
     // Persen efektif setelah dibulatkan ke tick spacing, dalam harga yang dilihat
     // pengguna — "−10%" bisa jadi −10,4% di pool ber-spacing lebar.
@@ -340,8 +342,153 @@ class Manual {
         tickLower: range.tickLower, tickUpper: range.tickUpper, curTick: slot0.tick,
         valueUsd, amount0: est.amount0.toString(), amount1: est.amount1.toString(),
         side, hasHooks: p.hasHooks, kasUsd,
+        swaps: sim.langkah,
+        swapOn: !!rules.swap.enabled, slippageBps: rules.swap.max_slippage_bps,
+        saldo: this.saldoDari(bal, p, slot0, sim.sesudah),
       },
     };
+  }
+
+  // ---- saldo & simulasi tukar ---------------------------------------------
+  gasReserve() { return BigInt(this.engine.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000); }
+
+  daftarSaldo(p) {
+    return [...new Set([ADDR.native, ADDR.usdg, ADDR.weth, ...(p ? [lc(p.token0), lc(p.token1)] : [])])];
+  }
+
+  // Dolar per SATU token (sudah disesuaikan desimal). Aset kuotasi dari harga ETH;
+  // token pasangan pool dari harga pool terhadap aset kuotasinya. Selain itu: null.
+  usdPer(tok, p, slot0) {
+    const t = lc(tok), q = QUOTES[t];
+    if (q) return q.kind === 'eth' ? this.engine.ethUsd : 1;
+    if (!p || !slot0 || p.quoteSide == null) return null;
+    const px = m.priceFromSqrt(slot0.sqrtPriceX96, p.dec0, p.dec1);   // token1 per token0
+    const qUsd = this.usdPer(p.quoteSide === 0 ? p.token0 : p.token1);
+    if (t === lc(p.token0) && p.quoteSide === 1) return px * qUsd;
+    if (t === lc(p.token1) && p.quoteSide === 0) return px > 0 ? qUsd / px : null;
+    return null;
+  }
+
+  // Satu baris token: jumlah manusiawi + nilai dolarnya.
+  kaki(tok, raw, p, slot0) {
+    const t = lc(tok);
+    const dec = QUOTES[t]?.decimals ?? (p && t === lc(p.token0) ? p.dec0 : p && t === lc(p.token1) ? p.dec1 : 18);
+    const symbol = QUOTES[t]?.symbol ?? (p && t === lc(p.token0) ? p.symbol0 : p && t === lc(p.token1) ? p.symbol1 : '?');
+    const amount = Number(raw) / 10 ** dec;
+    const u = this.usdPer(t, p, slot0);
+    return { token: t, symbol, amount, usd: u != null ? amount * u : null };
+  }
+
+  /**
+   * Saldo wallet yang relevan untuk membuka posisi: kas (ETH/USDG/WETH) dan token
+   * pasangan pool. `sesudah` (opsional) = taksiran saldo setelah swap & mint.
+   * kasUsd sengaja dihitung seperti dulu (ETH penuh, termasuk cadangan gas) supaya
+   * batas "kas cuma $X" tidak bergeser; cadangannya dilaporkan terpisah.
+   */
+  saldoDari(bal, p, slot0, sesudah = null) {
+    const tokens = this.daftarSaldo(p).map((t) => {
+      const row = { ...this.kaki(t, bal.get(t) || 0n, p, slot0), isQuote: !!QUOTES[t], native: isNative(t) };
+      if (sesudah) {
+        const s = this.kaki(t, sesudah.get(t) ?? bal.get(t) ?? 0n, p, slot0);
+        row.sesudah = s.amount; row.sesudahUsd = s.usd;
+      }
+      return row;
+    });
+    const kasUsd = tokens.filter((x) => x.isQuote).reduce((a, x) => a + (x.usd || 0), 0);
+    return { tokens, kasUsd, gasReserveEth: Number(this.gasReserve()) / 1e18 };
+  }
+
+  async saldo(poolRef) {
+    const eng = this.engine;
+    const p = poolRef ? await this.poolByRef(poolRef) : null;
+    let slot0 = null;
+    if (p) {
+      slot0 = await (p.venue === 'v3' ? this.chain.slot0V3(p.poolAddr || p.poolRef) : this.chain.slot0V4(p.poolRef))
+        .catch(() => null);
+    }
+    const bal = await eng.exec.balances(this.daftarSaldo(p));
+    return { ...this.saldoDari(bal, p, slot0), wallet: !!eng.exec.address() };
+  }
+
+  /**
+   * Menirukan langkah tukar engine.executeEntry — bungkus/buka bungkus WETH,
+   * jembatan USDG<->ETH, lalu zap — di atas saldo sekarang, TANPA mengirim apa pun.
+   * Rumusnya disalin dari sana, jadi kalau executeEntry berubah, ini ikut diubah.
+   *
+   * Angka zap sama dengan yang akan dikirim (harga pool + ruang slippage). Jembatan
+   * ditaksir dari harga ETH: kutipan Kyber yang sebenarnya baru diminta saat eksekusi.
+   * `masalah` = langkah yang akan membuat eksekusi berhenti.
+   */
+  simulasiSwap({ p, plan, slot0, bal, rules }) {
+    const eng = this.engine;
+    const reserve = this.gasReserve();
+    const slip = rules.swap.max_slippage_bps;
+    const s = new Map(this.daftarSaldo(p).map((t) => [t, bal.get(t) || 0n]));
+    const get = (t) => s.get(lc(t)) || 0n;
+    const avail = (t) => { const v = get(t); return isNative(t) ? (v > reserve ? v - reserve : 0n) : v; };
+    const pindah = (a, x, b, y) => { s.set(lc(a), get(a) - x); s.set(lc(b), get(b) + y); };
+    const langkah = [], masalah = [];
+    const catat = (jenis, a, x, b, y, extra = {}) => {
+      langkah.push({ jenis, dari: this.kaki(a, x, p, slot0), ke: this.kaki(b, y, p, slot0), ...extra });
+      pindah(a, x, b, y);
+    };
+    const fmt = (t, raw) => { const k = this.kaki(t, raw, p, slot0); return `${k.amount.toPrecision(4)} ${k.symbol}`; };
+
+    // 0. kas ke aset kuotasi pool ini (engine.ensureQuoteAsset)
+    const qTok = lc(plan.quoteSide === 0 ? plan.token0 : plan.token1);
+    const qDec = QUOTES[qTok]?.decimals ?? 18;
+    const needQ = BigInt(Math.ceil((plan.valueQuote || 0) * 1.05 * 10 ** qDec));
+    if (needQ > 0n && avail(qTok) < needQ) {
+      if (qTok === ADDR.weth || qTok === ADDR.native) {
+        const lain = qTok === ADDR.weth ? ADDR.native : ADDR.weth;
+        const want = needQ - avail(qTok), ada = avail(lain);
+        if (ada > 0n) catat(qTok === ADDR.weth ? 'bungkus' : 'buka_bungkus', lain, ada < want ? ada : want, qTok, ada < want ? ada : want);
+      }
+      if (avail(qTok) < needQ) {
+        const wantEth = qTok === ADDR.native || qTok === ADDR.weth;
+        const payTok = wantEth ? ADDR.usdg : ADDR.native, outTok = wantEth ? ADDR.native : ADDR.usdg;
+        const short = needQ - avail(qTok);
+        const k = 1 + slip / 10000;
+        const pay = wantEth
+          ? BigInt(Math.ceil((Number(short) / 1e18) * eng.ethUsd * 1e6 * k))
+          : BigInt(Math.ceil((Number(short) / 1e6 / eng.ethUsd) * 1e18 * k));
+        if (!rules.swap.enabled) masalah.push('kas ada di aset kuotasi lain dan auto-swap dimatikan — pembukaan akan berhenti');
+        else if (avail(payTok) < pay) masalah.push(`kas kurang untuk jembatan: butuh ~${fmt(payTok, pay)}, bisa dipakai ${fmt(payTok, avail(payTok))}`);
+        catat('jembatan', payTok, pay, outTok, short, { maxLossBps: rules.swap.max_price_impact_bps, taksiran: true });
+        if (qTok === ADDR.weth) {
+          const want = needQ - avail(qTok), ada = avail(ADDR.native);
+          const amt = ada < want ? ada : want;
+          if (amt > 0n) catat('bungkus', ADDR.native, amt, qTok, amt);
+        }
+      }
+    }
+
+    // 1. zap: tutup kekurangan tiap token dari token pasangannya
+    const price1per0 = Number(slot0.sqrtPriceX96) ** 2 / Number(m.Q96) ** 2;
+    const feeBps = plan.fee != null && plan.fee < 1_000_000 ? plan.fee / 100 : null;
+    const zapLossBps = feeBps != null
+      ? Math.max(rules.swap.max_price_impact_bps, Math.round(feeBps) + 200)
+      : rules.swap.max_price_impact_bps;
+    for (const [idx, tok, need] of [[0, plan.token0, BigInt(plan.amount0Max)], [1, plan.token1, BigInt(plan.amount1Max)]]) {
+      const have = avail(tok);
+      if (have >= need) continue;
+      const short = need - have;
+      const payTok = idx === 0 ? plan.token1 : plan.token0;
+      const k = 1 + slip / 10000;
+      const payRaw = idx === 0
+        ? BigInt(Math.ceil(Number(short) * price1per0 * k))
+        : BigInt(Math.ceil((Number(short) / price1per0) * k));
+      if (payRaw <= 0n) continue;
+      if (!rules.swap.enabled) masalah.push(`kurang ${fmt(tok, short)} dan auto-swap dimatikan — pembukaan akan berhenti`);
+      else if (avail(payTok) < payRaw) masalah.push(`saldo kurang untuk zap: butuh ~${fmt(payTok, payRaw)}, ada ${fmt(payTok, avail(payTok))}`);
+      catat('zap', payTok, payRaw, tok, short, { maxLossBps: zapLossBps });
+    }
+
+    // 2. mint memakai jumlah perkiraannya (bukan batas atas bersama slippage)
+    s.set(lc(plan.token0), get(plan.token0) - BigInt(plan.amount0));
+    s.set(lc(plan.token1), get(plan.token1) - BigInt(plan.amount1));
+    for (const [t, v] of s) if (v < 0n) s.set(t, 0n);
+    return { langkah, masalah, sesudah: s };
   }
 
   async openLp(plan) {

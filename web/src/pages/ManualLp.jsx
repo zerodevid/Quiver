@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Card, Spinner, toast } from '@heroui/react';
-import { Search, Check, TriangleAlert, Anchor } from 'lucide-react';
+import { Search, Check, TriangleAlert, Anchor, ArrowRight } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { PageHeader, Notice, PriceRange, Empty, KV } from '../components/ui';
-import { TokenPair } from '../components/TokenIcon';
-import { usd, num, ago, price, tickPrice } from '../fmt';
+import TokenIcon, { TokenPair } from '../components/TokenIcon';
+import { usd, num, ago, price, tickPrice, locale } from '../fmt';
 import { useI18n } from '../i18n';
 
 // Pilihan cepat rentang: [turun %, naik %, label]. Persennya dalam harga, jadi
@@ -72,6 +72,133 @@ function Langkah({ n, title, done, children, action }) {
 }
 
 const fee = (p) => (p.dynamicFee ? 'dinamis' : `${num(p.feePct, 2)}%`);
+
+// Jumlah token: memecoin bisa jutaan, ETH bisa 0,0000x — desimal tetap tidak cocok
+// untuk keduanya, jadi di bawah 1 memakai angka penting.
+const jml = (v) => (v == null ? '—' : v === 0 ? '0' : Math.abs(v) >= 1 ? num(v, Math.abs(v) >= 1000 ? 0 : 4)
+  : Number(v).toLocaleString(locale(), { maximumSignificantDigits: 4 }));
+
+// Saldo wallet yang relevan: kas (ETH/USDG/WETH) dan token pasangan pool. Kolom
+// "Setelah dibuka" muncul begitu pratinjau untuk pool ini selesai dihitung.
+function Saldo({ saldo, pool }) {
+  const { t } = useI18n();
+  if (!saldo) return null;
+  if (saldo.wallet === false) return <p className="text-xs text-muted">{t('Belum ada wallet — saldo tidak bisa dibaca.')}</p>;
+  const milikPool = (a) => pool && (a === pool.token0?.toLowerCase() || a === pool.token1?.toLowerCase());
+  const rows = saldo.tokens.filter((x) => x.amount > 0 || x.native || milikPool(x.token) || x.sesudah > 0);
+  const setelah = rows.some((x) => x.sesudah != null);
+  return (
+    <div className="rounded-md border border-border">
+      <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 text-xs text-muted">
+        <span>{t('Saldo wallet')}</span>
+        <span>{t('Kas')} <span className="num font-semibold text-foreground">{usd(saldo.kasUsd)}</span></span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          {setelah && (
+            <thead>
+              <tr className="text-[0.6875rem] text-muted">
+                <th className="px-3 pt-2 text-start font-normal">{t('Token')}</th>
+                <th className="px-3 pt-2 text-end font-normal">{t('Sekarang')}</th>
+                <th className="px-3 pt-2 text-end font-normal">{t('Setelah dibuka')}</th>
+              </tr>
+            </thead>
+          )}
+          <tbody>
+            {rows.map((x) => (
+              <tr key={x.token}>
+                <td className="px-3 py-1.5">
+                  <span className="flex items-center gap-2">
+                    <TokenIcon address={x.token} symbol={x.symbol} size={18} />
+                    <span className="font-medium">{x.symbol}</span>
+                  </span>
+                </td>
+                <td className="num px-3 py-1.5 text-end">
+                  {jml(x.amount)}
+                  <span className="ms-1.5 text-xs text-muted">{x.usd != null ? usd(x.usd) : ''}</span>
+                </td>
+                {setelah && (
+                  <td className="num px-3 py-1.5 text-end text-muted">
+                    ≈ {jml(x.sesudah)}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="border-t border-border px-3 py-2 text-xs text-muted">
+        {t('{e} ETH ditahan untuk gas dan tidak ikut dipakai.', { e: num(saldo.gasReserveEth, 4) })}
+      </p>
+    </div>
+  );
+}
+
+const jmlSwap = (n, t) => (!n ? t('tidak perlu') : n === 1 ? t('1 transaksi') : t('{n} transaksi', { n }));
+
+const JENIS = {
+  zap: 'Beli {s}',
+  jembatan: 'Jembatan kas',
+  bungkus: 'Bungkus ETH',
+  buka_bungkus: 'Buka bungkus WETH',
+};
+
+// Rincian tukar yang akan dijalankan bot sebelum mint, dari simulasi di server
+// (manual.simulasiSwap) — urutan dan jumlahnya sama dengan executeEntry.
+function AutoSwap({ p }) {
+  const { t } = useI18n();
+  const sw = p.swaps || [];
+  return (
+    <div className="rounded-md border border-border">
+      <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 text-xs text-muted">
+        <span>{t('Auto-swap sebelum mint')}</span>
+        <span>{jmlSwap(sw.length, t)}</span>
+      </div>
+      {!sw.length ? (
+        <p className="px-3 py-2.5 text-sm text-muted">
+          {t('Tidak ada yang ditukar — saldo {a} dan {b} sudah cukup untuk posisi ini.', { a: p.symbol0, b: p.symbol1 })}
+        </p>
+      ) : (
+        <ol className="divide-y divide-border">
+          {sw.map((s, i) => (
+            <li key={i} className="flex flex-col gap-1.5 px-3 py-2.5">
+              <div className="flex items-center gap-2 text-xs text-muted">
+                <span className="flex size-4 items-center justify-center rounded-full border border-border text-[0.625rem]">{i + 1}</span>
+                <span className="font-medium text-foreground">{t(JENIS[s.jenis] || s.jenis, { s: s.ke.symbol })}</span>
+                {s.jenis === 'zap' || s.jenis === 'jembatan' ? <span>· Kyber</span> : <span>· {t('1:1, tanpa slippage')}</span>}
+              </div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                <span className="flex items-center gap-1.5">
+                  <TokenIcon address={s.dari.token} symbol={s.dari.symbol} size={16} />
+                  <span className="num font-medium">{s.taksiran ? '≈ ' : ''}{jml(s.dari.amount)} {s.dari.symbol}</span>
+                </span>
+                <ArrowRight className="size-3.5 text-muted" />
+                <span className="flex items-center gap-1.5">
+                  <TokenIcon address={s.ke.token} symbol={s.ke.symbol} size={16} />
+                  <span className="num font-medium">{jml(s.ke.amount)} {s.ke.symbol}</span>
+                </span>
+                {s.dari.usd != null && <span className="num text-xs text-muted">{usd(s.dari.usd)}</span>}
+              </div>
+              {s.maxLossBps != null && (
+                <div className="text-xs text-muted">
+                  {t('dibatalkan kalau rugi rute lebih dari {r}%', { r: num(s.maxLossBps / 100, 2) })}
+                  {s.taksiran ? ' · ' + t('jumlah pasti dari kutipan Kyber saat eksekusi') : ''}
+                </div>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+      {!!sw.length && (
+        <p className="border-t border-border px-3 py-2 text-xs text-muted">
+          {p.swapOn
+            ? t('Jumlah yang dijual sudah termasuk ruang slippage {s}%; kelebihannya tetap di wallet.', { s: num(p.slippageBps / 100, 2) })
+            : <span className="text-danger">{t('Auto-swap dimatikan di Aturan — pembukaan akan berhenti di langkah pertama.')}</span>}
+        </p>
+      )}
+    </div>
+  );
+}
 
 function PilihPool({ pools, onPick }) {
   const { t } = useI18n();
@@ -182,12 +309,22 @@ export default function ManualLp() {
   const [konfirm, setKonfirm] = useState(false);
   const [kirim, setKirim] = useState(false);
   const [hasil, setHasil] = useState(null);
+  const [saldo, setSaldo] = useState(null);
   const seq = useRef(0);
 
   useEffect(() => {
     get('/api/manual/pools?limit=200').then((d) => setPools(d.pools || []));
     get('/api/rules').then(setRules);
   }, []);
+
+  // Saldo dibaca sendiri, tidak menunggu pratinjau: pengguna perlu tahu kasnya
+  // SEBELUM memilih nominal. Dibaca ulang saat pool berganti (token pasangannya
+  // ikut ditampilkan) dan setelah posisi dibuka.
+  const muatSaldo = useCallback(async (ref) => {
+    const d = await get(`/api/manual/saldo${ref ? `?poolRef=${ref}` : ''}`);
+    if (!d.error) setSaldo({ ...d, _ref: ref || null });
+  }, []);
+  useEffect(() => { muatSaldo(pool?.poolRef); }, [pool?.poolRef, muatSaldo]);
 
   const usdNum = Number(String(nominal).replace(',', '.'));
   const lo = Number(String(turun).replace(',', '.') || 0), up = Number(String(naik).replace(',', '.') || 0);
@@ -213,7 +350,7 @@ export default function ManualLp() {
     return () => { clearTimeout(id); };
   }, [pool?.poolRef, usdNum, lo, up, full, siap]);
 
-  const kas = plan?.preview?.kasUsd ?? null;
+  const kas = plan?.preview?.kasUsd ?? saldo?.kasUsd ?? null;
   // Nominal terbesar yang masih lolos semua batas — supaya tombol "Maks" tidak
   // mengantar ke penolakan.
   const maks = useMemo(() => {
@@ -233,6 +370,7 @@ export default function ManualLp() {
     setHasil(r);
     toast.success(t('Posisi dibuka'));
     reloadStatus();
+    muatSaldo(pool?.poolRef);
   };
 
   const p = plan?.preview;
@@ -241,6 +379,10 @@ export default function ManualLp() {
   const pKini = p && plan._ref === pool?.poolRef ? p : null;
   const hargaKini = pKini ? tickPrice(pKini.curTick, pKini.dec0, pKini.dec1, pKini.quoteSide) : null;
   const symQ = pKini ? (pKini.quoteSide === 0 ? pKini.symbol0 : pKini.symbol1) : null;
+  // Pratinjau membawa saldo "setelah dibuka"; selama belum ada, pakai bacaan
+  // sendiri — asal untuk pool yang sama, supaya token pasangannya tidak salah.
+  const pSiap = pKini && siap && !plan?.error ? pKini : null;
+  const saldoTampil = pSiap?.saldo || (saldo && saldo._ref === (pool?.poolRef || null) ? saldo : null);
   const dry = status?.mode?.dry_run !== false;
 
   if (hasil) {
@@ -313,9 +455,10 @@ export default function ManualLp() {
                 options={[25, 50, 100, 200].filter((v) => !maks || v < maks).map((v) => [v, `$${v}`])
                   .concat(maks > 0 ? [[maks, t('Maks {v}', { v: usd(maks, 0) })]] : [])} />
               <p className="text-xs text-muted">
-                {kas != null ? t('Kas tersedia {k}. Nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.', { k: usd(kas) })
-                  : t('Nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.')}
+                {t('Nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.')}
               </p>
+              <Saldo saldo={saldoTampil} pool={pool} />
+              {pSiap?.swaps && <AutoSwap p={pSiap} />}
             </div>
           </Langkah>
 
@@ -377,6 +520,7 @@ export default function ManualLp() {
                 <div className="divide-y divide-border border-y border-border">
                   <KV label={p.symbol0}>{num(Number(p.amount0) / 10 ** p.dec0, 6)}</KV>
                   <KV label={p.symbol1}>{num(Number(p.amount1) / 10 ** p.dec1, 6)}</KV>
+                  {p.swaps && <KV label="Auto-swap">{jmlSwap(p.swaps.length, t)}</KV>}
                   <KV label="Kas setelah dibuka">{usd(Math.max(0, p.kasUsd - p.valueUsd))}</KV>
                 </div>
 

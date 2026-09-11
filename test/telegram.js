@@ -752,6 +752,41 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.strictEqual(r.preview.side, 'both');
   });
 
+  await t('rencana LP manual: saldo dan auto-swap yang akan dijalankan ikut dipratinjau', async () => {
+    const w = build();
+    // Kas USDG cukup: tidak perlu jembatan, cukup zap USDG -> MEME.
+    const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50, widthPct: 25 });
+    assert.ok(!r.error, r.error);
+    const sw = r.preview.swaps;
+    assert.deepStrictEqual(sw.map((x) => x.jenis), ['zap']);
+    assert.strictEqual(sw[0].dari.symbol, 'USDG');
+    assert.strictEqual(sw[0].ke.symbol, 'MEME');
+    // dibayar dengan ruang slippage 1,5% dari porsi MEME (~separuh nilai posisi)
+    assert.ok(sw[0].dari.usd > 24 && sw[0].dari.usd < 27, `zap ${sw[0].dari.usd}`);
+    const saldo = Object.fromEntries(r.preview.saldo.tokens.map((x) => [x.symbol, x]));
+    assert.strictEqual(saldo.USDG.amount, 150);
+    assert.ok(saldo.USDG.sesudah > 99 && saldo.USDG.sesudah < 101, `USDG sesudah ${saldo.USDG.sesudah}`);
+    assert.ok('MEME' in saldo, 'token pasangan pool ikut ditampilkan');
+
+    // Kas hanya ETH: jembatan ETH -> USDG dulu, baru zap.
+    w.engine.exec.balances = async (list) => new Map(list.map((t2) => [String(t2).toLowerCase(), t2 === ADDR.native ? 10n ** 17n : 0n]));
+    const e = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50, widthPct: 25 });
+    assert.ok(!e.error, e.error);
+    assert.deepStrictEqual(e.preview.swaps.map((x) => x.jenis), ['jembatan', 'zap']);
+    assert.strictEqual(e.preview.swaps[0].dari.symbol, 'ETH');
+    assert.ok(Math.abs(e.preview.swaps[0].ke.amount - 52.5) < 0.01, 'jembatan menyediakan 105% nilai posisi');
+    assert.ok(!e.warnings.some((x) => /jembatan|zap/.test(x)), e.warnings.join('; '));
+
+    // Auto-swap dimatikan: langkahnya tetap terlihat, dan diperingatkan akan berhenti.
+    w.engine.rulesFrom = () => { const x = rulesFor(w.engine.cfg.rules, null); x.swap.enabled = false; return x; };
+    const off = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50, widthPct: 25 });
+    assert.ok(off.warnings.some((x) => /auto-swap dimatikan/.test(x)), off.warnings.join('; '));
+
+    const sd = await w.api('GET', '/api/manual/saldo', {}, { poolRef: '0xpool' });
+    assert.ok(!sd.error, sd.error);
+    assert.ok(Math.abs(sd.kasUsd - 250) < 0.01, `kas ${sd.kasUsd}`);
+  });
+
   await t('rentang lebih sempit menghasilkan likuiditas lebih padat', async () => {
     const w = build();
     const a = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50, widthPct: 5 });

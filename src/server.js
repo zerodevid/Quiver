@@ -548,6 +548,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       }
     },
     'GET /api/manual/tokens': async () => ({ tokens: await manual.held() }),
+    // Saldo untuk langkah "Nominal" — tampil sebelum pratinjau pertama selesai dihitung.
+    'GET /api/manual/saldo': async (req, url) => {
+      try { return await manual.saldo(String(url.searchParams.get('poolRef') || '') || null); }
+      catch (e) { return { error: e.message }; }
+    },
 
     // Alamat yang ditempel pengguna: token (untuk dipasangi LP) atau wallet (untuk
     // diriset / dijadikan target)? Wallet LP besar sering berupa KONTRAK (smart
