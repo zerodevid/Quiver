@@ -16,7 +16,7 @@ import {
 import { usePoll } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, ask } from '../components/ui';
-import { TokenPair } from '../components/TokenIcon';
+import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice, widthPct, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -31,17 +31,17 @@ const tfFor = (ageHours) => {
   for (const tf of ['5m', '15m', '1h', '4h']) if (s / SECS[tf] <= 400) return tf;
   return '1d';
 };
-const fmtT = (ts, tf) => (SECS[tf] >= 86400
+export const fmtT = (ts, tf) => (SECS[tf] >= 86400
   ? new Date(ts).toLocaleDateString(fmtLocale(), { day: 'numeric', month: 'short' })
   : new Date(ts).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }));
 const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
 const qty = (raw, dec) => (raw == null ? null : Number(raw) / 10 ** (dec ?? 18));
 const fmtQty = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleString(fmtLocale(), { maximumSignificantDigits: v >= 1000 ? 6 : 4 }));
-const kUsd = (v) => (v == null ? '—' : Math.abs(v) >= 1e6 ? usd(v / 1e6, 2) + 'M' : Math.abs(v) >= 1e4 ? usd(v / 1e3, 1) + 'k' : usd(v));
+export const kUsd = (v) => (v == null ? '—' : Math.abs(v) >= 1e6 ? usd(v / 1e6, 2) + 'M' : Math.abs(v) >= 1e4 ? usd(v / 1e3, 1) + 'k' : usd(v));
 
 // Satu lilin. Bar-nya membentang low→high (sumbu), badan open→close dihitung dari
 // proporsi di dalamnya — tanpa perlu akses ke skala sumbu.
-function Candle({ x, y, width, height, payload }) {
+export function Candle({ x, y, width, height, payload }) {
   if (!payload || !(payload.h > 0)) return null;
   const { o, c, h, l } = payload;
   const span = h - l;
@@ -59,7 +59,7 @@ function Candle({ x, y, width, height, payload }) {
   );
 }
 
-function CandleTip({ active, payload, tf, quote }) {
+export function CandleTip({ active, payload, tf, quote }) {
   const { t } = useI18n();
   const d = payload?.[0]?.payload;
   if (!active || !d) return null;
@@ -204,7 +204,7 @@ function Changes({ pc }) {
   );
 }
 
-function MarketPanel({ pair, pool }) {
+export function MarketPanel({ pair, pool }) {
   const { t } = useI18n();
   if (!pair) return <Loading />;
   if (pair.error) return <div className="p-4"><Empty title="Data pasar tidak tersedia" sub={pair.error} /></div>;
@@ -260,7 +260,6 @@ export default function PositionDetail({ id }) {
   const move = pEntry != null && pNow != null ? (pNow / pEntry - 1) * 100 : null;
   const quote = p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null;
   const base = p.quoteSide === 0 ? p.symbol1 : p.quoteSide === 1 ? p.symbol0 : p.symbol0;
-  const pair = `${p.symbol0}/${p.symbol1}`;
 
   // Jarak ke tepi terdekat, dalam persen pergerakan harga.
   let edge = null;
@@ -286,7 +285,7 @@ export default function PositionDetail({ id }) {
           <div className="flex min-w-0 items-center gap-3">
             <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={30} />
             <div className="min-w-0">
-              <h1 className="text-xl font-semibold tracking-tight">{pair}</h1>
+              <h1 className="text-xl font-semibold tracking-tight"><PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} sep="/" /></h1>
               <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted">
                 <span>Uniswap {String(p.venue).toUpperCase()}</span><span>·</span>
                 <span className="num">{t('fee {f}%', { f: num(p.fee / 10000, 2) })}</span>
@@ -355,22 +354,22 @@ export default function PositionDetail({ id }) {
               <KV label="Tick"><span className="mono">{p.tick_lower} … {p.tick_upper}{p.curTick != null && !closed && <span className="text-muted"> · {t('kini')} {p.curTick}</span>}</span></KV>
               <KV label={closed ? 'Diterima saat keluar' : 'Isi sekarang'}>
                 <div className="flex flex-col items-end">
-                  <span>{fmtQty(amt0)} <span className="font-normal text-muted">{p.symbol0}</span></span>
-                  <span>{fmtQty(amt1)} <span className="font-normal text-muted">{p.symbol1}</span></span>
+                  <span>{fmtQty(amt0)} <TokenSym address={p.token0} symbol={p.symbol0} className="font-normal text-muted" /></span>
+                  <span>{fmtQty(amt1)} <TokenSym address={p.token1} symbol={p.symbol1} className="font-normal text-muted" /></span>
                 </div>
               </KV>
               {!closed && (
                 <KV label="Fee belum diklaim">
                   <div className="flex flex-col items-end">
-                    <span className={fee0 > 0 ? 'text-success' : ''}>{fmtQty(fee0)} <span className="font-normal text-muted">{p.symbol0}</span></span>
-                    <span className={fee1 > 0 ? 'text-success' : ''}>{fmtQty(fee1)} <span className="font-normal text-muted">{p.symbol1}</span></span>
+                    <span className={fee0 > 0 ? 'text-success' : ''}>{fmtQty(fee0)} <TokenSym address={p.token0} symbol={p.symbol0} className="font-normal text-muted" /></span>
+                    <span className={fee1 > 0 ? 'text-success' : ''}>{fmtQty(fee1)} <TokenSym address={p.token1} symbol={p.symbol1} className="font-normal text-muted" /></span>
                   </div>
                 </KV>
               )}
               <KV label="Modal disetor">
                 <div className="flex flex-col items-end">
-                  <span>{fmtQty(cost0)} <span className="font-normal text-muted">{p.symbol0}</span></span>
-                  <span>{fmtQty(cost1)} <span className="font-normal text-muted">{p.symbol1}</span></span>
+                  <span>{fmtQty(cost0)} <TokenSym address={p.token0} symbol={p.symbol0} className="font-normal text-muted" /></span>
+                  <span>{fmtQty(cost1)} <TokenSym address={p.token1} symbol={p.symbol1} className="font-normal text-muted" /></span>
                 </div>
               </KV>
               <KV label="Dibuka">{fmtDate(p.opened_ts)}<span className="ml-1 font-normal text-muted">({ago(p.opened_ts)})</span></KV>

@@ -11,7 +11,7 @@ const { Manual } = require('./manual');
 const { Icons } = require('./icons');
 const { Market, TF } = require('./market');
 const { Positions } = require('./positions');
-const { QUOTES } = require('./chain');
+const { QUOTES, ADDR: { native: ADDR_NATIVE } } = require('./chain');
 const { writeCfg } = require('./env');
 
 // Sisi mana dari pool yang merupakan aset kuotasi (0 atau 1); null kalau tidak dikenal.
@@ -316,11 +316,92 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const token = String(url.searchParams.get('token') || '').toLowerCase();
       const limit = Number(url.searchParams.get('limit') || 300);
       const before = Number(url.searchParams.get('before')) || null;
+      // Halaman token memakai harga USD; halaman posisi memakai harga dalam aset
+      // kuotasi pool supaya sejajar dengan rentang tick.
+      const currency = url.searchParams.get('currency') === 'usd' ? 'usd' : 'token';
       const [pair, ohlcv] = await Promise.all([
-        market.pair(pool),
-        market.candles(pool, tf, { limit, token: /^0x[0-9a-f]{40}$/.test(token) ? token : null, before }),
+        url.searchParams.get('pair') === '0' ? null : market.pair(pool),
+        market.candles(pool, tf, { limit, token: /^0x[0-9a-f]{40}$/.test(token) ? token : null, before, currency }),
       ]);
       return { pair, ohlcv, tfs: Object.keys(TF) };
+    },
+    // Detail satu token: metadata, semua pool-nya (DexScreener), posisi bot yang
+    // memakainya, posisi wallet yang pernah diriset, dan gerakan target di token itu.
+    'GET /api/token': async (req, url) => {
+      const a = String(url.searchParams.get('a') || '').trim().toLowerCase();
+      if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat token tidak valid' };
+      const market$ = market.token(a).catch((e) => ({ error: e.message }));
+      let meta = QUOTES[a] ? { address: a, symbol: QUOTES[a].symbol, name: a === ADDR_NATIVE ? 'Ether' : null, decimals: QUOTES[a].decimals } : null;
+      meta = store.get('SELECT address,symbol,name,decimals FROM tokens WHERE address=?', a) || meta;
+      const mk = await market$;
+      // Belum pernah terlihat di chain: baca metadatanya hanya kalau DexScreener
+      // mengenalnya sebagai token — alamat wallet tidak boleh masuk tabel tokens.
+      if (!meta && mk?.pairs?.length) meta = await chain.tokens([a]).then((x) => x[0]).catch(() => null);
+      if (!meta) {
+        const hit = mk?.pairs?.[0];
+        const side = hit?.base.address === a ? hit.base : hit?.quote.address === a ? hit.quote : null;
+        if (!side) return { error: 'token tidak dikenal — belum pernah terlihat di chain maupun DexScreener' };
+        meta = { address: a, symbol: side.symbol, name: side.name, decimals: null };
+      }
+
+      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
+      const sym = (x) => toks.get(x)?.symbol || QUOTES[x]?.symbol || '?';
+      const dec = (x) => toks.get(x)?.decimals ?? QUOTES[x]?.decimals ?? 18;
+      const kOf = (q) => (q === 'ETH' || q === 'WETH' ? engine.ethUsd : 1);
+
+      // Posisi bot. Yang terbuka dari hasil sinkron terakhir (nilai & PnL kini).
+      const live = new Map(engine.positions.live.map((p) => [p.id, p]));
+      const mine = store.all(`SELECT * FROM positions WHERE (token0=? OR token1=?) AND status IN ('open','closed')
+        ORDER BY COALESCE(closed_ts, opened_ts) DESC LIMIT 200`, a, a);
+      const open = [], closed = [];
+      for (const r of mine) {
+        if (r.status === 'open') {
+          const l = live.get(r.id);
+          if (l?.empty) continue;
+          open.push(l || {
+            ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
+            quoteSide: quoteSideOf(r.token0, r.token1), entrySqrt: Positions.entrySqrtOf(r), curTick: null, inRange: null,
+            costUsd: (r.cost_quote || 0) * kOf(r.quote_symbol), valueUsd: (r.cost_quote || 0) * kOf(r.quote_symbol), feeUsd: 0, pnlUsd: 0, pnlPct: 0,
+            ageHours: (Date.now() - (r.opened_ts || Date.now())) / 3600000,
+          });
+        } else {
+          const cost = (r.cost_quote || 0) * kOf(r.quote_symbol), out = (r.out_quote || 0) * kOf(r.quote_symbol);
+          closed.push({ ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), costUsd: cost, outUsd: out,
+            pnlUsd: out - cost, pnlPct: cost > 0 ? ((out - cost) / cost) * 100 : null });
+        }
+      }
+
+      // Posisi wallet hasil riset (target maupun wallet lain yang pernah dipindai).
+      const labels = new Map(store.all('SELECT address,label FROM wallets').map((w) => [w.address, w.label]));
+      for (const t of store.all('SELECT address,label FROM targets')) if (t.label) labels.set(t.address, t.label);
+      const targets = new Set(store.all('SELECT address FROM targets').map((t) => t.address));
+      const wallets = store.all(`SELECT wallet, venue, token_id, pool_ref, token0, token1, fee, tick_lower, tick_upper, status,
+          opened_ts, closed_ts, invested_q, live_value_q, live_fee_q, fees_q, pnl_q
+        FROM wpositions WHERE token0=? OR token1=? ORDER BY COALESCE(closed_ts, opened_ts) DESC LIMIT 300`, a, a)
+        .map((r) => ({ ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
+          quoteSide: quoteSideOf(r.token0, r.token1), walletLabel: labels.get(r.wallet) || null, isTarget: targets.has(r.wallet),
+          pnlPct: r.invested_q > 0 ? (r.pnl_q / r.invested_q) * 100 : null }));
+
+      // Gerakan target di token ini, dengan keputusan bot atasnya.
+      const activity = store.all(`SELECT a.id, a.ts, a.target, a.venue, a.kind, a.token_id, a.token0, a.token1, a.fee,
+          a.value_quote, a.quote_symbol, d.verdict, d.reason, d.position_id
+        FROM actions a LEFT JOIN decisions d ON d.action_id = a.id
+        WHERE a.token0=? OR a.token1=? ORDER BY a.ts DESC, a.id DESC LIMIT 100`, a, a)
+        .map((r) => ({ ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), targetLabel: labels.get(r.target) || null }));
+
+      // Saldo wallet bot untuk token ini (kalau wallet terpasang).
+      let balance = null;
+      if (engine.exec.address() && meta.decimals != null) {
+        try {
+          const raw = (await engine.exec.balances([a])).get(a) || 0n;
+          balance = { raw: raw.toString(), amount: Number(raw) / 10 ** meta.decimals };
+        } catch { /* saldo tidak terbaca: bagian itu disembunyikan */ }
+      }
+
+      return {
+        token: { ...meta, isQuote: !!QUOTES[a] },
+        market: mk, balance, open, closed, wallets, activity, ethUsd: engine.ethUsd,
+      };
     },
     'GET /api/targets': () => {
       const rows = store.all('SELECT * FROM targets ORDER BY added_ts');

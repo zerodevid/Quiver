@@ -25,6 +25,8 @@ const Scout = lazy(() => import('./pages/Scout'));
 const Settings = lazy(() => import('./pages/Settings'));
 const ManualLp = lazy(() => import('./pages/ManualLp'));
 const Swap = lazy(() => import('./pages/Swap'));
+// Tidak ada di menu: dibuka dari lambang/simbol token di mana pun (#token/0x…).
+const TokenDetail = lazy(() => import('./pages/TokenDetail'));
 
 // Status mesin dipoll SEKALI di sini lalu dibagi ke semua halaman.
 const StatusCtx = createContext(null);
@@ -52,7 +54,7 @@ const NAV = [
     ['settings', 'Pengaturan', SettingsIcon, Settings],
   ]],
 ];
-const PAGES = Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C])));
+const PAGES = { ...Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C]))), token: TokenDetail };
 
 function NavLinks({ page, onPick }) {
   const { t } = useI18n();

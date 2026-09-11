@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, ProgressBar, toast } from '@heroui/react';
 import { get, post } from '../api';
 import { PageHeader, Panel, Stat, DataTable, Empty, PriceRange, Text, Pick } from '../components/ui';
+import { PairName } from '../components/TokenIcon';
 import { usd, tone } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -62,7 +63,8 @@ export default function Scout() {
               <DataTable label="Pasangan" rows={pairs} rowKey={([k]) => k}
                 defaultSort={{ column: 'v', direction: 'descending' }}
                 columns={[
-                  { key: 'k', label: 'Pasangan', sort: ([k]) => k, render: ([k]) => k },
+                  { key: 'k', label: 'Pasangan', sort: ([k]) => k, render: ([k, v]) => (v.token0
+                    ? <PairName token0={v.token0} token1={v.token1} symbol0={v.symbol0} symbol1={v.symbol1} sep="/" /> : k) },
                   { key: 'n', label: 'Posisi', align: 'end', sort: ([, v]) => v.n, render: ([, v]) => v.n },
                   { key: 'v', label: 'Nilai', align: 'end', sort: ([, v]) => v.valueUsd, render: ([, v]) => usd(v.valueUsd, 0) },
                   { key: 'f', label: 'Fee', align: 'end', sort: ([, v]) => v.feeUsd, render: ([, v]) => <span className="text-success">{usd(v.feeUsd)}</span> },
@@ -73,7 +75,7 @@ export default function Scout() {
                 defaultSort={{ column: 'v', direction: 'descending' }}
                 empty={<Empty title="Tidak ada posisi hidup" />}
                 columns={[
-                  { key: 'p', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <div>{p.symbol0}/{p.symbol1}
+                  { key: 'p', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <div><PairName token0={p.poolKey?.currency0} token1={p.poolKey?.currency1} symbol0={p.symbol0} symbol1={p.symbol1} sep="/" />
                     <span className={`ml-2 text-xs ${p.inRange ? 'text-success' : 'text-warning'}`}>{t(p.inRange ? 'in' : 'luar')}</span></div> },
                   { key: 'r', label: 'Rentang harga', sortable: false, render: (p) => <PriceRange lo={p.tickLower} hi={p.tickUpper} cur={p.curTick}
                     dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1} /> },

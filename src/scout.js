@@ -183,7 +183,7 @@ async function scoutWallet(rpc, chain, owner, { blocks = 2_600_000, ethUsd = 250
   const pairs = {};
   for (const r of alive) {
     const k = `${r.symbol0}/${r.symbol1}`;
-    pairs[k] = pairs[k] || { n: 0, valueUsd: 0, feeUsd: 0 };
+    pairs[k] = pairs[k] || { n: 0, valueUsd: 0, feeUsd: 0, token0: r.poolKey.currency0, token1: r.poolKey.currency1, symbol0: r.symbol0, symbol1: r.symbol1 };
     pairs[k].n++; pairs[k].valueUsd += r.valueUsd; pairs[k].feeUsd += r.feeUsd;
   }
   const widths = alive.map((r) => r.widthPct).sort((a, b) => a - b);

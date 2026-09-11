@@ -28,7 +28,29 @@ function hue(addr = '') {
   return h;
 }
 
-export default function TokenIcon({ address, symbol, size = 20, className = '' }) {
+const isAddr = (a) => /^0x[0-9a-f]{40}$/.test(a);
+// Rute halaman detail token; null kalau alamatnya tidak dikenal (tidak ditautkan).
+export const tokenHref = (address) => {
+  const a = (address || '').toLowerCase();
+  return isAddr(a) ? `#token/${a}` : null;
+};
+
+// Klik pada token di dalam baris yang bisa diklik (mis. tombol pilih pool) tidak
+// boleh ikut memicu aksi baris itu.
+const stop = (e) => e.stopPropagation();
+
+// Lambang token; `link` menjadikannya tautan ke halaman detail token.
+export default function TokenIcon({ link = false, ...props }) {
+  const href = link ? tokenHref(props.address) : null;
+  if (!href) return <Icon {...props} />;
+  return (
+    <a href={href} onClick={stop} aria-label={props.symbol || props.address} className={`inline-flex shrink-0 rounded-full transition-opacity hover:opacity-80 ${props.className || ''}`}>
+      <Icon {...props} className="" />
+    </a>
+  );
+}
+
+function Icon({ address, symbol, size = 20, className = '' }) {
   const a = (address || '').toLowerCase();
   const local = KNOWN[a];
   // coba → (gagal) tunggu → ulang → (gagal lagi) henti. Server mungkin masih mengambil.
@@ -64,12 +86,30 @@ export default function TokenIcon({ address, symbol, size = 20, className = '' }
   );
 }
 
-// Sepasang lambang yang saling menindih — lazim untuk pasangan pool.
-export function TokenPair({ token0, token1, symbol0, symbol1, size = 20 }) {
+// Sepasang lambang yang saling menindih — lazim untuk pasangan pool. Tiap lambang
+// menaut ke halaman detail tokennya sendiri.
+export function TokenPair({ token0, token1, symbol0, symbol1, size = 20, link = true }) {
   return (
     <span className="flex shrink-0 items-center" style={{ paddingRight: size * 0.35 }}>
-      <TokenIcon address={token0} symbol={symbol0} size={size} />
-      <TokenIcon address={token1} symbol={symbol1} size={size} className="-ml-2" />
+      <TokenIcon link={link} address={token0} symbol={symbol0} size={size} />
+      <TokenIcon link={link} address={token1} symbol={symbol1} size={size} className="-ml-2" />
+    </span>
+  );
+}
+
+// Simbol token sebagai tautan ke detail token. Tanpa alamat: teks biasa.
+export function TokenSym({ address, symbol, className = '' }) {
+  const href = tokenHref(address);
+  const label = symbol || (address ? address.slice(0, 6) + '…' : '?');
+  if (!href) return <span className={className}>{label}</span>;
+  return <a href={href} onClick={stop} className={`hover:underline ${className}`}>{label}</a>;
+}
+
+// "USDG / OPAI" — tiap simbol menaut ke tokennya masing-masing.
+export function PairName({ token0, token1, symbol0, symbol1, sep = ' / ', className = '' }) {
+  return (
+    <span className={`whitespace-nowrap ${className}`}>
+      <TokenSym address={token0} symbol={symbol0} />{sep}<TokenSym address={token1} symbol={symbol1} />
     </span>
   );
 }

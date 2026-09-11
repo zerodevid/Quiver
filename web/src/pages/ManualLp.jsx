@@ -4,7 +4,7 @@ import { Search, Check, TriangleAlert, Anchor, ArrowRight } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { PageHeader, Notice, PriceRange, Empty, KV } from '../components/ui';
-import TokenIcon, { TokenPair } from '../components/TokenIcon';
+import TokenIcon, { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, num, ago, price, tickPrice, locale } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -109,8 +109,8 @@ function Saldo({ saldo, pool }) {
               <tr key={x.token}>
                 <td className="px-3 py-1.5">
                   <span className="flex items-center gap-2">
-                    <TokenIcon address={x.token} symbol={x.symbol} size={18} />
-                    <span className="font-medium">{x.symbol}</span>
+                    <TokenIcon link address={x.token} symbol={x.symbol} size={18} />
+                    <TokenSym address={x.token} symbol={x.symbol} className="font-medium" />
                   </span>
                 </td>
                 <td className="num px-3 py-1.5 text-end">
@@ -169,13 +169,13 @@ function AutoSwap({ p }) {
               </div>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                 <span className="flex items-center gap-1.5">
-                  <TokenIcon address={s.dari.token} symbol={s.dari.symbol} size={16} />
-                  <span className="num font-medium">{s.taksiran ? '≈ ' : ''}{jml(s.dari.amount)} {s.dari.symbol}</span>
+                  <TokenIcon link address={s.dari.token} symbol={s.dari.symbol} size={16} />
+                  <span className="num font-medium">{s.taksiran ? '≈ ' : ''}{jml(s.dari.amount)} <TokenSym address={s.dari.token} symbol={s.dari.symbol} /></span>
                 </span>
                 <ArrowRight className="size-3.5 text-muted" />
                 <span className="flex items-center gap-1.5">
-                  <TokenIcon address={s.ke.token} symbol={s.ke.symbol} size={16} />
-                  <span className="num font-medium">{jml(s.ke.amount)} {s.ke.symbol}</span>
+                  <TokenIcon link address={s.ke.token} symbol={s.ke.symbol} size={16} />
+                  <span className="num font-medium">{jml(s.ke.amount)} <TokenSym address={s.ke.token} symbol={s.ke.symbol} /></span>
                 </span>
                 {s.dari.usd != null && <span className="num text-xs text-muted">{usd(s.dari.usd)}</span>}
               </div>
@@ -291,7 +291,7 @@ function PilihPool({ pools, onPick }) {
           <button key={p.poolRef} type="button" onClick={() => onPick(p)}
             className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2 text-start last:border-0 hover:bg-default/50">
             <span className="flex min-w-0 items-center gap-2.5">
-              <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={20} />
+              <TokenPair link={false} token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={20} />
               <span className="truncate font-medium">{p.pair}</span>
               <span className="text-[0.6875rem] text-muted uppercase">{p.venue}</span>
               {p.hasHooks && <Anchor className="size-3.5 shrink-0 text-warning" aria-label={t('pool memakai hook')} />}
@@ -440,7 +440,7 @@ export default function ManualLp() {
               <div className="flex items-center gap-3">
                 <TokenPair token0={pool.token0} token1={pool.token1} symbol0={pool.symbol0} symbol1={pool.symbol1} size={30} />
                 <div className="min-w-0">
-                  <div className="text-base font-semibold">{pool.pair}</div>
+                  <div className="text-base font-semibold"><PairName token0={pool.token0} token1={pool.token1} symbol0={pool.symbol0} symbol1={pool.symbol1} sep="/" /></div>
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted">
                     <span className="uppercase">{pool.venue}</span><span>·</span>
                     <span>{pool.dynamicFee ? t('fee dinamis') : t('fee {p}%', { p: num(pool.feePct, 2) })}</span><span>·</span>

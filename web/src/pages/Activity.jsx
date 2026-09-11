@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Plus, Minus, ArrowLeftRight, CircleDollarSign } from 'lucide-react';
 import { usePoll } from '../hooks';
 import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Dot } from '../components/ui';
+import { PairName } from '../components/TokenIcon';
 import { usd, ago, short, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
 import { useI18n, reason } from '../i18n';
 
@@ -51,7 +52,7 @@ export default function Activity() {
                 </div>);
             } },
             { key: 'pair', label: 'Pasangan', sort: (a) => (a.symbol0 ? `${a.symbol0}/${a.symbol1}` : null), render: (a) => (a.symbol0
-              ? <span className="font-medium whitespace-nowrap">{a.symbol0}/{a.symbol1}</span> : <span className="text-muted">—</span>) },
+              ? <PairName token0={a.token0} token1={a.token1} symbol0={a.symbol0} symbol1={a.symbol1} sep="/" className="font-medium" /> : <span className="text-muted">—</span>) },
             { key: 'range', label: 'Rentang harga', sortable: false, render: (a) => (a.tick_lower != null
               ? <PriceRange lo={a.tick_lower} hi={a.tick_upper} dec0={a.dec0} dec1={a.dec1}
                   quoteSide={a.quoteSide} symbol0={a.symbol0} symbol1={a.symbol1} />

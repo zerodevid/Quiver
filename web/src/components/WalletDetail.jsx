@@ -6,7 +6,7 @@ import { Button, Card, ProgressBar, Spinner, toast } from '@heroui/react';
 import { RefreshCw, Plus, Check } from 'lucide-react';
 import { get, post } from '../api';
 import { Panel, DataTable, Empty, Loading, PriceRange, Pick, Notice, Stat, KV } from './ui';
-import { TokenPair } from './TokenIcon';
+import { TokenPair, PairName } from './TokenIcon';
 import PnlCalendar from './PnlCalendar';
 import { usd, kUsd, pct, tone, ago, dur, num, age } from '../fmt';
 import { useI18n, translate as tt } from '../i18n';
@@ -82,7 +82,7 @@ const posCols = (open) => [
     <div className="flex items-center gap-2.5">
       <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={22} />
       <div>
-        <div className="font-medium whitespace-nowrap">{p.symbol0} / {p.symbol1}</div>
+        <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} className="block font-medium" />
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
           <span className="uppercase">{String(p.venue || 'v4')}</span><span>·</span>
           <span className="mono">#{p.token_id}</span>

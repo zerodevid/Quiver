@@ -8,6 +8,8 @@
 // disimpan sebentar di memori: dasbor yang dibuka di dua tab, atau poll berkala
 // halaman detail, tidak boleh menggandakan panggilan ke luar.
 const DS = 'https://api.dexscreener.com/latest/dex/pairs/robinhood/';
+// Semua pool yang memuat token (maks. 30) — /tokens/v1 hanya memberi satu per token.
+const DS_TOKEN = 'https://api.dexscreener.com/token-pairs/v1/robinhood/';
 const GT = 'https://api.geckoterminal.com/api/v2/networks/robinhood/pools/';
 
 // Rentang waktu lilin yang ditawarkan UI -> (timeframe, aggregate) GeckoTerminal.
@@ -67,6 +69,29 @@ class Market {
         websites: (p.info?.websites || []).map((w) => w.url).filter(Boolean).slice(0, 3),
         fetchedAt: Date.now(),
       };
+    });
+  }
+
+  // Semua pool satu token dari DexScreener, likuiditas terbesar di depan — bahan
+  // halaman detail token. Pool pertama jadi sumber grafik harganya.
+  token(address) {
+    const a = String(address).toLowerCase();
+    return this.memo(`dst:${a}`, 30_000, async () => {
+      const j = await this.json(DS_TOKEN + a);
+      const list = Array.isArray(j) ? j : j?.pairs || [];
+      const lc = (x) => String(x || '').toLowerCase();
+      const pairs = list.filter((p) => p?.pairAddress).map((p) => ({
+        pool: lc(p.pairAddress), url: p.url, dexId: p.dexId, labels: p.labels || [],
+        base: { address: lc(p.baseToken?.address), symbol: p.baseToken?.symbol, name: p.baseToken?.name },
+        quote: { address: lc(p.quoteToken?.address), symbol: p.quoteToken?.symbol, name: p.quoteToken?.name },
+        priceUsd: Number(p.priceUsd) || null, priceNative: Number(p.priceNative) || null,
+        priceChange: p.priceChange || {}, volume: p.volume || {}, txns: p.txns || {},
+        liquidityUsd: p.liquidity?.usd ?? null, fdv: p.fdv ?? null, marketCap: p.marketCap ?? null,
+        pairCreatedAt: p.pairCreatedAt ?? null,
+        websites: (p.info?.websites || []).map((w) => w.url).filter(Boolean).slice(0, 3),
+        socials: (p.info?.socials || []).filter((x) => x?.url).map((x) => ({ type: x.type, url: x.url })).slice(0, 4),
+      })).sort((x, y) => (y.liquidityUsd || 0) - (x.liquidityUsd || 0));
+      return { pairs, fetchedAt: Date.now() };
     });
   }
 
