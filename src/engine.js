@@ -825,6 +825,24 @@ class Engine {
     if (rc.timeout) throw new Error(`belum terkonfirmasi setelah 90 detik — tx ${hash} mungkin masih diproses, cek lagi sebentar`);
     if (!rc.ok) throw new Error(`transaksi keluar revert (${hash})`);
     const proceeds = await this.exitProceeds(pos, before, rc.receipt);
+    // Posisi dicatat tertutup DULU — lengkap dengan memecoin sisa yang diterima dan
+    // nilainya di harga tutup — baru sisanya dijual. Kalau penjualan berhasil,
+    // recordLeftoverSale mengganti taksiran itu dengan hasil sesungguhnya; kalau
+    // tersangkut, ekuitas tetap menilainya di harga kini, bukan menghilangkannya.
+    if (plan.full) {
+      const live = this.positions.live.find((p) => p.id === pos.id);
+      let left = null;
+      try { left = await this.leftoverOf(pos, rc.receipt, proceeds?.sqrt ?? live?.curSqrt ?? null); }
+      catch (e) { this.store.log('warn', `sisa #${pos.id} tidak terukur: ${e.message}`, { quiet: true }); }
+      this.positions.markClosed(pos.id, {
+        out0: proceeds?.amount0 ?? live?.amount0, out1: proceeds?.amount1 ?? live?.amount1,
+        outQuote: proceeds?.valueQuote ?? ((live?.valueUsd || 0) + (live?.feeUsd || 0)), txHash: hash,
+        exitSqrt: proceeds?.sqrt ?? live?.curSqrt ?? null, left,
+      });
+    } else {
+      this.store.run('UPDATE positions SET liquidity=? WHERE id=?',
+        (BigInt(pos.liquidity) - BigInt(plan.liquidity)).toString(), pos.id);
+    }
     // Jual memecoin yang BARU diterima dari transaksi keluar ini. Galatnya tidak boleh
     // membatalkan pencatatan keluar — posisinya sudah benar-benar tertutup di chain.
     let sold = null;
@@ -832,17 +850,6 @@ class Engine {
     // Gagal jual masuk antrean coba-ulang (keepLeftover); yang dikabarkan hanya kalau
     // antrean menyerah.
     catch (e) { this.store.log('error', `jual sisa #${pos.id}: ${e.message}`, { quiet: true }); }
-    if (plan.full) {
-      const live = this.positions.live.find((p) => p.id === pos.id);
-      this.positions.markClosed(pos.id, {
-        out0: proceeds?.amount0 ?? live?.amount0, out1: proceeds?.amount1 ?? live?.amount1,
-        outQuote: proceeds?.valueQuote ?? ((live?.valueUsd || 0) + (live?.feeUsd || 0)), txHash: hash,
-        exitSqrt: proceeds?.sqrt ?? live?.curSqrt ?? null,
-      });
-    } else {
-      this.store.run('UPDATE positions SET liquidity=? WHERE id=?',
-        (BigInt(pos.liquidity) - BigInt(plan.liquidity)).toString(), pos.id);
-    }
     return { txHash: hash, sold, note: `${plan.full ? 'tutup penuh' : 'kurangi'} posisi #${pos.id}${sold ? ` · ${sold}` : ''}` };
   }
 
@@ -869,6 +876,33 @@ class Engine {
       });
       return { amount0: amount0.toString(), amount1: amount1.toString(), valueQuote: v ? v.value : null, sqrt: s?.sqrtPriceX96 ?? null };
     } catch (e) { this.store.log('warn', `hasil keluar #${pos.id} tidak terukur: ${e.message}`, { quiet: true }); return null; }   // cadangan: angka sinkron terakhir
+  }
+
+  // Memecoin yang masuk wallet dari transaksi keluar ini + nilainya di harga tutup
+  // (satuan aset kuotasi posisi). Jumlahnya dari log Transfer di receipt — sama
+  // dengan yang akan dijual sellLeftover — bukan dari selisih saldo.
+  async leftoverOf(pos, receipt, sqrt) {
+    const q = this.chain.quoteSideOf(pos.token0, pos.token1);
+    if (!q) return null;
+    const meme = String(q.side === 0 ? pos.token1 : pos.token0).toLowerCase();
+    if (this.chain.quoteSideOf(meme, meme)) return null;
+    const me = this.exec.address().toLowerCase();
+    let got = 0n;
+    for (const l of receipt?.logs || []) {
+      if (l.address.toLowerCase() !== meme || l.topics[0] !== TOPIC.transfer || l.topics.length !== 3) continue;
+      if (('0x' + l.topics[2].slice(-40)).toLowerCase() === me) got += BigInt(l.data);
+    }
+    if (got === 0n) return null;
+    let quote = 0;
+    if (sqrt) {
+      const [t0, t1] = await this.chain.tokens([pos.token0, pos.token1]);
+      const v = this.chain.valueInQuote({
+        sqrtPriceX96: BigInt(sqrt), amount0: q.side === 0 ? 0n : got, amount1: q.side === 0 ? got : 0n,
+        dec0: t0?.decimals ?? 18, dec1: t1?.decimals ?? 18, token0: pos.token0, token1: pos.token1,
+      });
+      quote = v ? v.value : 0;
+    }
+    return { token: meme, amount: got, quote };
   }
 
   // ---- jual sisa memecoin -------------------------------------------------
@@ -914,6 +948,10 @@ class Engine {
       });
       if (!r) throw new Error('Kyber tidak menemukan rute');
       this.dropLeftover(item);
+      try {
+        this.positions.recordLeftoverSale({ posId: item.posId, token: item.token, amount, quoteToken: item.quote,
+          amountOut: r.amountOut, usdOut: r.quote?.usdOut, ethUsd: this.ethUsd });
+      } catch (e) { this.store.log('warn', `catat hasil jual sisa #${item.posId}: ${e.message}`, { quiet: true }); }
       const msg = `jual ${label} → $${(r.quote.usdOut || 0).toFixed(2)} (${r.quote.dex})`;
       if (!quiet) {
         this.notify(`posisi #${item.posId}: ${msg}`, {
@@ -1070,6 +1108,7 @@ class Engine {
     await sekali('rekon', 'rekonsiliasi keluar', this.reconcileExits());
     await this.positions.sync(this.ethUsd);
     await sekali('kas', 'saldo kas', this.refreshCash());
+    await sekali('sisa', 'nilai token sisa', this.positions.refreshLeftovers(this.ethUsd, this.exec.address()));
     const globalRules = rulesFor(this.cfg.rules);
     const triggers = this.positions.exitTriggers(globalRules);
     for (const t of triggers) {
@@ -1143,9 +1182,12 @@ class Engine {
     let cash = this.cash;
     if (this.exec.address() && (!cash || Date.now() - cash.ts > 120_000)) cash = await this.refreshCash().catch(() => null);
     const w = cash ? cash.usd : null;   // tidak terbaca = NULL, bukan 0
+    // Memecoin sisa yang belum terjual ikut dihitung sebagai "posisi": tanpa ini
+    // kurva total anjlok saat posisi tutup dan melonjak lagi saat sisanya terjual.
+    const lo = s.leftoverUsd || 0;
     this.store.run(
       'INSERT OR REPLACE INTO equity(ts,wallet_quote,positions_quote,total_quote,realized_quote,fees_quote,open_positions,pnl_quote) VALUES(?,?,?,?,?,?,?,?)',
-      Date.now(), w, s.exposureUsd, (w || 0) + s.exposureUsd + s.feeUsd, s.realizedUsd, s.feeUsd, s.openCount,
+      Date.now(), w, s.exposureUsd + lo, (w || 0) + s.exposureUsd + lo + s.feeUsd, s.realizedUsd, s.feeUsd, s.openCount,
       s.realizedUsd + s.unrealizedUsd);
   }
 

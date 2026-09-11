@@ -622,6 +622,8 @@ const EN = {
   'Harga masuk {p}': 'Entry price {p}',
   'Harga kini {p}{m}': 'Current price {p}{m}',
   'Harga keluar {p}{m}': 'Exit price {p}{m}',
+  'Token sisa belum dijual': 'Leftover tokens, unsold',
+  ' · sisa token {v}': ' · leftover tokens {v}',
   'Lebar {w}% ({x}×) · tick {lo} … {hi}': 'Width {w}% ({x}×) · ticks {lo} … {hi}',
   'masuk {p}': 'entry {p}',
   'keluar ': 'exit ',

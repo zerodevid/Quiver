@@ -109,6 +109,7 @@ function Composition({ now, ethUsd }) {
   const rows = [
     ['Di posisi LP', now.positionsUsd, t('{n} posisi · {r} in-range', { n: now.openCount, r: now.inRange })],
     ['Fee belum diklaim', now.feeUsd, null],
+    ['Token sisa belum dijual', now.leftoverUsd || 0, null],
     ...(c ? [
       ['USDG', c.usdg, null],
       ['ETH', c.eth * perEth, `${num(c.eth, 5)} ETH`],
@@ -232,6 +233,7 @@ export default function Overview() {
         <Stat label="Total portofolio" value={now ? usd(now.value) : '—'}
           sub={!now ? null : now.cash
             ? t('kas {c} · di posisi {p}', { c: usd(now.cash.usd), p: usd(now.positionsUsd + now.feeUsd) })
+              + ((now.leftoverUsd || 0) > 0.005 ? t(' · sisa token {v}', { v: usd(now.leftoverUsd) }) : '')
             : t('hanya posisi — saldo kas tidak terbaca')} />
         <Stat label="Total PnL" value={now ? usd(now.pnl) : '—'} valueClass={now ? tone(now.pnl) : ''}
           sub={!now ? null : t('terealisasi {r} · berjalan {u}', { r: usd(now.realizedUsd), u: usd(now.unrealizedUsd) })

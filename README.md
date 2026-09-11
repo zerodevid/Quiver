@@ -284,6 +284,8 @@ Both tiers respect `max_slippage_bps` and `max_price_impact_bps`; a swap that wo
 - `out_of_range_minutes`, `stop_loss_pct`, `take_profit_pct`, `max_age_hours` — independent triggers (`0` = disabled).
 - `sell_max_loss_bps` — bound on route loss when liquidating leftover memecoins. A leftover the route refuses is never dropped: it is re-quoted every `leftover_retry_sec` seconds (default 5, one Kyber quote per token per tick) and sold the moment it clears the bound. A loud alert (red banner + alarm on the dashboard, 🚨 Telegram card) fires on the first refusal and every 6 h it stays stuck.
 
+  **Leftovers in the books.** A closed position's `out_quote` first carries the leftover at the pool price of the close (`left_token` / `left_amount` / `left_quote` on the row). When the leftover is sold — by the retry queue or from the Swap page — the sale's actual proceeds replace that estimate (FIFO across positions holding the same token), so realised PnL is what really came back, not a mid-price guess. Until it sells, equity values the leftover at the current pool price (`summary.leftoverUsd`, shown on the Overview composition and Telegram summary), and the difference to the close estimate counts as unrealised PnL. Tokens that leave the wallet outside the bot are treated as sold at the current price. This removed a $150 "dip then jump" in the equity curve around every close that returned memecoins, and turned one position recorded as −$52 into the +$15 it actually made.
+
 ### Filters (`rules.filters`)
 
 `allow_hooks`, `quote_whitelist`, `token_whitelist` / `token_blacklist`, `min_pool_age_minutes`, `min_target_quote_usd`, `max_open_positions`, `cooldown_seconds` (per pool), `venues` (`v4`, `v3`), and `max_fee_bps` (pools with 35 %, 88 %, and even 99 % fees exist on this chain).
@@ -517,6 +519,7 @@ All suites run against the real engine with the chain, transaction sending, and 
 Run everything:
 
 ```bash
+| `node test/sisa.js` | **9** tests for leftover bookkeeping on the bot's own positions: close records the leftover and its close-price estimate, sales (USDG, native ETH, manual FIFO, oversized) replace the estimate with real proceeds, equity values unsold leftovers at the current pool price (close price when unreadable), and tokens gone from the wallet are realised at the current price. |
 for f in test/*.js; do node --no-warnings "$f"; done
 ```
 

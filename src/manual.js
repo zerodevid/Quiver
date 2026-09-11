@@ -716,6 +716,12 @@ class Manual {
     });
     if (!r) throw new Error('Kyber tidak menemukan rute');
     const keluar = Number(r.amountOut) / 10 ** (mo.decimals ?? 18);
+    // Yang dijual mungkin memecoin sisa dari posisi yang sudah tutup: PnL posisinya
+    // dikoreksi ke hasil jual ini (FIFO kalau beberapa posisi menyimpan token yang sama).
+    try {
+      eng.positions.recordLeftoverSale({ token: lc(tokenIn), amount: BigInt(amountRaw), quoteToken: lc(tokenOut),
+        amountOut: r.amountOut, usdOut: r.quote?.usdOut, ethUsd: eng.ethUsd });
+    } catch (e) { this.store.log('warn', `catat hasil jual sisa: ${e.message}`, { quiet: true }); }
     try {
       const row = this.store.get('SELECT detail FROM txs WHERE hash=?', r.hash);
       const d = row?.detail ? JSON.parse(row.detail) : detail;

@@ -71,6 +71,12 @@ CREATE TABLE IF NOT EXISTS positions (
   cost_quote    REAL DEFAULT 0,
   out0          TEXT DEFAULT '0', out1 TEXT DEFAULT '0',
   out_quote     REAL DEFAULT 0,
+  -- Memecoin yang ikut keluar saat posisi tutup dan BELUM dijual. out_quote sudah
+  -- memuat nilainya di harga tutup (left_quote); begitu terjual, out_quote dikoreksi
+  -- ke hasil jual sesungguhnya. Selama masih dipegang, ekuitas menilainya di harga kini.
+  left_token    TEXT,
+  left_amount   TEXT DEFAULT '0',
+  left_quote    REAL DEFAULT 0,
   fees_quote    REAL DEFAULT 0,
   quote_symbol  TEXT,
   tx_open       TEXT, tx_close TEXT,
@@ -241,6 +247,12 @@ class Store {
   }
   // `meta` hanya untuk pendengar, tidak disimpan: {quiet} = masalah yang sedang
   // ditangani jalan cadangan (tetap tercatat, tidak didorong ke chat); {recovered} =
+  if (!posCols.has('left_token')) {
+    db.exec('ALTER TABLE positions ADD COLUMN left_token TEXT');
+    db.exec(`ALTER TABLE positions ADD COLUMN left_amount TEXT DEFAULT '0'`);
+    db.exec('ALTER TABLE positions ADD COLUMN left_quote REAL DEFAULT 0');
+  }
+  }
   // kabar pulih yang menutup peringatan sebelumnya.
   log(level, msg, meta = null) {
     this.run('INSERT INTO logs(ts,level,msg) VALUES(?,?,?)', Date.now(), level, String(msg).slice(0, 2000));

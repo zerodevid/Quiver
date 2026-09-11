@@ -1297,6 +1297,7 @@ class Telegram {
       ['kas wallet', now?.cash ? usd(now.cash.usd) : null],
       ['dalam posisi', usd(s.exposureUsd)],
       ['fee belum diklaim', usd(s.feeUsd)],
+      ['token sisa belum dijual', s.leftoverUsd > 0.005 ? usd(s.leftoverUsd) : null],
       ['modal posisi', usd(s.costUsd)],
       ['belum terealisasi', sgn(s.unrealizedUsd)],
       ['sudah terealisasi', sgn(s.realizedUsd)],

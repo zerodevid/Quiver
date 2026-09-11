@@ -499,6 +499,18 @@ muncul.
 **Yang sengaja TIDAK ada di Telegram**
 
 - Impor atau ekspor kunci privat. Riwayat obrolan tersimpan di server Telegram —
+**Sisa memecoin dalam pembukuan.** `out_quote` posisi yang tutup mula-mula memuat sisa
+memecoin di harga pool saat tutup (`left_token` / `left_amount` / `left_quote`). Begitu
+sisa itu terjual — lewat antrean coba-ulang atau halaman Swap — hasil jual sesungguhnya
+menggantikan taksiran itu (FIFO kalau beberapa posisi menyimpan token yang sama), jadi
+PnL terealisasi adalah yang benar-benar kembali, bukan tebakan harga tengah. Selama
+belum terjual, ekuitas menilainya di harga pool kini (`summary.leftoverUsd`, tampil di
+komposisi Ringkasan dan ringkasan Telegram) dan selisihnya terhadap taksiran tutup
+dihitung sebagai PnL berjalan. Token yang hilang dari wallet di luar bot dianggap
+terjual di harga kini. Ini menghapus "anjlok lalu melonjak" $150 di kurva ekuitas tiap
+kali posisi tutup mengembalikan memecoin, dan mengubah satu posisi yang tercatat −$52
+menjadi +$15 seperti kenyataannya.
+
   bukan tempat untuk kunci. Ganti wallet lewat dasbor.
 - Mengubah URL RPC yang mengandung API key (menambah endpoint biasa tetap bisa).
 
@@ -602,3 +614,9 @@ catatan di commit "dry-run cermin Bang GE": kode bot dijalankan apa adanya tetap
 setiap `exec.send` dicegat dan dieksekusi berantai lewat `eth_simulateV1` pada
 satu blok yang dikunci, sehingga swap → mint → burn → jual sisa saling melihat
 perubahan state.
+`node test/sisa.js` (9 uji) menguji pembukuan sisa memecoin posisi bot: tutup mencatat
+sisa beserta taksiran harga tutupnya, penjualan (USDG, ETH native, manual FIFO, melebihi
+sisa) mengganti taksiran dengan hasil nyata, ekuitas menilai sisa yang belum terjual di
+harga pool kini (harga tutup kalau tak terbaca), dan token yang hilang dari wallet
+direalisasi di harga kini.
+

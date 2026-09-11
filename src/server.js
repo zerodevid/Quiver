@@ -275,7 +275,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const k = (q) => (q === 'ETH' ? eth : 1);
       const s = engine.positions.summary(eth);
       const cash = engine.cash;
-      const value = (cash?.usd || 0) + s.exposureUsd + s.feeUsd;
+      const lo = s.leftoverUsd || 0;
+      const value = (cash?.usd || 0) + s.exposureUsd + lo + s.feeUsd;
       const pnl = s.realizedUsd + s.unrealizedUsd;
 
       // Satu titik tiap 5 menit = 8.640 titik per 30 hari, jauh lebih rapat daripada
@@ -292,7 +293,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // Titik "sekarang" supaya ujung grafik sama dengan angka di kartu, bukan
       // tertinggal sampai 5 menit di belakangnya.
       if (engine.positions.lastSync) {
-        series = [...series, { ts: now, cash: cash ? cash.usd : null, pos: s.exposureUsd, fee: s.feeUsd, total: value, pnl, n: s.openCount, live: true }];
+        series = [...series, { ts: now, cash: cash ? cash.usd : null, pos: s.exposureUsd + lo, fee: s.feeUsd, total: value, pnl, n: s.openCount, live: true }];
       }
       // Titik terakhir SEBELUM jendela: patokan "berubah berapa dalam rentang ini".
       const baseline = from ? store.get('SELECT ts, pnl_quote AS pnl, total_quote AS total, wallet_quote AS cash FROM equity WHERE ts < ? ORDER BY ts DESC LIMIT 1', from) || null : null;
@@ -336,6 +337,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           // Tanpa saldo kas (mode tanpa wallet) tidak bisa dihitung.
           capital: cash ? value - pnl : null,
           openCount: s.openCount, inRange: s.inRange,
+          // memecoin sisa dari posisi yang sudah tutup, belum dijual, di harga kini
+          leftoverUsd: lo,
         },
         stats: {
           closedCount: closed.length, wins, losses: closed.length - wins,

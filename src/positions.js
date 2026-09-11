@@ -37,11 +37,135 @@ class Positions {
     return Number(r.lastInsertRowid);
   }
 
-  markClosed(id, { out0, out1, outQuote, txHash, exitSqrt }) {
+  // `left`: memecoin yang ikut keluar dan belum dijual — {token, amount, quote}; nilai
+  // quote-nya (di harga tutup) sudah termasuk dalam outQuote.
+  markClosed(id, { out0, out1, outQuote, txHash, exitSqrt, left = null }) {
     this.store.run(
-      `UPDATE positions SET status='closed', closed_ts=?, out0=?, out1=?, out_quote=?, tx_close=?, exit_sqrt=?, liquidity='0' WHERE id=?`,
+      `UPDATE positions SET status='closed', closed_ts=?, out0=?, out1=?, out_quote=?, tx_close=?, exit_sqrt=?, liquidity='0',
+         left_token=?, left_amount=?, left_quote=? WHERE id=?`,
       Date.now(), String(out0 ?? 0), String(out1 ?? 0), outQuote ?? 0, txHash ?? null,
-      exitSqrt != null ? String(exitSqrt) : null, id);
+      exitSqrt != null ? String(exitSqrt) : null,
+      left?.token || null, String(left?.amount ?? 0n), left?.quote || 0, id);
+  }
+
+  // ---- memecoin sisa: dari "dinilai harga tutup" ke "hasil jual sesungguhnya" ----
+  // Posisi yang menyimpan memecoin sisa dari tutupnya, urut tertua (FIFO).
+  leftoverRows(token = null) {
+    return this.store.all(`SELECT id, token0, token1, pool_ref, venue, quote_symbol, left_token, left_amount, left_quote, out_quote
+      FROM positions WHERE left_token IS NOT NULL AND left_amount != '0'${token ? ' AND left_token=?' : ''} ORDER BY closed_ts, id`,
+    ...(token ? [String(token).toLowerCase()] : []));
+  }
+
+  // Dipanggil setelah token sisa terjual (otomatis maupun dari halaman Swap): hasil
+  // jual dialokasikan FIFO ke posisi-posisi yang menyimpannya, dan out_quote tiap
+  // posisi dikoreksi — taksiran harga tutup diganti hasil yang benar-benar diterima.
+  // `posId` membatasi ke satu posisi (penjualan otomatis tahu asalnya).
+  recordLeftoverSale({ posId = null, token, amount, quoteToken, amountOut, usdOut, ethUsd }) {
+    const rows = this.leftoverRows(token).filter((r) => posId == null || r.id === posId);
+    if (!rows.length) return [];
+    const sold = BigInt(amount);
+    if (sold <= 0n) return [];
+    // Hasil dalam USD: dari jumlah aset kuotasi yang diterima kalau dikenal, kalau tidak
+    // dari taksiran USD Kyber.
+    const qt = String(quoteToken || '').toLowerCase();
+    const q = this.chain.quoteSideOf(qt, qt);
+    const gotUsd = q && amountOut != null
+      ? (Number(BigInt(amountOut)) / 10 ** q.decimals) * (q.kind === 'eth' ? ethUsd : 1)
+      : (usdOut || 0);
+    let rem = sold;
+    const done = [];
+    for (const r of rows) {
+      if (rem <= 0n) break;
+      const left = BigInt(r.left_amount || '0');
+      const take = left < rem ? left : rem;
+      rem -= take;
+      const frac = Number(take) / Number(left);
+      const share = gotUsd * (Number(take) / Number(sold));
+      const k = r.quote_symbol === 'ETH' ? ethUsd : 1;
+      const gotQuote = share / k;
+      const closeQuote = (r.left_quote || 0) * frac;
+      this.store.run('UPDATE positions SET out_quote = out_quote - ? + ?, left_quote = left_quote - ?, left_amount=? WHERE id=?',
+        closeQuote, gotQuote, closeQuote, (left - take).toString(), r.id);
+      done.push({ id: r.id, take, closeQuote, gotQuote });
+      this.log(`posisi #${r.id}: sisa terjual, hasil ${r.quote_symbol} ${gotQuote.toFixed(2)} menggantikan taksiran tutup ${closeQuote.toFixed(2)}`);
+    }
+    return done;
+  }
+
+  // Nilai memecoin sisa yang masih dipegang, di harga pool SEKARANG. Dibaca tiap
+  // sinkron bersama kas; hasilnya dipakai summary() supaya total portofolio tidak
+  // "anjlok" begitu posisi tutup lalu "melonjak" begitu sisanya terjual.
+  async refreshLeftovers(ethUsd, wallet = null) {
+    let rows = this.leftoverRows();
+    let usd = 0, closeUsd = 0;
+    const items = [];
+    // Token yang ternyata sudah tidak ada di wallet (dijual lewat DEX lain, dikirim
+    // keluar) tidak boleh terus dinilai: kekurangannya dianggap terealisasi di harga
+    // kini, seperti perlakuan riset wallet terhadap transfer keluar tanpa hasil.
+    if (rows.length && wallet) {
+      const toksL = [...new Set(rows.map((r) => r.left_token))];
+      const IF = new ethers.Interface(['function balanceOf(address) view returns (uint256)']);
+      const bals = await this.rpc.ethCallMany(toksL.map((t) => ({ to: t, data: IF.encodeFunctionData('balanceOf', [wallet]) })));
+      let changed = false;
+      for (let i = 0; i < toksL.length; i++) {
+        if (!bals[i] || bals[i] === '0x') continue;
+        const bal = BigInt(bals[i]);
+        const total = rows.filter((r) => r.left_token === toksL[i]).reduce((a, r) => a + BigInt(r.left_amount), 0n);
+        if (bal >= total) continue;
+        const gone = total - bal;
+        const val = await this.valueLeftover(rows.filter((r) => r.left_token === toksL[i]), gone, ethUsd);
+        this.log(`token sisa ${toksL[i].slice(0, 10)}… berkurang di luar bot (${gone} satuan) — dianggap terjual $${val.toFixed(2)}`);
+        this.recordLeftoverSale({ token: toksL[i], amount: gone, quoteToken: null, usdOut: val, ethUsd });
+        changed = true;
+      }
+      if (changed) rows = this.leftoverRows();
+    }
+    if (rows.length) {
+      const v4 = [...new Set(rows.filter((r) => r.venue !== 'v3').map((r) => r.pool_ref))];
+      const slots = new Map();
+      if (v4.length) (await this.chain.slot0V4Many(v4)).forEach((s, i) => slots.set(v4[i], s));
+      for (const a of new Set(rows.filter((r) => r.venue === 'v3').map((r) => r.pool_ref))) {
+        try { slots.set(a, await this.chain.slot0V3(a)); } catch { /* dinilai harga tutup */ }
+      }
+      const toks = await this.chain.tokens([...new Set(rows.flatMap((r) => [r.token0, r.token1]))]);
+      const dec = new Map(toks.filter(Boolean).map((t) => [t.address, t.decimals]));
+      for (const r of rows) {
+        const k = r.quote_symbol === 'ETH' ? ethUsd : 1;
+        const v = this.leftoverQuote(r, BigInt(r.left_amount), slots.get(r.pool_ref), dec);
+        // harga pool tidak terbaca: pakai nilai tutup supaya tidak hilang dari ekuitas
+        const now = (v ?? (r.left_quote || 0)) * k;
+        usd += now; closeUsd += (r.left_quote || 0) * k;
+        items.push({ id: r.id, token: r.left_token, amount: r.left_amount, usd: now });
+      }
+    }
+    this.leftoverVal = { usd, closeUsd, items, ts: Date.now() };
+    return this.leftoverVal;
+  }
+
+  // Nilai `amt` token sisa baris r (satuan aset kuotasi) di harga slot0 `s`; null kalau tak terbaca.
+  leftoverQuote(r, amt, s, dec) {
+    if (!s) return null;
+    const side = r.left_token === r.token0 ? 0 : 1;
+    const v = this.chain.valueInQuote({
+      sqrtPriceX96: s.sqrtPriceX96, amount0: side === 0 ? amt : 0n, amount1: side === 1 ? amt : 0n,
+      dec0: dec.get(r.token0) ?? 18, dec1: dec.get(r.token1) ?? 18, token0: r.token0, token1: r.token1,
+    });
+    return v ? v.value : null;
+  }
+
+  // Nilai USD `amt` satuan token sisa, dinilai lewat pool posisi pertama yang menyimpannya.
+  async valueLeftover(rows, amt, ethUsd) {
+    const r = rows[0];
+    let s = null;
+    try { s = r.venue === 'v3' ? await this.chain.slot0V3(r.pool_ref) : await this.chain.slot0V4(r.pool_ref); } catch { s = null; }
+    const toks = await this.chain.tokens([r.token0, r.token1]);
+    const dec = new Map(toks.filter(Boolean).map((t) => [t.address, t.decimals]));
+    const v = this.leftoverQuote(r, amt, s, dec);
+    const k = r.quote_symbol === 'ETH' ? ethUsd : 1;
+    if (v != null) return v * k;
+    // harga tidak terbaca: proporsional dari nilai tutup
+    const total = rows.reduce((a, x) => a + BigInt(x.left_amount), 0n);
+    return rows.reduce((a, x) => a + (x.left_quote || 0), 0) * k * Number(amt) / Number(total);
   }
 
   // Harga masuk untuk posisi yang dicatat sebelum kolom entry_sqrt ada: diturunkan
@@ -230,9 +354,13 @@ class Positions {
       const k = c.quote_symbol === 'ETH' ? ethUsd : 1;
       realized += ((c.out_quote || 0) - (c.cost_quote || 0)) * k;
     }
+    // Memecoin sisa yang belum dijual: out_quote posisinya masih memakai harga tutup,
+    // selisih ke harga kini adalah PnL yang belum terealisasi.
+    const lo = this.leftoverVal || { usd: 0, closeUsd: 0 };
     return {
       openCount: rows.length, exposureUsd: val, costUsd: cost, feeUsd: fee,
-      unrealizedUsd: val + fee - cost, realizedUsd: realized,
+      unrealizedUsd: val + fee - cost + (lo.usd - lo.closeUsd), realizedUsd: realized,
+      leftoverUsd: lo.usd, leftoverCloseUsd: lo.closeUsd,
       inRange: open.filter((p) => p.inRange).length,
     };
   }
