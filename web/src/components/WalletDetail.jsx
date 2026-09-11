@@ -5,10 +5,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Card, ProgressBar, Spinner, toast } from '@heroui/react';
 import { RefreshCw, Plus, Check } from 'lucide-react';
 import { get, post } from '../api';
-import { Panel, DataTable, Empty, Loading, PriceRange, Pick, Notice } from './ui';
+import { Panel, DataTable, Empty, Loading, PriceRange, Pick, Notice, Stat, KV } from './ui';
 import { TokenPair } from './TokenIcon';
-import { usd, kUsd, pct, tone, ago, dur, num } from '../fmt';
-import { Chip } from '@heroui/react';
+import { usd, kUsd, pct, tone, ago, dur, num, age } from '../fmt';
 import { useI18n, translate as tt } from '../i18n';
 
 export const WINDOWS = [['250000', '~7 jam'], ['900000', '~1 hari'], ['2600000', '~3 hari'], ['6000000', '~7 hari'], ['100000000', 'Semua riwayat']];
@@ -40,7 +39,7 @@ function ScanProgress({ job, compact }) {
   );
   if (compact) {
     return (
-      <Card variant="secondary" className="mb-6"><Card.Content className="flex-row items-center gap-3">
+      <Card variant="secondary" className="mb-4"><Card.Content className="flex-row items-center gap-3">
         <Spinner size="sm" color="current" />
         <div className="flex-1"><div className="mb-2 text-sm">{t('Memperbarui dari chain — {phase}', { phase: phaseText(job) })} <span className="text-muted">· {el}</span></div>{bar}</div>
       </Card.Content></Card>
@@ -80,9 +79,10 @@ function Calendar({ daily }) {
   for (let d = 1; d <= lastDay; d++) {
     const v = daily[`${prefix}-${String(d).padStart(2, '0')}`];
     cells.push(
-      <div key={d} className={`flex min-h-16 flex-col justify-between rounded-md border p-2 ${v != null ? 'border-border bg-surface-secondary' : 'border-border/60'}`}>
-        <span className="text-xs text-muted">{d}</span>
-        {v != null && <span className={`num text-xs font-semibold ${tone(v)}`}>{usd(v)}</span>}
+      <div key={d} className={`flex min-h-14 flex-col justify-between rounded-md border p-1.5 ${v == null ? 'border-border/60'
+        : v > 0.005 ? 'border-success/30 bg-success/10' : v < -0.005 ? 'border-danger/30 bg-danger/10' : 'border-border bg-default/50'}`}>
+        <span className="text-[0.6875rem] text-muted">{d}</span>
+        {v != null && <span className={`num truncate text-[0.6875rem] font-semibold ${tone(v)}`}>{kUsd(v)}</span>}
       </div>,
     );
   }
@@ -96,7 +96,7 @@ function Calendar({ daily }) {
         </div>
         <span className="text-sm text-muted">{t('Total bulan ini')} <span className={`num font-medium ${tone(total)}`}>{usd(total)}</span></span>
       </div>
-      <div className="grid grid-cols-7 gap-1.5">
+      <div className="grid grid-cols-7 gap-1">
         {(locale === 'en' ? ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] : ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'])
           .map((n) => <div key={n} className="pb-1 text-center text-xs text-muted">{n}</div>)}
         {cells}
@@ -105,23 +105,16 @@ function Calendar({ daily }) {
   );
 }
 
-function StatGrid({ s }) {
-  const { t } = useI18n();
-  const items = [
-    ['Posisi ditutup', s.closedCount ?? 0],
-    ['Win rate', <span className={(s.winRatePct || 0) >= 50 ? 'text-success' : 'text-danger'}>{(s.winRatePct || 0).toFixed(2)}%</span>],
+function Details({ s }) {
+  const rows = [
     ['Rata-rata modal', usd(s.avgInvestedUsd || 0)],
-    ['Fee didapat', <span className="text-success">{kUsd(s.feeEarnedUsd || 0)}</span>],
     ['Laba per posisi', <span className={tone(s.expectedValueUsd)}>{usd(s.expectedValueUsd || 0)}</span>],
+    ['Posisi terbaik', <span className="text-success">{usd(s.bestUsd || 0)}</span>],
+    ['Posisi terburuk', <span className="text-danger">{usd(s.worstUsd || 0)}</span>],
     ['Nilai posisi terbuka', usd(s.openValueUsd || 0)],
-    ['Terbaik / terburuk', <span><span className="text-success">{usd(s.bestUsd || 0)}</span> / <span className="text-danger">{usd(s.worstUsd || 0)}</span></span>],
     ['Belum terealisasi', <span className={tone(s.unrealizedUsd)}>{usd(s.unrealizedUsd || 0)}</span>],
   ];
-  return (
-    <dl className="grid grid-cols-2 gap-x-6 gap-y-4">
-      {items.map(([k, v]) => <div key={k}><dt className="text-xs text-muted">{t(k)}</dt><dd className="num mt-0.5 font-medium">{v}</dd></div>)}
-    </dl>
-  );
+  return <div className="divide-y divide-border">{rows.map(([k, v]) => <KV key={k} label={k}>{v}</KV>)}</div>;
 }
 
 // Fee total = yang sudah ditarik + yang masih menempel di posisi.
@@ -134,14 +127,14 @@ const posCols = (open) => [
       <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={22} />
       <div>
         <div className="font-medium whitespace-nowrap">{p.symbol0} / {p.symbol1}</div>
-        <div className="mt-1 flex items-center gap-1.5">
-          <Chip size="sm" variant="soft">Uniswap {String(p.venue || 'v4').toUpperCase()}</Chip>
-          <span className="mono text-xs text-muted">#{p.token_id}</span>
+        <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
+          <span className="uppercase">{String(p.venue || 'v4')}</span><span>·</span>
+          <span className="mono">#{p.token_id}</span>
           {p.incomplete ? <span className="text-xs text-warning" title={tt('Sebagian riwayat di luar jendela pindai')}>{tt('parsial')}</span> : null}
         </div>
       </div>
     </div>) },
-  { key: 'age', label: 'Umur', sort: (p) => p.ageHours, render: (p) => <span className="whitespace-nowrap text-muted">{p.ageHours == null ? '—' : p.ageHours < 24 ? p.ageHours.toFixed(2) + tt(' j') : (p.ageHours / 24).toFixed(1) + tt(' hr')}</span> },
+  { key: 'age', label: 'Umur', align: 'end', sort: (p) => p.ageHours, render: (p) => <span className="whitespace-nowrap text-muted">{age(p.ageHours)}</span> },
   { key: 'inv', label: 'Modal', align: 'end', sort: (p) => p.invested_q, render: (p) => usd(p.invested_q) },
   ...(open ? [{ key: 'val', label: 'Nilai', align: 'end', sort: (p) => p.live_value_q, render: (p) => usd(p.live_value_q) }] : []),
   { key: 'fee', label: 'Fee total', align: 'end', sort: feeTotal, render: (p) => {
@@ -150,11 +143,11 @@ const posCols = (open) => [
     return (
       <div className="text-success" title={open ? tt('sudah ditarik {c} · belum diklaim {u}', { c: usd(claimed), u: usd(unclaimed) }) : undefined}>
         {usd(f)}
-        <div className="text-xs text-muted">{p.invested_q > 0 ? ((f / p.invested_q) * 100).toFixed(2) + '%' : ''}</div>
+        <div className="text-xs text-muted">{p.invested_q > 0 ? pct((f / p.invested_q) * 100, 2).replace('+', '') : ''}</div>
       </div>);
   } },
   { key: 'pnl', label: open ? 'uPnL' : 'PnL', align: 'end', sort: (p) => p.pnl_q, render: (p) => (<div className={tone(p.pnl_q)}>{usd(p.pnl_q)}<div className="text-xs">{p.pnlPct == null ? '' : pct(p.pnlPct, 2)}</div></div>) },
-  { key: 'dpr', label: 'DPR', align: 'end', sort: (p) => p.dprPct, render: (p) => <span className={tone(p.dprPct)}>{p.dprPct == null ? '—' : Math.abs(p.dprPct) >= 1000 ? (p.dprPct / 1000).toFixed(2) + 'k%' : p.dprPct.toFixed(2) + '%'}</span> },
+  { key: 'dpr', label: 'DPR', align: 'end', sort: (p) => p.dprPct, render: (p) => <span className={tone(p.dprPct)}>{p.dprPct == null ? '—' : Math.abs(p.dprPct) >= 1000 ? pct(p.dprPct / 1000, 2).replace('%', 'k%') : pct(p.dprPct, 2)}</span> },
   { key: 'rng', label: 'Rentang harga', sortable: false, render: (p) => (
     <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={open ? p.curTick : null}
       dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1}
@@ -281,21 +274,21 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
   };
 
   const toolbar = (
-    <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-      <p className="text-sm text-muted">
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <p className="text-xs text-muted">
         {data?.found
           ? t('Diperbarui {when} · blok {from}–{to}', { when: ago(data.lastScanTs), from: num(data.scannedFrom || 0), to: num(data.scannedTo || 0) })
           : t('Sekali dipindai, data disimpan — membuka lagi tidak memanggil chain.')}
-        {data?.found && <span className="block text-xs">{t('Diperbarui otomatis saat wallet ini beraksi, dan saat dibuka bila lebih dari 5 menit.')}</span>}
+        {data?.found && <span className="block">{t('Diperbarui otomatis saat wallet ini beraksi, dan saat dibuka bila lebih dari 5 menit.')}</span>}
         {bgFailed && <span className="block text-xs text-warning">{t('Pembaruan otomatis gagal: {e} — dicoba lagi sebentar lagi.', { e: job.error })}</span>}
       </p>
       <div className="flex flex-wrap items-end gap-2">
         {data?.found && (
-          <Button isPending={running && job?.mode === 'refresh'} isDisabled={running} onPress={() => startScan(blocks, 'refresh')}>
+          <Button size="sm" isPending={running && job?.mode === 'refresh'} isDisabled={running} onPress={() => startScan(blocks, 'refresh')}>
             <RefreshCw className="size-4" />{t('Perbarui')}</Button>
         )}
-        <Pick className="w-40" value={blocks} onChange={setBlocks} options={WINDOWS} />
-        <Button variant="outline" isPending={running && job?.mode !== 'refresh'} isDisabled={running} onPress={() => startScan()}>
+        <Pick className="w-36" aria="Jendela pindai" value={blocks} onChange={setBlocks} options={WINDOWS} />
+        <Button size="sm" variant="outline" isPending={running && job?.mode !== 'refresh'} isDisabled={running} onPress={() => startScan()}>
           {t('Pindai ulang')}</Button>
       </div>
     </div>
@@ -305,7 +298,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
   return (
     <>
       {toolbar}
-      {job?.status === 'gagal' && !bgFailed && <div className="mb-6"><Notice status="danger" title="Pindai gagal">{t('{e} — coba pindai ulang.', { e: job.error })}</Notice></div>}
+      {job?.status === 'gagal' && !bgFailed && <div className="mb-4"><Notice status="danger" title="Pindai gagal">{t('{e} — coba pindai ulang.', { e: job.error })}</Notice></div>}
       {running && !data?.found ? <ScanProgress job={job} />
         : !data?.found ? (
           <Card><Card.Content className="flex-row items-center justify-between gap-4">
@@ -315,24 +308,28 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
         ) : (
           <>
             {running && <ScanProgress job={job} compact />}
-            <div className="mb-6 grid gap-4 lg:grid-cols-5">
-              <Panel className="lg:col-span-2">
-                <div className="mb-5 flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-xs font-medium uppercase tracking-wider text-muted">{t('Total profit (tertutup)')}</div>
-                    <div className={`num mt-1 text-3xl font-semibold tracking-tight ${tone(s.totalProfitUsd)}`}>{kUsd(s.totalProfitUsd || 0)}</div>
-                  </div>
-                  {showTargetButton && (data.isTarget
-                    ? <span className="flex items-center gap-1 text-sm text-success"><Check className="size-4" />{t('Sudah jadi target')}</span>
-                    : <Button size="sm" variant="outline" onPress={makeTarget}><Plus className="size-3.5" />{t('Jadikan target')}</Button>)}
-                </div>
-                <StatGrid s={s} />
-                {s.incompleteCount > 0 && <div className="mt-5"><Notice status="warning">{t('{n} posisi riwayatnya terpotong jendela pindai — tidak ikut dihitung. Perluas jendela untuk melengkapinya.', { n: s.incompleteCount })}</Notice></div>}
+            <div className="mb-3 grid grid-cols-2 gap-3 xl:grid-cols-4">
+              <Stat label="Total profit (tertutup)" value={kUsd(s.totalProfitUsd || 0)} valueClass={tone(s.totalProfitUsd)}
+                sub={t('{n} posisi ditutup', { n: s.closedCount ?? 0 })} />
+              <Stat label="Win rate" value={`${(s.winRatePct || 0).toFixed(1)}%`} valueClass={(s.winRatePct || 0) >= 50 ? 'text-success' : 'text-danger'}
+                sub={t('laba per posisi {v}', { v: usd(s.expectedValueUsd || 0) })} />
+              <Stat label="Fee didapat" value={kUsd(s.feeEarnedUsd || 0)}
+                sub={s.avgInvestedUsd ? t('modal rata-rata {v}', { v: usd(s.avgInvestedUsd, 0) }) : null} />
+              <Stat label="Belum terealisasi" value={usd(s.unrealizedUsd || 0)} valueClass={tone(s.unrealizedUsd)}
+                sub={t('{n} posisi berjalan', { n: data.open.length })} />
+            </div>
+            {s.incompleteCount > 0 && <div className="mb-3"><Notice status="warning">{t('{n} posisi riwayatnya terpotong jendela pindai — tidak ikut dihitung. Perluas jendela untuk melengkapinya.', { n: s.incompleteCount })}</Notice></div>}
+            <div className="mb-4 grid items-start gap-3 lg:grid-cols-5">
+              <Panel title="Rincian" className="lg:col-span-2" bodyClass="px-4 py-1"
+                action={showTargetButton && (data.isTarget
+                  ? <span className="flex items-center gap-1 text-xs font-medium text-success"><Check className="size-3.5" />{t('Sudah jadi target')}</span>
+                  : <Button size="sm" variant="outline" onPress={makeTarget}><Plus className="size-3.5" />{t('Jadikan target')}</Button>)}>
+                <Details s={s} />
               </Panel>
               <Panel title="Riwayat profit harian" className="lg:col-span-3"><Calendar daily={data.daily} /></Panel>
             </div>
 
-            <Panel title={t('Posisi berjalan ({n})', { n: data.open.length })} className="mb-6" bodyClass="p-0"
+            <Panel title={t('Posisi berjalan ({n})', { n: data.open.length })} className="mb-4" bodyClass="p-0"
               action={<Totals rows={data.open} />}>
               <DataTable label="Posisi berjalan" rows={data.open} rowKey={(p) => p.token_id} columns={posCols(true)}
                 searchable defaultSort={{ column: 'val', direction: 'descending' }}

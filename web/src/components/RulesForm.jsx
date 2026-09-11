@@ -19,16 +19,18 @@ export default function RulesForm({ value, onChange }) {
   const { t } = useI18n();
   if (!value) return null;
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6">
       {SCHEMA.map((g, gi) => {
         const visible = g.fields.filter((f) => !f.when || f.when(value));
         if (!visible.length) return null;
         return (
           <Fragment key={g.group}>
             {gi > 0 && <Separator />}
-            <section>
-              <h3 className="mb-4 text-sm font-semibold">{t(g.group)}</h3>
-              <div className="grid gap-x-6 gap-y-5 md:grid-cols-2 xl:grid-cols-3">
+            {/* Judul kelompok di kiri, field di kanan: form panjang jadi mudah dipindai
+                — mata turun lewat kolom judul, bukan membaca setiap label. */}
+            <section className="grid gap-x-8 gap-y-4 lg:grid-cols-[11rem_minmax(0,1fr)]">
+              <h3 className="text-sm font-semibold lg:pt-1">{t(g.group)}</h3>
+              <div className="grid gap-x-5 gap-y-4 md:grid-cols-2 xl:grid-cols-3">
                 {visible.map((f) => {
                   const v = dig(value, f.path);
                   const set = (nv) => onChange(put(value, f.path, nv));

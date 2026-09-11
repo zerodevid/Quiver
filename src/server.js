@@ -153,7 +153,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         lastSync: engine.positions.lastSync,
       };
     },
-    'GET /api/positions': () => ({ positions: engine.positions.live, closed: store.all("SELECT * FROM positions WHERE status='closed' ORDER BY closed_ts DESC LIMIT 100") }),
+    'GET /api/positions': () => {
+      // Posisi tertutup cuma menyimpan alamat token; tanpa simbol, tabelnya hanya
+      // deretan nomor NFT yang tidak bisa dikenali.
+      const closed = store.all("SELECT * FROM positions WHERE status='closed' ORDER BY closed_ts DESC LIMIT 100");
+      const toks = new Map(store.all('SELECT address,symbol FROM tokens').map((t) => [t.address, t.symbol]));
+      for (const r of closed) {
+        r.symbol0 = toks.get(r.token0) || null;
+        r.symbol1 = toks.get(r.token1) || null;
+      }
+      return { positions: engine.positions.live, closed };
+    },
     'GET /api/targets': () => {
       const rows = store.all('SELECT * FROM targets ORDER BY added_ts');
       for (const r of rows) {

@@ -8,27 +8,104 @@
   font-display: swap;
 }
 
-/* Klasik & bersih: font Inter, sudut sedikit lebih kecil, tanpa bayangan/gradien. */
+/* ---------------------------------------------------------------------------
+   Dasbor angka, bukan halaman promosi: rapat, datar, tanpa perhiasan.
+   Semua penyetelan dilakukan lewat token resmi HeroUI supaya seluruh komponen
+   ikut berubah sekaligus — tidak ada gaya per-komponen yang dirakit tangan.
+   --------------------------------------------------------------------------- */
+
+/* Akar 15px, bukan 16px. rem dipakai Tailwind untuk jarak DAN ukuran huruf, jadi
+   satu angka ini merapatkan seluruh dasbor ~6% tanpa menyentuh satu pun kelas. */
+html { font-size: 15px; }
+
 :root {
   --default-font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  /* Sudut tegas. Kartu diberi sudutnya sendiri di bawah. */
+  --radius: 0.375rem;
 }
-body { font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiased; }
-.num { font-variant-numeric: tabular-nums; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8125rem; }
+.dark, .light { --radius: 0.375rem; }
+
+body {
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+/* Angka harus sejajar antarbaris supaya kolom uang bisa dibaca menurun. */
+.num, .mono, table { font-variant-numeric: tabular-nums; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8125rem; letter-spacing: -0.01em; }
 td .mono { white-space: nowrap; }
 
-/* Sudut lebih tegas untuk kesan klasik. Semua radius HeroUI diturunkan dari --radius. */
-:root, .dark, .light { --radius: 0.375rem; }
-/* Field (input, select, textarea, dll.): tema bawaan HeroUI mematikan garis tepinya
-   (--field-border-width: 0; --field-border: transparent). Di dalam kartu, isi field
-   hampir sewarna dengan kartu sehingga kolomnya tidak terlihat. Garis tepi 1px dengan
-   kontras >= 3:1 terhadap kartu (WCAG 1.4.11) dinyalakan lewat token resmi HeroUI. */
-:root, .light { --field-border-width: 1px; --border-width-field: 1px; --field-border: oklch(0.64 0.005 286); }
-.dark { --field-border-width: 1px; --border-width-field: 1px; --field-border: oklch(0.55 0.006 286); }
-/* Jalur switch saat MATI: bawaannya --default (abu sangat muda, 1,19:1 terhadap kartu).
-   Disamakan dengan garis tepi field supaya semua kontrol form sama-sama >= 3:1. */
+/* --- warna semantik -------------------------------------------------------
+   Bawaan HeroUI memakai hijau/merah neon (chroma ~0,19 pada lightness 73%):
+   terbaca seperti papan iklan, dan hijaunya cuma 2,1:1 di atas kartu putih.
+   Diturunkan jadi warna bursa: gelap & lebih kalem di terang, terang & kalem
+   di gelap. Varian -soft (chip, alert) diturunkan HeroUI dari nilai ini. */
+:root, .light {
+  --success: oklch(0.55 0.125 150);
+  --danger: oklch(0.545 0.185 27);
+  --warning: oklch(0.58 0.115 62);
+  --accent: oklch(0.55 0.175 257);
+}
+.dark {
+  --success: oklch(0.76 0.15 152);
+  --danger: oklch(0.71 0.175 22);
+  --warning: oklch(0.79 0.13 70);
+  --accent: oklch(0.68 0.16 256);
+}
+
+/* --- permukaan ------------------------------------------------------------
+   Kartu bawaan HeroUI: sudut 18px, tanpa garis tepi, mengambang di atas bayangan.
+   Untuk tabel dan angka yang berjajar, kotak bergaris lebih jelas batasnya dan
+   tidak membuat halaman terlihat seperti tumpukan kartu nama. */
+.card {
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+:root, .light { --border: oklch(0.885 0.004 286); }
+.dark { --border: oklch(0.29 0.006 286); }
+
+/* Field (input, select, textarea): tema bawaan HeroUI mematikan garis tepinya,
+   sehingga isinya hampir sewarna kartu. Garis 1px dengan kontras >= 3:1 terhadap
+   kartu (WCAG 1.4.11) dinyalakan lewat token resmi. */
+:root, .light { --field-border-width: 1px; --border-width-field: 1px; --field-border: oklch(0.7 0.005 286); }
+.dark { --field-border-width: 1px; --border-width-field: 1px; --field-border: oklch(0.45 0.006 286); }
+/* Jalur switch saat MATI bawaannya abu sangat muda (1,19:1 terhadap kartu). */
 .switch { --switch-control-bg: var(--field-border); }
 
 /* Tombol & chip bawaannya berbentuk pil; samakan dengan radius field. */
 .button { border-radius: var(--radius-field); }
-.chip { border-radius: calc(var(--radius) * 1); }
+.chip { border-radius: calc(var(--radius) * 1); font-variant-numeric: tabular-nums; }
+
+/* --- tabel ----------------------------------------------------------------
+   Kepala tabel bawaan berupa pil abu bersudut 18px dengan garis pemisah vertikal
+   di tiap kolom — di dalam kartu yang rata tepi, itu terlihat seperti tombol yang
+   melayang. Diganti kepala datar bergaris bawah, baris lebih rapat, dan sorot baris. */
+.table__column {
+  border-radius: 0 !important;
+  background-color: color-mix(in oklab, var(--surface) 96%, var(--foreground) 4%);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.7188rem;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.table__column::after { content: none !important; }
+.table__cell { padding-block: calc(var(--spacing) * 2.5); }
+.table__cell { border-color: var(--border); }
+.table__body .table__row:last-child .table__cell { border-bottom-width: 0; }
+.table__body .table__row { transition: background-color 0.12s; }
+.table__body .table__row:hover { background-color: color-mix(in oklab, var(--foreground) 2.5%, transparent); }
+
+/* Batang gulir tipis; bawaan macOS sudah begitu, Windows/Linux belum. */
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+
+/* Peringatan: bawaan HeroUI berupa kartu putih melayang berbayang — terbaca
+   seperti notifikasi yang tertinggal. Dijadikan kotak datar berwarna tipis sesuai
+   statusnya, sehingga sifatnya (bahaya/peringatan) terlihat sebelum dibaca. */
+.alert { box-shadow: none !important; border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.625rem 0.75rem; }
+.alert--warning { background: color-mix(in oklab, var(--warning) 8%, var(--surface)); border-color: color-mix(in oklab, var(--warning) 30%, transparent); }
+.alert--danger { background: color-mix(in oklab, var(--danger) 7%, var(--surface)); border-color: color-mix(in oklab, var(--danger) 28%, transparent); }
+.alert--success { background: color-mix(in oklab, var(--success) 7%, var(--surface)); border-color: color-mix(in oklab, var(--success) 28%, transparent); }
+.alert--accent { background: color-mix(in oklab, var(--accent) 7%, var(--surface)); border-color: color-mix(in oklab, var(--accent) 28%, transparent); }
+.alert__title { font-size: 0.8125rem; font-weight: 600; }
+.alert__description { font-size: 0.8125rem; }

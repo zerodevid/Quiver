@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Card, Chip, Separator, Spinner, toast } from '@heroui/react';
+import { Button, Card, Spinner, toast } from '@heroui/react';
 import { Search, Check, TriangleAlert, Anchor } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
-import { PageHeader, Panel, Notice, PriceRange, Empty } from '../components/ui';
+import { PageHeader, Notice, PriceRange, Empty, KV } from '../components/ui';
+import { TokenPair } from '../components/TokenIcon';
 import { usd, num, ago } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -13,11 +14,13 @@ const LEBAR = [5, 10, 25, 50, 100];
 // selalu diisi dari beberapa nilai yang itu-itu saja, jadi mengetik itu kerja sia-sia.
 function Chips({ options, value, onPick }) {
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap gap-1.5">
       {options.map(([v, label]) => (
-        <Button key={String(v)} size="sm" variant={value === v ? 'primary' : 'outline'} onPress={() => onPick(v)}>
+        <button key={String(v)} type="button" onClick={() => onPick(v)} aria-pressed={value === v}
+          className={`num h-8 rounded-md border px-3 text-[0.8125rem] font-medium transition-colors ${value === v
+            ? 'border-accent bg-accent/10 text-accent' : 'border-border text-foreground hover:bg-default/60'}`}>
           {label}
-        </Button>
+        </button>
       ))}
     </div>
   );
@@ -26,19 +29,17 @@ function Chips({ options, value, onPick }) {
 function Langkah({ n, title, done, children, action }) {
   const { t } = useI18n();
   return (
-    <Card>
-      <Card.Content className="gap-4">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <span className={`flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${done ? 'bg-success text-success-foreground' : 'bg-surface-secondary text-muted'}`}>
-              {done ? <Check className="size-3.5" /> : n}
-            </span>
-            <h2 className="font-semibold">{t(title)}</h2>
-          </div>
-          {action}
+    <Card className="gap-0! p-0!">
+      <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="flex items-center gap-2.5">
+          <span className={`flex size-5 shrink-0 items-center justify-center rounded-full text-[0.6875rem] font-semibold ${done ? 'bg-success text-success-foreground' : 'border border-border text-muted'}`}>
+            {done ? <Check className="size-3" strokeWidth={3} /> : n}
+          </span>
+          <h2 className="text-sm font-semibold">{t(title)}</h2>
         </div>
-        {children}
-      </Card.Content>
+        {action}
+      </div>
+      <div className="p-4">{children}</div>
     </Card>
   );
 }
@@ -85,7 +86,7 @@ function PilihPool({ pools, onPick }) {
       <div className="relative">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('Cari pasangan, atau tempel alamat token')}
-          className="h-9 w-full rounded-md border border-field-border bg-surface-secondary pl-8 pr-3 text-sm outline-none focus:border-accent" />
+          className="h-9 w-full rounded-md border border-field-border bg-surface pl-8 pr-3 text-sm outline-none focus:border-accent" />
       </div>
 
       {/* Alamat token: pool-nya dicari langsung dari chain, bukan dari yang sudah dikenal. */}
@@ -120,14 +121,16 @@ function PilihPool({ pools, onPick }) {
             sub={isAlamat ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.' : 'Tempel alamat token untuk mencari poolnya langsung dari chain.'} />
         ) : hasil.map((p) => (
           <button key={p.poolRef} type="button" onClick={() => onPick(p)}
-            className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2.5 text-start last:border-0 hover:bg-surface-secondary">
-            <span className="flex min-w-0 items-center gap-2">
+            className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2 text-start last:border-0 hover:bg-default/50">
+            <span className="flex min-w-0 items-center gap-2.5">
+              <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={20} />
               <span className="truncate font-medium">{p.pair}</span>
+              <span className="text-[0.6875rem] text-muted uppercase">{p.venue}</span>
               {p.hasHooks && <Anchor className="size-3.5 shrink-0 text-warning" aria-label={t('pool memakai hook')} />}
             </span>
-            <span className="flex shrink-0 items-center gap-3 text-sm text-muted">
-              <span className="num">{fee(p)}</span>
-              <span className="hidden sm:inline">{p.kosong === true ? t('kosong') : p.lastTs ? ago(p.lastTs) : '—'}</span>
+            <span className="flex shrink-0 items-center gap-4 text-xs text-muted">
+              <span className="num w-12 text-end">{fee(p)}</span>
+              <span className="hidden w-20 text-end sm:inline">{p.kosong === true ? t('kosong') : p.lastTs ? ago(p.lastTs) : '—'}</span>
             </span>
           </button>
         ))}
@@ -234,17 +237,22 @@ export default function ManualLp() {
         </Notice>
       )}
 
-      <div className="mt-4 grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-        <div className="flex min-w-0 flex-col gap-4">
+      <div className="mt-4 grid items-start gap-3 lg:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="flex min-w-0 flex-col gap-3">
           <Langkah n={1} title="Pilih pool" done={!!pool}
             action={pool && !gantiPool ? <Button size="sm" variant="outline" onPress={() => setGantiPool(true)}>{t('Ganti')}</Button> : null}>
             {pools === null ? <Spinner /> : pool && !gantiPool ? (
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                <span className="text-lg font-semibold">{pool.pair}</span>
-                <Chip size="sm" variant="soft">{pool.venue}</Chip>
-<Chip size="sm" variant="soft">{pool.dynamicFee ? t('fee dinamis') : t('fee {p}%', { p: num(pool.feePct, 2) })}</Chip>
-                {pool.hasHooks && <Chip size="sm" variant="soft" color="warning">{t('pakai hook')}</Chip>}
-                <span className="text-sm text-muted">{pool.lastTs ? t('aksi terakhir {a}', { a: ago(pool.lastTs) }) : t('belum ada aksi terpantau')}</span>
+              <div className="flex items-center gap-3">
+                <TokenPair token0={pool.token0} token1={pool.token1} symbol0={pool.symbol0} symbol1={pool.symbol1} size={30} />
+                <div className="min-w-0">
+                  <div className="text-base font-semibold">{pool.pair}</div>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted">
+                    <span className="uppercase">{pool.venue}</span><span>·</span>
+                    <span>{pool.dynamicFee ? t('fee dinamis') : t('fee {p}%', { p: num(pool.feePct, 2) })}</span><span>·</span>
+                    {pool.hasHooks && <><span className="text-warning">{t('pakai hook')}</span><span>·</span></>}
+                    <span>{pool.lastTs ? t('aksi terakhir {a}', { a: ago(pool.lastTs) }) : t('belum ada aksi terpantau')}</span>
+                  </div>
+                </div>
               </div>
             ) : (
               <PilihPool pools={pools} onPick={(x) => { setPool(x); setGantiPool(false); }} />
@@ -254,10 +262,10 @@ export default function ManualLp() {
           <Langkah n={2} title="Nominal" done={siap}>
             <div className="flex flex-col gap-3">
               <div className="flex items-center gap-2">
-                <span className="text-2xl text-muted">$</span>
+                <span className="text-xl text-muted">$</span>
                 <input value={nominal} onChange={(e) => setNominal(e.target.value.replace(/[^\d.,]/g, ''))}
                   inputMode="decimal" placeholder="0" aria-label={t('Nominal posisi')}
-                  className="num h-12 w-40 rounded-md border border-field-border bg-surface-secondary px-3 text-2xl font-semibold outline-none focus:border-accent" />
+                  className="num h-11 w-44 rounded-md border border-field-border bg-surface px-3 text-xl font-semibold outline-none focus:border-accent" />
               </div>
               {/* "Maks" dihitung dari batas yang benar-benar berlaku, jadi menekannya
                   tidak pernah mengantar ke penolakan. Nilai yang kebetulan sama
@@ -265,7 +273,7 @@ export default function ManualLp() {
               <Chips value={usdNum} onPick={(v) => setNominal(String(v))}
                 options={[25, 50, 100, 200].filter((v) => !maks || v < maks).map((v) => [v, `$${v}`])
                   .concat(maks > 0 ? [[maks, t('Maks {v}', { v: usd(maks, 0) })]] : [])} />
-              <p className="text-sm text-muted">
+              <p className="text-xs text-muted">
                 {kas != null ? t('Kas tersedia {k}. Nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.', { k: usd(kas) })
                   : t('Nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.')}
               </p>
@@ -276,7 +284,7 @@ export default function ManualLp() {
             <div className="flex flex-col gap-3">
               <Chips value={full ? 'full' : lebar} onPick={(v) => { if (v === 'full') setFull(true); else { setFull(false); setLebar(v); } }}
                 options={[...LEBAR.map((v) => [v, `±${v}%`]), ['full', t('Seluruh rentang')]]} />
-              <p className="text-sm text-muted">
+              <p className="text-xs text-muted">
                 {t('Fee hanya mengalir selama harga ada di dalam rentang. Sempit = fee lebih besar tapi lebih cepat keluar; lebar = lebih aman tapi encer.')}
               </p>
               {p && (
@@ -290,39 +298,27 @@ export default function ManualLp() {
         </div>
 
         {/* pratinjau */}
-        <Card className="lg:sticky lg:top-4">
-          <Card.Content className="gap-4">
-            <div className="flex items-center justify-between">
-              <h2 className="font-semibold">{t('Pratinjau')}</h2>
-              {hitung && <Spinner size="sm" />}
-            </div>
-
+        <Card className="gap-0! p-0! lg:sticky lg:top-4">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <h2 className="text-sm font-semibold">{t('Pratinjau')}</h2>
+            {hitung && <Spinner size="sm" />}
+          </div>
+          <div className="flex flex-col gap-4 p-4">
             {!siap ? (
               <p className="text-sm text-muted">{t('Pilih pool dan isi nominalnya — pratinjau muncul sendiri.')}</p>
             ) : plan?.error ? (
               <Notice status="danger" title={t('Belum bisa dibuka')}>{plan.error}</Notice>
             ) : !p ? <Spinner /> : (
               <>
-                <dl className="flex flex-col gap-2.5 text-sm">
-                  <div className="flex items-baseline justify-between gap-3">
-                    <dt className="text-muted">{t('Nilai posisi')}</dt>
-                    <dd className="num text-lg font-semibold">{usd(p.valueUsd)}</dd>
-                  </div>
-                  <Separator />
-                  <div className="flex items-baseline justify-between gap-3">
-                    <dt className="text-muted">{p.symbol0}</dt>
-                    <dd className="num">{num(Number(p.amount0) / 10 ** p.dec0, 6)}</dd>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-3">
-                    <dt className="text-muted">{p.symbol1}</dt>
-                    <dd className="num">{num(Number(p.amount1) / 10 ** p.dec1, 6)}</dd>
-                  </div>
-                  <Separator />
-                  <div className="flex items-baseline justify-between gap-3">
-                    <dt className="text-muted">{t('Kas setelah dibuka')}</dt>
-                    <dd className="num">{usd(Math.max(0, p.kasUsd - p.valueUsd))}</dd>
-                  </div>
-                </dl>
+                <div>
+                  <div className="text-xs text-muted">{t('Nilai posisi')}</div>
+                  <div className="num text-[1.5rem] leading-tight font-semibold tracking-tight">{usd(p.valueUsd)}</div>
+                </div>
+                <div className="divide-y divide-border border-y border-border">
+                  <KV label={p.symbol0}>{num(Number(p.amount0) / 10 ** p.dec0, 6)}</KV>
+                  <KV label={p.symbol1}>{num(Number(p.amount1) / 10 ** p.dec1, 6)}</KV>
+                  <KV label="Kas setelah dibuka">{usd(Math.max(0, p.kasUsd - p.valueUsd))}</KV>
+                </div>
 
                 {(plan.warnings || []).map((w) => (
                   <div key={w} className="flex items-start gap-2 rounded-md bg-warning/10 p-2.5 text-sm text-warning">
@@ -357,7 +353,7 @@ export default function ManualLp() {
                 )}
               </>
             )}
-          </Card.Content>
+          </div>
         </Card>
       </div>
     </>

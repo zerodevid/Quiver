@@ -33,7 +33,7 @@ export default function Scout() {
   return (
     <>
       <PageHeader group="Riset" title="Scout" desc="Potret cepat posisi yang sedang hidup: ukuran, lebar rentang, dan fee yang belum diklaim." />
-      <Panel className="mb-6">
+      <Panel className="mb-4">
         <div className="grid items-end gap-3 md:grid-cols-[1fr_12rem_auto]">
           <Text label="Alamat wallet" mono placeholder="0x…" value={addr} onChange={setAddr}
             isInvalid={addr !== '' && !valid} error="Alamat harus 0x diikuti 40 karakter hex." />
@@ -51,13 +51,13 @@ export default function Scout() {
 
       {r && (
         <>
-          <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
             <Stat label="Nilai posisi hidup" value={usd(r.totalValueUsd)} sub={t('{n} posisi hidup', { n: r.positionsAlive })} />
-            <Stat label="Fee belum diklaim" value={usd(r.totalUnclaimedFeeUsd)} valueClass="text-success" sub={t('{p}% dari nilai', { p: r.feeRatioPct.toFixed(2) })} />
+            <Stat label="Fee belum diklaim" value={usd(r.totalUnclaimedFeeUsd)} sub={t('{p}% dari nilai', { p: r.feeRatioPct.toFixed(2) })} />
             <Stat label="Sedang in-range" value={`${r.inRangePct.toFixed(0)}%`} sub={t('median umur {h} jam', { h: r.medianAgeHours.toFixed(1) })} />
             <Stat label="Ukuran & rentang khas" value={usd(r.medianPositionUsd, 0)} sub={t('lebar median {w}%', { w: r.medianWidthPct.toFixed(0) })} />
           </div>
-          <div className="grid gap-4 lg:grid-cols-5">
+          <div className="grid items-start gap-3 lg:grid-cols-5">
             <Panel title="Pasangan" className="lg:col-span-2" bodyClass="p-0">
               <DataTable label="Pasangan" rows={pairs} rowKey={([k]) => k}
                 defaultSort={{ column: 'v', direction: 'descending' }}

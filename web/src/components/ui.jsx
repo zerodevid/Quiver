@@ -1,9 +1,9 @@
 // Komponen kecil yang dipakai berulang. Semuanya dirakit dari komponen HeroUI;
 // tidak ada gaya visual baru di luar token tema HeroUI.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Card, Chip, EmptyState, Label, Description, TextField, Input, Select, ListBox,
-  Switch, Table, Spinner, Alert, Pagination,
+  Switch, Table, Spinner, Alert, Pagination, AlertDialog, Button,
 } from '@heroui/react';
 import { Inbox, Search } from 'lucide-react';
 import { price, tickPrice, sqrtPrice, widthPct, pct } from '../fmt';
@@ -11,27 +11,42 @@ import { translate as t } from '../i18n';
 
 export function PageHeader({ group, title, desc, children }) {
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-      <div>
-        <div className="text-xs font-medium uppercase tracking-wider text-muted">{t(group)}</div>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t(title)}</h1>
-        {desc && <p className="mt-1 max-w-2xl text-sm text-muted">{t(desc)}</p>}
+    <div className="mb-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-3 border-b border-border pb-4">
+      <div className="min-w-0">
+        <h1 className="text-xl font-semibold tracking-tight">{t(title)}</h1>
+        {desc && <p className="mt-1 max-w-prose text-sm text-muted">{t(desc)}</p>}
       </div>
-      {children && <div className="flex items-center gap-2">{children}</div>}
+      {children && <div className="flex shrink-0 items-center gap-2">{children}</div>}
     </div>
   );
 }
 
+// Angka utama. Label kecil di atas, nilai besar, keterangan di bawah — tanpa
+// HURUF BESAR SEMUA, yang pada empat kartu berjajar berubah jadi teriakan.
 export function Stat({ label, value, sub, valueClass = '' }) {
   return (
-    <Card className="min-w-0">
-      <Card.Content className="gap-1">
-        <div className="text-xs font-medium uppercase tracking-wider text-muted">{t(label)}</div>
-        <div className={`num text-2xl font-semibold tracking-tight ${valueClass}`}>{value}</div>
-        {sub && <div className="text-sm text-muted">{typeof sub === 'string' ? t(sub) : sub}</div>}
-      </Card.Content>
+    <Card className="min-w-0 gap-1.5! p-3.5!">
+      <div className="truncate text-xs font-medium text-muted">{t(label)}</div>
+      <div className={`num text-[1.375rem] leading-tight font-semibold tracking-tight ${valueClass}`}>{value}</div>
+      {sub && <div className="truncate text-xs text-muted">{typeof sub === 'string' ? t(sub) : sub}</div>}
     </Card>
   );
+}
+
+// Baris label/nilai — dipakai di semua panel ringkasan.
+export function KV({ label, children, className = '' }) {
+  return (
+    <div className={`flex items-baseline justify-between gap-4 py-2 text-sm ${className}`}>
+      <span className="shrink-0 text-muted">{t(label)}</span>
+      <span className="num min-w-0 text-end font-medium">{children}</span>
+    </div>
+  );
+}
+
+// Titik status: lebih tenang daripada chip berwarna yang diulang tiap baris.
+export function Dot({ tone = 'default', title }) {
+  const c = { success: 'bg-success', danger: 'bg-danger', warning: 'bg-warning', accent: 'bg-accent', default: 'bg-muted' }[tone] || 'bg-muted';
+  return <span className={`inline-block size-1.5 shrink-0 rounded-full ${c}`} title={title ? t(title) : undefined} />;
 }
 
 // Kotak kartu dengan judul — pola yang paling sering dipakai.
@@ -39,17 +54,17 @@ export function Panel({ title, desc, action, children, className = '', bodyClass
   return (
     // min-w-0: item grid default-nya min-width:auto, sehingga teks panjang di dalamnya
     // memaksa kartu melebar melewati layar HP.
-    <Card className={`min-w-0 ${className}`}>
+    <Card className={`min-w-0 gap-0! p-0! ${className}`}>
       {(title || action) && (
-        <Card.Header className="flex-row items-start justify-between gap-3">
-          <div>
-            {title && <Card.Title>{t(title)}</Card.Title>}
-            {desc && <Card.Description>{t(desc)}</Card.Description>}
+        <div className="flex flex-row flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-border px-4 py-3">
+          <div className="min-w-0 shrink-0">
+            {title && <h2 className="text-sm font-semibold tracking-tight">{t(title)}</h2>}
+            {desc && <p className="mt-0.5 text-xs text-muted">{t(desc)}</p>}
           </div>
-          {action}
-        </Card.Header>
+          {action && <div className="shrink-0">{action}</div>}
+        </div>
       )}
-      <Card.Content className={bodyClass}>{children}</Card.Content>
+      <div className={bodyClass.includes('p-0') ? bodyClass : `p-4 ${bodyClass}`}>{children}</div>
     </Card>
   );
 }
@@ -96,6 +111,22 @@ export function PriceRange({
   lo, hi, cur, entrySqrt, exitSqrt, dec0, dec1, quoteSide, symbol0, symbol1, showPrices = true,
 }) {
   if (lo == null || hi == null) return <span className="text-muted">—</span>;
+  // Rentang penuh (tick ±887272, dibulatkan ke tick spacing): harganya 3e-39 … 3e+38,
+  // angka yang benar tapi tidak berarti apa-apa. Posisi seperti ini selalu in-range.
+  if (lo <= -880000 && hi >= 880000) {
+    const pE = sqrtPrice(entrySqrt, dec0, dec1, quoteSide), pX = sqrtPrice(exitSqrt, dec0, dec1, quoteSide);
+    const mv = pE != null && pX != null ? (pX / pE - 1) * 100 : null;
+    return (
+      <div className="w-44 min-w-40 text-xs">
+        <div className="font-medium">{t('Seluruh rentang')}</div>
+        <div className="mt-1 h-1.5 rounded-full bg-accent/40" />
+        {pE != null && <div className="num mt-1 whitespace-nowrap text-muted">
+          {t('masuk {p}', { p: price(pE) })}
+          {mv != null && <><span className="mx-1">·</span><span className={mv > 0.05 ? 'text-success' : mv < -0.05 ? 'text-danger' : ''}>{t('keluar ')}{pct(mv, 1)}</span></>}
+        </div>}
+      </div>
+    );
+  }
   const at = (t) => tickPrice(t, dec0, dec1, quoteSide);
   const a = at(lo), b = at(hi);
   const [pLo, pHi] = a <= b ? [a, b] : [b, a];
@@ -124,13 +155,14 @@ export function PriceRange({
   // Jarak ke tepi terdekat = berapa persen harga harus bergerak sebelum posisi
   // berhenti menghasilkan fee.
   let edge = null;
+  const cap = (x) => (x >= 1000 ? '999+' : x.toFixed(0));
   if (!closed && pNow != null) {
     if (inRange) {
       const toLo = (pNow / pLo - 1) * 100, toHi = (pHi / pNow - 1) * 100;
-      edge = <span className="text-success">{t(toLo < toHi ? 'di dalam · {n}% ke tepi bawah' : 'di dalam · {n}% ke tepi atas', { n: Math.min(toLo, toHi).toFixed(0) })}</span>;
+      edge = <span className="text-success">{t(toLo < toHi ? 'di dalam · {n}% ke tepi bawah' : 'di dalam · {n}% ke tepi atas', { n: cap(Math.min(toLo, toHi)) })}</span>;
     } else {
       const off = pNow < pLo ? (pLo / pNow - 1) * 100 : (pNow / pHi - 1) * 100;
-      edge = <span className="text-warning">{t(pNow < pLo ? 'di luar · {n}% di bawah' : 'di luar · {n}% di atas', { n: off.toFixed(0) })}</span>;
+      edge = <span className="text-warning">{t(pNow < pLo ? 'di luar · {n}% di bawah' : 'di luar · {n}% di atas', { n: cap(off) })}</span>;
     }
   }
 
@@ -219,12 +251,15 @@ export function DataTable({
   // Menyaring atau menyortir mengubah isi halaman — kembali ke halaman pertama.
   useEffect(() => { setPage(1); }, [q, sort?.column, sort?.direction, rows.length]);
 
-  const head = (searchable || pageSize) && rows.length > 0;
+  // Kotak cari di atas tabel berisi 2 baris cuma perabot kosong; muncul setelah
+  // daftarnya cukup panjang untuk benar-benar perlu disaring.
+  const bisaCari = searchable && rows.length >= 8;
+  const head = rows.length > 0 && (bisaCari || (pageSize > 0 && rows.length > pageSize));
   return (
     <div>
       {head && (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-          {searchable ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2.5">
+          {bisaCari ? (
             <div className="relative w-full max-w-64">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
               <Input variant="secondary" className="pl-8" value={q} aria-label={t('Cari')}
@@ -318,9 +353,9 @@ function Pager({ page, pages, total, pageSize, onChange }) {
 }
 
 // ---- field form ----
-export function Text({ label, value, onChange, placeholder, hint, type = 'text', mono, isInvalid, error, autoComplete, className = '' }) {
+export function Text({ label, value, onChange, placeholder, hint, type = 'text', mono, isInvalid, error, autoComplete, className = '', aria }) {
   return (
-    <TextField value={value ?? ''} onChange={onChange} type={type} isInvalid={isInvalid} className={`flex flex-col gap-1 ${className}`}>
+    <TextField value={value ?? ''} onChange={onChange} type={type} isInvalid={isInvalid} aria-label={aria ? t(aria) : undefined} className={`flex flex-col gap-1 ${className}`}>
       {label && <Label>{t(label)}</Label>}
       {/* variant="secondary": varian HeroUI untuk field di dalam Card/Surface. Varian bawaan
           (primary) berwarna sama persis dengan kartu dan tanpa garis tepi — tidak terlihat. */}
@@ -363,5 +398,69 @@ export function Toggle({ label, desc, value, onChange, isDisabled }) {
       </Switch.Content>
       {desc && <Description>{t(desc)}</Description>}
     </Switch>
+  );
+}
+
+// ---- konfirmasi ----
+// Pengganti window.confirm(): dialog bawaan browser tidak bisa diberi gaya, memuat
+// nama domain di judulnya, dan di Safari menghentikan seluruh halaman. Pemakaian
+// tetap satu baris: `if (!(await ask({ title, body, confirm, danger }))) return;`
+// Teks sudah diterjemahkan oleh pemanggil.
+let pushAsk = null;
+export function ask(opts) {
+  return new Promise((resolve) => {
+    if (!pushAsk) return resolve(window.confirm(opts.title));
+    pushAsk({ ...opts, resolve });
+  });
+}
+
+export function ConfirmHost() {
+  const [q, setQ] = useState(null);
+  const last = useRef(null);        // isi tetap tampil selama animasi menutup
+  useEffect(() => { pushAsk = setQ; return () => { pushAsk = null; }; }, []);
+  if (q) last.current = q;
+  const v = q || last.current || {};
+  const done = (ok) => { q?.resolve(ok); setQ(null); };
+  return (
+    <AlertDialog isOpen={!!q} onOpenChange={(o) => { if (!o) done(false); }}>
+      <AlertDialog.Backdrop isDismissable isKeyboardDismissDisabled={false}>
+        <AlertDialog.Container size="sm">
+          <AlertDialog.Dialog>
+            <AlertDialog.Header>
+              <AlertDialog.Icon status={v.danger ? 'danger' : 'warning'} />
+              <AlertDialog.Heading>{v.title}</AlertDialog.Heading>
+            </AlertDialog.Header>
+            {v.body && <AlertDialog.Body><div className="text-sm text-muted">{v.body}</div></AlertDialog.Body>}
+            <AlertDialog.Footer>
+              <Button variant="tertiary" onPress={() => done(false)}>{t('Batal')}</Button>
+              <Button variant={v.danger ? 'danger' : 'primary'} onPress={() => done(true)} autoFocus>{v.confirm || t('Ya, lanjutkan')}</Button>
+            </AlertDialog.Footer>
+          </AlertDialog.Dialog>
+        </AlertDialog.Container>
+      </AlertDialog.Backdrop>
+    </AlertDialog>
+  );
+}
+
+// Pilihan saling-eksklusif yang sedikit (2–6): semuanya terlihat sekaligus, satu
+// klik, dan bisa membawa jumlah per pilihan — lebih cepat dibaca daripada dropdown.
+// options: [[id, label, count?], ...]
+export function Segmented({ value, onChange, options, aria, size = 'md' }) {
+  const h = size === 'sm' ? 'h-7 text-xs' : 'h-8 text-[0.8125rem]';
+  return (
+    <div role="radiogroup" aria-label={aria ? t(aria) : undefined}
+      className="inline-flex max-w-full flex-wrap gap-0.5 rounded-lg border border-border bg-surface p-0.5">
+      {options.map(([id, label, count]) => {
+        const on = value === id;
+        return (
+          <button key={id} type="button" role="radio" aria-checked={on} onClick={() => onChange(id)}
+            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 font-medium whitespace-nowrap transition-colors ${h}
+              ${on ? 'bg-default text-foreground' : 'text-muted hover:text-foreground'}`}>
+            {t(label)}
+            {count != null && <span className={`num text-[0.6875rem] ${on ? 'text-muted' : 'text-muted/80'}`}>{count}</span>}
+          </button>
+        );
+      })}
+    </div>
   );
 }

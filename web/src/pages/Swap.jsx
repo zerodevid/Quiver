@@ -1,13 +1,44 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Card, Separator, Spinner, toast } from '@heroui/react';
+import { Button, Card, Spinner, Select, ListBox, toast } from '@heroui/react';
 import { ArrowDownUp, Check, TriangleAlert } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
-import { PageHeader, Notice, Pick, Loading } from '../components/ui';
+import { PageHeader, Notice, Loading, KV } from '../components/ui';
+import TokenIcon from '../components/TokenIcon';
 import { usd, num } from '../fmt';
 import { useI18n } from '../i18n';
 
 const PORSI = [['25%', '25%'], ['50%', '50%'], ['75%', '75%'], ['semua', 'Maks']];
+
+// Pemilih token ala dompet: tombolnya cukup lambang + simbol (saldonya sudah ada di
+// kepala kotak), daftar pilihannya menampilkan saldo tiap token di kanan.
+function TokenSelect({ value, onChange, list, aria }) {
+  const { t } = useI18n();
+  const cur = list.find((x) => x.address === value);
+  return (
+    <Select variant="secondary" value={value} onChange={(v) => onChange(v)} aria-label={t(aria)} className="w-36 shrink-0">
+      <Select.Trigger className="h-10 rounded-full! pl-1.5">
+        {cur ? <span className="flex min-w-0 items-center gap-2"><TokenIcon address={cur.address} symbol={cur.symbol} size={24} />
+          <span className="truncate font-semibold">{cur.symbol}</span></span> : <Select.Value />}
+        <Select.Indicator />
+      </Select.Trigger>
+      <Select.Popover className="min-w-56">
+        <ListBox>
+          {list.map((x) => (
+            <ListBox.Item key={x.address} id={x.address} textValue={x.symbol}>
+              <span className="flex w-full items-center gap-2.5">
+                <TokenIcon address={x.address} symbol={x.symbol} size={22} />
+                <span className="font-medium">{x.symbol}</span>
+                <span className="num ml-auto text-xs text-muted">{num(x.amount, 6)}</span>
+              </span>
+              <ListBox.ItemIndicator />
+            </ListBox.Item>
+          ))}
+        </ListBox>
+      </Select.Popover>
+    </Select>
+  );
+}
 
 export default function Swap() {
   const { t } = useI18n();
@@ -71,7 +102,6 @@ export default function Swap() {
   };
 
   const dry = status?.mode?.dry_run !== false;
-  const opsi = (list) => list.map((x) => [x.address, `${x.symbol} · ${num(x.amount, 6)}`]);
 
   if (tokens === null) return (<><PageHeader group="Aksi" title="Swap" /><Loading /></>);
 
@@ -123,87 +153,72 @@ export default function Swap() {
         desc="Menukar aset lewat agregator Kyber — rute yang sama dipakai bot untuk zap dan menjual memecoin sisa." />
 
       {dry && (
-        <Notice status="warning" title={t('Mode simulasi')}>
-          {t('Kutipan tetap diambil, tapi transaksi tidak akan dikirim. Nyalakan LIVE di Pengaturan kalau memang mau menukar.')}
-        </Notice>
+        <div className="mx-auto max-w-md">
+          <Notice status="warning" title={t('Mode simulasi')}>
+            {t('Kutipan tetap diambil, tapi transaksi tidak akan dikirim. Nyalakan LIVE di Pengaturan kalau memang mau menukar.')}
+          </Notice>
+        </div>
       )}
 
-      <div className="mx-auto mt-4 flex max-w-lg flex-col gap-4">
-        <Card>
-          <Card.Content className="gap-0">
-            {/* dari */}
-            <div className="flex flex-col gap-3 rounded-md bg-surface-secondary p-4">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm text-muted">{t('Dari')}</span>
-                {tDari && <span className="text-sm text-muted">{t('Saldo')} <span className="num">{num(tDari.amount, 6)}</span></span>}
-              </div>
-              <div className="flex items-center gap-3">
-                <input value={jumlah} onChange={(e) => setJumlah(e.target.value)} placeholder="0"
-                  aria-label={t('Jumlah yang ditukar')}
-                  className="num h-12 min-w-0 flex-1 rounded-md border border-field-border bg-surface px-3 text-2xl font-semibold outline-none focus:border-accent" />
-                <Pick label={null} aria="Token yang ditukar" value={dari} onChange={setDari} options={opsi(punya.filter((x) => x.address !== ke))} className="w-40 shrink-0" />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {PORSI.map(([v, label]) => (
-                  <Button key={v} size="sm" variant={jumlah === v ? 'primary' : 'outline'} onPress={() => setJumlah(v)}>{t(label)}</Button>
-                ))}
-              </div>
+      <div className="mx-auto mt-4 flex max-w-md flex-col gap-3">
+        <Card className="gap-0! p-2!">
+          {/* dari */}
+          <div className="rounded-md bg-default/50 p-4">
+            <div className="flex items-center justify-between gap-3 text-xs text-muted">
+              <span className="font-medium">{t('Dari')}</span>
+              {tDari && <span>{t('Saldo')} <span className="num">{num(tDari.amount, 6)}</span></span>}
             </div>
+            <div className="mt-2 flex items-center gap-3">
+              <input value={jumlah} onChange={(e) => setJumlah(e.target.value)} placeholder="0" inputMode="decimal"
+                aria-label={t('Jumlah yang ditukar')}
+                className="num h-10 min-w-0 flex-1 bg-transparent text-[1.75rem] font-semibold tracking-tight outline-none placeholder:text-muted/60" />
+              <TokenSelect aria="Token yang ditukar" value={dari} onChange={setDari} list={punya.filter((x) => x.address !== ke)} />
+            </div>
+            <div className="mt-3 flex flex-wrap justify-end gap-1.5">
+              {PORSI.map(([v, label]) => (
+                <button key={v} type="button" onClick={() => setJumlah(v)}
+                  className={`h-6 rounded-md border px-2 text-xs font-medium transition-colors ${jumlah === v
+                    ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted hover:text-foreground'}`}>{t(label)}</button>
+              ))}
+            </div>
+          </div>
 
-            {/* pembalik */}
-            <div className="relative h-2">
-              <Button size="sm" variant="outline" aria-label={t('Balik arah')} onPress={balik}
-                className="absolute left-1/2 top-1/2 size-9 -translate-x-1/2 -translate-y-1/2 rounded-full p-0">
-                <ArrowDownUp className="size-4" />
-              </Button>
-            </div>
+          {/* pembalik */}
+          <div className="relative z-10 -my-2.5 flex justify-center">
+            <Button size="sm" variant="outline" isIconOnly aria-label={t('Balik arah')} onPress={balik}
+              className="size-9 rounded-lg! border-4! border-surface! bg-default">
+              <ArrowDownUp className="size-4" />
+            </Button>
+          </div>
 
-            {/* ke */}
-            <div className="flex flex-col gap-3 rounded-md bg-surface-secondary p-4">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm text-muted">{t('Ke')}</span>
-                {tKe && <span className="text-sm text-muted">{t('Saldo')} <span className="num">{num(tKe.amount, 6)}</span></span>}
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="num flex h-12 min-w-0 flex-1 items-center px-3 text-2xl font-semibold text-muted">
-                  {ambil ? <Spinner size="sm" /> : kutip?.amountOut != null ? num(kutip.amountOut, 6) : '0'}
-                </div>
-                <Pick label={null} aria="Token yang diterima" value={ke} onChange={setKe} options={opsi(tokens.filter((x) => x.address !== dari))} className="w-40 shrink-0" />
-              </div>
+          {/* ke */}
+          <div className="rounded-md bg-default/50 p-4">
+            <div className="flex items-center justify-between gap-3 text-xs text-muted">
+              <span className="font-medium">{t('Ke')}</span>
+              {tKe && <span>{t('Saldo')} <span className="num">{num(tKe.amount, 6)}</span></span>}
             </div>
-          </Card.Content>
+            <div className="mt-2 flex items-center gap-3">
+              <div className={`num flex h-10 min-w-0 flex-1 items-center truncate text-[1.75rem] font-semibold tracking-tight ${kutip?.amountOut != null ? '' : 'text-muted/60'}`}>
+                {ambil ? <Spinner size="sm" /> : kutip?.amountOut != null ? num(kutip.amountOut, 6) : '0'}
+              </div>
+              <TokenSelect aria="Token yang diterima" value={ke} onChange={setKe} list={tokens.filter((x) => x.address !== dari)} />
+            </div>
+            {kutip?.usdOut != null && !ambil && <div className="num mt-1 text-xs text-muted">≈ {usd(kutip.usdOut)}</div>}
+          </div>
         </Card>
 
         {siap && kutip?.error && <Notice status="danger" title={t('Tidak bisa dikutip')}>{kutip.error}</Notice>}
 
         {kutip && !kutip.error && (
-          <Card>
-            <Card.Content className="gap-2.5 text-sm">
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="text-muted">{t('Dikirim')}</span>
-                <span className="num">{num(kutip.amountIn, 6)} {kutip.symbolIn}</span>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="text-muted">{t('Diterima')}</span>
-                <span className="num font-medium">{num(kutip.amountOut, 6)} {kutip.symbolOut}</span>
-              </div>
-              <Separator />
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="text-muted">{t('Nilai')}</span>
-                <span className="num">{usd(kutip.usdIn)} → {usd(kutip.usdOut)}</span>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="text-muted">{t('Biaya rute')}</span>
-                <span className={`num ${kutip.tooLossy ? 'text-danger' : ''}`}>
-                  {kutip.lossBps != null ? `${num(kutip.lossBps / 100, 2)}%` : '—'}
-                </span>
-              </div>
-              {kutip.dex && (
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="text-muted">{t('Lewat')}</span><span className="text-end">{kutip.dex}</span>
-                </div>
-              )}
-            </Card.Content>
+          <Card className="gap-0! px-4! py-1.5!">
+            <div className="divide-y divide-border">
+              <KV label="Dikirim">{num(kutip.amountIn, 6)} {kutip.symbolIn}</KV>
+              <KV label="Diterima">{num(kutip.amountOut, 6)} {kutip.symbolOut}</KV>
+              <KV label="Nilai">{usd(kutip.usdIn)} → {usd(kutip.usdOut)}</KV>
+              <KV label="Biaya rute"><span className={kutip.tooLossy ? 'text-danger' : kutip.lossBps > 300 ? 'text-warning' : ''}>
+                {kutip.lossBps != null ? `${num(kutip.lossBps / 100, 2)}%` : '—'}</span></KV>
+              {kutip.dex && <KV label="Lewat"><span className="font-normal text-muted">{kutip.dex}</span></KV>}
+            </div>
           </Card>
         )}
 
@@ -217,9 +232,9 @@ export default function Swap() {
         )}
 
         {dry ? (
-          <Button variant="outline" className="w-full" onPress={() => { location.hash = 'pengaturan'; }}>{t('Nyalakan LIVE dulu')}</Button>
+          <Button size="lg" variant="outline" className="w-full" onPress={() => { location.hash = 'pengaturan'; }}>{t('Nyalakan LIVE dulu')}</Button>
         ) : !konfirm ? (
-          <Button className="w-full" isDisabled={!kutip || !!kutip.error || kutip.tooLossy} onPress={() => setKonfirm(true)}>
+          <Button size="lg" className="w-full" isDisabled={!kutip || !!kutip.error || kutip.tooLossy} onPress={() => setKonfirm(true)}>
             {t('Tukar')}
           </Button>
         ) : (

@@ -19,10 +19,13 @@ export const widthPct = (lo, hi) => (1.0001 ** (hi - lo) - 1) * 100;
 // jumlah desimal tetap (0,00 tidak memberi tahu apa pun).
 export function price(p) {
   if (p == null || !Number.isFinite(p) || p <= 0) return '—';
+  // Di atas satu miliar angka penuhnya (337.815.857.900.711…) cuma merusak lebar
+  // kolom tabel; notasi ilmiah lebih jujur untuk harga token sampah semacam itu.
+  if (p >= 1e9) return p.toExponential(2).replace('.', loc() === 'id-ID' ? ',' : '.');
   if (p >= 1e6) return p.toLocaleString(loc(), { maximumFractionDigits: 0 });
   if (p >= 1) return p.toLocaleString(loc(), { maximumSignificantDigits: 6 });
   if (p >= 1e-7) return p.toLocaleString(loc(), { maximumSignificantDigits: 3 });
-  return p.toExponential(2).replace('.', ',');
+  return p.toExponential(2).replace('.', loc() === 'id-ID' ? ',' : '.');
 }
 
 // Harga dari sqrtPriceX96 (state pool yang tersimpan per kejadian).
@@ -71,5 +74,6 @@ export const TXKIND = {
   mint: 'Buka posisi', increase: 'Tambah likuiditas', decrease: 'Kurangi', burn: 'Tutup posisi',
   approve_erc20: 'Izin token', approve_permit2: 'Izin Permit2', zap_swap: 'Tukar (zap)',
   bridge_swap: 'Tukar kas', wrap_eth: 'Bungkus ETH', unwrap_weth: 'Buka WETH',
+  approve_kyber: 'Izin Kyber', sell_leftover: 'Jual token sisa', swap_manual: 'Swap manual',
 };
 export const TXSTATUS = { sukses: ['Sukses', 'success'], pending: ['Menunggu', 'warning'], gagal: ['Gagal', 'danger'] };

@@ -3,7 +3,7 @@ import { Button, Card, Chip, Checkbox, Separator, Tabs, toast } from '@heroui/re
 import { Pencil, Activity as Pulse, Trash2, KeyRound, Copy } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
-import { PageHeader, Loading, Notice, Text, Pick, Toggle } from '../components/ui';
+import { PageHeader, Loading, Notice, Text, Pick, Toggle, ask } from '../components/ui';
 import { num, locale as fmtLocale } from '../fmt';
 import { useI18n, translate as tt } from '../i18n';
 
@@ -12,7 +12,7 @@ const amt = (v, d = 4) => (v == null ? '—' : Number(v).toLocaleString(fmtLocal
 function Section({ title, desc, children }) {
   return (
     <div className="flex flex-col gap-5">
-      <div><h2 className="text-lg font-semibold">{tt(title)}</h2>{desc && <p className="mt-1 text-sm text-muted">{typeof desc === 'string' ? tt(desc) : desc}</p>}</div>
+      <div><h2 className="text-base font-semibold tracking-tight">{tt(title)}</h2>{desc && <p className="mt-1 text-sm text-muted">{typeof desc === 'string' ? tt(desc) : desc}</p>}</div>
       {children}
     </div>
   );
@@ -199,7 +199,7 @@ function RpcTab({ d, setD }) {
         {d.rpc.map((e) => (
           <RpcRow key={e.id + e.url} e={e}
             onSave={(f) => saveList(current().map((x) => (x.id === e.id ? { ...x, ...f, id: e.id } : x)), 'Endpoint diperbarui')}
-            onDelete={(id) => { if (confirm(t('Hapus endpoint ini?'))) saveList(current().filter((x) => x.id !== id), 'Endpoint dihapus'); }} />
+            onDelete={async (id) => { if (await ask({ title: t('Hapus endpoint ini?'), confirm: t('Hapus'), danger: true })) saveList(current().filter((x) => x.id !== id), 'Endpoint dihapus'); }} />
         ))}
       </div>
 
@@ -287,7 +287,7 @@ function TelegramTab({ d, reload }) {
           hint={t('Dibuat lewat @BotFather di Telegram. Siapa pun yang punya token ini menguasai botnya — jangan dibagikan.')} />
         <div className="flex items-end gap-2">
           <Button onPress={() => save('tok', { bot_token: tok }, 'Token tersimpan — bot langsung jalan')} isPending={busy === 'tok'} isDisabled={!tok}>{t('Simpan token')}</Button>
-          {tg.hasToken && <Button variant="outline" onPress={() => { if (confirm(t('Lepas token bot? Bot Telegram berhenti melayani.'))) save('rm', { bot_token: '' }, 'Token dilepas'); }}>{t('Lepas')}</Button>}
+          {tg.hasToken && <Button variant="outline" onPress={async () => { if (await ask({ title: t('Lepas token bot? Bot Telegram berhenti melayani.'), confirm: t('Lepas'), danger: true })) save('rm', { bot_token: '' }, 'Token dilepas'); }}>{t('Lepas')}</Button>}
         </div>
       </div>
 
@@ -317,7 +317,7 @@ function TelegramTab({ d, reload }) {
             {tg.chat_ids.map((c) => (
               <div key={c} className="flex items-center justify-between gap-3 rounded border border-default px-3 py-2">
                 <span className="mono text-sm">{c}</span>
-                <Button size="sm" variant="ghost" onPress={() => { if (confirm(t('Lepas chat ini?'))) save('c' + c, { chat_ids: tg.chat_ids.filter((x) => x !== c) }, 'Chat dilepas'); }}>
+                <Button size="sm" variant="ghost" onPress={async () => { if (await ask({ title: t('Lepas chat ini?'), confirm: t('Lepas'), danger: true })) save('c' + c, { chat_ids: tg.chat_ids.filter((x) => x !== c) }, 'Chat dilepas'); }}>
                   <Trash2 className="size-4" />
                 </Button>
               </div>
@@ -345,7 +345,7 @@ function SecurityTab() {
   const { t } = useI18n();
   const [tok, setTok] = useState(null);
   const rotate = async () => {
-    if (!confirm(t('Ganti token akses? Perangkat lain harus masuk ulang.'))) return;
+    if (!(await ask({ title: t('Ganti token akses? Perangkat lain harus masuk ulang.'), confirm: t('Ganti token') }))) return;
     const r = await post('/api/settings/token/rotate', {});
     if (r.error) return toast.danger(r.error);
     setTok(r.token);

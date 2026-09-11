@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Button, Card, Switch, toast } from '@heroui/react';
+import { Button, Card, Chip, Switch, toast } from '@heroui/react';
 import { Trash2, SlidersHorizontal, Plus, ChevronRight, ArrowLeft, Copy, Pencil, Check as CheckIcon, X } from 'lucide-react';
 import { usePoll } from '../hooks';
 import { post } from '../api';
-import { PageHeader, Panel, Text, Empty, Loading } from '../components/ui';
+import { PageHeader, Panel, Text, Empty, Loading, Stat, ask } from '../components/ui';
 import RulesForm from '../components/RulesForm';
 import WalletDetail from '../components/WalletDetail';
-import { usd, kUsd, tone, ago } from '../fmt';
+import { usd, kUsd, tone, ago, short } from '../fmt';
 import { useI18n } from '../i18n';
 
 // Editor aturan per-target — dipakai di kartu (dilipat) dan di halaman detail.
@@ -36,14 +36,14 @@ function TargetRules({ tg, onChanged }) {
 }
 
 // Ringkasan PnL dari hasil riset yang tersimpan (tanpa memanggil chain).
-function ResearchLine({ r }) {
+function Research({ r }) {
   const { t } = useI18n();
-  if (!r) return <span className="text-muted">{t('Belum pernah dipindai — buka untuk melihat PnL')}</span>;
+  if (!r) return <span className="text-xs text-muted">{t('Belum dipindai')}</span>;
   return (
-    <span className="num">
-      <span className={`font-medium ${tone(r.totalProfitUsd)}`}>{kUsd(r.totalProfitUsd || 0)}</span>
-      <span className="text-muted"> {t('{v} PnL · win {w}% · {n} posisi ditutup', { v: '', w: (r.winRatePct || 0).toFixed(0), n: r.closedCount || 0 })}</span>
-    </span>
+    <div className="num">
+      <div className={`font-medium ${tone(r.totalProfitUsd)}`}>{kUsd(r.totalProfitUsd || 0)}</div>
+      <div className="text-xs text-muted">{t('win {w}% · {n} posisi', { w: (r.winRatePct || 0).toFixed(0), n: r.closedCount || 0 })}</div>
+    </div>
   );
 }
 
@@ -78,45 +78,62 @@ function useToggles(targets, reload) {
   return { enabledOf, toggle };
 }
 
-function TargetCard({ tg, enabled, onToggle, onChanged }) {
+// Satu baris daftar target. Kolomnya sejajar antarbaris (grid yang sama) supaya
+// PnL, aktivitas, dan posisi bisa dibandingkan menurun seperti tabel.
+const ROW = 'grid items-center gap-x-4 gap-y-2 grid-cols-[auto_minmax(0,1fr)_auto] md:grid-cols-[auto_minmax(0,1.5fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_minmax(0,1fr)_auto]';
+
+function TargetRow({ tg, enabled, onToggle, onChanged }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const href = '#target/' + tg.address;
   const remove = async () => {
-    if (!confirm(t('Hapus {name} dari daftar target?', { name: tg.label || tg.address }))) return;
+    const ok = await ask({
+      title: t('Hapus {name} dari daftar target?', { name: tg.label || short(tg.address) }),
+      body: t('Posisi yang sudah disalin tetap ada dan tetap dipantau; bot hanya berhenti mengikuti wallet ini.'),
+      confirm: t('Hapus'), danger: true,
+    });
+    if (!ok) return;
     await post('/api/targets/delete', { address: tg.address }); onChanged();
   };
   return (
-    <Card>
-      <Card.Content className="gap-4">
-        <div className="flex flex-wrap items-center gap-4">
-          <Switch isSelected={enabled} onChange={(on) => onToggle(tg, on)} aria-label={t('Aktifkan target')}>
-            <Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
-          </Switch>
-          {/* Bagian kiri bisa diklik: membuka PnL, posisi, dan riwayat wallet ini */}
-          <a href={href} className="group min-w-0 flex-1 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent">
-            <div className="flex items-center gap-2 font-medium group-hover:underline">
-              {tg.label || t('Tanpa label')}
-              {tg.rulesOwn && <span className="rounded bg-default px-1.5 py-0.5 text-[11px] font-normal text-muted no-underline">{t('aturan sendiri')}</span>}
-            </div>
-            <div className="mono truncate text-muted">{tg.address}</div>
-            <div className="mt-1 text-sm"><ResearchLine r={tg.research} /></div>
-          </a>
-          <div className="text-right text-sm text-muted">
-            <div className="num">{t('{a} aksi · {c} disalin', { a: tg.actions, c: tg.copied })}</div>
-            <div className="num">{t('{n} posisi kita · {v}', { n: tg.openPositions, v: usd(tg.openCostQuote) })}{tg.lastActionTs ? ` · ${ago(tg.lastActionTs)}` : ''}</div>
+    <div className={enabled ? '' : 'bg-default/30'}>
+      <div className={`${ROW} px-4 py-3`}>
+        <Switch isSelected={enabled} onChange={(on) => onToggle(tg, on)} aria-label={t('Aktifkan target')} size="sm">
+          <Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
+        </Switch>
+        {/* Nama bisa diklik: membuka PnL, posisi, dan riwayat wallet ini */}
+        <a href={href} className="group min-w-0 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent">
+          <div className="flex items-center gap-2">
+            <span className={`truncate font-medium group-hover:underline ${enabled ? '' : 'text-muted'}`}>{tg.label || t('Tanpa label')}</span>
+            {tg.rulesOwn && <Chip size="sm" variant="soft" color="accent" className="shrink-0">{t('aturan sendiri')}</Chip>}
           </div>
-          <div className="flex gap-1">
-            <Button size="sm" variant={open ? 'secondary' : 'outline'} onPress={() => setOpen(!open)}>
-              <SlidersHorizontal className="size-3.5" />{t('Aturan')}</Button>
-            <Button size="sm" variant="ghost" isIconOnly aria-label={t('Hapus')} onPress={remove}><Trash2 className="size-4 text-danger" /></Button>
-            <a href={href} aria-label={t('Buka detail')} className="flex size-8 items-center justify-center rounded-md text-muted hover:bg-default hover:text-foreground">
-              <ChevronRight className="size-4" /></a>
-          </div>
+          <div className="mono truncate text-xs text-muted">{short(tg.address)}</div>
+        </a>
+        <div className="hidden md:block"><Research r={tg.research} /></div>
+        <div className="num hidden text-sm md:block">
+          <div>{t('{a} aksi', { a: tg.actions })}</div>
+          <div className="text-xs text-muted">{t('{c} disalin', { c: tg.copied })}</div>
         </div>
-        {open && <div className="border-t border-border pt-5"><TargetRules tg={tg} onChanged={onChanged} /></div>}
-      </Card.Content>
-    </Card>
+        <div className="num hidden text-sm md:block">
+          <div>{t('{n} posisi · {v}', { n: tg.openPositions, v: usd(tg.openCostQuote, 0) })}</div>
+          <div className="text-xs text-muted">{tg.lastActionTs ? t('aksi terakhir {w}', { w: ago(tg.lastActionTs) }) : t('belum ada aksi')}</div>
+        </div>
+        <div className="flex items-center gap-0.5">
+          <Button size="sm" variant={open ? 'secondary' : 'ghost'} isIconOnly aria-label={t('Aturan')} onPress={() => setOpen(!open)}>
+            <SlidersHorizontal className="size-4" /></Button>
+          <Button size="sm" variant="ghost" isIconOnly aria-label={t('Hapus')} onPress={remove}><Trash2 className="size-4 text-muted" /></Button>
+          <a href={href} aria-label={t('Buka detail')} className="flex size-8 items-center justify-center rounded-md text-muted hover:bg-default hover:text-foreground">
+            <ChevronRight className="size-4" /></a>
+        </div>
+        {/* HP: ringkasan dalam satu baris di bawah nama */}
+        <div className="col-span-3 flex flex-wrap gap-x-4 gap-y-1 pl-12 text-xs text-muted md:hidden">
+          {tg.research && <span className={`num font-medium ${tone(tg.research.totalProfitUsd)}`}>{kUsd(tg.research.totalProfitUsd || 0)} PnL</span>}
+          <span className="num">{t('{a} aksi · {c} disalin', { a: tg.actions, c: tg.copied })}</span>
+          <span className="num">{t('{n} posisi · {v}', { n: tg.openPositions, v: usd(tg.openCostQuote, 0) })}</span>
+        </div>
+      </div>
+      {open && <div className="border-t border-border bg-surface px-4 py-5"><TargetRules tg={tg} onChanged={onChanged} /></div>}
+    </div>
   );
 }
 
@@ -136,7 +153,7 @@ function EditableLabel({ tg, onChanged }) {
   if (!editing) {
     return (
       <div className="flex items-center gap-1.5">
-        <h1 className="text-2xl font-semibold tracking-tight">{tg.label || t('Tanpa label')}</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{tg.label || t('Tanpa label')}</h1>
         <Button size="sm" variant="ghost" isIconOnly aria-label={t('Ubah nama')}
           onPress={() => { setVal(tg.label || ''); setEditing(true); }}><Pencil className="size-3.5" /></Button>
       </div>
@@ -166,11 +183,10 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
   }
   return (
     <>
-      <a href="#target" className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground"><ArrowLeft className="size-4" />{t('Semua target')}</a>
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+      <a href="#target" className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground"><ArrowLeft className="size-4" />{t('Semua target')}</a>
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-4 border-b border-border pb-4">
         <div className="min-w-0">
-          <div className="text-xs font-medium uppercase tracking-wider text-muted">{t('Target')}</div>
-          <div className="mt-1"><EditableLabel tg={tg} onChanged={reload} /></div>
+          <EditableLabel tg={tg} onChanged={reload} />
           <div className="mt-1 flex items-center gap-2">
             <span className="mono break-all text-muted">{tg.address}</span>
             <Button size="sm" variant="ghost" isIconOnly aria-label={t('Salin alamat')}
@@ -190,19 +206,16 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
       </div>
 
       {/* aktivitas copy untuk target ini */}
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {[['Aksi terdeteksi', tg.actions], ['Disalin / simulasi', tg.copied], ['Posisi kita terbuka', tg.openPositions],
-          ['Modal di posisi kita', usd(tg.openCostQuote)]].map(([k, v]) => (
-          <Card key={k} className="min-w-0"><Card.Content className="gap-1">
-            <div className="text-xs font-medium uppercase tracking-wider text-muted">{t(k)}</div>
-            <div className="num text-xl font-semibold">{v}</div>
-          </Card.Content></Card>
-        ))}
+      <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <Stat label="Aksi terdeteksi" value={tg.actions} sub={tg.lastActionTs ? t('terakhir {w}', { w: ago(tg.lastActionTs) }) : t('belum ada aksi')} />
+        <Stat label="Disalin / simulasi" value={tg.copied} />
+        <Stat label="Posisi kita terbuka" value={tg.openPositions} />
+        <Stat label="Modal di posisi kita" value={usd(tg.openCostQuote)} />
       </div>
 
-      {rulesOpen && <Panel title="Aturan wallet ini" className="mb-6"><TargetRules tg={tg} onChanged={reload} /></Panel>}
+      {rulesOpen && <Panel title="Aturan wallet ini" className="mb-4"><TargetRules tg={tg} onChanged={reload} /></Panel>}
 
-      <h2 className="mb-3 text-lg font-semibold">{t('Kinerja LP wallet ini')}</h2>
+      <h2 className="mb-3 mt-6 text-base font-semibold tracking-tight">{t('Kinerja LP wallet ini')}</h2>
       <WalletDetail address={tg.address} showTargetButton={false} onChanged={reload} />
     </>
   );
@@ -215,6 +228,7 @@ export default function Targets({ param }) {
   const [addr, setAddr] = useState('');
   const [label, setLabel] = useState('');
   const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
   const valid = /^0x[0-9a-fA-F]{40}$/.test(addr.trim());
 
   if (param) return !d ? <Loading /> : <TargetDetail address={param} targets={d.targets} reload={reload} enabledOf={enabledOf} onToggle={toggle} />;
@@ -224,29 +238,48 @@ export default function Targets({ param }) {
     const r = await post('/api/targets', { address: addr.trim(), label: label.trim() || null });
     setBusy(false);
     if (r.error) return toast.danger(r.error);
-    setAddr(''); setLabel(''); toast.success(t('Wallet ditambahkan')); reload();
+    setAddr(''); setLabel(''); setAdding(false); toast.success(t('Wallet ditambahkan')); reload();
   };
 
+  const list = d?.targets || [];
+  const on = list.filter((x) => enabledOf(x)).length;
   return (
     <>
       <PageHeader group="Copy" title="Target"
-        desc="Wallet yang posisi LP-nya dicermin. Klik sebuah wallet untuk melihat PnL, posisi berjalan, dan riwayat posisinya." />
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Panel title="Tambah wallet" className="h-fit">
-          <div className="flex flex-col gap-4">
+        desc="Wallet yang posisi LP-nya dicermin. Klik sebuah wallet untuk melihat PnL, posisi berjalan, dan riwayat posisinya.">
+        <Button variant={adding ? 'secondary' : 'primary'} onPress={() => setAdding(!adding)}>
+          {adding ? <X className="size-4" /> : <Plus className="size-4" />}{t(adding ? 'Batal' : 'Tambah target')}</Button>
+      </PageHeader>
+
+      {adding && (
+        <Panel className="mb-4">
+          <div className="grid items-start gap-3 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]">
             <Text label="Alamat" mono placeholder="0x…" value={addr} onChange={setAddr}
               isInvalid={addr !== '' && !valid} error="Alamat harus 0x diikuti 40 karakter hex." />
             <Text label="Label (opsional)" placeholder="mis. LP pro #1" value={label} onChange={setLabel} />
-            <Button fullWidth onPress={add} isDisabled={!valid} isPending={busy}><Plus className="size-4" />{t('Tambah')}</Button>
-            <p className="text-sm text-muted">{t('Aturan default dipakai sampai kamu setel sendiri per wallet.')}</p>
+            <Button className="md:mt-[1.6rem]" onPress={add} isDisabled={!valid} isPending={busy}><Plus className="size-4" />{t('Tambah')}</Button>
           </div>
+          <p className="mt-3 text-xs text-muted">{t('Aturan default dipakai sampai kamu setel sendiri per wallet.')}</p>
         </Panel>
-        <div className="flex min-w-0 flex-col gap-4 lg:col-span-2">
-          {!d ? <Loading /> : d.targets.length
-            ? d.targets.map((x) => <TargetCard key={x.address + (x.rules || '')} tg={x} enabled={enabledOf(x)} onToggle={toggle} onChanged={reload} />)
-            : <Card><Card.Content><Empty title="Belum ada wallet target" sub="Tambahkan alamat di sebelah kiri, atau dari halaman Wallet setelah memeriksa kinerjanya." /></Card.Content></Card>}
-        </div>
-      </div>
+      )}
+
+      {!d ? <Loading /> : list.length ? (
+        <Card className="gap-0! overflow-hidden p-0!">
+          <div className={`${ROW} hidden border-b border-border bg-default/40 px-4 py-2 text-[0.7188rem] font-medium text-muted md:grid`}>
+            <span className="w-9" />
+            <span>{t('{on} dari {n} aktif', { on, n: list.length })}</span>
+            <span>{t('PnL wallet')}</span>
+            <span>{t('Aktivitas')}</span>
+            <span>{t('Posisi kita')}</span>
+            <span className="w-24" />
+          </div>
+          <div className="divide-y divide-border">
+            {list.map((x) => <TargetRow key={x.address + (x.rules || '')} tg={x} enabled={enabledOf(x)} onToggle={toggle} onChanged={reload} />)}
+          </div>
+        </Card>
+      ) : (
+        <Card><Empty title="Belum ada wallet target" sub="Tambahkan alamat lewat tombol di atas, atau dari halaman Wallet setelah memeriksa kinerjanya." /></Card>
+      )}
     </>
   );
 }
