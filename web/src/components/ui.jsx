@@ -120,7 +120,10 @@ export function PriceRange({
     return (
       <div className="w-44 min-w-40 text-xs">
         <div className="font-medium">{t('Seluruh rentang')}</div>
-        <div className="mt-1 h-1.5 rounded-full bg-accent/40" />
+        {/* tanpa tepi: pita memudar ke kedua sisi, bukan berhenti di satu harga */}
+        <div className="relative mt-0.5 h-3.5">
+          <div className="absolute inset-x-0 top-1/2 h-2 -translate-y-1/2 rounded-full bg-linear-to-r from-transparent via-accent/40 to-transparent" />
+        </div>
         {pE != null && <div className="num mt-1 whitespace-nowrap text-muted">
           {t('masuk {p}', { p: price(pE) })}
           {mv != null && <><span className="mx-1">·</span><span className={mv > 0.05 ? 'text-success' : mv < -0.05 ? 'text-danger' : ''}>{t('keluar ')}{pct(mv, 1)}</span></>}
@@ -152,6 +155,9 @@ export function PriceRange({
 
   const inRange = pNow != null && pNow >= pLo && pNow <= pHi;
   const move = pEntry != null && pNow != null ? (pNow / pEntry - 1) * 100 : null;
+  // Posisi tertutup atau tanpa harga kini: status in/out tidak berlaku, pita netral.
+  const band = closed || pNow == null ? 'bg-accent/25 border-accent'
+    : inRange ? 'bg-success/25 border-success' : 'bg-warning/20 border-warning';
 
   // Jarak ke tepi terdekat = berapa persen harga harus bergerak sebelum posisi
   // berhenti menghasilkan fee.
@@ -177,20 +183,24 @@ export function PriceRange({
   return (
     <div className="w-44 min-w-40" title={title}>
       {showPrices && (
-        <div className="num mb-1 text-xs whitespace-nowrap">
+        <div className="num mb-0.5 text-xs whitespace-nowrap">
           {price(pLo)} <span className="text-muted">–</span> {price(pHi)}
           {quote && <span className="ml-1 text-muted">{quote}</span>}
         </div>
       )}
-      <div className="relative h-1.5 rounded-full bg-default">
-        <div className="absolute inset-y-0 rounded-full bg-accent/60"
+      {/* Jalur tipis = seluruh sumbu; pita tebal bertepi = rentang posisi, diwarnai
+          statusnya supaya in/out terbaca sebelum teksnya. Penanda dipusatkan pada
+          harganya (-translate-x-1/2), bukan menempel dengan tepi kirinya. */}
+      <div className="relative h-3.5">
+        <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-default" />
+        <div className={`absolute top-1/2 h-2 -translate-y-1/2 rounded-[1px] border-x-2 ${band}`}
           style={{ left: `${at100(pLo)}%`, width: `${Math.max(2, at100(pHi) - at100(pLo))}%` }} />
-        {/* masuk: penanda tipis & redup; kini/keluar: penanda tegas */}
-        {pEntry != null && <div className="absolute -top-0.5 h-2.5 w-0.5 rounded-full bg-muted" style={{ left: `${at100(pEntry)}%` }} title={t('harga masuk')} />}
-        {pNow != null && <div className="absolute -top-1 h-3.5 w-0.5 rounded-full bg-foreground" style={{ left: `${at100(pNow)}%` }} title={t(closed ? 'harga keluar' : 'harga kini')} />}
+        {/* masuk: garis tipis & redup; kini/keluar: titik tegas berbingkai warna kartu */}
+        {pEntry != null && <div className="absolute inset-y-0.5 w-0.5 -translate-x-1/2 rounded-full bg-muted" style={{ left: `${at100(pEntry)}%` }} title={t('harga masuk')} />}
+        {pNow != null && <div className="absolute top-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground ring-2 ring-surface" style={{ left: `${at100(pNow)}%` }} title={t(closed ? 'harga keluar' : 'harga kini')} />}
       </div>
       {pEntry != null && (
-        <div className="num mt-1 text-xs whitespace-nowrap text-muted">
+        <div className="num mt-0.5 text-xs whitespace-nowrap text-muted">
           {t('masuk {p}', { p: price(pEntry) })}
           {move != null && <>
             <span className="mx-1 text-muted">·</span>
