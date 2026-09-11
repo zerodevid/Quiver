@@ -8,6 +8,7 @@ const { scoutWallet } = require('./scout');
 const { WalletResearch, summarize } = require('./wallet');
 const { createSettingsRoutes } = require('./settings');
 const { Manual } = require('./manual');
+const { Icons } = require('./icons');
 const { QUOTES } = require('./chain');
 
 // Sisi mana dari pool yang merupakan aset kuotasi (0 atau 1); null kalau tidak dikenal.
@@ -128,6 +129,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     req.on('end', () => { try { resolve(b ? JSON.parse(b) : {}); } catch { resolve({}); } });
   }));
   const saveCfg = () => fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+
+  // Logo token dari GeckoTerminal, disimpan di sebelah database. Pemanasan pertama
+  // ditunda sebentar supaya tidak berebut jaringan dengan sinkronisasi awal mesin.
+  // Tanpa path database (tes) tidak ada tempat menyimpan, jadi tidak ada pemanasan.
+  const dbPath = cfg.db?.path;
+  const icons = new Icons({ store, dir: dbPath ? path.join(path.dirname(dbPath), 'icons') : path.join(require('node:os').tmpdir(), 'lpcopy-icons'), log });
+  if (dbPath) {
+    const warmIcons = () => { try { const n = icons.warm(); if (n) log(`logo: mengambil ${n} logo token dari GeckoTerminal`); } catch (e) { log(`logo: ${e.message}`); } };
+    setTimeout(warmIcons, 15_000).unref?.();
+    setInterval(warmIcons, 30 * 60_000).unref?.();
+  }
 
   const routes = {
     'GET /api/overview': () => {
@@ -558,6 +570,20 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store' });
         return res.end(LOGIN_PAGE(false));
       }
+    }
+    // Logo token: satu-satunya rute /api yang membalas gambar, bukan JSON.
+    if (key === 'GET /api/icon') {
+      const img = await icons.get(url.searchParams.get('a'), { wait: 6000 }).catch(() => null);
+      if (!img) { res.writeHead(404, { 'cache-control': 'no-store' }); return res.end(); }
+      res.writeHead(200, {
+        'content-type': img.ctype,
+        'content-length': img.buf.length,
+        'cache-control': 'private, max-age=604800',
+        // gambar dari pihak ketiga, disajikan di origin yang memegang cookie login
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; sandbox",
+      });
+      return res.end(img.buf);
     }
     if (routes[key]) {
       try { return json(res, 200, await routes[key](req, url, res)); }

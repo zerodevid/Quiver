@@ -1,15 +1,18 @@
 // Lambang token.
 //
-// Logo asli hanya tersedia untuk aset kuotasi (USDG/ETH/WETH) — dan justru itulah
-// yang muncul di hampir setiap pasangan. Berkasnya disajikan dari server sendiri,
-// bukan dari CDN pihak ketiga: server produksi diblokir Cloudflare saat mengambil
-// metadata token, dan memuat gambar dari luar akan membocorkan token apa yang sedang
-// dilihat.
+// Logo aset kuotasi (USDG/ETH/WETH) ada di web/public/tokens/ — muncul di hampir
+// setiap pasangan, jadi dimuat tanpa menunggu siapa pun. Logo token lain diambil
+// server dari GeckoTerminal lalu disajikan dari origin dasbor sendiri
+// (/api/icon?a=0x…, lihat src/icons.js): browser tidak pernah memanggil pihak
+// ketiga, jadi tidak ada yang tahu token apa yang sedang dilihat.
 //
-// Token lain (memecoin) memang tidak punya logo di mana pun, jadi dipakai lambang
-// yang dibangkitkan dari alamatnya: warnanya selalu sama untuk alamat yang sama,
-// sehingga tetap bisa dikenali sekilas.
-import { useState } from 'react';
+// Selama logonya belum ada (baru diambil, atau memang tidak punya), yang tampil
+// lambang yang dibangkitkan dari alamat: warnanya selalu sama untuk alamat yang
+// sama, sehingga tetap bisa dikenali sekilas. Logo asli menimpanya begitu termuat,
+// tanpa menggeser tata letak.
+import { useEffect, useState } from 'react';
+
+const ZERO = '0x0000000000000000000000000000000000000000';
 
 const KNOWN = {
   '0x5fc5360d0400a0fd4f2af552add042d716f1d168': '/tokens/usdg.png',
@@ -26,26 +29,37 @@ function hue(addr = '') {
 }
 
 export default function TokenIcon({ address, symbol, size = 20, className = '' }) {
-  const [failed, setFailed] = useState(false);
   const a = (address || '').toLowerCase();
-  const src = KNOWN[a];
+  const local = KNOWN[a];
+  // coba → (gagal) tunggu → ulang → (gagal lagi) henti. Server mungkin masih mengambil.
+  const [phase, setPhase] = useState('coba');
+  const [loaded, setLoaded] = useState(false);
   const style = { width: size, height: size };
-
-  if (src && !failed) {
-    return (
-      <img src={src} alt={symbol || ''} title={symbol || ''} style={style} loading="lazy"
-        onError={() => setFailed(true)}
-        className={`shrink-0 rounded-full bg-surface ring-1 ring-border ${className}`} />
-    );
-  }
   const h = hue(a);
   const initials = (symbol || '?').replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || '?';
+
+  // Pengambilan pertama di server bisa melewati batas tunggunya saat puluhan logo
+  // diminta sekaligus — satu kali coba ulang beberapa detik kemudian menangkapnya.
+  useEffect(() => {
+    if (phase !== 'tunggu') return;
+    const id = setTimeout(() => setPhase('ulang'), 8000);
+    return () => clearTimeout(id);
+  }, [phase]);
+
+  const src = local || (/^0x[0-9a-f]{40}$/.test(a) && a !== ZERO ? `/api/icon?a=${a}${phase === 'ulang' ? '&r=1' : ''}` : null);
+  const showImg = src && (phase === 'coba' || phase === 'ulang');
+
   return (
-    <span
-      style={{ ...style, background: `oklch(0.62 0.11 ${h})`, fontSize: Math.round(size * 0.4) }}
+    <span style={{ ...style, background: loaded ? 'var(--surface)' : `oklch(0.62 0.11 ${h})`, fontSize: Math.round(size * 0.4) }}
       title={symbol || ''}
-      className={`flex shrink-0 items-center justify-center rounded-full font-semibold leading-none text-white ring-1 ring-border ${className}`}>
-      {initials}
+      className={`relative flex shrink-0 items-center justify-center overflow-hidden rounded-full font-semibold leading-none text-white ring-1 ring-border ${className}`}>
+      {!loaded && initials}
+      {showImg && (
+        <img src={src} alt="" loading="lazy" decoding="async" style={style}
+          onLoad={() => setLoaded(true)}
+          onError={() => { setLoaded(false); setPhase((f) => (f === 'coba' && !local ? 'tunggu' : 'henti')); }}
+          className={`absolute inset-0 rounded-full object-cover transition-opacity duration-200 ${loaded ? 'opacity-100' : 'opacity-0'}`} />
+      )}
     </span>
   );
 }

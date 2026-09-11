@@ -95,6 +95,13 @@ CREATE TABLE IF NOT EXISTS tokens (
   seen_ts   INTEGER
 );
 
+-- logo token (GeckoTerminal), berkasnya di data/icons/. status: ok | none | err
+CREATE TABLE IF NOT EXISTS icons (
+  address    TEXT PRIMARY KEY,
+  status     TEXT, file TEXT, ctype TEXT, src TEXT,
+  checked_ts INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS txs (
   hash       TEXT PRIMARY KEY,
   ts         INTEGER, kind TEXT, status TEXT,
