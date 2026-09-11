@@ -584,8 +584,43 @@ class Manual {
     this.store.setState('swap_tokens', JSON.stringify(this.customTokens().filter((x) => x !== lc(a))));
   }
 
+  // Token ERC-20 apa saja yang pernah MASUK ke wallet bot — dari log Transfer yang
+  // `to`-nya wallet kita. Tanpa ini, token yang dikirim dari luar (bukan hasil
+  // posisi bot) tidak pernah muncul di daftar swap walau saldonya ada.
+  //
+  // Pindainya bertahap: blok yang sudah dilihat disimpan di state, jadi setelah
+  // pindai pertama (900 ribu blok, seperti riset wallet) tiap pemanggilan hanya
+  // membaca blok baru. Kalau RPC sedang tumbang, yang lama tetap dipakai — daftar
+  // token tidak boleh ikut hilang gara-gara satu pindai gagal.
+  async seenTokens() {
+    const me = this.engine.exec.address();
+    if (!me) return [];
+    let st = { wallet: null, block: 0, tokens: [] };
+    try { st = { ...st, ...JSON.parse(this.store.getState('swap_seen', '{}')) }; } catch { /* mulai dari nol */ }
+    if (st.wallet !== me) st = { wallet: me, block: 0, tokens: [] };
+    // Pindai ulang paling cepat tiap 60 detik: halaman Swap dan bot Telegram
+    // memanggil held() berulang, dan getLogs adalah panggilan RPC yang paling berat.
+    if (st.block && Date.now() - (st.ts || 0) < 60_000) return st.tokens;
+    try {
+      const head = await this.rpc.blockNumber();
+      const lo = st.block ? st.block + 1 : Math.max(0, head - 900_000);
+      if (head >= lo) {
+        const { getLogsSafe } = require('./scout');
+        const logs = await getLogsSafe(this.rpc, { topics: [TOPIC.transfer, null, ethers.zeroPadValue(me, 32)] }, lo, head);
+        const set = new Set(st.tokens);
+        // Transfer ERC-721 punya topik yang sama tapi tokenId-nya di topics[3];
+        // ERC-20 memakai data untuk jumlahnya.
+        for (const l of logs) if (l.topics.length === 3 && l.address) set.add(lc(l.address));
+        st = { wallet: me, block: head, ts: Date.now(), tokens: [...set].slice(-300) };
+        this.store.setState('swap_seen', JSON.stringify(st));
+      }
+    } catch (e) { this.log(`pindai token wallet gagal: ${e.message}`); }
+    return st.tokens;
+  }
+
   // Token yang masuk akal ditawarkan: aset kuotasi + token yang memang kita pegang
-  // (dari posisi terbuka dan antrean jual sisa) + token yang ditambahkan manual.
+  // (dari posisi terbuka, antrean jual sisa, dan semua token yang pernah masuk ke
+  // wallet — hanya yang saldonya masih ada) + token yang ditambahkan manual.
   // Saldo dibaca sekali, satu batch.
   async held() {
     const eng = this.engine;
@@ -597,10 +632,19 @@ class Manual {
     }
     for (const it of eng.leftovers()) if (it.token) set.add(lc(it.token));
     for (const a of custom) set.add(a);
-    const list = [...set];
-    const [bal, metas] = await Promise.all([eng.exec.balances(list), this.chain.tokens(list)]);
-    const byAddr = new Map(metas.map((t) => [lc(t.address), t]));
-    return list.map((a) => {
+    // Token yang pernah masuk ke wallet + semua token yang dikenal bot: saldonya
+    // dicek sekaligus, tapi hanya yang masih bersaldo yang masuk daftar — token
+    // yang sudah habis dijual tidak perlu memenuhi pemilih.
+    const extra = new Set();
+    for (const a of await this.seenTokens()) if (!set.has(a)) extra.add(a);
+    for (const r of this.store.all('SELECT address FROM tokens')) if (r.address && !set.has(lc(r.address))) extra.add(lc(r.address));
+    const list = [...set, ...extra];
+    const bal = await eng.exec.balances(list);
+    const keep = list.filter((a) => set.has(a) || (bal.get(a) || 0n) > 0n);
+    // Metadata token yang bersaldo tapi belum dikenal dibaca dari chain (dan tersimpan).
+    const metas = await this.chain.tokens(keep);
+    const byAddr = new Map(metas.filter(Boolean).map((t) => [lc(t.address), t]));
+    return keep.map((a) => {
       const meta = byAddr.get(a) || {};
       const raw = bal.get(a) || 0n;
       const dec = meta.decimals ?? (QUOTES[a]?.decimals ?? 18);
