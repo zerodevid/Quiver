@@ -3,6 +3,7 @@ import { Button, Chip, Toast } from '@heroui/react';
 import {
   LayoutDashboard, Layers, ListChecks, Users, SlidersHorizontal, Wallet as WalletIcon,
   Radar, Settings as SettingsIcon, Moon, Sun, Pause, Play, Menu, X,
+  PlusCircle, ArrowDownUp,
 } from 'lucide-react';
 import { usePoll, useHash, useTheme } from './hooks';
 import { post } from './api';
@@ -20,6 +21,8 @@ const Rules = lazy(() => import('./pages/Rules'));
 const WalletPage = lazy(() => import('./pages/Wallet'));
 const Scout = lazy(() => import('./pages/Scout'));
 const Settings = lazy(() => import('./pages/Settings'));
+const ManualLp = lazy(() => import('./pages/ManualLp'));
+const Swap = lazy(() => import('./pages/Swap'));
 
 // Status mesin dipoll SEKALI di sini lalu dibagi ke semua halaman.
 const StatusCtx = createContext(null);
@@ -34,6 +37,10 @@ const NAV = [
   ['Copy', [
     ['target', 'Target', Users, Targets],
     ['aturan', 'Aturan', SlidersHorizontal, Rules],
+  ]],
+  ['Aksi', [
+    ['lp-manual', 'LP manual', PlusCircle, ManualLp],
+    ['swap', 'Swap', ArrowDownUp, Swap],
   ]],
   ['Riset', [
     ['wallet', 'Wallet', WalletIcon, WalletPage],

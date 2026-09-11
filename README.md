@@ -389,8 +389,37 @@ Swap menerima `semua`, persen (`50%`), atau angka; untuk ETH native cadangan gas
 selalu disisakan. Kutipan menampilkan biaya rute, dan rute yang rugi melebihi
 `exit.sell_max_loss_bps` ditolak dengan alasannya.
 
-Rutenya (`/api/manual/*`) ada di server, jadi dasbor bisa memakainya juga — untuk
-sekarang kedua fitur ini baru punya tampilan di Telegram.
+Keduanya punya halaman sendiri di dasbor (grup **Aksi**) dan menu di Telegram,
+lewat rute yang sama (`/api/manual/*`).
+
+**Halaman LP manual** dibagi tiga langkah bernomor (pool → nominal → rentang) dengan
+pratinjau melekat di sisi kanan yang menghitung ulang sendiri, tanpa tombol "hitung":
+tiap perubahan memicu satu permintaan setelah jeda 350 ms, dan balasan yang datang
+terlambat dibuang lewat nomor urut — pola yang sama dipakai `usePoll`. Pemilih pool
+berupa daftar yang bisa dicari (bukan dropdown berisi 81 baris buram) lengkap dengan
+fee, penanda hook, dan kapan terakhir beraksi. Tombol nominal cepat dihitung dari
+batas yang benar-benar berlaku, jadi "Maks" tidak pernah mengantar ke penolakan.
+Rentangnya langsung tergambar memakai komponen `PriceRange` yang sama dengan halaman
+Posisi.
+
+**Halaman Swap** memakai bentuk kartu dua kotak yang sudah dikenal orang, dengan
+tombol pembalik arah di tengah, tombol porsi (25/50/75/Maks), dan kutipan yang
+diambil sendiri. Rute yang rugi melebihi batas mematikan tombolnya dan menjelaskan
+alasannya, bukan gagal belakangan.
+
+Keduanya memakai konfirmasi dua langkah di tempat (tombol berubah jadi "Kirim
+transaksi sungguhan?") — bukan `confirm()` bawaan peramban, supaya ringkasan yang
+dikonfirmasi tetap terlihat bersama angkanya. Di mode simulasi tombolnya tidak
+dimatikan begitu saja: ia berubah jadi "Nyalakan LIVE dulu" yang membawa ke
+Pengaturan, karena tombol mati tanpa jalan keluar cuma bikin user menebak.
+
+`cd web && python3 check-ui.py` menjalankan keduanya di Chromium dan WebKit, ukuran
+desktop dan HP, dua bahasa, mode simulasi dan LIVE, rute bagus dan rute rugi —
+dengan balasan API dipalsukan supaya jalur berhasil ikut terlihat (kontrak API-nya
+sendiri sudah ditutup uji Node). Tiga cacat UX ditemukan justru olehnya: tombol mati
+tanpa jalan keluar, halaman swap yang diam tanpa penjelasan saat wallet kosong, dan
+sisi "dari"/"ke" yang bisa jatuh ke token yang sama sehingga kutipan tidak pernah
+muncul.
 
 **Yang sengaja TIDAK ada di Telegram**
 
@@ -464,6 +493,8 @@ src/server.js     API + penyaji dashboard (server.api = pintu yang sama untuk bo
 src/manual.js     LP manual & swap manual (memakai jalur eksekusi yang sama)
 src/telegram.js   bot Telegram: seluruh dasbor lewat obrolan
 web/              tampilan React + HeroUI v3 (sumber); web/dist = hasil build
+                  halaman: Ringkasan, Posisi, Aktivitas, Target, Aturan,
+                  LP manual, Swap, Wallet, Scout, Pengaturan
 public/           tampilan lama (Tabler) — cadangan kalau web/dist belum dibuild
 ```
 

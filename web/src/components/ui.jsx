@@ -330,9 +330,13 @@ export function Text({ label, value, onChange, placeholder, hint, type = 'text',
   );
 }
 
-export function Pick({ label, value, onChange, options, hint, className = '' }) {
+// `aria` dipakai saat field sengaja tanpa label terlihat (mis. pemilih token di
+// kartu swap, yang labelnya sudah dibawa judul kotaknya) — pembaca layar tetap
+// butuh nama.
+export function Pick({ label, value, onChange, options, hint, className = '', aria }) {
   return (
-    <Select variant="secondary" value={value} onChange={(v) => onChange(v)} className={`flex flex-col gap-1 ${className}`}>
+    <Select variant="secondary" value={value} onChange={(v) => onChange(v)} aria-label={aria ? t(aria) : undefined}
+      className={`flex flex-col gap-1 ${className}`}>
       {label && <Label>{t(label)}</Label>}
       <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
       {hint && <Description>{t(hint)}</Description>}
