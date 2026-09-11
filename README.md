@@ -15,7 +15,7 @@
   <img alt="ethers v6" src="https://img.shields.io/badge/ethers-v6-2535a0" />
   <img alt="React 19" src="https://img.shields.io/badge/react-19-61dafb?logo=react&logoColor=white" />
   <img alt="Chain 4663" src="https://img.shields.io/badge/chain-Robinhood%20(4663)-cc0000" />
-  <img alt="Tests" src="https://img.shields.io/badge/tests-153%20passing-brightgreen" />
+  <img alt="Tests" src="https://img.shields.io/badge/tests-169%20passing-brightgreen" />
 </p>
 
 > 🇮🇩 The original, more discursive Indonesian documentation is preserved in [`README.id.md`](README.id.md).
@@ -31,6 +31,7 @@
 - [Quick start](#quick-start)
 - [Command-line interface](#command-line-interface)
 - [Configuration](#configuration)
+  - [Secrets in `.env`](#secrets-in-env)
 - [Copy rules](#copy-rules)
 - [Going live](#going-live)
 - [Dashboard](#dashboard)
@@ -81,7 +82,7 @@ Everything the engine does is observable and controllable from three equivalent 
                          │                 Robinhood Chain              │
                          │  PoolManager · PositionManager · NPM v3 …    │
                          └───────────────┬──────────────────────────────┘
-                                         │ JSON-RPC (3 endpoints, method-routed)
+                                         │ JSON-RPC (multiple endpoints, method-routed)
                                          ▼
 ┌──────────────┐   ┌────────────────────────────────────────────────────────────┐
 │  CLI (`lp`)  │   │                        src/engine.js                       │
@@ -141,7 +142,7 @@ WETH9 (EIP-1967)     0x0bd7d308f8e1639fab988df18a8011f41eacad73
 
 ### Requirements
 
-- **Node.js ≥ 22.5** — the persistence layer uses the built-in [`node:sqlite`](https://nodejs.org/api/sqlite.html) module (no native build step). Node 24 is used in production. The `--no-warnings` flag in the start scripts silences the experimental-module notice.
+- **Node.js ≥ 22.5** — the persistence layer uses the built-in [`node:sqlite`](https://nodejs.org/api/sqlite.html) module (no native build step). Production runs Node 22. The `--no-warnings` flag in the start scripts silences the experimental-module notice.
 - A wallet **dedicated to this bot** (never your main wallet) with USDG and a little ETH for gas — only required for LIVE mode.
 - For the dashboard build: `npm` and a modern browser. For UI checks: Python 3 with Playwright.
 
@@ -152,6 +153,7 @@ git clone <repository-url> lpcopy
 cd lpcopy
 npm install                      # engine dependencies (ethers only)
 cp config.example.json config.json
+cp .env.example .env && chmod 600 .env   # secrets — see Secrets in .env
 ```
 
 ### Run
@@ -182,7 +184,9 @@ Environment variables:
 | Variable | Purpose |
 |---|---|
 | `LPCOPY_CONFIG` | Path to the configuration file (default `./config.json`). |
-| `LPCOPY_PRIVATE_KEY` | Signing key for LIVE mode; overrides `wallet.key_file`. Prefer the key file. |
+| `LPCOPY_ENV` | Path to the secrets file (default `./.env`). |
+| `LPCOPY_PRIVATE_KEY` | Signing key for LIVE mode; overrides `wallet.key_file`. |
+| `LPCOPY_AUTH_TOKEN`, `LPCOPY_TELEGRAM_BOT_TOKEN`, `LPCOPY_NTFY_TOPIC` | Override `server.auth_token`, `telegram.bot_token`, `notify.ntfy_topic`. See [Secrets in `.env`](#secrets-in-env). |
 
 A PID file (`data/lpcopy.pid`) enforces a **single running instance** — two processes sharing one database would overwrite each other's block cursor.
 
@@ -190,23 +194,45 @@ A PID file (`data/lpcopy.pid`) enforces a **single running instance** — two pr
 
 ## Configuration
 
-`config.json` is git-ignored because it holds secrets. Start from `config.example.json`. Most settings are also editable at runtime from the dashboard's **Settings** and **Rules** pages, and changes there are written back to the file.
+Start from `config.example.json`. Most settings are also editable at runtime from the dashboard's **Settings** and **Rules** pages, and changes there are written back to the file. Secrets (tokens, RPC API keys, optionally the wallet key) belong in [`.env`](#secrets-in-env) rather than in `config.json`; both files are git-ignored.
 
 | Section | Key settings | Notes |
 |---|---|---|
 | `chain` | `endpoints[]`, `max_inflight`, `dns_over_https` | Each endpoint may declare `no_logs`, `max_log_blocks`, `archive`, `max_batch`. See [RPC layer](#rpc-layer). |
-| `wallet` | `key_file` | Path to the private key (default `~/.lpcopy/key`). Must be mode `600`. |
+| `wallet` | `key_file` | Path to the private key (default `~/.lpcopy/key`). Must be mode `600`. `LPCOPY_PRIVATE_KEY` in `.env` takes precedence. |
 | `mode` | `dry_run`, `paused` | `dry_run: true` = simulation. |
 | `loop` | `poll_ms`, `max_block_span`, `sync_seconds`, `equity_seconds`, `stale_action_seconds` | Engine cadence; actions older than `stale_action_seconds` (default 300) are skipped in LIVE mode. |
 | `gas` | `price_multiplier`, `priority_wei`, `max_gas_limit`, `native_reserve_wei` | ETH reserve is never spent on swaps. |
 | `prices` | `eth_usd`, `auto_eth_price` | ETH/USD is derived on-chain from the deepest ETH/USDG pools when `auto_eth_price` is on (within 0.07 % of Blockscout). |
-| `server` | `port`, `host`, `auth_token` | **Set `auth_token` before exposing the dashboard beyond localhost.** An empty token disables the gate. |
+| `server` | `port`, `host`, `auth_token` | **Set an access token before exposing the dashboard beyond localhost** — `LPCOPY_AUTH_TOKEN` in `.env`, or `auth_token` here. An empty token disables the gate. |
 | `db` | `path` | SQLite file, relative to the project root. |
 | `scout` | `blocks` | Default scan window for `lp scout`. |
-| `notify` | `ntfy_topic` | Optional ntfy.sh push notifications. |
-| `telegram` | `bot_token`, `chat_ids[]`, `notify{}` | See [Telegram bot](#telegram-bot). |
+| `notify` | `ntfy_topic` | Optional ntfy.sh push notifications (or `LPCOPY_NTFY_TOPIC`). |
+| `telegram` | `bot_token`, `chat_ids[]`, `notify{}` | Token preferably as `LPCOPY_TELEGRAM_BOT_TOKEN`. See [Telegram bot](#telegram-bot). |
 | `targets[]` | `address`, `label`, `enabled`, `rules` | Seeded into the database on first run; per-target `rules` override the global set. |
 | `rules` | `sizing`, `range`, `onesided`, `swap`, `exit`, `filters` | See [Copy rules](#copy-rules). |
+
+### Secrets in `.env`
+
+Secrets can live in a `.env` file next to `config.json` instead of inside it, so the config can be backed up or shared without them:
+
+```bash
+cp .env.example .env && chmod 600 .env
+```
+
+| Variable | Replaces |
+|---|---|
+| `LPCOPY_PRIVATE_KEY` | `wallet.key_file` — the key file is ignored and the dashboard's import/generate/remove wallet actions are disabled. |
+| `LPCOPY_AUTH_TOKEN` | `server.auth_token` |
+| `LPCOPY_TELEGRAM_BOT_TOKEN` | `telegram.bot_token` |
+| `LPCOPY_NTFY_TOPIC` | `notify.ntfy_topic` |
+| any name, e.g. `ALCHEMY_KEY` | referenced from RPC URLs or headers as `${ALCHEMY_KEY}`, e.g. `"url": "https://robinhood-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}"` |
+
+- Precedence: variables already set in the environment > `.env` > `config.json`. Empty lines in `.env` have no effect.
+- Values from `.env` are **never written back** to `config.json`; every config write goes through `src/env.js`, which restores the file's own values and the `${NAME}` templates before saving.
+- The dashboard refuses to edit a field that `.env` controls (it would be overwritten on restart) and says which variable to change instead.
+- Only variable **names** are logged at startup. The process refuses to start if `.env` holds `LPCOPY_PRIVATE_KEY` and is readable by other users.
+- `.env` is git-ignored and not sent by `deploy.sh`; create it on each machine.
 
 ---
 
@@ -272,7 +298,7 @@ Both tiers respect `max_slippage_bps` and `max_price_impact_bps`; a swap that wo
    echo "0xYOUR_PRIVATE_KEY" > ~/.lpcopy/key
    chmod 600 ~/.lpcopy/key
    ```
-   The bot refuses to start if the file's permissions are more permissive than `600`.
+   The bot refuses to use a key file (or a `.env` holding `LPCOPY_PRIVATE_KEY`) whose permissions are more permissive than `600`. The key file lives outside the project directory, which is why it remains the recommended place.
 2. **Fund the wallet** with USDG and a small amount of ETH for gas.
 3. **Enable LIVE** — flip the badge in the dashboard header (or set `mode.dry_run: false` in `config.json`).
 
@@ -283,6 +309,7 @@ Safety rails that apply in LIVE mode:
 - Actions older than `loop.stale_action_seconds` (default 300 s) discovered after downtime are **skipped, never executed** — a stale LP signal is not a signal.
 - Position-size caps, exposure caps, cooldowns, and filters are re-evaluated **immediately before** every transaction is built.
 - Manual LP and swap plans are **never executed as submitted**; the server rebuilds the plan from the same inputs at the current price so every check runs again.
+- **One exit per position at a time.** While a close is waiting for its receipt (up to 90 s), auto-exit triggers, the exit reconciler, and repeated clicks cannot send a second burn that would revert and waste gas. A receipt timeout is reported as *not confirmed yet*, not as a failure.
 
 ---
 
@@ -301,8 +328,8 @@ npx vite build       # production build (deploy.sh does this automatically)
 
 | Page | Contents |
 |---|---|
-| **Overview** | Mode, open positions, PnL, block lag, most common skip reasons, RPC health, equity chart. |
-| **Positions** | Per-position value, fees (collected + unclaimed), PnL, IL, price range with distance-to-edge, age. Click a pair for the **detail page**: pool candlestick chart with the position's range and entry/exit markers (GeckoTerminal), DexScreener embed, market stats, and position composition. |
+| **Overview** | Portfolio value and growth chart, PnL per period, win rate and track record, daily PnL calendar, results per source (target or manual), block lag, skip reasons, RPC health. |
+| **Positions** | Per-position value, fees (collected + unclaimed), PnL, IL, price range with distance-to-edge, age. Closing shows a pending toast until the receipt arrives, then the amount received and realised PnL. Click a pair for the **detail page**: pool candlestick chart with the position's range and entry/exit markers (GeckoTerminal), DexScreener embed, market stats, and position composition. |
 | **Activity** | Target actions and the engine's decision for each, with the reason — paginated. |
 | **Targets** | Add, enable/disable, rename, remove, per-target rule overrides, and research shortcuts. |
 | **Rules** | All six rule groups, globally or per target. |
@@ -310,7 +337,11 @@ npx vite build       # production build (deploy.sh does this automatically)
 | **Swap** | Two-box swap card via Kyber, with quoted route cost and a hard stop on routes that lose more than the configured bound. |
 | **Wallet** | Wallet research — see [Wallet research](#wallet-research). |
 | **Scout** | The `lp scout` report, in the browser. |
-| **Settings** | LIVE/simulation, cadence, wallet, RPC endpoints (test & add), gas, engine, notifications, Telegram, dashboard token. |
+| **Settings** | LIVE/simulation, cadence, wallet, RPC endpoints (test & add), gas, engine, notifications, Telegram, dashboard token. Fields controlled by `.env` are shown read-only with the variable to change. |
+
+### Target alerts
+
+The bell in the header polls `/api/feed` and raises a toast — plus an optional two-tone sound and a desktop notification while the tab is in the background — whenever a target wallet opens or adds to an LP position, together with what the bot decided (copied, simulated, skipped and why). Preferences are per browser (`localStorage`): a desk laptop may beep, a phone need not. Opening the dashboard never replays history, and actions backfilled after downtime are filtered by age.
 
 ### Internationalisation
 
@@ -336,7 +367,7 @@ Everything in the dashboard is also available from a Telegram chat. The bot **co
 ### Setup
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the token.
-2. **Dashboard → Settings → Telegram** → paste the token → **Save**. The bot starts listening immediately, without a process restart. (Alternatively, set `telegram.bot_token` in `config.json` and restart.)
+2. **Dashboard → Settings → Telegram** → paste the token → **Save**. The bot starts listening immediately, without a process restart. (Alternatively, set `LPCOPY_TELEGRAM_BOT_TOKEN` in `.env` and restart — the dashboard then shows the token as managed by `.env`.)
 3. **Generate a pairing code** in the dashboard and send `/start <CODE>` to the bot. Codes are single-use and expire after 15 minutes.
 
 If no chat is paired yet, the bot prints its own pairing code to the log on startup, so pairing over SSH alone is possible.
@@ -347,7 +378,7 @@ Tokens can be replaced at any time while the bot is running: the previous listen
 
 | | |
 |---|---|
-| 📊 Summary | mode, positions, PnL, block lag, top skip reasons, RPC health |
+| 📊 Summary | portfolio value, PnL with 24 h change, one-line engine health (paused / lagging / sync stalled / RPC cooling), open positions, track record, per-target results, copy counters |
 | 💼 Positions | list with value, fees, PnL, IL, range, age; close positions; open detail pages |
 | 🎯 Targets | list, toggle, rename, remove, add, per-target rules, research |
 | 📜 Activity | recent target actions and bot decisions, paginated |
@@ -363,7 +394,16 @@ Slash commands: `/summary` `/positions` `/targets` `/activity` `/rules` `/settin
 
 ### Notifications
 
-Copied LPs, closed positions, errors, and warnings are pushed automatically; each category can be toggled under **Notifications**. The outbound queue is rate-limited so a log flood never trips Telegram's send limits.
+Every event that moves funds arrives as a formatted card with action buttons:
+
+| Card | Contents |
+|---|---|
+| 🟢 **LP copied** / ➕ **LP added** | pair, venue, fee tier, capital, price range with the current price marked, target and mirrored NFT, reason, swaps performed, tx |
+| 🔴 **LP closed** / ➖ **LP reduced** | realised PnL and %, proceeds vs. cost, holding time, reason, leftover sale, tx |
+| 🛡 **Auto-exit** | the same, for stop-loss, take-profit, out-of-range, max-age, and missed-exit reconciliation |
+| 🧹 **Leftover sold** | amount received, token value, route loss, DEX, attempt number |
+
+The engine passes structured detail with each notification and the bot reads the numbers back through the same API as the dashboard, so a card never disagrees with the screens. If a card cannot be built, the plain message is sent instead. Errors and warnings arrive as `⛔ Error · <context>` / `⚠️ Warning · <context>` with the detail underneath. Each category can be toggled under **Notifications**; the outbound queue is rate-limited so a log flood never trips Telegram's send limits. ntfy.sh keeps receiving plain text.
 
 ### Deliberately not available in Telegram
 
@@ -419,6 +459,8 @@ Positions whose NFTs have been **burned** are recovered from the pool's `Mint` e
 | `rpc.mainnet.chain.robinhood.com` | ~250 ms | yes | official; returns `429` under burst load |
 | `rpc.ordofi.network` | ~232 ms | yes (slow, ~4.5 s) | only archive node; `getLogs` limited to 3 000-block ranges |
 
+`config.example.json` ships with these three public endpoints. Keyed providers (e.g. Alchemy) can be added with the key kept in `.env`: `"url": "https://robinhood-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}"`. The dashboard masks key-bearing URLs and the Telegram bot will not edit them.
+
 Endpoints evaluated and rejected: `robinhood.drpc.org` (free tier answers only `eth_chainId`), `rpc.arrowrpc.com` (down), `robinhoodchain.blockscout.com/api/eth-rpc` (behind Cloudflare).
 
 Design decisions:
@@ -438,7 +480,13 @@ Production runs on a Singapore VPS under **pm2** as the `lpcopy` process (see `e
 ./deploy.sh
 ```
 
-builds the dashboard, rsyncs `src test public package.json README.md lp ecosystem.config.cjs deploy.sh` and `web/dist` to the server, installs production dependencies, and restarts pm2. It **deliberately excludes** `config.json` (secrets), `data/` (block cursor and positions — pushing it would rewind the cursor and re-evaluate old actions), and `logs/`.
+builds the dashboard, rsyncs `src test public package.json README.md lp ecosystem.config.cjs deploy.sh .env.example` and `web/dist` to the server, installs production dependencies, and restarts pm2. It **deliberately excludes** `config.json` and `.env` (both live only on the server), `data/` (block cursor and positions — pushing it would rewind the cursor and re-evaluate old actions), and `logs/`.
+
+Secrets on the server live in `~/lpcopy/.env` (mode `600`); `config.json` there refers to RPC keys as `${NAME}`. At startup the log lists which variables were loaded — names only, never values:
+
+```
+.env dimuat: LPCOPY_AUTH_TOKEN, LPCOPY_TELEGRAM_BOT_TOKEN, ALCHEMY_KEY
+```
 
 Day-to-day on the server:
 
@@ -459,7 +507,8 @@ All suites run against the real engine with the chain, transaction sending, and 
 |---|---|
 | `node test/edge.js` | **28** adversarial scenarios through policy, engine, and watcher: target adds to an already-mirrored position, partial withdrawals, NFT moves, custody by automation contracts, hooked pools, every cap (count, exposure, cooldown, minimums), one-sided positions, insufficient balance, duplicate actions, leftover-memecoin sale queue. |
 | `node test/riset.js` | **11** tests for v3 wallet research: fee/principal separation, fee-only claims, NFTs transferred and returned, event-block pricing vs estimate flagging, and two regressions for the "v3-only wallet appears empty" bug. |
-| `node test/telegram.js` | **93** tests with a mocked Telegram API but the real server route table. The core test is a crawler that presses **every** button reachable from the main menu and asserts no throw, no empty screen, and no `undefined`/`NaN` leaking into text. Also verifies the rules menu and `policy.js` agree in both directions. |
+| `node test/telegram.js` | **99** tests with a mocked Telegram API but the real server route table. The core test is a crawler that presses **every** button reachable from the main menu and asserts no throw, no empty screen, and no `undefined`/`NaN` leaking into text. Also verifies the rules menu and `policy.js` agree in both directions, and renders every notification card and the Summary screen. |
+| `node test/env.js` | **10** tests for `.env`: parsing, precedence, refusing a world-readable private key, `${NAME}` RPC templates, secrets never written back to `config.json` (including after dashboard edits), and settings routes locking `.env`-managed fields. |
 | `node test/market.js` | **8** tests for DexScreener/GeckoTerminal caching and entry-price derivation. |
 | `node test/icons.js` | **8** tests for token logo fetching, validation, and caching. |
 | `node test/rentang.js` | **5** tests for manual-LP range → tick conversion in both quote orientations. |
@@ -480,11 +529,13 @@ For dry-running **real** target transactions without broadcasting, see the commi
 ```
 lp                    CLI entry point (zsh wrapper)
 config.example.json   configuration template
+.env.example          secrets template (copy to .env, chmod 600)
 ecosystem.config.cjs  pm2 process definition
 deploy.sh             build + rsync + pm2 restart
 
 src/
-  index.js            bootstrap: CLI dispatch, single-instance lock, timers
+  index.js            bootstrap: .env, CLI dispatch, single-instance lock, timers
+  env.js              .env loading, config overrides, secret-free config writes
   engine.js           orchestrator
   watcher.js          target LP action detection (events)
   policy.js           rule engine: sizing, range, filters
@@ -517,7 +568,7 @@ web/                  React dashboard source (Vite + HeroUI v3 + Tailwind v4)
   dist/               production build (git-ignored)
 
 public/               legacy Tabler UI — fallback when web/dist is absent
-test/                 edge · riset · telegram · market · icons · rentang
+test/                 edge · env · riset · telegram · market · icons · rentang
 data/                 SQLite database, PID file, icon cache (git-ignored)
 logs/                 engine and pm2 logs (git-ignored)
 ```
@@ -553,9 +604,10 @@ Findings that were expensive to obtain and are worth knowing before touching the
 
 ## Security
 
-- `config.json`, `data/`, `logs/`, and any `key*` / `*.mnemonic` files are git-ignored. **Never commit them.**
-- The private key is read from a file that must be mode `600`; the process refuses to start otherwise. Use a wallet dedicated to this bot.
-- The dashboard can enable LIVE mode and close positions. **Set `server.auth_token` before binding to anything other than `127.0.0.1`.** An empty token disables authentication entirely.
+- `.env`, `config.json`, `data/`, `logs/`, and any `key*` / `*.mnemonic` files are git-ignored. **Never commit them.** Only `.env.example` is tracked.
+- Keep secrets in `.env`: values from it are never written to `config.json` and never logged. Bot tokens and RPC keys are masked before they reach the browser.
+- The private key is read from a file (or `.env`) that must be mode `600`; the process refuses otherwise. Use a wallet dedicated to this bot.
+- The dashboard can enable LIVE mode and close positions. **Set an access token (`LPCOPY_AUTH_TOKEN`) before binding to anything other than `127.0.0.1`.** An empty token disables authentication entirely.
 - A paired Telegram chat has the same authority as the dashboard. Audit `telegram.chat_ids` regularly.
 - Key import/export and API-key-bearing RPC URLs are intentionally unavailable through Telegram.
 

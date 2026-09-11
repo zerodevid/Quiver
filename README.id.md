@@ -40,7 +40,14 @@ rsync -az --exclude node_modules --exclude data --exclude logs --exclude config.
 ssh singapore 'pm2 restart lpcopy'
 ```
 
-**Token akses** ada di `~/lpcopy/config.json` di server (`server.auth_token`, chmod 600).
+**Rahasia di `.env`.** Token dan kunci boleh dipindah dari `config.json` ke `~/lpcopy/.env`
+(`cp .env.example .env && chmod 600 .env`): `LPCOPY_PRIVATE_KEY`, `LPCOPY_AUTH_TOKEN`,
+`LPCOPY_TELEGRAM_BOT_TOKEN`, `LPCOPY_NTFY_TOPIC`, dan variabel bebas yang dirujuk dari URL/header
+RPC sebagai `${NAMA}` (mis. `.../v2/${ALCHEMY_KEY}`). Urutan: variabel lingkungan > `.env` >
+`config.json`. Nilai dari `.env` tidak pernah ditulis balik ke `config.json`, dan dasbor menolak
+mengubah kolom yang diatur `.env`. `.env` tidak masuk git dan tidak ikut `deploy.sh`.
+
+**Token akses** ada di `~/lpcopy/config.json` di server (`server.auth_token`, chmod 600) — atau di `.env` sebagai `LPCOPY_AUTH_TOKEN`.
 Dasbor ini bisa menyalakan mode LIVE dan menutup posisi, jadi ia tidak boleh terbuka
 tanpa token begitu diekspos — token kosong = gerbang mati (hanya aman untuk 127.0.0.1).
 
