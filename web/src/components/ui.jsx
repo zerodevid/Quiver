@@ -279,12 +279,17 @@ export function DataTable({
             <Table.Header>
               {columns.map((c, i) => {
                 const canSort = c.sortable !== false && !!c.key;
+                // Kepala kolom sortable bawaan HeroUI adalah flex space-between, jadi
+                // text-end di <th> tidak berpengaruh; rata kanan diatur di span-nya.
                 return (
                   <Table.Column key={c.key} id={c.key} isRowHeader={i === 0} allowsSorting={canSort}
                     className={c.align === 'end' ? 'text-end' : ''}>
                     {canSort
                       ? ({ sortDirection }) => (
-                        <Table.SortableColumnHeader sortDirection={sortDirection}>{t(c.label)}</Table.SortableColumnHeader>)
+                        <Table.SortableColumnHeader sortDirection={sortDirection}
+                          className={`gap-1 ${c.align === 'end' ? 'justify-end' : 'justify-start'}`}>
+                          {t(c.label)}
+                        </Table.SortableColumnHeader>)
                       : t(c.label)}
                   </Table.Column>
                 );

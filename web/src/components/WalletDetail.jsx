@@ -108,7 +108,7 @@ const posCols = (open) => [
     <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={open ? p.curTick : null}
       dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1}
       entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />) },
-  { key: 'when', label: open ? 'Dibuka' : 'Ditutup', sort: (p) => (open ? p.opened_ts : p.closed_ts), render: (p) => (
+  { key: 'when', label: open ? 'Dibuka' : 'Ditutup', align: 'end', sort: (p) => (open ? p.opened_ts : p.closed_ts), render: (p) => (
     <span className="whitespace-nowrap text-muted">{ago(open ? p.opened_ts : p.closed_ts)}</span>) },
 ];
 
