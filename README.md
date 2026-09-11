@@ -331,9 +331,9 @@ npx vite build       # production build (deploy.sh does this automatically)
 | Page | Contents |
 |---|---|
 | **Overview** | Portfolio value and growth chart, PnL per period, win rate and track record, daily PnL calendar, results per source (target or manual), block lag, skip reasons, RPC health. |
-| **Positions** | Per-position value, fees (collected + unclaimed), PnL, IL, price range with distance-to-edge, age. Closing shows a pending toast until the receipt arrives, then the amount received and realised PnL. Click a pair for the **detail page**: pool candlestick chart with the position's range and entry/exit markers (GeckoTerminal), DexScreener embed, market stats, and position composition. |
+| **Positions** | Per-position value, fees (collected + unclaimed), PnL, IL, price range with distance-to-edge, age. Closing shows a pending toast until the receipt arrives, then the amount received and realised PnL. The drawer's **Detail page & chart** button (and the pair name on the Overview) opens the **detail page**: pool candlestick chart with the position's range and entry/exit markers (GeckoTerminal), DexScreener embed, market stats, and position composition. Clicking a row opens a side drawer with the position's **history**: every transaction that touched it (zap swap, mint, add, remove, close, leftover sale) with token amounts, USD value, gas and Blockscout link, plus the bot's notes — the decision that triggered it and log lines about the position. |
 | **Activity** | Target actions and the engine's decision for each, with the reason — paginated. |
-| **Targets** | Add, enable/disable, rename, remove, per-target rule overrides, and research shortcuts. |
+| **Targets** | Add, enable/disable, rename, remove, per-target rule overrides, and research shortcuts. The detail page shows the wallet's **holdings** — every token it holds with amount, price and USD value — above its LP performance. |
 | **Rules** | All six rule groups, globally or per target. |
 | **Manual LP** | Three-step flow (pool → amount → range) with a live-recomputing preview. Pool picker is searchable and can discover pools directly from a token address via the v4 `Initialize` event (both currencies are indexed). |
 | **Swap** | Two-box swap card via Kyber, with quoted route cost and a hard stop on routes that lose more than the configured bound. |
@@ -433,6 +433,16 @@ Both are exact; fees computed this way match `tokens out − principal` to the l
 
 Only `rpc.ordofi.network` serves archive state (`archive: true`). Without it the engine degrades gracefully: price from the nearest `Swap` event plus amounts from transfers, with the guard that principal can never exceed what was received.
 
+### Realised vs unrealised after close
+
+Closing a USDG/MEME position returns USDG **and** MEME; the MEME is not money until it is swapped, and memecoins routinely lose another 50–80 % between the close and the sale. Position history therefore follows the non-quote token after close (`src/proceeds.js`):
+
+- USDG / ETH / WETH received on close → **realised** immediately.
+- Any other token: every `Transfer` out of the wallet after the close is read from its receipt. If quote assets came *into* the wallet in the same transaction, it is a sale and the **actual proceeds** are used (a 1 M-token sell pays price impact and router fees that the pool mid-price ignores); native ETH proceeds come from the balance delta plus gas, priced at the ETH/USDG pool rate of that block. A transfer with nothing coming back (sent elsewhere, or swapped into another memecoin) is valued at the pool price of that block.
+- What has not left the wallet is **still held** and valued at the current pool price every time the page loads, so a closed position's PnL keeps moving until the tokens are sold, then locks.
+
+Sales are allocated **FIFO** across positions that returned the same token, with any balance held before the first close consumed first. The PnL column shows the split (`realised $x · $y held`), and the total-profit tile says how much is still sitting in tokens. This is what made a reference wallet's two "+$287 / +$181" memecoin trades — as shown by a third-party tracker pricing from a stale feed — resolve on-chain to **−$344 / −$170** once the actual ETH proceeds were counted.
+
 ### Uniswap v3 methodology
 
 v3 has its own path (`src/walletv3.js`) and is cheaper than v4: `NonfungiblePositionManager` emits token amounts directly and separates principal from fees —
@@ -509,6 +519,8 @@ All suites run against the real engine with the chain, transaction sending, and 
 |---|---|
 | `node test/edge.js` | **28** adversarial scenarios through policy, engine, and watcher: target adds to an already-mirrored position, partial withdrawals, NFT moves, custody by automation contracts, hooked pools, every cap (count, exposure, cooldown, minimums), one-sided positions, insufficient balance, duplicate actions, leftover-memecoin sale queue. |
 | `node test/riset.js` | **11** tests for v3 wallet research: fee/principal separation, fee-only claims, NFTs transferred and returned, event-block pricing vs estimate flagging, and two regressions for the "v3-only wallet appears empty" bug. |
+| `node test/sisa.js` | **9** tests for leftover bookkeeping on the bot's own positions: close records the leftover and its close-price estimate, sales (USDG, native ETH, manual FIFO, oversized) replace the estimate with real proceeds, equity values unsold leftovers at the current pool price (close price when unreadable), and tokens gone from the wallet are realised at the current price. |
+| `node test/hasil.js` | **10** tests for realised/unrealised tracking after close: held tokens repriced at the current pool, actual USDG and native-ETH sale proceeds, FIFO across positions and pre-existing balance, zap-outs, transfers with no proceeds, incremental refresh, and a transient RPC failure leaving the position untracked rather than mis-recorded. |
 | `node test/telegram.js` | **99** tests with a mocked Telegram API but the real server route table. The core test is a crawler that presses **every** button reachable from the main menu and asserts no throw, no empty screen, and no `undefined`/`NaN` leaking into text. Also verifies the rules menu and `policy.js` agree in both directions, and renders every notification card and the Summary screen. |
 | `node test/env.js` | **10** tests for `.env`: parsing, precedence, refusing a world-readable private key, `${NAME}` RPC templates, secrets never written back to `config.json` (including after dashboard edits), and settings routes locking `.env`-managed fields. |
 | `node test/market.js` | **8** tests for DexScreener/GeckoTerminal caching and entry-price derivation. |
@@ -519,7 +531,6 @@ All suites run against the real engine with the chain, transaction sending, and 
 Run everything:
 
 ```bash
-| `node test/sisa.js` | **9** tests for leftover bookkeeping on the bot's own positions: close records the leftover and its close-price estimate, sales (USDG, native ETH, manual FIFO, oversized) replace the estimate with real proceeds, equity values unsold leftovers at the current pool price (close price when unreadable), and tokens gone from the wallet are realised at the current price. |
 for f in test/*.js; do node --no-warnings "$f"; done
 ```
 
@@ -554,6 +565,7 @@ src/
   db.js               SQLite schema (node:sqlite)
   wallet.js           v4 wallet research
   walletv3.js         v3 wallet research
+  proceeds.js         realised vs unrealised after close (follows tokens until sold)
   scout.js            candidate wallet report
   market.js           DexScreener / GeckoTerminal market data (cached)
   icons.js            token logo resolution and caching

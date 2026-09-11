@@ -24,6 +24,7 @@ const { computePoolId } = require('./pools');
 const { getLogsSafe } = require('./scout');
 const { unclaimedV4, feesAtBlock } = require('./fees');
 const { WalletV3 } = require('./walletv3');
+const { Proceeds } = require('./proceeds');
 const m = require('./v3math');
 
 const IF_POSM = new ethers.Interface(ABI.posmV4);
@@ -41,6 +42,8 @@ class WalletResearch {
     // jadi rekonstruksinya tidak sama dengan v4. Wallet yang ber-LP di v3 dulu
     // tampil KOSONG di halaman riset karena modul ini cuma membaca v4.
     this.v3 = new WalletV3({ rpc, store, chain, log });
+    // Mengikuti token non-kuotasi hasil tutup posisi sampai benar-benar dijual.
+    this.proceeds = new Proceeds({ rpc, store, chain, research: this, log });
   }
 
   // ---- harga pool pada blok tertentu --------------------------------------
@@ -539,12 +542,13 @@ class WalletResearch {
   // Dengan begini angka ringkasan selalu sama dengan isi tabel.
   statsFromDb(wallet) {
     const rows = this.store.all(
-      'SELECT status, incomplete, pnl_q, invested_q, fees_q, live_value_q, live_fee_q FROM wpositions WHERE wallet=?', wallet);
+      'SELECT status, incomplete, pnl_q, invested_q, fees_q, live_value_q, live_fee_q, held_tok, unrealized_q FROM wpositions WHERE wallet=?', wallet);
     // Nilai di DB sudah dalam USD saat disimpan, jadi quoteKind 'usd'.
     return summarize(rows.map((r) => ({
       status: r.status, incomplete: !!r.incomplete, quoteKind: 'usd',
       pnlQ: r.pnl_q || 0, investedQ: r.invested_q || 0, feesQ: r.fees_q || 0,
       liveValueQ: r.live_value_q || 0, liveFeeQ: r.live_fee_q || 0,
+      heldUnrealizedQ: r.held_tok && r.held_tok !== '0' ? (r.unrealized_q || 0) : 0,
     })));
   }
 
@@ -608,6 +612,10 @@ class WalletResearch {
           e.sqrt ? e.sqrt.toString() : null, usd(e.valueQ, p.quoteKind));
       }
     }
+    // Posisi yang baru tutup: pisahkan yang sudah jadi uang dari token yang masih
+    // dipegang. Kegagalan di sini tidak boleh membatalkan hasil pindai.
+    try { await this.proceeds.track(wallet, { head, ethUsd }); }
+    catch (e) { this.log(`lacak hasil ${wallet.slice(0, 10)}…: ${e.message}`); }
     const stats = this.statsFromDb(wallet);
     this.store.run(
       `INSERT INTO wallets(address,first_block,scanned_to,last_scan_ts,stats,positions_n) VALUES(?,?,?,?,?,?)
@@ -635,6 +643,9 @@ function summarize(positions, ethUsd = 2500) {
     closedCount: closed.length,
     incompleteCount: positions.filter((p) => p.incomplete).length,
     totalProfitUsd: pnls.reduce((s, x) => s + x, 0),
+    // Bagian dari total profit yang masih berupa token hasil tutup posisi yang belum
+    // dijual — ikut bergerak dengan harga sampai wallet menukarnya.
+    heldUnrealizedUsd: closed.reduce((s, p) => s + usd(p.heldUnrealizedQ || 0, p.quoteKind), 0),
     unrealizedUsd: open.reduce((s, p) => s + usd(p.pnlQ || 0, p.quoteKind), 0),
     openValueUsd: open.reduce((s, p) => s + usd(p.liveValueQ || 0, p.quoteKind), 0),
     openFeeUsd: open.reduce((s, p) => s + usd(p.liveFeeQ || 0, p.quoteKind), 0),

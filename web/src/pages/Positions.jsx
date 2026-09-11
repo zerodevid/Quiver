@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { Button } from '@heroui/react';
 import { usePoll } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
@@ -6,6 +6,7 @@ import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Dot, ask } fr
 import { TokenPair } from '../components/TokenIcon';
 // Halaman detail membawa pustaka grafik — dimuat hanya saat dibuka.
 const PositionDetail = lazy(() => import('./PositionDetail'));
+import PositionHistory from '../components/PositionHistory';
 import { usd, pct, tone, age, ago, short, num } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -24,14 +25,17 @@ function Totals({ items }) {
 }
 
 // Dipakai juga panel "Posisi aktif" di Ringkasan. Nama pasangan menaut ke halaman
-// detail posisi (grafik harga, titik masuk, data pasar).
-export function Pair({ p }) {
+// detail posisi (grafik harga, titik masuk, data pasar); di halaman Posisi tautannya
+// dimatikan (link=false) karena seluruh barisnya sudah membuka laci riwayat.
+export function Pair({ p, link = true }) {
   const { t } = useI18n();
+  const name = `${p.symbol0 || '?'}/${p.symbol1 || '?'}`;
   return (
     <div className="flex items-center gap-2.5">
       <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={20} />
       <div className="min-w-0">
-        <a href={'#positions/' + p.id} className="font-medium whitespace-nowrap hover:underline">{p.symbol0 || '?'}/{p.symbol1 || '?'}</a>
+        {link ? <a href={'#positions/' + p.id} className="font-medium whitespace-nowrap hover:underline">{name}</a>
+          : <span className="font-medium whitespace-nowrap">{name}</span>}
         <div className="mt-0.5 flex items-center gap-1.5 text-xs whitespace-nowrap text-muted">
           <span className="uppercase">{p.venue}</span><span>·</span><span className="num">{num(p.fee / 10000, 2)}%</span>
           {p.inRange != null && <><span>·</span><Dot tone={p.inRange ? 'success' : 'warning'} />
@@ -47,6 +51,8 @@ export default function Positions({ param }) {
   // #positions/123 -> detail satu posisi. Poll daftar dimatikan selama detail terbuka.
   const { data: d, reload } = usePoll(param ? null : '/api/positions', 10000);
   const { close, closing } = useClosePosition(reload);
+  // Klik baris -> laci riwayat posisi (transaksi & catatan bot).
+  const [hist, setHist] = useState(null);
   if (param) return <Suspense fallback={<Loading />}><PositionDetail id={param} /></Suspense>;
   if (!d) return <Loading />;
   const open = d.positions, closed = d.closed;
@@ -55,18 +61,19 @@ export default function Positions({ param }) {
 
   return (
     <>
-      <PageHeader group="Pemantauan" title="Posisi" desc="Posisi LP milik bot — nilai, fee, dan PnL diperbarui dari chain tiap 30 detik." />
+      <PageHeader group="Pemantauan" title="Posisi" desc="Posisi LP milik bot — nilai, fee, dan PnL diperbarui dari chain tiap 30 detik. Klik baris untuk melihat riwayat transaksi dan catatan bot." />
+      <PositionHistory id={hist} onClose={() => setHist(null)} />
       <Panel title={t('Posisi terbuka ({n})', { n: open.length })} className="mb-4" bodyClass="p-0"
         action={open.length > 0 && <Totals items={[
           ['Nilai', usd(sum(open, (p) => p.valueUsd))],
           ['Fee', usd(sum(open, (p) => p.feeUsd))],
           ['PnL', usd(openPnl), tone(openPnl)],
         ]} />}>
-        <DataTable label="Posisi terbuka" rows={open} rowKey={(p) => p.id} searchable
+        <DataTable label="Posisi terbuka" rows={open} rowKey={(p) => p.id} searchable onRow={(p) => setHist(p.id)}
           defaultSort={{ column: 'val', direction: 'descending' }}
           empty={<Empty title="Belum ada posisi terbuka" sub="Posisi muncul di sini setelah bot menyalin LP dari wallet target." />}
           columns={[
-            { key: 'pair', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <Pair p={p} /> },
+            { key: 'pair', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <Pair p={p} link={false} /> },
             { key: 'range', label: 'Rentang harga', sortable: false, render: (p) => (
               <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={p.curTick}
                 dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1}
@@ -88,14 +95,14 @@ export default function Positions({ param }) {
       </Panel>
       <Panel title={t('Posisi tertutup ({n})', { n: closed.length })} bodyClass="p-0"
         action={closed.length > 0 && <Totals items={[['PnL', usd(closedPnl), tone(closedPnl)]]} />}>
-        <DataTable label="Posisi tertutup" rows={closed} rowKey={(c) => c.id} searchable pageSize={20}
+        <DataTable label="Posisi tertutup" rows={closed} rowKey={(c) => c.id} searchable pageSize={20} onRow={(c) => setHist(c.id)}
           defaultSort={{ column: 'at', direction: 'descending' }}
           empty={<Empty title="Belum ada posisi tertutup" />}
           columns={[
             { key: 'pair', label: 'Pasangan', sort: (c) => `${c.symbol0}/${c.symbol1}`, search: (c) => `${c.symbol0}/${c.symbol1} ${c.token_id}`, render: (c) => (
               <div className="flex items-center gap-2.5">
                 <TokenPair token0={c.token0} token1={c.token1} symbol0={c.symbol0} symbol1={c.symbol1} size={20} />
-                <div><a href={'#positions/' + c.id} className="font-medium whitespace-nowrap hover:underline">{c.symbol0 || '?'}/{c.symbol1 || '?'}</a>
+                <div><span className="font-medium whitespace-nowrap">{c.symbol0 || '?'}/{c.symbol1 || '?'}</span>
                   <div className="mono mt-0.5 text-xs text-muted">{String(c.venue || '').toUpperCase()} · #{c.token_id}</div></div>
               </div>) },
             { key: 'cost', label: 'Modal', align: 'end', sort: (c) => c.cost_quote, render: (c) => usd(c.cost_quote) },

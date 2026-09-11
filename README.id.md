@@ -105,6 +105,25 @@ USDG/MEME), harga token spekulatif adalah **kebalikan** dari tick — `tickLower
 menghasilkan harga tertinggi. Diverifikasi dengan membandingkan dua susunan pool yang
 setara: keduanya menghasilkan angka yang sama.
 
+## Riwayat posisi (laci di halaman Posisi)
+
+Klik baris posisi (terbuka maupun tertutup) → laci dari kanan berisi PnL, umur, fee,
+modal, lalu **riwayat transaksi** posisi itu: swap zap, mint, tambah, kurangi, tutup,
+jual sisa — dengan jumlah token, nilai USD, gas, hash (tautan Blockscout), dan alasan
+keputusan yang memicunya. Di bawahnya **catatan bot**: keputusan atas aksi target yang
+menaut ke posisi ini dan baris log yang menyebut `#<id>`. Sumbernya tabel `txs`
+(detail JSON menyimpan nomor posisi/pool), `decisions`, dan `logs`
+(`GET /api/position/history?id=`); posisi yang diadopsi tanpa tx tetap punya kejadian
+buka/tutup dari baris posisinya. Uji: `node test/riwayat.js`.
+
+## Isi wallet target (halaman detail target)
+
+Di atas kinerja LP, halaman detail target menampilkan **isi wallet**-nya: semua token
+yang dipegang beserta jumlah, harga, nilai USD, dan porsinya terhadap total. Kandidat
+tokennya dirakit dari aset kuotasi, token posisi LP-nya, token yang dikenal bot, dan
+log `Transfer` ERC-20 ke alamat itu (~1 hari terakhir, bertahap); saldonya dibaca satu
+batch dari chain, harganya dari DexScreener (`GET /api/wallet/holdings?address=`).
+
 ## Riset wallet (tab **Wallet**)
 
 Buka wallet mana pun → total profit, win rate, fee, rata-rata modal, kalender profit
@@ -131,6 +150,22 @@ Keduanya eksak (fee hasil metode ini identik sampai digit terakhir dengan
 "token keluar − pokok" pada transaksi yang tidak ter-netting). Kejadian **klaim fee**
 (delta likuiditas nol) juga dihitung — versi awal melewatinya dan kehilangan
 $6,68 fee pada satu posisi.
+
+**Terealisasi vs belum, setelah posisi tutup.** Menutup posisi USDG/MEME mengembalikan
+USDG **dan** MEME — MEME-nya belum jadi uang sampai ditukar, dan memecoin biasa turun
+50–80% lagi antara tutup dan jual. Riwayat posisi karena itu mengikuti token non-kuotasi
+setelah tutup (`src/proceeds.js`): USDG/ETH/WETH yang diterima langsung **terealisasi**;
+token lain dilacak lewat Transfer keluar dari wallet — kalau di tx yang sama ada aset
+kuotasi masuk, itu penjualan dan **hasil sesungguhnya** yang dipakai (jual 1 juta token
+kena price impact & fee router; hasil ke ETH native dibaca dari selisih saldo + gas,
+dihargai kurs ETH/USDG blok itu); kalau tidak ada yang masuk (dikirim ke wallet lain /
+ditukar ke memecoin lain), dinilai harga pool blok itu. Yang belum keluar = **masih
+dipegang**, dinilai harga pool sekarang tiap halaman dibuka — PnL posisi tertutup ikut
+bergerak sampai tokennya dijual, lalu terkunci. Penjualan dialokasikan FIFO antar-posisi
+yang menerima token yang sama; saldo yang sudah ada sebelum posisi pertama dihabiskan
+dulu. Kolom PnL menampilkan pembagiannya (`terealisasi $x · $y dipegang`). Dua posisi
+memecoin wallet acuan yang oleh tracker pihak ketiga (harga dari feed yang basi) tampil
+"+$287 / +$181" ternyata di chain **−$344 / −$170** begitu hasil jual ETH-nya dihitung.
 
 **Node arsip: hanya `rpc.ordofi.network`** (`archive: true` di config). Endpoint resmi
 membalas "metadata is not found" untuk blok lampau, publicnode 403. Tanpa node arsip,
@@ -464,6 +499,18 @@ Swap menerima `semua`, persen (`50%`), atau angka; untuk ETH native cadangan gas
 selalu disisakan. Kutipan menampilkan biaya rute, dan rute yang rugi melebihi
 `exit.sell_max_loss_bps` ditolak dengan alasannya.
 
+**Sisa memecoin dalam pembukuan.** `out_quote` posisi yang tutup mula-mula memuat sisa
+memecoin di harga pool saat tutup (`left_token` / `left_amount` / `left_quote`). Begitu
+sisa itu terjual — lewat antrean coba-ulang atau halaman Swap — hasil jual sesungguhnya
+menggantikan taksiran itu (FIFO kalau beberapa posisi menyimpan token yang sama), jadi
+PnL terealisasi adalah yang benar-benar kembali, bukan tebakan harga tengah. Selama
+belum terjual, ekuitas menilainya di harga pool kini (`summary.leftoverUsd`, tampil di
+komposisi Ringkasan dan ringkasan Telegram) dan selisihnya terhadap taksiran tutup
+dihitung sebagai PnL berjalan. Token yang hilang dari wallet di luar bot dianggap
+terjual di harga kini. Ini menghapus "anjlok lalu melonjak" $150 di kurva ekuitas tiap
+kali posisi tutup mengembalikan memecoin, dan mengubah satu posisi yang tercatat −$52
+menjadi +$15 seperti kenyataannya.
+
 Keduanya punya halaman sendiri di dasbor (grup **Aksi**) dan menu di Telegram,
 lewat rute yang sama (`/api/manual/*`).
 
@@ -499,18 +546,6 @@ muncul.
 **Yang sengaja TIDAK ada di Telegram**
 
 - Impor atau ekspor kunci privat. Riwayat obrolan tersimpan di server Telegram —
-**Sisa memecoin dalam pembukuan.** `out_quote` posisi yang tutup mula-mula memuat sisa
-memecoin di harga pool saat tutup (`left_token` / `left_amount` / `left_quote`). Begitu
-sisa itu terjual — lewat antrean coba-ulang atau halaman Swap — hasil jual sesungguhnya
-menggantikan taksiran itu (FIFO kalau beberapa posisi menyimpan token yang sama), jadi
-PnL terealisasi adalah yang benar-benar kembali, bukan tebakan harga tengah. Selama
-belum terjual, ekuitas menilainya di harga pool kini (`summary.leftoverUsd`, tampil di
-komposisi Ringkasan dan ringkasan Telegram) dan selisihnya terhadap taksiran tutup
-dihitung sebagai PnL berjalan. Token yang hilang dari wallet di luar bot dianggap
-terjual di harga kini. Ini menghapus "anjlok lalu melonjak" $150 di kurva ekuitas tiap
-kali posisi tutup mengembalikan memecoin, dan mengubah satu posisi yang tercatat −$52
-menjadi +$15 seperti kenyataannya.
-
   bukan tempat untuk kunci. Ganti wallet lewat dasbor.
 - Mengubah URL RPC yang mengandung API key (menambah endpoint biasa tetap bisa).
 
@@ -601,6 +636,17 @@ pemisahan fee dari pokok, klaim fee tanpa penarikan, NFT yang berpindah tangan l
 kembali, penilaian pada harga blok kejadian vs penandaan taksiran — dan dua uji
 regresi untuk bug yang membuat wallet v3 tampil kosong.
 
+`node test/sisa.js` (9 uji) menguji pembukuan sisa memecoin posisi bot: tutup mencatat
+sisa beserta taksiran harga tutupnya, penjualan (USDG, ETH native, manual FIFO, melebihi
+sisa) mengganti taksiran dengan hasil nyata, ekuitas menilai sisa yang belum terjual di
+harga pool kini (harga tutup kalau tak terbaca), dan token yang hilang dari wallet
+direalisasi di harga kini.
+
+`node test/hasil.js` (10 uji) menguji pelacakan terealisasi/belum setelah tutup: token
+dipegang dinilai ulang harga pool sekarang, hasil jual USDG & ETH native sesungguhnya,
+FIFO antar-posisi dan saldo lama, zap-out, kirim tanpa hasil, pembaruan lanjutan, dan
+gangguan RPC sesaat yang membiarkan posisi belum terlacak alih-alih tercatat salah.
+
 `node test/telegram.js` (80 uji) menguji bot Telegram dengan API Telegram dipalsukan tetapi
 tabel rute server yang asli. Uji intinya adalah penjelajah: ia menekan **setiap**
 tombol yang bisa dicapai dari menu utama dan menuntut tidak ada yang melempar
@@ -614,9 +660,3 @@ catatan di commit "dry-run cermin Bang GE": kode bot dijalankan apa adanya tetap
 setiap `exec.send` dicegat dan dieksekusi berantai lewat `eth_simulateV1` pada
 satu blok yang dikunci, sehingga swap → mint → burn → jual sisa saling melihat
 perubahan state.
-`node test/sisa.js` (9 uji) menguji pembukuan sisa memecoin posisi bot: tutup mencatat
-sisa beserta taksiran harga tutupnya, penjualan (USDG, ETH native, manual FIFO, melebihi
-sisa) mengganti taksiran dengan hasil nyata, ekuitas menilai sisa yang belum terjual di
-harga pool kini (harga tutup kalau tak terbaca), dan token yang hilang dari wallet
-direalisasi di harga kini.
-

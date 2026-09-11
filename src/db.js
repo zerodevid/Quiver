@@ -164,6 +164,14 @@ CREATE TABLE IF NOT EXISTS wpositions (
   status       TEXT NOT NULL,         -- open | closed
   events_n     INTEGER DEFAULT 0,
   incomplete   INTEGER DEFAULT 0,     -- 1 = sebagian riwayat di luar jendela pindai
+  -- Posisi tertutup yang mengembalikan token non-kuotasi: yang sudah ditukar jadi
+  -- USDG/ETH = terealisasi (hasil tukar sesungguhnya), sisanya masih dipegang wallet
+  -- dan dinilai harga sekarang = belum terealisasi. pnl_q = keduanya - modal.
+  held_tok     TEXT DEFAULT '0',      -- token non-kuotasi yang masih dipegang (mentah)
+  sold_tok     TEXT DEFAULT '0',      -- yang sudah ditukar / dikirim keluar
+  realized_q   REAL,                  -- USD yang benar-benar di tangan
+  unrealized_q REAL,                  -- nilai held_tok pada harga pool sekarang
+  tracked_to   INTEGER,               -- pelacakan penjualan sudah sampai blok ini
   PRIMARY KEY (wallet, venue, token_id)
 );
 CREATE INDEX IF NOT EXISTS idx_wpos_wallet ON wpositions(wallet, status);
@@ -186,6 +194,23 @@ CREATE TABLE IF NOT EXISTS wevents (
   PRIMARY KEY (tx_hash, log_index)
 );
 CREATE INDEX IF NOT EXISTS idx_wev_pos ON wevents(wallet, token_id, block);
+
+-- Tiap tx yang MENGELUARKAN token non-kuotasi dari wallet setelah posisi ditutup:
+-- berapa token yang pergi dan berapa aset kuotasi (USDG/ETH/WETH) yang masuk di tx
+-- yang sama. Dibaca sekali dari receipt, lalu dialokasikan FIFO ke posisi-posisi
+-- yang pernah menerima token itu (lihat proceeds.js).
+CREATE TABLE IF NOT EXISTS wsales (
+  wallet     TEXT NOT NULL,
+  token      TEXT NOT NULL,
+  tx_hash    TEXT NOT NULL,
+  block      INTEGER NOT NULL,
+  ts         INTEGER,
+  tok_out    TEXT NOT NULL,           -- token yang keluar dari wallet (mentah)
+  quote_usd  REAL,                    -- aset kuotasi yang masuk, dalam USD (NULL = tidak ada)
+  kind       TEXT,                    -- sell (ada kuotasi masuk) | send (tidak ada)
+  PRIMARY KEY (wallet, token, tx_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_wsales ON wsales(wallet, token, block);
 
 -- harga pool pada suatu blok, dari event Swap terdekat (mahal dicari, murah disimpan)
 CREATE TABLE IF NOT EXISTS wprices (
@@ -222,6 +247,19 @@ function open(dbPath) {
     db.exec('ALTER TABLE positions ADD COLUMN entry_sqrt TEXT');
     db.exec('ALTER TABLE positions ADD COLUMN exit_sqrt TEXT');
   }
+  if (!posCols.has('left_token')) {
+    db.exec('ALTER TABLE positions ADD COLUMN left_token TEXT');
+    db.exec(`ALTER TABLE positions ADD COLUMN left_amount TEXT DEFAULT '0'`);
+    db.exec('ALTER TABLE positions ADD COLUMN left_quote REAL DEFAULT 0');
+  }
+  const wpCols = new Set(db.prepare('PRAGMA table_info(wpositions)').all().map((c) => c.name));
+  if (!wpCols.has('held_tok')) {
+    db.exec(`ALTER TABLE wpositions ADD COLUMN held_tok TEXT DEFAULT '0'`);
+    db.exec(`ALTER TABLE wpositions ADD COLUMN sold_tok TEXT DEFAULT '0'`);
+    db.exec('ALTER TABLE wpositions ADD COLUMN realized_q REAL');
+    db.exec('ALTER TABLE wpositions ADD COLUMN unrealized_q REAL');
+    db.exec('ALTER TABLE wpositions ADD COLUMN tracked_to INTEGER');
+  }
   return db;
 }
 
@@ -247,12 +285,6 @@ class Store {
   }
   // `meta` hanya untuk pendengar, tidak disimpan: {quiet} = masalah yang sedang
   // ditangani jalan cadangan (tetap tercatat, tidak didorong ke chat); {recovered} =
-  if (!posCols.has('left_token')) {
-    db.exec('ALTER TABLE positions ADD COLUMN left_token TEXT');
-    db.exec(`ALTER TABLE positions ADD COLUMN left_amount TEXT DEFAULT '0'`);
-    db.exec('ALTER TABLE positions ADD COLUMN left_quote REAL DEFAULT 0');
-  }
-  }
   // kabar pulih yang menutup peringatan sebelumnya.
   log(level, msg, meta = null) {
     this.run('INSERT INTO logs(ts,level,msg) VALUES(?,?,?)', Date.now(), level, String(msg).slice(0, 2000));

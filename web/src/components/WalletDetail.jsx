@@ -102,7 +102,18 @@ const posCols = (open) => [
         <div className="text-xs text-muted">{p.invested_q > 0 ? pct((f / p.invested_q) * 100, 2).replace('+', '') : ''}</div>
       </div>);
   } },
-  { key: 'pnl', label: open ? 'uPnL' : 'PnL', align: 'end', sort: (p) => p.pnl_q, render: (p) => (<div className={tone(p.pnl_q)}>{usd(p.pnl_q)}<div className="text-xs">{p.pnlPct == null ? '' : pct(p.pnlPct, 2)}</div></div>) },
+  { key: 'pnl', label: open ? 'uPnL' : 'PnL', align: 'end', sort: (p) => p.pnl_q, render: (p) => (
+    <div className={tone(p.pnl_q)}>
+      {usd(p.pnl_q)}
+      <div className="text-xs">{p.pnlPct == null ? '' : pct(p.pnlPct, 2)}</div>
+      {/* Posisi tertutup yang tokennya belum dijual: PnL-nya masih ikut harga. Tunjukkan
+          berapa yang sudah jadi uang dan berapa yang masih berupa token. */}
+      {!open && p.heldTok > 0 && (
+        <div className="whitespace-nowrap text-xs text-muted" title={tt('Hasil tutup posisi yang sudah ditukar jadi USDG/ETH = terealisasi; token yang masih dipegang dinilai harga pool sekarang.')}>
+          {tt('terealisasi {r} · {t} dipegang', { r: usd(p.realizedPnl), t: usd(p.heldUnrealized) })}
+        </div>
+      )}
+    </div>) },
   { key: 'dpr', label: 'DPR', align: 'end', sort: (p) => p.dprPct, render: (p) => <span className={tone(p.dprPct)}>{p.dprPct == null ? '—' : Math.abs(p.dprPct) >= 1000 ? pct(p.dprPct / 1000, 2).replace('%', 'k%') : pct(p.dprPct, 2)}</span> },
   { key: 'rng', label: 'Rentang harga', sortable: false, render: (p) => (
     <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={open ? p.curTick : null}
@@ -286,7 +297,9 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
             {running && <ScanProgress job={job} compact />}
             <div className="mb-3 grid grid-cols-2 gap-3 xl:grid-cols-4">
               <Stat label="Total profit (tertutup)" value={kUsd(s.totalProfitUsd || 0)} valueClass={tone(s.totalProfitUsd)}
-                sub={t('{n} posisi ditutup', { n: s.closedCount ?? 0 })} />
+                sub={Math.abs(s.heldUnrealizedUsd || 0) >= 0.01
+                  ? t('{n} posisi ditutup · {v} masih berupa token', { n: s.closedCount ?? 0, v: usd(s.heldUnrealizedUsd) })
+                  : t('{n} posisi ditutup', { n: s.closedCount ?? 0 })} />
               <Stat label="Win rate" value={`${(s.winRatePct || 0).toFixed(1)}%`} valueClass={(s.winRatePct || 0) >= 50 ? 'text-success' : 'text-danger'}
                 sub={t('laba per posisi {v}', { v: usd(s.expectedValueUsd || 0) })} />
               <Stat label="Fee didapat" value={kUsd(s.feeEarnedUsd || 0)}
@@ -320,7 +333,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
                 empty={<Empty title="Belum ada posisi tertutup" />}
                 footer={<TotalRow rows={data.closed} />} />
             </Panel>
-            <p className="mt-4 text-xs text-muted">{t('Pokok & fee dibaca dari state pool dan posisi tepat di blok tiap kejadian (node arsip). Posisi yang dibuka-tutup tanpa ada swap di rentangnya tercatat impas, bukan kalah.')}</p>
+            <p className="mt-4 text-xs text-muted">{t('Pokok & fee dibaca dari state pool dan posisi tepat di blok tiap kejadian (node arsip). Posisi yang dibuka-tutup tanpa ada swap di rentangnya tercatat impas, bukan kalah.')} {t('Riwayat mengikuti token hasil tutup posisi sampai dijual: USDG/ETH yang diterima langsung terealisasi, token lain baru terealisasi saat ditukar — sebelum itu dinilai harga pool sekarang.')}</p>
           </>
         )}
     </>

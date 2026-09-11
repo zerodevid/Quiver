@@ -221,7 +221,7 @@ const valOf = (c, r) => (c.sort ? c.sort(r) : r[c.key]);
 
 export function DataTable({
   label, columns, rows, rowKey, empty, dense, footer,
-  searchable, pageSize = 0, defaultSort,
+  searchable, pageSize = 0, defaultSort, onRow,
 }) {
   const [sort, setSort] = useState(defaultSort || null);
   const [q, setQ] = useState('');
@@ -274,8 +274,12 @@ export function DataTable({
       )}
       <Table variant="secondary">
         <Table.ScrollContainer>
+          {/* onRow: seluruh baris bisa diklik (mis. membuka laci riwayat). Tombol dan
+              tautan di dalam sel tetap bekerja sendiri — react-aria menghentikan
+              tekanan bersarang sebelum sampai ke baris. */}
           <Table.Content aria-label={t(label)} className="min-w-[640px]"
-            sortDescriptor={sort || undefined} onSortChange={setSort}>
+            sortDescriptor={sort || undefined} onSortChange={setSort}
+            onRowAction={onRow ? (key) => { const r = rows.find((x, i) => String(rowKey ? rowKey(x, i) : i) === String(key)); if (r) onRow(r); } : undefined}>
             <Table.Header>
               {columns.map((c, i) => {
                 const canSort = c.sortable !== false && !!c.key;
@@ -297,7 +301,7 @@ export function DataTable({
             </Table.Header>
             <Table.Body renderEmptyState={() => (q ? <Empty title="Tidak ada yang cocok" sub="Coba kata kunci lain." /> : empty || <Empty title="Belum ada data" />)}>
               {view.map((r, i) => (
-                <Table.Row key={rowKey ? rowKey(r, i) : i} id={rowKey ? rowKey(r, i) : i}>
+                <Table.Row key={rowKey ? rowKey(r, i) : i} id={rowKey ? rowKey(r, i) : i} className={onRow ? 'cursor-pointer' : ''}>
                   {columns.map((c) => (
                     <Table.Cell key={c.key} className={`${c.align === 'end' ? 'text-end num' : ''} ${dense ? 'py-2' : ''} ${c.className || ''}`}>
                       {c.render ? c.render(r) : r[c.key]}

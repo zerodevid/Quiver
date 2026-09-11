@@ -226,9 +226,28 @@ Chain.prototype.ethUsd = async function ethUsd(fallback = 2500) {
     if (!best) return fallback;
     // currency0 = ETH(18), currency1 = USDG(6) -> harga = USDG per ETH
     const price = m.priceFromSqrt(best.s.sqrtPriceX96, 18, 6);
-    if (price > 100 && price < 100_000) { this._ethUsd = price; this._ethUsdAt = now; return price; }
+    if (price > 100 && price < 100_000) { this._ethUsd = price; this._ethUsdAt = now; this._ethPoolId = best.p.poolId; return price; }
     return fallback;
   } catch { return fallback; }
+};
+
+// Harga ETH pada blok lampau, dari pool ETH/USDG yang sama (butuh node arsip).
+// Dipakai menilai hasil jual ke ETH pada waktunya — memakai harga ETH sekarang untuk
+// penjualan kemarin bisa meleset beberapa persen. Tanpa arsip: harga sekarang.
+Chain.prototype.ethUsdAt = async function ethUsdAt(block, fallback = 2500) {
+  const now = await this.ethUsd(fallback);
+  if (!this._ethPoolId || !this.rpc.hasArchive()) return now;
+  const key = `ethusd:${block}`;
+  const cached = this.store.getState(key);
+  if (cached) return Number(cached);
+  try {
+    const slot = ethers.keccak256(coder.encode(['bytes32', 'uint256'], [this._ethPoolId, POOLS_SLOT]));
+    const w = await this.rpc.callAt(ADDR.poolManager, IF_EXT.encodeFunctionData('extsload', [slot]), block);
+    const s = unpackSlot0(w);
+    const price = m.priceFromSqrt(s.sqrtPriceX96, 18, 6);
+    if (price > 100 && price < 100_000) { this.store.setState(key, String(price)); return price; }
+  } catch { /* pakai harga sekarang */ }
+  return now;
 };
 
 // ---- poolKey dari poolId --------------------------------------------------

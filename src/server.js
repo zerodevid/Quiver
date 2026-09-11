@@ -8,6 +8,7 @@ const { scoutWallet } = require('./scout');
 const { WalletResearch, summarize } = require('./wallet');
 const { createSettingsRoutes } = require('./settings');
 const { Manual } = require('./manual');
+const { Holdings } = require('./holdings');
 const { Icons } = require('./icons');
 const { Market, TF } = require('./market');
 const { Positions } = require('./positions');
@@ -45,6 +46,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   const walletJobs = new Map();
   const research = new WalletResearch({ rpc, store, chain, log });
   const manual = new Manual({ engine, store, chain, rpc, log });
+  const holdings = new Holdings({ rpc, store, chain, log });
+  // Portofolio per wallet di-cache sebentar: halaman detail target di-poll, dan
+  // tiap hitungan berarti puluhan eth_call + DexScreener.
+  const holdingsCache = new Map();
   const market = new Market({ log });
 
   // Antrean memecoin sisa yang belum terjual, dengan simbol & desimal supaya dasbor
@@ -332,13 +337,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         range, from, series, baseline,
         now: {
           value, cash, positionsUsd: s.exposureUsd, feeUsd: s.feeUsd, costUsd: s.costUsd,
+          // memecoin sisa dari posisi yang sudah tutup, belum dijual, di harga kini
+          leftoverUsd: lo,
           pnl, realizedUsd: s.realizedUsd, unrealizedUsd: s.unrealizedUsd,
           // Modal bersih ≈ yang pernah disetor: nilai sekarang dikurangi seluruh laba.
           // Tanpa saldo kas (mode tanpa wallet) tidak bisa dihitung.
           capital: cash ? value - pnl : null,
           openCount: s.openCount, inRange: s.inRange,
-          // memecoin sisa dari posisi yang sudah tutup, belum dijual, di harga kini
-          leftoverUsd: lo,
         },
         stats: {
           closedCount: closed.length, wins, losses: closed.length - wins,
@@ -399,6 +404,96 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // Token spekulatif = yang bukan aset kuotasi; dasar harga di grafik.
       pos.baseToken = pos.quoteSide === 0 ? row.token1 : pos.quoteSide === 1 ? row.token0 : row.token0;
       return { position: pos, ethUsd: engine.ethUsd, syncedAt: engine.positions.lastSync };
+    },
+    // Riwayat satu posisi bot untuk laci detail: setiap transaksi yang menyentuhnya
+    // (swap zap, mint, tambah, kurangi, tutup, jual sisa) dengan jumlah token dan nilai,
+    // plus catatan bot — keputusan atas aksi target yang memicunya dan baris log yang
+    // menyebut posisi ini.
+    'GET /api/position/history': (req, url) => {
+      const id = Number(url.searchParams.get('id'));
+      const row = store.get('SELECT * FROM positions WHERE id=?', id);
+      if (!row) return { error: 'posisi tidak ditemukan' };
+      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
+      const isEth = row.quote_symbol === 'ETH' || row.quote_symbol === 'WETH';
+      const k = isEth ? engine.ethUsd : 1;
+      const parse = (d) => { try { return JSON.parse(d || '{}') || {}; } catch { return {}; } };
+      const gasUsd = (t) => (t.gas_used && t.gas_price ? (Number(t.gas_used) * Number(BigInt(t.gas_price))) / 1e18 * engine.ethUsd : null);
+      // Transaksi yang menyentuh posisi ini: hash buka/tutup, yang mencatat nomor posisi
+      // di detailnya (tutup, jual sisa), keputusan yang menaut ke posisi ini, dan
+      // swap/mint di pool yang sama selama posisi hidup (zap tidak menyimpan nomor posisi —
+      // nomornya baru ada setelah mint sukses).
+      const lo = (row.opened_ts || 0) - 15 * 60_000, hi = (row.closed_ts || Date.now()) + 60_000;
+      const txs = store.all(`
+        SELECT * FROM txs WHERE hash IN (?, ?)
+           OR json_extract(detail, '$.position') = ?
+           OR hash IN (SELECT tx_hash FROM decisions WHERE position_id = ? AND tx_hash IS NOT NULL)
+           OR (json_extract(detail, '$.pool') = ? AND ts BETWEEN ? AND ? AND kind IN ('zap_swap', 'mint', 'increase', 'bridge_swap'))
+        ORDER BY ts`, row.tx_open, row.tx_close, id, id, row.pool_ref, lo, hi);
+      const decByTx = new Map(store.all(`
+        SELECT d.tx_hash, d.verdict, d.reason, a.kind AS action_kind, a.value_quote, a.quote_symbol
+        FROM decisions d JOIN actions a ON a.id = d.action_id
+        WHERE d.position_id = ? AND d.tx_hash IS NOT NULL`, id).map((d) => [d.tx_hash, d]));
+      const seen = new Set();
+      const events = txs.filter((t) => !seen.has(t.hash) && seen.add(t.hash)).map((t) => {
+        const d = parse(t.detail);
+        const dec = decByTx.get(t.hash);
+        const ev = {
+          hash: t.hash, ts: t.ts, kind: t.kind, status: t.status, error: t.error, gasUsd: gasUsd(t),
+          dex: d.dex || d.via || null, usdIn: d.usdIn ?? null, usdOut: d.usdOut ?? null,
+          amount0: null, amount1: null, valueUsd: null, feesUsd: null,
+          reason: dec?.reason || null, verdict: dec?.verdict || null,
+          // Nilai aksi target yang ditiru — konteks "kenapa sebesar ini".
+          targetUsd: dec?.value_quote > 0 ? dec.value_quote * (dec.quote_symbol === 'ETH' || dec.quote_symbol === 'WETH' ? engine.ethUsd : 1) : null,
+        };
+        if (t.hash === row.tx_open) { ev.amount0 = row.cost0; ev.amount1 = row.cost1; ev.valueUsd = (row.cost_quote || 0) * k; ev.kind = ev.kind === 'increase' ? 'increase' : 'mint'; }
+        if (t.hash === row.tx_close) {
+          ev.amount0 = row.out0; ev.amount1 = row.out1; ev.valueUsd = (row.out_quote || 0) * k; ev.feesUsd = (row.fees_quote || 0) * k;
+          if (ev.kind !== 'decrease') ev.kind = 'burn';
+        }
+        return ev;
+      });
+      // Posisi yang diadopsi dari wallet (bukan dibuka bot) tidak punya tx di tabel:
+      // kejadian buka/tutupnya disusun dari baris posisi supaya riwayatnya tidak kosong.
+      if (row.opened_ts && !events.some((e) => e.kind === 'mint' || (row.tx_open && e.hash === row.tx_open))) {
+        events.unshift({ hash: row.tx_open, ts: row.opened_ts, kind: 'mint', status: row.tx_open ? 'sukses' : null, synthetic: true,
+          amount0: row.cost0, amount1: row.cost1, valueUsd: (row.cost_quote || 0) * k, gasUsd: null });
+      }
+      if (row.status === 'closed' && row.closed_ts && !events.some((e) => e.kind === 'burn' || (row.tx_close && e.hash === row.tx_close))) {
+        events.push({ hash: row.tx_close, ts: row.closed_ts, kind: 'burn', status: row.tx_close ? 'sukses' : null, synthetic: true,
+          amount0: row.out0, amount1: row.out1, valueUsd: (row.out_quote || 0) * k, feesUsd: (row.fees_quote || 0) * k, gasUsd: null });
+      }
+      events.sort((a, b) => a.ts - b.ts);
+
+      // Catatan bot: keputusan yang menaut ke posisi ini (termasuk yang tanpa tx,
+      // mis. simulasi/lewat) + baris log yang menyebut "#<id>" (bukan #<id>0 dst.).
+      const notes = store.all(`
+        SELECT d.ts, d.verdict, d.reason, a.kind AS action_kind, a.target
+        FROM decisions d JOIN actions a ON a.id = d.action_id WHERE d.position_id = ? ORDER BY d.ts`, id)
+        .map((d) => ({ ts: d.ts, kind: 'keputusan', level: d.verdict === 'error' ? 'error' : 'info', verdict: d.verdict, actionKind: d.action_kind, target: d.target, msg: d.reason || '' }));
+      const re = new RegExp(`#${id}(?!\\d)`);
+      for (const l of store.all('SELECT ts, level, msg FROM logs WHERE msg LIKE ? ORDER BY ts DESC LIMIT 400', `%#${id}%`)) {
+        if (re.test(l.msg)) notes.push({ ts: l.ts, kind: 'log', level: l.level, msg: l.msg });
+      }
+      notes.sort((a, b) => a.ts - b.ts);
+
+      const costUsd = (row.cost_quote || 0) * k;
+      const outUsd = row.status === 'closed' ? (row.out_quote || 0) * k : null;
+      return {
+        position: {
+          id: row.id, venue: row.venue, token_id: row.token_id, pool_ref: row.pool_ref, status: row.status,
+          token0: row.token0, token1: row.token1,
+          symbol0: toks.get(row.token0)?.symbol || '?', symbol1: toks.get(row.token1)?.symbol || '?',
+          dec0: toks.get(row.token0)?.decimals ?? 18, dec1: toks.get(row.token1)?.decimals ?? 18,
+          opened_ts: row.opened_ts, closed_ts: row.closed_ts, target: row.target, mirror_of: row.mirror_of,
+          targetLabel: row.target ? (store.get('SELECT label FROM targets WHERE address=?', row.target)?.label || null) : null,
+          costUsd, outUsd, feesUsd: (row.fees_quote || 0) * k,
+          pnlUsd: outUsd != null ? outUsd - costUsd : null,
+          leftToken: row.left_token || null, leftAmount: row.left_amount || '0', leftUsd: (row.left_quote || 0) * k,
+          leftSymbol: row.left_token ? (toks.get(row.left_token)?.symbol || null) : null,
+          leftDec: row.left_token ? (toks.get(row.left_token)?.decimals ?? 18) : 18,
+        },
+        events, notes, ethUsd: engine.ethUsd,
+      };
     },
     // Statistik pool (DexScreener) dan lilin harga (GeckoTerminal) untuk halaman detail.
     'GET /api/market': async (req, url) => {
@@ -656,6 +751,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         else cur.exit = e.sqrt_price;
       }
       const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
+      // Token hasil tutup posisi yang masih dipegang dinilai ulang di harga pool
+      // SEKARANG tiap kali halaman dibuka — angkanya hidup sampai tokennya dijual.
+      for (const r of rows) { r.dec0 = toks.get(r.token0)?.decimals ?? 18; r.dec1 = toks.get(r.token1)?.decimals ?? 18; }
+      try { await research.proceeds.refreshHeld(rows, engine.ethUsd); } catch { /* pakai nilai tersimpan */ }
       const hours = (a, b) => (a && b ? (b - a) / 3600000 : null);
       const deco = (r) => ({
         ...r,
@@ -673,6 +772,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         dprPct: (r.invested_q > 0 && hours(r.opened_ts, r.closed_ts || Date.now()) > 0)
           ? (r.pnl_q / r.invested_q) * (24 / hours(r.opened_ts, r.closed_ts || Date.now())) * 100 : null,
         pnlPct: r.invested_q > 0 ? (r.pnl_q / r.invested_q) * 100 : null,
+        // Posisi tertutup: bagian PnL yang sudah jadi uang vs token yang masih dipegang.
+        realizedPnl: r.status === 'closed' && r.realized_q != null ? r.realized_q - (r.invested_q || 0) : null,
+        heldUnrealized: r.status === 'closed' && r.held_tok && r.held_tok !== '0' ? (r.unrealized_q || 0) : 0,
+        heldTok: r.status === 'closed' && r.held_tok && r.held_tok !== '0'
+          ? Number(BigInt(r.held_tok)) / 10 ** (quoteSideOf(r.token0, r.token1) === 0 ? (toks.get(r.token1)?.decimals ?? 18) : (toks.get(r.token0)?.decimals ?? 18)) : 0,
         // Posisi terbuka: fee yang relevan adalah yang BELUM diklaim; posisi tertutup:
         // fee yang sudah benar-benar ditarik.
         feeShown: r.status === 'open' ? (r.live_fee_q || 0) : (r.fees_q || 0),
@@ -722,6 +826,27 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const addr = String(url.searchParams.get('address') || '').toLowerCase();
       const id = String(url.searchParams.get('token_id') || '');
       return { events: store.all('SELECT * FROM wevents WHERE wallet=? AND token_id=? ORDER BY block', addr, id) };
+    },
+
+    // Isi wallet (portofolio) — token yang dipegang + nilai USD-nya. Untuk wallet
+    // mana pun, bukan hanya milik bot; dipakai halaman detail target.
+    'GET /api/wallet/holdings': async (req, url) => {
+      const addr = String(url.searchParams.get('address') || '').toLowerCase();
+      if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
+      const hit = holdingsCache.get(addr);
+      if (hit && url.searchParams.get('refresh') !== '1' && Date.now() - hit.ts < 60_000) return hit.data;
+      const tokens = await holdings.of(addr);
+      await Promise.all(tokens.map(async (x) => {
+        x.priceUsd = x.amount > 0 ? await usdPrice(x.address) : null;
+        x.usd = x.priceUsd != null ? x.amount * x.priceUsd : null;
+      }));
+      const totalUsd = tokens.reduce((a, x) => a + (x.usd || 0), 0);
+      for (const x of tokens) x.sharePct = totalUsd > 0 && x.usd != null ? (x.usd / totalUsd) * 100 : null;
+      // Bernilai dulu (besar ke kecil), lalu yang harganya tidak ditemukan.
+      tokens.sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1) || b.amount - a.amount);
+      const data = { address: addr, tokens, totalUsd, unpricedN: tokens.filter((x) => x.amount > 0 && x.usd == null).length, ts: Date.now() };
+      holdingsCache.set(addr, { ts: data.ts, data });
+      return data;
     },
 
     'GET /api/wallets': () => ({

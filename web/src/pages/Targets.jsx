@@ -6,6 +6,7 @@ import { post } from '../api';
 import { PageHeader, Panel, Text, Empty, Loading, Stat, ask } from '../components/ui';
 import RulesForm from '../components/RulesForm';
 import WalletDetail from '../components/WalletDetail';
+import WalletHoldings from '../components/WalletHoldings';
 import { usd, kUsd, tone, ago, short } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -214,6 +215,9 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
       </div>
 
       {rulesOpen && <Panel title="Aturan wallet ini" className="mb-4"><TargetRules tg={tg} onChanged={reload} /></Panel>}
+
+      {/* apa yang sedang dia pegang di luar posisi LP: kas, hasil tutup yang belum dijual, token yang ditimbun */}
+      <WalletHoldings address={tg.address} />
 
       <h2 className="mb-3 mt-6 text-base font-semibold tracking-tight">{t('Kinerja LP wallet ini')}</h2>
       <WalletDetail address={tg.address} showTargetButton={false} onChanged={reload} />
