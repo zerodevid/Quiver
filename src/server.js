@@ -191,6 +191,38 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   // berlikuiditas, dan fee-nya bisa dinilai di muka.
   const bisaDimasuki = (p) => p.quoteSide != null && p.kosong !== true && !p.dynamicFee;
 
+  // Hasil posisi KITA per sumber: target yang disalin, atau '' untuk posisi manual /
+  // di luar bot. Terealisasi = posisi tertutup (out − modal); berjalan = PnL live
+  // posisi terbuka (sudah termasuk fee yang pernah diklaim). Dipakai halaman Target
+  // dan kartu "per sumber" di Overview supaya angkanya sama persis.
+  const pnlByTarget = (closed) => {
+    const eth = engine.ethUsd;
+    const k = (q) => (q === 'ETH' ? eth : 1);
+    closed ??= store.all("SELECT target, cost_quote, out_quote, quote_symbol FROM positions WHERE status='closed' AND closed_ts IS NOT NULL")
+      .map((p) => ({ ...p, pnl: ((p.out_quote || 0) - (p.cost_quote || 0)) * k(p.quote_symbol) }));
+    const live = new Map(engine.positions.live.map((p) => [p.id, p]));
+    const labels = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
+    const by = new Map();
+    const grp = (t) => {
+      const key = t || '';
+      if (!by.has(key)) by.set(key, { target: key || null, label: key ? labels.get(key) || null : null, open: 0, value: 0, upnl: 0, closed: 0, wins: 0, realized: 0 });
+      return by.get(key);
+    };
+    for (const r of store.all("SELECT id, target, cost_quote, quote_symbol FROM positions WHERE status='open'")) {
+      const l = live.get(r.id);
+      if (l?.empty) continue;
+      const g = grp(r.target);
+      g.open++;
+      g.value += l ? (l.valueUsd || 0) + (l.feeUsd || 0) : (r.cost_quote || 0) * k(r.quote_symbol);
+      g.upnl += l?.pnlUsd || 0;
+    }
+    for (const p of closed) {
+      const g = grp(p.target);
+      g.closed++; g.realized += p.pnl; if (p.pnl > 0) g.wins++;
+    }
+    return by;
+  };
+
   // Posisi bot, posisi wallet hasil riset, dan gerakan target yang cocok dengan satu
   // syarat SQL (mis. "token0=? OR token1=?" atau "pool_ref=?") — bahan halaman
   // detail token dan detail pool, supaya keduanya menghitung PnL dengan cara sama.
@@ -314,26 +346,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const holds = closed.filter((p) => p.opened_ts).map((p) => (p.closed_ts - p.opened_ts) / 3600000);
 
       // Per sumber: target yang disalin, atau '' untuk posisi manual / di luar bot.
-      const live = new Map(engine.positions.live.map((p) => [p.id, p]));
-      const labels = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
-      const by = new Map();
-      const grp = (t) => {
-        const key = t || '';
-        if (!by.has(key)) by.set(key, { target: key || null, label: key ? labels.get(key) || null : null, open: 0, value: 0, upnl: 0, closed: 0, wins: 0, realized: 0 });
-        return by.get(key);
-      };
-      for (const r of store.all("SELECT id, target, cost_quote, quote_symbol FROM positions WHERE status='open'")) {
-        const l = live.get(r.id);
-        if (l?.empty) continue;
-        const g = grp(r.target);
-        g.open++;
-        g.value += l ? (l.valueUsd || 0) + (l.feeUsd || 0) : (r.cost_quote || 0) * k(r.quote_symbol);
-        g.upnl += l?.pnlUsd || 0;
-      }
-      for (const p of closed) {
-        const g = grp(p.target);
-        g.closed++; g.realized += p.pnl; if (p.pnl > 0) g.wins++;
-      }
+      const by = pnlByTarget(closed);
 
       return {
         range, from, series, baseline,
@@ -607,7 +620,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     },
     'GET /api/targets': () => {
       const rows = store.all('SELECT * FROM targets ORDER BY added_ts');
+      const ours = pnlByTarget();
       for (const r of rows) {
+        // hasil posisi kita yang disalin dari wallet ini (USD)
+        const o = ours.get(r.address);
+        r.ours = o ? { open: o.open, value: o.value, upnl: o.upnl, closed: o.closed, wins: o.wins, realized: o.realized } : null;
         r.rulesResolved = rulesFor(cfg.rules, r.rules);
         r.rulesOwn = r.rules ? JSON.parse(r.rules) : null;
         const st = store.get('SELECT COUNT(*) n, MAX(ts) last FROM actions WHERE target=?', r.address);

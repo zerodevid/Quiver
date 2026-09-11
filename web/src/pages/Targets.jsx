@@ -48,6 +48,48 @@ function Research({ r }) {
   );
 }
 
+const signed = (v) => (v > 0.005 ? '+' : '') + usd(v);
+const oursTotal = (o) => (o ? o.realized + o.upnl : 0);
+
+// Hasil posisi KITA yang disalin dari wallet ini: terealisasi (sudah ditutup) +
+// berjalan (posisi yang masih terbuka). Diletakkan di samping PnL wallet supaya
+// "dia dapat berapa" dan "kita dapat berapa" terbaca berdampingan.
+function Ours({ o }) {
+  const { t } = useI18n();
+  if (!o) return <span className="text-xs text-muted">{t('Belum ada posisi')}</span>;
+  const tot = oursTotal(o);
+  const wr = o.closed ? (o.wins / o.closed) * 100 : null;
+  const tip = [t('{o} terbuka · {c} ditutup', { o: o.open, c: o.closed }), wr != null ? t('menang {p}%', { p: wr.toFixed(0) }) : null].filter(Boolean).join(' · ');
+  return (
+    <div className="num" title={tip}>
+      <div className={`font-medium ${tone(tot)}`}>{signed(tot)}</div>
+      <div className="truncate text-xs text-muted">{t('terealisasi {r} · berjalan {u}', { r: usd(o.realized), u: usd(o.upnl) })}</div>
+    </div>
+  );
+}
+
+// Rekap di atas daftar: total yang kita dapat dari semua wallet yang diikuti.
+function Recap({ list }) {
+  const { t } = useI18n();
+  const rows = list.filter((x) => x.ours);
+  const sum = (f) => rows.reduce((a, x) => a + f(x.ours), 0);
+  const realized = sum((o) => o.realized), upnl = sum((o) => o.upnl);
+  const closed = sum((o) => o.closed), wins = sum((o) => o.wins);
+  const open = sum((o) => o.open), value = sum((o) => o.value);
+  const best = rows.length ? rows.reduce((a, b) => (oursTotal(b.ours) > oursTotal(a.ours) ? b : a)) : null;
+  return (
+    <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
+      <Stat label="Hasil dari semua target" value={signed(realized + upnl)} valueClass={tone(realized + upnl)}
+        sub={t('terealisasi {r} · berjalan {u}', { r: usd(realized), u: usd(upnl) })} />
+      <Stat label="Posisi ditutup" value={closed}
+        sub={closed ? t('{w} menang · {l} kalah', { w: wins, l: closed - wins }) : t('belum ada')} />
+      <Stat label="Posisi berjalan" value={open} sub={t('nilai {v}', { v: usd(value) })} />
+      <Stat label="Wallet paling cuan" value={best ? <a href={'#targets/' + best.address} className="hover:underline">{best.label || short(best.address)}</a> : '—'}
+        sub={best ? <span className={`num ${tone(oursTotal(best.ours))}`}>{signed(oursTotal(best.ours))}</span> : t('belum ada')} />
+    </div>
+  );
+}
+
 // Sakelar dibuat optimistis. /api/targets ikut menghitung riset tiap wallet, jadi
 // balasannya bisa beberapa detik saat RPC sedang kena 429; tanpa ini sakelar diam di
 // posisi lama sampai balasan datang — persis seperti tidak bisa diklik. Nilai lokal
@@ -81,7 +123,7 @@ function useToggles(targets, reload) {
 
 // Satu baris daftar target. Kolomnya sejajar antarbaris (grid yang sama) supaya
 // PnL, aktivitas, dan posisi bisa dibandingkan menurun seperti tabel.
-const ROW = 'grid items-center gap-x-4 gap-y-2 grid-cols-[auto_minmax(0,1fr)_auto] md:grid-cols-[auto_minmax(0,1.5fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_minmax(0,1fr)_auto]';
+const ROW = 'grid items-center gap-x-4 gap-y-2 grid-cols-[auto_minmax(0,1fr)_auto] md:grid-cols-[auto_minmax(0,1.3fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,0.7fr)_minmax(0,0.9fr)_auto]';
 
 function TargetRow({ tg, enabled, onToggle, onChanged }) {
   const { t } = useI18n();
@@ -111,6 +153,7 @@ function TargetRow({ tg, enabled, onToggle, onChanged }) {
           <div className="mono truncate text-xs text-muted">{short(tg.address)}</div>
         </a>
         <div className="hidden md:block"><Research r={tg.research} /></div>
+        <div className="hidden min-w-0 md:block"><Ours o={tg.ours} /></div>
         <div className="num hidden text-sm md:block">
           <div>{t('{a} aksi', { a: tg.actions })}</div>
           <div className="text-xs text-muted">{t('{c} disalin', { c: tg.copied })}</div>
@@ -129,6 +172,7 @@ function TargetRow({ tg, enabled, onToggle, onChanged }) {
         {/* HP: ringkasan dalam satu baris di bawah nama */}
         <div className="col-span-3 flex flex-wrap gap-x-4 gap-y-1 pl-12 text-xs text-muted md:hidden">
           {tg.research && <span className={`num font-medium ${tone(tg.research.totalProfitUsd)}`}>{kUsd(tg.research.totalProfitUsd || 0)} PnL</span>}
+          {tg.ours && <span className={`num font-medium ${tone(oursTotal(tg.ours))}`}>{t('kita {v}', { v: signed(oursTotal(tg.ours)) })}</span>}
           <span className="num">{t('{a} aksi · {c} disalin', { a: tg.actions, c: tg.copied })}</span>
           <span className="num">{t('{n} posisi · {v}', { n: tg.openPositions, v: usd(tg.openCostQuote, 0) })}</span>
         </div>
@@ -210,8 +254,9 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
       <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Stat label="Aksi terdeteksi" value={tg.actions} sub={tg.lastActionTs ? t('terakhir {w}', { w: ago(tg.lastActionTs) }) : t('belum ada aksi')} />
         <Stat label="Disalin / simulasi" value={tg.copied} />
-        <Stat label="Posisi kita terbuka" value={tg.openPositions} />
-        <Stat label="Modal di posisi kita" value={usd(tg.openCostQuote)} />
+        <Stat label="Posisi kita terbuka" value={tg.openPositions} sub={t('modal {v}', { v: usd(tg.openCostQuote) })} />
+        <Stat label="Hasil kita" value={signed(oursTotal(tg.ours))} valueClass={tone(oursTotal(tg.ours))}
+          sub={tg.ours ? t('terealisasi {r} · berjalan {u}', { r: usd(tg.ours.realized), u: usd(tg.ours.upnl) }) : t('Belum ada posisi')} />
       </div>
 
       {rulesOpen && <Panel title="Aturan wallet ini" className="mb-4"><TargetRules tg={tg} onChanged={reload} /></Panel>}
@@ -267,12 +312,15 @@ export default function Targets({ param }) {
         </Panel>
       )}
 
+      {d && list.length > 0 && <Recap list={list} />}
+
       {!d ? <Loading /> : list.length ? (
         <Card className="gap-0! overflow-hidden p-0!">
           <div className={`${ROW} hidden border-b border-border bg-default/40 px-4 py-2 text-[0.7188rem] font-medium text-muted md:grid`}>
             <span className="w-9" />
             <span>{t('{on} dari {n} aktif', { on, n: list.length })}</span>
             <span>{t('PnL wallet')}</span>
+            <span>{t('Hasil kita')}</span>
             <span>{t('Aktivitas')}</span>
             <span>{t('Posisi kita')}</span>
             <span className="w-24" />
