@@ -23,7 +23,7 @@ const LOGIN_PAGE = (err) => `<!doctype html><html lang="id" data-bs-theme="dark"
 <body class="d-flex align-items-center py-4" style="min-height:100vh">
 <div class="container container-tight py-4">
   <div class="card card-md"><div class="card-body">
-    <h2 class="h2 text-center mb-1"><span class="text-primary">lp</span>copy</h2>
+    <h2 class="h2 text-center mb-1"><img src="/favicon.svg" alt="" width="28" height="28" class="me-2 align-text-bottom">Quiver</h2>
     <p class="text-secondary text-center mb-4">Dasbor ini bisa memindahkan dana. Masukkan token akses.</p>
     ${err ? '<div class="alert alert-danger">Token salah.</div>' : ''}
     <form method="POST" action="/login">
