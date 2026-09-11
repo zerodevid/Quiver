@@ -341,6 +341,20 @@ Perintah cepat (nama Inggris supaya cepat diketik; isi layarnya tetap Indonesia)
 dipilih per jenis di menu Notifikasi. Antreannya dibatasi supaya banjir log tidak
 menghajar batas kirim Telegram.
 
+**Tata letak**: obrolan Telegram memakai font proporsional, jadi meluruskan kolom
+dengan spasi di teks biasa selalu berantakan. Semua tabel angka karena itu dibungkus
+`<pre>` (monospace, spasi dihitung) dengan lebar kolom diukur SEBELUM `esc()` —
+`&` jadi `&amp;` di HTML tapi tetap satu karakter di layar. Angka terpenting ditaruh
+di luar tabel supaya bisa ditebalkan; isi `<pre>` selalu polos. Emoji tidak pernah
+masuk ke dalam `<pre>` karena lebarnya bukan satu karakter. Ada uji yang menjelajah
+semua layar dan menolak perataan spasi di luar `<pre>`.
+
+Rentang posisi ditampilkan sebagai **harga**, bukan tick mentah — rumus dan arahnya
+sama persis dengan dasbor (`web/src/fmt.js`), termasuk pembalikan saat aset kuotasi
+ada di token0. Bentuknya batang: `0,00949 ────────●────── 0,0156` plus jarak ke tepi
+terdekat, yaitu berapa persen harga harus bergerak sebelum posisi berhenti
+menghasilkan fee.
+
 **Yang sengaja TIDAK ada di Telegram**
 
 - Impor atau ekspor kunci privat. Riwayat obrolan tersimpan di server Telegram —
@@ -425,7 +439,7 @@ penitipan ke kontrak otomasi, pool berhook, semua batas (jumlah posisi,
 eksposur, jeda, minimum), posisi satu sisi, saldo kurang, aksi ganda, dan
 antrean jual memecoin sisa.
 
-`node test/telegram.js` (44 uji) menguji bot Telegram dengan API Telegram dipalsukan tetapi
+`node test/telegram.js` (55 uji) menguji bot Telegram dengan API Telegram dipalsukan tetapi
 tabel rute server yang asli. Uji intinya adalah penjelajah: ia menekan **setiap**
 tombol yang bisa dicapai dari menu utama dan menuntut tidak ada yang melempar
 galat, tidak ada layar kosong, dan tidak ada `undefined`/`NaN` yang bocor ke teks.

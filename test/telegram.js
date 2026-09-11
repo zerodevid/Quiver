@@ -653,6 +653,99 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     }
   });
 
+  // ---- kerapian tampilan ---------------------------------------------------
+  await t('kolom benar-benar lurus, termasuk saat isinya perlu di-escape', async () => {
+    const { kolom } = require('../src/telegram');
+    const out = kolom([['a&b', '1'], ['panjang', '22,50']], 'lr');
+    const baris = out.replace(/<\/?pre>/g, '').split('\n');
+    // panjang diukur setelah entitas HTML dikembalikan ke satu karakter
+    const nyata = (x) => x.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    assert.strictEqual(nyata(baris[0]).length, nyata(baris[1]).length, `kolom tidak lurus:\n${baris.join('\n')}`);
+    assert.match(nyata(baris[0]), /^a&b +1$/, nyata(baris[0]));
+    assert.match(nyata(baris[1]), /^panjang +22,50$/, nyata(baris[1]));
+    assert.strictEqual(kolom([]), null, 'tabel kosong harus null supaya bisa disaring');
+  });
+
+  await t('harga dari tick identik untuk kedua susunan pool', async () => {
+    const { tickPrice } = require('../src/telegram');
+    // Sisi kuotasi menentukan arah: kalau kuotasi ada di token0, harga token
+    // spekulatif adalah KEBALIKAN tick. Dua susunan yang menggambarkan pasangan
+    // yang sama harus menghasilkan angka yang sama — ini pernah jadi sumber bug.
+    for (const T of [600, -600, 12345, -322900]) {
+      const a = tickPrice(T, 6, 18, 0);     // USDG/MEME, kuotasi di token0
+      const b = tickPrice(-T, 18, 6, 1);    // MEME/USDG, kuotasi di token1
+      assert.ok(Math.abs(a / b - 1) < 1e-12, `tick ${T}: ${a} ≠ ${b}`);
+    }
+  });
+
+  await t('rentang harga: posisi asli user terbaca benar', async () => {
+    const { rentang } = require('../src/telegram');
+    // HOOKR/USDG milik user: tick −322900…−317900, harga kini −319936.
+    const r = rentang({ tick_lower: -322900, tick_upper: -317900, curTick: -319936,
+      dec0: 18, dec1: 6, quoteSide: 1, symbol0: 'HOOKR', symbol1: 'USDG' });
+    assert.ok(r, 'rentang harus terbaca');
+    assert.match(r.judul, /HOOKR dalam USDG/);
+    assert.match(r.ket, /di dalam/, `seharusnya in-range: ${r.ket}`);
+    assert.match(r.bar, /●/, 'penanda harga kini harus ada di batang');
+    // batang harus punya panjang tetap berapa pun harganya
+    const polos = r.bar.replace(/<\/?pre>/g, '');
+    assert.strictEqual((polos.match(/[─●]/g) || []).length, 15);
+  });
+
+  await t('rentang harga: harga di luar rentang dinyatakan arahnya', async () => {
+    const { rentang } = require('../src/telegram');
+    const atas = rentang({ tick_lower: -322900, tick_upper: -317900, curTick: -300000,
+      dec0: 18, dec1: 6, quoteSide: 1, symbol0: 'HOOKR', symbol1: 'USDG' });
+    assert.match(atas.ket, /di luar rentang, [\d.,]+% di atas/, atas.ket);
+    const bawah = rentang({ tick_lower: -322900, tick_upper: -317900, curTick: -350000,
+      dec0: 18, dec1: 6, quoteSide: 1, symbol0: 'HOOKR', symbol1: 'USDG' });
+    assert.match(bawah.ket, /di luar rentang, [\d.,]+% di bawah/, bawah.ket);
+    // data yang tidak lengkap tidak boleh melempar galat
+    assert.strictEqual(rentang({ tick_lower: null, tick_upper: 1, quoteSide: 1 }), null);
+    assert.strictEqual(rentang({ tick_lower: -1, tick_upper: 1, quoteSide: null }), null);
+  });
+
+  await t('detail posisi menampilkan harga, bukan tick mentah', async () => {
+    const w = build();
+    Object.assign(w.engine.positions.live[0], {
+      symbol0: 'HOOKR', symbol1: 'USDG', dec0: 18, dec1: 6, quoteSide: 1,
+      tick_lower: -322900, tick_upper: -317900, curTick: -319936,
+    });
+    await w.bot.handle(cbq('p:1'));
+    const teks = lastOut(w.sent).params.text;
+    assert.ok(!/-322\.?900|rentang tick/i.test(teks), `tick mentah masih bocor ke layar:\n${teks}`);
+    assert.match(teks, /Rentang harga/);
+    assert.match(teks, /harga kini/);
+  });
+
+  await t('satuan waktu tidak ambigu', async () => {
+    const { dur } = require('../src/telegram');
+    assert.strictEqual(dur(45), '45 detik');
+    assert.strictEqual(dur(3600 * 2), '2 jam');
+    assert.strictEqual(dur(3600 * 2 + 720), '2 jam 12 menit');
+    assert.strictEqual(dur(86400 + 36000), '1 hari 10 jam');
+    assert.strictEqual(dur(86400 * 3), '3 hari');
+  });
+
+  await t('tidak ada layar yang memakai perataan spasi di teks biasa', async () => {
+    // Font obrolan Telegram proporsional: spasi ganda di luar <pre> tidak pernah lurus.
+    const w = build();
+    const antre = ['h']; const sudah = new Set();
+    while (antre.length) {
+      const d = antre.shift();
+      if (sudah.has(d)) continue;
+      sudah.add(d);
+      if (['pC', 'tD', 'swG', 'sK', 'srd', 'scd', 'fr', 'fd', 'tr'].includes(d.split(':')[0])) continue;
+      await w.bot.handle(cbq(d));
+      const teks = lastOut(w.sent).params.text;
+      const luarPre = teks.replace(/<pre>[\s\S]*?<\/pre>/g, '');
+      for (const baris of luarPre.split('\n')) {
+        assert.ok(!/\S {3,}\S/.test(baris), `layar ${d} mencoba meluruskan dengan spasi di luar <pre>:\n  "${baris}"`);
+      }
+      for (const b of buttons(lastOut(w.sent))) antre.push(b);
+    }
+  });
+
   await t('data tombol muat di batas 64 byte Telegram', async () => {
     const w = build();
     const antre = ['h']; const sudah = new Set();
