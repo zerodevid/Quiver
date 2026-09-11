@@ -321,7 +321,7 @@ export default function Overview() {
             <KV label="Harga ETH">{usd(d.chain.ethUsd)}</KV>
             <KV label="Latensi RPC"><Latency rpc={d.rpc || []} /></KV>
           </div>
-          {d.stats.lastError && <div className="p-4 pt-3"><Notice status="warning" title="Error terakhir">{d.stats.lastError}</Notice></div>}
+          {d.stats.lastError && <div className="p-4 pt-3"><Notice status="warning" title="Error terakhir">{reason(d.stats.lastError)}</Notice></div>}
         </Panel>
         <Panel title="Alasan terbanyak dilewati" bodyClass="p-0">
           {d.skipReasons.length ? (

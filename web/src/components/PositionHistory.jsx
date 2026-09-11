@@ -10,7 +10,7 @@ import { get } from '../api';
 import { Stat, Empty, Loading, Notice } from './ui';
 import TokenIcon, { TokenPair } from './TokenIcon';
 import { usd, pct, tone, age, ago, short, txHref, locale as fmtLocale } from '../fmt';
-import { useI18n } from '../i18n';
+import { useI18n, reason } from '../i18n';
 
 // Jenis transaksi -> label & warna chip.
 const KIND = {
@@ -24,7 +24,7 @@ const KIND = {
   kyber_swap: ['Swap', 'accent'],
   swap_manual: ['Swap manual', 'accent'],
 };
-const VERDICT = { copy: ['disalin', 'success'], dry: ['simulasi', 'accent'], skip: ['dilewati', 'default'], error: ['galat', 'danger'] };
+const VERDICT = { copy: ['Disalin', 'success'], dry: ['Simulasi', 'accent'], skip: ['Dilewati', 'default'], error: ['Gagal', 'danger'] };
 
 const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
 const qty = (raw, dec) => (raw == null ? null : Number(BigInt(String(raw))) / 10 ** (dec ?? 18));
@@ -50,6 +50,11 @@ function TxHash({ hash }) {
 // kurangi/tutup = keluar dari posisi. Swap ditampilkan sebagai USD masuk → keluar.
 function Amounts({ ev, p }) {
   const { t } = useI18n();
+  if (ev.swap) return <div className="space-y-0.5 text-xs">
+    <div className="num">{fmtQty(ev.swap.amountIn)} {ev.swap.symbolIn || short(ev.swap.tokenIn)}</div>
+    <div className="num">→ {fmtQty(ev.swap.amountOut)} {ev.swap.symbolOut || short(ev.swap.tokenOut)}</div>
+    {ev.dex && <div className="text-muted">{t('via {dex}', { dex: ev.dex })}</div>}
+  </div>;
   if (ev.usdIn != null || ev.usdOut != null) {
     return (
       <div className="text-xs">
@@ -101,9 +106,9 @@ function Events({ d }) {
                   {ev.gasUsd != null && <div className="num text-xs text-muted">{t('gas {v}', { v: usd(ev.gasUsd) })}</div>}</td>
                 <td className="py-2.5 pr-3">
                   <Chip size="sm" variant="soft" color={failed ? 'danger' : k[1]} className="whitespace-nowrap">{t(k[0])}</Chip>
-                  {failed && <div className="mt-1 max-w-56 text-xs text-danger">{ev.error || t('gagal')}</div>}
+                  {failed && <div className="mt-1 max-w-56 text-xs text-danger">{reason(ev.error) || t('gagal')}</div>}
                   {ev.status === 'pending' && <div className="mt-1 text-xs text-warning">{t('menunggu konfirmasi')}</div>}
-                  {ev.reason && <div className="mt-1 max-w-64 text-xs text-muted" title={ev.reason}>{ev.reason}</div>}
+                  {ev.reason && <div className="mt-1 max-w-64 text-xs text-muted" title={reason(ev.reason)}>{reason(ev.reason)}</div>}
                 </td>
                 <td className="py-2.5 pr-3"><Amounts ev={ev} p={p} /></td>
                 <td className="num py-2.5 pr-3 text-end whitespace-nowrap">
@@ -136,10 +141,10 @@ function Notes({ notes }) {
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-1.5">
                 {v && <Chip size="sm" variant="soft" color={v[1]}>{t(v[0])}</Chip>}
-                {n.actionKind && <span className="text-xs text-muted">{t('aksi target: {k}', { k: n.actionKind })}</span>}
-                {!v && <span className="text-xs text-muted">{n.level}</span>}
+                {n.actionKind && <span className="text-xs text-muted">{t('aksi target: {k}', { k: t(({ mint: 'Buka posisi', increase: 'Tambah likuiditas', decrease: 'Penarikan likuiditas', burn: 'Tutup posisi', collect: 'Klaim fee', transfer_out: 'Transfer posisi' })[n.actionKind] || n.actionKind) })}</span>}
+                {!v && <span className="text-xs text-muted">{t(({ info: 'Informasi', warn: 'Peringatan', error: 'Kesalahan' })[n.level] || n.level)}</span>}
               </div>
-              <div className={`mt-0.5 break-words ${cls}`}>{n.msg}</div>
+              <div className={`mt-0.5 break-words ${cls}`}>{reason(n.msg)}</div>
             </div>
           </li>
         );
@@ -194,13 +199,19 @@ export default function PositionHistory({ id, onClose }) {
               {d && (
                 <>
                   <div className="mb-4 grid grid-cols-2 gap-3">
-                    <Stat label={closed ? 'PnL' : 'PnL (belum terealisasi)'} value={usd(p.pnlUsd ?? 0)} valueClass={tone(p.pnlUsd)}
+                    <Stat label={closed ? 'PnL total (LP + sisa)' : 'PnL (belum terealisasi)'} value={usd(p.pnlUsd ?? 0)} valueClass={tone(p.pnlUsd)}
                       sub={p.costUsd > 0 && p.pnlUsd != null ? pct((p.pnlUsd / p.costUsd) * 100, 2) : null} />
                     <Stat label="Umur" value={age(hours)} sub={p.opened_ts ? t('dibuka {w}', { w: ago(p.opened_ts) }) : null} />
                     <Stat label="Fee didapat" value={usd(p.feesUsd)} valueClass={p.feesUsd > 0.005 ? 'text-success' : ''}
                       sub={p.costUsd > 0 ? pct((p.feesUsd / p.costUsd) * 100, 2).replace('+', '') : null} />
                     <Stat label="Modal" value={usd(p.costUsd)} sub={closed ? t('hasil {v}', { v: usd(p.outUsd) }) : null} />
                   </div>
+                  {closed && <div className="mb-4 rounded-lg border border-border p-3 text-sm">
+                    <div className="flex justify-between gap-3"><span>{t('Hasil LP saat tutup (taksiran)')}</span><span className="num">{usd(p.closeUsd)}</span></div>
+                    <div className="mt-1 flex justify-between gap-3"><span>{t('PnL LP saat tutup')}</span><span className={`num ${p.closeUsd != null ? tone(p.closeUsd - p.costUsd) : ''}`}>{usd(p.closeUsd != null ? p.closeUsd - p.costUsd : null)}</span></div>
+                    {p.closeUsd != null && <div className="mt-1 flex justify-between gap-3"><span>{t('Perubahan hasil setelah tutup')}</span><span className={`num ${tone(p.outUsd - p.closeUsd)}`}>{usd(p.outUsd - p.closeUsd)}</span></div>}
+                    <p className="mt-2 text-xs text-muted">{t('Hasil LP menilai token saat penutupan. PnL total mencakup hasil penjualan sisa token; nilai swap bukan tambahan utuh ke hasil LP.')}</p>
+                  </div>}
                   {p.leftToken && p.leftAmount !== '0' && (
                     <div className="mb-4"><Notice status="warning" title="Sisa token belum terjual">
                       {t('{q} {s} (≈{v}) dari penutupan masih dipegang — dijual otomatis di kesempatan berikutnya.', { q: fmtQty(qty(p.leftAmount, p.leftDec)), s: p.leftSymbol || short(p.leftToken), v: usd(p.leftUsd) })}

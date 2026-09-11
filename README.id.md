@@ -377,6 +377,8 @@ kursor sudah terlanjur lewat.
 
 ## Bot Telegram
 
+Pilih **Language / Bahasa** di menu utama atau Pengaturan, atau kirim `/language`, untuk memilih Inggris atau Indonesia. Pilihan tersimpan per chat dan berlaku pada layar, instruksi, format angka, serta notifikasi baru. Chat tanpa pilihan tersimpan memakai Inggris, kecuali `telegram.language` diatur ke `id`. Bahasa dashboard diatur terpisah; Catatan bot mengikuti pilihan dashboard. Pesan Telegram lama tetap memakai teks sebelumnya hingga disegarkan.
+
 Seluruh isi dasbor juga bisa dijalankan dari obrolan Telegram — memantau, mengubah
 aturan, menyalakan LIVE, menutup posisi, meriset wallet. Bot **tidak punya logika
 sendiri**: setiap tombol memanggil rute API yang persis sama dengan yang dipakai
@@ -423,10 +425,10 @@ telegram: belum ada chat terhubung. Kirim ke bot →  /start 3F9A21C0   (berlaku
 | 🧹 Sisa jual | antrean memecoin sisa: coba jual sekarang atau keluarkan dari antrean |
 | 📝 Log · 🧾 Transaksi · 💵 Saldo | |
 
-Perintah cepat (nama Inggris supaya cepat diketik; isi layarnya tetap Indonesia):
+Perintah cepat memakai nama Inggris; bahasa layar mengikuti pilihan per chat:
 `/summary` `/positions` `/targets` `/activity` `/rules` `/settings` `/balance`
 `/leftovers` `/logs` `/tx` `/scout <alamat>` `/research <alamat>` `/pause`
-`/resume` `/help`. Nama lama berbahasa Indonesia tetap diterima diam-diam.
+`/resume` `/language` `/help`. Nama lama berbahasa Indonesia tetap diterima diam-diam.
 
 **Kabar masuk otomatis** — LP disalin, posisi ditutup, galat, peringatan. Bisa
 dipilih per jenis di menu Notifikasi. Antreannya dibatasi supaya banjir log tidak
@@ -565,8 +567,8 @@ kunci mentah atau teks kosong. Untuk dua bahasa, itu menghapus seluruh kelas bug
 "kunci tidak ketemu".
 
 Alasan keputusan dari mesin (`decisions.reason`) dirangkai di server dengan nilai yang
-disisipkan, jadi diterjemahkan per potongan lewat `reason()`; angka, alamat, dan pesan
-error RPC dibiarkan apa adanya karena memang bukan kalimat kita.
+disisipkan, jadi ditampilkan lewat `reason()` dan templat bersama di `src/message-copy.mjs`.
+Angka, alamat, serta rincian galat dari layanan luar tetap dipertahankan.
 
 Dua pemeriksaan yang dipakai saat mengembangkan (keduanya bersih):
 

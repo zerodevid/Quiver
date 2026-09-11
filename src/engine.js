@@ -950,7 +950,7 @@ class Engine {
       this.dropLeftover(item);
       try {
         this.positions.recordLeftoverSale({ posId: item.posId, token: item.token, amount, quoteToken: item.quote,
-          amountOut: r.amountOut, usdOut: r.quote?.usdOut, ethUsd: this.ethUsd });
+          txHash: r.hash, amountOut: r.amountOut, usdOut: r.quote?.usdOut, ethUsd: this.ethUsd });
       } catch (e) { this.store.log('warn', `catat hasil jual sisa #${item.posId}: ${e.message}`, { quiet: true }); }
       const msg = `jual ${label} → $${(r.quote.usdOut || 0).toFixed(2)} (${r.quote.dex})`;
       if (!quiet) {

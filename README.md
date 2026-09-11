@@ -364,6 +364,8 @@ Hashed Vite assets under `/assets/*` are served `private, immutable` (cached by 
 
 ## Telegram bot
 
+Use **Language / Bahasa** in the main menu or Settings, or send `/language`, to choose English or Indonesian. The choice is saved per chat and applies to screens, prompts, number formatting, and new notifications. Chats without a saved preference use English unless `telegram.language` is set to `id`. Dashboard language is selected separately; Bot Notes follow the dashboard selection. Existing Telegram messages keep their original text until refreshed.
+
 Everything in the dashboard is also available from a Telegram chat. The bot **contains no business logic of its own**: every button calls the exact same internal API routes the browser uses (`server.api`), so validation and safety rails live in one place. If the dashboard rejects something, the bot rejects it too.
 
 ### Setup

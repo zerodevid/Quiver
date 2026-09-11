@@ -54,7 +54,7 @@ function isiPosisi(store) {
     hash, ts, kind, status, gas ? 100_000 : null, gas ? '1000000000' : null, detail ? JSON.stringify(detail) : null);
   tx('0xzap1', T0 + 30_000, 'zap_swap', 'sukses', { via: 'kyber', pool: POOL, dex: 'uniswap-v4', usdIn: 100, usdOut: 99.2 }, true);
   tx('0xmint1', T0 + 60_000, 'mint', 'sukses', { pool: POOL, target: TARGET, venue: 'v4' }, true);
-  tx('0xburn1', T0 + 360_000, 'burn', 'sukses', { position: 1 }, true);
+  tx('0xburn1', T0 + 360_000, 'burn', 'sukses', { position: 1, closeProceeds: { amount0: '53000000', amount1: (614_765n * 10n ** 18n).toString(), quote: 148 } }, true);
   tx('0xsell1', T0 + 400_000, 'sell_leftover', 'sukses', { position: 1, dex: 'kyber', usdIn: 73.7, usdOut: 73.1 }, true);
   tx('0xapprove', T0 + 40_000, 'approve_permit2', 'sukses', null, true);                  // tanpa detail: tidak ikut
   tx('0xzapLain', T0 + 30_000, 'zap_swap', 'sukses', { pool: '0x' + 'cd'.repeat(32) }, true); // pool lain: tidak ikut
@@ -87,7 +87,7 @@ function isiPosisi(store) {
     const mint = r.events[1], burn = r.events[2];
     assert.equal(mint.amount0, (100n * 10n ** 6n).toString()); assert.equal(mint.valueUsd, 200);
     assert.equal(mint.reason, 'ukuran 50% dari target — USDG/MEME $200,00'); assert.equal(mint.targetUsd, 400);
-    assert.equal(burn.amount0, (53n * 10n ** 6n).toString()); assert.equal(burn.valueUsd, 215.15); assert.equal(burn.feesUsd, 13.63);
+    assert.equal(burn.amount0, (53n * 10n ** 6n).toString()); assert.equal(burn.valueUsd, 148); assert.equal(burn.feesUsd, 13.63);
   });
   await t('swap membawa USD masuk/keluar dan dex; gas dihitung ke USD', () => {
     const zap = r.events[0];
@@ -104,9 +104,20 @@ function isiPosisi(store) {
       VALUES(20,'v3','5','0x'||?,?,?,'closed',?,?,80,90,'USDG')`, 'ef'.repeat(20), ADDR.usdg, MEME, T0, T0 + 1000);
     return api('GET', '/api/position/history', {}, { id: '20' }).then((x) => {
       assert.deepEqual(x.events.map((e) => [e.kind, !!e.synthetic]), [['mint', true], ['burn', true]]);
-      assert.equal(x.events[1].valueUsd, 90);
+      assert.equal(x.events[1].valueUsd, null);
     });
   });
+  await t('swap manual bertaut lewat alokasi FIFO, termasuk jauh setelah tutup', async () => {
+    store.run('INSERT INTO txs(hash,ts,kind,status,detail) VALUES(?,?,?,?,?)', '0xmanual', T0 + 9000000, 'swap_manual', 'sukses', JSON.stringify({
+      tokenIn: MEME, tokenOut: ADDR.usdg, symbolIn: 'MEME', symbolOut: 'USDG', amountIn: 100, amountOut: 30,
+      positionSales: [{ position: 1, closeQuote: 10, gotQuote: 30 }, { position: 10, closeQuote: 5, gotQuote: 8 }]
+    }));
+    const x = await api('GET', '/api/position/history', {}, { id: '1' });
+    const ev = x.events.find(e => e.hash === '0xmanual');
+    assert.equal(ev.swap.amountOut, 30); assert.equal(ev.saleDeltaUsd, 20);
+    assert.equal(x.position.closeUsd, 148); assert.equal(x.position.outUsd, 215.15);
+  });
+
   await t('posisi tidak ada -> error', async () => {
     const x = await api('GET', '/api/position/history', {}, { id: '999' });
     assert.equal(x.error, 'posisi tidak ditemukan');

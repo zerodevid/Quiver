@@ -426,9 +426,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const txs = store.all(`
         SELECT * FROM txs WHERE hash IN (?, ?)
            OR json_extract(detail, '$.position') = ?
+           OR EXISTS (SELECT 1 FROM json_each(txs.detail, '$.positionSales') sale WHERE json_extract(sale.value, '$.position') = ?)
            OR hash IN (SELECT tx_hash FROM decisions WHERE position_id = ? AND tx_hash IS NOT NULL)
            OR (json_extract(detail, '$.pool') = ? AND ts BETWEEN ? AND ? AND kind IN ('zap_swap', 'mint', 'increase', 'bridge_swap'))
-        ORDER BY ts`, row.tx_open, row.tx_close, id, id, row.pool_ref, lo, hi);
+        ORDER BY ts`, row.tx_open, row.tx_close, id, id, id, row.pool_ref, lo, hi);
       const decByTx = new Map(store.all(`
         SELECT d.tx_hash, d.verdict, d.reason, a.kind AS action_kind, a.value_quote, a.quote_symbol
         FROM decisions d JOIN actions a ON a.id = d.action_id
@@ -437,8 +438,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const events = txs.filter((t) => !seen.has(t.hash) && seen.add(t.hash)).map((t) => {
         const d = parse(t.detail);
         const dec = decByTx.get(t.hash);
+        const sale = d.positionSales?.find((s) => s.position === id);
         const ev = {
           hash: t.hash, ts: t.ts, kind: t.kind, status: t.status, error: t.error, gasUsd: gasUsd(t),
+          swap: d.tokenIn ? { tokenIn: d.tokenIn, tokenOut: d.tokenOut, symbolIn: d.symbolIn, symbolOut: d.symbolOut, amountIn: d.amountIn, amountOut: d.amountOut } : null,
+          saleDeltaUsd: sale ? (sale.gotQuote - sale.closeQuote) * k : null,
           dex: d.dex || d.via || null, usdIn: d.usdIn ?? null, usdOut: d.usdOut ?? null,
           amount0: null, amount1: null, valueUsd: null, feesUsd: null,
           reason: dec?.reason || null, verdict: dec?.verdict || null,
@@ -447,7 +451,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         };
         if (t.hash === row.tx_open) { ev.amount0 = row.cost0; ev.amount1 = row.cost1; ev.valueUsd = (row.cost_quote || 0) * k; ev.kind = ev.kind === 'increase' ? 'increase' : 'mint'; }
         if (t.hash === row.tx_close) {
-          ev.amount0 = row.out0; ev.amount1 = row.out1; ev.valueUsd = (row.out_quote || 0) * k; ev.feesUsd = (row.fees_quote || 0) * k;
+          ev.amount0 = d.closeProceeds?.amount0 ?? row.out0; ev.amount1 = d.closeProceeds?.amount1 ?? row.out1; ev.valueUsd = d.closeProceeds?.quote != null ? d.closeProceeds.quote * k : null; ev.feesUsd = (row.fees_quote || 0) * k;
           if (ev.kind !== 'decrease') ev.kind = 'burn';
         }
         return ev;
@@ -460,7 +464,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       }
       if (row.status === 'closed' && row.closed_ts && !events.some((e) => e.kind === 'burn' || (row.tx_close && e.hash === row.tx_close))) {
         events.push({ hash: row.tx_close, ts: row.closed_ts, kind: 'burn', status: row.tx_close ? 'sukses' : null, synthetic: true,
-          amount0: row.out0, amount1: row.out1, valueUsd: (row.out_quote || 0) * k, feesUsd: (row.fees_quote || 0) * k, gasUsd: null });
+          amount0: row.out0, amount1: row.out1, valueUsd: null, feesUsd: (row.fees_quote || 0) * k, gasUsd: null });
       }
       events.sort((a, b) => a.ts - b.ts);
 
@@ -486,6 +490,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           dec0: toks.get(row.token0)?.decimals ?? 18, dec1: toks.get(row.token1)?.decimals ?? 18,
           opened_ts: row.opened_ts, closed_ts: row.closed_ts, target: row.target, mirror_of: row.mirror_of,
           targetLabel: row.target ? (store.get('SELECT label FROM targets WHERE address=?', row.target)?.label || null) : null,
+          closeUsd: events.find((e) => e.hash === row.tx_close)?.valueUsd ?? null,
+          swapDeltaUsd: events.some((e) => e.saleDeltaUsd != null) ? events.reduce((sum, e) => sum + (e.saleDeltaUsd || 0), 0) : null,
           costUsd, outUsd, feesUsd: (row.fees_quote || 0) * k,
           pnlUsd: outUsd != null ? outUsd - costUsd : null,
           leftToken: row.left_token || null, leftAmount: row.left_amount || '0', leftUsd: (row.left_quote || 0) * k,

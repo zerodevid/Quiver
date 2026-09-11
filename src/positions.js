@@ -46,6 +46,12 @@ class Positions {
       Date.now(), String(out0 ?? 0), String(out1 ?? 0), outQuote ?? 0, txHash ?? null,
       exitSqrt != null ? String(exitSqrt) : null,
       left?.token || null, String(left?.amount ?? 0n), left?.quote || 0, id);
+    if (txHash) {
+      const tx = this.store.get('SELECT detail FROM txs WHERE hash=?', txHash);
+      const detail = JSON.parse(tx?.detail || '{}');
+      detail.closeProceeds = { amount0: String(out0 ?? 0), amount1: String(out1 ?? 0), quote: outQuote ?? 0 };
+      this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify(detail), txHash);
+    }
   }
 
   // ---- memecoin sisa: dari "dinilai harga tutup" ke "hasil jual sesungguhnya" ----
@@ -60,7 +66,7 @@ class Positions {
   // jual dialokasikan FIFO ke posisi-posisi yang menyimpannya, dan out_quote tiap
   // posisi dikoreksi — taksiran harga tutup diganti hasil yang benar-benar diterima.
   // `posId` membatasi ke satu posisi (penjualan otomatis tahu asalnya).
-  recordLeftoverSale({ posId = null, token, amount, quoteToken, amountOut, usdOut, ethUsd }) {
+  recordLeftoverSale({ posId = null, token, amount, quoteToken, amountOut, usdOut, ethUsd, txHash = null }) {
     const rows = this.leftoverRows(token).filter((r) => posId == null || r.id === posId);
     if (!rows.length) return [];
     const sold = BigInt(amount);
@@ -88,6 +94,13 @@ class Positions {
         closeQuote, gotQuote, closeQuote, (left - take).toString(), r.id);
       done.push({ id: r.id, take, closeQuote, gotQuote });
       this.log(`posisi #${r.id}: sisa terjual, hasil ${r.quote_symbol} ${gotQuote.toFixed(2)} menggantikan taksiran tutup ${closeQuote.toFixed(2)}`);
+    }
+    if (txHash && done.length) {
+      const tx = this.store.get('SELECT detail FROM txs WHERE hash=?', txHash);
+      const detail = JSON.parse(tx?.detail || '{}');
+      detail.positionSales = done.map((r) => ({ position: r.id, amount: r.take.toString(),
+        closeQuote: r.closeQuote, gotQuote: r.gotQuote }));
+      this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify(detail), txHash);
     }
     return done;
   }

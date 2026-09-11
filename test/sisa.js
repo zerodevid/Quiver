@@ -65,6 +65,18 @@ function tutup(d, id = null, { meme = 700_000n * E18, memeQuote = 140, usdg = 60
 const row = (d, id) => d.store.get('SELECT * FROM positions WHERE id=?', id);
 
 (async () => {
+  await t('snapshot penutupan tetap, swap menyimpan alokasi posisi dan hasil aktual', () => {
+    const d = dunia();
+    d.store.run("INSERT INTO txs(hash,detail) VALUES('0x1','{}'),('0xsale','{}')");
+    const id = tutup(d);
+    d.positions.recordLeftoverSale({ txHash: '0xsale', token: MEME, amount: 700_000n * E18, quoteToken: ADDR.usdg,
+      amountOut: 156_890_000n, usdOut: 150, ethUsd: ETH });
+    const close = JSON.parse(d.store.get("SELECT detail FROM txs WHERE hash='0x1'").detail).closeProceeds;
+    const sales = JSON.parse(d.store.get("SELECT detail FROM txs WHERE hash='0xsale'").detail).positionSales;
+    assert.equal(close.quote, 200); assert.equal(sales[0].position, id);
+    dekat(sales[0].gotQuote, 156.89, 'hasil aktual'); assert.equal(sales[0].closeQuote, 140);
+  });
+
   await t('tutup: sisa memecoin tercatat, out_quote memuat taksiran harga tutup', async () => {
     const d = dunia();
     const id = tutup(d);

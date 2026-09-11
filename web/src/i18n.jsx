@@ -6,6 +6,7 @@
 // menghilangkan seluruh kelas bug "kunci tidak ketemu".
 //
 // Sisipan nilai: t('Tahap {n} dari 2', { n: 1 }).
+import { formatNote } from '../../src/message-copy.mjs';
 import { createContext, useContext, useEffect, useState } from 'react';
 import { I18nProvider as AriaI18n } from '@heroui/react';
 
@@ -30,6 +31,15 @@ export function initLocale() {
 }
 
 const EN = {
+  'Penarikan likuiditas': 'Withdraw liquidity',
+  'Informasi': 'Info',
+  'Peringatan': 'Warning',
+  'Kesalahan': 'Error',
+  'Tambah likuiditas': 'Add liquidity',
+  'Kurangi likuiditas': 'Reduce liquidity',
+  'Transfer posisi': 'Transfer position',
+  'Klaim fee': 'Claim fees',
+
   'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki': 'No Uniswap v3/v4 pool you can enter',
   'Diperdagangkan di tempat lain': 'Traded elsewhere',
   'Bot hanya bisa membuka LP di Uniswap v3/v4 (likuiditas terkonsentrasi dengan rentang harga). Pool gaya v2 tidak punya rentang maupun NFT posisi.': 'The bot can only open LP on Uniswap v3/v4 (concentrated liquidity with a price range). v2-style pools have no range and no position NFT.',
@@ -927,15 +937,20 @@ const EN = {
   '{n} hari': '{n} days',
   ' j': ' h',
   ' hr': ' d',
+  'PnL total (LP + sisa)': 'Total PnL (LP + leftovers)',
+  'Hasil LP saat tutup (taksiran)': 'LP proceeds at close (estimated)',
+  'PnL LP saat tutup': 'LP PnL at close',
+  'Perubahan hasil setelah tutup': 'Change in proceeds after close',
+  'Hasil LP menilai token saat penutupan. PnL total mencakup hasil penjualan sisa token; nilai swap bukan tambahan utuh ke hasil LP.': 'LP proceeds value tokens at closing. Total PnL includes leftover token sales; swap proceeds are not added in full to the LP proceeds.',
   // ---- laci riwayat posisi ----
   'Posisi LP milik bot — nilai, fee, dan PnL diperbarui dari chain tiap 30 detik. Klik baris untuk melihat riwayat transaksi dan catatan bot.': 'The bot’s LP positions — value, fees and PnL refreshed from chain every 30 s. Click a row for its transaction history and bot notes.',
   'Riwayat posisi': 'Position history',
   'Riwayat tidak terbaca': 'Could not load history',
   'Memuat riwayat…': 'Loading history…',
   'PnL (belum terealisasi)': 'PnL (unrealised)',
-  'dibuka {w}': 'opened {w}',
-  'hasil {v}': 'proceeds {v}',
-  'meniru {t}': 'mirroring {t}',
+  'dibuka {w}': 'Opened {w}',
+  'hasil {v}': 'Proceeds {v}',
+  'meniru {t}': 'Mirroring {t}',
   'Terbuka': 'Open',
   'Ditutup': 'Closed',
   'Sisa token belum terjual': 'Leftover tokens not sold yet',
@@ -958,17 +973,17 @@ const EN = {
   'Jual sisa': 'Sell leftover',
   'Swap': 'Swap',
   'Swap manual': 'Manual swap',
-  'disalin': 'copied',
+  'disalin': 'Copied',
   'simulasi': 'simulated',
-  'dilewati': 'skipped',
-  'galat': 'error',
+  'dilewati': 'Skipped',
+  'galat': 'Error',
   'gagal': 'failed',
-  'menunggu konfirmasi': 'awaiting confirmation',
-  'via {dex}': 'via {dex}',
-  'gas {v}': 'gas {v}',
-  'fee {v}': 'fee {v}',
-  'target {v}': 'target {v}',
-  'aksi target: {k}': 'target action: {k}',
+  'menunggu konfirmasi': 'Awaiting confirmation',
+  'via {dex}': 'Via {dex}',
+  'gas {v}': 'Gas {v}',
+  'fee {v}': 'Fees {v}',
+  'target {v}': 'Target {v}',
+  'aksi target: {k}': 'Target action: {k}',
   'Salin hash': 'Copy hash',
   'Hash tersalin': 'Hash copied',
   'Jumlah token dan nilai dicatat bot saat transaksi; harga swap dari Kyber.': 'Token amounts and values were recorded by the bot at transaction time; swap prices from Kyber.',
@@ -1000,7 +1015,7 @@ const EN = {
   'Status': 'Status',
   'Terbuka': 'Open',
   'Nilai / hasil': 'Value / proceeds',
-  'dibuka {w}': 'opened {w}',
+  'dibuka {w}': 'Opened {w}',
   'Posisi wallet yang diriset ({n})': 'Researched wallet positions ({n})',
   'Dari pemindaian halaman Wallet dan Target': 'From Wallet and Target page scans',
   'Posisi wallet': 'Wallet positions',
@@ -1096,16 +1111,7 @@ const DICT = { id: null, en: EN };
 // Sisanya (angka, alamat, pesan error RPC) dibiarkan apa adanya — memang bukan
 // kalimat kita, dan pesan RPC aslinya berbahasa Inggris.
 export function reason(text) {
-  if (!text) return text;
-  if (current !== 'en') return text;
-  if (EN[text]) return EN[text];
-  let out = text;
-  for (const [k, v] of Object.entries(EN)) {
-    if (k[0] !== '@') continue;
-    const frag = k.slice(1);
-    if (out.includes(frag)) out = out.split(frag).join(v);
-  }
-  return out;
+  return formatNote(text, current);
 }
 
 export function translate(text, vars) {
