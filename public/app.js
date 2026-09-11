@@ -1026,7 +1026,7 @@ function renderSetNotify() {
     <p class="text-secondary mb-4">Kabar tiap posisi disalin atau ditutup, lewat <a href="https://ntfy.sh" target="_blank" rel="noopener">ntfy.sh</a>.
       Pasang aplikasi ntfy di HP lalu langganan topik yang sama.</p>
     <div id="setMsg"></div>
-    ${fieldRow('Topik ntfy', `<input class="form-control mono" id="nTopic" value="${esc(setData.notify.ntfy_topic)}" placeholder="mis. lpcopy-rahasia-8x2k">`,
+    ${fieldRow('Topik ntfy', `<input class="form-control mono" id="nTopic" value="${esc(setData.notify.ntfy_topic)}" placeholder="mis. quiver-rahasia-8x2k">`,
       'Siapa pun yang tahu nama topiknya bisa membaca notifikasinya — pakai nama yang sulit ditebak. Kosongkan untuk mematikan.')}
     <div class="d-flex gap-2"><button class="btn btn-primary" id="btnNSave">Simpan</button>
       <button class="btn btn-outline-secondary" id="btnNTest">Kirim uji</button></div>`;

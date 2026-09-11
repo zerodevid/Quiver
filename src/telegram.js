@@ -589,14 +589,14 @@ class Telegram {
       if (m) {
         const r = this.tryPair(chatId, m[1]);
         if (r.error) return this.send(chatId, `❌ ${esc(r.error)}`);
-        return this.screen(chatId, null, 'h', `✅ Chat tersambung. Selamat datang di <b>lpcopy</b>.\n\n`);
+        return this.screen(chatId, null, 'h', `✅ Chat tersambung. Selamat datang di <b>Quiver</b>.\n\n`);
       }
       // Bot ini bisa ditemukan siapa saja lewat namanya. Petunjuknya dikirim sekali
       // per chat; sisanya didiamkan supaya tidak bisa dipakai memancing balasan terus.
       if (!this.told) this.told = new Set();
       if (this.told.has(chatId)) return;
       this.told.add(chatId);
-      return this.send(chatId, 'Chat ini belum tersambung ke lpcopy.\n\nBuka dasbor → <b>Pengaturan</b> → <b>Telegram</b> → <i>Buat kode</i>, lalu kirim di sini:\n<code>/start KODE</code>');
+      return this.send(chatId, 'Chat ini belum tersambung ke Quiver.\n\nBuka dasbor → <b>Pengaturan</b> → <b>Telegram</b> → <i>Buat kode</i>, lalu kirim di sini:\n<code>/start KODE</code>');
     }
 
     const s = this.sess(chatId);
@@ -1046,7 +1046,7 @@ class Telegram {
     const jeda = o.mode.paused ? ' · ⏸ dijeda' : '';
     const s = o.summary;
     const text = [
-      `<b>lpcopy</b> — ${mode}${jeda}`,
+      `<b>Quiver</b> — ${mode}${jeda}`,
       `Wallet: <code>${esc(shortA(o.mode.wallet))}</code>`,
       '',
       `💼 ${s.openCount} posisi terbuka · ${usd(s.exposureUsd)} · fee ${usd(s.feeUsd)}`,

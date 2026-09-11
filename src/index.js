@@ -90,7 +90,7 @@ async function main() {
     const old = Number(fs.readFileSync(pidFile, 'utf8').trim());
     let alive = false;
     try { process.kill(old, 0); alive = true; } catch { alive = false; }
-    if (alive) { console.error(`lpcopy sudah jalan (pid ${old}). Hentikan dulu: kill ${old}`); process.exit(1); }
+    if (alive) { console.error(`Quiver sudah jalan (pid ${old}). Hentikan dulu: kill ${old}`); process.exit(1); }
   }
   fs.writeFileSync(pidFile, String(process.pid));
   const cleanup = () => { try { fs.unlinkSync(pidFile); } catch { /* sudah hilang */ } };
@@ -113,7 +113,7 @@ async function main() {
   server = createServer({ engine, store, cfg, cfgPath: CFG_PATH, chain, rpc, log, telegram });
   server.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
-      log(`port ${cfg.server.port} sudah dipakai — kemungkinan lpcopy lain masih jalan.`);
+      log(`port ${cfg.server.port} sudah dipakai — kemungkinan Quiver lain masih jalan.`);
       log(`  cek: lsof -ti tcp:${cfg.server.port}   |   hentikan: lsof -ti tcp:${cfg.server.port} | xargs kill`);
     } else log(`server: ${e.message}`);
     process.exit(1);

@@ -130,7 +130,7 @@ class RpcPool {
         protocol: u.protocol, hostname: u.hostname, port: u.port || 443,
         path: u.pathname + u.search, method: 'POST',
         servername: u.hostname,
-        headers: { ...(extraHeaders || {}), 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), 'user-agent': 'lpcopy/1.0' },
+        headers: { ...(extraHeaders || {}), 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), 'user-agent': 'quiver/1.0' },
         agent: this.agentFor(u.hostname, ips), timeout: timeoutMs,
       }, (res) => {
         const chunks = [];

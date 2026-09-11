@@ -19,7 +19,7 @@ const crypto = require('node:crypto');
 
 const LOGIN_PAGE = (err) => `<!doctype html><html lang="id" data-bs-theme="dark"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>lpcopy — masuk</title><link rel="stylesheet" href="/vendor/tabler.min.css"></head>
+<title>Quiver — masuk</title><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/vendor/tabler.min.css"></head>
 <body class="d-flex align-items-center py-4" style="min-height:100vh">
 <div class="container container-tight py-4">
   <div class="card card-md"><div class="card-body">
@@ -682,8 +682,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           res.end(LOGIN_PAGE(true));
         });
       }
-      // Aset vendor boleh lewat supaya halaman login bisa tampil rapi.
-      const isVendor = url.pathname.startsWith('/vendor/');
+      // Aset vendor dan favicon boleh lewat supaya halaman login bisa tampil rapi.
+      const isVendor = url.pathname.startsWith('/vendor/') || url.pathname === '/favicon.svg';
       if (!isVendor && !authed(req)) {
         if (url.pathname.startsWith('/api/')) {
           res.writeHead(401, { 'content-type': 'application/json' });
@@ -714,10 +714,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     if (req.method !== 'GET') return json(res, 404, { error: 'tidak ada' });
 
     // Tampilan: hasil build React (web/dist) kalau ada; kalau belum dibuild, pakai
-    // tampilan lama di public/. /vendor/* selalu dari public/ (dipakai halaman masuk).
+    // tampilan lama di public/. /vendor/* dan favicon selalu dari public/ (dipakai
+    // halaman masuk juga).
     const dist = path.join(__dirname, '..', 'web', 'dist');
     const useDist = fs.existsSync(path.join(dist, 'index.html'));
-    const isVendor = url.pathname.startsWith('/vendor/');
+    const isVendor = url.pathname.startsWith('/vendor/') || url.pathname === '/favicon.svg';
     const root = isVendor || !useDist ? pub : dist;
     let p = url.pathname === '/' ? '/index.html' : url.pathname;
     let file = path.join(root, path.normalize(p).replace(/^(\.\.[/\\])+/, ''));
@@ -731,7 +732,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     //  - index.html: jangan pernah di-cache (ia yang menunjuk ke berkas versi terbaru)
     //  - /assets/* hasil Vite: nama mengandung hash isi -> aman di-cache selamanya
     //  - vendor & font: tidak pernah berubah
-    const immutable = isVendor || url.pathname.startsWith('/assets/') || url.pathname.startsWith('/fonts/');
+    const immutable = url.pathname.startsWith('/vendor/') || url.pathname.startsWith('/assets/') || url.pathname.startsWith('/fonts/');
     const headers = {
       'content-type': MIME[path.extname(file)] || 'application/octet-stream',
       // private: browser boleh menyimpan, CDN (Cloudflare) tidak — berkas ini ada di balik gerbang token.

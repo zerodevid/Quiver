@@ -21,7 +21,7 @@ const { ADDR } = require('./chain');
 const DEFAULT_ROUTER = '0x6131B5fae19EA4f9D964eAc0408E4408b66337b5'; // MetaAggregationRouterV2 (terverifikasi di chain 4663)
 const DEFAULT_API = 'https://aggregator-api.kyberswap.com/robinhood/api/v1';
 const NATIVE = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';        // sentinel Kyber untuk ETH native
-const HEADERS = { 'x-client-id': 'lpcopy' };
+const HEADERS = { 'x-client-id': 'quiver' };
 const IF_ERC20 = new ethers.Interface([
   'function approve(address,uint256) returns (bool)',
   'function allowance(address,address) view returns (uint256)',
@@ -63,7 +63,7 @@ class Kyber {
       const r = await fetch(`${this.api()}/route/build`, {
         method: 'POST',
         headers: { ...HEADERS, 'content-type': 'application/json' },
-        body: JSON.stringify({ routeSummary, sender, recipient: sender, slippageTolerance: slippageBps, source: 'lpcopy', enableGasEstimation: false }),
+        body: JSON.stringify({ routeSummary, sender, recipient: sender, slippageTolerance: slippageBps, source: 'quiver', enableGasEstimation: false }),
         signal: AbortSignal.timeout(20_000),
       });
       const j = await r.json().catch(() => null);

@@ -1,9 +1,9 @@
 {
-  "name": "lpcopy",
+  "name": "quiver",
   "version": "1.0.0",
   "private": true,
   "type": "commonjs",
-  "description": "Copy-LP untuk Robinhood Chain: cermin posisi likuiditas Uniswap v3/v4 dari wallet target, dengan dashboard",
+  "description": "Quiver — copy-LP untuk Robinhood Chain: cermin posisi likuiditas Uniswap v3/v4 dari wallet target, dengan dasbor dan bot Telegram",
   "main": "src/index.js",
   "scripts": {
     "start": "node --no-warnings src/index.js",

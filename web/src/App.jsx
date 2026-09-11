@@ -9,6 +9,7 @@ import { usePoll, useHash, useTheme } from './hooks';
 import { post } from './api';
 import { short } from './fmt';
 import { useI18n, LOCALES } from './i18n';
+import { QuiverMark } from './components/Logo';
 
 import { Loading, ConfirmHost } from './components/ui';
 
@@ -137,11 +138,9 @@ function StatusFoot({ status, reload, theme, toggleTheme }) {
 function Brand() {
   return (
     <a href="#ringkasan" className="flex items-center gap-2.5">
-      <span className="flex size-7 items-center justify-center rounded-md bg-foreground text-background">
-        <Layers className="size-4" strokeWidth={2.25} />
-      </span>
+      <QuiverMark className="size-7" />
       <span className="leading-tight">
-        <span className="block text-sm font-semibold tracking-tight">lpcopy</span>
+        <span className="block text-sm font-semibold tracking-tight">Quiver</span>
         <span className="block text-[0.6875rem] text-muted">Robinhood Chain</span>
       </span>
     </a>
@@ -195,7 +194,7 @@ export default function App() {
             <Suspense fallback={<Loading />}><Page key={page + (param || '')} param={param} /></Suspense>
           </main>
           <footer className="mx-auto w-full max-w-[90rem] px-4 pb-5 text-[0.6875rem] text-muted sm:px-6 lg:px-8">
-            {t('lpcopy · cermin posisi likuiditas Uniswap v3/v4 · Robinhood Chain (4663)')}
+            {t('Quiver · cermin posisi likuiditas Uniswap v3/v4 · Robinhood Chain (4663)')}
           </footer>
         </div>
       </div>

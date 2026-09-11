@@ -958,7 +958,7 @@ class Engine {
     if (this.onNotify) { try { this.onNotify(msg); } catch { /* abaikan */ } }
     this.store.log('info', msg);
     if (!topic) return;
-    fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body: `lpcopy: ${msg}` }).catch(() => {});
+    fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body: `Quiver: ${msg}` }).catch(() => {});
   }
 }
 

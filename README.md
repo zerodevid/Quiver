@@ -1,4 +1,4 @@
-# lpcopy — copy-LP untuk Robinhood Chain
+# Quiver — copy-LP untuk Robinhood Chain
 
 Mencermin posisi likuiditas (LP) Uniswap **v4 dan v3** dari satu atau banyak wallet
 target di Robinhood Chain (chainId 4663), dengan dashboard untuk memantau dan menyetel

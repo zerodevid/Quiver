@@ -303,7 +303,7 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
     },
     'POST /api/settings/notify/test': async () => {
       if (!cfg.notify?.ntfy_topic) return { error: 'Isi topik ntfy dulu.' };
-      const r = await fetch(`https://ntfy.sh/${cfg.notify.ntfy_topic}`, { method: 'POST', body: 'lpcopy: uji notifikasi dari halaman Pengaturan' })
+      const r = await fetch(`https://ntfy.sh/${cfg.notify.ntfy_topic}`, { method: 'POST', body: 'Quiver: uji notifikasi dari halaman Pengaturan' })
         .then((x) => x.status).catch((e) => e.message);
       return r === 200 ? { ok: true } : { error: `ntfy membalas ${r}` };
     },
@@ -362,7 +362,7 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
       if (!ids.length) return { error: 'Belum ada chat yang tersambung.' };
       const errs = [];
       for (const c of ids) {
-        try { await telegram.send(c, 'lpcopy: uji notifikasi dari halaman Pengaturan.'); }
+        try { await telegram.send(c, 'Quiver: uji notifikasi dari halaman Pengaturan.'); }
         catch (e) { errs.push(`${c}: ${e.message}`); }
       }
       return errs.length ? { error: errs.join(' · ') } : { ok: true, sent: ids.length };

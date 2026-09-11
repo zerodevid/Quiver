@@ -300,8 +300,8 @@ const EN = {
   'Ganti tema': 'Toggle theme',
   'Menu': 'Menu',
   'Bahasa': 'Language',
-  'lpcopy · cermin posisi likuiditas Uniswap v3/v4 · Robinhood Chain (4663)':
-    'lpcopy · mirrors Uniswap v3/v4 liquidity positions · Robinhood Chain (4663)',
+  'Quiver · cermin posisi likuiditas Uniswap v3/v4 · Robinhood Chain (4663)':
+    'Quiver · mirrors Uniswap v3/v4 liquidity positions · Robinhood Chain (4663)',
   'Memuat…': 'Loading…',
   'Belum ada data': 'No data yet',
   'Cari': 'Search',
