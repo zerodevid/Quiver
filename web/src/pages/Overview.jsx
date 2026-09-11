@@ -157,7 +157,7 @@ function BySource({ rows }) {
             <div className={`absolute inset-y-0 left-0 ${tot >= 0 ? 'bg-success/8' : 'bg-danger/8'}`} style={{ width: `${(Math.abs(tot) / max) * 100}%` }} />
             <div className="relative min-w-0">
               {r.target
-                ? <a href={'#target/' + r.target} className="font-medium hover:underline">{r.label || <span className="mono">{short(r.target)}</span>}</a>
+                ? <a href={'#targets/' + r.target} className="font-medium hover:underline">{r.label || <span className="mono">{short(r.target)}</span>}</a>
                 : <span className="font-medium">{t('Manual / di luar bot')}</span>}
               <div className="mt-0.5 truncate text-xs text-muted">
                 {t('{o} terbuka · {c} ditutup', { o: r.open, c: r.closed })}
@@ -264,7 +264,7 @@ export default function Overview() {
             <span className="whitespace-nowrap"><span className="text-muted">{t('Nilai')}</span> <span className="num font-medium">{usd(sum(open, (x) => x.valueUsd))}</span></span>
             <span className="whitespace-nowrap"><span className="text-muted">{t('uPnL')}</span> <span className={`num font-medium ${tone(sum(open, (x) => x.pnlUsd))}`}>{usd(sum(open, (x) => x.pnlUsd))}</span></span>
           </>}
-          <a href="#posisi" className="font-medium text-accent hover:underline">{t('Semua posisi →')}</a>
+          <a href="#positions" className="font-medium text-accent hover:underline">{t('Semua posisi →')}</a>
         </div>}>
         {!pos ? <Loading /> : (
           <DataTable label="Posisi aktif" rows={open} rowKey={(x) => x.id} dense

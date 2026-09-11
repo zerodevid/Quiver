@@ -83,7 +83,7 @@ export default function Positions() {
             { key: 'il', label: 'IL', align: 'end', sort: (p) => p.ilUsd, render: (p) => <span className={tone(p.ilUsd)}>{p.ilUsd == null ? '—' : usd(p.ilUsd)}</span> },
             { key: 'age', label: 'Umur', align: 'end', sort: (p) => p.ageHours, render: (p) => <span className="whitespace-nowrap text-muted">{age(p.ageHours)}</span> },
             { key: 'tgt', label: 'Sumber', sort: (p) => p.target, render: (p) => p.target
-              ? <a href={'#target/' + p.target} className="mono text-muted hover:text-foreground hover:underline">{short(p.target)}</a>
+              ? <a href={'#targets/' + p.target} className="mono text-muted hover:text-foreground hover:underline">{short(p.target)}</a>
               // diadopsi dari wallet: dibuka manual atau oleh program lain, bukan salinan
               : <span className="text-xs text-muted" title={t('Posisi ini sudah ada di wallet, tidak menyalin target mana pun. Bot hanya memantaunya; tutup manual kalau perlu.')}>{t('di luar bot')}</span> },
             { key: 'act', label: '', sortable: false, className: 'text-end', render: (p) => (

@@ -31,7 +31,7 @@ export default function Activity() {
             { key: 'ts', label: 'Waktu', sort: (a) => a.ts, render: (a) => (
               <span className="whitespace-nowrap text-muted" title={new Date(a.ts).toLocaleString(fmtLocale())}>{ago(a.ts)}</span>) },
             { key: 'tgt', label: 'Target', sort: (a) => a.targetLabel || a.target, search: (a) => `${a.targetLabel || ''} ${a.target}`, render: (a) => (
-              <a href={'#target/' + a.target} className="group block max-w-40" title={a.target}>
+              <a href={'#targets/' + a.target} className="group block max-w-40" title={a.target}>
                 {a.targetLabel && <div className="truncate font-medium group-hover:underline">{a.targetLabel}</div>}
                 <div className="mono text-xs text-muted">{short(a.target)}</div>
               </a>) },

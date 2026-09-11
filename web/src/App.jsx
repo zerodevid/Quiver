@@ -31,16 +31,16 @@ export const useStatus = () => useContext(StatusCtx);
 
 const NAV = [
   ['Pemantauan', [
-    ['ringkasan', 'Ringkasan', LayoutDashboard, Overview],
-    ['posisi', 'Posisi', Layers, Positions],
-    ['aktivitas', 'Aktivitas', ListChecks, Activity],
+    ['summary', 'Ringkasan', LayoutDashboard, Overview],
+    ['positions', 'Posisi', Layers, Positions],
+    ['activity', 'Aktivitas', ListChecks, Activity],
   ]],
   ['Copy', [
-    ['target', 'Target', Users, Targets],
-    ['aturan', 'Aturan', SlidersHorizontal, Rules],
+    ['targets', 'Target', Users, Targets],
+    ['rules', 'Aturan', SlidersHorizontal, Rules],
   ]],
   ['Aksi', [
-    ['lp-manual', 'LP manual', PlusCircle, ManualLp],
+    ['manual-lp', 'LP manual', PlusCircle, ManualLp],
     ['swap', 'Swap', ArrowDownUp, Swap],
   ]],
   ['Riset', [
@@ -48,7 +48,7 @@ const NAV = [
     ['scout', 'Scout', Radar, Scout],
   ]],
   ['Sistem', [
-    ['pengaturan', 'Pengaturan', SettingsIcon, Settings],
+    ['settings', 'Pengaturan', SettingsIcon, Settings],
   ]],
 ];
 const PAGES = Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C])));
@@ -137,7 +137,7 @@ function StatusFoot({ status, reload, theme, toggleTheme }) {
 
 function Brand() {
   return (
-    <a href="#ringkasan" className="flex items-center gap-2.5">
+    <a href="#summary" className="flex items-center gap-2.5">
       <QuiverMark className="size-7" />
       <span className="leading-tight">
         <span className="block text-sm font-semibold tracking-tight">Quiver</span>
@@ -150,7 +150,7 @@ function Brand() {
 export default function App() {
   const { t } = useI18n();
   // Rute berbentuk "halaman/parameter", mis. #target/0xabc… membuka detail satu wallet.
-  const [page, ...rest] = useHash('ringkasan').split('/');
+  const [page, ...rest] = useHash('summary').split('/');
   const param = rest.join('/') || null;
   const [theme, toggleTheme] = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);

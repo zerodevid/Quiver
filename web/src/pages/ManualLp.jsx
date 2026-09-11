@@ -412,7 +412,7 @@ export default function ManualLp() {
               <div className="mono mt-2 text-sm text-muted">{hasil.tx}</div>
             </div>
             <div className="flex gap-2">
-              <Button onPress={() => { location.hash = 'posisi'; }}>{t('Lihat posisi')}</Button>
+              <Button onPress={() => { location.hash = 'positions'; }}>{t('Lihat posisi')}</Button>
               <Button variant="outline" onPress={() => { setHasil(null); setNominal(''); }}>{t('Buka satu lagi')}</Button>
             </div>
           </Card.Content>
@@ -552,7 +552,7 @@ export default function ManualLp() {
                     tanpa jalan keluar cuma bikin user menebak. Ia berubah jadi jalan
                     pintas ke tempat yang bisa mengubah keadaannya. */}
                 {dry ? (
-                  <Button variant="outline" className="w-full" onPress={() => { location.hash = 'pengaturan'; }}>
+                  <Button variant="outline" className="w-full" onPress={() => { location.hash = 'settings'; }}>
                     {t('Nyalakan LIVE dulu')}
                   </Button>
                 ) : !konfirm ? (

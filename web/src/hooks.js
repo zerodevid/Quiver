@@ -29,8 +29,22 @@ export function usePoll(path, ms = 5000) {
   return { data, error, reload: load, setData };
 }
 
+// Slug lama (bahasa Indonesia) → slug baru, supaya bookmark/link lama tetap jalan.
+const LEGACY_HASH = {
+  ringkasan: 'summary', posisi: 'positions', aktivitas: 'activity', target: 'targets',
+  aturan: 'rules', 'lp-manual': 'manual-lp', pengaturan: 'settings',
+};
+
 export function useHash(def) {
-  const read = () => (location.hash || '#' + def).slice(1);
+  const read = () => {
+    const h = (location.hash || '#' + def).slice(1);
+    const [page, ...rest] = h.split('/');
+    const alias = LEGACY_HASH[page];
+    if (!alias) return h;
+    const fixed = [alias, ...rest].join('/');
+    history.replaceState(null, '', '#' + fixed);
+    return fixed;
+  };
   const [page, setPage] = useState(read);
   useEffect(() => {
     const f = () => setPage(read());

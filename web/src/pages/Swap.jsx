@@ -140,7 +140,7 @@ export default function Swap() {
                 {t('Wallet bot kosong. Isi dengan ETH atau USDG dulu — alamatnya ada di Pengaturan.')}
               </p>
             </div>
-            <Button variant="outline" onPress={() => { location.hash = 'pengaturan'; }}>{t('Buka Pengaturan')}</Button>
+            <Button variant="outline" onPress={() => { location.hash = 'settings'; }}>{t('Buka Pengaturan')}</Button>
           </Card.Content>
         </Card>
       </>
@@ -232,7 +232,7 @@ export default function Swap() {
         )}
 
         {dry ? (
-          <Button size="lg" variant="outline" className="w-full" onPress={() => { location.hash = 'pengaturan'; }}>{t('Nyalakan LIVE dulu')}</Button>
+          <Button size="lg" variant="outline" className="w-full" onPress={() => { location.hash = 'settings'; }}>{t('Nyalakan LIVE dulu')}</Button>
         ) : !konfirm ? (
           <Button size="lg" className="w-full" isDisabled={!kutip || !!kutip.error || kutip.tooLossy} onPress={() => setKonfirm(true)}>
             {t('Tukar')}

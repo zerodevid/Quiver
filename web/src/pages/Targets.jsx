@@ -85,7 +85,7 @@ const ROW = 'grid items-center gap-x-4 gap-y-2 grid-cols-[auto_minmax(0,1fr)_aut
 function TargetRow({ tg, enabled, onToggle, onChanged }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  const href = '#target/' + tg.address;
+  const href = '#targets/' + tg.address;
   const remove = async () => {
     const ok = await ask({
       title: t('Hapus {name} dari daftar target?', { name: tg.label || short(tg.address) }),
@@ -176,14 +176,14 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
   if (!tg) {
     return (
       <>
-        <a href="#target" className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground"><ArrowLeft className="size-4" />{t('Target')}</a>
+        <a href="#targets" className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground"><ArrowLeft className="size-4" />{t('Target')}</a>
         <Card><Card.Content><Empty title="Wallet ini tidak ada di daftar target" sub="Mungkin sudah dihapus. Kembali ke daftar target." /></Card.Content></Card>
       </>
     );
   }
   return (
     <>
-      <a href="#target" className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground"><ArrowLeft className="size-4" />{t('Semua target')}</a>
+      <a href="#targets" className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground"><ArrowLeft className="size-4" />{t('Semua target')}</a>
       <div className="mb-5 flex flex-wrap items-start justify-between gap-4 border-b border-border pb-4">
         <div className="min-w-0">
           <EditableLabel tg={tg} onChanged={reload} />
