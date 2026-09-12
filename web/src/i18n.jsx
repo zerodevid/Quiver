@@ -178,6 +178,7 @@ const EN = {
   'Total portofolio': 'Total portfolio',
   'Total PnL': 'Total PnL',
   'PnL bersih': 'Net PnL',
+  'Nilai wallet saat bot mulai mencatat + setoran − penarikan': 'Wallet value when the bot started recording + deposits − withdrawals',
   'modal {m} · {p} · PnL posisi {v}': 'capital {m} · {p} · position PnL {v}',
   'kas {c} · di posisi {p}': 'cash {c} · in positions {p}',
   'kas {c} · posisi {p}': 'cash {c} · positions {p}',

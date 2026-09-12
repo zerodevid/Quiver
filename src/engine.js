@@ -1514,9 +1514,12 @@ class Engine {
   }
 
   async snapshotEquity() {
+    // Kas SELALU dibaca ulang di sini, bukan dari cache tick. Cache itu diisi di awal
+    // tick, SEBELUM posisi dibuka/ditutup di tick yang sama — snapshot yang memakainya
+    // mencatat kas lama + posisi baru: total anjlok $139 saat #38 tutup, dan kurva PnL
+    // bersih ikut menukik lalu melonjak. Tidak terbaca = NULL (titik dilewati grafik).
+    const cash = this.exec.address() ? await this.refreshCash().catch(() => null) : null;
     const s = this.positions.summary(this.ethUsd);
-    let cash = this.cash;
-    if (this.exec.address() && (!cash || Date.now() - cash.ts > 120_000)) cash = await this.refreshCash().catch(() => null);
     const w = cash ? cash.usd : null;   // tidak terbaca = NULL, bukan 0
     // Memecoin sisa yang belum terjual ikut dihitung sebagai "posisi": tanpa ini
     // kurva total anjlok saat posisi tutup dan melonjak lagi saat sisanya terjual.

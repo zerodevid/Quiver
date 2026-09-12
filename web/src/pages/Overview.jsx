@@ -39,10 +39,12 @@ function GrowthChart({ p, view }) {
 
   const first = pts[0].v, last = pts[pts.length - 1].v;
   // Rentang "Semua" dihitung dari nol: PnL kumulatif memang dimulai dari nol.
+  // PnL dihitung dari titik patokan sebelum jendela; kalau riwayatnya dimulai di dalam
+  // jendela (patokan tidak ada), dari nol — bukan dari titik pertama yang sudah berisi laba.
   const delta = view === 'net'
-    ? last - (p.range === 'all' ? 0 : (p.baseline?.net ?? first))
+    ? last - (p.range === 'all' ? 0 : (p.baseline?.net ?? 0))
     : view === 'pnl'
-      ? last - (p.range === 'all' ? 0 : (p.baseline?.pnl ?? first))
+      ? last - (p.range === 'all' ? 0 : (p.baseline?.pnl ?? 0))
       : last - first;
   const cap = view === 'net' ? p.now.capitalNet : p.now.capital;
   const vals = pts.map((x) => x.v);
@@ -144,7 +146,10 @@ function Composition({ now, ethUsd }) {
       </div>
       {!c && <p className="mt-3 text-xs text-muted">{t('Saldo kas tidak terbaca (belum ada wallet) — total hanya berisi posisi.')}</p>}
       <div className="mt-2 divide-y divide-border border-t border-border">
-        {now.capital != null && (
+        {now.capitalNet != null
+          // modal nyata: baseline + setoran − penarikan (capital.js) — sama dengan kartu PnL bersih
+          ? <KV label="Modal bersih"><span title={t('Nilai wallet saat bot mulai mencatat + setoran − penarikan')}>{usd(now.capitalNet)}</span></KV>
+          : now.capital != null && (
           <KV label="Modal bersih"><span title={t('Nilai sekarang dikurangi seluruh PnL — kira-kira dana yang disetor ke wallet bot')}>{usd(now.capital)}</span></KV>
         )}
         <KV label="Modal di posisi">{usd(now.costUsd)}</KV>
