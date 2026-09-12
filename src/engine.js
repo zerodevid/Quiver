@@ -1448,7 +1448,13 @@ class Engine {
     const triggers = this.positions.exitTriggers(globalRules);
     for (const t of triggers) {
       if (this.exiting.has(t.pos.id)) continue;
-      if (t.pos.empty) { this.positions.markClosed(t.pos.id, { outQuote: 0, txHash: null }); continue; }
+      if (t.pos.empty) {
+        // Menutup di database tanpa transaksi = hasil $0 tercatat selamanya. Dibaca
+        // ulang dulu; kalau ternyata masih ada, biarkan sinkron berikutnya yang menilai.
+        if (await this.positions.confirmEmpty(t.pos)) this.positions.markClosed(t.pos.id, { outQuote: 0, txHash: null });
+        else this.store.log('warn', `#${t.pos.id} terbaca kosong tapi tidak terkonfirmasi — tidak ditutup`, { quiet: true });
+        continue;
+      }
       if (this.dryRun() || !this.exec.address()) { this.store.log('info', `[simulasi] keluar #${t.pos.id}: ${t.reason}`); continue; }
       try {
         const out = await this.executeExit({ venue: t.pos.venue, action: 'burn', full: true, liquidity: t.pos.liquidity, tokenId: t.pos.token_id }, t.pos);

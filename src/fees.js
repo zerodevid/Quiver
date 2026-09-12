@@ -52,8 +52,12 @@ async function unclaimedV4(rpc, items, curTickByPool) {
   const res = await rpc.ethCallMany(calls);
   const out = [];
   items.forEach((it, i) => {
-    const [off] = idx[i];
-    const v = (k) => (res[off + k] && res[off + k] !== '0x' ? BigInt(res[off + k]) : 0n);
+    const [off, n] = idx[i];
+    // Satu slot saja gagal terbaca → fee-nya tidak bisa dihitung. Kalau dipaksa nol,
+    // sub() membungkus mod 2^256 dan hasilnya fee 10^47 (pernah masuk ke ekuitas).
+    // `unknown` supaya pemanggil memakai angka terakhir yang diketahui, bukan nol.
+    if (res.slice(off, off + n).some((x) => !x || x === '0x')) { out.push({ fee0: 0n, fee1: 0n, liquidity: 0n, unknown: true }); return; }
+    const v = (k) => BigInt(res[off + k]);
     const fg0 = v(0), fg1 = v(1);
     const lo0 = v(2), lo1 = v(3), hi0 = v(4), hi1 = v(5);
     const L = v(6) & ((1n << 128n) - 1n);

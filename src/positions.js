@@ -291,17 +291,24 @@ class Positions {
       ...v4.map((r) => ({ to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(r.token_id)]) })),
       ...v3.map((r) => ({ to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('positions', [BigInt(r.token_id)]) })),
     ];
+    // Panggilan yang GAGAL (RPC error, balasan kosong) TIDAK boleh dibaca sebagai nol:
+    // nol berarti "likuiditas habis" dan engine menutup posisinya di database tanpa
+    // transaksi apa pun. Pernah terjadi saat endpoint sedang rusak — #45 ($110) dicatat
+    // tutup dengan hasil $0 padahal di chain masih utuh. Gagal = pakai angka terakhir
+    // yang tersimpan, dan posisi ditandai belum tersinkron (bukan kosong).
     const liqRes = await this.rpc.ethCallMany(liqCalls);
     const liqBy = new Map();
+    const liqStale = new Set();
+    const keepOld = (r) => { liqBy.set(r.id, BigInt(r.liquidity || '0')); liqStale.add(r.id); };
     v4.forEach((r, i) => {
       const w = liqRes[i];
-      liqBy.set(r.id, w && w !== '0x' ? BigInt(w) : 0n);
+      if (w && w !== '0x') liqBy.set(r.id, BigInt(w)); else keepOld(r);
     });
     v3.forEach((r, i) => {
       const w = liqRes[v4.length + i];
-      let L = 0n;
-      if (w && w !== '0x') { try { L = BigInt(IF_NPM.decodeFunctionResult('positions', w)[7]); } catch { L = 0n; } }
-      liqBy.set(r.id, L);
+      let L = null;
+      if (w && w !== '0x') { try { L = BigInt(IF_NPM.decodeFunctionResult('positions', w)[7]); } catch { L = null; } }
+      if (L != null) liqBy.set(r.id, L); else keepOld(r);
     });
 
     // 2. state pool — harga DAN likuiditas aktif. Likuiditas nol berarti harganya
@@ -362,6 +369,7 @@ class Positions {
         const vf = this.chain.valueInQuote({ sqrtPriceX96: mark.sqrt, amount0: f.fee0, amount1: f.fee1, dec0: d0, dec1: d1, token0: r.token0, token1: r.token1 });
         if (vf) feeQuote = vf.value;
       }
+      if (f.unknown) feeQuote = r.fees_quote ?? null;   // fee tidak terbaca: angka terakhir, bukan nol
       const kind = this.chain.quoteSideOf(r.token0, r.token1)?.kind || 'usd';
       const toUsd = (x) => (x == null ? null : (kind === 'eth' ? x * ethUsd : x));
       const costUsd = toUsd(r.cost_quote) ?? 0;
@@ -405,12 +413,31 @@ class Positions {
         pnlPct: costUsd > 0 ? (pnlUsd / costUsd) * 100 : 0,
         ilUsd: hodlUsd != null ? valUsd - hodlUsd : null,
         ageHours: (Date.now() - (r.opened_ts || Date.now())) / 3600000,
-        empty: L === 0n,
+        // Kosong hanya kalau chain BENAR-BENAR menjawab nol — bukan karena gagal dibaca.
+        empty: L === 0n && !liqStale.has(r.id),
+        liqStale: liqStale.has(r.id),
       });
     }
     this.live = out;
     this.lastSync = Date.now();
     return out;
+  }
+
+  // Pastikan likuiditas posisi memang nol di chain sebelum ditutup di database.
+  // Dibaca ulang lewat satu panggilan tersendiri (bukan hasil sinkron terakhir): nol
+  // dari sinkron bisa datang dari node yang tertinggal/rusak, dan menutup posisi
+  // berdasarkan itu berarti $110 hilang dari pembukuan tanpa transaksi. Gagal baca
+  // = belum pasti = false.
+  async confirmEmpty(pos) {
+    try {
+      const call = pos.venue === 'v4'
+        ? { to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(pos.token_id)]) }
+        : { to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('positions', [BigInt(pos.token_id)]) };
+      const [w] = await this.rpc.ethCallMany([call]);
+      if (!w || w === '0x') return false;
+      const L = pos.venue === 'v4' ? BigInt(w) : BigInt(IF_NPM.decodeFunctionResult('positions', w)[7]);
+      return L === 0n;
+    } catch { return false; }
   }
 
   // Posisi yang perlu ditutup karena aturan mandiri (bukan karena target keluar).
