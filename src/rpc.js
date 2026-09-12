@@ -357,8 +357,17 @@ class RpcPool {
   }
 
   // Banyak eth_call sekaligus. Hasil: array hex|null (null = revert/gagal)
+  //
+  // `from` dan `value` boleh diisi untuk menyimulasikan transaksi sebagai wallet bot
+  // (saldo dan izin ikut terbaca) — dipakai memilih pool swap: pool yang menolak swap
+  // ketahuan di sini, sebelum ongkos gas keluar. Pembacaan biasa cukup {to, data}.
   async ethCallMany(items, block = 'latest') {
-    const res = await this.batch(items.map((i) => ({ method: 'eth_call', params: [{ to: i.to, data: i.data }, block] })));
+    const res = await this.batch(items.map((i) => {
+      const tx = { to: i.to, data: i.data };
+      if (i.from) tx.from = i.from;
+      if (i.value != null && BigInt(i.value) > 0n) tx.value = '0x' + BigInt(i.value).toString(16);
+      return { method: 'eth_call', params: [tx, block] };
+    }));
     return res.map((r) => (r && !r.error ? r.result : null));
   }
 

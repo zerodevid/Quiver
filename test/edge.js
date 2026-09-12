@@ -415,6 +415,47 @@ async function t(name, fn) {
     assert.strictEqual(sent.length, 0);
   });
 
+  // Kyber tanpa rute -> cadangan swap langsung ke pool. Yang dipakai BUKAN pool posisi
+  // apa adanya, melainkan pool terbaik untuk pasangan itu (lihat test/zap-pool.js untuk
+  // pemilihnya). Hanya di jalur buka posisi: jual sisa & tutup posisi tetap Kyber saja.
+  await t('zap tanpa rute Kyber -> swap lewat pool berfee paling murah, bukan pool posisi', async () => {
+    const { eng, store, sent } = harness({ balances: { ...RICH, [MEME]: 0n } });
+    eng.kyber.swap = async () => null;
+    // Pool lain untuk pasangan yang sama, jauh lebih murah dari pool posisi (0,3%).
+    store.run(`INSERT INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block)
+      VALUES(?,'v4',?,?,500,10,?,1)`, '0x' + 'be'.repeat(32), USDG, MEME, '0x' + '0'.repeat(40));
+    eng.chain.slot0V4Many = async (ids) => ids.map(() => ({ sqrtPriceX96: SQRT, tick: TICK, lpFee: 0 }));
+    eng.chain.poolLiquidityMany = async (ids) => ids.map(() => 10n ** 24n);
+    // Tiap kandidat yang disimulasikan dibangunkan transaksinya; yang menentukan
+    // adalah transaksi mana yang akhirnya DIKIRIM.
+    const dibangun = new Map();
+    const asli = eng.exec.buildSwapV4.bind(eng.exec);
+    eng.exec.buildSwapV4 = (key, ...rest) => {
+      const tx = asli(key, ...rest);
+      dibangun.set(key.fee, { key, tx });
+      return tx;
+    };
+    // MEME baru ada di wallet SESUDAH zap terkirim — tanpa ini putaran zap mengira
+    // harga bergerak dan membatalkan pembukaan.
+    let meme = 0n;
+    const kirim = eng.exec.send;
+    eng.exec.send = async (tx, meta) => {
+      if (meta?.kind === 'zap_swap') meme = 10n ** 30n;
+      return kirim(tx, meta);
+    };
+    eng.exec.balances = async (list) => new Map(list.map((a) => {
+      const k = String(a).toLowerCase();
+      return [k, k === MEME ? meme : BigInt(RICH[k] ?? 0)];
+    }));
+    await eng.handle(rec(store, action()));
+    assert.strictEqual(verdictOf(store).verdict, 'copy', verdictOf(store).reason);
+    const zap = sent.find((s) => s.kind === 'zap_swap');
+    assert.ok(zap, 'zap harus terkirim lewat pool langsung');
+    assert.ok(dibangun.has(500) && dibangun.has(3000), 'kedua pool harus ikut dinilai');
+    assert.strictEqual(zap.tx.data, dibangun.get(500).tx.data, 'pool 0,05% harus menang dari pool posisi 0,3%');
+    assert.strictEqual(dibangun.get(500).key.tickSpacing, 10, 'poolKey diambil dari pool terpilih, bukan pool posisi');
+  });
+
   await t('jembatan gagal di tengah eksekusi -> galat jelas, tidak ada posisi tercatat', async () => {
     const { eng, store } = harness({ balances: { ...RICH, [MEME]: 0n } });
     eng.kyber.swap = async () => null;               // tidak ada rute penambal

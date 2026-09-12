@@ -76,5 +76,15 @@
   "pool ber-hook belum diizinkan": "pool ber-hook belum diizinkan",
   "fee belum cukup atau rasio token belum cocok untuk compound": "fee belum cukup atau rasio token belum cocok untuk compound",
   "batas nilai posisi atau eksposur sudah tercapai": "batas nilai posisi atau eksposur sudah tercapai",
-  "fee yang bisa ditambahkan belum mencapai minimum compound": "fee yang bisa ditambahkan belum mencapai minimum compound"
+  "fee yang bisa ditambahkan belum mencapai minimum compound": "fee yang bisa ditambahkan belum mencapai minimum compound",
+  "⏳ Menunggu sinkronisasi": "⏳ Menunggu sinkronisasi",
+  "Fee sudah diklaim": "Fee sudah diklaim",
+  "Fee di-compound": "Fee di-compound",
+  "<b>🪙 Komposisi token</b>": "<b>🪙 Komposisi token</b>",
+  "Di posisi": "Di posisi",
+  "Modal token": "Modal token",
+  "<i>Di luar rentang: tidak menghasilkan fee swap sampai harga kembali ke rentang.</i>": "<i>Di luar rentang: tidak menghasilkan fee swap sampai harga kembali ke rentang.</i>",
+  "♻️ Minimum {0} · periksa setiap {1} menit": "♻️ Minimum {0} · periksa setiap {1} menit",
+  "<i>Sinkronisasi terakhir: {0}</i>": "<i>Sinkronisasi terakhir: {0}</i>",
+  "Pemeriksaan terakhir: {0}": "Pemeriksaan terakhir: {0}"
 }

@@ -361,13 +361,18 @@ Chain.prototype.poolAgeMinutes = async function poolAgeMinutes(poolId, windowBlo
 };
 
 // Likuiditas aktif pool v4 (slot +3), dipakai untuk menaksir dampak harga swap.
+Chain.prototype.poolLiquidityMany = async function poolLiquidityMany(poolIds) {
+  if (!poolIds.length) return [];
+  const words = await this.rpc.ethCallMany(poolIds.map((id) => {
+    const slot = BigInt(ethers.keccak256(coder.encode(['bytes32', 'uint256'], [id, POOLS_SLOT]))) + 3n;
+    return { to: ADDR.poolManager, data: IF_EXT.encodeFunctionData('extsload', ['0x' + slot.toString(16).padStart(64, '0')]) };
+  }));
+  return words.map((w) => (w && w !== '0x' ? BigInt(w) & ((1n << 128n) - 1n) : 0n));
+};
+
 Chain.prototype.poolLiquidity = async function poolLiquidity(poolId) {
-  const slot = BigInt(ethers.keccak256(coder.encode(['bytes32', 'uint256'], [poolId, POOLS_SLOT]))) + 3n;
-  const [w] = await this.rpc.ethCallMany([{
-    to: ADDR.poolManager,
-    data: IF_EXT.encodeFunctionData('extsload', ['0x' + slot.toString(16).padStart(64, '0')]),
-  }]);
-  return w && w !== '0x' ? BigInt(w) & ((1n << 128n) - 1n) : 0n;
+  const [L] = await this.poolLiquidityMany([poolId]);
+  return L ?? 0n;
 };
 
 // ---- pool jembatan ETH <-> USDG -------------------------------------------

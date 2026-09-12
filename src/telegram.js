@@ -34,15 +34,25 @@ const shortH = (h) => (h ? `${String(h).slice(0, 10)}…` : '—');
 // Buang nol di ekor pecahan: "1,50" -> "1,5", "1,00" -> "1". Angka tanpa koma
 // tidak disentuh — di format Indonesia "1.000" adalah seribu, bukan satu koma nol.
 // Rentang LP manual: "10 30" / "-10 +30" / "−10/+30" = turun 10%, naik 30%; "25" = ±25%.
+// Tanda yang ditulis dihormati: "-30 -10" = seluruhnya di bawah harga, "+10 +30" =
+// seluruhnya di atas. Angka tanpa tanda memakai arah biasa (bawah turun, atas naik).
+// Hasilnya tetap lowerPct = seberapa jauh batas bawah DI BAWAH harga (negatif = di atas).
 function parseRentang(text) {
-  const nums = String(text).replace(/[−–]/g, '-').replace(/,/g, '.').match(/[-+]?\d+(?:\.\d+)?/g) || [];
+  const nums = [...String(text).replace(/[−–]/g, '-').replace(/,/g, '.').matchAll(/(?:^|[^\d.])([-+]?)(\d+(?:\.\d+)?)/g)];
   if (!nums.length || nums.length > 2) return { error: tr("kirim satu angka (±) atau dua angka: batas bawah lalu batas atas, misal 10 30") };
-  const [a, b] = nums.map((x) => Math.abs(Number(x)));
-  const lowerPct = a, upperPct = nums.length === 2 ? b : a;
-  if (!(lowerPct >= 0 && lowerPct < 100)) return { error: tr("batas bawah harus 0 sampai di bawah 100% — turun 100% berarti harga nol") };
-  if (!(upperPct >= 0 && upperPct <= 100000)) return { error: tr("batas atas maksimal 100.000%") };
-  if (lowerPct === 0 && upperPct === 0) return { error: tr("rentangnya kosong") };
-  return { lowerPct, upperPct };
+  if (nums.length === 1) {
+    const w = Number(nums[0][2]);
+    if (!(w < 100)) return { error: tr("batas bawah harus di atas −100% — turun 100% berarti harga nol") };
+    return w === 0 ? { error: tr("rentangnya kosong") } : { lowerPct: w, upperPct: w };
+  }
+  // Perubahan bertanda dari harga kini untuk tiap batas.
+  let [a, b] = nums.map(([, s, v], i) => (s === '-' ? -Number(v) : s === '+' ? Number(v) : i === 0 ? -Number(v) : Number(v)));
+  if (a > b) [a, b] = [b, a];
+  if (a === 0 && b === 0) return { error: tr("rentangnya kosong") };
+  if (a === b) return { error: tr("batas atas harus lebih tinggi dari batas bawah") };
+  if (!(a > -100)) return { error: tr("batas bawah harus di atas −100% — turun 100% berarti harga nol") };
+  if (!(b <= 100000)) return { error: tr("batas atas maksimal 100.000%") };
+  return { lowerPct: a === 0 ? 0 : -a, upperPct: b };
 }
 // Di mana token itu diperdagangkan kalau bukan di Uniswap v3/v4 (data GeckoTerminal).
 function pasarLainTeks(lainnya) {
@@ -61,7 +71,8 @@ function pasarLainTeks(lainnya) {
 function rentangTeks(d) {
   if (d.lowerPct == null && d.upperPct == null) return `±${trimZ(nf(d.widthPct ?? 25, 1))}%`;
   const lo = d.lowerPct ?? 0, up = d.upperPct ?? 0;
-  return lo === up ? `±${trimZ(nf(lo, 2))}%` : `−${trimZ(nf(lo, 2))}% / +${trimZ(nf(up, 2))}%`;
+  const bertanda = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${trimZ(nf(Math.abs(v), 2))}%`;
+  return lo === up ? `±${trimZ(nf(lo, 2))}%` : `${bertanda(-lo)} / ${bertanda(up)}`;
 }
 
 const trimZ = (s) => { const sep = locale() === 'en' ? '.' : ','; if (!s.includes(sep)) return s; const trimmed = s.replace(/0+$/, ''); return trimmed.endsWith(sep) ? trimmed.slice(0, -1) : trimmed; };
@@ -952,7 +963,8 @@ class Telegram {
         return this.ask(chatId, { kind: 'lpWidth', retry: 'qk' },
           tr("Kirim <b>batas bawah</b> dan <b>batas atas</b> dalam persen dari harga kini.\n\n")
           + tr("<code>10 30</code> → turun sampai −10%, naik sampai +30%\n")
-          + '<code>25</code> → ±25%');
+          + '<code>25</code> → ±25%\n'
+          + tr("<code>-30 -10</code> → seluruhnya di bawah harga kini: hanya aset kuotasi (misal USDG) yang disetor\n\n"));
       case 'qkp': return out(...this.lpKartuPool(chatId));
       case 'qkP': {
         const pool = (s.qkPools || [])[+rest[0]];
@@ -991,7 +1003,8 @@ class Telegram {
         tr("Kirim <b>batas bawah</b> dan <b>batas atas</b> dalam persen dari harga kini.\n\n")
         + tr("<code>10 30</code> → turun sampai −10%, naik sampai +30%\n")
         + '<code>25</code> → ±25%\n'
-        + tr("<code>0 50</code> → mulai tepat di harga kini, naik sampai +50%\n\n")
+        + tr("<code>0 50</code> → mulai tepat di harga kini, naik sampai +50%\n")
+        + tr("<code>-30 -10</code> → seluruhnya di bawah harga kini: hanya aset kuotasi (misal USDG) yang disetor\n\n")
         + tr("<i>Makin sempit makin besar fee-nya, tapi makin cepat keluar rentang.</i>"));
       case 'mlv': return out(...(await this.lpPreview(chatId)));
       case 'mlX': {
@@ -1505,7 +1518,7 @@ class Telegram {
     const r = rentang(p);
     const L = [
       `<b>${esc(p.symbol0)}/${esc(p.symbol1)}</b>  <code>#${esc(p.token_id)}</code>`,
-      `${p.inRange ? '🟢 in-range' : tr("🟡 di luar rentang")} · ${esc(p.venue)} · fee ${p.fee != null ? trimZ(nf(p.fee / 10000, 2)) + '%' : '—'} · ${esc(dur(p.ageHours * 3600))}`,
+      `${p.inRange == null ? tr('⏳ Menunggu sinkronisasi') : p.inRange ? '🟢 in-range' : tr("🟡 di luar rentang")} · ${esc(p.venue)} · fee ${p.fee != null ? trimZ(nf(p.fee / 10000, 2)) + '%' : '—'} · ${esc(dur(p.ageHours * 3600))}`,
       '',
       // Angka yang paling dicari ditaruh di luar tabel supaya bisa ditebalkan:
       // isi blok <pre> selalu polos.
@@ -1514,6 +1527,8 @@ class Telegram {
         [tr("nilai"), usd(p.valueUsd)],
         [tr("modal"), usd(p.costUsd)],
         [tr("fee belum diklaim"), usd(p.feeUsd)],
+        [tr("Fee sudah diklaim"), usd(p.claimedUsd)],
+        [tr("Fee di-compound"), usd(p.compound?.compoundedUsd)],
         ['IL vs HODL', p.ilUsd != null ? sgn(p.ilUsd) : null],
       ]),
     ];
@@ -1522,6 +1537,19 @@ class Telegram {
       L.push(r.bar);
       L.push(r.kini ? `${esc(r.kini)}${r.ket ? ` — ${esc(r.ket)}` : ''}` : (r.ket ? esc(r.ket) : null));
     }
+    const tokenQty = (raw, dec) => raw == null ? '—' : tok(Number(raw) / 10 ** (dec ?? 18));
+    L.push('', tr('<b>🪙 Komposisi token</b>'));
+    for (const side of [0, 1]) {
+      L.push(`<b>${esc(p[`symbol${side}`])}</b>`);
+      L.push(angka([
+        [tr('Di posisi'), tokenQty(p[`amount${side}`], p[`dec${side}`])],
+        [tr('Modal token'), tokenQty(p[`cost${side}`], p[`dec${side}`])],
+        [tr('fee belum diklaim'), tokenQty(p[`fee${side}`], p[`dec${side}`])],
+      ]));
+    }
+    if (p.inRange === false) L.push(tr('<i>Di luar rentang: tidak menghasilkan fee swap sampai harga kembali ke rentang.</i>'));
+    if (p.compound?.enabled) L.push(tr('♻️ Minimum {0} · periksa setiap {1} menit', [usd(p.compound.minUsd), p.compound.intervalMinutes]));
+    L.push(tr('<i>Sinkronisasi terakhir: {0}</i>', [esc(d.syncedAt ? ago(d.syncedAt) : '—')]));
     const jejak = tabel([
       [tr("posisi"), `#${p.id}`],
       [tr("cermin dari"), p.target ? `${shortA(p.target)} #${p.mirror_of || '—'}` : null],
@@ -1532,6 +1560,7 @@ class Telegram {
       p.venue === 'v4' ? [btn(`♻️ Auto-compound · ${p.compound?.enabled ? 'ON' : 'OFF'}`, `ac:${p.id}`)] : null,
       [btn(tr("💰 Claim fee"), `pf:${p.id}`)],
       [btn(tr("🔴 Tutup posisi ini"), `pc:${p.id}`)],
+      [btn(tr("🔄 Segarkan"), `p:${p.id}`)],
       [btn(tr("↩︎ Posisi"), 'p'), BACK_HOME],
     ])];
   }
@@ -1548,6 +1577,7 @@ class Telegram {
       tr("Minimum ditambahkan: {0}", [usd(c.minUsd)]),
       tr("Periksa setiap {0} menit", [c.intervalMinutes]),
       tr("Total ditambahkan (perkiraan): {0}", [usd(c.compoundedUsd)]),
+      c.lastCheck ? tr("Pemeriksaan terakhir: {0}", [esc(ago(c.lastCheck))]) : null,
       c.lastNote ? esc(note(tr(c.lastNote))) : null,
       '',
       tr("Berjalan saat LIVE dan bot tidak dijeda. Slippage serta batas posisi mengikuti Aturan. Mengaktifkan mengizinkan transaksi otomatis."),
@@ -1555,6 +1585,7 @@ class Telegram {
     return [L.filter((x) => x != null).join('\n'), kb([
       c.supported ? [btn(c.enabled ? tr("⏸ Matikan auto-compound") : tr("▶️ Aktifkan auto-compound"), `acT:${id}:${c.enabled ? 0 : 1}`)] : null,
       c.supported ? [btn(tr("✏️ Minimum fee"), `acM:${id}`), btn(tr("⏱ Interval"), `acI:${id}`)] : null,
+      [btn(tr("🔄 Segarkan"), `ac:${id}`)],
       [btn(tr("↩︎ Posisi"), `p:${id}`)],
     ])];
   }
@@ -1625,6 +1656,7 @@ class Telegram {
       [btn(t.enabled ? tr("⚪️ Matikan") : tr("🟢 Nyalakan"), `tt:${t.address}`)],
       [btn(tr("⚙️ Aturan khusus"), `ts:${t.address}`), btn(tr("✏️ Ganti nama"), `tn:${t.address}`)],
       [btn(tr("🔎 Riset wallet"), `tw:${t.address}`), btn(tr("🔄 Perbarui riset"), `tr:${t.address}`)],
+      [btn(tr("🔄 Segarkan"), `t:${t.address}`)],
       [btn(tr("🗑 Hapus target"), `td:${t.address}`)],
       [btn(tr("↩︎ Target"), 't'), BACK_HOME],
     ])];
@@ -2133,6 +2165,7 @@ class Telegram {
       '',
       tr("<i>Batas bawah dan atas boleh berbeda — misal turun 10%, naik 30%.</i>"),
       tr("Satu sisi: isi 25 0 atau 0 25. Hanya satu token disetor; fee mulai saat harga masuk rentang. Auto-swap bisa diperlukan untuk menyediakan token itu."),
+      tr("Tanda +/− memindah batas ke sisi lain harga: <code>-30 -10</code> = seluruhnya di bawah harga (hanya aset kuotasi), <code>+10 +30</code> = seluruhnya di atas (hanya tokennya)."),
     ];
     return [L.join('\n'), kb([
       [btn('±5%', 'mlw:5:5'), btn('±10%', 'mlw:10:10'), btn('±25%', 'mlw:25:25')],

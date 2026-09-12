@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Button, Card, Spinner, toast } from '@heroui/react';
 import { Search, Check, TriangleAlert, Anchor, ArrowRight } from 'lucide-react';
 import { get, post } from '../api';
@@ -8,27 +8,44 @@ import TokenIcon, { TokenPair, TokenSym, PairName } from '../components/TokenIco
 import { usd, num, ago, price, tickPrice, locale } from '../fmt';
 import { useI18n } from '../i18n';
 
-// Pilihan cepat rentang: [turun %, naik %, label]. Persennya dalam harga, jadi
-// "±50%" benar-benar setengah turun dan setengah naik; "½× – 2×" adalah rentang yang
-// dulu tertulis ±100% (dalam tick simetris, dalam harga tidak).
-const PRESET = [[5, 5, '±5%'], [10, 10, '±10%'], [25, 25, '±25%'], [50, 50, '±50%'], [50, 100, '½× – 2×'], [25, 0, '1 sisi · bawah −25%'], [0, 25, '1 sisi · atas +25%']];
+// Pilihan cepat rentang: [perubahan batas bawah %, perubahan batas atas %, label],
+// bertanda dari harga kini. Persennya dalam harga, jadi "±50%" benar-benar setengah
+// turun dan setengah naik; "½× – 2×" adalah rentang yang dulu tertulis ±100% (dalam
+// tick simetris, dalam harga tidak).
+const PRESET = [[-5, 5, '±5%'], [-10, 10, '±10%'], [-25, 25, '±25%'], [-50, 50, '±50%'], [-50, 100, '½× – 2×'], [-25, 0, '1 sisi · bawah −25%'], [0, 25, '1 sisi · atas +25%']];
 
-// Teks rentang untuk ringkasan & konfirmasi.
+// Teks rentang untuk ringkasan & konfirmasi. lo/up = perubahan bertanda tiap batas.
 const fmtPct = (v) => num(Number(v), 2);
+const bertanda = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${fmtPct(Math.abs(v))}%`;
 const rentangLabel = (lo, up, full, t) => (full ? t('seluruh rentang')
-  : Number(lo) === Number(up) ? `±${fmtPct(lo)}%` : `−${fmtPct(lo)}% / +${fmtPct(up)}%`);
+  : -lo === up ? `±${fmtPct(up)}%` : `${bertanda(lo)} / ${bertanda(up)}`);
 
 // Satu kotak batas: tanda di depan, persen di belakang, harga hasilnya di bawah.
-function Batas({ label, tanda, value, onChange, harga, sym, invalid, disabled, aria }) {
+// Tandanya tombol: −/+ memindah batas ke sisi lain harga kini, jadi rentang satu
+// sisi tidak harus menempel di harga (misal −30% … −10%). Mengetik "-" atau "+"
+// di kotaknya melakukan hal yang sama.
+function Batas({ label, arah, onArah, value, onChange, harga, sym, invalid, disabled, aria }) {
   const { t } = useI18n();
+  // Label diikat ke input lewat id: tanpa itu tombol tanda (elemen pertama yang
+  // bisa dilabeli) ikut terklik setiap kali kotaknya diklik.
+  const id = useId();
   return (
-    <label className={`flex min-w-0 flex-1 flex-col gap-1.5 rounded-md border p-3 transition-colors
+    <label htmlFor={id} className={`flex min-w-0 flex-1 flex-col gap-1.5 rounded-md border p-3 transition-colors
       ${invalid ? 'border-danger/60' : 'border-border focus-within:border-accent'} ${disabled ? 'opacity-50' : ''}`}>
       <span className="text-xs text-muted">{t(label)}</span>
       <span className="flex items-baseline gap-1">
-        <span className="num text-lg font-semibold text-muted">{tanda}</span>
-        <input value={value} disabled={disabled} inputMode="decimal" aria-label={t(aria)} placeholder="0"
-          onChange={(e) => onChange(e.target.value.replace(/[^\d.,]/g, ''))}
+        <button type="button" disabled={disabled} onClick={() => onArah(-arah)}
+          aria-label={t(arah < 0 ? 'Di bawah harga kini — klik untuk memindah ke atas' : 'Di atas harga kini — klik untuk memindah ke bawah')}
+          title={t(arah < 0 ? 'Di bawah harga kini — klik untuk memindah ke atas' : 'Di atas harga kini — klik untuk memindah ke bawah')}
+          className="num w-6 shrink-0 self-center rounded text-lg font-semibold text-muted hover:bg-default/60 hover:text-foreground">
+          {arah < 0 ? '−' : '+'}
+        </button>
+        <input id={id} value={value} disabled={disabled} inputMode="decimal" aria-label={t(aria)} placeholder="0"
+          onChange={(e) => {
+            const v = e.target.value;
+            if (/[-−–]/.test(v)) onArah(-1); else if (v.includes('+')) onArah(1);
+            onChange(v.replace(/[^\d.,]/g, ''));
+          }}
           className="num w-full min-w-0 bg-transparent text-lg font-semibold outline-none placeholder:text-muted/60" />
         <span className="text-lg text-muted">%</span>
       </span>
@@ -315,8 +332,11 @@ export default function ManualLp() {
   const [pool, setPool] = useState(null);
   const [gantiPool, setGantiPool] = useState(false);
   const [nominal, setNominal] = useState('');
-  const [turun, setTurun] = useState('25');
-  const [naik, setNaik] = useState('25');
+  // Tiap batas = besar persen + arah dari harga kini (−1 di bawah, +1 di atas).
+  const [bawah, setBawah] = useState('25');
+  const [atas, setAtas] = useState('25');
+  const [arahBawah, setArahBawah] = useState(-1);
+  const [arahAtas, setArahAtas] = useState(1);
   const [full, setFull] = useState(false);
   const [plan, setPlan] = useState(null);      // { preview, warnings } | { error }
   const [hitung, setHitung] = useState(false);
@@ -341,13 +361,17 @@ export default function ManualLp() {
   useEffect(() => { muatSaldo(pool?.poolRef); }, [pool?.poolRef, muatSaldo]);
 
   const usdNum = Number(String(nominal).replace(',', '.'));
-  const lo = Number(String(turun).replace(',', '.') || 0), up = Number(String(naik).replace(',', '.') || 0);
-  const loBad = !full && !(lo >= 0 && lo < 100);
-  const upBad = !full && !(up >= 0 && up <= 100000);
+  // lo/up = perubahan bertanda tiap batas dari harga kini. API memakai lowerPct =
+  // seberapa jauh batas bawah DI BAWAH harga, jadi tandanya dibalik saat dikirim.
+  const pctDari = (s) => Number(String(s).replace(',', '.') || 0);
+  const lo = arahBawah * pctDari(bawah), up = arahAtas * pctDari(atas);
+  const loBad = !full && !(lo > -100);
+  const upBad = !full && !(up > -100 && up <= 100000);
   const kosong = !full && lo === 0 && up === 0;
-  const rentangOk = full || (!loBad && !upBad && !kosong);
+  const terbalik = !full && !loBad && !upBad && !kosong && up <= lo;
+  const rentangOk = full || (!loBad && !upBad && !kosong && !terbalik);
   const siap = !!pool && Number.isFinite(usdNum) && usdNum > 0 && rentangOk;
-  const body = { poolRef: pool?.poolRef, usd: usdNum, ...(full ? { full: true } : { lowerPct: lo, upperPct: up }) };
+  const body = { poolRef: pool?.poolRef, usd: usdNum, ...(full ? { full: true } : { lowerPct: -lo, upperPct: up }) };
 
   // Pratinjau dihitung ulang sendiri setiap pilihan berubah — tidak ada tombol
   // "hitung". Balasan yang datang terlambat dibuang lewat nomor urut.
@@ -393,6 +417,11 @@ export default function ManualLp() {
   const pKini = p && plan._ref === pool?.poolRef ? p : null;
   const hargaKini = pKini ? tickPrice(pKini.curTick, pKini.dec0, pKini.dec1, pKini.quoteSide) : null;
   const symQ = pKini ? (pKini.quoteSide === 0 ? pKini.symbol0 : pKini.symbol1) : null;
+  // Rentang yang seluruhnya di satu sisi harga hanya diisi satu token: di bawah =
+  // aset kuotasi, di atas = token pasangannya.
+  const satuSisi = !full && rentangOk ? (up <= 0 ? 'bawah' : lo >= 0 ? 'atas' : null) : null;
+  const symSetor = satuSisi && pool?.quoteSide != null
+    ? ((pool.quoteSide === 0) === (satuSisi === 'bawah') ? pool.symbol0 : pool.symbol1) : null;
   // Pratinjau membawa saldo "setelah dibuka"; selama belum ada, pakai bacaan
   // sendiri — asal untuk pool yang sama, supaya token pasangannya tidak salah.
   const pSiap = pKini && siap && !plan?.error ? pKini : null;
@@ -482,25 +511,38 @@ export default function ManualLp() {
                 onPick={(v) => {
                   if (v === 'full') return setFull(true);
                   const [a, b] = PRESET.find((x) => x[2] === v);
-                  setFull(false); setTurun(String(a)); setNaik(String(b));
+                  setFull(false);
+                  setBawah(String(Math.abs(a))); setArahBawah(a > 0 ? 1 : -1);
+                  setAtas(String(Math.abs(b))); setArahAtas(b < 0 ? -1 : 1);
                 }}
                 options={[...PRESET.map(([, , l]) => [l, t(l)]), ['full', t('Seluruh rentang')]]} />
-              <p className="text-xs text-muted">{t('Satu sisi: pilih batas bawah atau atas 0%. Hanya satu token disetor; fee mulai saat harga masuk rentang. Auto-swap bisa diperlukan untuk menyediakan token itu.')}</p>
+              <p className="text-xs text-muted">{t('Klik tanda −/+ untuk memindah batas ke sisi lain harga kini. Rentang yang seluruhnya di bawah harga (misal −30% sampai −10%) hanya diisi aset kuotasi seperti USDG; yang seluruhnya di atas hanya diisi tokennya.')}</p>
               {/* Batas bebas: mengetik di salah satu kotak otomatis keluar dari "seluruh rentang". */}
               <div className="flex flex-col gap-2 sm:flex-row">
-                <Batas label="Batas bawah" aria="Turun sampai (persen)" tanda="−" value={full ? '' : turun} disabled={false}
-                  onChange={(v) => { setFull(false); setTurun(v); }} invalid={loBad}
-                  harga={hargaKini != null && !full && !loBad ? hargaKini * (1 - lo / 100) : null} sym={symQ} />
-                <Batas label="Batas atas" aria="Naik sampai (persen)" tanda="+" value={full ? '' : naik} disabled={false}
-                  onChange={(v) => { setFull(false); setNaik(v); }} invalid={upBad}
+                <Batas label="Batas bawah" aria="Batas bawah dari harga kini (persen)" arah={arahBawah} value={full ? '' : bawah} disabled={false}
+                  onArah={(a) => { setFull(false); setArahBawah(a); }}
+                  onChange={(v) => { setFull(false); setBawah(v); }} invalid={loBad || terbalik}
+                  harga={hargaKini != null && !full && !loBad ? hargaKini * (1 + lo / 100) : null} sym={symQ} />
+                <Batas label="Batas atas" aria="Batas atas dari harga kini (persen)" arah={arahAtas} value={full ? '' : atas} disabled={false}
+                  onArah={(a) => { setFull(false); setArahAtas(a); }}
+                  onChange={(v) => { setFull(false); setAtas(v); }} invalid={upBad || terbalik}
                   harga={hargaKini != null && !full && !upBad ? hargaKini * (1 + up / 100) : null} sym={symQ} />
               </div>
-              {(loBad || upBad || kosong) && (
-                <p className="text-xs text-danger">{t(loBad ? 'Batas bawah harus 0 sampai di bawah 100% — turun 100% berarti harga nol.'
-                  : upBad ? 'Batas atas maksimal 100.000%.' : 'Isi batas bawah atau batas atas.')}</p>
+              {(loBad || upBad || kosong || terbalik) && (
+                <p className="text-xs text-danger">{t(loBad ? 'Batas bawah harus di atas −100% — turun 100% berarti harga nol.'
+                  : upBad ? 'Batas atas harus di atas −100% dan maksimal +100.000%.'
+                    : terbalik ? 'Batas atas harus lebih tinggi dari batas bawah.' : 'Isi batas bawah atau batas atas.')}</p>
               )}
-              {!full && p && !plan?.error && (Math.abs(p.lowerPct - lo) >= 0.05 || Math.abs(p.upperPct - up) >= 0.05) && (
-                <p className="text-xs text-muted">{t('Dibulatkan ke tick pool: −{a}% / +{b}%.', { a: num(p.lowerPct, 2), b: num(p.upperPct, 2) })}</p>
+              {satuSisi && (
+                <p className="text-xs text-muted">
+                  {t(satuSisi === 'bawah'
+                    ? 'Satu sisi di bawah harga kini: hanya {s} yang disetor. Fee mulai saat harga turun masuk rentang.'
+                    : 'Satu sisi di atas harga kini: hanya {s} yang disetor. Fee mulai saat harga naik masuk rentang.',
+                  { s: symSetor || t('satu token') })}
+                </p>
+              )}
+              {!full && p && !plan?.error && (Math.abs(-p.lowerPct - lo) >= 0.05 || Math.abs(p.upperPct - up) >= 0.05) && (
+                <p className="text-xs text-muted">{t('Dibulatkan ke tick pool: {a} / {b}.', { a: bertanda(-p.lowerPct), b: bertanda(p.upperPct) })}</p>
               )}
               <p className="text-xs text-muted">
                 {t('Fee hanya mengalir selama harga ada di dalam rentang. Sempit = fee lebih besar tapi lebih cepat keluar; lebar = lebih aman tapi encer.')}

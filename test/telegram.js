@@ -1161,6 +1161,16 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     }
     assert.deepStrictEqual(parseRentang('25'), { lowerPct: 25, upperPct: 25 });
     assert.deepStrictEqual(parseRentang('2,5 7,5'), { lowerPct: 2.5, upperPct: 7.5 });
+    assert.deepStrictEqual(parseRentang('10-30'), { lowerPct: 10, upperPct: 30 }, 'strip = pemisah, bukan tanda');
+    // Tanda eksplisit memindah batas ke sisi lain harga kini.
+    assert.deepStrictEqual(parseRentang('-30 -10'), { lowerPct: 30, upperPct: -10 });
+    assert.deepStrictEqual(parseRentang('−10 −30'), { lowerPct: 30, upperPct: -10 }, 'urutan terbalik dirapikan');
+    assert.deepStrictEqual(parseRentang('+10 +30'), { lowerPct: -10, upperPct: 30 });
+    assert.strictEqual(rentangTeks({ lowerPct: 30, upperPct: -10 }), '−30% / −10%');
+    assert.strictEqual(rentangTeks({ lowerPct: -10, upperPct: 30 }), '+10% / +30%');
+    assert.strictEqual(rentangTeks({ lowerPct: 25, upperPct: 0 }), '−25% / 0%');
+    assert.ok(parseRentang('-10 -10').error);
+    assert.ok(parseRentang('-100 -10').error);
     assert.ok(parseRentang('100 10').error);
     assert.ok(parseRentang('0 0').error);
     assert.ok(parseRentang('1 2 3').error);

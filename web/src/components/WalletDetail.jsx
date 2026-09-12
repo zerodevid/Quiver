@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Card, ProgressBar, Spinner, toast } from '@heroui/react';
 import { RefreshCw, Plus, Check } from 'lucide-react';
 import { get, post } from '../api';
-import { Panel, DataTable, Empty, Loading, PriceRange, Pick, Notice, Stat, KV } from './ui';
+import { Panel, DataTable, Empty, Loading, PriceRange, Pick, Notice, Stat, KV, Refreshing } from './ui';
 import { TokenPair, PairName } from './TokenIcon';
 import PnlCalendar from './PnlCalendar';
 import { usd, kUsd, pct, tone, ago, dur, num, age } from '../fmt';
@@ -190,13 +190,20 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
   const touched = useRef(false);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Pengambilan ulang di latar (poll pelan, setelah pindai) — data lama tetap tampil.
+  const [busy, setBusy] = useState(false);
   const timer = useRef(null);
   const alive = useRef(true);
 
   const stopPoll = () => { clearInterval(timer.current); timer.current = null; };
 
   const fetchWallet = useCallback(async () => {
-    const d = await get('/api/wallet?address=' + address);
+    // Balasannya membaca chain (harga & fee posisi yang masih berjalan), jadi bisa
+    // makan waktu — poll pelan 30 detik yang berjalan diam-diam pun perlu terlihat.
+    setBusy(true);
+    let d;
+    try { d = await get('/api/wallet?address=' + address); }
+    finally { if (alive.current) setBusy(false); }
     if (!alive.current) return d;
     setData(d);
     // Dropdown mengikuti jendela yang tersimpan, selama pengguna belum menyentuhnya.
@@ -270,6 +277,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
         {bgFailed && <span className="block text-xs text-warning">{t('Pembaruan otomatis gagal: {e} — dicoba lagi sebentar lagi.', { e: job.error })}</span>}
       </p>
       <div className="flex flex-wrap items-end gap-2">
+        <Refreshing loading={busy && !running} />
         {data?.found && (
           <Button size="sm" isPending={running && job?.mode === 'refresh'} isDisabled={running} onPress={() => startScan(blocks, 'refresh')}>
             <RefreshCw className="size-4" />{t('Perbarui')}</Button>

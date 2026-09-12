@@ -1,7 +1,7 @@
 // Tabel yang dipakai bersama halaman detail token dan detail pool: posisi bot,
 // posisi wallet hasil riset, dan gerakan target. Datanya dari lpRows di server.
 import { Button } from '@heroui/react';
-import { Panel, Dot, Empty, DataTable, PriceRange } from './ui';
+import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing } from './ui';
 import { TokenPair, PairName } from './TokenIcon';
 import { Pair } from '../pages/Positions';
 import { usd, pct, tone, ago, short, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
@@ -25,13 +25,16 @@ function When({ p }) {
 
 // Semua posisi bot (terbuka + tertutup) dengan modal, nilai/hasil, dan PnL.
 // onFocus: tombol "Grafik" per baris untuk menggambar posisi itu di grafik halaman.
-export function BotPositions({ open, closed, onFocus, focusId, className = '' }) {
+export function BotPositions({ open, closed, onFocus, focusId, loading = false, className = '' }) {
   const { t } = useI18n();
   const rows = [...open.map((p) => ({ ...p, status: 'open' })), ...closed];
   const pnl = sum(rows, (p) => p.pnlUsd);
   return (
     <Panel title={t('Posisi bot ({n})', { n: rows.length })} className={className} bodyClass="p-0"
-      action={rows.length > 0 && <span className="text-xs"><span className="text-muted">PnL</span> <span className={`num font-medium ${tone(pnl)}`}>{usd(pnl)}</span></span>}>
+      action={<div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
+        <Refreshing loading={loading} />
+        {rows.length > 0 && <span className="text-xs"><span className="text-muted">PnL</span> <span className={`num font-medium ${tone(pnl)}`}>{usd(pnl)}</span></span>}
+      </div>}>
       <DataTable label="Posisi bot" rows={rows} rowKey={(p) => p.id} pageSize={10}
         defaultSort={{ column: 'when', direction: 'descending' }}
         empty={<Empty title="Bot belum pernah membuka posisi di sini" />}
@@ -60,11 +63,13 @@ export function BotPositions({ open, closed, onFocus, focusId, className = '' })
 }
 
 // Posisi wallet yang pernah dipindai (halaman Wallet / Target).
-export function WalletPositions({ rows, className = '' }) {
+export function WalletPositions({ rows, loading = false, className = '' }) {
   const { t } = useI18n();
   if (!rows.length) return null;
   return (
-    <Panel title={t('Posisi wallet yang diriset ({n})', { n: rows.length })} desc="Dari pemindaian halaman Wallet dan Target" className={className} bodyClass="p-0">
+    <Panel title={t('Posisi wallet yang diriset ({n})', { n: rows.length })}
+      desc="Modal dan hasil dari pemindaian wallet; posisi yang masih terbuka dinilai ulang di harga sekarang."
+      className={className} bodyClass="p-0" action={<Refreshing loading={loading} />}>
       <DataTable label="Posisi wallet" rows={rows} rowKey={(p) => `${p.wallet}:${p.venue}:${p.token_id}`} searchable pageSize={15}
         defaultSort={{ column: 'when', direction: 'descending' }}
         columns={[
@@ -85,8 +90,21 @@ export function WalletPositions({ rows, className = '' }) {
             </div>) },
           { key: 'st', label: 'Status', sort: (p) => p.status, render: (p) => <Status open={p.status === 'open'} /> },
           { key: 'inv', label: 'Modal', align: 'end', sort: (p) => p.invested_q, render: (p) => usd(p.invested_q) },
-          { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnl_q, render: (p) => (
-            <div className={tone(p.pnl_q)}>{usd(p.pnl_q)}<div className="text-xs">{p.pnlPct == null ? '' : pct(p.pnlPct, 2)}</div></div>) },
+          { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnl_q, render: (p) => {
+            // Posisi terbuka yang harga kininya gagal dibaca tetap ditampilkan, tapi
+            // angkanya dari pemindaian terakhir — katakan begitu, jangan sodorkan
+            // sebagai nilai sekarang.
+            const stored = p.status === 'open' && !p.liveTs;
+            return (
+              <div className={tone(p.pnl_q)}
+                title={stored ? t('Harga kini tidak terbaca — angka ini dari pemindaian terakhir wallet tersebut.') : undefined}>
+                {usd(p.pnl_q)}
+                <div className="text-xs">
+                  {p.pnlPct == null ? '' : pct(p.pnlPct, 2)}
+                  {stored && <span className="text-muted"> · {t('tersimpan')}</span>}
+                </div>
+              </div>);
+          } },
           { key: 'rng', label: 'Rentang harga', sortable: false, render: (p) => (
             <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={p.curTick ?? null} dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1} />) },
           { key: 'when', label: 'Waktu', align: 'end', sort: (p) => p.closed_ts || p.opened_ts, render: (p) => <When p={p} /> },

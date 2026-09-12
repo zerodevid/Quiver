@@ -28,14 +28,18 @@ const DYNAMIC_FEE = 0x800000;
 // dibulatkan ke spacing). Persennya dalam HARGA YANG DILIHAT pengguna: token dalam
 // aset kuotasi. Harga itu naik bersama tick kalau kuotasinya token1, dan TURUN
 // kalau kuotasinya token0 — di situ batas bawah harga menjadi batas ATAS tick.
+// Nilai negatif memindah batas ke sisi lain harga: lowerPct −10 = batas bawah 10%
+// DI ATAS harga, upperPct −10 = batas atas 10% DI BAWAH harga. Dengan begitu
+// rentang satu sisi tidak harus menempel di harga kini (misal −30% … −10%).
 function ticksFromPct({ curTick, quoteSide, lowerPct, upperPct }) {
   const lo = Number(lowerPct ?? 0), up = Number(upperPct ?? 0);
-  if (!Number.isFinite(lo) || lo < 0 || lo >= 100) return { error: 'batas bawah harus 0 sampai di bawah 100%' };
-  if (!Number.isFinite(up) || up < 0 || up > 100000) return { error: 'batas atas harus 0 sampai 100.000%' };
+  if (!Number.isFinite(lo) || lo >= 100) return { error: 'batas bawah harus di atas −100% — turun 100% berarti harga nol' };
+  if (!Number.isFinite(up) || up <= -100 || up > 100000) return { error: 'batas atas harus di atas −100% dan maksimal +100.000%' };
   if (lo === 0 && up === 0) return { error: 'rentangnya kosong — isi batas bawah atau batas atas' };
+  if (lo + up <= 0) return { error: 'batas atas harus lebih tinggi dari batas bawah' };
   const LN = Math.log(1.0001);
-  const dTurun = Math.log(1 - lo / 100) / LN;   // <= 0
-  const dNaik = Math.log(1 + up / 100) / LN;    // >= 0
+  const dTurun = Math.log(1 - lo / 100) / LN;   // <= 0 kecuali batas bawah di atas harga
+  const dNaik = Math.log(1 + up / 100) / LN;    // >= 0 kecuali batas atas di bawah harga
   const [a, b] = quoteSide === 1 ? [curTick + dTurun, curTick + dNaik] : [curTick - dNaik, curTick - dTurun];
   return { tickLower: Math.floor(a), tickUpper: Math.ceil(b) };
 }
@@ -290,14 +294,15 @@ class Manual {
     if (!slot0) return { error: 'harga pool tidak terbaca sekarang' };
 
     let singleSide = null;
-    // Batas 0% berarti satu sisi. Pembulatan batas dekat harga harus menjauh
-    // dari harga, supaya spacing tidak menyisipkan kebutuhan token kedua.
+    // Batas di harga kini (0%) atau di seberangnya berarti satu sisi. Pembulatan
+    // batas dekat harga harus menjauh dari harga, supaya spacing tidak
+    // menyisipkan kebutuhan token kedua.
     if (!full && tickLower == null && tickUpper == null && (lowerPct != null || upperPct != null)) {
       const r = ticksFromPct({ curTick: slot0.tick, quoteSide: p.quoteSide, lowerPct, upperPct });
       if (r.error) return r;
       ({ tickLower, tickUpper } = r);
-      if (Number(lowerPct ?? 0) === 0) singleSide = p.quoteSide === 1 ? 'token0' : 'token1';
-      else if (Number(upperPct ?? 0) === 0) singleSide = p.quoteSide === 1 ? 'token1' : 'token0';
+      if (Number(lowerPct ?? 0) <= 0) singleSide = p.quoteSide === 1 ? 'token0' : 'token1';
+      else if (Number(upperPct ?? 0) <= 0) singleSide = p.quoteSide === 1 ? 'token1' : 'token0';
     }
 
     // Rentang: dihitung oleh planRange yang sama dengan jalur otomatis.
@@ -316,10 +321,10 @@ class Manual {
       };
       if (range.tickUpper <= range.tickLower) range.tickUpper = range.tickLower + sp;
       if (singleSide === 'token0') {
-        range.tickLower = m.alignTick(slot0.tick + 1, sp, 'up');
+        range.tickLower = Math.max(range.tickLower, m.alignTick(slot0.tick + 1, sp, 'up'));
         range.tickUpper = Math.max(range.tickUpper, range.tickLower + sp);
       } else if (singleSide === 'token1') {
-        range.tickUpper = m.alignTick(slot0.tick, sp, 'down');
+        range.tickUpper = Math.min(range.tickUpper, m.alignTick(slot0.tick, sp, 'down'));
         range.tickLower = Math.min(range.tickLower, range.tickUpper - sp);
       }
     } else {

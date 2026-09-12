@@ -276,6 +276,8 @@ Pools on this chain are not uniformly USDG-quoted: of 5 901 new v4 pools observe
 
 Both tiers respect `max_slippage_bps` and `max_price_impact_bps`; a swap that would exceed either is rejected rather than forced.
 
+The zap itself goes through **Kyber** (best route across every DEX on this chain). When Kyber has no route, the fallback swaps directly against a pool — and that pool is **searched for**, not assumed to be the position's own: every pool holding the same token pair is scored (fee, including the dynamic fee read from `slot0`, plus price impact against its liquidity), the best candidates are **simulated with `eth_call` as the bot wallet**, and only a simulation that passes is broadcast. Thin pools are filtered by the price-impact bound; pools that reject the swap (a reverting hook) are caught in simulation, before gas is spent. This search runs on the **entry** path only — closing a position and selling leftovers still go straight through Kyber, so exits stay fast.
+
 > The bridge is *permitted* to route through hooked pools even though LP into hooked pools is filtered by default. A swap is atomic and protected by `amountOutMinimum` — the worst case is a revert. A hook on a pool where you *hold liquidity* can block `beforeRemoveLiquidity` and lock your capital, which is why the hook filter applies to LP only.
 
 ### Exit (`rules.exit`)

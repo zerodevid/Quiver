@@ -1,9 +1,10 @@
 import { lazy, Suspense, useState } from 'react';
-import { Button } from '@heroui/react';
+import { RefreshCw } from 'lucide-react';
+import { Button, Spinner } from '@heroui/react';
 import { usePoll } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
-import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Dot, ask } from '../components/ui';
+import { PageHeader, Panel, DataTable, Empty, Loading, Notice, PriceRange, Dot } from '../components/ui';
 import { TokenPair } from '../components/TokenIcon';
 // Halaman detail membawa pustaka grafik — dimuat hanya saat dibuka.
 const PositionDetail = lazy(() => import('./PositionDetail'));
@@ -40,38 +41,78 @@ export function Pair({ p, link = true }) {
           : <span className="font-medium whitespace-nowrap">{name}</span>}
         <div className="mt-0.5 flex items-center gap-1.5 text-xs whitespace-nowrap text-muted">
           <span className="uppercase">{p.venue}</span><span>·</span><span className="num">{num(p.fee / 10000, 2)}%</span>
-          {p.inRange != null && <><span>·</span><Dot tone={p.inRange ? 'success' : 'warning'} />
-            <span className={p.inRange ? 'text-success' : 'text-warning'}>{t(p.inRange ? 'in-range' : 'di luar')}</span></>}
+          {p.syncing ? <><span>·</span><Spinner size="sm" color="current" className="size-3" />
+            <span title={t('Posisi baru tercatat; nilai, fee, dan PnL menyusul setelah sinkron dengan chain.')}>{t('menyinkronkan…')}</span></>
+            : p.inRange != null && <><span>·</span><Dot tone={p.inRange ? 'success' : 'warning'} />
+              <span className={p.inRange ? 'text-success' : 'text-warning'}>{t(p.inRange ? 'in-range' : 'di luar')}</span></>}
         </div>
       </div>
     </div>
   );
 }
 
+// Penanda di kepala panel: kosong saat semuanya segar, supaya tidak jadi perabot
+// yang selalu ada. Tabel tidak pernah dikosongkan selama memuat ulang — data lama
+// tetap tampil sampai yang baru tiba. Dipakai juga panel "Posisi aktif" di Ringkasan.
+export function SyncState({ loading, syncedAt, pending }) {
+  const { t } = useI18n();
+  const text = !syncedAt ? 'Sinkron pertama dengan chain…'
+    : pending > 0 ? '{n} posisi baru menunggu sinkron'
+      : loading ? 'Memperbarui…' : null;
+  if (!text) return null;
+  return (
+    <span className="flex items-center gap-1.5 text-xs whitespace-nowrap text-muted" role="status">
+      <Spinner size="sm" color="current" className="size-3" />{t(text, { n: pending })}
+    </span>
+  );
+}
+
 export default function Positions({ param }) {
   const { t } = useI18n();
   // #positions/123 -> detail satu posisi. Poll daftar dimatikan selama detail terbuka.
-  const { data: d, reload } = usePoll(param ? null : '/api/positions', 10000);
+  // Endpoint-nya murah (basis data + hasil sinkron di memori), jadi posisi yang baru
+  // dibuka bot muncul dalam ~5 detik.
+  const { data: d, error, loading, reload } = usePoll(param ? null : '/api/positions', 5000);
   const { close, closing } = useClosePosition(reload);
   const { claim, claiming } = useClaimFees(reload);
   // Klik baris -> laci riwayat posisi (transaksi & catatan bot).
   const [hist, setHist] = useState(null);
   if (param) return <Suspense fallback={<Loading />}><PositionDetail id={param} /></Suspense>;
-  if (!d) return <Loading />;
+  const header = <PageHeader group="Pemantauan" title="Posisi" desc="Posisi LP milik bot — nilai, fee, dan PnL diperbarui dari chain tiap 30 detik. Klik baris untuk melihat riwayat transaksi dan catatan bot." />;
+  // Belum ada balasan sama sekali: tampilkan di tempat tabel akan muncul, bukan
+  // halaman kosong — dan kalau servernya tidak terjangkau, katakan begitu.
+  if (!d?.positions) {
+    return (
+      <>
+        {header}
+        <Panel title="Posisi terbuka" bodyClass="p-0">
+          {error ? <div className="p-4"><Notice status="danger" title="Daftar posisi gagal dimuat">{error} — {t('mencoba lagi otomatis.')}</Notice></div>
+            : <Loading text="Memuat posisi…" />}
+        </Panel>
+      </>
+    );
+  }
   const open = d.positions, closed = d.closed;
   const openPnl = sum(open, (p) => p.pnlUsd);
   const closedPnl = sum(closed, (c) => (c.out_quote || 0) - (c.cost_quote || 0));
+  const pending = open.filter((p) => p.syncing).length;
+  const dash = (p, node) => (p.syncing ? <span className="text-muted">—</span> : node);
 
   return (
     <>
-      <PageHeader group="Pemantauan" title="Posisi" desc="Posisi LP milik bot — nilai, fee, dan PnL diperbarui dari chain tiap 30 detik. Klik baris untuk melihat riwayat transaksi dan catatan bot." />
+      {header}
       <PositionHistory id={hist} onClose={() => setHist(null)} />
+      {error && <div className="mb-4"><Notice status="warning" title="Gagal memperbarui daftar posisi">{error} — {t('data di bawah dari pembaruan terakhir.')}</Notice></div>}
       <Panel title={t('Posisi terbuka ({n})', { n: open.length })} className="mb-4" bodyClass="p-0"
-        action={open.length > 0 && <Totals items={[
-          ['Nilai', usd(sum(open, (p) => p.valueUsd))],
-          ['Fee', usd(sum(open, (p) => p.feeUsd))],
-          ['PnL', usd(openPnl), tone(openPnl)],
-        ]} />}>
+        action={<div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
+          <Button size="sm" variant="tertiary" isPending={loading} isDisabled={loading} onPress={reload}><RefreshCw className="size-4" />{t('Perbarui detail')}</Button>
+          <SyncState loading={loading} syncedAt={d.syncedAt} pending={pending} />
+          {open.length > 0 && <Totals items={[
+            ['Nilai', usd(sum(open, (p) => p.valueUsd))],
+            ['Fee', usd(sum(open, (p) => p.feeUsd))],
+            ['PnL', usd(openPnl), tone(openPnl)],
+          ]} />}
+        </div>}>
         <DataTable label="Posisi terbuka" rows={open} rowKey={(p) => p.id} searchable onRow={(p) => setHist(p.id)}
           defaultSort={{ column: 'val', direction: 'descending' }}
           empty={<Empty title="Belum ada posisi terbuka" sub="Posisi muncul di sini setelah bot menyalin LP dari wallet target." />}
@@ -83,9 +124,9 @@ export default function Positions({ param }) {
                 entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />) },
             { key: 'val', label: 'Nilai', align: 'end', sort: (p) => p.valueUsd, render: (p) => (
               <div className="whitespace-nowrap">{usd(p.valueUsd)}<div className="text-xs text-muted">{t('modal {v}', { v: usd(p.costUsd) })}</div></div>) },
-            { key: 'fee', label: 'Fee', align: 'end', sort: (p) => p.feeUsd, render: (p) => <span className={p.feeUsd > 0.005 ? 'text-success' : 'text-muted'}>{usd(p.feeUsd)}</span> },
-            { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnlUsd, render: (p) => (
-              <div className={`whitespace-nowrap ${tone(p.pnlUsd)}`}>{usd(p.pnlUsd)}<div className="text-xs">{pct(p.pnlPct)}</div></div>) },
+            { key: 'fee', label: 'Fee', align: 'end', sort: (p) => p.feeUsd, render: (p) => dash(p, <span className={p.feeUsd > 0.005 ? 'text-success' : 'text-muted'}>{usd(p.feeUsd)}</span>) },
+            { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnlUsd, render: (p) => dash(p, (
+              <div className={`whitespace-nowrap ${tone(p.pnlUsd)}`}>{usd(p.pnlUsd)}<div className="text-xs">{pct(p.pnlPct)}</div></div>)) },
             { key: 'il', label: 'IL', align: 'end', sort: (p) => p.ilUsd, render: (p) => <span className={tone(p.ilUsd)}>{p.ilUsd == null ? '—' : usd(p.ilUsd)}</span> },
             { key: 'age', label: 'Umur', align: 'end', sort: (p) => p.ageHours, render: (p) => <span className="whitespace-nowrap text-muted">{age(p.ageHours)}</span> },
             { key: 'tgt', label: 'Sumber', sort: (p) => p.target, render: (p) => p.target

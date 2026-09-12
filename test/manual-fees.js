@@ -63,13 +63,15 @@ function fixture({ quoteSide = 0, tick = 17, venue = 'v4', native = false } = {}
   return { eng, store, manual, pool, slot, balances, sent, rpc, id, receipt };
 }
 
-for (const quoteSide of [0, 1]) for (const tick of [-121, 0, 17, 120]) for (const [lowerPct, upperPct] of [[25, 0], [0, 25]]) {
+// [25, 0] / [0, 25] menempel di harga kini; [30, -10] / [-10, 30] bergeser menjauh
+// (seluruhnya di bawah / di atas harga) dan tetap hanya butuh satu token.
+for (const quoteSide of [0, 1]) for (const tick of [-121, 0, 17, 120]) for (const [lowerPct, upperPct] of [[25, 0], [0, 25], [30, -10], [-10, 30], [0.1, -0.05]]) {
   test(`single-sided q${quoteSide}, tick ${tick}, range ${lowerPct}/${upperPct}`, async () => {
     const f = fixture({ quoteSide, tick });
     try {
       const r = await f.manual.planLp({ poolRef: POOL, usd: 50, lowerPct, upperPct });
       assert.ok(!r.error, r.error);
-      const zeroSide = (lowerPct === 0) === (quoteSide === 1) ? 1 : 0;
+      const zeroSide = (lowerPct <= 0) === (quoteSide === 1) ? 1 : 0;
       assert.equal(r.plan[`amount${zeroSide}`], '0');
       assert.equal(r.plan[`amount${zeroSide}Max`], '0');
       assert.ok(BigInt(r.plan[`amount${1 - zeroSide}`]) > 0n);

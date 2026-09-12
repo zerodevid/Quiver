@@ -234,7 +234,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   // Posisi bot, posisi wallet hasil riset, dan gerakan target yang cocok dengan satu
   // syarat SQL (mis. "token0=? OR token1=?" atau "pool_ref=?") — bahan halaman
   // detail token dan detail pool, supaya keduanya menghitung PnL dengan cara sama.
-  const lpRows = (cond, args) => {
+  const lpRows = async (cond, args) => {
     const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
     const sym = (x) => toks.get(x)?.symbol || QUOTES[x]?.symbol || '?';
     const dec = (x) => toks.get(x)?.decimals ?? QUOTES[x]?.decimals ?? 18;
@@ -268,12 +268,21 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     const labels = new Map(store.all('SELECT address,label FROM wallets').map((w) => [w.address, w.label]));
     for (const t of store.all('SELECT address,label FROM targets')) if (t.label) labels.set(t.address, t.label);
     const targets = new Set(store.all('SELECT address FROM targets').map((t) => t.address));
+    // liquidity & returned_q ikut dibaca karena penilaian ulang di bawah memerlukannya:
+    // tanpa liquidity posisi v3 tak bisa dinilai, dan tanpa returned_q penarikan yang
+    // sudah masuk kantong hilang dari PnL-nya.
     const wallets = store.all(`SELECT wallet, venue, token_id, pool_ref, token0, token1, fee, tick_lower, tick_upper, status,
-        opened_ts, closed_ts, invested_q, live_value_q, live_fee_q, fees_q, pnl_q
+        opened_ts, closed_ts, liquidity, invested_q, returned_q, live_value_q, live_fee_q, fees_q, pnl_q
       FROM wpositions WHERE ${cond} ORDER BY COALESCE(closed_ts, opened_ts) DESC LIMIT 300`, ...args)
       .map((r) => ({ ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
-        quoteSide: quoteSideOf(r.token0, r.token1), walletLabel: labels.get(r.wallet) || null, isTarget: targets.has(r.wallet),
-        pnlPct: r.invested_q > 0 ? (r.pnl_q / r.invested_q) * 100 : null }));
+        quoteSide: quoteSideOf(r.token0, r.token1), walletLabel: labels.get(r.wallet) || null, isTarget: targets.has(r.wallet) }));
+    // Posisi wallet yang masih terbuka dinilai ulang di harga sekarang. Angka tersimpan
+    // berasal dari pemindaian terakhir wallet itu — tanpa ini, tabel riset dan tabel
+    // posisi bot di halaman yang sama bisa menunjukkan arah PnL yang berlawanan untuk
+    // pool dan rentang yang sama, hanya karena keduanya diukur di waktu yang berbeda.
+    try { await research.refreshOpen(wallets, engine.ethUsd); }
+    catch (e) { log(`nilai posisi riset terbuka: ${e.message}`); }
+    for (const r of wallets) r.pnlPct = r.invested_q > 0 ? (r.pnl_q / r.invested_q) * 100 : null;
 
     // Gerakan target, dengan keputusan bot atasnya.
     const activity = store.all(`SELECT a.id, a.ts, a.target, a.venue, a.kind, a.token_id, a.pool_ref, a.token0, a.token1, a.fee,
@@ -384,12 +393,29 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // Posisi tertutup cuma menyimpan alamat token; tanpa simbol, tabelnya hanya
       // deretan nomor NFT yang tidak bisa dikenali.
       const closed = store.all("SELECT * FROM positions WHERE status='closed' ORDER BY closed_ts DESC LIMIT 100");
-      const toks = new Map(store.all('SELECT address,symbol FROM tokens').map((t) => [t.address, t.symbol]));
+      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
       for (const r of closed) {
-        r.symbol0 = toks.get(r.token0) || null;
-        r.symbol1 = toks.get(r.token1) || null;
+        r.symbol0 = toks.get(r.token0)?.symbol || null;
+        r.symbol1 = toks.get(r.token1)?.symbol || null;
       }
-      return { positions: engine.positions.live.map((p) => ({ ...p, compound: compound.status(p) })), closed };
+      // Daftarnya dari basis data, angkanya dari sinkron terakhir. Dulu daftarnya
+      // langsung hasil sinkron (tiap 30 detik): sesudah restart tabel kosong sampai
+      // sinkron pertama selesai, posisi yang baru dimint baru muncul ~30 detik
+      // kemudian, dan yang baru ditutup masih tampil. Posisi yang belum tersinkron
+      // tampil dulu dengan angka modal, bertanda `syncing`.
+      const live = new Map(engine.positions.live.map((p) => [p.id, p]));
+      const k = (q) => (q === 'ETH' || q === 'WETH' ? engine.ethUsd : 1);
+      const sym = (x) => toks.get(x)?.symbol || QUOTES[x]?.symbol || '?';
+      const dec = (x) => toks.get(x)?.decimals ?? QUOTES[x]?.decimals ?? 18;
+      const positions = store.all("SELECT * FROM positions WHERE status='open' ORDER BY opened_ts").map((r) => live.get(r.id) || {
+        ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
+        quoteSide: quoteSideOf(r.token0, r.token1), entrySqrt: Positions.entrySqrtOf(r), curTick: null, inRange: null,
+        costUsd: (r.cost_quote || 0) * k(r.quote_symbol), valueUsd: (r.cost_quote || 0) * k(r.quote_symbol),
+        feeUsd: 0, pnlUsd: 0, pnlPct: 0, ilUsd: null,
+        ageHours: (Date.now() - (r.opened_ts || Date.now())) / 3600000,
+        syncing: true,
+      });
+      return { positions: positions.map((p) => ({ ...p, compound: compound.status(p) })), closed, syncedAt: engine.positions.lastSync };
     },
     // Satu posisi untuk halaman detail. Yang terbuka diambil dari hasil sinkron terakhir
     // (nilai, fee, harga kini); yang sudah ditutup — atau baru dibuka dan belum
@@ -420,6 +446,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         ageHours: ((row.closed_ts || Date.now()) - (row.opened_ts || Date.now())) / 3600000,
         empty: row.status === 'closed',
       };
+      // Baru dimint, belum ikut sinkron: angka nilai/fee/PnL di bawah masih taksiran
+      // dari modal — halaman detail menandainya, bukan menyajikannya sebagai kabar pasti.
+      pos.syncing = row.status !== 'closed' && !live;
       pos.exitSqrt = row.exit_sqrt || null;
       pos.claimedUsd = (row.claimed_quote || 0) * k;
       pos.compound = compound.status(row);
@@ -573,7 +602,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         meta = { address: a, symbol: side.symbol, name: side.name, decimals: null };
       }
 
-      const rows = lpRows('token0=? OR token1=?', [a, a]);
+      const rows = await lpRows('token0=? OR token1=?', [a, a]);
       // Saldo wallet bot untuk token ini (kalau wallet terpasang).
       let balance = null;
       if (engine.exec.address() && meta.decimals != null) {
@@ -612,9 +641,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // Harga kini: v4 = poolId (32 byte) dibaca dari PoolManager, v3 = alamat pool.
       let slot = null;
       try { slot = ref.length === 66 ? (await chain.slot0V4Many([ref]))[0] : await chain.slot0V3(ref); } catch { /* tanpa harga kini */ }
-      const rows = lpRows('pool_ref=?', [ref]);
-      // Rentang posisi riset yang masih terbuka digambar terhadap harga kini.
-      for (const w of rows.wallets) if (w.status === 'open') w.curTick = slot?.tick ?? null;
+      const rows = await lpRows('pool_ref=?', [ref]);
+      // Rentang posisi riset yang masih terbuka digambar terhadap harga kini. Yang
+      // sudah membawa tick dari penilaian ulang dibiarkan — itu tick yang dipakai
+      // menghitung nilainya, jadi bar dan angkanya bercerita tentang saat yang sama.
+      for (const w of rows.wallets) if (w.status === 'open') w.curTick ??= slot?.tick ?? null;
       return {
         pool: {
           ...pool, venue: String(pool.venue || '').replace('pool', ''),
@@ -801,6 +832,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // SEKARANG tiap kali halaman dibuka — angkanya hidup sampai tokennya dijual.
       for (const r of rows) { r.dec0 = toks.get(r.token0)?.decimals ?? 18; r.dec1 = toks.get(r.token1)?.decimals ?? 18; }
       try { await research.proceeds.refreshHeld(rows, engine.ethUsd); } catch { /* pakai nilai tersimpan */ }
+      // Posisi yang masih berjalan dinilai di harga pool SEKARANG. Halaman ini memicu
+      // pindai ulang hanya kalau risetnya sudah basi 5 menit, dan pindai itu berjalan
+      // di latar — tanpa penilaian ulang di sini, nilai & fee yang tampil bisa jauh
+      // lebih tua daripada halamannya sendiri.
+      try { await research.refreshOpen(rows, engine.ethUsd); } catch { /* pakai nilai tersimpan */ }
       const hours = (a, b) => (a && b ? (b - a) / 3600000 : null);
       const deco = (r) => ({
         ...r,
@@ -837,18 +873,21 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // pool_ref v4 adalah poolId (32 byte, dibaca dari storage PoolManager); pool_ref
       // v3 adalah ALAMAT kontrak pool-nya. Dulu semuanya dilempar ke jalur v4, yang
       // untuk v3 menghasilkan tick ngawur — penanda "harga kini" jadi salah tempat.
+      // Baris yang sudah dinilai ulang membawa tick-nya sendiri; yang dibaca di sini
+      // tinggal sisanya (pool yang gagal dibaca, atau posisi yang penilaiannya dilewat).
       const byPool = new Map();
-      const idV4 = [...new Set(open.filter((r) => r.venue !== 'v3').map((r) => r.pool_ref).filter(Boolean))];
+      const need = open.filter((r) => r.curTick == null && r.pool_ref);
+      const idV4 = [...new Set(need.filter((r) => r.venue !== 'v3').map((r) => r.pool_ref))];
       if (idV4.length) {
         try {
           const slots = await chain.slot0V4Many(idV4);
           idV4.forEach((id, i) => byPool.set(id, slots[i]));
         } catch { /* harga kini tidak terbaca: bar tetap tampil tanpa penanda */ }
       }
-      for (const a of [...new Set(open.filter((r) => r.venue === 'v3').map((r) => r.pool_ref).filter(Boolean))]) {
+      for (const a of [...new Set(need.filter((r) => r.venue === 'v3').map((r) => r.pool_ref))]) {
         try { byPool.set(a, await chain.slot0V3(a)); } catch { /* sama */ }
       }
-      for (const r of open) r.curTick = byPool.get(r.pool_ref)?.tick ?? null;
+      for (const r of need) r.curTick = byPool.get(r.pool_ref)?.tick ?? null;
 
       // profit harian untuk kalender
       const daily = {};

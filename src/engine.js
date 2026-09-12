@@ -6,6 +6,7 @@ const { Watcher } = require('./watcher');
 const { Positions } = require('./positions');
 const { Executor, isNative } = require('./executor');
 const { Kyber } = require('./kyber');
+const { pickSwapPool } = require('./swappool');
 const { Compound } = require('./compound');
 const { rulesFor, planEntry, planExit, quoteToUsd } = require('./policy');
 const { enumerateV4, livePositions } = require('./scout');
@@ -726,21 +727,28 @@ class Engine {
         const h = await this.exec.send(a, { kind: a.kind });
         await this.exec.waitReceipt(h);
       }
-      const zeroForOne = idx === 1;   // beli token1 -> jual token0
-      // tolak zap yang menggeser harga pool terlalu jauh — ini yang membuat
-      // "auto-swap" tidak berubah jadi menabrak pool tipis
-      if (plan.venue === 'v4' && rules.swap.max_price_impact_bps > 0) {
-        const poolL = await this.chain.poolLiquidity(plan.poolRef);
-        const impact = m.priceImpactBps(s.sqrtPriceX96, poolL, payRaw, zeroForOne);
-        if (impact != null && impact > rules.swap.max_price_impact_bps) {
-          throw new Error(`zap butuh geser harga ${impact.toFixed(0)} bps (batas ${rules.swap.max_price_impact_bps})`);
-        }
-      }
+      // Cadangan: swap langsung ke pool. Pool posisi ini belum tentu tempat terbaik
+      // menukar — pemilihnya menilai semua pool berpasangan sama (fee + dampak harga)
+      // lalu menyimulasikannya, jadi pool tipis dan pool yang menolak swap tersingkir
+      // sebelum gas keluar. Batas dampak harga yang berlaku tetap yang di Aturan:
+      // itu yang menjaga "auto-swap" tidak berubah jadi menabrak pool tipis.
       const minOut = (short * (10000n - BigInt(rules.swap.max_slippage_bps))) / 10000n;
-      const swapTx = plan.venue === 'v3'
-        ? this.exec.buildSwapV3(payTok, idx === 0 ? plan.token0 : plan.token1, plan.fee, payRaw, minOut, this.exec.deadline())
-        : this.exec.buildSwapV4(pk, zeroForOne, payRaw, minOut, this.exec.deadline());
-      const h = await this.exec.send(swapTx, { kind: 'zap_swap', detail: { pool: plan.poolRef, payRaw: payRaw.toString() } });
+      const info = {};
+      const pick = await pickSwapPool({ store: this.store, chain: this.chain, rpc: this.rpc, exec: this.exec, log: this.log }, {
+        tokenIn: payTok, tokenOut: buyTok, amountIn: payRaw, minOut,
+        maxImpactBps: rules.swap.max_price_impact_bps, deadlineSec: this.exec.deadline(), info,
+        extra: [{
+          pool_ref: plan.poolRef, venue: plan.venue, token0: plan.token0, token1: plan.token1,
+          fee: plan.fee, tick_spacing: plan.tickSpacing ?? pk?.tickSpacing ?? null,
+          hooks: plan.poolKey?.hooks ?? pk?.hooks ?? null, pool_addr: plan.venue === 'v3' ? plan.poolRef : null,
+        }],
+      });
+      if (!pick) throw new Error(`zap lewat pool langsung tidak bisa: ${info.reason}`);
+      if (pick.pool.pool_ref !== plan.poolRef) {
+        this.log(`zap lewat pool lain ${pick.pool.pool_ref.slice(0, 10)}… (fee ${(pick.feePpm / 10000).toFixed(2)}%`
+          + `${pick.impactBps != null ? `, dampak ~${Math.round(pick.impactBps)} bps` : ''}) — terbaik dari ${info.scored} pool berpasangan sama`);
+      }
+      const h = await this.exec.send(pick.tx, { kind: 'zap_swap', detail: { pool: pick.pool.pool_ref, payRaw: payRaw.toString() } });
       const rc = await this.exec.waitReceipt(h);
       if (!rc.ok) throw new Error(`swap zap gagal (${h})`);
       notes.push(`zap ${idx === 0 ? 'beli token0' : 'beli token1'}`);

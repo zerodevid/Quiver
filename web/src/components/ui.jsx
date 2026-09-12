@@ -89,6 +89,19 @@ export function Loading({ text = 'Memuat…' }) {
   return <div className="flex items-center justify-center gap-3 py-12 text-sm text-muted"><Spinner size="sm" color="current" />{t(text)}</div>;
 }
 
+// Penanda "sedang mengambil data baru" untuk kepala panel. Tabel TIDAK pernah
+// dikosongkan selama memuat ulang — data lama tetap terbaca sampai yang baru tiba,
+// dan penanda ini yang memberi tahu bahwa angkanya sebentar lagi berganti. Kosong
+// saat tidak memuat, supaya tidak jadi perabot yang selalu ada.
+export function Refreshing({ loading, text = 'Memperbarui…' }) {
+  if (!loading) return null;
+  return (
+    <span className="flex items-center gap-1.5 text-xs whitespace-nowrap text-muted" role="status">
+      <Spinner size="sm" color="current" className="size-3" />{t(text)}
+    </span>
+  );
+}
+
 export function Notice({ status = 'default', title, children }) {
   return (
     <Alert status={status}>

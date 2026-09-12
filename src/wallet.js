@@ -22,7 +22,7 @@ const { ethers } = require('ethers');
 const { ADDR, TOPIC, ABI, QUOTES } = require('./chain');
 const { computePoolId } = require('./pools');
 const { getLogsSafe } = require('./scout');
-const { unclaimedV4, feesAtBlock } = require('./fees');
+const { unclaimedV4, unclaimedV3, feesAtBlock } = require('./fees');
 const { WalletV3 } = require('./walletv3');
 const { Proceeds } = require('./proceeds');
 const m = require('./v3math');
@@ -33,6 +33,8 @@ const hex = (n) => '0x' + n.toString(16);
 const asAddr = (t) => ('0x' + t.slice(-40)).toLowerCase();
 const pad32 = (a) => '0x' + a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
 const w32 = (bytes, i) => BigInt(ethers.hexlify(bytes.slice(i * 32, i * 32 + 32)));
+const big = (v) => BigInt(v || 0);
+const rowKey = (r) => `${r.wallet}:${r.venue}:${r.token_id}`;
 
 class WalletResearch {
   constructor({ rpc, store, chain, log }) {
@@ -44,6 +46,8 @@ class WalletResearch {
     this.v3 = new WalletV3({ rpc, store, chain, log });
     // Mengikuti token non-kuotasi hasil tutup posisi sampai benar-benar dijual.
     this.proceeds = new Proceeds({ rpc, store, chain, research: this, log });
+    // Nilai posisi terbuka yang baru dibaca, per baris — lihat refreshOpen().
+    this.liveCache = new Map();
   }
 
   // ---- harga pool pada blok tertentu --------------------------------------
@@ -534,6 +538,129 @@ class WalletResearch {
     out.push(...await this.scanV3(wallet, { from: w.first_block || 0, head, ethUsd, onProgress }));
     await this.persist(wallet, out, { from, head, ethUsd, partial: true });
     return { wallet, positions: out, head, from, refreshed: out.length };
+  }
+
+  // ---- nilai posisi terbuka, di harga sekarang -------------------------------
+  // Baris wpositions hanya ditulis ulang saat wallet-nya dipindai, dan pemindaian
+  // cuma dipicu oleh halaman Wallet/Target atau aksi baru si target. Posisi yang
+  // masih terbuka karena itu bisa tampil dengan nilai dari pemindaian terakhir —
+  // untuk target yang diam berjam-jam, itu foto dari beberapa detik setelah dia mint.
+  // Di halaman Pool/Token angka itu berdampingan dengan posisi bot yang dihitung
+  // ulang tiap 30 detik, jadi pool yang SAMA dengan rentang yang SAMA bisa terbaca
+  // untung di satu tabel dan rugi di tabel sebelahnya.
+  //
+  // Yang basi hanya nilai pasar dan fee berjalan; modal dan hasil yang sudah ditarik
+  // tidak berubah tanpa kejadian on-chain baru. Jadi cukup dua hal itu yang dibaca
+  // ulang di sini. `rows` dimutasi di tempat (live_value_q, live_fee_q, pnl_q,
+  // in_range, curTick, liveTs) dan hasilnya ikut ditulis ke DB supaya ringkasan
+  // wallet tidak berbeda dengan isi tabelnya.
+  //
+  // Cache pendek per baris menjaga halaman yang dipoll tiap beberapa detik tetap
+  // hemat: satu pembacaan dipakai bersama semua halaman sampai kedaluwarsa.
+  async refreshOpen(rows, ethUsd, { ttlMs = 15_000 } = {}) {
+    const open = rows.filter((r) => r.status === 'open' && r.pool_ref && r.token0 && r.token1);
+    if (!open.length) return;
+    const now = Date.now();
+    const fresh = open.filter((r) => now - (this.liveCache.get(rowKey(r))?.ts || 0) >= ttlMs);
+
+    // Desimal menentukan harga; baris yang datang tanpa desimal (pemanggil yang tidak
+    // menghiasnya) dinilai dengan angka yang salah pangkat sepuluh kalau dibiarkan.
+    const need = fresh.filter((r) => r.dec0 == null || r.dec1 == null);
+    if (need.length) {
+      const toks = new Map(this.store.all('SELECT address,decimals FROM tokens').map((t) => [t.address, t.decimals]));
+      for (const r of need) {
+        r.dec0 ??= toks.get(r.token0) ?? QUOTES[r.token0]?.decimals ?? 18;
+        r.dec1 ??= toks.get(r.token1) ?? QUOTES[r.token1]?.decimals ?? 18;
+      }
+    }
+
+    // Harga pool: v4 satu batch (pool_ref = poolId di storage PoolManager), v3 satu per
+    // satu (pool_ref = alamat kontrak pool-nya).
+    const slotBy = new Map();
+    const idV4 = [...new Set(fresh.filter((r) => r.venue !== 'v3').map((r) => r.pool_ref))];
+    if (idV4.length) {
+      try {
+        const s = await this.chain.slot0V4Many(idV4);
+        idV4.forEach((id, i) => { if (s[i]) slotBy.set(id, s[i]); });
+      } catch (e) { this.log(`nilai posisi terbuka: harga v4 gagal: ${e.message}`); }
+    }
+    for (const a of [...new Set(fresh.filter((r) => r.venue === 'v3').map((r) => r.pool_ref))]) {
+      try {
+        const s = await this.chain.slot0V3(a);
+        if (s) slotBy.set(a, s);
+      } catch { /* satu pool gagal tidak menjatuhkan sisanya */ }
+    }
+
+    // Fee berjalan: v4 dari storage PoolManager (satu batch, sekalian membawa L
+    // terkini), v3 disimulasikan lewat collect dan harus per pemilik.
+    const feeBy = new Map();
+    const v4 = fresh.filter((r) => r.venue !== 'v3' && slotBy.has(r.pool_ref));
+    if (v4.length) {
+      try {
+        const curTick = new Map([...slotBy.entries()].map(([k, s]) => [k, s.tick]));
+        const f = await unclaimedV4(this.rpc,
+          v4.map((r) => ({ poolId: r.pool_ref, tickLower: r.tick_lower, tickUpper: r.tick_upper, tokenId: r.token_id })),
+          curTick);
+        v4.forEach((r, i) => { if (f[i]) feeBy.set(rowKey(r), f[i]); });
+      } catch (e) { this.log(`nilai posisi terbuka: fee v4 gagal: ${e.message}`); }
+    }
+    const byOwner = new Map();
+    for (const r of fresh) {
+      if (r.venue !== 'v3' || !slotBy.has(r.pool_ref)) continue;
+      if (!byOwner.has(r.wallet)) byOwner.set(r.wallet, []);
+      byOwner.get(r.wallet).push(r);
+    }
+    for (const [owner, list] of byOwner) {
+      try {
+        const f = await unclaimedV3(this.rpc, list.map((r) => BigInt(r.token_id)), owner);
+        list.forEach((r, i) => { if (f[i]) feeBy.set(rowKey(r), f[i]); });
+      } catch { /* fee tidak terbaca: pakai yang tersimpan */ }
+    }
+
+    for (const r of fresh) {
+      const s = slotBy.get(r.pool_ref);
+      if (!s) continue;
+      const f = feeBy.get(rowKey(r));
+      // L dari storage lebih baru daripada L hasil pindai. Kalau sudah nol, posisinya
+      // ditutup setelah pemindaian terakhir: nilainya memang 0, tapi hasil tutupnya
+      // belum terbaca — menuliskannya sekarang membuat posisi itu terlihat rugi total.
+      // Biarkan angka lama sampai pemindai membetulkannya.
+      const L = f?.liquidity != null ? f.liquidity : big(r.liquidity);
+      if (L <= 0n) continue;
+      const amt = m.amountsForLiquidity(s.sqrtPriceX96,
+        m.getSqrtRatioAtTick(r.tick_lower), m.getSqrtRatioAtTick(r.tick_upper), L);
+      // Nilai di wpositions selalu USD (lihat persist), jadi sisi kuotasi ETH dikalikan
+      // harga ETH di sini juga.
+      const vq = (a0, a1) => {
+        const v = this.chain.valueInQuote({
+          sqrtPriceX96: s.sqrtPriceX96, amount0: a0, amount1: a1,
+          dec0: r.dec0, dec1: r.dec1, token0: r.token0, token1: r.token1,
+        });
+        return v ? v.value * (v.kind === 'eth' ? ethUsd : 1) : null;
+      };
+      const value = vq(amt.amount0, amt.amount1);
+      if (value == null) continue;                       // pool tanpa sisi kuotasi: tak bisa dinilai
+      const fee = f ? (vq(f.fee0, f.fee1) ?? 0) : (r.live_fee_q || 0);
+      const inRange = m.sideOfRange(s.tick, r.tick_lower, r.tick_upper) === 'both';
+      this.liveCache.set(rowKey(r), { ts: now, value, fee, tick: s.tick, inRange });
+      this.store.run(
+        'UPDATE wpositions SET live_value_q=?, live_fee_q=?, pnl_q=?, in_range=? WHERE wallet=? AND venue=? AND token_id=?',
+        value, fee, value + fee + (r.returned_q || 0) - (r.invested_q || 0), inRange ? 1 : 0,
+        r.wallet, r.venue, r.token_id);
+    }
+
+    // Baris yang masih tercakup cache ikut memakai angka yang sama — termasuk yang
+    // pembacaannya barusan gagal, yang tetap memegang nilai tersimpan tanpa liveTs.
+    for (const r of open) {
+      const c = this.liveCache.get(rowKey(r));
+      if (!c) continue;
+      r.live_value_q = c.value;
+      r.live_fee_q = c.fee;
+      r.in_range = c.inRange ? 1 : 0;
+      r.curTick = c.tick;
+      r.pnl_q = c.value + c.fee + (r.returned_q || 0) - (r.invested_q || 0);
+      r.liveTs = c.ts;
+    }
   }
 
   // Ringkasan dihitung dari SELURUH baris tersimpan, bukan hanya posisi yang baru

@@ -4,7 +4,7 @@ import { useStatus } from '../App';
 import { usePoll } from '../hooks';
 import { PageHeader, Stat, Panel, Empty, Loading, Notice, KV, Dot, DataTable, PriceRange, Segmented } from '../components/ui';
 import PnlCalendar from '../components/PnlCalendar';
-import { Pair } from './Positions';
+import { Pair, SyncState } from './Positions';
 import { usd, tone, num, pct, age, ago, short, locale as fmtLocale, TXKIND, TXSTATUS } from '../fmt';
 import { useI18n, reason } from '../i18n';
 
@@ -214,7 +214,8 @@ export default function Overview() {
   const [range, setRange] = useState('7d');
   const [view, setView] = useState('pnl');
   const { data: p } = usePoll('/api/portfolio?range=' + range, 30000);
-  const { data: pos } = usePoll('/api/positions', 10000);
+  // Sama dengan halaman Posisi: endpoint murah, jadi posisi baru muncul dalam ~5 detik.
+  const { data: pos, loading: posLoading } = usePoll('/api/positions', 5000);
   const { data: tx } = usePoll('/api/txs', 10000);
   if (!d) return <Loading />;
   const s = d.summary, T = d.totals || {};
@@ -224,6 +225,9 @@ export default function Overview() {
   const maxSkip = Math.max(1, ...(d.skipReasons || []).map((r) => r.n));
   const now = p?.now, st = p?.stats;
   const open = (pos?.positions || []).filter((x) => !x.empty);
+  // Posisi yang belum ikut sinkron chain: nilai masih taksiran modal, fee & PnL belum ada.
+  const pendingSync = open.filter((x) => x.syncing).length;
+  const dash = (x, node) => (x.syncing ? <span className="text-muted">—</span> : node);
   const cal = p ? dailyOf(p.closed) : null;
 
   return (
@@ -262,13 +266,14 @@ export default function Overview() {
 
       <Panel title={t('Posisi aktif ({n})', { n: open.length })} className="mb-4" bodyClass="p-0"
         action={<div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 text-xs">
+          <SyncState loading={posLoading} syncedAt={pos?.syncedAt} pending={pendingSync} />
           {open.length > 0 && <>
             <span className="whitespace-nowrap"><span className="text-muted">{t('Nilai')}</span> <span className="num font-medium">{usd(sum(open, (x) => x.valueUsd))}</span></span>
             <span className="whitespace-nowrap"><span className="text-muted">{t('uPnL')}</span> <span className={`num font-medium ${tone(sum(open, (x) => x.pnlUsd))}`}>{usd(sum(open, (x) => x.pnlUsd))}</span></span>
           </>}
           <a href="#positions" className="font-medium text-accent hover:underline">{t('Semua posisi →')}</a>
         </div>}>
-        {!pos ? <Loading /> : (
+        {!pos?.positions ? <Loading text="Memuat posisi…" /> : (
           <DataTable label="Posisi aktif" rows={open} rowKey={(x) => x.id} dense
             defaultSort={{ column: 'val', direction: 'descending' }}
             empty={<Empty title="Tidak ada posisi aktif" sub="Posisi muncul di sini setelah bot menyalin LP dari wallet target." />}
@@ -280,9 +285,9 @@ export default function Overview() {
                   entrySqrt={x.entrySqrt} exitSqrt={x.exitSqrt} showPrices={false} />) },
               { key: 'val', label: 'Nilai', align: 'end', sort: (x) => x.valueUsd, render: (x) => (
                 <div className="whitespace-nowrap">{usd(x.valueUsd)}<div className="text-xs text-muted">{t('modal {v}', { v: usd(x.costUsd) })}</div></div>) },
-              { key: 'fee', label: 'Fee', align: 'end', sort: (x) => x.feeUsd, render: (x) => <span className={x.feeUsd > 0.005 ? 'text-success' : 'text-muted'}>{usd(x.feeUsd)}</span> },
-              { key: 'pnl', label: 'PnL', align: 'end', sort: (x) => x.pnlUsd, render: (x) => (
-                <div className={`whitespace-nowrap ${tone(x.pnlUsd)}`}>{usd(x.pnlUsd)}<div className="text-xs">{pct(x.pnlPct)}</div></div>) },
+              { key: 'fee', label: 'Fee', align: 'end', sort: (x) => x.feeUsd, render: (x) => dash(x, <span className={x.feeUsd > 0.005 ? 'text-success' : 'text-muted'}>{usd(x.feeUsd)}</span>) },
+              { key: 'pnl', label: 'PnL', align: 'end', sort: (x) => x.pnlUsd, render: (x) => dash(x, (
+                <div className={`whitespace-nowrap ${tone(x.pnlUsd)}`}>{usd(x.pnlUsd)}<div className="text-xs">{pct(x.pnlPct)}</div></div>)) },
               { key: 'age', label: 'Umur', align: 'end', sort: (x) => x.ageHours, render: (x) => <span className="whitespace-nowrap text-muted">{age(x.ageHours)}</span> },
             ]} />
         )}

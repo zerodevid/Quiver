@@ -19,7 +19,7 @@ const DYNAMIC_FEE = 0x800000;   // penanda fee dinamis v4 (diatur hook)
 export default function PoolDetail({ param }) {
   const { t } = useI18n();
   const ref = String(param || '').toLowerCase();
-  const { data: d } = usePoll(`/api/pool?ref=${encodeURIComponent(ref)}`, 15000);
+  const { data: d, loading } = usePoll(`/api/pool?ref=${encodeURIComponent(ref)}`, 15000);
   // undefined = pilihan otomatis (posisi terbuka terbaru), null = tanpa posisi di grafik.
   const [focusPick, setFocus] = useState(undefined);
   const [tfPick, setTf] = useState(null);
@@ -132,8 +132,8 @@ export default function PoolDetail({ param }) {
         </div>
       </div>
 
-      <BotPositions open={d.open} closed={d.closed} onFocus={setFocus} focusId={focus?.id} className="mt-4" />
-      <WalletPositions rows={d.wallets} className="mt-4" />
+      <BotPositions open={d.open} closed={d.closed} onFocus={setFocus} focusId={focus?.id} loading={loading} className="mt-4" />
+      <WalletPositions rows={d.wallets} loading={loading} className="mt-4" />
       <TargetMoves rows={d.activity} className="mt-4" />
     </>
   );

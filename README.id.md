@@ -258,6 +258,16 @@ Kas yang cuma ada di satu aset akan memblokir separuh peluang, jadi ada dua ting
 Keduanya dibatasi slippage dan dampak harga; swap yang menggeser harga melebihi batas
 ditolak, bukan dipaksakan.
 
+Zap dikerjakan lewat **Kyber** (rute terbaik lintas seluruh DEX chain ini). Kalau Kyber
+tidak punya rute, cadangannya swap langsung ke pool — dan pool-nya **dicari**, bukan
+memakai pool posisi apa adanya: semua pool berpasangan token sama dinilai (fee, termasuk
+fee dinamis dari slot0, plus dampak harga terhadap likuiditasnya), yang terbaik
+**disimulasikan dengan `eth_call` sebagai wallet bot**, dan hanya yang lolos dikirim.
+Pool tipis tersaring batas dampak harga di Aturan; pool yang menolak swap (hook-nya
+revert) ketahuan di simulasi, sebelum gas keluar. Pencarian ini hanya di jalur **buka
+posisi**: menutup posisi dan menjual token sisa tetap lewat Kyber saja, supaya penutupan
+tidak ikut melambat.
+
 **Kenapa jembatan boleh lewat pool ber-hook padahal LP tidak.** Semua 16 pool ETH/USDG
 di chain ini memakai hook (fee `8388608` = flag dynamic-fee). Untuk *swap* itu jauh lebih
 aman daripada untuk *LP*: swap bersifat atomik dan dijaga `amountOutMinimum` — hook tidak

@@ -32,9 +32,24 @@ test('batas bawah 0% = rentang mulai tepat di harga kini', () => {
   assert.strictEqual(r.tickLower, 1000);
 });
 
+for (const q of [0, 1]) {
+  test(`rentang bergeser dari harga: −30% … −10% dan +10% … +30% (kuotasi token${q})`, () => {
+    const cur = -276000, p0 = tickPrice(cur, q);
+    for (const [lowerPct, upperPct, bawah, atas] of [[30, -10, 0.7, 0.9], [-10, 30, 1.1, 1.3]]) {
+      const r = ticksFromPct({ curTick: cur, quoteSide: q, lowerPct, upperPct });
+      assert.ok(!r.error, r.error);
+      const ps = [tickPrice(r.tickLower, q), tickPrice(r.tickUpper, q)].sort((a, b) => a - b);
+      near(ps[0] / p0, bawah, 0.001, `batas bawah ${lowerPct}`);
+      near(ps[1] / p0, atas, 0.001, `batas atas ${upperPct}`);
+    }
+  });
+}
+
 test('isian tidak masuk akal ditolak dengan pesan', () => {
   assert.ok(ticksFromPct({ curTick: 0, quoteSide: 1, lowerPct: 100, upperPct: 10 }).error, 'turun 100% = harga nol');
-  assert.ok(ticksFromPct({ curTick: 0, quoteSide: 1, lowerPct: -5, upperPct: 10 }).error);
+  assert.ok(ticksFromPct({ curTick: 0, quoteSide: 1, lowerPct: -10, upperPct: 5 }).error, 'bawah +10% di atas batas atas +5%');
+  assert.ok(ticksFromPct({ curTick: 0, quoteSide: 1, lowerPct: 10, upperPct: -10 }).error, 'kedua batas di harga yang sama');
+  assert.ok(ticksFromPct({ curTick: 0, quoteSide: 1, lowerPct: 150, upperPct: -100 }).error, 'batas atas −100% = harga nol');
   assert.ok(ticksFromPct({ curTick: 0, quoteSide: 1, lowerPct: 0, upperPct: 0 }).error, 'kosong');
   assert.ok(ticksFromPct({ curTick: 0, quoteSide: 1, lowerPct: 'abc', upperPct: 10 }).error);
   assert.ok(ticksFromPct({ curTick: 0, quoteSide: 1, lowerPct: 10, upperPct: 1e9 }).error);

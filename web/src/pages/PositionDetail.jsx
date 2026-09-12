@@ -7,8 +7,8 @@
 // pihak ketiga tidak bisa digambari. Tampilan DexScreener tetap tersedia sebagai
 // pilihan kedua untuk melihat transaksi dan indikator lain.
 import { useMemo, useState } from 'react';
-import { Button } from '@heroui/react';
-import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { Button, Spinner } from '@heroui/react';
+import { ArrowLeft, ExternalLink, RefreshCw } from 'lucide-react';
 import CandleChart from '../components/CandleChart';
 import { usePoll } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
@@ -142,7 +142,7 @@ export function MarketPanel({ pair, pool }) {
 
 export default function PositionDetail({ id }) {
   const { t } = useI18n();
-  const { data: d, reload } = usePoll(`/api/position?id=${encodeURIComponent(id)}`, 10000);
+  const { data: d, reload, loading } = usePoll(`/api/position?id=${encodeURIComponent(id)}`, 10000);
   const p = d?.position;
   const [tfPick, setTf] = useState(null);
   const [view, setView] = useState('chart');
@@ -156,7 +156,7 @@ export default function PositionDetail({ id }) {
   const tail = p?.status === 'closed' ? Math.max(20, Math.ceil((span * 0.2) / SECS[tf])) : 0;
   const limit = p ? Math.min(1000, Math.max(120, Math.ceil(span / SECS[tf]) + 40 + tail)) : 200;
   const before = p?.status === 'closed' && p.closed_ts ? p.closed_ts + tail * SECS[tf] * 1000 : null;
-  const { data: m } = usePoll(p ? `/api/market?pool=${p.pool_ref}&tf=${tf}&limit=${limit}&token=${p.baseToken || ''}${before ? `&before=${before}` : ''}` : null, 30000);
+  const { data: m, reload: reloadMarket, loading: marketLoading } = usePoll(p ? `/api/market?pool=${p.pool_ref}&tf=${tf}&limit=${limit}&token=${p.baseToken || ''}${before ? `&before=${before}` : ''}` : null, 30000);
 
   if (!d) return <Loading />;
   if (d.error) return <Empty title="Posisi tidak ditemukan" sub={d.error} />;
@@ -207,13 +207,16 @@ export default function PositionDetail({ id }) {
                   ? <span>{t('ditutup {w}', { w: ago(p.closed_ts) })}</span>
                   : p.inRange != null
                     ? <><Dot tone={p.inRange ? 'success' : 'warning'} /><span className={p.inRange ? 'text-success' : 'text-warning'}>{t(p.inRange ? 'in-range' : 'di luar rentang')}</span></>
-                    : <span>{t('belum tersinkron')}</span>}
+                    : <span className="flex items-center gap-1.5" title={t('Posisi baru tercatat; nilai, fee, dan PnL menyusul setelah sinkron dengan chain.')}>
+                      <Spinner size="sm" color="current" className="size-3" />{t(p.syncing ? 'menyinkronkan…' : 'belum tersinkron')}
+                    </span>}
                 {p.target
                   ? <><span>·</span><a href={'#targets/' + p.target} className="hover:underline">{t('menyalin')} {p.targetLabel || <span className="mono">{short(p.target)}</span>}</a></>
                   : <><span>·</span><span>{t('di luar bot')}</span></>}
               </div>
             </div>
           </div>
+          <Button size="sm" variant="tertiary" isPending={loading || marketLoading} isDisabled={loading || marketLoading} onPress={() => { reload(); reloadMarket(); }}><RefreshCw className="size-4" />{t('Perbarui detail')}</Button>
           {!closed && !p.empty && <>
             <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} />
             <Button variant="secondary" isPending={claiming != null} isDisabled={closing != null || claiming != null} onPress={() => claim(p)}>{t('Claim fee')}</Button>

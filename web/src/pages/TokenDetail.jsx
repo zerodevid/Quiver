@@ -36,7 +36,7 @@ function TokenChart({ m, tf }) {
 export default function TokenDetail({ param }) {
   const { t } = useI18n();
   const a = String(param || '').toLowerCase();
-  const { data: d } = usePoll(`/api/token?a=${encodeURIComponent(a)}`, 30000);
+  const { data: d, loading } = usePoll(`/api/token?a=${encodeURIComponent(a)}`, 30000);
   const [poolPick, setPool] = useState(null);
   const [tf, setTf] = useState('1h');
   const pairs = d?.market?.pairs || [];
@@ -163,8 +163,8 @@ export default function TokenDetail({ param }) {
         </Panel>
       )}
 
-      <BotPositions open={d.open} closed={d.closed} className="mt-4" />
-      <WalletPositions rows={d.wallets} className="mt-4" />
+      <BotPositions open={d.open} closed={d.closed} loading={loading} className="mt-4" />
+      <WalletPositions rows={d.wallets} loading={loading} className="mt-4" />
       <TargetMoves rows={d.activity} className="mt-4" />
     </>
   );

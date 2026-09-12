@@ -2,9 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { get } from './api';
 
 // Ambil data dari path lalu perbarui tiap `ms`. Poll berhenti saat tab tidak terlihat.
+// `loading` baru menyala kalau balasan lebih lama dari 400 ms: poll yang selesai
+// sekejap tidak membuat indikator berkedip tiap beberapa detik.
 export function usePoll(path, ms = 5000) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
   const alive = useRef(true);
   // Balasan bisa datang tidak berurutan: /api/targets kadang lama (RPC kena 429),
   // sehingga poll berkala yang berangkat lebih dulu bisa mendarat SETELAH reload
@@ -14,10 +17,13 @@ export function usePoll(path, ms = 5000) {
   const load = useCallback(async () => {
     if (!path) return;
     const mine = ++seq.current;
+    const latest = () => alive.current && mine === seq.current;
+    const slow = setTimeout(() => { if (latest()) setLoading(true); }, 400);
     try {
       const d = await get(path);
-      if (alive.current && mine === seq.current) { setData(d); setError(d.error || null); }
-    } catch (e) { if (alive.current && mine === seq.current) setError(e.message); }
+      if (latest()) { setData(d); setError(d.error || null); }
+    } catch (e) { if (latest()) setError(e.message); }
+    finally { clearTimeout(slow); if (latest()) setLoading(false); }
   }, [path]);
   useEffect(() => {
     alive.current = true;
@@ -26,7 +32,7 @@ export function usePoll(path, ms = 5000) {
     const t = setInterval(() => { if (!document.hidden) load(); }, ms);
     return () => { alive.current = false; clearInterval(t); };
   }, [load, ms]);
-  return { data, error, reload: load, setData };
+  return { data, error, loading, reload: load, setData };
 }
 
 // Slug lama (bahasa Indonesia) → slug baru, supaya bookmark/link lama tetap jalan.
