@@ -4,6 +4,10 @@
 # data berisi kursor blok — kalau ikut ter-push, kursor mundur dan aksi lama dinilai ulang.
 set -e
 cd "$(dirname "$0")"
+# URL dasbor tidak pernah ditulis di repo — ambil dari .env (LPCOPY_DASHBOARD_URL).
+if [[ -z "$LPCOPY_DASHBOARD_URL" && -f .env ]]; then
+  LPCOPY_DASHBOARD_URL=$(sed -n 's/^LPCOPY_DASHBOARD_URL=//p' .env | tail -1)
+fi
 echo "build tampilan…"
 (cd web && npx vite build --logLevel warn)
 rsync -az --exclude node_modules --exclude data --exclude logs --exclude config.json \
@@ -11,4 +15,4 @@ rsync -az --exclude node_modules --exclude data --exclude logs --exclude config.
 ssh singapore 'mkdir -p ~/lpcopy/web'
 rsync -az --delete web/dist singapore:~/lpcopy/web/
 ssh singapore 'cd ~/lpcopy && npm install --omit=dev --silent 2>/dev/null; pm2 restart lpcopy >/dev/null && echo "pm2: lpcopy di-restart"'
-echo "terkirim. dasbor: $LPCOPY_DASHBOARD_URL"
+echo "terkirim. dasbor: ${LPCOPY_DASHBOARD_URL:-(isi LPCOPY_DASHBOARD_URL di .env)}"

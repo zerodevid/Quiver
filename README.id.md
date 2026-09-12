@@ -15,7 +15,8 @@ menyalakannya sendiri.
 ## Di mana jalannya
 
 **Produksi: VPS Singapore** (`ssh singapore`), sebagai proses pm2 `lpcopy`.
-Dasbor: URL tunnel kamu sendiri (lewat cloudflared tunnel, butuh token akses).
+Dasbor: URL tunnel kamu sendiri (lewat cloudflared tunnel, butuh token akses);
+simpan alamatnya di `.env` sebagai `LPCOPY_DASHBOARD_URL`, bukan di repo.
 
 ```bash
 ssh singapore
