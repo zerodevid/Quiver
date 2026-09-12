@@ -248,8 +248,10 @@ export function PriceRange({
           {t('masuk {p}', { p: price(pEntry) })}
           {move != null && <>
             <span className="mx-1 text-muted">·</span>
+            {/* pool yang disapu kosong bisa menaruh harga di tick maksimum — +1e19% tidak
+                memberi tahu apa-apa selain "jauh"; dibatasi seperti jarak ke tepi */}
             <span className={move > 0.05 ? 'text-success' : move < -0.05 ? 'text-danger' : ''}>
-              {closed ? t('keluar ') : ''}{pct(move, 1)}</span>
+              {closed ? t('keluar ') : ''}{move >= 1000 ? '+999+%' : pct(move, 1)}</span>
           </>}
         </div>
       )}

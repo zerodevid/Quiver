@@ -24,6 +24,7 @@ function fixture() {
   };
   const chain = {
     slot0V4: async () => ({ tick: 0, sqrtPriceX96: m.Q96 }),
+    poolLiquidity: async () => 1n,   // pool hidup: harga pool sendiri yang dipakai menilai
     tokens: async (list) => list.map((address) => ({ address, decimals: 6, symbol: 'TOK' })),
     valueInQuote: ({ amount0, amount1 }) => ({ value: Number(amount0 + amount1) / 1e6, kind: 'usd' }),
   };

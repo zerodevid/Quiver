@@ -931,7 +931,8 @@ class Engine {
       return value > 0n ? value : 0n;
     };
     const amount0 = await amount(pos.token0), amount1 = await amount(pos.token1);
-    const slot = pos.venue === 'v3' ? await this.chain.slot0V3(pos.pool_ref) : await this.chain.slot0V4(pos.pool_ref);
+    // harga penilai, bukan harga pool mentah: pool yang disapu kosong menaruh harga di batas
+    const slot = await this.positions.markSlotFor(pos);
     const [t0, t1] = await this.chain.tokens([pos.token0, pos.token1]);
     const value = slot && this.chain.valueInQuote({ sqrtPriceX96: slot.sqrtPriceX96, amount0, amount1,
       dec0: t0.decimals, dec1: t1.decimals, token0: pos.token0, token1: pos.token1 });
@@ -1056,7 +1057,8 @@ class Engine {
     if (plan.full) {
       const live = this.positions.live.find((p) => p.id === pos.id);
       let left = null;
-      try { left = await this.leftoverOf(pos, rc.receipt, proceeds?.sqrt ?? live?.curSqrt ?? null); }
+      // sisa memecoin dinilai di harga penilai (markSqrt), bukan harga pool yang bisa di batas
+      try { left = await this.leftoverOf(pos, rc.receipt, proceeds?.markSqrt ?? live?.markSqrt ?? live?.curSqrt ?? null); }
       catch (e) { this.store.log('warn', `sisa #${pos.id} tidak terukur: ${e.message}`, { quiet: true }); }
       this.positions.markClosed(pos.id, {
         out0: proceeds?.amount0 ?? live?.amount0, out1: proceeds?.amount1 ?? live?.amount1,
@@ -1092,13 +1094,14 @@ class Engine {
       };
       const amount0 = d(pos.token0), amount1 = d(pos.token1);
       if (amount0 === 0n && amount1 === 0n) return null;
-      const s = pos.venue === 'v3' ? await this.chain.slot0V3(pos.pool_ref) : await this.chain.slot0V4(pos.pool_ref);
+      // harga penilai (pool sendiri kalau layak); exit_sqrt tetap harga pool apa adanya
+      const s = await this.positions.markSlotFor(pos);
       const toks = await this.chain.tokens([pos.token0, pos.token1]);
       const v = s && this.chain.valueInQuote({
         sqrtPriceX96: s.sqrtPriceX96, amount0, amount1,
         dec0: toks[0].decimals, dec1: toks[1].decimals, token0: pos.token0, token1: pos.token1,
       });
-      return { amount0: amount0.toString(), amount1: amount1.toString(), valueQuote: v ? v.value : null, sqrt: s?.sqrtPriceX96 ?? null };
+      return { amount0: amount0.toString(), amount1: amount1.toString(), valueQuote: v ? v.value : null, sqrt: s?.poolSqrt ?? null, markSqrt: s?.sqrtPriceX96 ?? null };
     } catch (e) { this.store.log('warn', `hasil keluar #${pos.id} tidak terukur: ${e.message}`, { quiet: true }); return null; }   // cadangan: angka sinkron terakhir
   }
 

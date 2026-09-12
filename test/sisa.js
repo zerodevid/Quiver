@@ -28,13 +28,18 @@ const E18 = 10n ** 18n;
 // pool token0 USDG(6) / token1 MEME(18): 1 MEME = 0,001 USDG
 const sqrtOf = (memePerUsdg) => mm.getSqrtRatioAtTick(mm.priceToTick(memePerUsdg, 6, 18));
 
-function dunia({ price = 1000, balance = null } = {}) {
+function dunia({ price = 1000, balance = null, poolLiq = 1n, refPrice = null } = {}) {
   const store = new Store(':memory:');
-  const st = { price, balance };
+  const st = { price, balance, poolLiq, refPrice };
   const chain = {
     tokens: async (l) => l.map((a) => (a === ADDR.usdg ? { address: a, symbol: 'USDG', decimals: 6 } : { address: a, symbol: 'MEME', decimals: 18 })),
     slot0V4: async () => ({ sqrtPriceX96: sqrtOf(st.price), tick: 0 }),
     slot0V4Many: async (ids) => ids.map(() => ({ sqrtPriceX96: sqrtOf(st.price), tick: 0 })),
+    // likuiditas aktif pool & harga acuan dari pool lain — dipakai saat pool posisi
+    // sudah kosong dan harganya tidak layak dipakai menilai
+    poolLiquidity: async () => st.poolLiq,
+    poolLiquidityMany: async (ids) => ids.map(() => st.poolLiq),
+    markSqrtForPair: async () => (st.refPrice == null ? null : { sqrtPriceX96: sqrtOf(st.refPrice), poolRef: '0xref' }),
     quoteSideOf: (t0, t1) => {
       const q = { [ADDR.usdg]: { symbol: 'USDG', decimals: 6, kind: 'usd' }, [ADDR.native]: { symbol: 'ETH', decimals: 18, kind: 'eth' }, [ADDR.weth]: { symbol: 'WETH', decimals: 18, kind: 'eth' } };
       if (q[t0]) return { side: 0, ...q[t0] };
@@ -145,6 +150,25 @@ const row = (d, id) => d.store.get('SELECT * FROM positions WHERE id=?', id);
     d.positions.chain.slot0V4Many = async (ids) => ids.map(() => null);
     await d.positions.refreshLeftovers(ETH, W);
     dekat(d.positions.summary(ETH).leftoverUsd, 140, 'leftoverUsd');
+  });
+
+  // Kasus nyata: pool Maple/USDG 3,9% disapu kosong (likuiditas 0, tick 887271 =
+  // maksimum). Harga pool = 1e17× harga wajar; 154 Maple fee dinilai "$4e52".
+  await t('pool kosong, harga di tick maksimum: sisa dinilai lewat pool acuan, bukan harga pool', async () => {
+    const d = dunia({ price: 1e-30, poolLiq: 0n, refPrice: 2000 });   // pool sendiri: 1 MEME = 1e30 USDG
+    d.positions.chain.slot0V4Many = async (ids) => ids.map(() => ({ sqrtPriceX96: sqrtOf(1e-30), tick: 887271 }));
+    tutup(d);
+    await d.positions.refreshLeftovers(ETH, W);
+    dekat(d.positions.summary(ETH).leftoverUsd, 350, 'acuan 0,0005 USDG × 700.000');
+  });
+
+  await t('pool kosong tanpa pool acuan: harga masuk posisi dipakai; tanpa itu pun tidak meledak', async () => {
+    const d = dunia({ price: 1e-30, poolLiq: 0n });
+    d.positions.chain.slot0V4Many = async (ids) => ids.map(() => ({ sqrtPriceX96: sqrtOf(1e-30), tick: 887271 }));
+    const id = tutup(d);
+    d.store.run('UPDATE positions SET entry_sqrt=? WHERE id=?', sqrtOf(1000).toString(), id);
+    await d.positions.refreshLeftovers(ETH, W);
+    dekat(d.positions.summary(ETH).leftoverUsd, 700, 'harga masuk 0,001 × 700.000');
   });
 
   await t('token hilang dari wallet (dijual di luar bot): dianggap terjual di harga kini', async () => {

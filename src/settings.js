@@ -13,12 +13,36 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const net = require('node:net');
+const dns = require('node:dns').promises;
 const { ethers } = require('ethers');
 const { RpcPool } = require('./rpc');
 const { ADDR, TOPIC, CHAIN_ID } = require('./chain');
 const { writeCfg, envName, privateKeyFromEnv } = require('./env');
 
 const MASK = '••••';
+
+// Penjaga SSRF untuk URL RPC yang diketik pengguna. URL RPC sah boleh menunjuk
+// node yang di-host sendiri di loopback/jaringan privat, jadi keduanya DIBIARKAN;
+// yang ditutup adalah rentang link-local (169.254.0.0/16 & fe80::/10) tempat layanan
+// metadata cloud tinggal — target SSRF paling berharga. Layanan metadata sendiri
+// hanya melayani HTTP, dan URL RPC wajib https, jadi ini lapis pertahanan tambahan.
+function isLinkLocal(ip) {
+  const v = net.isIP(ip);
+  if (v === 4) return ip.startsWith('169.254.');
+  if (v === 6) { const s = ip.toLowerCase(); return s.startsWith('fe8') || s.startsWith('fe9') || s.startsWith('fea') || s.startsWith('feb') || s.startsWith('::ffff:169.254.'); }
+  return false;
+}
+async function assertSafeRpcUrl(rawUrl) {
+  let host;
+  try { host = new URL(rawUrl).hostname.replace(/^\[|\]$/g, ''); } catch { throw new Error('URL tidak valid'); }
+  // Nama host metadata cloud yang lazim — tutup lebih dulu sebelum resolusi DNS.
+  if (/(^|\.)metadata\.(google|goog)\b/i.test(host) || host === 'metadata') throw new Error('host tidak diizinkan');
+  if (net.isIP(host)) { if (isLinkLocal(host)) throw new Error('alamat link-local tidak diizinkan'); return; }
+  let addrs = [];
+  try { addrs = await dns.lookup(host, { all: true }); } catch { return; } // resolusi gagal: biarkan pemanggil yang menangani
+  if (addrs.some((a) => isLinkLocal(a.address))) throw new Error('host mengarah ke alamat link-local');
+}
 
 function maskUrl(u) {
   try {
@@ -48,6 +72,7 @@ function maskHeaders(h) {
 
 // Menguji sebuah endpoint dan menyarankan bendera yang cocok untuknya.
 async function probeRpc({ url, headers }) {
+  try { await assertSafeRpcUrl(url); } catch (e) { return { url: maskUrl(url), usable: false, summary: e.message }; }
   const pool = new RpcPool([{ url, headers, max_batch: 10 }], () => {}, { max_inflight: 1 });
   const hex = (n) => '0x' + n.toString(16);
   const t = async (fn) => {
@@ -82,7 +107,7 @@ async function probeRpc({ url, headers }) {
   return { ...out, usable: out.call.ok, suggest, summary: parts.join(' · ') };
 }
 
-function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody, telegram }) {
+function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody, telegram, sessionCookie }) {
   // Lewat writeCfg: nilai dari .env tidak boleh ikut tertulis ke config.json.
   const saveCfg = () => writeCfg(cfgPath, cfg);
   // Kolom yang diatur .env akan ditimpa lagi saat restart — mengubahnya dari dasbor
@@ -272,6 +297,8 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
         const base = e.id != null && cur[Number(e.id)] ? cur[Number(e.id)] : null;
         const url = e.url ? String(e.url).trim() : base?.url;
         if (!/^https:\/\/.+/i.test(url || '')) return { error: `URL tidak valid: ${e.url || '(kosong)'}` };
+        // Endpoint yang tak diubah (kirim id saja, tanpa url) tak perlu dicek ulang.
+        if (e.url) { try { await assertSafeRpcUrl(url); } catch (err) { return { error: `URL ditolak: ${err.message}` }; } }
         let headers = base?.headers || null;
         if (e.headers === null) headers = null;                       // dihapus
         else if (e.headers && typeof e.headers === 'object') headers = Object.keys(e.headers).length ? e.headers : null;
@@ -392,7 +419,7 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
       cfg.server = { ...(cfg.server || {}), auth_token: tok };
       saveCfg();
       log('token akses dasbor diganti');
-      res.__setCookie = `lpcopy_token=${encodeURIComponent(tok)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`;
+      res.__setCookie = sessionCookie(req, tok);
       return { ok: true, token: tok };
     },
   };

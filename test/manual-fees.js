@@ -19,6 +19,7 @@ function fixture({ quoteSide = 0, tick = 17, venue = 'v4', native = false } = {}
   const slot = { tick, sqrtPriceX96: m.getSqrtRatioAtTick(tick) + 1n };
   const chain = {
     slot0V4: async () => slot, slot0V3: async () => slot,
+    poolLiquidity: async () => 1n,   // pool hidup: harga pool sendiri yang dipakai menilai
     tokens: async (list) => list.map((address) => ({ address, symbol: address === ADDR.usdg ? 'USDG' : 'TOKEN', decimals: address === ADDR.native ? 18 : 6 })),
     token: async (address) => (await chain.tokens([address]))[0],
     quoteSideOf: () => ({ side: quoteSide, kind: 'usd', symbol: 'USDG', decimals: 6 }),

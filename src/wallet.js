@@ -20,7 +20,7 @@
 // dan tick-nya cocok 100% saat diverifikasi silang).
 const { ethers } = require('ethers');
 const { ADDR, TOPIC, ABI, QUOTES } = require('./chain');
-const { computePoolId } = require('./pools');
+const { computePoolId, priceUsable, sqrtClampedToRange } = require('./pools');
 const { getLogsSafe } = require('./scout');
 const { unclaimedV4, unclaimedV3, feesAtBlock } = require('./fees');
 const { WalletV3 } = require('./walletv3');
@@ -284,7 +284,9 @@ class WalletResearch {
         } catch (e) { this.log(`fee arsip #${id} @${ev.block} gagal: ${e.message}`); }
       }
       if (exact) {
-        const sqrtE = exact.sqrtPriceX96;
+        // Pool yang disapu kosong menaruh harga di tick min/maks — diapit ke tepi
+        // rentang, kalau tidak fee memecoin dinilai "$1e55" (kasus nyata 4 posisi target).
+        const sqrtE = sqrtClampedToRange(exact.sqrtPriceX96, sa, sb);
         const pr = m.amountsForLiquidity(sqrtE, sa, sb, abs);
         const valE = (a0, a1) => {
           if (!q) return 0;
@@ -325,7 +327,7 @@ class WalletResearch {
       if (ev.delta === 0n) continue;           // cadangan tidak bisa menilai klaim fee
 
       // ---- jalur cadangan: harga dari Swap terdekat + jumlah dari Transfer ----
-      let sqrt = await this.priceAt(info.poolId, ev.block);
+      let sqrt = sqrtClampedToRange(await this.priceAt(info.poolId, ev.block), sa, sb);
       let princ = { amount0: 0n, amount1: 0n };
       if (sqrt) {
         princ = m.amountsForLiquidity(sqrt, sa, sb, abs);
@@ -396,11 +398,19 @@ class WalletResearch {
       if (s0) {
         curTick = s0.tick;
         const tl = info.tickLower ?? first.tickLower, tu = info.tickUpper ?? first.tickUpper;
+        const sa0 = m.getSqrtRatioAtTick(tl), sb0 = m.getSqrtRatioAtTick(tu);
         inRange = m.sideOfRange(s0.tick, tl, tu) === 'both';
-        const amt = m.amountsForLiquidity(s0.sqrtPriceX96, m.getSqrtRatioAtTick(tl), m.getSqrtRatioAtTick(tu), liq);
+        const amt = m.amountsForLiquidity(s0.sqrtPriceX96, sa0, sb0, liq);
+        // Harga penilai: pool sendiri kalau likuiditas aktifnya > 0 dan tidak di
+        // batas; kalau tidak, pool lain pasangan yang sama; terakhir tepi rentang.
+        let mark = s0.sqrtPriceX96;
+        if (!priceUsable(s0, await this.chain.poolLiquidity(info.poolId).catch(() => 0n))) {
+          const alt = await this.chain.markSqrtForPair(info.poolKey.currency0, info.poolKey.currency1, info.poolId);
+          mark = alt ? alt.sqrtPriceX96 : sqrtClampedToRange(s0.sqrtPriceX96, sa0, sb0);
+        }
         const vq = (a0, a1) => {
           const v = this.chain.valueInQuote({
-            sqrtPriceX96: s0.sqrtPriceX96, amount0: a0, amount1: a1, dec0: d0, dec1: d1,
+            sqrtPriceX96: mark, amount0: a0, amount1: a1, dec0: d0, dec1: d1,
             token0: info.poolKey.currency0, token1: info.poolKey.currency1,
           });
           return v ? v.value : 0;
@@ -576,12 +586,12 @@ class WalletResearch {
 
     // Harga pool: v4 satu batch (pool_ref = poolId di storage PoolManager), v3 satu per
     // satu (pool_ref = alamat kontrak pool-nya).
-    const slotBy = new Map();
+    const slotBy = new Map(), poolLiqBy = new Map();
     const idV4 = [...new Set(fresh.filter((r) => r.venue !== 'v3').map((r) => r.pool_ref))];
     if (idV4.length) {
       try {
-        const s = await this.chain.slot0V4Many(idV4);
-        idV4.forEach((id, i) => { if (s[i]) slotBy.set(id, s[i]); });
+        const [s, pl] = await Promise.all([this.chain.slot0V4Many(idV4), this.chain.poolLiquidityMany(idV4)]);
+        idV4.forEach((id, i) => { if (s[i]) { slotBy.set(id, s[i]); poolLiqBy.set(id, pl[i] ?? 0n); } });
       } catch (e) { this.log(`nilai posisi terbuka: harga v4 gagal: ${e.message}`); }
     }
     for (const a of [...new Set(fresh.filter((r) => r.venue === 'v3').map((r) => r.pool_ref))]) {
@@ -627,13 +637,21 @@ class WalletResearch {
       // Biarkan angka lama sampai pemindai membetulkannya.
       const L = f?.liquidity != null ? f.liquidity : big(r.liquidity);
       if (L <= 0n) continue;
-      const amt = m.amountsForLiquidity(s.sqrtPriceX96,
-        m.getSqrtRatioAtTick(r.tick_lower), m.getSqrtRatioAtTick(r.tick_upper), L);
+      const sa = m.getSqrtRatioAtTick(r.tick_lower), sb = m.getSqrtRatioAtTick(r.tick_upper);
+      const amt = m.amountsForLiquidity(s.sqrtPriceX96, sa, sb, L);
+      // Harga penilai: pool sendiri kalau layak (v3 tidak dibaca likuiditasnya — harga
+      // di batas tetap tertangkap lewat apitan); kalau tidak, pool lain pasangan yang
+      // sama; terakhir tepi rentang posisi.
+      let mark = s.sqrtPriceX96;
+      if (!priceUsable(s, r.venue === 'v3' ? 1n : (poolLiqBy.get(r.pool_ref) ?? 0n))) {
+        const alt = await this.chain.markSqrtForPair(r.token0, r.token1, r.pool_ref);
+        mark = alt ? alt.sqrtPriceX96 : sqrtClampedToRange(s.sqrtPriceX96, sa, sb);
+      }
       // Nilai di wpositions selalu USD (lihat persist), jadi sisi kuotasi ETH dikalikan
       // harga ETH di sini juga.
       const vq = (a0, a1) => {
         const v = this.chain.valueInQuote({
-          sqrtPriceX96: s.sqrtPriceX96, amount0: a0, amount1: a1,
+          sqrtPriceX96: mark, amount0: a0, amount1: a1,
           dec0: r.dec0, dec1: r.dec1, token0: r.token0, token1: r.token1,
         });
         return v ? v.value * (v.kind === 'eth' ? ethUsd : 1) : null;

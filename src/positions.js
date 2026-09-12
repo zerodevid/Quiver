@@ -3,12 +3,13 @@
 // pemicu keluar mandiri (di luar rentang, stop loss, take profit, umur).
 const { ethers } = require('ethers');
 const { ADDR, ABI } = require('./chain');
-const { computePoolId } = require('./pools');
+const { computePoolId, priceUsable } = require('./pools');
 const { unclaimedV4, unclaimedV3 } = require('./fees');
 const m = require('./v3math');
 
 const IF_POSM = new ethers.Interface(ABI.posmV4);
 const IF_NPM = new ethers.Interface(ABI.npmV3);
+const IF_POOL3 = new ethers.Interface(ABI.poolV3);
 
 class Positions {
   constructor({ rpc, store, chain, log }) {
@@ -58,7 +59,8 @@ class Positions {
   // ---- memecoin sisa: dari "dinilai harga tutup" ke "hasil jual sesungguhnya" ----
   // Posisi yang menyimpan memecoin sisa dari tutupnya, urut tertua (FIFO).
   leftoverRows(token = null) {
-    return this.store.all(`SELECT id, token0, token1, pool_ref, venue, quote_symbol, left_token, left_amount, left_quote, out_quote
+    return this.store.all(`SELECT id, token0, token1, pool_ref, venue, quote_symbol, left_token, left_amount, left_quote, out_quote,
+        entry_sqrt, exit_sqrt, liquidity, cost0, cost1, tick_lower, tick_upper
       FROM positions WHERE left_token IS NOT NULL AND left_amount != '0'${token ? ' AND left_token=?' : ''} ORDER BY closed_ts, id`,
     ...(token ? [String(token).toLowerCase()] : []));
   }
@@ -136,16 +138,21 @@ class Positions {
     }
     if (rows.length) {
       const v4 = [...new Set(rows.filter((r) => r.venue !== 'v3').map((r) => r.pool_ref))];
-      const slots = new Map();
-      if (v4.length) (await this.chain.slot0V4Many(v4)).forEach((s, i) => slots.set(v4[i], s));
+      const slots = new Map(), liqs = new Map();
+      if (v4.length) {
+        const [ss, ls] = await Promise.all([this.chain.slot0V4Many(v4), this.chain.poolLiquidityMany(v4)]);
+        v4.forEach((id, i) => { slots.set(id, ss[i]); liqs.set(id, ls[i] ?? 0n); });
+      }
       for (const a of new Set(rows.filter((r) => r.venue === 'v3').map((r) => r.pool_ref))) {
-        try { slots.set(a, await this.chain.slot0V3(a)); } catch { /* dinilai harga tutup */ }
+        try { slots.set(a, await this.chain.slot0V3(a)); liqs.set(a, await this.poolLiquidityOf('v3', a)); } catch { /* dinilai harga tutup */ }
       }
       const toks = await this.chain.tokens([...new Set(rows.flatMap((r) => [r.token0, r.token1]))]);
       const dec = new Map(toks.filter(Boolean).map((t) => [t.address, t.decimals]));
       for (const r of rows) {
         const k = r.quote_symbol === 'ETH' ? ethUsd : 1;
-        const v = this.leftoverQuote(r, BigInt(r.left_amount), slots.get(r.pool_ref), dec);
+        // token sisa dinilai dengan harga penilai, bukan harga pool yang mungkin sudah kosong
+        const mk = await this.markFor(r, slots.get(r.pool_ref), liqs.get(r.pool_ref));
+        const v = this.leftoverQuote(r, BigInt(r.left_amount), mk ? { sqrtPriceX96: mk.sqrt } : null, dec);
         // harga pool tidak terbaca: pakai nilai tutup supaya tidak hilang dari ekuitas
         const now = (v ?? (r.left_quote || 0)) * k;
         usd += now; closeUsd += (r.left_quote || 0) * k;
@@ -154,6 +161,40 @@ class Positions {
     }
     this.leftoverVal = { usd, closeUsd, items, ts: Date.now() };
     return this.leftoverVal;
+  }
+
+  // Harga penilai untuk baris posisi r, diberi slot0 `s` dan likuiditas aktif pool-nya:
+  // harga pool sendiri kalau layak; kalau tidak, pool lain yang memuat pasangan yang
+  // sama; terakhir, harga posisi sendiri saat keluar/masuk (usang, tapi berhingga dan
+  // masuk akal — lebih baik daripada 1e17× harga wajar dari pool yang sudah disapu kosong).
+  // Balikan { sqrt, ref } — ref null = harga pool sendiri, 'exit'/'entry', atau pool_ref acuan.
+  async markFor(r, s, poolLiq) {
+    if (!s) return null;
+    if (priceUsable(s, poolLiq ?? 0n)) return { sqrt: s.sqrtPriceX96, ref: null };
+    const alt = await this.chain.markSqrtForPair(r.token0, r.token1, r.pool_ref);
+    if (alt) return { sqrt: alt.sqrtPriceX96, ref: alt.poolRef };
+    if (r.exit_sqrt) return { sqrt: BigInt(r.exit_sqrt), ref: 'exit' };
+    const entry = Positions.entrySqrtOf(r);
+    return entry ? { sqrt: BigInt(entry), ref: 'entry' } : { sqrt: s.sqrtPriceX96, ref: null };
+  }
+
+  // Baca harga pool posisi r lalu pilih harga penilainya; bentuknya slot0 supaya bisa
+  // langsung dioper ke valueInQuote. null kalau harga pool tidak terbaca sama sekali.
+  async markSlotFor(r) {
+    const s = r.venue === 'v3' ? await this.chain.slot0V3(r.pool_ref) : await this.chain.slot0V4(r.pool_ref);
+    const mk = await this.markFor(r, s, await this.poolLiquidityOf(r.venue, r.pool_ref));
+    return mk ? { sqrtPriceX96: mk.sqrt, tick: s.tick, ref: mk.ref, poolSqrt: s.sqrtPriceX96 } : null;
+  }
+
+  // Likuiditas aktif pool (v3 lewat kontrak pool, v4 lewat PoolManager); 0n kalau tak terbaca.
+  async poolLiquidityOf(venue, poolRef) {
+    try {
+      if (venue === 'v3') {
+        const [wl] = await this.rpc.ethCallMany([{ to: poolRef, data: IF_POOL3.encodeFunctionData('liquidity') }]);
+        return wl && wl !== '0x' ? BigInt(wl) : 0n;
+      }
+      return await this.chain.poolLiquidity(poolRef);
+    } catch { return 0n; }
   }
 
   // Nilai `amt` token sisa baris r (satuan aset kuotasi) di harga slot0 `s`; null kalau tak terbaca.
@@ -172,9 +213,10 @@ class Positions {
     const r = rows[0];
     let s = null;
     try { s = r.venue === 'v3' ? await this.chain.slot0V3(r.pool_ref) : await this.chain.slot0V4(r.pool_ref); } catch { s = null; }
+    const mk = await this.markFor(r, s, await this.poolLiquidityOf(r.venue, r.pool_ref));
     const toks = await this.chain.tokens([r.token0, r.token1]);
     const dec = new Map(toks.filter(Boolean).map((t) => [t.address, t.decimals]));
-    const v = this.leftoverQuote(r, amt, s, dec);
+    const v = this.leftoverQuote(r, amt, mk ? { sqrtPriceX96: mk.sqrt } : null, dec);
     const k = r.quote_symbol === 'ETH' ? ethUsd : 1;
     if (v != null) return v * k;
     // harga tidak terbaca: proporsional dari nilai tutup
@@ -236,12 +278,23 @@ class Positions {
       liqBy.set(r.id, L);
     });
 
-    // 2. state pool
+    // 2. state pool — harga DAN likuiditas aktif. Likuiditas nol berarti harganya
+    //    tidak bisa dipercaya (lihat markSqrtForPair), jadi dibaca bersamaan.
     const poolIds = [...new Set(rows.filter((r) => r.venue === 'v4').map((r) => r.pool_ref))];
-    const slots = poolIds.length ? await this.chain.slot0V4Many(poolIds) : [];
+    const [slots, poolLiq] = poolIds.length
+      ? await Promise.all([this.chain.slot0V4Many(poolIds), this.chain.poolLiquidityMany(poolIds)]) : [[], []];
     const slotBy = new Map(poolIds.map((id, i) => [id, slots[i]]));
+    const poolLiqBy = new Map(poolIds.map((id, i) => [id, poolLiq[i] ?? 0n]));
     for (const r of rows.filter((x) => x.venue === 'v3')) {
-      if (!slotBy.has(r.pool_ref) && r.pool_ref) slotBy.set(r.pool_ref, await this.chain.slot0V3(r.pool_ref));
+      if (slotBy.has(r.pool_ref) || !r.pool_ref) continue;
+      slotBy.set(r.pool_ref, await this.chain.slot0V3(r.pool_ref));
+      poolLiqBy.set(r.pool_ref, await this.poolLiquidityOf('v3', r.pool_ref));
+    }
+
+    const markBy = new Map();
+    for (const r of rows) {
+      const mk = await this.markFor(r, slotBy.get(r.pool_ref), poolLiqBy.get(r.pool_ref));
+      if (mk) markBy.set(r.id, mk);
     }
 
     // 3. fee belum diklaim
@@ -274,10 +327,13 @@ class Positions {
         amount0 = amt.amount0; amount1 = amt.amount1;
         inRange = m.sideOfRange(s.tick, r.tick_lower, r.tick_upper) === 'both';
       }
-      if (s) {
-        const v = this.chain.valueInQuote({ sqrtPriceX96: s.sqrtPriceX96, amount0, amount1, dec0: d0, dec1: d1, token0: r.token0, token1: r.token1 });
+      // Komposisi token (amount0/1) mengikuti harga pool sendiri — itulah yang benar-
+      // benar keluar saat ditarik. Tapi NILAINYA dalam kuotasi memakai harga penilai.
+      const mark = markBy.get(r.id);
+      if (s && mark) {
+        const v = this.chain.valueInQuote({ sqrtPriceX96: mark.sqrt, amount0, amount1, dec0: d0, dec1: d1, token0: r.token0, token1: r.token1 });
         if (v) valueQuote = v.value;
-        const vf = this.chain.valueInQuote({ sqrtPriceX96: s.sqrtPriceX96, amount0: f.fee0, amount1: f.fee1, dec0: d0, dec1: d1, token0: r.token0, token1: r.token1 });
+        const vf = this.chain.valueInQuote({ sqrtPriceX96: mark.sqrt, amount0: f.fee0, amount1: f.fee1, dec0: d0, dec1: d1, token0: r.token0, token1: r.token1 });
         if (vf) feeQuote = vf.value;
       }
       const kind = this.chain.quoteSideOf(r.token0, r.token1)?.kind || 'usd';
@@ -291,9 +347,9 @@ class Positions {
       // HODL: kalau modal awal dibiarkan sebagai token, berapa nilainya sekarang?
       // Selisihnya = impermanent loss.
       let hodlUsd = null;
-      if (s) {
+      if (s && mark) {
         const v = this.chain.valueInQuote({
-          sqrtPriceX96: s.sqrtPriceX96, amount0: BigInt(r.cost0 || '0'), amount1: BigInt(r.cost1 || '0'),
+          sqrtPriceX96: mark.sqrt, amount0: BigInt(r.cost0 || '0'), amount1: BigInt(r.cost1 || '0'),
           dec0: d0, dec1: d1, token0: r.token0, token1: r.token1,
         });
         if (v) hodlUsd = toUsd(v.value);
@@ -312,6 +368,10 @@ class Positions {
         fee0: f.fee0.toString(), fee1: f.fee1.toString(),
         curTick: s?.tick ?? null, inRange,
         curSqrt: s?.sqrtPriceX96 != null ? s.sqrtPriceX96.toString() : null,
+        // Harga penilai kalau berbeda dari harga pool (pool tidak layak dinilai):
+        // sqrt-nya dan dari mana ('entry' atau pool_ref pool acuan).
+        markSqrt: mark && mark.ref ? mark.sqrt.toString() : null,
+        markRef: mark?.ref ?? null,
         entrySqrt: Positions.entrySqrtOf(r),
         valueUsd: valUsd, feeUsd, claimedUsd, costUsd, pnlUsd,
         pnlPct: costUsd > 0 ? (pnlUsd / costUsd) * 100 : 0,

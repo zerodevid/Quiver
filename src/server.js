@@ -23,23 +23,91 @@ const quoteSideOf = (t0, t1) => (QUOTES[(t0 || '').toLowerCase()] ? 0 : QUOTES[(
 
 const crypto = require('node:crypto');
 
-const LOGIN_PAGE = (err) => `<!doctype html><html lang="id" data-bs-theme="dark"><head>
+// Halaman masuk: dirender server, mandiri (tanpa Tabler — 400 KB CSS untuk satu
+// form), dan mengikuti bahasa desain dasbor React: Inter, kartu datar bergaris,
+// tema terang/gelap. Tema dibaca dari localStorage 'lpcopy-theme' (kunci yang sama
+// dengan dasbor) sebelum gambar pertama supaya tidak berkedip; kalau belum ada,
+// ikut preferensi sistem. Logo = salinan transparan public/logo.svg (diletakkan inline
+// supaya tidak ada permintaan tambahan sebelum kartu tampil).
+const LOGIN_MARK = `<svg width="198" height="36" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 264 48" role="img" aria-label="QUIVER"><g fill="currentColor" fill-rule="evenodd"><path d="M0 19H26L16 8L24 0L46 24L24 48L16 40L26 30H0ZM43 11L51 3L73 24L51 46L43 38L56 24Z"/><path d="M99 9C88 9 82 15 82 24S88 39 99 39C102 39 105 38 107 37L113 43L118 38L112 32C114 30 115 27 115 24C115 15 109 9 99 9ZM99 15C105 15 108 18 108 24S105 33 99 33S89 30 89 24S93 15 99 15Z M120 10H127V27C127 31 130 33 134 33S141 31 141 27V10H148V27C148 35 143 39 134 39S120 35 120 27Z M154 10H161V38H154Z M166 10H174L183 31L192 10H200L187 38H179Z M204 10H229V16H211V21H227V27H211V32H229V38H204Z M234 10H250C258 10 262 14 262 20C262 24 260 27 256 28L264 38H255L248 29H241V38H234ZM241 16V23H249C253 23 255 22 255 20S253 16 249 16Z"/></g></svg>`;
+
+const LOGIN_CSS = `
+@font-face{font-family:Inter;src:url(/fonts/inter-var-latin.woff2) format("woff2");font-weight:100 900;font-display:swap}
+:root{color-scheme:light;--bg:oklch(.975 .003 286);--surface:#fff;--fg:oklch(.2 .006 286);--muted:oklch(.5 .006 286);--border:oklch(.885 .004 286);--field-border:oklch(.7 .005 286);--accent:oklch(.55 .175 257);--accent-fg:#fff;--danger:oklch(.545 .185 27);--gold:#B8892A}
+:root.dark{color-scheme:dark;--bg:oklch(.165 .005 286);--surface:oklch(.215 .006 286);--fg:oklch(.94 .004 286);--muted:oklch(.66 .006 286);--border:oklch(.29 .006 286);--field-border:oklch(.45 .006 286);--accent:oklch(.68 .16 256);--accent-fg:oklch(.15 .02 256);--danger:oklch(.71 .175 22);--gold:#D9AE45}
+*{box-sizing:border-box}
+html{font-size:15px;-webkit-text-size-adjust:100%}
+body{margin:0;min-height:100vh;min-height:100svh;display:flex;align-items:center;justify-content:center;padding:1.5rem 1rem;background:var(--bg);color:var(--fg);font:400 1rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif;font-feature-settings:"cv11","ss01";-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background:
+ radial-gradient(60rem 30rem at 50% -10%,color-mix(in oklab,var(--gold) 9%,transparent),transparent 70%),
+ linear-gradient(color-mix(in oklab,var(--fg) 4%,transparent) 1px,transparent 1px) 0 0/100% 2.5rem,
+ linear-gradient(90deg,color-mix(in oklab,var(--fg) 4%,transparent) 1px,transparent 1px) 0 0/2.5rem 100%;
+ mask-image:radial-gradient(40rem 28rem at 50% 40%,#000 20%,transparent 100%);-webkit-mask-image:radial-gradient(40rem 28rem at 50% 40%,#000 20%,transparent 100%)}
+.card{width:100%;max-width:22.5rem;background:var(--surface);border:1px solid var(--border);border-radius:.75rem;padding:2rem 1.75rem 1.5rem;box-shadow:0 1px 2px rgb(0 0 0/.04),0 12px 40px -12px rgb(0 0 0/.12);animation:in .35s cubic-bezier(.2,.7,.2,1) both}
+.dark .card{box-shadow:0 1px 0 rgb(255 255 255/.03) inset,0 20px 50px -20px rgb(0 0 0/.6)}
+@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.card{animation:none}}
+.brand{display:flex;flex-direction:column;align-items:center;gap:.875rem;text-align:center;margin-bottom:1.5rem}
+.brand svg{display:block;max-width:100%;height:auto}
+.brand h1{margin:0;font-size:1.25rem;font-weight:600;letter-spacing:-.02em;line-height:1.2}
+.brand p{margin:.25rem 0 0;color:var(--muted);font-size:.8125rem;line-height:1.45;text-wrap:balance}
+label{display:block;font-size:.8125rem;font-weight:500;margin-bottom:.375rem}
+.field{position:relative}
+input{width:100%;height:2.625rem;padding:0 2.75rem 0 .875rem;border:1px solid var(--field-border);border-radius:.375rem;background:transparent;color:var(--fg);font:inherit;font-size:.9375rem;letter-spacing:.04em;transition:border-color .12s,box-shadow .12s}
+input::placeholder{letter-spacing:0;color:var(--muted);opacity:.7}
+input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in oklab,var(--accent) 22%,transparent)}
+input[aria-invalid=true]{border-color:var(--danger)}
+input[aria-invalid=true]:focus{box-shadow:0 0 0 3px color-mix(in oklab,var(--danger) 22%,transparent)}
+.eye{position:absolute;right:.375rem;top:50%;transform:translateY(-50%);width:2rem;height:2rem;display:grid;place-items:center;border:0;border-radius:.25rem;background:transparent;color:var(--muted);cursor:pointer;transition:background .12s,color .12s}
+.eye:hover{background:color-mix(in oklab,var(--fg) 6%,transparent);color:var(--fg)}
+.eye:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.eye svg{width:1.0625rem;height:1.0625rem}
+.eye .off{display:none}.eye[aria-pressed=true] .on{display:none}.eye[aria-pressed=true] .off{display:block}
+.err{display:flex;align-items:flex-start;gap:.5rem;margin:0 0 1rem;padding:.625rem .75rem;border:1px solid color-mix(in oklab,var(--danger) 28%,transparent);border-radius:.5rem;background:color-mix(in oklab,var(--danger) 7%,var(--surface));color:var(--fg);font-size:.8125rem;line-height:1.4}
+.err svg{flex:none;width:1rem;height:1rem;margin-top:.1rem;color:var(--danger)}
+.err b{font-weight:600}
+button[type=submit]{width:100%;height:2.625rem;margin-top:1.25rem;border:0;border-radius:.375rem;background:var(--accent);color:var(--accent-fg);font:inherit;font-size:.9375rem;font-weight:600;letter-spacing:-.005em;cursor:pointer;transition:filter .12s,transform .08s}
+button[type=submit]:hover{filter:brightness(1.06)}
+button[type=submit]:active{transform:translateY(1px)}
+button[type=submit]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.foot{margin:1.25rem 0 0;padding-top:1rem;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:.5rem;color:var(--muted);font-size:.75rem;text-align:center}
+.foot svg{width:.875rem;height:.875rem;flex:none}
+`;
+
+const LOGIN_PAGE = (err) => `<!doctype html><html lang="id"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Quiver — masuk</title><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/vendor/tabler.min.css"></head>
-<body class="d-flex align-items-center py-4" style="min-height:100vh">
-<div class="container container-tight py-4">
-  <div class="card card-md"><div class="card-body">
-    <h2 class="h2 text-center mb-1"><img src="/favicon.svg" alt="" width="28" height="28" class="me-2 align-text-bottom">Quiver</h2>
-    <p class="text-secondary text-center mb-4">Dasbor ini bisa memindahkan dana. Masukkan token akses.</p>
-    ${err ? '<div class="alert alert-danger">Token salah.</div>' : ''}
-    <form method="POST" action="/login">
-      <div class="mb-3"><input type="password" name="token" class="form-control" placeholder="token akses" autofocus autocomplete="current-password"></div>
-      <button type="submit" class="btn btn-primary w-100">Masuk</button>
-    </form>
-  </div></div>
-</div></body></html>`;
+<title>Quiver — masuk</title><link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<script>try{var t=localStorage.getItem('lpcopy-theme');if(t==='dark'||(!t&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark')}catch(e){}</script>
+<style>${LOGIN_CSS}</style></head>
+<body>
+<main class="card">
+  <div class="brand">
+    ${LOGIN_MARK}
+    <div><p>Dasbor ini bisa memindahkan dana. Masukkan token akses untuk melanjutkan.</p></div>
+  </div>
+  ${err ? `<div class="err" role="alert"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg><div><b>Token salah.</b> Periksa kembali lalu coba lagi.</div></div>` : ''}
+  <form method="POST" action="/login">
+    <label for="token">Token akses</label>
+    <div class="field">
+      <input id="token" type="password" name="token" placeholder="••••••••••••" autofocus required autocomplete="current-password" spellcheck="false" autocapitalize="off"${err ? ' aria-invalid="true"' : ''}>
+      <button type="button" class="eye" aria-label="Tampilkan token" aria-pressed="false" onclick="var i=document.getElementById('token'),s=i.type==='password';i.type=s?'text':'password';this.setAttribute('aria-pressed',s);this.setAttribute('aria-label',s?'Sembunyikan token':'Tampilkan token');i.focus()">
+        <svg class="on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+        <svg class="off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.2A10.9 10.9 0 0 1 12 4c6.5 0 10 8 10 8a18 18 0 0 1-2.2 3.2M6.6 6.6C3.6 8.6 2 12 2 12s3.5 8 10 8c1.7 0 3.2-.4 4.5-1.1M3 3l18 18"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+      </button>
+    </div>
+    <button type="submit">Masuk</button>
+  </form>
+  <p class="foot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Sesi tersimpan 30 hari di peramban ini.</p>
+</main></body></html>`;
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.svg': 'image/svg+xml', '.json': 'application/json' };
+
+// Header keamanan untuk respons dokumen. Dasbor ini bisa menyalakan LIVE dan menutup
+// posisi, jadi ia tidak boleh bisa di-frame situs lain (clickjacking): frame-ancestors
+// 'none' adalah versi modern X-Frame-Options; keduanya dipasang demi peramban lama.
+// nosniff mencegah MIME-sniffing. CSP di sini sengaja hanya membatasi frame-ancestors
+// supaya tidak mematahkan skrip/gaya inline aplikasi & halaman masuk.
+const SEC_HEADERS = { 'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'", 'x-content-type-options': 'nosniff' };
 
 function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }) {
   const pub = path.join(__dirname, '..', 'public');
@@ -167,6 +235,30 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   const safeEq = (a, b) => {
     const ab = Buffer.from(String(a)); const bb = Buffer.from(String(b));
     return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
+  };
+
+  // HTTPS? Di balik Cloudflare/reverse-proxy koneksi ke Node bisa HTTP, tapi
+  // protokol asli ke peramban ada di X-Forwarded-Proto. Dipakai untuk menandai
+  // cookie sesi `Secure`: token ini bisa memindahkan dana, jadi tidak boleh ikut
+  // terkirim di koneksi HTTP polos.
+  const isHttps = (req) => !!req.socket?.encrypted
+    || (req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+  // Satu-satunya tempat string cookie sesi dibentuk — dipakai halaman /login dan
+  // rotasi token (lewat sessionCookie yang dioper ke rute Pengaturan).
+  const sessionCookie = (req, token) =>
+    `lpcopy_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${isHttps(req) ? '; Secure' : ''}`;
+  // IP klien untuk rem laju login: di balik Cloudflare IP asli ada di header, bukan
+  // di soket (yang selalu Cloudflare/loopback).
+  const clientIp = (req) => req.headers['cf-connecting-ip']
+    || (req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+    || req.socket?.remoteAddress || '?';
+  // Rem laju login: 10 gagal per IP menutup /login 5 menit. Token 144-bit acak sudah
+  // tak realistis ditebak, ini cuma menutup celah kalau dasbor terekspos.
+  const loginHits = new Map();
+  const loginBlocked = (ip) => { const e = loginHits.get(ip); return !!e && e.until > Date.now() && e.n >= 10; };
+  const loginFail = (ip) => {
+    const now = Date.now(); const e = loginHits.get(ip);
+    loginHits.set(ip, { n: (e && e.until > now ? e.n : 0) + 1, until: now + 5 * 60_000 });
   };
 
   const json = (res, code, body) => {
@@ -973,10 +1065,19 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       return data;
     },
 
-    'GET /api/wallets': () => ({
-      wallets: store.all('SELECT address,label,scanned_to,last_scan_ts,positions_n,stats FROM wallets ORDER BY last_scan_ts DESC LIMIT 50')
-        .map((w) => { try { return { ...w, stats: JSON.parse(w.stats || '{}') }; } catch { return { ...w, stats: {} }; } }),
-    }),
+    // Wallet yang juga tersimpan sebagai target dipinjamkan nama targetnya bila
+    // wallet itu sendiri belum diberi label — supaya daftar riset tidak menampilkan
+    // alamat telanjang untuk wallet yang sudah kita kenal.
+    'GET /api/wallets': () => {
+      const tLabel = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
+      return {
+        wallets: store.all('SELECT address,label,scanned_to,last_scan_ts,positions_n,stats FROM wallets ORDER BY last_scan_ts DESC LIMIT 50')
+          .map((w) => {
+            const label = w.label || tLabel.get(w.address) || null;
+            try { return { ...w, label, isTarget: tLabel.has(w.address), stats: JSON.parse(w.stats || '{}') }; } catch { return { ...w, label, isTarget: tLabel.has(w.address), stats: {} }; }
+          }),
+      };
+    },
 
     // ---- LP manual & swap manual ----
     // Rencana TIDAK pernah dikirim balik lalu dieksekusi apa adanya: /open menyusun
@@ -1227,7 +1328,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     },
   };
 
-  Object.assign(routes, createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody, telegram }));
+  Object.assign(routes, createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody, telegram, sessionCookie }));
 
   // Pintu yang sama untuk pemanggil di dalam proses (bot Telegram). Sengaja lewat
   // tabel rute yang persis dipakai browser: apa pun yang bisa dilakukan dasbor bisa
@@ -1301,29 +1402,33 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     const TOKEN = tokenNow();
     if (TOKEN) {
       if (url.pathname === '/login' && req.method === 'POST') {
+        const ip = clientIp(req);
+        if (loginBlocked(ip)) {
+          res.writeHead(429, { 'content-type': 'text/html; charset=utf-8', 'retry-after': '300', ...SEC_HEADERS });
+          return res.end(LOGIN_PAGE(true));
+        }
         let body = '';
         req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
         return req.on('end', () => {
           const tok = decodeURIComponent((body.split('token=')[1] || '').split('&')[0].replace(/\+/g, ' '));
           if (safeEq(tok, TOKEN)) {
-            res.writeHead(302, {
-              location: '/',
-              'set-cookie': `lpcopy_token=${encodeURIComponent(TOKEN)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`,
-            });
+            loginHits.delete(ip);
+            res.writeHead(302, { location: '/', 'set-cookie': sessionCookie(req, TOKEN) });
             return res.end();
           }
-          res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' });
+          loginFail(ip);
+          res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SEC_HEADERS });
           res.end(LOGIN_PAGE(true));
         });
       }
-      // Aset vendor dan favicon boleh lewat supaya halaman login bisa tampil rapi.
-      const isVendor = url.pathname.startsWith('/vendor/') || url.pathname === '/favicon.svg';
-      if (!isVendor && !authed(req)) {
+      // Aset vendor, font, dan favicon boleh lewat supaya halaman masuk bisa tampil rapi.
+      const isPublicAsset = url.pathname.startsWith('/vendor/') || url.pathname.startsWith('/fonts/') || url.pathname === '/favicon.svg';
+      if (!isPublicAsset && !authed(req)) {
         if (url.pathname.startsWith('/api/')) {
           res.writeHead(401, { 'content-type': 'application/json' });
           return res.end('{"error":"tidak berwenang"}');
         }
-        res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store' });
+        res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', ...SEC_HEADERS });
         return res.end(LOGIN_PAGE(false));
       }
     }
@@ -1350,8 +1455,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       return res.end(img.buf);
     }
     if (routes[key]) {
+      // Detail kesalahan tak terduga hanya ke log; ke klien pesan generik supaya
+      // path filesystem / detail RPC tidak bocor. Kesalahan yang memang perlu
+      // ditampilkan sudah dikembalikan tiap rute sebagai {error} dengan status 200.
       try { return json(res, 200, await routes[key](req, url, res)); }
-      catch (e) { log(`api ${key}: ${e.message}`); return json(res, 500, { error: e.message }); }
+      catch (e) { log(`api ${key}: ${e.message}`); return json(res, 500, { error: 'kesalahan server' }); }
     }
     if (req.method !== 'GET') return json(res, 404, { error: 'tidak ada' });
 
@@ -1379,6 +1487,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       'content-type': MIME[path.extname(file)] || 'application/octet-stream',
       // private: browser boleh menyimpan, CDN (Cloudflare) tidak — berkas ini ada di balik gerbang token.
       'cache-control': immutable ? `${isVendor ? 'public' : 'private'}, max-age=31536000, immutable` : 'private, no-store, max-age=0',
+      // Dokumen HTML dijaga dari clickjacking; aset statis tidak perlu.
+      ...(path.extname(file) === '.html' ? SEC_HEADERS : {}),
     };
     if (!useDist && path.extname(file) === '.html') {
       const ver = Math.floor(fs.statSync(path.join(pub, 'app.js')).mtimeMs).toString(36);

@@ -9,7 +9,7 @@ import { usePoll, useHash, useTheme } from './hooks';
 import { post } from './api';
 import { short } from './fmt';
 import { useI18n, LOCALES } from './i18n';
-import { QuiverMark } from './components/Logo';
+import { QuiverLogo } from './components/Logo';
 import { AlertBell, useTargetAlerts } from './components/TargetAlerts';
 import StuckAlert from './components/StuckAlert';
 
@@ -143,11 +143,11 @@ function StatusFoot({ status, reload, theme, toggleTheme }) {
 
 function Brand() {
   return (
-    <a href="#summary" className="flex items-center gap-2.5">
-      <QuiverMark className="size-7" />
-      <span className="leading-tight">
-        <span className="block text-sm font-semibold tracking-tight">Quiver</span>
-        <span className="block text-[0.6875rem] text-muted">Robinhood Chain</span>
+    <a href="#summary" className="flex shrink-0 flex-col items-start gap-2 text-foreground" aria-label="Quiver">
+      <QuiverLogo className="h-[22px] w-[121px]" />
+      <span className="flex items-center gap-1.5 text-[0.6875rem] leading-4 text-muted">
+        <img src="/robinhood-chain.jpg" alt="" width="14" height="14" className="size-3.5 shrink-0 rounded-full" />
+        Robinhood Chain
       </span>
     </a>
   );
@@ -172,14 +172,14 @@ export default function App() {
       <div className="flex min-h-dvh">
         {/* sidebar desktop */}
         <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col border-r border-border bg-surface lg:flex">
-          <div className="flex h-14 items-center border-b border-border px-4"><Brand /></div>
+          <div className="flex h-[76px] items-center border-b border-border px-5"><Brand /></div>
           <div className="flex-1 overflow-y-auto px-2 py-4"><NavLinks page={page} /></div>
           <StatusFoot status={status} reload={reload} theme={theme} toggleTheme={toggleTheme} />
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
           {/* header mobile */}
-          <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-surface/90 px-4 backdrop-blur lg:hidden">
+          <header className="sticky top-0 z-30 flex h-[72px] items-center justify-between border-b border-border bg-surface/90 px-4 backdrop-blur lg:hidden">
             <Brand />
             <div className="flex items-center gap-1">
               <span className="mr-2"><ModeBadge m={status?.mode} /></span>

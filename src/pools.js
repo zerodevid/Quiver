@@ -375,6 +375,83 @@ Chain.prototype.poolLiquidity = async function poolLiquidity(poolId) {
   return L ?? 0n;
 };
 
+// ---- harga acuan pasangan ---------------------------------------------------
+// Harga pool tidak selalu layak dipakai menilai. Pool yang likuiditas aktifnya nol
+// (semua LP di luar rentang, atau satu swap menyapu habis) menyisakan sqrtPrice di
+// mana saja — pernah sampai tick maksimum, 1e17× harga wajar. Menilai fee/sisa
+// token dengan harga itu menghasilkan PnL "$4e52". Harga yang layak = likuiditas
+// aktif > 0 dan tick tidak menempel di batas.
+const TICK_EDGE = 887000;
+const SQRT_EDGE_LO = m.getSqrtRatioAtTick(-TICK_EDGE), SQRT_EDGE_HI = m.getSqrtRatioAtTick(TICK_EDGE);
+const sqrtSane = (s) => s != null && s > SQRT_EDGE_LO && s < SQRT_EDGE_HI;
+function priceUsable(slot, liquidity) {
+  return !!slot && liquidity > 0n && sqrtSane(slot.sqrtPriceX96);
+}
+// Untuk harga historis (riset wallet) tidak ada pool acuan yang murah dibaca; harga
+// yang menempel di batas diapit ke tepi rentang posisi — harga terakhir yang benar-
+// benar dilalui posisi itu. Komposisi tokennya sama (semua di satu sisi), hanya
+// nilainya yang jadi masuk akal.
+function sqrtClampedToRange(sqrt, sa, sb) {
+  if (sqrt == null || sqrtSane(sqrt)) return sqrt;
+  return sqrt < sa ? sa : sb;
+}
+
+// Harga acuan untuk pasangan token: dari pool lain yang memuat pasangan yang sama
+// (tabel pools) dan harganya layak, yang likuiditasnya terdalam. null kalau tidak
+// ada — pemanggil memutuskan cadangannya. Hasil ditahan sebentar: sinkron posisi
+// bisa dipanggil beruntun dan pasangan yang sama tidak perlu dibaca ulang.
+Chain.prototype.markSqrtForPair = async function markSqrtForPair(token0, token1, skipRef) {
+  const a = String(token0 || '').toLowerCase(), b = String(token1 || '').toLowerCase();
+  const key = `${a}|${b}`;
+  const now = Date.now();
+  this._markCache ??= new Map();
+  const hit = this._markCache.get(key);
+  if (hit && now - hit.at < 60_000) return hit.val;
+  let val = null;
+  try {
+    const rows = this.store.all(`SELECT pool_ref, venue, token0, token1, pool_addr FROM pools
+      WHERE ((token0=? AND token1=?) OR (token0=? AND token1=?)) AND pool_ref<>?`, a, b, b, a, String(skipRef || '').toLowerCase());
+    const v4 = rows.filter((r) => r.venue === 'v4');
+    const v3 = rows.filter((r) => r.venue === 'v3' && r.pool_addr);
+    const [slots4, liq4, res3] = await Promise.all([
+      v4.length ? this.slot0V4Many(v4.map((r) => r.pool_ref)) : [],
+      v4.length ? this.poolLiquidityMany(v4.map((r) => r.pool_ref)) : [],
+      v3.length ? this.rpc.ethCallMany(v3.flatMap((r) => [
+        { to: r.pool_addr, data: IF_POOL3.encodeFunctionData('slot0') },
+        { to: r.pool_addr, data: IF_POOL3.encodeFunctionData('liquidity') },
+      ])) : [],
+    ]);
+    let best = null;
+    const consider = (row, slot, L) => {
+      // token0/token1 pool bisa terbalik terhadap pasangan yang diminta — harga harus
+      // dinyatakan dalam urutan pemanggil.
+      if (!priceUsable(slot, L)) return;
+      if (best && L <= best.L) return;
+      const flipped = row.token0 !== a;
+      const sqrt = flipped ? (1n << 192n) / slot.sqrtPriceX96 : slot.sqrtPriceX96;
+      best = { L, val: { sqrtPriceX96: sqrt, poolRef: row.pool_ref } };
+    };
+    v4.forEach((r, i) => consider(r, slots4[i], liq4[i] || 0n));
+    v3.forEach((r, i) => {
+      const w = res3[i * 2], wl = res3[i * 2 + 1];
+      if (!w || w === '0x' || !wl || wl === '0x') return;
+      try {
+        const d = IF_POOL3.decodeFunctionResult('slot0', w);
+        consider(r, { sqrtPriceX96: BigInt(d[0]), tick: Number(d[1]) }, BigInt(wl));
+      } catch { /* pool tidak terbaca: lewati */ }
+    });
+    val = best ? best.val : null;
+  } catch (e) {
+    this.log(`harga acuan ${key}: ${e.message}`);
+  }
+  this._markCache.set(key, { at: now, val });
+  return val;
+};
+
+module.exports.priceUsable = priceUsable;
+module.exports.sqrtSane = sqrtSane;
+module.exports.sqrtClampedToRange = sqrtClampedToRange;
+
 // ---- pool jembatan ETH <-> USDG -------------------------------------------
 // Dipakai untuk memindahkan kas antar aset kuotasi: kalau target nge-LP di pool
 // berkuotasi ETH sedangkan kas kita USDG (atau sebaliknya), inilah jalannya.

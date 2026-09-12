@@ -27,7 +27,7 @@ const C = {
 const HIDDEN = '••••';
 const FONT_DIR = path.join(__dirname, '..', 'public', 'fonts');
 const FONTS = ['Regular', 'Medium', 'SemiBold', 'Bold'].map((w) => path.join(FONT_DIR, `Inter-${w}.ttf`));
-const MARK = fs.readFileSync(path.join(__dirname, '..', 'public', 'favicon.svg'), 'utf8')
+const MARK = fs.readFileSync(path.join(__dirname, '..', 'public', 'logo-white.svg'), 'utf8')
   .replace(/<!--[\s\S]*?-->/g, '').replace(/<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
 const QUOTE = new Set(['USDG', 'WETH', 'ETH', 'USDC', 'USDT']);
 
@@ -103,8 +103,7 @@ function frame(tint, right, body) {
   <radialGradient id="glow" cx="${W - 140}" cy="120" r="560" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="${tint}" stop-opacity="0.2"/><stop offset="1" stop-color="${tint}" stop-opacity="0"/></radialGradient>
 </defs>
 <rect width="${W}" height="${H}" fill="url(#bg)"/><rect width="${W}" height="${H}" fill="url(#glow)"/>${lines}
-<svg x="${PAD}" y="${PAD - 2}" width="40" height="40" viewBox="0 0 64 64">${MARK}</svg>
-${txt('Quiver', PAD + 52, PAD + 19, { size: 26, weight: 700, base: 'middle' })}
+<svg x="${PAD}" y="${PAD - 2}" width="220" height="40" viewBox="0 0 264 48">${MARK}</svg>
 ${txt(right, W - PAD, PAD + 19, { size: 18, weight: 500, color: C.muted, anchor: 'end', base: 'middle' })}
 ${txt(tr('LP copy-trading di Robinhood Chain'), W - PAD, H - PAD + 6, { size: 17, weight: 500, color: C.gold, anchor: 'end' })}
 ${body}
