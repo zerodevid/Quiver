@@ -164,7 +164,12 @@ class Executor {
   async waitReceipt(hash, timeoutMs = 60_000) {
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
-      const r = await this.rpc.call('eth_getTransactionReceipt', [hash]);
+      // Endpoint sedang tumbang (429/500) bukan berarti transaksinya gagal: terus
+      // tanya sampai batas waktu. Dulu satu galat RPC langsung dilempar ke pemanggil,
+      // yang menganggap tx-nya gagal padahal sedang masuk.
+      let r = null;
+      try { r = await this.rpc.call('eth_getTransactionReceipt', [hash]); }
+      catch (e) { this.log(`receipt ${hash.slice(0, 12)}… belum terbaca (${String(e.message).slice(0, 80)}) — coba lagi`); }
       if (r) {
         const ok = BigInt(r.status) === 1n;
         this.store.run('UPDATE txs SET status=?, gas_used=?, gas_price=? WHERE hash=?',

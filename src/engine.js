@@ -408,12 +408,23 @@ class Engine {
     }
 
     // berapa L target sebelum menarik? = L sekarang + yang ditarik
-    let before = 0n;
-    try {
-      const [w] = await this.rpc.ethCallMany([{ to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(act.tokenId)]) }]);
-      const now = w && w !== '0x' ? BigInt(w) : 0n;
-      before = now + (-BigInt(act.liquidity));
-    } catch { /* biarkan 0 -> dianggap tutup penuh */ }
+    //
+    // Gagal baca TIDAK boleh dianggap nol: nol berarti "target tutup penuh" dan cermin
+    // kita di-burn seluruhnya — padahal target mungkin cuma menarik 10%. Dicoba beberapa
+    // kali; kalau tetap tidak terbaca, aksi ini dilewati: kalau target memang keluar
+    // penuh, rekonsiliasi keluar (tiap sinkron) yang menutupnya.
+    let before = null;
+    for (let i = 0; i < 3 && before == null; i++) {
+      if (i) await new Promise((r) => setTimeout(r, 1500));
+      try {
+        const [w] = await this.rpc.ethCallMany([{ to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(act.tokenId)]) }]);
+        if (w && w !== '0x') before = BigInt(w) + (-BigInt(act.liquidity));
+      } catch { /* coba lagi */ }
+    }
+    if (before == null) {
+      this.store.log('warn', `likuiditas target #${act.tokenId} tidak terbaca dari RPC — aksi keluar dilewati (rekonsiliasi menutup kalau target memang keluar penuh)`);
+      return this.decide(act.id, 'skip', 'likuiditas target tidak terbaca dari RPC');
+    }
     const poolKey = pos.venue === 'v4' ? await this.poolKeyOf(pos) : null;
     const d = planExit({ ...act, liquidityBefore: before }, { ...pos, poolKey }, { rules });
     if (d.verdict !== 'copy') return this.decide(act.id, 'skip', d.reason);
@@ -1051,6 +1062,97 @@ class Engine {
     }
   }
 
+  // Posisi yang likuiditasnya sudah NOL di chain tanpa tercatat tutup. Tiga sebab:
+  // tx keluar bot yang receipt-nya gagal dibaca (RPC tumbang), tarikan manual di
+  // luar bot (#45: $110 ditarik lewat Uniswap, dulu tercatat hasil $0 = rugi total),
+  // atau tx bot yang baru masuk setelah batas tunggu. Hasilnya dicari dulu — dari
+  // receipt tx bot di tabel txs, kalau tidak ada dari log ModifyLiquidity terakhir —
+  // baru dicatat lewat recordExit seperti keluar biasa. Ditutup dengan $0 hanya kalau
+  // semuanya gagal, dan pemilik dikabari supaya bisa memperbaikinya manual.
+  async closeEmptyPosition(pos) {
+    const plan = { full: true, liquidity: pos.liquidity };
+    let hash = null;
+    for (const r of this.store.all("SELECT hash, detail FROM txs WHERE kind IN ('burn','decrease') AND ts >= ? ORDER BY ts DESC", pos.opened_ts || 0)) {
+      try {
+        const d = JSON.parse(r.detail || '{}');
+        if (d.position !== pos.id) continue;
+        // Sudah dibukukan (tarik sebagian sebelumnya) — bukan tx yang mengosongkannya.
+        if (d.closeProceeds || d.decreaseProceeds) break;
+        hash = r.hash; break;
+      } catch { /* detail lama tanpa JSON */ }
+    }
+    let source = 'tx bot';
+    if (!hash && pos.venue === 'v4' && pos.pool_ref && pos.token_id) {
+      source = 'log ModifyLiquidity';
+      hash = await this.lastWithdrawTx(pos).catch((e) => { this.store.log('warn', `cari tx tarik #${pos.id}: ${e.message}`, { quiet: true }); return null; });
+    }
+    if (hash) {
+      let receipt = null;
+      try { receipt = await this.rpc.call('eth_getTransactionReceipt', [hash]); } catch { /* dicoba lagi sinkron berikutnya */ }
+      if (!receipt) {
+        this.store.log('warn', `#${pos.id} kosong di chain; receipt ${hash.slice(0, 12)}… belum terbaca — penutupan ditunda`, { quiet: true });
+        return null;
+      }
+      if (BigInt(receipt.status) === 1n) {
+        const r = await this.recordExit(plan, pos, hash, receipt);
+        const msg = `#${pos.id} ditutup di luar alur bot — hasil dicatat dari ${source} ${hash.slice(0, 12)}… (${r.note})`;
+        this.notify(msg, { kind: 'exit', positionId: pos.id, txHash: hash, full: true, sold: r.sold, auto: true, target: pos.target, mirrorOf: pos.mirror_of, reason: 'likuiditas sudah nol di chain' });
+        return r;
+      }
+    }
+    this.positions.markClosed(pos.id, { outQuote: 0, txHash: null });
+    this.notify(`#${pos.id} likuiditasnya sudah nol di chain tetapi transaksi keluarnya tidak ditemukan — dicatat hasil $0; perbaiki manual kalau dananya memang masuk wallet`, {
+      kind: 'exit', positionId: pos.id, txHash: null, full: true, auto: true, target: pos.target, mirrorOf: pos.mirror_of, reason: 'likuiditas sudah nol di chain, hasil tidak ditemukan',
+    });
+    return null;
+  }
+
+  // Tx keluar bot (burn/decrease) yang sudah terkirim tapi hasilnya belum dibukukan —
+  // receipt-nya gagal dibaca saat itu (RPC tumbang / lewat batas tunggu). Dicoba lagi
+  // tiap sinkron sampai receipt terbaca: sukses → dibukukan (tutup penuh kalau
+  // likuiditasnya kini nol, kalau tidak sebagai tarik sebagian); revert → ditandai.
+  async bookPendingExits() {
+    if (!this.exec.address()) return;
+    const rows = this.store.all("SELECT hash, kind, detail FROM txs WHERE kind IN ('burn','decrease') AND status != 'gagal' AND ts > ? ORDER BY ts", Date.now() - 24 * 3600_000);
+    for (const r of rows) {
+      let d; try { d = JSON.parse(r.detail || '{}'); } catch { continue; }
+      if (!d.position || d.closeProceeds || d.decreaseProceeds) continue;
+      const pos = this.store.get("SELECT * FROM positions WHERE id=? AND status='open'", d.position);
+      if (!pos || this.exiting.has(pos.id)) continue;
+      let receipt = null;
+      try { receipt = await this.rpc.call('eth_getTransactionReceipt', [r.hash]); } catch { continue; }
+      if (!receipt) continue;
+      if (BigInt(receipt.status) !== 1n) {
+        this.store.run("UPDATE txs SET status='gagal' WHERE hash=?", r.hash);
+        continue;
+      }
+      const live = this.positions.live.find((p) => p.id === pos.id);
+      const full = live ? live.empty : r.kind === 'burn';
+      const res = await this.recordExit({ full, liquidity: '0' }, pos, r.hash, receipt);
+      this.store.log('info', `hasil tx keluar ${r.hash.slice(0, 12)}… #${pos.id} dibukukan belakangan (${res.note})`);
+    }
+  }
+
+  // Tx terakhir yang MENARIK likuiditas posisi v4 ini (ModifyLiquidity dengan salt ==
+  // tokenId dan delta negatif), dicari mundur dari blok terbaru dalam jendela terbatas.
+  // Dipanggil jarang (posisi kosong tak tercatat), jadi biaya getLogs-nya wajar.
+  async lastWithdrawTx(pos, { span = this.cfg.loop?.empty_scan_blocks ?? 3000, step = 500 } = {}) {
+    const head = parseInt(await this.rpc.call('eth_blockNumber', []), 16);
+    const salt = BigInt(pos.token_id).toString(16).padStart(64, '0');
+    for (let to = head; to > head - span; to -= step) {
+      const from = Math.max(0, to - step + 1);
+      const logs = await this.rpc.getLogs({
+        address: ADDR.poolManager, topics: [TOPIC.modifyLiquidity, pos.pool_ref],
+        fromBlock: '0x' + from.toString(16), toBlock: '0x' + to.toString(16),
+      });
+      // data = tickLower, tickUpper, liquidityDelta (int256), salt — masing-masing 32 byte
+      const mine = logs.filter((l) => l.data.length === 2 + 4 * 64 && l.data.slice(-64) === salt
+        && BigInt.asIntN(256, BigInt('0x' + l.data.slice(2 + 2 * 64, 2 + 3 * 64))) < 0n);
+      if (mine.length) return mine[mine.length - 1].transactionHash;
+    }
+    return null;
+  }
+
   // Likuiditas posisi kita menurut chain; null kalau tidak terbaca.
   async chainLiquidity(pos) {
     try {
@@ -1085,9 +1187,19 @@ class Engine {
       hash = await this.exec.send(tx, { kind: plan.full ? 'burn' : 'decrease', detail: { position: pos.id } });
     } catch (e) { e.notSent = true; throw e; }   // belum ada tx keluar di chain: aman diulang
     const rc = await this.exec.waitReceipt(hash, 90_000);
-    if (rc.timeout) throw new Error(`belum terkonfirmasi setelah 90 detik — tx ${hash} mungkin masih diproses, cek lagi sebentar`);
+    // Tx sudah di chain tapi receipt belum terbaca: JANGAN ditutup dengan $0 oleh sinkron
+    // berikutnya — closeEmptyPosition menemukan tx ini di tabel txs dan mencatat hasilnya
+    // dari receipt begitu terbaca.
+    if (rc.timeout) throw new Error(`belum terkonfirmasi setelah 90 detik — tx ${hash} mungkin masih diproses; hasilnya dicatat otomatis begitu receipt terbaca`);
     if (!rc.ok) throw new Error(`transaksi keluar revert (${hash})`);
-    const proceeds = await this.exitProceeds(pos, before, rc.receipt);
+    return this.recordExit(plan, pos, hash, rc.receipt, before);
+  }
+
+  // Pembukuan sesudah tx keluar terkonfirmasi: hasil dari receipt, sisa memecoin, lalu
+  // penjualan sisanya. Dipakai sendExit dan closeEmptyPosition (tx yang receipt-nya
+  // baru terbaca belakangan, atau tarikan di luar bot).
+  async recordExit(plan, pos, hash, receipt, before = null) {
+    const proceeds = await this.exitProceeds(pos, before, receipt);
     // Posisi dicatat tertutup DULU — lengkap dengan memecoin sisa yang diterima dan
     // nilainya di harga tutup — baru sisanya dijual. Kalau penjualan berhasil,
     // recordLeftoverSale mengganti taksiran itu dengan hasil sesungguhnya; kalau
@@ -1095,7 +1207,7 @@ class Engine {
     const live = this.positions.live.find((p) => p.id === pos.id);
     let left = null;
     // sisa memecoin dinilai di harga penilai (markSqrt), bukan harga pool yang bisa di batas
-    try { left = await this.leftoverOf(pos, rc.receipt, proceeds?.markSqrt ?? live?.markSqrt ?? live?.curSqrt ?? null); }
+    try { left = await this.leftoverOf(pos, receipt, proceeds?.markSqrt ?? live?.markSqrt ?? live?.curSqrt ?? null); }
     catch (e) { this.store.log('warn', `sisa #${pos.id} tidak terukur: ${e.message}`, { quiet: true }); }
     if (plan.full) {
       this.positions.markClosed(pos.id, {
@@ -1117,7 +1229,7 @@ class Engine {
     // Jual memecoin yang BARU diterima dari transaksi keluar ini. Galatnya tidak boleh
     // membatalkan pencatatan keluar — posisinya sudah benar-benar tertutup di chain.
     let sold = null;
-    try { sold = await this.sellLeftover(pos, rc.receipt, { quiet: true }); }
+    try { sold = await this.sellLeftover(pos, receipt, { quiet: true }); }
     // Gagal jual masuk antrean coba-ulang (keepLeftover); yang dikabarkan hanya kalau
     // antrean menyerah.
     catch (e) { this.store.log('error', `jual sisa #${pos.id}: ${e.message}`, { quiet: true }); }
@@ -1138,6 +1250,7 @@ class Engine {
         amount0 = await this.receivedIn(receipt, pos.token0, me);
         amount1 = await this.receivedIn(receipt, pos.token1, me);
       } catch (e) {
+        if (!before) throw e;   // tanpa saldo "sebelum" tidak ada cadangan
         this.store.log('warn', `hasil keluar #${pos.id} dari receipt tidak terbaca (${e.message}) — pakai selisih saldo`, { quiet: true });
         const after = await this.exec.balances([pos.token0, pos.token1]);
         const d = (t) => {
@@ -1472,6 +1585,7 @@ class Engine {
     await sekali('claim', 'pencatatan claim fee', this.reconcileFeeClaims());
     await sekali('rekon', 'rekonsiliasi keluar', this.reconcileExits());
     await this.positions.sync(this.ethUsd);
+    await sekali('buku-keluar', 'pembukuan tx keluar tertunda', this.bookPendingExits());
     await sekali('kas', 'saldo kas', this.refreshCash());
     await sekali('sisa', 'nilai token sisa', this.positions.refreshLeftovers(this.ethUsd, this.exec.address()));
     const globalRules = rulesFor(this.cfg.rules);
@@ -1481,7 +1595,7 @@ class Engine {
       if (t.pos.empty) {
         // Menutup di database tanpa transaksi = hasil $0 tercatat selamanya. Dibaca
         // ulang dulu; kalau ternyata masih ada, biarkan sinkron berikutnya yang menilai.
-        if (await this.positions.confirmEmpty(t.pos)) this.positions.markClosed(t.pos.id, { outQuote: 0, txHash: null });
+        if (await this.positions.confirmEmpty(t.pos)) await this.closeEmptyPosition(t.pos).catch((e) => this.store.log('warn', `tutup #${t.pos.id} yang kosong: ${e.message}`, { quiet: true }));
         else this.store.log('warn', `#${t.pos.id} terbaca kosong tapi tidak terkonfirmasi — tidak ditutup`, { quiet: true });
         continue;
       }
@@ -1550,6 +1664,9 @@ class Engine {
   }
 
   async snapshotEquity() {
+    // Di tengah transaksi masuk/keluar kas sudah berpindah tapi posisinya belum
+    // tercatat (atau sebaliknya): titiknya pasti salah. Lewati; 5 menit lagi ada lagi.
+    if ((this.activeEntries || 0) > 0 || this.exiting.size > 0) return;
     // Kas SELALU dibaca ulang di sini, bukan dari cache tick. Cache itu diisi di awal
     // tick, SEBELUM posisi dibuka/ditutup di tick yang sama — snapshot yang memakainya
     // mencatat kas lama + posisi baru: total anjlok $139 saat #38 tutup, dan kurva PnL
