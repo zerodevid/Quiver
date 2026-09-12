@@ -12,6 +12,11 @@
 </p>
 
 <p align="center">
+  <img src="public/robinhood-chain.jpg" alt="" width="20" height="20" align="absmiddle" />
+  <span>Built on Robinhood Chain</span>
+</p>
+
+<p align="center">
   Node.js · SQLite · ethers · React · Vite
 </p>
 
