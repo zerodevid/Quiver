@@ -263,7 +263,18 @@ class Engine {
       // Sedang berhenti (deploy/restart): aksi yang belum ditangani TIDAK dieksekusi
       // setengah jalan — sudah tersimpan tanpa keputusan, backfillDecisions menilainya
       // saat proses hidup lagi (kalau masih segar).
-      for (const a of fresh) { if (this.stopping) break; await this.handle(a); }
+      for (const a of fresh) {
+        if (this.stopping) break;
+        // Galat satu aksi tidak boleh memutus aksi lain di rentang yang sama: kursor sudah
+        // maju, jadi aksi yang tidak sempat ditangani baru dinilai saat restart — dan saat
+        // itu sudah "lampau". Dicatat sebagai keputusan galat supaya terlihat.
+        try { await this.handle(a); }
+        catch (e) {
+          this.stats.errors++;
+          if (a.id != null && !this.store.get('SELECT 1 FROM decisions WHERE action_id=?', a.id)) this.decide(a.id, 'error', String(e.message).slice(0, 300));
+          this.store.log('error', `aksi ${a.kind} #${a.tokenId ?? '?'}: ${e.message}`);
+        }
+      }
       // Pendengar luar (dasbor) diberi tahu aksi baru — mis. untuk memperbarui riset
       // wallet target. Galat pendengar tidak boleh mengganggu siklus copy.
       if (fresh.length && this.onFreshActions) {
@@ -335,7 +346,13 @@ class Engine {
         }
       } catch { /* kalau tidak terbaca, jangan halangi */ }
     }
-    const toks = await this.chain.tokens([act.token0, act.token1]);
+    // Metadata token yang belum dikenal dibaca dari RPC; galat sementara diulang sebentar
+    // (sinyal masuk target tidak menunggu lama).
+    let toks;
+    for (let i = 0; ; i++) {
+      try { toks = await this.chain.tokens([act.token0, act.token1]); break; }
+      catch (e) { if (i >= 2) throw e; await new Promise((r) => setTimeout(r, 1000 * (i + 1))); }
+    }
     // Mode live: ukuran juga dibatasi kas nyata, supaya posisi yang sedikit kelebihan
     // dari saldo dibuka lebih kecil alih-alih gagal di tengah jembatan. Mode simulasi
     // sengaja tidak — wallet uji sering kosong, dan simulasinya jadi tidak berguna.
@@ -1625,11 +1642,20 @@ class Engine {
   async sellTokenLocked(item, rules, { quiet }) {
     // Penjualan butuh gas: ETH native di bawah cadangan diisi dulu (dari WETH/USDG).
     await this.topUpGas([]).catch(() => {});
-    const bal = (await this.exec.balances([item.token])).get(item.token) || 0n;
-    const amount = bal < BigInt(item.amount) ? bal : BigInt(item.amount);
-    if (amount === 0n) { this.dropLeftover(item); return null; }
-    const meta = await this.chain.token(item.token);
-    const label = `${(Number(amount) / 10 ** (meta?.decimals ?? 18)).toPrecision(4)} ${meta?.symbol || item.token.slice(0, 8)}`;
+    let amount = BigInt(item.amount), label = String(item.token).slice(0, 10);
+    try {
+      const bal = (await this.exec.balances([item.token])).get(item.token) || 0n;
+      amount = bal < BigInt(item.amount) ? bal : BigInt(item.amount);
+      if (amount === 0n) { this.dropLeftover(item); return null; }
+      const meta = await this.chain.token(item.token).catch(() => null);
+      label = `${(Number(amount) / 10 ** (meta?.decimals ?? 18)).toPrecision(4)} ${meta?.symbol || item.token.slice(0, 8)}`;
+    } catch (e) {
+      // Saldo tidak terbaca (RPC). Dulu galat ini lolos SEBELUM item diantrekan: sisa
+      // dari tx keluar tidak pernah masuk antrean dan tidak pernah dijual siapa pun.
+      // Tetap antre (tanpa peringatan keras — ini galat RPC sementara).
+      this.keepLeftover({ ...item, amount: String(item.amount) }, `saldo belum terbaca: ${e.message}`);
+      throw new Error(`${label} belum terjual: ${e.message}`);
+    }
     try {
       const r = await this.kyber.swap(item.token, item.quote, amount, {
         slippageBps: rules.swap.max_slippage_bps, maxLossBps: rules.exit.sell_max_loss_bps,

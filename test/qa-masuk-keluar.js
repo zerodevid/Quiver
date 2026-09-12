@@ -422,6 +422,34 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     release(); await a;
   });
 
+  await t('sisa dari tx keluar saat saldo tidak terbaca (RPC) → TETAP masuk antrean, bukan hilang', async () => {
+    const { eng } = engineWith({ balances: { [ETH]: 10n ** 18n } });
+    eng.gasReserve = async () => 1n;
+    eng.exec.balances = async () => { throw new Error('gagal membaca saldo token dari RPC'); };
+    let swaps = 0; eng.kyber.swap = async () => { swaps++; return null; };
+    await assert.rejects(eng.sellToken({ posId: 9, target: null, token: MEME, quote: USDG, amount: '1234' }), /belum terjual/);
+    assert.strictEqual(swaps, 0);
+    const q = eng.leftovers();
+    assert.strictEqual(q.length, 1);
+    assert.strictEqual(q[0].posId, 9); assert.strictEqual(q[0].amount, '1234');
+  });
+
+  await t('galat tak terduga di satu aksi tidak memutus aksi lain di rentang yang sama', async () => {
+    const { eng, store } = engineWith();
+    eng.head = 0; eng.cursor = 0;
+    eng.rpc.allCooling = () => false;
+    eng.rpc.safeHead = async () => ({ min: 10, max: 10, spread: 0 });
+    const mk = (tokenId) => ({ ts: Date.now(), block: 5, txHash: '0x' + tokenId, logIndex: Number(tokenId), target: TARGET, venue: 'v4', kind: 'increase', tokenId });
+    eng.watcher.scan = async () => [mk('1'), mk('2')];
+    const handled = [];
+    eng.handle = async (a) => { handled.push(a.tokenId); if (a.tokenId === '1') throw new Error('eth_call tidak terbaca dari RPC: 429'); eng.decide(a.id, 'skip', 'ok'); };
+    await eng.tick();
+    assert.deepStrictEqual(handled, ['1', '2']);
+    const d = store.all('SELECT verdict, reason FROM decisions ORDER BY id');
+    assert.strictEqual(d.length, 2);
+    assert.strictEqual(d[0].verdict, 'error');
+  });
+
   await t('isi gas: tanpa WETH dan ETH native < ½ cadangan → beli ETH dari USDG (12 Sep 14:39: semua tx "insufficient funds")', async () => {
     const { eng } = engineWith({ balances: { [ETH]: 5n * 10n ** 14n, [WETH]: 0n, [USDG]: 400_000_000n } });
     eng.gasReserve = async () => 2n * 10n ** 15n;
