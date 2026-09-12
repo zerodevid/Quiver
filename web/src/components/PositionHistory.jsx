@@ -5,12 +5,12 @@
 // dan baris log yang menyebut posisi ini. Grafik harga tetap di halaman detail.
 import { useEffect, useState } from 'react';
 import PositionSnapshot from './PositionSnapshot';
-import { Button, Chip, Drawer, toast } from '@heroui/react';
-import { Copy, ExternalLink, X, ChartCandlestick } from 'lucide-react';
+import { Button, Chip, Drawer } from '@heroui/react';
+import { X, ChartCandlestick } from 'lucide-react';
 import { get } from '../api';
-import { Stat, Empty, Loading, Notice } from './ui';
+import { Stat, Empty, Loading, Notice, TxHash } from './ui';
 import TokenIcon, { TokenPair } from './TokenIcon';
-import { usd, pct, tone, age, ago, short, txHref, locale as fmtLocale } from '../fmt';
+import { usd, pct, tone, age, ago, short, qty, fmtQty, locale as fmtLocale } from '../fmt';
 import { useI18n, reason } from '../i18n';
 
 // Jenis transaksi -> label & warna chip.
@@ -30,25 +30,6 @@ const KIND = {
 const VERDICT = { copy: ['Disalin', 'success'], dry: ['Simulasi', 'accent'], skip: ['Dilewati', 'default'], error: ['Gagal', 'danger'] };
 
 const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
-const qty = (raw, dec) => (raw == null ? null : Number(BigInt(String(raw))) / 10 ** (dec ?? 18));
-const fmtQty = (v) => (v == null || !Number.isFinite(v) ? '—'
-  : v >= 1e6 ? v.toLocaleString(fmtLocale(), { maximumFractionDigits: 0 })
-    : v.toLocaleString(fmtLocale(), { maximumSignificantDigits: v >= 1000 ? 6 : 4 }));
-
-function TxHash({ hash }) {
-  const { t } = useI18n();
-  if (!hash) return <span className="text-muted">—</span>;
-  return (
-    <span className="inline-flex items-center gap-1">
-      <a href={txHref(hash)} target="_blank" rel="noreferrer" className="mono inline-flex items-center gap-1 text-accent hover:underline">
-        {short(hash)}<ExternalLink className="size-3" />
-      </a>
-      <button type="button" className="text-muted hover:text-foreground" aria-label={t('Salin hash')}
-        onClick={() => { navigator.clipboard?.writeText(hash); toast.success(t('Hash tersalin')); }}><Copy className="size-3" /></button>
-    </span>
-  );
-}
-
 // Saldo token yang berpindah di satu kejadian: mint/tambah = masuk ke posisi,
 // kurangi/tutup = keluar dari posisi. Swap ditampilkan sebagai USD masuk → keluar.
 function Amounts({ ev, p }) {

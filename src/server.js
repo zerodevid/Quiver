@@ -394,10 +394,6 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // deretan nomor NFT yang tidak bisa dikenali.
       const closed = store.all("SELECT * FROM positions WHERE status='closed' ORDER BY closed_ts DESC LIMIT 100");
       const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
-      for (const r of closed) {
-        r.symbol0 = toks.get(r.token0)?.symbol || null;
-        r.symbol1 = toks.get(r.token1)?.symbol || null;
-      }
       // Daftarnya dari basis data, angkanya dari sinkron terakhir. Dulu daftarnya
       // langsung hasil sinkron (tiap 30 detik): sesudah restart tabel kosong sampai
       // sinkron pertama selesai, posisi yang baru dimint baru muncul ~30 detik
@@ -407,6 +403,37 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const k = (q) => (q === 'ETH' || q === 'WETH' ? engine.ethUsd : 1);
       const sym = (x) => toks.get(x)?.symbol || QUOTES[x]?.symbol || '?';
       const dec = (x) => toks.get(x)?.decimals ?? QUOTES[x]?.decimals ?? 18;
+      // Asal tiap baris: wallet target yang disalin, dan — kalau wallet itu pernah
+      // diriset — nasib posisi aslinya. Salinan kita masuk beberapa blok setelah
+      // target dan keluar atas keputusan sendiri, jadi hasilnya hampir tidak pernah
+      // sama; menaruh kedua angka berdampingan membuat selisihnya terbaca, bukan
+      // ditebak dari dua halaman berbeda.
+      const tLabel = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
+      const origin = (r) => {
+        if (!r.target) return { targetLabel: null, mirror: null };
+        const w = r.mirror_of
+          ? store.get('SELECT * FROM wpositions WHERE wallet=? AND venue=? AND token_id=?', r.target, r.venue, r.mirror_of)
+          : null;
+        const kq = w ? k(w.quote_symbol) : 1;
+        return {
+          targetLabel: tLabel.get(r.target) || null,
+          mirror: !w ? null : {
+            tokenId: w.token_id, status: w.status,
+            costUsd: (w.invested_q || 0) * kq,
+            pnlUsd: (w.pnl_q || 0) * kq,
+            pnlPct: w.invested_q > 0 ? (w.pnl_q / w.invested_q) * 100 : null,
+            openedTs: w.opened_ts, closedTs: w.closed_ts,
+            // Posisi target yang masih terbuka bernilai sebesar pemindaian terakhir
+            // wallet itu, bukan harga sekarang — UI harus mengatakannya.
+            stale: w.status === 'open',
+          },
+        };
+      };
+      for (const r of closed) {
+        r.symbol0 = toks.get(r.token0)?.symbol || null;
+        r.symbol1 = toks.get(r.token1)?.symbol || null;
+        Object.assign(r, origin(r));
+      }
       const positions = store.all("SELECT * FROM positions WHERE status='open' ORDER BY opened_ts").map((r) => live.get(r.id) || {
         ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
         quoteSide: quoteSideOf(r.token0, r.token1), entrySqrt: Positions.entrySqrtOf(r), curTick: null, inRange: null,
@@ -415,7 +442,18 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         ageHours: (Date.now() - (r.opened_ts || Date.now())) / 3600000,
         syncing: true,
       });
-      return { positions: positions.map((p) => ({ ...p, compound: compound.status(p) })), closed, syncedAt: engine.positions.lastSync };
+      return { positions: positions.map((p) => ({ ...p, compound: compound.status(p), ...origin(p) })), closed, syncedAt: engine.positions.lastSync };
+    },
+    // Tombol "Perbarui" di tabel posisi. Poll biasa cuma mengulang hasil sinkron
+    // terakhir — yang berumur sampai 30 detik — jadi tombol yang hanya memuat ulang
+    // halaman akan mengembalikan angka yang sama persis dan berbohong soal
+    // kesegarannya. Di sini chain benar-benar dibaca lagi dulu, baru daftarnya
+    // dikirim. Yang dibalas cuma waktu sinkronnya: daftarnya diambil pemanggil lewat
+    // GET seperti biasa, supaya cuma ada satu jalan data ke tabel.
+    'POST /api/positions/sync': async () => {
+      try { await engine.positions.resync(engine.ethUsd); }
+      catch (e) { return { error: e.message, syncedAt: engine.positions.lastSync }; }
+      return { ok: true, syncedAt: engine.positions.lastSync };
     },
     // Satu posisi untuk halaman detail. Yang terbuka diambil dari hasil sinkron terakhir
     // (nilai, fee, harga kini); yang sudah ditutup — atau baru dibuka dan belum

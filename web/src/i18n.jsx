@@ -461,7 +461,15 @@ const EN = {
   'Peringatan': 'Warnings',
   'Semua baris log': 'Every log line',
   'di luar bot': 'outside bot',
-  'Posisi ini sudah ada di wallet, tidak menyalin target mana pun. Bot hanya memantaunya; tutup manual kalau perlu.': 'This position was already in the wallet and does not copy any target. The bot only tracks it; close it manually if needed.',
+  // ---- asal posisi: target yang disalin vs hasil kita ----
+  'Posisi ini tidak menyalin target mana pun: dibuka manual, atau sudah ada di wallet sebelum bot memantaunya.': 'This position copies no target: it was opened manually, or was already in the wallet before the bot started tracking it.',
+  'PnL kita': 'Our PnL',
+  'PnL target': 'Target PnL',
+  'belum dipindai': 'not scanned yet',
+  'masih terbuka': 'still open',
+  'modal target {v}': "target's capital {v}",
+  'Wallet target ini belum diriset, jadi hasil posisi aslinya belum diketahui. Buka halaman target dan pindai wallet-nya.': 'This target wallet has not been researched, so the original position\u2019s result is unknown. Open the target page and scan the wallet.',
+  'Sumber = wallet yang disalin. PnL target dihitung dari modal target sendiri, jadi yang sebanding persennya, bukan dolarnya.': "Source = the wallet being copied. The target's PnL is measured against the target's own capital, so compare the percentages, not the dollars.",
   // ---- jual sisa memecoin ----
   'Jual memecoin sisa setelah keluar': 'Sell leftover memecoin after exit',
   'Token yang diterima saat menutup posisi dijual balik ke USDG/ETH lewat agregator Kyber': 'Tokens received when closing a position are sold back to USDG/ETH via the Kyber aggregator',
@@ -501,6 +509,8 @@ const EN = {
   'Memuat…': 'Loading…',
   'Memuat posisi…': 'Loading positions…',
   'Memperbarui…': 'Updating…',
+  'diperbarui {n}': 'updated {n}',
+  'belum terbaca': 'not read yet',
   'Sinkron pertama dengan chain…': 'First chain sync in progress…',
   '{n} posisi baru menunggu sinkron': '{n} new position(s) awaiting sync',
   'menyinkronkan…': 'syncing…',
@@ -723,8 +733,8 @@ const EN = {
   'Gagal menyimpan': 'Save failed',
 
   // ---- wallet / riset ----
-  'PnL, fee, gaya ber-LP, dan seluruh riwayat posisi wallet mana pun — dihitung langsung dari chain.':
-    'PnL, fees, LP style and the full position history of any wallet — computed straight from chain.',
+  'PnL, fee, gaya ber-LP, dan seluruh riwayat posisi wallet mana pun — dihitung langsung dari chain. Klik baris posisi untuk melihat tiap kejadian on-chain-nya.':
+    'PnL, fees, LP style and the full position history of any wallet — computed straight from chain. Click a position row to see every on-chain event behind it.',
   'Alamat wallet': 'Wallet address',
   'Jendela pindai': 'Scan window',
   'Buka': 'Open',
@@ -812,6 +822,23 @@ const EN = {
   'harga masuk': 'entry price',
   'harga kini': 'current price',
   'harga keluar': 'exit price',
+
+  // ---- laci riwayat posisi wallet yang diriset ----
+  'Tarik likuiditas': 'Withdraw liquidity',
+  'Harga pool': 'Pool price',
+  'blok {n}': 'block {n}',
+  'Kejadian on-chain ({n})': 'On-chain events ({n})',
+  'Belum ada kejadian tercatat': 'No events recorded',
+  'Riwayat posisi ini ada di luar jendela pindai — perluas jendelanya lalu pindai ulang.':
+    "This position's history falls outside the scan window — widen it and rescan.",
+  'nilai kini {v}': 'now worth {v}',
+  'DPR {v}': 'DPR {v}',
+  'Riwayat posisi ini terpotong': "This position's history is cut off",
+  'Sebagian kejadiannya terjadi sebelum jendela pindai, jadi modal dan PnL-nya tidak ikut dihitung di ringkasan wallet. Perluas jendela lalu pindai ulang untuk melengkapinya.':
+    'Some of its events happened before the scan window, so its capital and PnL are left out of the wallet summary. Widen the window and rescan to complete it.',
+  'Pokok dan fee dipisahkan lewat matematika likuiditas pada state pool di blok tiap kejadian, bukan ditaksir dari transfer token.':
+    'Principal and fees are separated with liquidity math against pool state at each event block, not estimated from token transfers.',
+  'Halaman pool & grafik': 'Pool page & chart',
 
   // ---- profil gaya LP (dulu halaman Scout, sekarang di dalam Wallet) ----
   'Gaya LP · dari {n} posisi berjalan': 'LP style · from {n} open positions',

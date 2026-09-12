@@ -6,15 +6,15 @@
 // rentang saya, kapan saya masuk, dan seberapa jauh harga dari tepi" — dan iframe
 // pihak ketiga tidak bisa digambari. Tampilan DexScreener tetap tersedia sebagai
 // pilihan kedua untuk melihat transaksi dan indikator lain.
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Button, Spinner } from '@heroui/react';
-import { ArrowLeft, ExternalLink, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ExternalLink } from 'lucide-react';
 import CandleChart from '../components/CandleChart';
-import { usePoll } from '../hooks';
+import { usePoll, useResync } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
 import AutoCompoundButton from '../components/AutoCompoundButton';
-import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, ask } from '../components/ui';
+import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice, widthPct, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
@@ -142,7 +142,7 @@ export function MarketPanel({ pair, pool }) {
 
 export default function PositionDetail({ id }) {
   const { t } = useI18n();
-  const { data: d, reload, loading } = usePoll(`/api/position?id=${encodeURIComponent(id)}`, 10000);
+  const { data: d, reload } = usePoll(`/api/position?id=${encodeURIComponent(id)}`, 10000);
   const p = d?.position;
   const [tfPick, setTf] = useState(null);
   const [view, setView] = useState('chart');
@@ -156,7 +156,11 @@ export default function PositionDetail({ id }) {
   const tail = p?.status === 'closed' ? Math.max(20, Math.ceil((span * 0.2) / SECS[tf])) : 0;
   const limit = p ? Math.min(1000, Math.max(120, Math.ceil(span / SECS[tf]) + 40 + tail)) : 200;
   const before = p?.status === 'closed' && p.closed_ts ? p.closed_ts + tail * SECS[tf] * 1000 : null;
-  const { data: m, reload: reloadMarket, loading: marketLoading } = usePoll(p ? `/api/market?pool=${p.pool_ref}&tf=${tf}&limit=${limit}&token=${p.baseToken || ''}${before ? `&before=${before}` : ''}` : null, 30000);
+  const { data: m, reload: reloadMarket } = usePoll(p ? `/api/market?pool=${p.pool_ref}&tf=${tf}&limit=${limit}&token=${p.baseToken || ''}${before ? `&before=${before}` : ''}` : null, 30000);
+  // "Perbarui detail" memaksa sinkron chain dulu — angka nilai/fee/PnL di halaman ini
+  // berasal dari sinkron terakhir, jadi memuat ulang saja mengembalikan angka yang sama.
+  const reloadAll = useCallback(async () => { await Promise.all([reload(), reloadMarket()]); }, [reload, reloadMarket]);
+  const [resync, syncing] = useResync(reloadAll);
 
   if (!d) return <Loading />;
   if (d.error) return <Empty title="Posisi tidak ditemukan" sub={d.error} />;
@@ -216,7 +220,9 @@ export default function PositionDetail({ id }) {
               </div>
             </div>
           </div>
-          <Button size="sm" variant="tertiary" isPending={loading || marketLoading} isDisabled={loading || marketLoading} onPress={() => { reload(); reloadMarket(); }}><RefreshCw className="size-4" />{t('Perbarui detail')}</Button>
+          {/* posisi tertutup: angkanya sudah final, jadi tidak ada jam kesegaran — tombolnya
+              cuma menyegarkan grafik pasar. */}
+          <Refresh at={closed ? undefined : d.syncedAt} busy={syncing} onPress={resync} label="Perbarui detail" />
           {!closed && !p.empty && <>
             <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} />
             <Button variant="secondary" isPending={claiming != null} isDisabled={closing != null || claiming != null} onPress={() => claim(p)}>{t('Claim fee')}</Button>

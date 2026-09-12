@@ -30,6 +30,13 @@ export function price(p) {
   return p.toExponential(2).replace('.', loc() === 'id-ID' ? ',' : '.');
 }
 
+// Jumlah token: dari satuan terkecil di chain ke satuan tampilan, lalu diformat
+// dengan angka penting — token bisa 6 desimal (USDG) atau 18 (kebanyakan sisanya).
+export const qty = (raw, dec) => (raw == null ? null : Number(BigInt(String(raw))) / 10 ** (dec ?? 18));
+export const fmtQty = (v) => (v == null || !Number.isFinite(v) ? '—'
+  : v >= 1e6 ? v.toLocaleString(loc(), { maximumFractionDigits: 0 })
+    : v.toLocaleString(loc(), { maximumSignificantDigits: v >= 1000 ? 6 : 4 }));
+
 // Harga dari sqrtPriceX96 (state pool yang tersimpan per kejadian).
 export function sqrtPrice(sqrtX96, dec0, dec1, quoteSide) {
   if (!sqrtX96) return null;

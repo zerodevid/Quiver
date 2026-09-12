@@ -1,10 +1,9 @@
 import { lazy, Suspense, useState } from 'react';
-import { RefreshCw } from 'lucide-react';
 import { Button, Spinner } from '@heroui/react';
-import { usePoll } from '../hooks';
+import { usePoll, useResync } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
-import { PageHeader, Panel, DataTable, Empty, Loading, Notice, PriceRange, Dot } from '../components/ui';
+import { PageHeader, Panel, DataTable, Empty, Loading, Notice, PriceRange, Dot, Refresh } from '../components/ui';
 import { TokenPair } from '../components/TokenIcon';
 // Halaman detail membawa pustaka grafik — dimuat hanya saat dibuka.
 const PositionDetail = lazy(() => import('./PositionDetail'));
@@ -54,11 +53,12 @@ export function Pair({ p, link = true }) {
 // Penanda di kepala panel: kosong saat semuanya segar, supaya tidak jadi perabot
 // yang selalu ada. Tabel tidak pernah dikosongkan selama memuat ulang — data lama
 // tetap tampil sampai yang baru tiba. Dipakai juga panel "Posisi aktif" di Ringkasan.
-export function SyncState({ loading, syncedAt, pending }) {
+// "Sedang mengambil data" tidak ada di sini: itu tugas tombol Perbarui di sebelahnya,
+// yang menyalakan spinner-nya sendiri.
+export function SyncState({ syncedAt, pending }) {
   const { t } = useI18n();
   const text = !syncedAt ? 'Sinkron pertama dengan chain…'
-    : pending > 0 ? '{n} posisi baru menunggu sinkron'
-      : loading ? 'Memperbarui…' : null;
+    : pending > 0 ? '{n} posisi baru menunggu sinkron' : null;
   if (!text) return null;
   return (
     <span className="flex items-center gap-1.5 text-xs whitespace-nowrap text-muted" role="status">
@@ -67,12 +67,63 @@ export function SyncState({ loading, syncedAt, pending }) {
   );
 }
 
+// Dari mana posisi ini datang: wallet target yang disalin — beserta nomor NFT posisi
+// aslinya — atau tidak menyalin siapa pun (dibuka manual / sudah ada di wallet).
+function Source({ p }) {
+  const { t } = useI18n();
+  if (!p.target) {
+    return (
+      <span className="text-xs text-muted" title={t('Posisi ini tidak menyalin target mana pun: dibuka manual, atau sudah ada di wallet sebelum bot memantaunya.')}>
+        {t('Manual / di luar bot')}
+      </span>
+    );
+  }
+  return (
+    <a href={'#targets/' + p.target} className="group block max-w-40" title={p.target}>
+      {p.targetLabel && <div className="truncate font-medium group-hover:underline">{p.targetLabel}</div>}
+      <div className="mono text-xs whitespace-nowrap text-muted group-hover:text-foreground">
+        {short(p.target)}{p.mirror_of ? ` · #${p.mirror_of}` : ''}
+      </div>
+    </a>
+  );
+}
+
+// PnL posisi asli di wallet target, disandingkan dengan PnL kita di baris yang sama.
+// Modal keduanya jarang sama besar, jadi yang sebanding adalah persennya — dolarnya
+// hanya bercerita soal ukuran taruhan target. Angkanya dari pemindaian wallet itu:
+// wallet yang belum pernah diriset tidak punya angka, dan posisi target yang masih
+// terbuka dinilai sebesar pemindaian terakhir, bukan harga sekarang.
+function MirrorPnl({ p }) {
+  const { t } = useI18n();
+  if (!p.target) return <span className="text-muted">—</span>;
+  const m = p.mirror;
+  if (!m) {
+    return (
+      <span className="text-xs text-muted" title={t('Wallet target ini belum diriset, jadi hasil posisi aslinya belum diketahui. Buka halaman target dan pindai wallet-nya.')}>
+        {t('belum dipindai')}
+      </span>
+    );
+  }
+  return (
+    <div className={`whitespace-nowrap ${tone(m.pnlUsd)}`} title={t('modal target {v}', { v: usd(m.costUsd) })}>
+      {usd(m.pnlUsd)}
+      <div className="text-xs">
+        {m.pnlPct == null ? '' : pct(m.pnlPct, 2)}
+        {m.stale && <span className="text-muted"> · {t('masih terbuka')}</span>}
+      </div>
+    </div>
+  );
+}
+
 export default function Positions({ param }) {
   const { t } = useI18n();
   // #positions/123 -> detail satu posisi. Poll daftar dimatikan selama detail terbuka.
   // Endpoint-nya murah (basis data + hasil sinkron di memori), jadi posisi yang baru
   // dibuka bot muncul dalam ~5 detik.
-  const { data: d, error, loading, reload } = usePoll(param ? null : '/api/positions', 5000);
+  const { data: d, error, reload } = usePoll(param ? null : '/api/positions', 5000);
+  // Tombolnya memaksa pembacaan chain baru, bukan sekadar mengambil ulang hasil
+  // sinkron terakhir — lihat useResync.
+  const [resync, syncing] = useResync(reload);
   const { close, closing } = useClosePosition(reload);
   const { claim, claiming } = useClaimFees(reload);
   // Klik baris -> laci riwayat posisi (transaksi & catatan bot).
@@ -105,8 +156,8 @@ export default function Positions({ param }) {
       {error && <div className="mb-4"><Notice status="warning" title="Gagal memperbarui daftar posisi">{error} — {t('data di bawah dari pembaruan terakhir.')}</Notice></div>}
       <Panel title={t('Posisi terbuka ({n})', { n: open.length })} className="mb-4" bodyClass="p-0"
         action={<div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
-          <Button size="sm" variant="tertiary" isPending={loading} isDisabled={loading} onPress={reload}><RefreshCw className="size-4" />{t('Perbarui detail')}</Button>
-          <SyncState loading={loading} syncedAt={d.syncedAt} pending={pending} />
+          <Refresh at={d.syncedAt} busy={syncing} onPress={resync} />
+          <SyncState syncedAt={d.syncedAt} pending={pending} />
           {open.length > 0 && <Totals items={[
             ['Nilai', usd(sum(open, (p) => p.valueUsd))],
             ['Fee', usd(sum(open, (p) => p.feeUsd))],
@@ -129,10 +180,8 @@ export default function Positions({ param }) {
               <div className={`whitespace-nowrap ${tone(p.pnlUsd)}`}>{usd(p.pnlUsd)}<div className="text-xs">{pct(p.pnlPct)}</div></div>)) },
             { key: 'il', label: 'IL', align: 'end', sort: (p) => p.ilUsd, render: (p) => <span className={tone(p.ilUsd)}>{p.ilUsd == null ? '—' : usd(p.ilUsd)}</span> },
             { key: 'age', label: 'Umur', align: 'end', sort: (p) => p.ageHours, render: (p) => <span className="whitespace-nowrap text-muted">{age(p.ageHours)}</span> },
-            { key: 'tgt', label: 'Sumber', sort: (p) => p.target, render: (p) => p.target
-              ? <a href={'#targets/' + p.target} className="mono text-muted hover:text-foreground hover:underline">{short(p.target)}</a>
-              // diadopsi dari wallet: dibuka manual atau oleh program lain, bukan salinan
-              : <span className="text-xs text-muted" title={t('Posisi ini sudah ada di wallet, tidak menyalin target mana pun. Bot hanya memantaunya; tutup manual kalau perlu.')}>{t('di luar bot')}</span> },
+            { key: 'tgt', label: 'Sumber', sort: (p) => p.targetLabel || p.target,
+              search: (p) => `${p.targetLabel || ''} ${p.target || ''}`, render: (p) => <Source p={p} /> },
             { key: 'act', label: '', sortable: false, className: 'text-end', render: (p) => (
               <div className="flex flex-wrap gap-2 justify-end">
                 <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} />
@@ -142,6 +191,7 @@ export default function Positions({ param }) {
           ]} />
       </Panel>
       <Panel title={t('Posisi tertutup ({n})', { n: closed.length })} bodyClass="p-0"
+        desc="Sumber = wallet yang disalin. PnL target dihitung dari modal target sendiri, jadi yang sebanding persennya, bukan dolarnya."
         action={closed.length > 0 && <Totals items={[['PnL', usd(closedPnl), tone(closedPnl)]]} />}>
         <DataTable label="Posisi tertutup" rows={closed} rowKey={(c) => c.id} searchable pageSize={20} onRow={(c) => setHist(c.id)}
           defaultSort={{ column: 'at', direction: 'descending' }}
@@ -153,12 +203,15 @@ export default function Positions({ param }) {
                 <div><span className="font-medium whitespace-nowrap">{c.symbol0 || '?'}/{c.symbol1 || '?'}</span>
                   <div className="mono mt-0.5 text-xs text-muted">{String(c.venue || '').toUpperCase()} · #{c.token_id}</div></div>
               </div>) },
+            { key: 'tgt', label: 'Sumber', sort: (c) => c.targetLabel || c.target,
+              search: (c) => `${c.targetLabel || ''} ${c.target || ''}`, render: (c) => <Source p={c} /> },
             { key: 'cost', label: 'Modal', align: 'end', sort: (c) => c.cost_quote, render: (c) => usd(c.cost_quote) },
             { key: 'out', label: 'Hasil', align: 'end', sort: (c) => c.out_quote, render: (c) => usd(c.out_quote) },
-            { key: 'pnl', label: 'PnL', align: 'end', sort: (c) => (c.out_quote || 0) - (c.cost_quote || 0), render: (c) => {
+            { key: 'pnl', label: 'PnL kita', align: 'end', sort: (c) => (c.out_quote || 0) - (c.cost_quote || 0), render: (c) => {
               const v = (c.out_quote || 0) - (c.cost_quote || 0);
-              return <div className={tone(v)}>{usd(v)}<div className="text-xs">{c.cost_quote > 0 ? pct((v / c.cost_quote) * 100, 2) : ''}</div></div>;
+              return <div className={`whitespace-nowrap ${tone(v)}`}>{usd(v)}<div className="text-xs">{c.cost_quote > 0 ? pct((v / c.cost_quote) * 100, 2) : ''}</div></div>;
             } },
+            { key: 'tpnl', label: 'PnL target', align: 'end', sort: (c) => c.mirror?.pnlPct ?? null, render: (c) => <MirrorPnl p={c} /> },
             { key: 'dur', label: 'Durasi', align: 'end', sort: (c) => (c.closed_ts || 0) - (c.opened_ts || 0), render: (c) => (
               <span className="whitespace-nowrap text-muted">{c.opened_ts && c.closed_ts ? age((c.closed_ts - c.opened_ts) / 3600000) : '—'}</span>) },
             { key: 'at', label: 'Ditutup', align: 'end', sort: (c) => c.closed_ts, render: (c) => <span className="whitespace-nowrap text-muted">{ago(c.closed_ts)}</span> },

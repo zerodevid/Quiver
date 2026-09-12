@@ -25,19 +25,23 @@ async function t(name, fn) {
   catch (e) { fail++; console.log(`  GAGAL ${name}\n       ${e.message}`); }
 }
 
-function dunia({ live = [], lastSync = T0 } = {}) {
+function dunia({ live = [], lastSync = T0, resync } = {}) {
   const store = new Store(':memory:');
   const cfg = { mode: { dry_run: true }, rules: {}, gas: {}, loop: {}, prices: {}, chain: { endpoints: [] }, server: {}, notify: {}, wallet: {} };
   const cfgPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lpcopy-daftar-')), 'config.json');
   fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+  // `positions` di sini meniru Positions: `live`/`lastSync` adalah hasil sinkron
+  // terakhir, dan `resync` yang membaca chain lagi lalu memperbaruinya.
+  const pos = { live, lastSync, resync: null };
+  pos.resync = resync ? () => resync(pos) : async () => { pos.lastSync = Date.now(); };
   const engine = {
-    cfg, store, ethUsd: 2500, positions: { live, lastSync }, watcher: { unsupported: new Map() },
+    cfg, store, ethUsd: 2500, positions: pos, watcher: { unsupported: new Map() },
     exec: { address: () => null, balances: async () => new Map() }, leftovers: () => [], dryRun: () => true,
   };
   const server = createServer({ engine, store, cfg, cfgPath, chain: {}, rpc: {}, log: () => {}, telegram: null });
   store.run('INSERT INTO tokens(address,symbol,decimals) VALUES(?,?,?)', ADDR.usdg, 'USDG', 6);
   store.run('INSERT INTO tokens(address,symbol,decimals) VALUES(?,?,?)', MEME, 'MEME', 18);
-  return { store, api: server.api };
+  return { store, api: server.api, pos };
 }
 
 // Satu posisi terbuka di DB; belum tentu sudah ikut sinkron.
@@ -139,6 +143,37 @@ const hasilSinkron = (id, extra = {}) => ({
     tutup(store, 11);
     const r = await api('GET', '/api/position', {}, { id: '11' });
     assert.equal(r.position.syncing, false);
+  });
+
+  // ---- tombol "Perbarui" di kepala tabel --------------------------------------
+  // Tanpa ini, tombolnya cuma mengambil ulang hasil sinkron yang SAMA — yang umurnya
+  // bisa 30 detik — dan mengembalikan angka yang persis sama. Tombol yang berkedip
+  // lalu tidak mengubah apa pun lebih buruk daripada tidak ada tombol: pemakainya
+  // menyangka angka di layar baru saja dipastikan, padahal tidak.
+  await t('Perbarui membaca chain lagi, bukan mengulang hasil sinkron lama', async () => {
+    let dibaca = 0;
+    const { api, pos } = dunia({
+      lastSync: T0,
+      resync: async (p) => { dibaca++; p.live = [hasilSinkron(12, { valueUsd: 999 })]; p.lastSync = T0 + 60_000; },
+    });
+    const r = await api('POST', '/api/positions/sync', {}, {});
+    assert.equal(dibaca, 1, 'harus benar-benar menyuruh sinkron, bukan cuma membalas');
+    assert.equal(r.ok, true);
+    assert.equal(r.syncedAt, T0 + 60_000, 'waktu sinkron yang dibalas harus yang baru');
+    assert.equal(pos.live[0].valueUsd, 999);
+  });
+
+  await t('sinkron gagal: galatnya dikabarkan, tabel tetap punya angka lama', async () => {
+    const { store, api } = dunia({
+      live: [hasilSinkron(13)], lastSync: T0,
+      resync: async () => { throw new Error('RPC 429'); },
+    });
+    buka(store, 13);
+    const r = await api('POST', '/api/positions/sync', {}, {});
+    assert.equal(r.error, 'RPC 429');
+    assert.equal(r.syncedAt, T0, 'waktu sinkron tidak boleh maju kalau chain tidak terbaca');
+    const daftar = await api('GET', '/api/positions', {}, {});
+    assert.equal(daftar.positions[0].valueUsd, 210, 'angka terakhir yang diketahui tetap disajikan');
   });
 
   console.log(`\n${pass} lulus, ${fail} gagal`);

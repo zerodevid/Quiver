@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { get } from './api';
+import { get, post } from './api';
 
 // Ambil data dari path lalu perbarui tiap `ms`. Poll berhenti saat tab tidak terlihat.
 // `loading` baru menyala kalau balasan lebih lama dari 400 ms: poll yang selesai
@@ -33,6 +33,35 @@ export function usePoll(path, ms = 5000) {
     return () => { alive.current = false; clearInterval(t); };
   }, [load, ms]);
   return { data, error, loading, reload: load, setData };
+}
+
+// Tombol "Perbarui" yang benar-benar memperbarui: minta server membaca chain lagi
+// (POST …/sync), baru ambil daftarnya. Memanggil reload() saja tidak cukup — itu
+// hanya mengulang hasil sinkron terakhir, yang umurnya bisa 30 detik, sehingga
+// tombolnya berkedip lalu memberi angka yang sama persis.
+//
+// Daftar tetap diambil ulang walau sinkronnya gagal: kalau satu RPC meleset, yang
+// benar adalah menunjukkan angka terakhir yang diketahui apa adanya, bukan diam.
+export function useResync(reload, path = '/api/positions/sync') {
+  const [busy, setBusy] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+  const run = useCallback(async () => {
+    setBusy(true);
+    try { await post(path); } catch { /* galat muncul lewat data yang diambil di bawah */ }
+    try { await reload(); } finally { if (alive.current) setBusy(false); }
+  }, [path, reload]);
+  return [run, busy];
+}
+
+// Jam yang berdetak: bikin komponen menggambar ulang tiap `ms` supaya teks waktu
+// relatif ("12 dtk lalu") ikut berjalan tanpa menunggu poll berikutnya.
+export function useTick(ms = 1000) {
+  const [, set] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => { if (!document.hidden) set((n) => n + 1); }, ms);
+    return () => clearInterval(t);
+  }, [ms]);
 }
 
 // Slug lama (bahasa Indonesia) → slug baru, supaya bookmark/link lama tetap jalan.

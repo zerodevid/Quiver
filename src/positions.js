@@ -15,6 +15,7 @@ class Positions {
     this.rpc = rpc; this.store = store; this.chain = chain; this.log = log || console.log;
     this.live = [];      // hasil sinkron terakhir, dipakai dashboard
     this.lastSync = 0;
+    this.syncing = null; // sinkron yang sedang berjalan, dipakai bersama
   }
 
   open() {
@@ -199,6 +200,18 @@ class Positions {
   }
 
   // ---- sinkronisasi -------------------------------------------------------
+  // Sinkron atas permintaan pengguna: tombol "Perbarui" di tabel dasbor.
+  //
+  // Kalau sinkron sedang berjalan, permintaan ini menumpang yang itu — menekan
+  // tombol lima kali tidak boleh berarti lima putaran eth_call, dan hasilnya toh
+  // dibaca beberapa milidetik yang lalu. Yang TIDAK boleh menumpang adalah sinkron
+  // sesudah transaksi mendarat (claim, compound): di sana angka lama pasti salah,
+  // jadi pemanggilnya memakai sync() langsung dan selalu membaca ulang.
+  resync(ethUsd) {
+    if (!this.syncing) this.syncing = this.sync(ethUsd).finally(() => { this.syncing = null; });
+    return this.syncing;
+  }
+
   async sync(ethUsd) {
     const rows = this.open();
     if (!rows.length) { this.live = []; this.lastSync = Date.now(); return []; }

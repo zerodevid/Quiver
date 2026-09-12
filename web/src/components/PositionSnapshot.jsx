@@ -1,6 +1,7 @@
 import { Button, Chip } from '@heroui/react';
 import { RefreshCw } from 'lucide-react';
-import { usePoll } from '../hooks';
+import { useCallback } from 'react';
+import { usePoll, useResync } from '../hooks';
 import { useClaimFees } from '../useClaimFees';
 import { useClosePosition } from '../useClosePosition';
 import AutoCompoundButton from './AutoCompoundButton';
@@ -13,8 +14,10 @@ const amount = (raw, decimals) => raw == null ? '—' : (Number(raw) / 10 ** (de
 
 export default function PositionSnapshot({ id, onUpdate }) {
   const { t } = useI18n();
-  const { data, error, reload, loading } = usePoll(`/api/position?id=${encodeURIComponent(id)}`, 10000);
-  const refresh = () => { reload(); onUpdate?.(); };
+  const { data, error, reload } = usePoll(`/api/position?id=${encodeURIComponent(id)}`, 10000);
+  const refresh = useCallback(async () => { await reload(); onUpdate?.(); }, [reload, onUpdate]);
+  // Tombolnya memaksa sinkron chain dulu: angka di kartu ini dari sinkron terakhir.
+  const [resync, syncing] = useResync(refresh);
   const { claim, claiming } = useClaimFees(refresh);
   const { close, closing } = useClosePosition(refresh);
   const p = data?.position;
@@ -30,7 +33,7 @@ export default function PositionSnapshot({ id, onUpdate }) {
       <h3 className="text-sm font-semibold">{t('Posisi ini')}</h3>
       <div className="flex items-center gap-2">
         <Chip size="sm" variant="soft" color={closed ? 'default' : p.empty || p.inRange === false ? 'warning' : p.inRange === true ? 'success' : 'default'}>{t(closed ? 'Ditutup' : p.empty ? 'Likuiditas kosong' : p.inRange == null ? 'belum tersinkron' : p.inRange ? 'in-range' : 'di luar rentang')}</Chip>
-        <Button size="sm" variant="tertiary" isPending={loading} isDisabled={loading} aria-label={t('Perbarui detail')} onPress={refresh}><RefreshCw className="size-4" /></Button>
+        <Button size="sm" variant="tertiary" isPending={syncing} isDisabled={syncing} aria-label={t('Perbarui detail')} onPress={resync}><RefreshCw className="size-4" /></Button>
       </div>
     </div>
     {error && <p role="alert" className="text-xs text-warning">{error}</p>}

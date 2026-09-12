@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip as ReTooltip, CartesianGrid, ReferenceLine } from 'recharts';
 import { useStatus } from '../App';
-import { usePoll } from '../hooks';
-import { PageHeader, Stat, Panel, Empty, Loading, Notice, KV, Dot, DataTable, PriceRange, Segmented } from '../components/ui';
+import { usePoll, useResync } from '../hooks';
+import { PageHeader, Stat, Panel, Empty, Loading, Notice, KV, Dot, DataTable, PriceRange, Segmented, Refresh } from '../components/ui';
 import PnlCalendar from '../components/PnlCalendar';
 import { Pair, SyncState } from './Positions';
 import { usd, tone, num, pct, age, ago, short, locale as fmtLocale, TXKIND, TXSTATUS } from '../fmt';
@@ -213,10 +213,17 @@ export default function Overview() {
   const { status: d } = useStatus();
   const [range, setRange] = useState('7d');
   const [view, setView] = useState('pnl');
-  const { data: p } = usePoll('/api/portfolio?range=' + range, 30000);
+  const { data: p, reload: reloadPortfolio } = usePoll('/api/portfolio?range=' + range, 30000);
   // Sama dengan halaman Posisi: endpoint murah, jadi posisi baru muncul dalam ~5 detik.
-  const { data: pos, loading: posLoading } = usePoll('/api/positions', 5000);
+  const { data: pos, reload: reloadPos } = usePoll('/api/positions', 5000);
   const { data: tx } = usePoll('/api/txs', 10000);
+  // Satu sinkron chain menyegarkan SELURUH halaman, bukan cuma tabelnya: kartu total
+  // portofolio dan PnL dihitung dari hasil sinkron yang sama, dan dua angka untuk
+  // hal yang sama dengan umur berbeda di satu layar adalah bug yang terlihat.
+  const reloadAll = useCallback(async () => {
+    await Promise.all([reloadPos(), reloadPortfolio()]);
+  }, [reloadPos, reloadPortfolio]);
+  const [resync, syncing] = useResync(reloadAll);
   if (!d) return <Loading />;
   const s = d.summary, T = d.totals || {};
   // Kursor bisa sedikit MENDAHULUI kepala rantai yang terakhir dibaca; itu sinkron,
@@ -266,7 +273,8 @@ export default function Overview() {
 
       <Panel title={t('Posisi aktif ({n})', { n: open.length })} className="mb-4" bodyClass="p-0"
         action={<div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 text-xs">
-          <SyncState loading={posLoading} syncedAt={pos?.syncedAt} pending={pendingSync} />
+          <Refresh at={pos?.syncedAt} busy={syncing} onPress={resync} />
+          <SyncState syncedAt={pos?.syncedAt} pending={pendingSync} />
           {open.length > 0 && <>
             <span className="whitespace-nowrap"><span className="text-muted">{t('Nilai')}</span> <span className="num font-medium">{usd(sum(open, (x) => x.valueUsd))}</span></span>
             <span className="whitespace-nowrap"><span className="text-muted">{t('uPnL')}</span> <span className={`num font-medium ${tone(sum(open, (x) => x.pnlUsd))}`}>{usd(sum(open, (x) => x.pnlUsd))}</span></span>

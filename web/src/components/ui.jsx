@@ -5,8 +5,9 @@ import {
   Card, Chip, EmptyState, Label, Description, TextField, Input, Select, ListBox,
   Switch, Table, Spinner, Alert, Pagination, AlertDialog, Button,
 } from '@heroui/react';
-import { Inbox, Search, ArrowLeft, Copy, Check, ExternalLink } from 'lucide-react';
-import { price, tickPrice, sqrtPrice, widthPct, pct, short } from '../fmt';
+import { Inbox, Search, ArrowLeft, Copy, Check, ExternalLink, RefreshCw } from 'lucide-react';
+import { price, tickPrice, sqrtPrice, widthPct, pct, short, txHref, ago } from '../fmt';
+import { useTick } from '../hooks';
 import { translate as t } from '../i18n';
 
 export function PageHeader({ group, title, desc, children }) {
@@ -98,6 +99,36 @@ export function Refreshing({ loading, text = 'Memperbarui…' }) {
   return (
     <span className="flex items-center gap-1.5 text-xs whitespace-nowrap text-muted" role="status">
       <Spinner size="sm" color="current" className="size-3" />{t(text)}
+    </span>
+  );
+}
+
+// Tombol perbarui + jam "terakhir dibaca". Satu paket dengan sengaja: tombol tanpa
+// jam tidak bisa dipercaya — ditekan, angkanya sama, dan tidak ada cara tahu apakah
+// memang belum berubah atau permintaannya hilang; jam tanpa tombol cuma memberi
+// kabar basi tanpa jalan keluar.
+//
+// `at` adalah waktu server membaca chain, BUKAN waktu halaman mengambil data:
+// memuat ulang halaman tiap detik tidak membuat angkanya lebih baru. Lewat 90 detik
+// jamnya berubah kuning — di situ umur data sudah cukup untuk mengubah keputusan
+// (harga bergerak, fee bertambah, posisi keluar rentang).
+//
+// `at` tidak dioper sama sekali = tabelnya tidak punya jam semacam itu (isinya dari
+// basis data, bukan dari sinkron chain): tombol saja, tanpa jam yang mengaku-aku.
+export function Refresh({ at, busy, onPress, label = 'Perbarui', stale = 90_000 }) {
+  useTick(1000);
+  const old = at ? Date.now() - at > stale : false;
+  return (
+    <span className="flex items-center gap-2">
+      {at !== undefined && (
+        <span className={`text-xs whitespace-nowrap ${old ? 'text-warning' : 'text-muted'}`}
+          title={at ? new Date(at).toLocaleString() : undefined}>
+          {at ? t('diperbarui {n}', { n: ago(at) }) : t('belum terbaca')}
+        </span>
+      )}
+      <Button size="sm" variant="tertiary" isPending={busy} isDisabled={busy} onPress={onPress}>
+        <RefreshCw className="size-4" />{t(label)}
+      </Button>
     </span>
   );
 }
@@ -508,6 +539,25 @@ export function CopyAddr({ address }) {
       className="inline-flex items-center gap-1 rounded px-1 font-mono text-muted transition-colors hover:bg-default hover:text-foreground">
       {short(address)}{done ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
     </button>
+  );
+}
+
+// Hash transaksi: tautan ke penjelajah blok + tombol salin. Dipakai laci riwayat
+// posisi bot maupun laci riwayat posisi wallet yang diriset.
+export function TxHash({ hash }) {
+  const [done, setDone] = useState(false);
+  useEffect(() => { if (!done) return undefined; const id = setTimeout(() => setDone(false), 1500); return () => clearTimeout(id); }, [done]);
+  if (!hash) return <span className="text-muted">—</span>;
+  const copy = async () => { try { await navigator.clipboard.writeText(hash); setDone(true); } catch { /* izin clipboard ditolak */ } };
+  return (
+    <span className="inline-flex items-center gap-1">
+      <a href={txHref(hash)} target="_blank" rel="noreferrer" className="mono inline-flex items-center gap-1 text-accent hover:underline">
+        {short(hash)}<ExternalLink className="size-3" />
+      </a>
+      <button type="button" onClick={copy} className="text-muted hover:text-foreground" aria-label={t('Salin hash')}>
+        {done ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
+      </button>
+    </span>
   );
 }
 

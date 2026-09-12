@@ -8,7 +8,8 @@ import { get, post } from '../api';
 import { Panel, DataTable, Empty, Loading, PriceRange, Pick, Notice, Stat, KV, Refreshing } from './ui';
 import { TokenPair, PairName } from './TokenIcon';
 import PnlCalendar from './PnlCalendar';
-import { usd, kUsd, pct, tone, ago, dur, num, age } from '../fmt';
+import WalletPositionHistory from './WalletPositionHistory';
+import { usd, kUsd, pct, tone, ago, dur, num, age, widthPct } from '../fmt';
 import { useI18n, translate as tt } from '../i18n';
 
 export const WINDOWS = [['250000', '~7 jam'], ['900000', '~1 hari'], ['2600000', '~3 hari'], ['6000000', '~7 hari'], ['100000000', 'Semua riwayat']];
@@ -79,7 +80,7 @@ function styleOf(open) {
   return {
     n: open.length,
     inRangePct: known.length ? (inRange.length / known.length) * 100 : null,
-    medWidthPct: median(open.map((p) => (1.0001 ** (p.tick_upper - p.tick_lower) - 1) * 100)),
+    medWidthPct: median(open.map((p) => widthPct(p.tick_lower, p.tick_upper))),
     medValueUsd: median(open.map((p) => p.live_value_q || 0)),
     medAgeHours: median(open.map((p) => p.ageHours || 0)),
     feeRatioPct: value > 0 ? (sum(open, (p) => p.live_fee_q) / value) * 100 : null,
@@ -243,6 +244,10 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
   const [loading, setLoading] = useState(true);
   // Pengambilan ulang di latar (poll pelan, setelah pindai) — data lama tetap tampil.
   const [busy, setBusy] = useState(false);
+  // Posisi yang lacinya sedang dibuka (null = tertutup). Disimpan sebagai token_id,
+  // bukan barisnya: poll latar mengganti seluruh objek baris tiap 2–30 detik, dan
+  // laci yang memegang salinan lama akan membeku pada angka yang sudah basi.
+  const [histId, setHistId] = useState(null);
   const timer = useRef(null);
   const alive = useRef(true);
 
@@ -284,7 +289,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
   // muat saat alamat berganti; pindai otomatis kalau belum pernah
   useEffect(() => {
     alive.current = true; touched.current = false;
-    setData(null); setLoading(true); stopPoll();
+    setData(null); setLoading(true); setHistId(null); stopPoll();
     (async () => {
       try {
         const d = await fetchWallet();
@@ -377,10 +382,12 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
               <Panel title="Riwayat profit harian" className="lg:col-span-3"><PnlCalendar daily={data.daily} /></Panel>
             </div>
 
+            {/* Klik baris -> laci kejadian on-chain posisi itu, sama seperti tabel
+                posisi bot. Kejadiannya sudah tersimpan sejak pindai, jadi gratis. */}
             <Panel title={t('Posisi berjalan ({n})', { n: data.open.length })} className="mb-4" bodyClass="p-0"
               action={<Totals rows={data.open} />}>
               <DataTable label="Posisi berjalan" rows={data.open} rowKey={(p) => p.token_id} columns={posCols(true)}
-                searchable defaultSort={{ column: 'val', direction: 'descending' }}
+                searchable defaultSort={{ column: 'val', direction: 'descending' }} onRow={(p) => setHistId(p.token_id)}
                 empty={<Empty title="Tidak ada posisi berjalan" />}
                 footer={<TotalRow rows={data.open} open />} />
             </Panel>
@@ -388,10 +395,12 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
               {/* Pembagian halaman menggantikan tombol "tampilkan semua": 145 baris
                   sekaligus membuat halaman panjang dan sulit dibaca. */}
               <DataTable label="Riwayat posisi" rows={data.closed} rowKey={(p) => p.token_id} columns={posCols(false)}
-                searchable pageSize={20} defaultSort={{ column: 'when', direction: 'descending' }}
+                searchable pageSize={20} defaultSort={{ column: 'when', direction: 'descending' }} onRow={(p) => setHistId(p.token_id)}
                 empty={<Empty title="Belum ada posisi tertutup" />}
                 footer={<TotalRow rows={data.closed} />} />
             </Panel>
+            <WalletPositionHistory address={address} onClose={() => setHistId(null)}
+              p={histId ? [...data.open, ...data.closed].find((p) => p.token_id === histId) || null : null} />
             <p className="mt-4 text-xs text-muted">{t('Pokok & fee dibaca dari state pool dan posisi tepat di blok tiap kejadian (node arsip). Posisi yang dibuka-tutup tanpa ada swap di rentangnya tercatat impas, bukan kalah.')} {t('Riwayat mengikuti token hasil tutup posisi sampai dijual: USDG/ETH yang diterima langsung terealisasi, token lain baru terealisasi saat ditukar — sebelum itu dinilai harga pool sekarang.')}</p>
           </>
         )}
