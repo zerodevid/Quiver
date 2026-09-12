@@ -1,6 +1,9 @@
+// Nama proses = nama folder, supaya ~/lpcopy dan ~/lpcopy2 bisa hidup berdampingan di satu VPS.
+const name = require('path').basename(__dirname);
+
 module.exports = {
   apps: [{
-    name: 'lpcopy',
+    name,
     script: 'src/index.js',
     node_args: '--no-warnings',
     cwd: __dirname,
@@ -10,8 +13,8 @@ module.exports = {
     // Server ini cuma 1,9 GB dan sudah menampung rht + robinhood-lp + omniroute.
     // Batas 250M memberi ruang aman; pemakaian normal Quiver ~80M.
     max_memory_restart: '250M',
-    out_file: 'logs/lpcopy.log',
-    error_file: 'logs/lpcopy.err.log',
+    out_file: `logs/${name}.log`,
+    error_file: `logs/${name}.err.log`,
     time: true
   }]
 };
