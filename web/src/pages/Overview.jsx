@@ -11,19 +11,26 @@ import { useI18n, reason } from '../i18n';
 
 const RANGES = [['24h', '24 jam'], ['7d', '7 hari'], ['30d', '30 hari'], ['all', 'Semua']];
 const VIEWS = [['pnl', 'PnL kumulatif'], ['value', 'Nilai']];
+// PnL bersih hanya ada kalau modal wallet terlacak (setoran/penarikan via Alchemy).
+const VIEWS_NET = [['net', 'PnL bersih'], ...VIEWS];
 const sum = (rows, f) => rows.reduce((a, r) => a + (f(r) || 0), 0);
 
 // Pertumbuhan portofolio. Dua tampilan, satu sumbu — bukan dua garis berskala beda
 // di satu grafik:
-//  - PnL kumulatif: laba/rugi sejak awal. Tidak ikut melonjak saat dana disetor atau
-//    ditarik, jadi inilah "pertumbuhan" yang sebenarnya.
+//  - PnL bersih: nilai wallet − modal (baseline + setoran − penarikan). Memuat semua
+//    biaya di luar posisi (zap, gas, swap ETH↔USDG) — "modal 400 jadi 520 = untung 120".
+//  - PnL kumulatif: jumlah PnL posisi (out − cost). Tidak ikut melonjak saat dana
+//    disetor atau ditarik.
 //  - Nilai: kas + posisi + fee. Hanya titik yang saldo kasnya terbaca; titik lama
 //    (sebelum kas ikut dicatat) cuma berisi nilai posisi dan akan menipu.
 function GrowthChart({ p, view }) {
   const { t } = useI18n();
-  const pts = view === 'pnl'
-    ? p.series.filter((e) => e.pnl != null).map((e) => ({ t: e.ts, v: e.pnl }))
-    : p.series.filter((e) => e.cash != null).map((e) => ({ t: e.ts, v: e.total, cash: e.cash, pos: (e.pos || 0) + (e.fee || 0) }));
+  const isPnl = view === 'pnl' || view === 'net';
+  const pts = view === 'net'
+    ? p.series.filter((e) => e.net != null).map((e) => ({ t: e.ts, v: e.net }))
+    : view === 'pnl'
+      ? p.series.filter((e) => e.pnl != null).map((e) => ({ t: e.ts, v: e.pnl }))
+      : p.series.filter((e) => e.cash != null).map((e) => ({ t: e.ts, v: e.total, cash: e.cash, pos: (e.pos || 0) + (e.fee || 0) }));
   if (pts.length < 2) {
     return view === 'value'
       ? <Empty title="Nilai portofolio belum tercatat" sub="Kas + posisi dicatat tiap 5 menit sejak pembaruan ini (butuh wallet yang terbaca). Sementara itu lihat tampilan PnL kumulatif." />
@@ -32,10 +39,12 @@ function GrowthChart({ p, view }) {
 
   const first = pts[0].v, last = pts[pts.length - 1].v;
   // Rentang "Semua" dihitung dari nol: PnL kumulatif memang dimulai dari nol.
-  const delta = view === 'pnl'
-    ? last - (p.range === 'all' ? 0 : (p.baseline?.pnl ?? first))
-    : last - first;
-  const cap = p.now.capital;
+  const delta = view === 'net'
+    ? last - (p.range === 'all' ? 0 : (p.baseline?.net ?? first))
+    : view === 'pnl'
+      ? last - (p.range === 'all' ? 0 : (p.baseline?.pnl ?? first))
+      : last - first;
+  const cap = view === 'net' ? p.now.capitalNet : p.now.capital;
   const vals = pts.map((x) => x.v);
   const hi = Math.max(...vals), lo = Math.min(...vals);
   // drawdown terdalam: jarak terbesar dari puncak sebelumnya ke titik sesudahnya
@@ -55,7 +64,7 @@ function GrowthChart({ p, view }) {
         <div>
           <div className={`num text-2xl leading-tight font-semibold tracking-tight ${tone(delta)}`}>
             {delta > 0 ? '+' : ''}{usd(delta)}
-            {view === 'pnl' && cap > 0 && <span className="ml-2 text-sm font-medium">{pct((delta / cap) * 100, 2)}</span>}
+            {isPnl && cap > 0 && <span className="ml-2 text-sm font-medium">{pct((delta / cap) * 100, 2)}</span>}
           </div>
           <div className="text-xs text-muted">
             {t(lbl)}{view === 'value' && <span> · {t('termasuk setoran & penarikan')}</span>}
@@ -63,7 +72,7 @@ function GrowthChart({ p, view }) {
         </div>
         <div className="flex gap-5 text-xs">
           <span><span className="text-muted">{t('Tertinggi')}</span> <span className="num font-medium">{usd(hi)}</span></span>
-          {view === 'pnl'
+          {isPnl
             ? <span title={t('Penurunan terdalam dari puncak sebelumnya dalam rentang ini')}><span className="text-muted">{t('Drawdown maks')}</span> <span className={`num font-medium ${dd > 0.005 ? 'text-danger' : ''}`}>{dd > 0.005 ? '−' : ''}{usd(dd)}</span></span>
             : <span><span className="text-muted">{t('Terendah')}</span> <span className="num font-medium">{usd(lo)}</span></span>}
         </div>
@@ -81,15 +90,15 @@ function GrowthChart({ p, view }) {
             <XAxis dataKey="t" type="number" domain={['dataMin', 'dataMax']} tickLine={false} axisLine={false}
               minTickGap={48} tick={{ fill: 'var(--muted)', fontSize: 11 }} tickFormatter={tickFmt} />
             <YAxis width={56} tickLine={false} axisLine={false} tick={{ fill: 'var(--muted)', fontSize: 11 }}
-              domain={view === 'pnl' ? ['auto', 'auto'] : [0, 'auto']}
+              domain={isPnl ? ['auto', 'auto'] : [0, 'auto']}
               tickFormatter={(v) => usd(v, small ? 2 : 0)} />
             {/* garis nol selalu terlihat (extendDomain) tanpa merusak tick yang bulat */}
-            {view === 'pnl' && <ReferenceLine y={0} stroke="var(--muted)" strokeOpacity={0.5} ifOverflow="extendDomain" />}
+            {isPnl && <ReferenceLine y={0} stroke="var(--muted)" strokeOpacity={0.5} ifOverflow="extendDomain" />}
             <ReTooltip cursor={{ stroke: 'var(--muted)', strokeDasharray: '3 3' }}
               contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12 }}
               labelFormatter={(v) => new Date(v).toLocaleString(fmtLocale())}
-              formatter={(v, _n, it) => (view === 'pnl'
-                ? [usd(v), t('PnL kumulatif')]
+              formatter={(v, _n, it) => (isPnl
+                ? [usd(v), t(view === 'net' ? 'PnL bersih' : 'PnL kumulatif')]
                 : [`${usd(v)}  (${t('kas {c} · posisi {p}', { c: usd(it.payload.cash), p: usd(it.payload.pos) })})`, t('Nilai')])} />
             <Area type="linear" dataKey="v" stroke="var(--accent)" strokeWidth={2} fill="url(#eq)" dot={false}
               activeDot={{ r: 4, strokeWidth: 2, stroke: 'var(--surface)' }} isAnimationActive={false} />
@@ -213,7 +222,8 @@ export default function Overview() {
   const { t } = useI18n();
   const { status: d } = useStatus();
   const [range, setRange] = useState('7d');
-  const [view, setView] = useState('pnl');
+  // Tampilan awal: PnL bersih kalau modal terlacak; kalau tidak, PnL kumulatif.
+  const [viewPick, setView] = useState('net');
   const [shareDay, setShareDay] = useState(null);   // 'YYYY-MM-DD' yang diklik di kalender
   const { data: p, reload: reloadPortfolio } = usePoll('/api/portfolio?range=' + range, 30000);
   // Sama dengan halaman Posisi: endpoint murah, jadi posisi baru muncul dalam ~5 detik.
@@ -233,6 +243,7 @@ export default function Overview() {
   const lag = Math.max(0, d.chain.lag);
   const maxSkip = Math.max(1, ...(d.skipReasons || []).map((r) => r.n));
   const now = p?.now, st = p?.stats;
+  const view = viewPick === 'net' && now?.netPnl == null ? 'pnl' : viewPick;
   const open = (pos?.positions || []).filter((x) => !x.empty);
   // Posisi yang belum ikut sinkron chain: nilai masih taksiran modal, fee & PnL belum ada.
   const pendingSync = open.filter((x) => x.syncing).length;
@@ -252,9 +263,14 @@ export default function Overview() {
             ? t('kas {c} · di posisi {p}', { c: usd(now.cash.usd), p: usd(now.positionsUsd + now.feeUsd) })
               + ((now.leftoverUsd || 0) > 0.005 ? t(' · sisa token {v}', { v: usd(now.leftoverUsd) }) : '')
             : t('hanya posisi — saldo kas tidak terbaca')} />
-        <Stat label="Total PnL" value={now ? usd(now.pnl) : '—'} valueClass={now ? tone(now.pnl) : ''}
-          sub={!now ? null : t('terealisasi {r} · berjalan {u}', { r: usd(now.realizedUsd), u: usd(now.unrealizedUsd) })
-            + (now.capital > 0 ? ` · ${pct((now.pnl / now.capital) * 100, 2)}` : '')} />
+        {now?.netPnl != null
+          // Modal wallet terlacak: yang utama PnL bersih terhadap modal nyata; PnL
+          // per-posisi (tanpa biaya zap/gas/swap) jadi keterangan.
+          ? <Stat label="PnL bersih" value={usd(now.netPnl)} valueClass={tone(now.netPnl)}
+            sub={t('modal {m} · {p} · PnL posisi {v}', { m: usd(now.capitalNet), p: pct((now.netPnl / now.capitalNet) * 100, 2), v: usd(now.pnl) })} />
+          : <Stat label="Total PnL" value={now ? usd(now.pnl) : '—'} valueClass={now ? tone(now.pnl) : ''}
+            sub={!now ? null : t('terealisasi {r} · berjalan {u}', { r: usd(now.realizedUsd), u: usd(now.unrealizedUsd) })
+              + (now.capital > 0 ? ` · ${pct((now.pnl / now.capital) * 100, 2)}` : '')} />}
         <Stat label="Fee terkumpul" value={usd(s.feeUsd)}
           sub={s.costUsd > 0 ? t('{p}% dari modal · belum diklaim', { p: num((s.feeUsd / s.costUsd) * 100, 2) }) : t('belum diklaim')} />
         <Stat label="Win rate" value={st?.winRatePct != null ? `${num(st.winRatePct, 0)}%` : '—'}
@@ -267,7 +283,7 @@ export default function Overview() {
       <div className="mb-4 grid items-start gap-3 lg:grid-cols-3">
         <Panel title="Pertumbuhan portofolio" className="lg:col-span-2"
           action={<div className="flex flex-wrap gap-2">
-            <Segmented size="sm" aria="Tampilan grafik" value={view} onChange={setView} options={VIEWS} />
+            <Segmented size="sm" aria="Tampilan grafik" value={view} onChange={setView} options={now?.netPnl != null ? VIEWS_NET : VIEWS} />
             <Segmented size="sm" aria="Rentang waktu" value={range} onChange={setRange} options={RANGES} />
           </div>}>
           {p ? <GrowthChart p={p} view={view} /> : <Loading />}

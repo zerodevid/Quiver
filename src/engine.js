@@ -8,6 +8,7 @@ const { Executor, isNative } = require('./executor');
 const { Kyber } = require('./kyber');
 const { pickSwapPool } = require('./swappool');
 const { Compound } = require('./compound');
+const { Capital } = require('./capital');
 const { rulesFor, planEntry, planExit, quoteToUsd } = require('./policy');
 const { enumerateV4, livePositions } = require('./scout');
 const m = require('./v3math');
@@ -47,6 +48,7 @@ class Engine {
     this.busy = false;
     this.exiting = new Set();      // id posisi yang transaksi keluarnya sedang berjalan
     this.compound = new Compound(this);
+    this.capital = new Capital({ rpc, store, chain, cfg, log: this.log });
     this.troubles = new Map();     // kunci -> galat beruntun yang sedang ditangani cadangan
     this.lastCopyAt = new Map();   // poolRef -> ts (cooldown)
     this.stats = { scanned: 0, actions: 0, copied: 0, skipped: 0, errors: 0, startedAt: Date.now() };
@@ -1426,6 +1428,12 @@ class Engine {
     if (addr && Date.now() - (this.lastAdopt || 0) > 10 * 60_000) {
       this.lastAdopt = Date.now();
       await this.adoptOwnPositions(addr);
+    }
+    // Setoran/penarikan eksternal → modal wallet (PnL bersih). Tiap 5 menit; galat
+    // beruntun (Alchemy/arsip) ditangani seperti langkah lain, tidak menghentikan tick.
+    if (addr && this.capital.available() && Date.now() - (this.capital.lastSync || 0) > 5 * 60_000) {
+      await this.capital.sync(addr).then(() => this.cleared('modal', 'pelacakan setoran: berhasil lagi'))
+        .catch((e) => this.trouble('modal', `pelacakan setoran: ${e.message}`, { after: 3, afterMs: 30 * 60_000 }));
     }
     // Semua langkah ini diulang tiap sinkron (30 detik) — galat sesaat tidak dikabarkan.
     const sekali = (key, label, p) => p.then(() => this.cleared(key, `${label}: berhasil lagi`))

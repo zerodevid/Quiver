@@ -446,6 +446,16 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       }
       // Titik terakhir SEBELUM jendela: patokan "berubah berapa dalam rentang ini".
       const baseline = from ? store.get('SELECT ts, pnl_quote AS pnl, total_quote AS total, wallet_quote AS cash FROM equity WHERE ts < ? ORDER BY ts DESC LIMIT 1', from) || null : null;
+      // PnL bersih wallet = total − modal(t); modal(t) = baseline + setoran − penarikan
+      // sampai t (lihat capital.js). Titik ekuitas tanpa kas (NULL) tidak punya total
+      // yang sah, jadi bersihnya juga tidak dihitung.
+      const capital = engine.capital?.summary?.() || null;
+      if (capital) {
+        const deps = engine.capital.rows();
+        const capAt = (ts) => capital.baselineUsd + deps.filter((d) => d.ts <= ts).reduce((a, d) => a + (d.kind === 'deposit' ? d.usd : -d.usd), 0);
+        for (const r of series) r.net = r.cash == null && !r.live ? null : r.total - capAt(r.ts);
+        if (baseline) baseline.net = baseline.cash == null ? null : baseline.total - capAt(baseline.ts);
+      }
 
       // Posisi tertutup: bahan kalender (dikelompokkan per hari di browser, pakai
       // zona waktu pengguna) dan statistik menang/kalah.
@@ -469,7 +479,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           // Tanpa saldo kas (mode tanpa wallet) tidak bisa dihitung.
           capital: cash ? value - pnl : null,
           openCount: s.openCount, inRange: s.inRange,
+          // Modal nyata (baseline + setoran − penarikan) dan PnL bersih terhadapnya —
+          // memuat biaya zap, gas, dan swap ETH↔USDG yang tidak ada di PnL per-posisi.
+          capitalNet: capital && cash ? capital.capitalUsd : null,
+          netPnl: capital && cash ? value - capital.capitalUsd : null,
         },
+        capital: capital ? { ...capital, deposits: engine.capital.rows().map((d) => ({
+          ts: d.ts, kind: d.kind, symbol: d.symbol, amount: Number(d.amount) / (d.symbol === 'USDG' ? 1e6 : 1e18), usd: d.usd, ethUsd: d.eth_usd, txHash: d.tx_hash, counterparty: d.counterparty,
+        })) } : null,
         stats: {
           closedCount: closed.length, wins, losses: closed.length - wins,
           winRatePct: closed.length ? (wins / closed.length) * 100 : null,

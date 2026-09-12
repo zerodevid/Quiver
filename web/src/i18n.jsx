@@ -177,6 +177,8 @@ const EN = {
   // --- Ringkasan: portofolio ---
   'Total portofolio': 'Total portfolio',
   'Total PnL': 'Total PnL',
+  'PnL bersih': 'Net PnL',
+  'modal {m} · {p} · PnL posisi {v}': 'capital {m} · {p} · position PnL {v}',
   'kas {c} · di posisi {p}': 'cash {c} · in positions {p}',
   'kas {c} · posisi {p}': 'cash {c} · positions {p}',
   'hanya posisi — saldo kas tidak terbaca': 'positions only — cash balance unreadable',
