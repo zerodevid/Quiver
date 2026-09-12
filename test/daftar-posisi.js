@@ -52,11 +52,25 @@ function buka(store, id, { cost = 200, opened = T0 } = {}) {
   id, String(2_000_000 + id), POOL, ADDR.usdg, MEME, opened, cost, '0xmint' + id);
 }
 
-function tutup(store, id, { out = 250 } = {}) {
+function tutup(store, id, { out = 250, target = null, mirrorOf = null } = {}) {
   store.run(`INSERT INTO positions(id,venue,token_id,pool_ref,token0,token1,fee,status,opened_ts,closed_ts,
-      cost0,cost1,cost_quote,out_quote,quote_symbol,tx_open,tx_close)
-    VALUES(?,'v4',?,?,?,?,3000,'closed',?,?,'0','0',200,?,'USDG',?,?)`,
-  id, String(2_000_000 + id), POOL, ADDR.usdg, MEME, T0, T0 + 60_000, out, '0xmint' + id, '0xburn' + id);
+      cost0,cost1,cost_quote,out_quote,quote_symbol,tx_open,tx_close,target,mirror_of)
+    VALUES(?,'v4',?,?,?,?,3000,'closed',?,?,'0','0',200,?,'USDG',?,?,?,?)`,
+  id, String(2_000_000 + id), POOL, ADDR.usdg, MEME, T0, T0 + 60_000, out, '0xmint' + id, '0xburn' + id,
+  target, mirrorOf);
+}
+
+// Wallet target beserta salah satu posisinya, seperti yang ditinggalkan pemindaian
+// riset — sumber angka "PnL target" di tabel posisi tertutup.
+function target(store, address, label) {
+  store.run('INSERT INTO targets(address,label,enabled,added_ts) VALUES(?,?,1,?)', address, label, T0);
+}
+function risetPosisi(store, wallet, tokenId, { invested = 1000, pnl = 50, status = 'closed', quote = 'USDG' } = {}) {
+  store.run(`INSERT INTO wpositions(wallet,venue,token_id,pool_ref,token0,token1,fee,status,
+      opened_ts,closed_ts,invested_q,pnl_q,quote_symbol)
+    VALUES(?,'v4',?,?,?,?,3000,?,?,?,?,?,?)`,
+  wallet, tokenId, POOL, ADDR.usdg, MEME, status, T0, status === 'closed' ? T0 + 90_000 : null,
+  invested, pnl, quote);
 }
 
 // Bentuk baris hasil sinkron, seperlunya untuk uji ini.
@@ -174,6 +188,78 @@ const hasilSinkron = (id, extra = {}) => ({
     assert.equal(r.syncedAt, T0, 'waktu sinkron tidak boleh maju kalau chain tidak terbaca');
     const daftar = await api('GET', '/api/positions', {}, {});
     assert.equal(daftar.positions[0].valueUsd, 210, 'angka terakhir yang diketahui tetap disajikan');
+  });
+
+  // ---- asal posisi: siapa yang disalin, dan bagaimana hasil aslinya --------------
+  // Tabel posisi tertutup menyandingkan PnL kita dengan PnL posisi target yang kita
+  // cermin. Tanpa itu, satu-satunya cara membandingkan keduanya adalah membuka
+  // halaman target di tab lain dan mencocokkan nomor NFT dengan mata.
+  const PAUS = '0x' + 'e1'.repeat(20);
+
+  await t('posisi salinan membawa label target dan angka posisi aslinya', async () => {
+    const { store, api } = dunia();
+    target(store, PAUS, 'Paus CME');
+    risetPosisi(store, PAUS, '2302256', { invested: 1000, pnl: 59.12 });
+    tutup(store, 20, { out: 221.84, target: PAUS, mirrorOf: '2302256' });
+    const c = (await api('GET', '/api/positions', {}, {})).closed[0];
+    assert.equal(c.targetLabel, 'Paus CME');
+    assert.equal(c.mirror.tokenId, '2302256');
+    assert.equal(c.mirror.costUsd, 1000);
+    assert.ok(Math.abs(c.mirror.pnlUsd - 59.12) < 1e-9);
+    assert.ok(Math.abs(c.mirror.pnlPct - 5.912) < 1e-9, 'persen dihitung dari modal target, bukan modal kita');
+    assert.equal(c.mirror.stale, false, 'posisi target sudah tutup — angkanya final');
+  });
+
+  await t('posisi target yang masih terbuka ditandai, karena angkanya dari pemindaian terakhir', async () => {
+    const { store, api } = dunia();
+    target(store, PAUS, null);
+    risetPosisi(store, PAUS, '2481984', { invested: 800, pnl: -40, status: 'open' });
+    tutup(store, 21, { out: 232.58, target: PAUS, mirrorOf: '2481984' });
+    const c = (await api('GET', '/api/positions', {}, {})).closed[0];
+    assert.equal(c.targetLabel, null, 'target tanpa label tetap sah — UI jatuh ke alamat pendek');
+    assert.equal(c.mirror.status, 'open');
+    assert.equal(c.mirror.stale, true);
+    assert.equal(c.mirror.pnlUsd, -40);
+  });
+
+  await t('target yang belum diriset: sumbernya tetap disebut, angkanya kosong', async () => {
+    const { store, api } = dunia();
+    target(store, PAUS, 'Sniper kecil');
+    tutup(store, 22, { target: PAUS, mirrorOf: '2468552' });     // wpositions kosong
+    const c = (await api('GET', '/api/positions', {}, {})).closed[0];
+    assert.equal(c.targetLabel, 'Sniper kecil');
+    assert.equal(c.mirror, null, 'jangan mengarang angka untuk wallet yang belum pernah dipindai');
+  });
+
+  await t('posisi manual tidak menyalin siapa pun', async () => {
+    const { store, api } = dunia();
+    tutup(store, 23);
+    const c = (await api('GET', '/api/positions', {}, {})).closed[0];
+    assert.equal(c.target, null);
+    assert.equal(c.targetLabel, null);
+    assert.equal(c.mirror, null);
+  });
+
+  // Posisi target dikunci per (wallet, venue, token_id): nomor NFT yang sama di
+  // wallet lain tidak boleh bocor jadi "hasil target" posisi ini.
+  await t('nomor NFT yang sama milik wallet lain tidak ikut terbawa', async () => {
+    const { store, api } = dunia();
+    target(store, PAUS, 'Paus CME');
+    risetPosisi(store, '0x' + '77'.repeat(20), '2302256', { invested: 500, pnl: 300 });
+    tutup(store, 24, { target: PAUS, mirrorOf: '2302256' });
+    const c = (await api('GET', '/api/positions', {}, {})).closed[0];
+    assert.equal(c.mirror, null);
+  });
+
+  await t('PnL target dalam ETH dikonversi ke USD seperti kolom lain', async () => {
+    const { store, api } = dunia();                               // ethUsd = 2500
+    target(store, PAUS, 'Paus ETH');
+    risetPosisi(store, PAUS, '999', { invested: 2, pnl: 0.4, quote: 'ETH' });
+    tutup(store, 25, { target: PAUS, mirrorOf: '999' });
+    const c = (await api('GET', '/api/positions', {}, {})).closed[0];
+    assert.equal(c.mirror.costUsd, 5000);
+    assert.equal(c.mirror.pnlUsd, 1000);
+    assert.equal(c.mirror.pnlPct, 20, 'persennya tidak berubah oleh kurs');
   });
 
   console.log(`\n${pass} lulus, ${fail} gagal`);
