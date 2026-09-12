@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Card, Spinner, Modal, Input, toast } from '@heroui/react';
-import { ArrowDownUp, ArrowRight, Brush, Check, ChevronDown, ChevronLeft, ChevronRight, RefreshCw, CircleCheck, CircleX, Clock, Plus, Search, TriangleAlert, X } from 'lucide-react';
+import { ArrowDownUp, ArrowRight, Brush, Check, ChevronDown, ChevronLeft, ChevronRight, Eye, EyeOff, RefreshCw, CircleCheck, CircleX, Clock, Plus, Search, TriangleAlert, X } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { usePoll } from '../hooks';
@@ -164,10 +164,11 @@ function TokenPicker({ value, onChange, list, all, exclude, side, onImport }) {
 
 // Panel saldo di samping kartu swap: apa saja yang ada di wallet bot, nilainya, dan
 // token manual (yang bisa dihapus lagi). Klik baris = pakai sebagai sisi "dari".
-const PER_HAL = 8;
+const PER_HAL = 5;
 // Bernilai = ada harga dan nilainya minimal satu sen; sisanya (tanpa harga / debu)
 // dikumpulkan di bawah supaya aset yang berarti tidak tenggelam di antara memecoin.
 const bernilai = (x) => x.usd != null && x.usd >= 0.01;
+// (Token yang disembunyikan tetap bisa dipilih lewat pemilih token di kartu swap.)
 
 function Holdings({ tokens, dari, onUse, onRemove, onImport, harga, onRetryHarga }) {
   const { t } = useI18n();
@@ -175,11 +176,17 @@ function Holdings({ tokens, dari, onUse, onRemove, onImport, harga, onRetryHarga
   const [kirim, setKirim] = useState(false);
   const [sapu, setSapu] = useState(false);
   const [hal, setHal] = useState(0);
-  const rows = useMemo(() => tokens.filter((x) => x.amount > 0 || x.custom)
+  const [semua, setSemua] = useState(false);
+  const semuaRows = useMemo(() => tokens.filter((x) => x.amount > 0 || x.custom)
     .sort((a, b) => (bernilai(b) - bernilai(a)) || (b.usd ?? -1) - (a.usd ?? -1) || b.amount - a.amount), [tokens]);
-  const total = rows.reduce((s, x) => s + (x.usd || 0), 0);
-  const adaHarga = rows.some((x) => x.usd != null);
-  const nBernilai = rows.filter(bernilai).length;
+  const total = semuaRows.reduce((s, x) => s + (x.usd || 0), 0);
+  const adaHarga = semuaRows.some((x) => x.usd != null);
+  const nBernilai = semuaRows.filter(bernilai).length;
+  // Token tanpa nilai disembunyikan — tapi hanya setelah harga benar-benar terbaca;
+  // selagi memuat atau kalau harga gagal, menyembunyikan berarti panel kosong.
+  const sembunyi = harga === 'ok' && !semua;
+  const rows = sembunyi ? semuaRows.filter(bernilai) : semuaRows;
+  const nTersembunyi = harga === 'ok' ? semuaRows.length - nBernilai : 0;
   const nHal = Math.max(1, Math.ceil(rows.length / PER_HAL));
   const halIni = Math.min(hal, nHal - 1);
   const dari0 = halIni * PER_HAL;
@@ -235,9 +242,9 @@ function Holdings({ tokens, dari, onUse, onRemove, onImport, harga, onRetryHarga
           {tampil.map((x, i) => (
             <div key={x.address}>
             {/* pembatas kelompok: baris pertama yang tidak bernilai */}
-            {harga !== 'muat' && nBernilai > 0 && dari0 + i === nBernilai && (
+            {!sembunyi && harga === 'ok' && nBernilai > 0 && dari0 + i === nBernilai && (
               <div className="border-b border-border bg-default/40 px-4 py-1.5 text-[0.6875rem] font-medium uppercase tracking-wide text-muted">
-                {t('Tanpa nilai ({n})', { n: rows.length - nBernilai })}
+                {t('Tanpa nilai ({n})', { n: nTersembunyi })}
               </div>
             )}
             <div className={`group flex items-center gap-3 px-4 py-2.5 text-sm ${x.address === dari ? 'bg-accent/5' : ''}`}>
@@ -268,18 +275,27 @@ function Holdings({ tokens, dari, onUse, onRemove, onImport, harga, onRetryHarga
             </div>
           ))}
         </div>
-      ) : <div className="p-4"><Empty title="Wallet kosong" /></div>}
+      ) : <div className="p-4"><Empty title={nTersembunyi ? 'Tidak ada aset bernilai' : 'Wallet kosong'} /></div>}
 
-      {nHal > 1 && (
-        <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-2 text-xs text-muted">
-          <span className="num">{t('{a}–{b} dari {n}', { a: dari0 + 1, b: Math.min(dari0 + PER_HAL, rows.length), n: rows.length })}</span>
-          <span className="flex items-center gap-1">
+      {(nHal > 1 || nTersembunyi > 0) && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-2 text-xs text-muted">
+          <span className="flex items-center gap-2">
+            {rows.length > 0 && <span className="num">{t('{a}–{b} dari {n}', { a: dari0 + 1, b: Math.min(dari0 + PER_HAL, rows.length), n: rows.length })}</span>}
+            {nTersembunyi > 0 && (
+              <button type="button" onClick={() => { setSemua((v) => !v); setHal(0); }}
+                className="inline-flex items-center gap-1 rounded px-1 text-accent hover:underline">
+                {semua ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+                {semua ? t('Sembunyikan {n} tanpa nilai', { n: nTersembunyi }) : t('Tampilkan {n} tanpa nilai', { n: nTersembunyi })}
+              </button>
+            )}
+          </span>
+          {nHal > 1 && <span className="flex items-center gap-1">
             <Button size="sm" variant="ghost" isIconOnly aria-label={t('Sebelumnya')} isDisabled={halIni === 0}
               onPress={() => setHal(halIni - 1)} className="size-7"><ChevronLeft className="size-4" /></Button>
             <span className="num min-w-10 text-center">{halIni + 1} / {nHal}</span>
             <Button size="sm" variant="ghost" isIconOnly aria-label={t('Berikutnya')} isDisabled={halIni >= nHal - 1}
               onPress={() => setHal(halIni + 1)} className="size-7"><ChevronRight className="size-4" /></Button>
-          </span>
+          </span>}
         </div>
       )}
 
