@@ -17,7 +17,7 @@ export function PageHeader({ group, title, desc, children }) {
         <h1 className="text-xl font-semibold tracking-tight">{t(title)}</h1>
         {desc && <p className="mt-1 max-w-prose text-sm text-muted">{t(desc)}</p>}
       </div>
-      {children && <div className="flex shrink-0 items-center gap-2">{children}</div>}
+      {children && <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">{children}</div>}
     </div>
   );
 }
@@ -28,7 +28,7 @@ export function Stat({ label, value, sub, valueClass = '' }) {
   return (
     <Card className="min-w-0 gap-1.5! p-3.5!">
       <div className="truncate text-xs font-medium text-muted">{t(label)}</div>
-      <div className={`num text-[1.375rem] leading-tight font-semibold tracking-tight ${valueClass}`}>{value}</div>
+      <div className={`num break-words text-lg sm:text-[1.375rem] leading-tight font-semibold tracking-tight ${valueClass}`}>{value}</div>
       {sub && <div className="truncate text-xs text-muted">{typeof sub === 'string' ? t(sub) : sub}</div>}
     </Card>
   );
@@ -37,9 +37,9 @@ export function Stat({ label, value, sub, valueClass = '' }) {
 // Baris label/nilai — dipakai di semua panel ringkasan.
 export function KV({ label, children, className = '' }) {
   return (
-    <div className={`flex items-baseline justify-between gap-4 py-2 text-sm ${className}`}>
-      <span className="shrink-0 text-muted">{t(label)}</span>
-      <span className="num min-w-0 text-end font-medium">{children}</span>
+    <div className={`kv-row flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 text-sm ${className}`}>
+      <span className="min-w-0 text-muted">{t(label)}</span>
+      <span className="num min-w-0 max-w-full break-words text-end font-medium">{children}</span>
     </div>
   );
 }
@@ -58,7 +58,7 @@ export function Panel({ title, desc, action, children, className = '', bodyClass
     <Card className={`min-w-0 gap-0! p-0! ${className}`}>
       {(title || action) && (
         <div className="flex flex-row flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-border px-4 py-3">
-          <div className="min-w-0 shrink-0">
+          <div className="min-w-0 max-w-full">
             {title && <h2 className="text-sm font-semibold tracking-tight">{t(title)}</h2>}
             {desc && <p className="mt-0.5 text-xs text-muted">{t(desc)}</p>}
           </div>
@@ -119,7 +119,7 @@ export function Refresh({ at, busy, onPress, label = 'Perbarui', stale = 90_000 
   useTick(1000);
   const old = at ? Date.now() - at > stale : false;
   return (
-    <span className="flex items-center gap-2">
+    <span className="flex max-w-full flex-wrap items-center gap-2">
       {at !== undefined && (
         <span className={`text-xs whitespace-nowrap ${old ? 'text-warning' : 'text-muted'}`}
           title={at ? new Date(at).toLocaleString() : undefined}>
@@ -329,7 +329,7 @@ export function DataTable({
         </div>
       )}
       <Table variant="secondary">
-        <Table.ScrollContainer>
+        <Table.ScrollContainer className="max-w-full">
           {/* onRow: seluruh baris bisa diklik (mis. membuka laci riwayat). Tombol dan
               tautan di dalam sel tetap bekerja sendiri — react-aria menghentikan
               tekanan bersarang sebelum sampai ke baris. */}

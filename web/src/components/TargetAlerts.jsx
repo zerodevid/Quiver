@@ -196,7 +196,7 @@ export function AlertBell({ placement = 'top', variant = 'outline', iconClass = 
       <Button size="sm" variant={variant} isIconOnly aria-label={t('Peringatan target')}>
         <Icon className={iconClass} />
       </Button>
-      <Popover.Content placement={placement} className="w-72">
+      <Popover.Content placement={placement} className="w-72 max-w-[calc(100vw-2rem)]">
         <Popover.Dialog className="flex flex-col gap-3 p-3">
           <div>
             <Popover.Heading className="text-sm font-medium">{t('Peringatan target')}</Popover.Heading>

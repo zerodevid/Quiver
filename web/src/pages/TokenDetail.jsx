@@ -65,7 +65,7 @@ export default function TokenDetail({ param }) {
       <div className="mb-5 border-b border-border pb-4">
         <BackLink />
         <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
-          <div className="flex min-w-0 items-center gap-3">
+          <div className="detail-heading flex min-w-0 max-w-full items-center gap-3">
             <TokenIcon address={tk.address} symbol={tk.symbol} size={36} />
             <div className="min-w-0">
               <h1 className="flex flex-wrap items-baseline gap-x-2 text-xl font-semibold tracking-tight">

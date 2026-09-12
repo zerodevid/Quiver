@@ -182,7 +182,7 @@ export default function App() {
           <header className="sticky top-0 z-30 flex h-[72px] items-center justify-between border-b border-border bg-surface/90 px-4 backdrop-blur lg:hidden">
             <Brand />
             <div className="flex items-center gap-1">
-              <span className="mr-2"><ModeBadge m={status?.mode} /></span>
+              <span className="mr-1 hidden min-[360px]:inline"><ModeBadge m={status?.mode} /></span>
               <AlertBell placement="bottom" variant="ghost" iconClass="size-4" />
               <Button size="sm" variant="ghost" isIconOnly aria-label={t('Ganti tema')} onPress={toggleTheme}>
                 {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}

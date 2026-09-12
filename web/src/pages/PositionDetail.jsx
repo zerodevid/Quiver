@@ -199,7 +199,7 @@ export default function PositionDetail({ id }) {
       <div className="mb-5 border-b border-border pb-4">
         <a href="#positions" className="mb-3 inline-flex items-center gap-1 text-xs text-muted hover:text-foreground"><ArrowLeft className="size-3.5" />{t('Semua posisi')}</a>
         <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
-          <div className="flex min-w-0 items-center gap-3">
+          <div className="detail-heading flex min-w-0 max-w-full items-center gap-3">
             <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={30} />
             <div className="min-w-0">
               <h1 className="text-xl font-semibold tracking-tight"><PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} sep="/" /></h1>

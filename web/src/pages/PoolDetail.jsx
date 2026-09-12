@@ -66,7 +66,7 @@ export default function PoolDetail({ param }) {
       <div className="mb-5 border-b border-border pb-4">
         <BackLink />
         <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
-          <div className="flex min-w-0 items-center gap-3">
+          <div className="detail-heading flex min-w-0 max-w-full items-center gap-3">
             <TokenPair token0={pool.token0} token1={pool.token1} symbol0={pool.symbol0} symbol1={pool.symbol1} size={30} />
             <div className="min-w-0">
               <h1 className="text-xl font-semibold tracking-tight">

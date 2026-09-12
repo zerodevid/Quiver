@@ -142,7 +142,7 @@ export default function WalletPositionHistory({ p, address, onClose }) {
     <Drawer isOpen={!!p} onOpenChange={(o) => { if (!o) onClose(); }}>
       <Drawer.Backdrop isDismissable>
         <Drawer.Content placement="right">
-          <Drawer.Dialog className="h-full w-full max-w-[760px] overflow-hidden">
+          <Drawer.Dialog className="position-drawer">
             <Drawer.Header className="mb-4 flex-row! items-start justify-between gap-3 pr-8">
               {p ? (
                 <div className="flex min-w-0 items-center gap-3">
@@ -165,7 +165,7 @@ export default function WalletPositionHistory({ p, address, onClose }) {
             <Drawer.Body className="text-foreground">
               {p && (
                 <>
-                  <div className="mb-4 grid grid-cols-2 gap-3">
+                  <div className="mb-4 grid grid-cols-1 min-[360px]:grid-cols-2 gap-3">
                     <Stat label={open ? 'PnL (belum terealisasi)' : 'PnL'} value={usd(p.pnl_q)} valueClass={tone(p.pnl_q)}
                       sub={p.pnlPct == null ? null : pct(p.pnlPct, 2)} />
                     <Stat label="Umur" value={age(p.ageHours)}

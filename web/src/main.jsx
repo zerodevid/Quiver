@@ -1,4 +1,4 @@
-import { StrictMode } from 'react';
+import { Component, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import { I18nProvider, initLocale } from './i18n';
@@ -18,6 +18,24 @@ window.addEventListener('vite:preloadError', (e) => {
 });
 
 initLocale();
+
+class AppBoundary extends Component {
+  state = { error: null };
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error('Dashboard render failed', error, info); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <main role="alert" className="mx-auto my-12 max-w-lg p-6">
+        <h1 className="text-xl font-semibold">Halaman gagal dimuat</h1>
+        <p className="mt-2 text-sm text-muted">Muat ulang untuk mengambil versi terbaru. Jika masih gagal, sertakan pesan di bawah saat melaporkan masalah.</p>
+        <pre className="my-4 whitespace-pre-wrap break-words rounded border border-border p-3 text-xs">{String(this.state.error?.message || this.state.error)}</pre>
+        <button type="button" className="rounded bg-accent px-4 py-2 text-accent-foreground" onClick={() => window.location.reload()}>Muat ulang</button>
+      </main>
+    );
+  }
+}
+
 createRoot(document.getElementById('root')).render(
-  <StrictMode><I18nProvider><App /></I18nProvider></StrictMode>,
+  <StrictMode><AppBoundary><I18nProvider><App /></I18nProvider></AppBoundary></StrictMode>,
 );

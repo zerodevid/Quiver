@@ -96,6 +96,17 @@ td .mono { white-space: nowrap; }
 .table__body .table__row { transition: background-color 0.12s; }
 .table__body .table__row:hover { background-color: color-mix(in oklab, var(--foreground) 2.5%, transparent); }
 
+/* Aktivitas: beri ruang untuk metadata dua baris dan panduan mata antarbaris. */
+.activity-table .table__column { padding-block: 12px; }
+.activity-table .table__cell { padding-block: 14px; vertical-align: middle; }
+.activity-table .table__body .table__row:nth-child(even) {
+  background-color: color-mix(in oklab, var(--foreground) 1.5%, transparent);
+}
+.activity-table .table__body .table__row:hover,
+.activity-table .table__body .table__row:focus-within {
+  background-color: color-mix(in oklab, var(--accent) 5%, var(--surface));
+}
+
 /* Batang gulir tipis; bawaan macOS sudah begitu, Windows/Linux belum. */
 * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 
@@ -109,3 +120,52 @@ td .mono { white-space: nowrap; }
 .alert--accent { background: color-mix(in oklab, var(--accent) 7%, var(--surface)); border-color: color-mix(in oklab, var(--accent) 28%, transparent); }
 .alert__title { font-size: 0.8125rem; font-weight: 600; }
 .alert__description { font-size: 0.8125rem; }
+
+/* Long RPC errors and token names must wrap inside their own surface. */
+.alert { min-width: 0; gap: 0.625rem; }
+.alert__indicator { flex-shrink: 0; }
+.alert__content, .toast__content { min-width: 0; }
+.alert__title, .alert__description, .toast__title, .toast__description {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.toast-region { width: min(26rem, calc(100vw - 2rem)); min-width: 0; }
+.toast__description { max-height: 35dvh; overflow-y: auto; }
+.toast__close-button { flex-shrink: 0; }
+
+/* Keep wide tables scrollable without widening cards or their grid tracks. */
+.card > *, .table, .table__scroll-container { min-width: 0; max-width: 100%; }
+.pagination { flex-wrap: wrap; gap: 0.75rem; }
+.pagination__content { max-width: 100%; flex-wrap: wrap; }
+.kv-row > :last-child { margin-inline-start: auto; overflow-wrap: anywhere; }
+.detail-heading { overflow-wrap: anywhere; }
+.detail-heading h1 .whitespace-nowrap { white-space: normal; }
+
+/* Side panels use the viewport on phones, with independently scrolling content. */
+.drawer__dialog.position-drawer {
+  width: min(760px, 100vw);
+  max-width: 100vw;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding: 1rem;
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+.position-drawer .drawer__header, .position-drawer .drawer__footer { flex-shrink: 0; min-width: 0; }
+.position-drawer .drawer__body { min-width: 0; overflow-wrap: anywhere; }
+.position-drawer .drawer__heading { overflow-wrap: anywhere; }
+.position-drawer .drawer__header > div { min-width: 0; }
+.position-drawer .drawer__header { overflow-wrap: anywhere; }
+.position-drawer .drawer__footer { flex-wrap: wrap; }
+.position-drawer .drawer__close-trigger { min-width: 2.5rem; min-height: 2.5rem; }
+.modal__dialog, .alert-dialog__dialog { min-width: 0; overflow-wrap: anywhere; }
+.modal__body, .alert-dialog__body { min-width: 0; }
+.modal__footer, .alert-dialog__footer { flex-wrap: wrap; }
+@media (min-width: 640px) {
+  .drawer__dialog.position-drawer { padding: 1.5rem; }
+}
+@media (max-width: 639px) {
+  .position-drawer .drawer__footer > .button { width: 100%; }
+  .modal__dialog, .alert-dialog__dialog { max-width: calc(100vw - 2rem); }
+  .button { max-width: 100%; }
+}

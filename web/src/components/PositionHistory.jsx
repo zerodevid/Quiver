@@ -120,9 +120,9 @@ function Notes({ notes }) {
         const v = n.verdict ? VERDICT[n.verdict] : null;
         const cls = n.level === 'error' ? 'text-danger' : n.level === 'warn' ? 'text-warning' : '';
         return (
-          <li key={i} className="flex items-start gap-3 py-2">
+          <li key={i} className="flex flex-col items-start gap-1 py-3 sm:flex-row sm:gap-3">
             <span className="w-24 shrink-0 text-xs text-muted" title={fmtDate(n.ts)}>{ago(n.ts)}</span>
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 w-full flex-1">
               <div className="flex flex-wrap items-center gap-1.5">
                 {v && <Chip size="sm" variant="soft" color={v[1]}>{t(v[0])}</Chip>}
                 {n.actionKind && <span className="text-xs text-muted">{t('aksi target: {k}', { k: t(({ mint: 'Buka posisi', increase: 'Tambah likuiditas', decrease: 'Penarikan likuiditas', burn: 'Tutup posisi', collect: 'Klaim fee', transfer_out: 'Transfer posisi' })[n.actionKind] || n.actionKind) })}</span>}
@@ -159,7 +159,7 @@ export default function PositionHistory({ id, onClose }) {
     <Drawer isOpen={!!id} onOpenChange={(o) => { if (!o) onClose(); }}>
       <Drawer.Backdrop isDismissable>
         <Drawer.Content placement="right">
-          <Drawer.Dialog className="h-full w-full max-w-[760px] overflow-hidden">
+          <Drawer.Dialog className="position-drawer">
             <Drawer.Header className="mb-4 flex-row! items-start justify-between gap-3 pr-8">
               {p ? (
                 <div className="flex min-w-0 items-center gap-3">
@@ -183,7 +183,7 @@ export default function PositionHistory({ id, onClose }) {
               {!d && !err && <Loading text="Memuat riwayat…" />}
               {d && (
                 <>
-                  <div className="mb-4 grid grid-cols-2 gap-3">
+                  <div className="mb-4 grid grid-cols-1 min-[360px]:grid-cols-2 gap-3">
                     <Stat label={closed ? 'PnL total (LP + sisa)' : 'PnL (belum terealisasi)'} value={usd(p.pnlUsd ?? 0)} valueClass={tone(p.pnlUsd)}
                       sub={p.costUsd > 0 && p.pnlUsd != null ? pct((p.pnlUsd / p.costUsd) * 100, 2) : null} />
                     <Stat label="Umur" value={age(hours)} sub={p.opened_ts ? t('dibuka {w}', { w: ago(p.opened_ts) }) : null} />
@@ -213,7 +213,7 @@ export default function PositionHistory({ id, onClose }) {
               )}
             </Drawer.Body>
             {p && (
-              <Drawer.Footer className="mt-4 justify-between">
+              <Drawer.Footer className="mt-4 flex-wrap justify-between gap-2">
                 <span className="text-xs text-muted">{t('Jumlah token dan nilai dicatat bot saat transaksi; harga swap dari Kyber.')}</span>
                 <Button size="sm" variant="outline" onPress={() => { onClose(); location.hash = '#positions/' + p.id; }}>
                   <ChartCandlestick className="size-4" />{t('Halaman detail & grafik')}</Button>

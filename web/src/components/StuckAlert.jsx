@@ -87,7 +87,7 @@ export default function StuckAlert() {
     <div role="alert" className="border-b-2 border-danger bg-danger/10">
       <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-2 px-4 py-3 sm:px-6 lg:px-8">
         {list.length > 1 && (
-          <div className="flex items-center justify-between gap-3 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
             <span className="font-semibold text-danger">{t('{n} token menunggu dijual', { n: list.length })}</span>
             <Button size="sm" variant="outline" onPress={() => coba()} isPending={busy === '*'}>{t('Jual semua sekarang')}</Button>
           </div>
@@ -99,11 +99,11 @@ export default function StuckAlert() {
           const sisa = Math.max(0, Math.ceil(((it.next || 0) - Date.now()) / 1000));
           const jalan = busy === keyOf(it) || busy === '*';
           return (
-            <div key={keyOf(it)} className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div key={keyOf(it)} className="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] items-start gap-x-3 gap-y-3 border-t border-danger/20 pt-3 first:border-t-0 first:pt-0">
               <span className="flex size-8 shrink-0 animate-pulse items-center justify-center rounded-full bg-danger text-white">
                 <Siren className="size-4" />
               </span>
-              <div className="min-w-0 flex-1 basis-64 text-sm">
+              <div className="min-w-0 text-sm [overflow-wrap:anywhere]">
                 <div className="font-semibold text-danger">
                   {t('{a} {s} belum terjual', { a: num(it.amountNum, 0), s: it.symbol || short(it.token) })}
                   <span className="font-normal">
@@ -126,7 +126,7 @@ export default function StuckAlert() {
                   </span>
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-1.5">
+              <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 sm:col-start-2 sm:col-span-1">
                 <Button size="sm" variant="danger" onPress={() => coba(it)} isPending={jalan}>
                   {t('Jual sekarang')}{!jalan && sisa > 0 ? ` · ${sisa}s` : ''}
                 </Button>

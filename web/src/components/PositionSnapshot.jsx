@@ -32,7 +32,7 @@ export default function PositionSnapshot({ id, onUpdate }) {
   return <section className="mb-5 space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <h3 className="text-sm font-semibold">{t('Posisi ini')}</h3>
-      <div className="flex items-center gap-2">
+      <div className="flex max-w-full flex-wrap items-center gap-2">
         <Chip size="sm" variant="soft" color={closed ? 'default' : p.empty || p.inRange === false ? 'warning' : p.inRange === true ? 'success' : 'default'}>{t(closed ? 'Ditutup' : p.empty ? 'Likuiditas kosong' : p.inRange == null ? 'belum tersinkron' : p.inRange ? 'in-range' : 'di luar rentang')}</Chip>
         <ShareButton card={positionCard(p)} iconOnly variant="tertiary" />
         <Button size="sm" variant="tertiary" isPending={syncing} isDisabled={syncing} aria-label={t('Perbarui detail')} onPress={resync}><RefreshCw className="size-4" /></Button>
@@ -51,7 +51,7 @@ export default function PositionSnapshot({ id, onUpdate }) {
       <h3 className="mb-2 text-sm font-semibold">{t(closed ? 'Diterima saat keluar' : 'Komposisi token')}</h3>
       <div className="grid gap-3 sm:grid-cols-2">
         {[0, 1].map((side) => <div key={side} className="min-w-0 rounded-lg border border-border p-3">
-          <div className="mb-3 flex items-center gap-2"><TokenIcon address={p[`token${side}`]} symbol={p[`symbol${side}`]} size={24} /><span className="font-medium">{p[`symbol${side}`]}</span></div>
+          <div className="mb-3 flex items-center gap-2"><TokenIcon address={p[`token${side}`]} symbol={p[`symbol${side}`]} size={24} /><span className="min-w-0 break-words font-medium">{p[`symbol${side}`]}</span></div>
           <div className="num break-words text-lg font-semibold">{amount(p[`amount${side}`], p[`dec${side}`])}</div>
           <div className="mt-3 space-y-1 text-xs">
             <div className="flex justify-between gap-2"><span className="text-muted">{t('Modal disetor')}</span><span className="num">{amount(p[`cost${side}`], p[`dec${side}`])}</span></div>

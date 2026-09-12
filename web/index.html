@@ -18,7 +18,22 @@
   </script>
 </head>
 <body class="bg-background text-foreground">
-  <div id="root"></div>
+  <div id="root">
+    <div id="startup" role="status" style="max-width:32rem;margin:15vh auto;padding:1.5rem;font:15px/1.6 system-ui">
+      <p id="startup-message">Memuat Quiver…</p>
+      <a href="" style="color:inherit;text-decoration:underline">Muat ulang halaman</a>
+    </div>
+  </div>
+  <noscript>Aktifkan JavaScript untuk membuka dasbor Quiver.</noscript>
+  <script>
+    // Tetap terlihat jika entry JS gagal dimuat sebelum React sempat berjalan.
+    window.addEventListener('error', function (event) {
+      var message = document.getElementById('startup-message');
+      if (message && (event.error || event.target && event.target.tagName === 'SCRIPT')) {
+        message.textContent = 'Aplikasi gagal dimuat. Muat ulang halaman untuk mengambil versi terbaru.';
+      }
+    }, true);
+  </script>
   <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>
