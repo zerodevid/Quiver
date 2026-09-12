@@ -426,6 +426,7 @@ class RpcPool {
         if (toTag && (!br || br.error || !br.result)) {
           throw new Error(`endpoint belum sampai blok ${parseInt(toTag, 16)} (node tertinggal)`);
         }
+        if (used.ep) used.ep.logsStreak = 0;
         return out;
       } catch (e) {
         lastErr = e;
@@ -441,10 +442,15 @@ class RpcPool {
         // detik, node biasanya menyusul. Galat lain ("historical state", "time budget",
         // "invalid range"): 20 detik — beberapa tick lewat endpoint lain dulu.
         const ms = capacityErr(e.message) ? 8000 : busyErr(e.message) ? 30_000 : /tertinggal/.test(e.message) ? 10_000 : 20_000;
-        ep.logsCooldownUntil = Math.max(ep.logsCooldownUntil, Date.now() + ms);
+        // Menolak beruntun (ordofi: "more logs than upstream will serve" di hampir tiap
+        // rentang): istirahatnya berlipat sampai 5 menit, supaya percobaan tidak habis
+        // di endpoint yang sama. Satu balasan sukses mengembalikannya ke nol.
+        ep.logsStreak = (ep.logsStreak || 0) + 1;
+        const cool = Math.min(300_000, ms * 2 ** Math.min(ep.logsStreak - 1, 5));
+        ep.logsCooldownUntil = Math.max(ep.logsCooldownUntil, Date.now() + cool);
         lastErr = new Error(`${e.message} [${host}]`);
         if (this.allCoolingFor(true, span)) break;
-        this.log(`getLogs ${host} gagal (${String(e.message).slice(0, 90)}) — istirahat getLogs ${ms / 1000}s, coba endpoint lain`);
+        this.log(`getLogs ${host} gagal (${String(e.message).slice(0, 90)}) — istirahat getLogs ${Math.round(cool / 1000)}s, coba endpoint lain`);
       }
     }
     throw lastErr;

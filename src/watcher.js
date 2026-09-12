@@ -97,18 +97,25 @@ class Watcher {
   async fetchRange(fromBlock, toBlock) {
     const hex = (n) => '0x' + n.toString(16);
     const range = { fromBlock: hex(fromBlock), toBlock: hex(toBlock) };
-    // Tiga query paralel lewat rpc.getLogs (bukan rpc.batch) supaya masing-masing
-    // dapat failover antar-endpoint saat sebuah upstream menolak karena kapasitas.
-    // Menyatukannya dalam satu batch memang hemat satu round-trip, tapi satu sub-query
-    // yang ditolak menggagalkan seluruh siklus tanpa kesempatan pindah endpoint.
+    // SATU query untuk ketiga sumber (alamat & topik boleh berupa daftar; hasilnya
+    // dipilah lagi per alamat+topik di bawah). Dulu tiga query terpisah tiap 1,5 detik
+    // — dikali dua instance — menghabiskan kuota endpoint gratisan (429 beruntun).
+    // Failover antar-endpoint tetap ada di rpc.getLogs, per query.
     //
     // Hanya topik yang kita butuhkan yang diminta. Mengambil SEMUA log NPM ikut
     // menyeret Collect dan Approval (>50% volume) dan itu yang memicu 429 saat mengejar.
-    const [modLiq, xferV4, npm] = await Promise.all([
-      this.rpc.getLogs({ address: ADDR.poolManager, topics: [TOPIC.modifyLiquidity], ...range }, { priority: true }),
-      this.rpc.getLogs({ address: ADDR.posmV4, topics: [TOPIC.transfer], ...range }, { priority: true }),
-      this.rpc.getLogs({ address: ADDR.npmV3, topics: [[TOPIC.increaseLiq, TOPIC.decreaseLiq, TOPIC.transfer]], ...range }, { priority: true }),
-    ]);
+    const logs = await this.rpc.getLogs({
+      address: [ADDR.poolManager, ADDR.posmV4, ADDR.npmV3],
+      topics: [[TOPIC.modifyLiquidity, TOPIC.transfer, TOPIC.increaseLiq, TOPIC.decreaseLiq]],
+      ...range,
+    }, { priority: true });
+    const modLiq = [], xferV4 = [], npm = [];
+    for (const l of logs || []) {
+      const a = String(l.address || '').toLowerCase(), t0 = String(l.topics?.[0] || '').toLowerCase();
+      if (a === ADDR.poolManager && t0 === TOPIC.modifyLiquidity) modLiq.push(l);
+      else if (a === ADDR.posmV4 && t0 === TOPIC.transfer) xferV4.push(l);
+      else if (a === ADDR.npmV3 && (t0 === TOPIC.transfer || t0 === TOPIC.increaseLiq || t0 === TOPIC.decreaseLiq)) npm.push(l);
+    }
     return { modLiq: modLiq || [], xferV4: xferV4 || [], npm: npm || [] };
   }
 
