@@ -36,10 +36,12 @@ class Watcher {
     const need = [...new Set(addrs)].filter((a) => a && !this.isContract.has(a));
     if (!need.length) return;
     const res = await this.rpc.batch(need.map((a) => ({ method: 'eth_getCode', params: [a, 'latest'] })));
-    need.forEach((a, i) => {
-      const code = res[i] && !res[i].error ? res[i].result : '0x';
-      this.isContract.set(a, !!code && code !== '0x');
-    });
+    // Tidak terbaca ≠ "bukan kontrak". Dulu galat RPC dibaca '0x' dan DISIMPAN selamanya:
+    // titipan NFT target ke router otomasi terbaca "target melepas posisi", dan bot
+    // menutup cermin dari posisi yang masih hidup. Lempar — rentang blok diulang.
+    const bad = need.find((a, i) => !res[i] || res[i].error || typeof res[i].result !== 'string');
+    if (bad) throw new Error(`eth_getCode ${bad} tidak terbaca dari RPC`);
+    need.forEach((a, i) => this.isContract.set(a, res[i].result !== '0x'));
   }
 
   targets() {
@@ -81,7 +83,9 @@ class Watcher {
     if (!need.length) return;
     const to = venue === 'v4' ? ADDR.posmV4 : ADDR.npmV3;
     const iface = venue === 'v4' ? IF_POSM : IF_NPM;
-    const res = await this.rpc.ethCallMany(need.map((id) => ({ to, data: iface.encodeFunctionData('ownerOf', [BigInt(id)]) })));
+    // strict: ownerOf yang tidak terbaca (kuota) ≠ revert (NFT dibakar). Tanpa ini aksi
+    // likuiditas target tersaring sebagai "bukan milik target" dan hilang selamanya.
+    const res = await this.rpc.ethCallMany(need.map((id) => ({ to, data: iface.encodeFunctionData('ownerOf', [BigInt(id)]) })), 'latest', { strict: true });
     need.forEach((id, i) => {
       const w = res[i];
       // ownerOf revert = NFT sudah dibakar; biarkan null supaya bisa diisi dari log Transfer
@@ -176,8 +180,12 @@ class Watcher {
       .filter((h) => !seenTx.has(h));
     if (needTx.length) {
       const rcs = await this.rpc.batch(needTx.map((h) => ({ method: 'eth_getTransactionReceipt', params: [h] })));
+      // Jaring pengaman yang bolong kalau receipt-nya tidak terbaca: aksi likuiditas
+      // target hilang diam-diam sementara kursor maju. Lempar — rentang diulang.
+      const miss = rcs.findIndex((r) => !r || r.error || !r.result);
+      if (miss >= 0) throw new Error(`receipt ${needTx[miss].slice(0, 12)}… tidak terbaca dari RPC`);
       for (const r of rcs) {
-        const rc = r && !r.error ? r.result : null;
+        const rc = r.result;
         for (const l of rc?.logs || []) {
           if (l.address.toLowerCase() !== ADDR.poolManager || l.topics[0] !== TOPIC.modifyLiquidity) continue;
           if (asAddr(l.topics[2]) !== ADDR.posmV4) continue;
@@ -236,7 +244,7 @@ class Watcher {
     if (need.length) {
       const res = await this.rpc.ethCallMany(need.map((id) => ({
         to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPoolAndPositionInfo', [BigInt(id)]),
-      })));
+      })), 'latest', { strict: true });
       need.forEach((id, i) => {
         if (!res[i] || res[i] === '0x') return;
         try {
@@ -315,7 +323,7 @@ class Watcher {
     const ids = [...new Set(rows.map((r) => r.tokenId))];
     const res = await this.rpc.ethCallMany(ids.map((id) => ({
       to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('positions', [BigInt(id)]),
-    })));
+    })), 'latest', { strict: true });
     const posBy = new Map();
     ids.forEach((id, i) => {
       if (!res[i] || res[i] === '0x') return;

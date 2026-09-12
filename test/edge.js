@@ -58,7 +58,10 @@ function harness({ balances = {}, rules = {}, positions = [], targetLiquidityAft
   // getPositionLiquidity dipakai handleExit untuk menghitung L target SEBELUM aksi.
   const rpc = {
     ethCallMany: async (c) => c.map(() => (targetLiquidityAfter == null ? '0x' : '0x' + targetLiquidityAfter.toString(16).padStart(64, '0'))),
-    batch: async (c) => c.map(() => ({ result: null })), blockNumber: async () => 1e6, call: async () => null,
+    // receipt tx yang log-nya terlihat pasti ada di chain (tanpa log likuiditas di sini);
+    // getCode = '0x' (EOA)
+    batch: async (c) => c.map((x) => ({ result: x.method === 'eth_getTransactionReceipt' ? { logs: [] } : x.method === 'eth_getCode' ? '0x' : null })),
+    blockNumber: async () => 1e6, call: async () => null,
   };
   const eng = new Engine({ rpc, store, chain, cfg, log: () => {} });
   eng.ethUsd = 2500;
@@ -706,7 +709,7 @@ async function t(name, fn) {
   function watcherWith(range) {
     const store = new Store(':memory:');
     store.run('INSERT INTO targets(address,label,enabled,added_ts) VALUES(?,?,1,?)', TARGET, 'uji', Date.now());
-    const rpc = { ethCallMany: async (c) => c.map(() => '0x'), batch: async (c) => c.map(() => ({ result: null })), getLogs: async () => [] };
+    const rpc = { ethCallMany: async (c) => c.map(() => '0x'), batch: async (c) => c.map((x) => ({ result: x.method === 'eth_getTransactionReceipt' ? { logs: [] } : x.method === 'eth_getCode' ? '0x' : null })), getLogs: async () => [] };
     const chain = { blockTs: async (b) => b * 101, tokens: async (l) => l.map((a) => ({ address: a, symbol: '?', decimals: 18 })), slot0V4Many: async (ids) => ids.map(() => null), quoteSideOf: () => null, valueInQuote: () => null, poolKeyOfId: async () => null };
     const w = new Watcher({ rpc, store, chain, cfg: {}, log: () => {} });
     w.fetchRange = async () => range;

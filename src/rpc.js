@@ -38,6 +38,8 @@ class RpcPool {
     this.logsActive = 0;
     this.logsQueue = [];
     this.logsLast = 0;
+    // blok ≈ 0,1 detik: 20 blok ≈ 2 detik keterlambatan membaca aksi target
+    this.headMargin = opts.head_margin_blocks ?? 20;
   }
 
   async logsSlot(priority = false) {
@@ -210,18 +212,57 @@ class RpcPool {
   // (~1-2 detik). Kalau kursor dimajukan ke kepala endpoint tercepat lalu getLogs
   // dilayani endpoint yang tertinggal, blok di antaranya hilang selamanya —
   // karena kursor sudah terlanjur lewat. Jadi dipakai yang paling rendah.
+  //
+  // Catatan: dulu ini mengirim N eth_blockNumber identik dalam SATU batch — batch pergi
+  // ke satu endpoint, jadi "min" selalu = "max" (headSpread selalu 0) dan kuota endpoint
+  // teratas terbakar N× tiap 1,5 detik. Sekarang satu panggilan; perlindungan dari
+  // endpoint getLogs yang tertinggal ada di _getLogs (blok ujung rentang harus ada di
+  // endpoint yang sama yang menjawab log-nya).
   async safeHead() {
-    const res = await this.batch(this.eps.map(() => ({ method: 'eth_blockNumber' })));
-    const heights = res.map((r) => (r && !r.error && r.result ? parseInt(r.result, 16) : null)).filter(Boolean);
-    if (!heights.length) throw new Error('tidak ada endpoint yang membalas blockNumber');
-    return { min: Math.min(...heights), max: Math.max(...heights), spread: Math.max(...heights) - Math.min(...heights) };
+    const [r] = await this.batch([{ method: 'eth_blockNumber' }]);
+    const h = r && !r.error && r.result ? parseInt(r.result, 16) : null;
+    if (!h) throw new Error('tidak ada endpoint yang membalas blockNumber');
+    // Endpoint getLogs publik biasanya 3–5 blok di belakang endpoint tercepat. Tanpa
+    // jarak ini ujung rentang sering belum ada di sana dan pemindaian gagal beruntun.
+    const safe = h - this.headMargin;
+    return { min: safe, max: h, spread: h - safe };
+  }
+
+  // Galat per-item di dalam balasan 200 yang sifatnya SEMENTARA (kuota, node sibuk,
+  // node tertinggal) — bukan jawaban sah. eth_call yang revert itu jawaban sah.
+  static transientItemError(err) {
+    if (!err) return false;
+    const msg = String(err.message || '');
+    if (err.code === 3 || /revert/i.test(msg)) return false;
+    if ([429, -32005, -32029, -32001, -31001, -32603].includes(err.code)) return true;
+    return /429|too many|rate.?limit|exceeded|capacity|busy|timeout|timed out|try again|unavailable|no backend|internal error|header not found|missing trie|historical state|upstream|relay|overload/i.test(msg);
   }
 
   // ---- pemanggilan --------------------------------------------------------
   // calls: [{method, params}] -> hasil sejajar; melempar kalau semua endpoint gagal
   // `used` (opsional): objek yang diisi {ep} — endpoint yang terakhir melayani, supaya
   // pemanggil bisa mengistirahatkannya kalau balasan 200-nya ternyata berisi galat.
-  async batch(calls, { timeoutMs = 30_000, logSpan = 0, archive = false, used = null } = {}) {
+  async batch(calls, opts = {}) {
+    const out = await this.batchOnce(calls, opts);
+    // getLogs punya failover sendiri (_getLogs: istirahat khusus getLogs per endpoint).
+    if (calls.some((c) => c.method === 'eth_getLogs')) return out;
+    // Item yang gagal SEMENTARA (galat kuota di dalam balasan 200, atau item yang
+    // hilang dari balasan batch) dicoba ulang di endpoint lain. Dulu item seperti itu
+    // sampai ke pemanggil sebagai null — dan ethCallMany(null) terbaca "revert/nol":
+    // pemilik NFT tidak dikenal (aksi target dibuang), likuiditas nol (posisi ditutup).
+    const tries = Math.max(1, Math.min(this.eps.length, 4));
+    for (let t = 1; t < tries; t++) {
+      const idx = out.map((r, i) => (r?.transient ? i : -1)).filter((i) => i >= 0);
+      if (!idx.length) break;
+      if (opts.used) opts.used.ep = null;
+      let again;
+      try { again = await this.batchOnce(idx.map((i) => calls[i]), opts); } catch { break; }
+      idx.forEach((i, k) => { out[i] = again[k]; });
+    }
+    return out;
+  }
+
+  async batchOnce(calls, { timeoutMs = 30_000, logSpan = 0, archive = false, used = null } = {}) {
     if (!calls.length) return [];
     const out = new Array(calls.length).fill(null);
     const needsLogs = calls.some((c) => c.method === 'eth_getLogs');
@@ -244,12 +285,25 @@ class RpcPool {
         const res = await this.post(ep.url, body, timeoutMs, ips, ep.headers);
         const arr = single ? [res] : res;
         if (!Array.isArray(arr)) throw new Error(arr?.error?.message || 'balasan batch bukan array');
-        const byId = new Map(arr.map((r) => [r.id, r]));
+        const byId = new Map(arr.map((r) => [r?.id, r]));
+        let flaky = 0;
         for (let i = 0; i < slice.length; i++) {
           const r = byId.get(payload[i].id);
-          out[pos + i] = r?.error ? { error: r.error } : { result: r?.result ?? null };
+          if (!r) { out[pos + i] = { error: { message: 'item hilang dari balasan batch' }, transient: true }; flaky++; }
+          else if (r.error) {
+            const tr = RpcPool.transientItemError(r.error);
+            out[pos + i] = tr ? { error: r.error, transient: true } : { error: r.error };
+            if (tr) flaky++;
+          } else out[pos + i] = { result: r.result ?? null };
         }
-        ep.calls += slice.length; ep.fails = 0; ep.lastMs = Date.now() - t0;
+        ep.calls += slice.length; ep.lastMs = Date.now() - t0;
+        if (flaky && !needsLogs) {
+          // Endpoint menjawab tapi sebagian isinya galat kuota: istirahatkan sebentar
+          // supaya ulangan item-item itu jatuh ke endpoint lain. (Galat getLogs diurus
+          // _getLogs dengan istirahat khusus getLogs — eth_call endpoint itu tetap jalan.)
+          ep.errors++; ep.fails++;
+          ep.cooldownUntil = Date.now() + Math.min(30_000, 4000 * 2 ** Math.min(ep.fails - 1, 3));
+        } else ep.fails = 0;
         pos += size;
       } catch (e) {
         ep.errors++; ep.fails++;
@@ -348,16 +402,30 @@ class RpcPool {
     const busyErr = (m) => /429|too many requests|network is busy|rate limit/i.test(m || '');
     const eligible = this.eps.filter((e) => !e.noLogs);
     const span = spanOf(filter);
+    // Blok ujung rentang diminta di batch YANG SAMA (satu permintaan HTTP, satu node).
+    // Node yang tertinggal membalas getLogs untuk blok yang belum ia punya dengan daftar
+    // KOSONG tanpa galat — kursor maju dan aksi target di rentang itu hilang selamanya.
+    // Node itu juga membalas getBlockByNumber(ujung) = null: itu yang ditangkap di sini.
+    const toTag = typeof filter.toBlock === 'string' && /^0x[0-9a-f]+$/i.test(filter.toBlock) ? filter.toBlock : null;
     let lastErr = null;
     for (let attempt = 0; attempt < Math.max(1, eligible.length); attempt++) {
       const used = {};
       try {
-        const out = await this.call('eth_getLogs', [filter], { timeoutMs: 45_000, logSpan: span, used });
+        const calls = [{ method: 'eth_getLogs', params: [filter] }];
+        if (toTag) calls.push({ method: 'eth_getBlockByNumber', params: [toTag, false] });
+        const res = await this.batch(calls, { timeoutMs: 45_000, logSpan: span, used });
+        const [lr, br] = res;
+        if (!lr) throw new Error('eth_getLogs: tidak ada balasan');
+        if (lr.error) throw new Error(`eth_getLogs: ${lr.error.message}`);
+        const out = lr.result;
         // Sebagian upstream membalas `result: null` alih-alih daftar kosong saat gagal
         // di dalam. Kalau itu diterima sebagai "tidak ada log", satu rentang blok
         // hilang DIAM-DIAM padahal kursor tetap maju — aksi target di rentang itu
         // tidak akan pernah terlihat. Perlakukan sebagai kegagalan supaya diulang.
         if (!Array.isArray(out)) throw new Error('eth_getLogs mengembalikan hasil bukan daftar');
+        if (toTag && (!br || br.error || !br.result)) {
+          throw new Error(`endpoint belum sampai blok ${parseInt(toTag, 16)} (node tertinggal)`);
+        }
         return out;
       } catch (e) {
         lastErr = e;
@@ -369,10 +437,10 @@ class RpcPool {
         const host = new URL(ep.url).hostname;
         ep.logsErrors++;
         // Kapasitas: 8 detik cukup, rentang berikutnya mungkin lebih ringan. Sibuk/429:
-        // lebih lama, mencoba lagi cepat cuma memperpanjang hukuman. Galat lain
-        // ("historical state", "time budget", "invalid range"): 20 detik — cukup untuk
-        // beberapa tick lewat endpoint lain sebelum yang ini dicoba lagi.
-        const ms = capacityErr(e.message) ? 8000 : busyErr(e.message) ? 30_000 : 20_000;
+        // lebih lama, mencoba lagi cepat cuma memperpanjang hukuman. Tertinggal: 10
+        // detik, node biasanya menyusul. Galat lain ("historical state", "time budget",
+        // "invalid range"): 20 detik — beberapa tick lewat endpoint lain dulu.
+        const ms = capacityErr(e.message) ? 8000 : busyErr(e.message) ? 30_000 : /tertinggal/.test(e.message) ? 10_000 : 20_000;
         ep.logsCooldownUntil = Math.max(ep.logsCooldownUntil, Date.now() + ms);
         lastErr = new Error(`${e.message} [${host}]`);
         if (this.allCoolingFor(true, span)) break;
@@ -392,13 +460,21 @@ class RpcPool {
   // `from` dan `value` boleh diisi untuk menyimulasikan transaksi sebagai wallet bot
   // (saldo dan izin ikut terbaca) — dipakai memilih pool swap: pool yang menolak swap
   // ketahuan di sini, sebelum ongkos gas keluar. Pembacaan biasa cukup {to, data}.
-  async ethCallMany(items, block = 'latest') {
+  //
+  // strict: lempar kalau ada item yang tetap gagal SEMENTARA setelah dicoba di endpoint
+  // lain — untuk pemanggil yang tidak boleh menyamakan "tidak terbaca" dengan "revert"
+  // (mis. ownerOf: revert = NFT dibakar, tidak terbaca = belum tahu).
+  async ethCallMany(items, block = 'latest', { strict = false } = {}) {
     const res = await this.batch(items.map((i) => {
       const tx = { to: i.to, data: i.data };
       if (i.from) tx.from = i.from;
       if (i.value != null && BigInt(i.value) > 0n) tx.value = '0x' + BigInt(i.value).toString(16);
       return { method: 'eth_call', params: [tx, block] };
     }));
+    if (strict) {
+      const bad = res.find((r) => !r || r.transient);
+      if (bad) throw new Error(`eth_call tidak terbaca dari RPC: ${bad?.error?.message || 'tidak ada balasan'}`);
+    }
     return res.map((r) => (r && !r.error ? r.result : null));
   }
 
