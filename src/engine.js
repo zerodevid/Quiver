@@ -622,11 +622,29 @@ class Engine {
       throw new Error('posisi sedang diproses — tunggu konfirmasi transaksi');
     }
     this.activeEntries = (this.activeEntries || 0) + 1;
-    try { return await this.sendEntry(plan, act); }
+    const trace = {};
+    try { return await this.sendEntry(plan, act, trace); }
+    catch (e) {
+      // Zap sudah jadi tapi LP-nya gagal: token yang terbeli jangan ditinggal telanjang
+      // di wallet — masuk antrean jual, seperti sisa posisi. Rescue gagal tidak boleh
+      // menutupi galat aslinya.
+      if (trace.zapped) await this.rescueZap(plan, trace.zapped, e).catch((x) => this.store?.log?.('warn', `antrekan token zap gagal: ${x.message}`, { quiet: true }));
+      throw e;
+    }
     finally { this.activeEntries--; }
   }
 
-  async sendEntry(plan, act) {
+  async rescueZap(plan, z, err) {
+    const bal = (await this.exec.balances([z.token])).get(z.token) || 0n;
+    const gained = bal > z.before ? bal - z.before : 0n;
+    if (gained === 0n) return;
+    const meta = await this.chain.token(z.token).catch(() => null);
+    this.keepLeftover({ posId: null, target: plan.target ?? null, token: z.token, quote: z.quote, amount: gained.toString(), tries: 0,
+      since: Date.now(), source: 'zap' }, `LP gagal setelah zap: ${err.message}`);
+    this.store.log('warn', `LP gagal setelah zap — ${fmtUnits(gained, meta?.decimals ?? 18)} ${meta?.symbol || z.token.slice(0, 8)} masuk antrean jual`);
+  }
+
+  async sendEntry(plan, act, trace = {}) {
     const rules = this.rulesFrom(act.target);
     const pk = plan.poolKey;
     const need0 = BigInt(plan.amount0Max), need1 = BigInt(plan.amount1Max);
@@ -716,12 +734,16 @@ class Engine {
       const zapLossBps = feeBps != null
         ? Math.max(rules.swap.max_price_impact_bps, Math.round(feeBps) + 200)
         : rules.swap.max_price_impact_bps;
+      // Saldo token beli SEBELUM zap: kalau LP-nya gagal sesudah ini, hanya yang
+      // terbeli di sini yang diantrekan untuk dijual (rescueZap), bukan saldo lama.
+      const boughtBefore = bal.get(buyTok.toLowerCase()) || 0n;
       const kz = await this.kyber.swap(payTok, buyTok, payRaw, {
         slippageBps: rules.swap.max_slippage_bps, maxLossBps: zapLossBps,
         kind: 'zap_swap', detail: { via: 'kyber', pool: plan.poolRef },
       });
       if (kz) {
         notes.push(`zap ${idx === 0 ? 'beli token0' : 'beli token1'} via Kyber`);
+        trace.zapped = trace.zapped || { token: buyTok.toLowerCase(), quote: payTok, before: boughtBefore };
         bal = await this.exec.balances([plan.token0, plan.token1]);
         continue;
       }
@@ -754,6 +776,7 @@ class Engine {
       const rc = await this.exec.waitReceipt(h);
       if (!rc.ok) throw new Error(`swap zap gagal (${h})`);
       notes.push(`zap ${idx === 0 ? 'beli token0' : 'beli token1'}`);
+      trace.zapped = trace.zapped || { token: buyTok.toLowerCase(), quote: payTok, before: boughtBefore };
       bal = await this.exec.balances([plan.token0, plan.token1]);
     }
 
@@ -800,14 +823,21 @@ class Engine {
     // token lama setelah harga berubah selama menunggu receipt approval.
     await refreshNeeds();
     bal = await this.exec.balances([plan.token0, plan.token1]);
-    const latestAmounts = m.amountsForLiquidity(s2.sqrtPriceX96, sa, sb, L);
-    if (L > desiredL || latestAmounts.amount0 > avail(plan.token0)
-      || latestAmounts.amount1 > avail(plan.token1)
-      || latestAmounts.amount0 > BigInt(finalPlan.amount0Max)
-      || latestAmounts.amount1 > BigInt(finalPlan.amount1Max)) {
-      throw new Error('harga berubah sebelum mint; kebutuhan token atau batas nilai berubah — LP belum dibuka, dana tetap di wallet');
+    // Harga bergerak selama menunggu approval (termasuk akibat zap kita sendiri).
+    // Dulu ini MEMBATALKAN mint — padahal token hasil zap sudah di wallet dan dibiarkan
+    // telanjang (lpcopy2: $26 PAIREX ditinggal, terpaksa dijual manual). Ukurannya
+    // disesuaikan ulang ke saldo nyata dan batas nilai pada harga saat mint (approval
+    // tak terbatas, jadi aman); batal hanya kalau memang tidak tersisa apa-apa.
+    const fitL = (m.liquidityForAmounts(s2.sqrtPriceX96, sa, sb, avail(plan.token0), avail(plan.token1)) * 99n) / 100n;
+    if (fitL < L || desiredL < L) {
+      L = fitL < desiredL ? fitL : desiredL;
+      notes.push('ukuran disesuaikan ke harga saat mint');
     }
-    amt = latestAmounts;
+    if (L <= 0n) throw new Error('saldo token pool tidak mencukupi pada harga saat mint — LP belum dibuka, token hasil zap tetap di wallet');
+    amt = m.amountsForLiquidity(s2.sqrtPriceX96, sa, sb, L);
+    finalPlan.liquidity = L.toString();
+    finalPlan.amount0Max = ((amt.amount0 * (10000n + slip)) / 10000n).toString();
+    finalPlan.amount1Max = ((amt.amount1 * (10000n + slip)) / 10000n).toString();
     const adding = plan.action === 'increase' && plan.tokenId;
     const tx = adding
       ? (plan.venue === 'v3'

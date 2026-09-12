@@ -111,9 +111,42 @@ test('full simulated execution: historical BOW tick path and fee/slippage matrix
 });
 
 test('price crossing range during approvals must stop before sending mint', async () => {
+  // Belum ada zap (rencana USDG saja), lalu harga masuk rentang saat approval: butuh BOW
+  // yang tidak dimiliki — berhenti, tidak ada token yang tersangkut.
   const f = fixture({ ticks: [-323399], approvalTick: -323458, complete: true });
-  await assert.rejects(f.e.executeEntry(f.plan, {}), /harga berubah sebelum mint/);
+  await assert.rejects(f.e.executeEntry(f.plan, {}), /saldo token pool tidak mencukupi pada harga saat mint/);
+  assert.equal(f.stats().swaps, 0);
   assert.equal(f.stats().mint, undefined);
+});
+
+test('price drift during approvals after a zap refits the size instead of stranding the token', async () => {
+  // Kasus lpcopy2 (12 Sep): zap $26 USDG→PAIREX sukses, harga bergeser selama approval,
+  // mint dibatalkan "harga berubah sebelum mint" — PAIREX ditinggal telanjang di wallet.
+  for (const drift of [-323412, -323458, -324000, -323401]) {
+    const f = fixture({ ticks: [-323405], approvalTick: drift, complete: true });
+    const result = await f.e.executeEntry(f.plan, {});
+    assert.equal(result.txHash, 'SIMULATED');
+    assert.equal(f.stats().swaps, 1);
+    assert.ok(BigInt(f.stats().mint.liquidity) > 0n);
+    assert.ok(result.valueUsd <= 200.000001);
+  }
+});
+
+test('mint failing after a zap queues the bought token for sale instead of stranding it', async () => {
+  const f = fixture({ ticks: [-323405], complete: true });
+  const state = new Map(); const logs = [];
+  f.e.store = { getState: (k, d) => state.get(k) ?? d, setState: (k, v) => state.set(k, v), log: (lvl, msg) => logs.push(msg) };
+  f.e.rulesFrom = () => ({ swap: { enabled: true, max_slippage_bps: 150, max_price_impact_bps: 500 }, exit: {} });
+  const send = f.e.exec.send;
+  f.e.exec.send = async (tx) => { if (tx.simulatedMint) throw new Error('MINT_BOOM'); return send(tx); };
+  await assert.rejects(f.e.executeEntry(f.plan, {}), /MINT_BOOM/);
+  assert.equal(f.stats().swaps, 1);
+  const q = JSON.parse(state.get('leftovers'));
+  assert.equal(q.length, 1);
+  assert.equal(q[0].token, TOKEN); assert.equal(q[0].quote, ADDR.usdg); assert.equal(q[0].source, 'zap');
+  assert.equal(BigInt(q[0].amount), f.balances.get(TOKEN));   // persis yang terbeli (saldo awal 0)
+  assert.match(q[0].why, /MINT_BOOM/);
+  assert.ok(logs.some((m) => /masuk antrean jual/.test(m)));
 });
 
 test('pool RPC failure stops before token swap or mint', async () => {
