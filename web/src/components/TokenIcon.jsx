@@ -14,7 +14,7 @@ import { useEffect, useState } from 'react';
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 
-const KNOWN = {
+export const KNOWN = {
   '0x5fc5360d0400a0fd4f2af552add042d716f1d168': '/tokens/usdg.png',
   '0x0bd7d308f8e1639fab988df18a8011f41eacad73': '/tokens/weth.png',
   '0x0000000000000000000000000000000000000000': '/tokens/eth.svg',
@@ -22,7 +22,7 @@ const KNOWN = {
 
 // Rona warna diturunkan dari alamat — stabil, tersebar rata, dan tidak pernah
 // menghasilkan warna yang bentrok dengan makna hijau/merah untung-rugi.
-function hue(addr = '') {
+export function hue(addr = '') {
   let h = 0;
   for (let i = 2; i < addr.length; i++) h = (h * 31 + addr.charCodeAt(i)) % 360;
   return h;

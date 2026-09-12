@@ -4,6 +4,7 @@ import { useStatus } from '../App';
 import { usePoll, useResync } from '../hooks';
 import { PageHeader, Stat, Panel, Empty, Loading, Notice, KV, Dot, DataTable, PriceRange, Segmented, Refresh } from '../components/ui';
 import PnlCalendar from '../components/PnlCalendar';
+import ShareButton, { ShareDialog, totalCard, dailyCard } from '../components/ShareCard';
 import { Pair, SyncState } from './Positions';
 import { usd, tone, num, pct, age, ago, short, locale as fmtLocale, TXKIND, TXSTATUS } from '../fmt';
 import { useI18n, reason } from '../i18n';
@@ -213,6 +214,7 @@ export default function Overview() {
   const { status: d } = useStatus();
   const [range, setRange] = useState('7d');
   const [view, setView] = useState('pnl');
+  const [shareDay, setShareDay] = useState(null);   // 'YYYY-MM-DD' yang diklik di kalender
   const { data: p, reload: reloadPortfolio } = usePoll('/api/portfolio?range=' + range, 30000);
   // Sama dengan halaman Posisi: endpoint murah, jadi posisi baru muncul dalam ~5 detik.
   const { data: pos, reload: reloadPos } = usePoll('/api/positions', 5000);
@@ -239,7 +241,11 @@ export default function Overview() {
 
   return (
     <>
-      <PageHeader group="Pemantauan" title="Ringkasan" />
+      <PageHeader group="Pemantauan" title="Ringkasan">
+        <ShareButton label="Bagikan total PnL" isDisabled={!now} card={now ? totalCard({ pnl: now.pnl }) : null} />
+      </PageHeader>
+      {/* Kartu PnL harian: hari yang diklik di kalender. Server merakit datanya sendiri. */}
+      <ShareDialog card={shareDay && cal ? dailyCard({ day: shareDay, pnl: cal.daily[shareDay] }) : null} onClose={() => setShareDay(null)} />
       <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Stat label="Total portofolio" value={now ? usd(now.value) : '—'}
           sub={!now ? null : now.cash
@@ -302,8 +308,8 @@ export default function Overview() {
       </Panel>
 
       <div className="mb-4 grid items-start gap-3 lg:grid-cols-5">
-        <Panel title="Kalender PnL" desc="PnL terealisasi per hari posisi ditutup" className="lg:col-span-3">
-          {cal ? <PnlCalendar daily={cal.daily} counts={cal.counts} empty="Belum ada posisi ditutup" /> : <Loading />}
+        <Panel title="Kalender PnL" desc="PnL terealisasi per hari posisi ditutup · klik hari untuk membuat kartu bagikan" className="lg:col-span-3">
+          {cal ? <PnlCalendar daily={cal.daily} counts={cal.counts} empty="Belum ada posisi ditutup" onShare={(k) => setShareDay(k)} /> : <Loading />}
         </Panel>
         <div className="grid gap-3 lg:col-span-2">
           <Panel title="Kinerja per sumber" bodyClass="p-0">

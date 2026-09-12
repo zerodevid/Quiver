@@ -193,7 +193,11 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
   const bot = new Telegram({
     cfg: (cfg.telegram.language = 'id', cfg), cfgPath, store, engine, log: () => {},
     api: (m, p, b, q) => server.api(m, p, b, q),
+    shareCard: (o) => server.shareCard(o),
   });
+  // Kartu bagikan dikirim sebagai foto lewat multipart, bukan this.tg(): dicatat
+  // terpisah supaya tidak menyentuh jaringan.
+  bot.sendPhoto = async (chatId, png, caption) => { sent.push({ method: 'sendPhoto', params: { chat_id: chatId, caption, bytes: png.length } }); return true; };
   // API Telegram palsu: mencatat apa yang keluar, membalas seperti aslinya.
   let msgId = 100;
   bot.tg = async (method, params) => {
@@ -367,6 +371,29 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
   });
 
   // ---- penjelajah menu ----------------------------------------------------
+  await t('tombol Bagikan kartu: foto PnL dikirim ke chat itu, layar tidak diganti', async () => {
+    const w = build(); w.bot.setLanguage(CHAT, 'en');
+    const d = await w.api('GET', '/api/positions');
+    const p = d.positions[0];
+    assert.ok(p, 'perlu satu posisi terbuka di data uji');
+    const before = w.sent.length;
+    await w.bot.handle(cbq(`ps:${p.id}`));
+    const foto = w.sent.slice(before).filter((x) => x.method === 'sendPhoto');
+    assert.strictEqual(foto.length, 1, 'tepat satu foto');
+    assert.strictEqual(foto[0].params.chat_id, CHAT);
+    assert.ok(foto[0].params.bytes > 10_000, 'PNG sungguhan, bukan kosong');
+    assert.match(foto[0].params.caption, new RegExp(`^${p.symbol0} / ${p.symbol1} .*· Quiver$`));
+    assert.ok(!w.sent.slice(before).some((x) => x.method === 'editMessageText'), 'layar detail tidak boleh ditimpa');
+    const ack = w.sent.slice(before).find((x) => x.method === 'answerCallbackQuery');
+    assert.strictEqual(ack?.params.text, 'Card sent.');
+    // Total PnL dari layar ringkasan.
+    const b2 = w.sent.length;
+    await w.bot.handle(cbq('os'));
+    const total = w.sent.slice(b2).find((x) => x.method === 'sendPhoto');
+    assert.match(total?.params.caption || '', /^Total PnL .*· Quiver$/);
+    w.bot.stop();
+  });
+
   await t('setiap tombol yang bisa dicapai dari menu utama bekerja', async () => {
     const w = build();
     // Tidak ditekan: memindahkan dana, menghapus, atau mengganti rahasia.

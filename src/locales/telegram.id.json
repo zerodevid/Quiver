@@ -86,5 +86,6 @@
   "<i>Di luar rentang: tidak menghasilkan fee swap sampai harga kembali ke rentang.</i>": "<i>Di luar rentang: tidak menghasilkan fee swap sampai harga kembali ke rentang.</i>",
   "♻️ Minimum {0} · periksa setiap {1} menit": "♻️ Minimum {0} · periksa setiap {1} menit",
   "<i>Sinkronisasi terakhir: {0}</i>": "<i>Sinkronisasi terakhir: {0}</i>",
-  "Pemeriksaan terakhir: {0}": "Pemeriksaan terakhir: {0}"
+  "Pemeriksaan terakhir: {0}": "Pemeriksaan terakhir: {0}",
+  "hasil keluar": "hasil"
 }

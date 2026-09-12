@@ -416,9 +416,9 @@ const ALIAS = {
 const PAIR_RE = /^\/(?:start|mulai)(?:@\S+)?\s+(\S+)/i;
 
 class Telegram {
-  constructor({ cfg, cfgPath, store, engine, api, log }) {
+  constructor({ cfg, cfgPath, store, engine, api, shareCard, log }) {
     this.cfg = cfg; this.cfgPath = cfgPath; this.store = store; this.engine = engine;
-    this.api = api; this.log = log || (() => {});
+    this.api = api; this.shareCard = shareCard; this.log = log || (() => {});
     this.sessions = new Map();          // chatId -> { scope, pending, ... }
     this.pairCode = null;               // { code, exp }
     this.offset = Number(store.getState('tg_offset', '0')) || 0;
@@ -470,6 +470,21 @@ class Telegram {
       link_preview_options: { is_disabled: true },
       ...(keyboard ? { reply_markup: keyboard } : {}),
     });
+  }
+  // Gambar (kartu bagikan dari dasbor). Multipart, bukan JSON: Telegram hanya
+  // menerima berkas lewat form-data. Dikirim sebagai foto supaya tampil langsung
+  // di obrolan, bukan sebagai lampiran yang harus diunduh dulu.
+  async sendPhoto(chatId, png, caption) {
+    const tok = this.token();
+    if (!tok) throw new Error(tr("bot_token Telegram belum diisi"));
+    const fd = new FormData();
+    fd.append('chat_id', String(chatId));
+    if (caption) fd.append('caption', cut(caption));
+    fd.append('photo', new Blob([png], { type: 'image/png' }), 'quiver.png');
+    const r = await fetch(`${API}${tok}/sendPhoto`, { method: 'POST', body: fd, signal: AbortSignal.timeout(40_000) });
+    const j = await r.json().catch(() => null);
+    if (!j || !j.ok) throw new Error(j?.description || `HTTP ${r.status}`);
+    return j.result;
   }
   // Navigasi menu menimpa pesan yang sama supaya obrolan tidak penuh.
   async edit(chatId, msgId, text, keyboard) {
@@ -771,6 +786,15 @@ class Telegram {
       case 'b': return out(...(await this.saldo()));
       case 'p': return rest[0] ? out(...(await this.posisiDetail(rest[0]))) : out(...(await this.posisi()));
       case 'pc': return out(...(await this.tutupKonfirm(rest[0])));
+      // Kartu bagikan: gambar PnL (src/share-card.js) dikirim sebagai foto ke chat ini;
+      // layar yang sedang tampil tidak diubah, cukup notifikasi kecil di tombolnya.
+      case 'ps': case 'os': {
+        if (!this.shareCard) throw new Error('kartu bagikan tidak tersedia');
+        const card = await this.shareCard({ kind: head === 'ps' ? 'position' : 'total', id: rest[0], lang: locale() });
+        if (card.error) throw new Error(note(card.error));
+        await this.sendPhoto(chatId, card.png, card.caption);
+        return ack ? ack(tr("Kartu dikirim.")) : null;
+      }
       case 'ac': return out(...(await this.compoundScreen(rest[0])));
       case 'acT': {
         const r = await this.api('POST', '/api/positions/compound', { id: Number(rest[0]), enabled: rest[1] === '1' });
@@ -1461,7 +1485,8 @@ class Telegram {
     return [cut(L.filter((x) => x != null).join('\n')), kb([
       [btn(tr("💼 Posisi"), 'p'), btn('🎯 Target', 't')],
       [btn(tr("📜 Aktivitas"), 'a:0'), btn(tr("💵 Saldo"), 'b')],
-      [btn(tr("🔄 Segarkan"), 'o'), BACK_HOME],
+      [btn(tr("🔄 Segarkan"), 'o'), btn(tr("📤 Bagikan total PnL"), 'os')],
+      [BACK_HOME],
     ])];
   }
 
@@ -1560,7 +1585,7 @@ class Telegram {
       p.venue === 'v4' ? [btn(`♻️ Auto-compound · ${p.compound?.enabled ? 'ON' : 'OFF'}`, `ac:${p.id}`)] : null,
       [btn(tr("💰 Claim fee"), `pf:${p.id}`)],
       [btn(tr("🔴 Tutup posisi ini"), `pc:${p.id}`)],
-      [btn(tr("🔄 Segarkan"), `p:${p.id}`)],
+      [btn(tr("🔄 Segarkan"), `p:${p.id}`), btn(tr("📤 Bagikan kartu"), `ps:${p.id}`)],
       [btn(tr("↩︎ Posisi"), 'p'), BACK_HOME],
     ])];
   }

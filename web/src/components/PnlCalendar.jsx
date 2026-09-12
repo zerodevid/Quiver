@@ -12,7 +12,8 @@ import { useI18n } from '../i18n';
 const pad = (n) => String(n).padStart(2, '0');
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi tertutup di jendela ini' }) {
+// onShare(key, pnl, count): hari yang punya PnL bisa diklik (mis. membuat kartu bagikan).
+export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi tertutup di jendela ini', onShare }) {
   const { t, locale } = useI18n();
   const days = Object.keys(daily).sort();
   // Hook harus dipanggil sebelum return bersyarat (aturan hooks React).
@@ -34,9 +35,13 @@ export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi t
   for (let d = 1; d <= lastDay; d++) {
     const k = `${prefix}-${pad(d)}`;
     const v = daily[k], n = counts?.[k];
+    const clickable = onShare && v != null;
     cells.push(
-      <div key={d} title={v != null ? `${usd(v)}${n ? ' · ' + t('{n} posisi', { n }) : ''}` : undefined}
-        className={`flex min-h-14 flex-col justify-between rounded-md border p-1.5 ${v == null ? 'border-border/60'
+      <div key={d} title={v != null ? `${usd(v)}${n ? ' · ' + t('{n} posisi', { n }) : ''}${clickable ? ' · ' + t('klik untuk bagikan') : ''}` : undefined}
+        role={clickable ? 'button' : undefined} tabIndex={clickable ? 0 : undefined}
+        onClick={clickable ? () => onShare(k, v, n) : undefined}
+        onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onShare(k, v, n); } } : undefined}
+        className={`flex min-h-14 flex-col justify-between rounded-md border p-1.5 ${clickable ? 'cursor-pointer hover:ring-1 hover:ring-foreground/40' : ''} ${v == null ? 'border-border/60'
           : v > 0.005 ? 'border-success/30 bg-success/10' : v < -0.005 ? 'border-danger/30 bg-danger/10' : 'border-border bg-default/50'}
           ${k === today ? 'ring-1 ring-foreground/40' : ''}`}>
         <span className="flex items-center justify-between text-[0.6875rem] text-muted">

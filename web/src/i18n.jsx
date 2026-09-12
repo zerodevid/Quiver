@@ -678,6 +678,7 @@ const EN = {
   'Wallet ditambahkan': 'Wallet added',
   'Tanpa label': 'Unlabelled',
   'aturan sendiri': 'own rules',
+  'target tersimpan': 'saved target',
   'Belum pernah dipindai — buka untuk melihat PnL': 'Never scanned — open to see PnL',
   '{v} PnL · win {w}% · {n} posisi ditutup': '{v} PnL · {w}% win rate · {n} closed positions',
   '{a} aksi · {c} disalin': '{a} actions · {c} copied',
@@ -1276,6 +1277,29 @@ const EN = {
   'Situs': 'Website',
   'Likuiditas sudah nol di chain': 'Liquidity is already zero on-chain',
   'Posisi ini akan ditandai tertutup pada sinkronisasi berikutnya.': 'This position will be marked closed on the next sync.',
+
+  // Kartu bagikan (ShareCard)
+  'Bagikan': 'Share',
+  'Menggambar kartu…': 'Rendering card…',
+  'Kartu gagal digambar': 'Could not render the card',
+  'Sembunyikan nominal dolar': 'Hide dollar amounts',
+  'Hanya persentase yang tampil; harga token tetap ditampilkan.': 'Only percentages are shown; token prices stay visible.',
+  'Salin gambar': 'Copy image',
+  'Unduh PNG': 'Download PNG',
+  'Gambar disalin': 'Image copied',
+  'Tempel langsung ke X, Telegram, atau Discord.': 'Paste it straight into X, Telegram, or Discord.',
+  'Gambar gagal disalin': 'Could not copy the image',
+  'Gambar gagal diunduh': 'Could not download the image',
+  'Gagal membagikan': 'Could not share',
+  'Browser ini tidak bisa membagikan gambar.': 'This browser cannot share images.',
+  'Kirim ke Telegram': 'Send to Telegram',
+  'Terkirim ke Telegram': 'Sent to Telegram',
+  'Gagal mengirim ke Telegram': 'Could not send to Telegram',
+  '{n} chat gagal: {e}': '{n} chat(s) failed: {e}',
+  '{n} chat': '{n} chat(s)',
+  'Bagikan total PnL': 'Share total PnL',
+  'klik untuk bagikan': 'click to share',
+  'PnL terealisasi per hari posisi ditutup · klik hari untuk membuat kartu bagikan': 'Realized PnL by the day a position was closed · click a day to make a share card',
 };
 
 const DICT = { id: null, en: EN };

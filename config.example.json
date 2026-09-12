@@ -69,7 +69,8 @@
       "warn": true,
       "info": false
     },
-    "catatan": "Buat bot lewat @BotFather, tempel tokennya di sini (atau lewat dasbor -> Pengaturan -> Telegram). chat_ids diisi sendiri saat sebuah chat mengirim /start <kode>."
+    "timezone": null,
+    "catatan": "Buat bot lewat @BotFather, tempel tokennya di sini (atau lewat dasbor -> Pengaturan -> Telegram). chat_ids diisi sendiri saat sebuah chat mengirim /start <kode>. timezone (mis. \"Asia/Jakarta\") dipakai untuk tanggal di kartu bagikan yang dikirim dari bot; kosong = zona waktu server."
   },
   "targets": [],
   "rules": {

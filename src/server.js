@@ -13,8 +13,9 @@ const { Holdings } = require('./holdings');
 const { Icons } = require('./icons');
 const { Market, TF } = require('./market');
 const { Positions } = require('./positions');
-const { QUOTES, ADDR: { native: ADDR_NATIVE } } = require('./chain');
+const { QUOTES, ADDR: { native: ADDR_NATIVE, usdg: ADDR_USDG, weth: ADDR_WETH } } = require('./chain');
 const { writeCfg } = require('./env');
+const shareCard = require('./share-card');
 
 // Sisi mana dari pool yang merupakan aset kuotasi (0 atau 1); null kalau tidak dikenal.
 // Menentukan arah harga yang ditampilkan: selalu "harga token spekulatif dalam kuotasi".
@@ -1129,6 +1130,29 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     },
 
     // ---- sisa memecoin yang belum terjual setelah keluar posisi ----
+    // Kartu bagikan (share card). Datanya dirakit dari rute yang sama dengan yang
+    // dipakai dasbor, lalu digambar di server (src/share-card.js) supaya dasbor dan
+    // bot Telegram mengirim gambar yang persis sama.
+    //   kind=position&id=…  | kind=total | kind=daily&day=YYYY-MM-DD
+    //   hide=1 menyembunyikan nominal dolar; lang=id|en; tz=zona waktu IANA pembaca
+    //   (hari di kalender dihitung menurut zona itu, sama seperti di browser).
+    'GET /api/share/telegram': () => ({
+      ready: !!(telegram?.token() && telegram.chats().length), chats: telegram ? telegram.chats().length : 0,
+    }),
+    'POST /api/share/telegram': async (req) => {
+      if (!telegram?.token()) return { error: 'bot Telegram belum dipasang' };
+      const chats = telegram.chats();
+      if (!chats.length) return { error: 'belum ada chat Telegram yang dipasangkan' };
+      const b = await readBody(req);
+      const card = await shareCardOf(b);
+      if (card.error) return card;
+      let sent = 0, lastErr = null;
+      for (const c of chats) {
+        try { await telegram.sendPhoto(c, card.png, card.caption); sent++; } catch (e) { lastErr = e.message; }
+      }
+      if (!sent) return { error: lastErr || 'gagal mengirim' };
+      return { sent, failed: chats.length - sent, lastErr };
+    },
     'GET /api/leftovers': () => ({ leftovers: leftoverRows() }),
     // Tanpa body: seluruh antrean. Dengan {posId, token}: satu item saja — tombol
     // "jual sekarang" di pita peringatan menembak barisnya sendiri, bukan semuanya.
@@ -1218,6 +1242,57 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     return routes[key]({ __body: body, headers: {} }, url, {});
   };
 
+  // Merakit data satu kartu bagikan lalu menggambarnya. Dipakai rute PNG, rute kirim
+  // Telegram, dan tombol "Bagikan" di bot. Mengembalikan { png, caption } atau { error }.
+  const dayKeyIn = (ts, timeZone) => {
+    try { return new Date(ts).toLocaleDateString('en-CA', { timeZone }); } catch { return new Date(ts).toLocaleDateString('en-CA'); }
+  };
+  const shareCardOf = async ({ kind, id, day, hide = false, lang = 'id', tz } = {}) => {
+    const timeZone = tz || cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const opts = { hideAmounts: !!hide, lang, timeZone };
+    let data;
+    if (kind === 'position') {
+      const d = await callApi('GET', '/api/position', {}, { id });
+      if (d.error) return { error: d.error };
+      data = d.position;
+      // Logo pasangan: aset kuotasi dari berkas dasbor, sisanya dari cache GeckoTerminal.
+      const local = { [ADDR_USDG]: 'usdg.png', [ADDR_WETH]: 'weth.png' };
+      const iconOf = (a) => {
+        const k = String(a || '').toLowerCase();
+        // Di VPS hanya web/dist yang ada (Vite menyalin public/tokens ke sana); saat
+        // pengembangan tanpa build, web/public.
+        if (local[k]) {
+          for (const dir of ['dist', 'public']) {
+            try { return { buf: fs.readFileSync(path.join(__dirname, '..', 'web', dir, 'tokens', local[k])), ctype: 'image/png' }; } catch { /* coba berikutnya */ }
+          }
+          return null;
+        }
+        return icons.read(k);
+      };
+      opts.icons = { token0: iconOf(data.token0), token1: iconOf(data.token1) };
+    } else if (kind === 'total' || kind === 'daily') {
+      const [pf, pos] = await Promise.all([callApi('GET', '/api/portfolio', {}, { range: 'all' }), callApi('GET', '/api/positions')]);
+      const all = [...(pos.positions || []), ...(pos.closed || [])];
+      if (kind === 'total') {
+        if (!pf.now) return { error: 'portofolio belum terbaca' };
+        data = { now: pf.now, stats: pf.stats, since: all.reduce((a, x) => (x.opened_ts && (!a || x.opened_ts < a) ? x.opened_ts : a), null) };
+      } else {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day || ''))) return { error: 'tanggal tidak valid' };
+        const daily = {}, counts = {};
+        for (const [ts, v] of pf.closed || []) { const k = dayKeyIn(ts, timeZone); daily[k] = (daily[k] || 0) + v; counts[k] = (counts[k] || 0) + 1; }
+        if (daily[day] == null) return { error: 'tidak ada posisi yang ditutup pada hari itu' };
+        const kq = (q) => (q === 'ETH' || q === 'WETH' ? engine.ethUsd || 0 : 1);
+        data = {
+          day, total: daily[day], count: counts[day],
+          rows: (pos.closed || []).filter((c) => c.closed_ts && dayKeyIn(c.closed_ts, timeZone) === day)
+            .map((c) => ({ symbol0: c.symbol0, symbol1: c.symbol1, cost: (c.cost_quote || 0) * kq(c.quote_symbol), pnl: ((c.out_quote || 0) - (c.cost_quote || 0)) * kq(c.quote_symbol) })),
+          monthTotal: Object.entries(daily).filter(([k]) => k.startsWith(day.slice(0, 7))).reduce((a, [, v]) => a + v, 0),
+        };
+      }
+    } else return { error: `jenis kartu tidak dikenal: ${kind}` };
+    return { png: shareCard.render(kind, data, opts), caption: shareCard.caption(kind, data, lang) };
+  };
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     const key = `${req.method} ${url.pathname}`;
@@ -1253,6 +1328,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       }
     }
     // Logo token: satu-satunya rute /api yang membalas gambar, bukan JSON.
+    // Kartu bagikan: satu-satunya rute /api lain yang membalas gambar.
+    if (key === 'GET /api/share/card') {
+      const q = Object.fromEntries(url.searchParams);
+      const card = await shareCardOf({ ...q, hide: q.hide === '1' }).catch((e) => ({ error: e.message }));
+      if (card.error) return json(res, 400, { error: card.error });
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'private, no-store' });
+      return res.end(card.png);
+    }
     if (key === 'GET /api/icon') {
       const img = await icons.get(url.searchParams.get('a'), { wait: 6000 }).catch(() => null);
       if (!img) { res.writeHead(404, { 'cache-control': 'no-store' }); return res.end(); }
@@ -1307,6 +1390,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     fs.createReadStream(file).pipe(res);
   });
   server.api = callApi;
+  server.shareCard = shareCardOf;
   return server;
 }
 

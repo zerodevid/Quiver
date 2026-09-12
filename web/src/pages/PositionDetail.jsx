@@ -14,6 +14,7 @@ import { usePoll, useResync } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
 import AutoCompoundButton from '../components/AutoCompoundButton';
+import ShareButton, { positionCard } from '../components/ShareCard';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice, widthPct, locale as fmtLocale } from '../fmt';
@@ -222,12 +223,20 @@ export default function PositionDetail({ id }) {
           </div>
           {/* posisi tertutup: angkanya sudah final, jadi tidak ada jam kesegaran — tombolnya
               cuma menyegarkan grafik pasar. */}
-          <Refresh at={closed ? undefined : d.syncedAt} busy={syncing} onPress={resync} label="Perbarui detail" />
-          {!closed && !p.empty && <>
-            <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} />
-            <Button variant="secondary" isPending={claiming != null} isDisabled={closing != null || claiming != null} onPress={() => claim(p)}>{t('Claim fee')}</Button>
-            <Button variant="danger-soft" isPending={closing != null} isDisabled={claiming != null || closing != null} onPress={() => close(p)}>{t('Tutup posisi')}</Button>
-          </>}
+          {/* Satu klaster aksi, rapat di kanan, tinggi seragam: jam kesegaran + perbarui
+              (pasif) dipisah garis tipis dari aksi yang mengirim transaksi. Urutannya
+              dari yang paling aman ke yang paling merusak, dan hanya "Tutup posisi"
+              yang berwarna — supaya mata langsung tahu mana yang tidak bisa dibatalkan. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Refresh at={closed ? undefined : d.syncedAt} busy={syncing} onPress={resync} label="Perbarui detail" />
+            <ShareButton card={positionCard(p)} />
+            {!closed && !p.empty && <>
+              <span aria-hidden className="mx-1 hidden h-5 w-px bg-border sm:block" />
+              <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} />
+              <Button size="sm" variant="outline" isPending={claiming != null} isDisabled={closing != null || claiming != null} onPress={() => claim(p)}>{t('Claim fee')}</Button>
+              <Button size="sm" variant="danger-soft" isPending={closing != null} isDisabled={claiming != null || closing != null} onPress={() => close(p)}>{t('Tutup posisi')}</Button>
+            </>}
+          </div>
         </div>
       </div>
 

@@ -5,6 +5,7 @@ import { usePoll, useResync } from '../hooks';
 import { useClaimFees } from '../useClaimFees';
 import { useClosePosition } from '../useClosePosition';
 import AutoCompoundButton from './AutoCompoundButton';
+import ShareButton, { positionCard } from './ShareCard';
 import TokenIcon from './TokenIcon';
 import { KV, Loading, Notice, PriceRange } from './ui';
 import { useI18n } from '../i18n';
@@ -33,6 +34,7 @@ export default function PositionSnapshot({ id, onUpdate }) {
       <h3 className="text-sm font-semibold">{t('Posisi ini')}</h3>
       <div className="flex items-center gap-2">
         <Chip size="sm" variant="soft" color={closed ? 'default' : p.empty || p.inRange === false ? 'warning' : p.inRange === true ? 'success' : 'default'}>{t(closed ? 'Ditutup' : p.empty ? 'Likuiditas kosong' : p.inRange == null ? 'belum tersinkron' : p.inRange ? 'in-range' : 'di luar rentang')}</Chip>
+        <ShareButton card={positionCard(p)} iconOnly variant="tertiary" />
         <Button size="sm" variant="tertiary" isPending={syncing} isDisabled={syncing} aria-label={t('Perbarui detail')} onPress={resync}><RefreshCw className="size-4" /></Button>
       </div>
     </div>
