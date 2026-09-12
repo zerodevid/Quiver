@@ -72,8 +72,18 @@ class Watcher {
 
   ownerKey(venue, tokenId) { return `${venue}:${tokenId}`; }
 
+  // Cache ini menampung pemilik SEMUA tokenId yang muncul di log PositionManager seluruh
+  // chain, bukan hanya milik target — tanpa batas ia tumbuh sepanjang umur proses menuju
+  // max_memory_restart pm2 (restart di tengah transaksi). Yang tertua dibuang; pemilik
+  // yang terbuang dibaca ulang lewat ownerOf bila muncul lagi.
   cacheOwner(venue, tokenId, owner) {
-    this.owners.set(this.ownerKey(venue, tokenId), owner);
+    const k = this.ownerKey(venue, tokenId);
+    this.owners.delete(k);
+    this.owners.set(k, owner);
+    if (this.owners.size > (this.maxOwners || 50_000)) {
+      let drop = Math.ceil(this.owners.size / 5);
+      for (const key of this.owners.keys()) { if (drop-- <= 0) break; this.owners.delete(key); }
+    }
   }
   knownOwner(venue, tokenId) { return this.owners.get(this.ownerKey(venue, tokenId)) || null; }
 

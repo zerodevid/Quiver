@@ -280,7 +280,13 @@ function planExit(act, ourPos, ctx) {
   const before = BigInt(act.liquidityBefore || 0n); // L target sebelum aksi (kalau diketahui)
   const ourL = BigInt(ourPos.liquidity);
   let takeL;
-  if (before > 0n && removed < before && rules.exit.follow_partial) {
+  const partial = before > 0n && removed < before;
+  if (partial && !rules.exit.follow_partial) {
+    // "Ikut menarik sebagian" dimatikan = abaikan tarikan sebagian. Dulu justru menutup
+    // cermin kita PENUH saat target cuma menarik sebagian.
+    return { verdict: 'skip', reason: 'target menarik sebagian — ikut-tarik-sebagian dimatikan' };
+  }
+  if (partial) {
     takeL = (ourL * removed) / before;             // proporsional
   } else {
     takeL = ourL;                                   // target menutup penuh -> kita tutup penuh

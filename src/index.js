@@ -133,6 +133,20 @@ async function main() {
   };
   process.on('SIGINT', () => { shutdown('SIGINT'); });
   process.on('SIGTERM', () => { shutdown('SIGTERM'); });
+  // Node mematikan proses pada promise rejection yang tak tertangani — satu janji "lepas"
+  // yang gagal akan membunuh bot seketika, di tengah zap atau mint, tanpa berhenti tertib.
+  // Dicatat saja; alur yang benar-benar penting punya penanganannya sendiri.
+  process.on('unhandledRejection', (e) => {
+    log(`PERINGATAN: promise tak tertangani — ${e?.stack || e}`);
+    try { store.log('error', `promise tak tertangani: ${String(e?.message || e).slice(0, 300)}`); } catch { /* abaikan */ }
+  });
+  // Galat sinkron tak tertangkap: state proses tidak lagi bisa dipercaya — berhenti tertib
+  // (menunggu transaksi berjalan), pm2 menyalakan ulang.
+  process.on('uncaughtException', (e) => {
+    log(`GALAT TAK TERTANGKAP: ${e?.stack || e}`);
+    try { store.log('error', `galat tak tertangkap: ${String(e?.message || e).slice(0, 300)}`); } catch { /* abaikan */ }
+    shutdown('uncaughtException');
+  });
 
   // Bot Telegram memakai pintu API yang sama dengan dasbor (server.api). Ia dibuat
   // lebih dulu supaya halaman Pengaturan bisa menampilkan status & kode sambungnya,

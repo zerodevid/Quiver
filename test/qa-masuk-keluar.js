@@ -450,6 +450,49 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     assert.strictEqual(d[0].verdict, 'error');
   });
 
+  await t('sisa token tanpa rute Kyber (pool baru belum terindeks) → dijual langsung ke pool posisinya', async () => {
+    const { eng, store } = engineWith({ balances: { [MEME]: 10n ** 21n, [ETH]: 10n ** 18n } });
+    eng.gasReserve = async () => 1n;
+    const L = 10n ** 24n, sqrtP = m.getSqrtRatioAtTick(0);
+    eng.chain.slot0V4Many = async (ids) => ids.map(() => ({ sqrtPriceX96: sqrtP, tick: 0, lpFee: 0 }));
+    eng.chain.poolLiquidityMany = async (ids) => ids.map(() => L);
+    const id = Number(store.run(`INSERT INTO positions(venue,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,tick_lower,tick_upper,liquidity,status,opened_ts,cost_quote,quote_symbol)
+      VALUES('v4','77',?,?,?,3000,60,?,-600,600,'0','closed',?,100,'USDG')`, POOL, USDG, MEME, ADDR.native, Date.now()).lastInsertRowid);
+    eng.kyber.swap = async () => null;   // Kyber tidak kenal rutenya
+    eng.exec.ensureRouterAllowance = async () => [];
+    eng.exec.deadline = () => 9e9;
+    eng.rpc.ethCallMany = async (c) => c.map(() => '0x');   // simulasi lolos
+    const sent = [];
+    eng.exec.send = async (tx, meta) => { sent.push(meta); return '0xsellpool'; };
+    eng.exec.waitReceipt = async () => ({ ok: true, receipt: { logs: [{ address: USDG, topics: [TOPIC.transfer, addrTopic(POOL.slice(0, 42)), addrTopic(ME)], data: pad(990_000n) }] } });
+    eng.positions.recordLeftoverSale = () => [];
+    const msg = await eng.sellToken({ posId: id, target: null, token: MEME, quote: USDG, amount: String(10n ** 21n) });
+    assert.match(msg, /pool v4/);
+    assert.strictEqual(sent.length, 1);
+    assert.strictEqual(sent[0].kind, 'sell_leftover');
+    assert.deepStrictEqual(eng.leftovers(), []);
+  });
+
+  await t('jual lewat pool: rugi di atas batas ditolak (tetap antre), token tanpa pool dikenal tidak dicoba', async () => {
+    const { eng, store } = engineWith({ balances: { [MEME]: 10n ** 21n, [ETH]: 10n ** 18n } });
+    eng.gasReserve = async () => 1n;
+    eng.kyber.swap = async () => null;
+    let sends = 0; eng.exec.send = async () => { sends++; return '0x'; };
+    eng.exec.ensureRouterAllowance = async () => [];
+    // tanpa pool dikenal
+    await assert.rejects(eng.sellToken({ posId: null, target: null, token: MEME, quote: USDG, amount: '1000' }), /pool langsung juga tidak bisa/);
+    assert.strictEqual(sends, 0);
+    // pool fee 10% → rugi > batas 5%
+    store.run(`INSERT INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks) VALUES(?,?,?,?,?,?,?)`, POOL, 'v4', USDG, MEME, 100000, 200, ADDR.native);
+    eng.chain.slot0V4Many = async (ids) => ids.map(() => ({ sqrtPriceX96: m.getSqrtRatioAtTick(0), tick: 0 }));
+    eng.chain.poolLiquidityMany = async (ids) => ids.map(() => 10n ** 24n);
+    eng.rpc.ethCallMany = async (c) => c.map(() => '0x');
+    eng.cfg.rules = { exit: { sell_max_loss_bps: 500 } };
+    await assert.rejects(eng.sellToken({ posId: null, target: null, token: MEME, quote: USDG, amount: String(10n ** 21n) }), /rugi 10\.\d%/);
+    assert.strictEqual(sends, 0);
+    assert.strictEqual(eng.leftovers().length, 1, 'tetap di antrean');
+  });
+
   await t('isi gas: tanpa WETH dan ETH native < ½ cadangan → beli ETH dari USDG (12 Sep 14:39: semua tx "insufficient funds")', async () => {
     const { eng } = engineWith({ balances: { [ETH]: 5n * 10n ** 14n, [WETH]: 0n, [USDG]: 400_000_000n } });
     eng.gasReserve = async () => 2n * 10n ** 15n;
@@ -540,6 +583,17 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     assert.ok(Math.abs(sum.costUsd - 100) < 1e-6, String(sum.costUsd));
     const spent = store.get("SELECT COALESCE(SUM(cost_quote * CASE WHEN quote_symbol IN ('ETH','WETH') THEN ? ELSE 1 END),0) AS s FROM positions WHERE opened_ts > ?", 2500, Date.now() - 86400_000).s;
     assert.ok(Math.abs(spent - 300) < 1e-6);
+  });
+
+  await t('policy: "ikut menarik sebagian" dimatikan → tarikan sebagian diabaikan (dulu: tutup penuh); keluar penuh tetap diikuti', async () => {
+    const { planExit, rulesFor } = require('../src/policy');
+    const rules = rulesFor({ exit: { follow_target: true, follow_partial: false } });
+    const pos = { id: 1, venue: 'v4', token_id: '5', liquidity: '1000' };
+    assert.strictEqual(planExit({ liquidity: '-100', liquidityBefore: 1000n, tokenId: '9' }, pos, { rules }).verdict, 'skip');
+    const full = planExit({ liquidity: '-1000', liquidityBefore: 1000n, tokenId: '9' }, pos, { rules });
+    assert.strictEqual(full.verdict, 'copy'); assert.strictEqual(full.plan.full, true);
+    const on = planExit({ liquidity: '-100', liquidityBefore: 1000n, tokenId: '9' }, pos, { rules: rulesFor({}) });
+    assert.strictEqual(on.plan.liquidity, '100');
   });
 
   await t('policy: tambah ke posisi yang sudah dicermin — tidak kena batas jumlah posisi, batas $ per posisi dihitung dari total', async () => {

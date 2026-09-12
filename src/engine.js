@@ -1706,11 +1706,14 @@ class Engine {
       throw new Error(`${label} belum terjual: ${e.message}`);
     }
     try {
-      const r = await this.kyber.swap(item.token, item.quote, amount, {
+      let r = await this.kyber.swap(item.token, item.quote, amount, {
         slippageBps: rules.swap.max_slippage_bps, maxLossBps: rules.exit.sell_max_loss_bps,
         kind: 'sell_leftover', detail: { position: item.posId },
       });
-      if (!r) throw new Error('Kyber tidak menemukan rute');
+      // Kyber belum mengenal rutenya (pool token baru sering belum terindeks): coba jual
+      // langsung ke pool yang kita kenal — pool posisinya sendiri dan pool berpasangan sama.
+      if (!r) r = await this.sellViaPool(item, amount, rules);
+      if (!r) throw new Error('Kyber tidak menemukan rute (pool langsung juga tidak bisa)');
       this.dropLeftover(item);
       try {
         this.positions.recordLeftoverSale({ posId: item.posId, token: item.token, amount, quoteToken: item.quote,
@@ -1729,6 +1732,60 @@ class Engine {
       this.alertLeftover({ ...item, amount: amount.toString() }, label, e);
       throw new Error(`${label} belum terjual: ${e.message}`);
     }
+  }
+
+  // Jual lewat satu pool langsung (UniversalRouter), cadangan kalau Kyber tidak punya rute.
+  // Pengaman yang sama dengan jual lewat Kyber: batas rugi (fee pool + dampak harga) dari
+  // aturan sell_max_loss_bps, minOut dari taksiran pool dikurangi slippage, dan tx hanya
+  // dikirim kalau simulasinya lolos. Debu (< $0,50) tidak dijual: gasnya lebih mahal.
+  async sellViaPool(item, amount, rules) {
+    const token = String(item.token).toLowerCase(), quote = String(item.quote).toLowerCase();
+    const ctx = { store: this.store, chain: this.chain, rpc: this.rpc, exec: this.exec, log: this.log };
+    const extra = [];
+    if (item.posId != null) {
+      const p = this.store.get('SELECT pool_ref, venue, token0, token1, fee, tick_spacing, hooks FROM positions WHERE id=?', item.posId);
+      if (p && [p.token0, p.token1].map((x) => String(x).toLowerCase()).sort().join() === [token, quote].sort().join()) {
+        extra.push({ ...p, pool_addr: p.venue === 'v3' ? p.pool_ref : null });
+      }
+    }
+    const known = extra.length || this.store.get('SELECT 1 FROM pools WHERE (token0=? AND token1=?) OR (token0=? AND token1=?)', token, quote, quote, token);
+    if (!known) return null;
+    const maxLoss = Number(rules.exit.sell_max_loss_bps) || 1500;
+    const usdOf = (out) => {
+      const q = QUOTES[quote];
+      return q ? (Number(out) / 10 ** q.decimals) * (q.kind === 'eth' ? this.ethUsd : 1) : null;
+    };
+    // Taksiran dulu tanpa izin/simulasi yang berarti (minOut 1): kalau debu atau terlalu
+    // rugi, berhenti sebelum approval yang memakan gas.
+    for (const a of await this.exec.ensureRouterAllowance(token)) {
+      const usdGuess = item.lastUsdOut ?? null;
+      if (usdGuess != null && usdGuess < 0.5) return null;
+      const h = await this.exec.send(a, { kind: a.kind });
+      await this.exec.waitReceipt(h);
+    }
+    const probeInfo = {};
+    const probe = await pickSwapPool(ctx, { tokenIn: token, tokenOut: quote, amountIn: amount, minOut: 1n,
+      maxImpactBps: maxLoss, deadlineSec: this.exec.deadline(), extra, info: probeInfo });
+    if (!probe) return null;
+    const lossBps = (probe.impactBps ?? 0) + (probe.feePpm ?? 0) / 100;
+    if (lossBps > maxLoss) {
+      const e = new Error(`jual lewat pool rugi ${(lossBps / 100).toFixed(1)}% (batas ${(maxLoss / 100).toFixed(1)}%)`);
+      e.loss = { lossBps, maxLossBps: maxLoss, usdIn: null, usdOut: usdOf(probe.outEst), dex: 'pool langsung' };
+      throw e;
+    }
+    const usdOut = usdOf(probe.outEst);
+    if (usdOut != null && usdOut < 0.5) return null;
+    const minOut = (probe.outEst * BigInt(10_000 - Number(rules.swap.max_slippage_bps))) / 10_000n;
+    const pick = await pickSwapPool(ctx, { tokenIn: token, tokenOut: quote, amountIn: amount, minOut,
+      maxImpactBps: maxLoss, deadlineSec: this.exec.deadline(), extra, info: {} });
+    if (!pick) return null;
+    const h = await this.exec.send(pick.tx, { kind: 'sell_leftover', detail: { position: item.posId, via: pick.pool.pool_ref, dex: `pool ${pick.pool.venue}`, usdOut } });
+    const rc = await this.exec.waitReceipt(h, 90_000);
+    if (rc.timeout) throw new Error(`jual lewat pool ${h} belum terkonfirmasi setelah 90 detik`);
+    if (!rc.ok) throw new Error(`jual lewat pool gagal (${h})`);
+    const me = this.exec.address().toLowerCase();
+    const got = isNative(quote) ? null : await this.receivedIn(rc.receipt, quote, me).catch(() => null);
+    return { hash: h, amountOut: got ?? pick.outEst, quote: { dex: `pool ${pick.pool.venue} ${String(pick.pool.pool_ref).slice(0, 10)}…`, usdIn: null, usdOut: got != null ? usdOf(got) : usdOut } };
   }
 
   // Token yang tidak bisa dijual = uang yang tersangkut. Dikabarkan KERAS pada
@@ -1798,6 +1855,13 @@ class Engine {
           const q = await this.kyber.quote(item.token, item.quote, amount);
           const { Kyber } = require('./kyber');
           const loss = q ? Kyber.lossBps(q) : null;
+          // Tanpa rute Kyber: jalur pool langsung dicoba (sellToken → sellViaPool), paling
+          // sering tiap 60 detik per item — tiap percobaan membaca & menyimulasikan pool.
+          if (!q && Date.now() - (item.poolTriedAt || 0) > 60_000) {
+            this.saveLeftovers(this.leftovers().map((x) => (this.sameLeftover(x, item) ? { ...x, poolTriedAt: Date.now() } : x)));
+            await this.sellToken({ ...item, poolTriedAt: Date.now() });
+            continue;
+          }
           if (!q || (loss != null && loss > rules.exit.sell_max_loss_bps)) {
             const why = !q ? 'Kyber tidak menemukan rute'
               : `rute Kyber rugi ${(loss / 100).toFixed(1)}% (batas ${(rules.exit.sell_max_loss_bps / 100).toFixed(1)}%) — $${q.usdIn?.toFixed(2)} → $${q.usdOut?.toFixed(2)}`;
