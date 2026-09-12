@@ -904,32 +904,38 @@ class Engine {
     } finally { this.exiting.delete(id); }
   }
 
+  // Berapa `token` yang BERSIH masuk ke `owner` pada transaksi ini, dibaca dari
+  // receipt-nya — bukan dari selisih saldo "sebelum/sesudah", yang bisa nol kalau RPC
+  // yang dibaca masih tertinggal satu blok, atau tercemar tx lain di antaranya.
+  async receivedIn(receipt, token, owner) {
+    if (!isNative(token)) {
+      let value = 0n;
+      for (const l of receipt.logs || []) {
+        if (l.address.toLowerCase() !== token.toLowerCase() || l.topics[0] !== TOPIC.transfer || l.topics.length !== 3) continue;
+        if (asAddr(l.topics[2]) === owner) value += BigInt(l.data);
+        if (asAddr(l.topics[1]) === owner) value -= BigInt(l.data);
+      }
+      return value > 0n ? value : 0n;
+    }
+    // ETH native tidak punya Transfer. Baca saldo historis di blok receipt
+    // agar retry setelah timeout tidak menghitung aktivitas wallet di blok lain.
+    const hash = receipt.transactionHash || receipt.hash;
+    const bn = BigInt(receipt.blockNumber);
+    const before = BigInt(await this.rpc.call('eth_getBalance', [owner, ethers.toQuantity(bn - 1n)]));
+    const after = BigInt(await this.rpc.call('eth_getBalance', [owner, ethers.toQuantity(bn)]));
+    const block = await this.rpc.call('eth_getBlockByNumber', [ethers.toQuantity(bn), true]);
+    const others = (block?.transactions || []).filter((t) => t.hash !== hash
+      && (String(t.from).toLowerCase() === owner || String(t.to).toLowerCase() === owner));
+    if (!block || others.length) throw new Error('saldo ETH pada blok transaksi tidak dapat diisolasi');
+    const value = after - before + BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice);
+    return value > 0n ? value : 0n;
+  }
+
   async recordFeeClaim(pos, hash, receipt) {
     if (this.store.get('SELECT tx_hash FROM fee_claims WHERE tx_hash=?', hash)) return {};
     const detail = JSON.parse(this.store.get('SELECT detail FROM txs WHERE hash=?', hash)?.detail || '{}');
     const owner = String(detail.wallet || this.exec.address()).toLowerCase();
-    const amount = async (token) => {
-      if (!isNative(token)) {
-        let value = 0n;
-        for (const l of receipt.logs || []) {
-          if (l.address.toLowerCase() !== token.toLowerCase() || l.topics[0] !== TOPIC.transfer || l.topics.length !== 3) continue;
-          if (asAddr(l.topics[2]) === owner) value += BigInt(l.data);
-          if (asAddr(l.topics[1]) === owner) value -= BigInt(l.data);
-        }
-        return value > 0n ? value : 0n;
-      }
-      // ETH native tidak punya Transfer. Baca saldo historis di blok receipt
-      // agar retry setelah timeout tidak menghitung aktivitas wallet di blok lain.
-      const bn = BigInt(receipt.blockNumber);
-      const before = BigInt(await this.rpc.call('eth_getBalance', [owner, ethers.toQuantity(bn - 1n)]));
-      const after = BigInt(await this.rpc.call('eth_getBalance', [owner, ethers.toQuantity(bn)]));
-      const block = await this.rpc.call('eth_getBlockByNumber', [ethers.toQuantity(bn), true]);
-      const others = (block?.transactions || []).filter((t) => t.hash !== hash
-        && (String(t.from).toLowerCase() === owner || String(t.to).toLowerCase() === owner));
-      if (!block || others.length) throw new Error('saldo ETH pada blok claim tidak dapat diisolasi');
-      const value = after - before + BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice);
-      return value > 0n ? value : 0n;
-    };
+    const amount = (token) => this.receivedIn(receipt, token, owner);
     const amount0 = await amount(pos.token0), amount1 = await amount(pos.token1);
     // harga penilai, bukan harga pool mentah: pool yang disapu kosong menaruh harga di batas
     const slot = await this.positions.markSlotFor(pos);
@@ -1054,20 +1060,27 @@ class Engine {
     // nilainya di harga tutup — baru sisanya dijual. Kalau penjualan berhasil,
     // recordLeftoverSale mengganti taksiran itu dengan hasil sesungguhnya; kalau
     // tersangkut, ekuitas tetap menilainya di harga kini, bukan menghilangkannya.
+    const live = this.positions.live.find((p) => p.id === pos.id);
+    let left = null;
+    // sisa memecoin dinilai di harga penilai (markSqrt), bukan harga pool yang bisa di batas
+    try { left = await this.leftoverOf(pos, rc.receipt, proceeds?.markSqrt ?? live?.markSqrt ?? live?.curSqrt ?? null); }
+    catch (e) { this.store.log('warn', `sisa #${pos.id} tidak terukur: ${e.message}`, { quiet: true }); }
     if (plan.full) {
-      const live = this.positions.live.find((p) => p.id === pos.id);
-      let left = null;
-      // sisa memecoin dinilai di harga penilai (markSqrt), bukan harga pool yang bisa di batas
-      try { left = await this.leftoverOf(pos, rc.receipt, proceeds?.markSqrt ?? live?.markSqrt ?? live?.curSqrt ?? null); }
-      catch (e) { this.store.log('warn', `sisa #${pos.id} tidak terukur: ${e.message}`, { quiet: true }); }
       this.positions.markClosed(pos.id, {
         out0: proceeds?.amount0 ?? live?.amount0, out1: proceeds?.amount1 ?? live?.amount1,
         outQuote: proceeds?.valueQuote ?? ((live?.valueUsd || 0) + (live?.feeUsd || 0)), txHash: hash,
         exitSqrt: proceeds?.sqrt ?? live?.curSqrt ?? null, left,
       });
     } else {
-      this.store.run('UPDATE positions SET liquidity=? WHERE id=?',
-        (BigInt(pos.liquidity) - BigInt(plan.liquidity)).toString(), pos.id);
+      // Tarik sebagian: hasilnya SUDAH di wallet, jadi harus masuk out_quote sekarang.
+      // Dulu hanya likuiditasnya yang dikurangi — posisi #25 kehilangan $68,52 dari
+      // catatan (54,75 USDG + memecoin yang terjual $13,77) dan terbaca rugi $64
+      // padahal untung $4.
+      this.positions.markDecreased(pos.id, {
+        liquidity: (BigInt(pos.liquidity) - BigInt(plan.liquidity)).toString(),
+        out0: proceeds?.amount0 ?? 0n, out1: proceeds?.amount1 ?? 0n,
+        outQuote: proceeds?.valueQuote ?? 0, txHash: hash, left,
+      });
     }
     // Jual memecoin yang BARU diterima dari transaksi keluar ini. Galatnya tidak boleh
     // membatalkan pencatatan keluar — posisinya sudah benar-benar tertutup di chain.
@@ -1079,20 +1092,31 @@ class Engine {
     return { txHash: hash, sold, note: `${plan.full ? 'tutup penuh' : 'kurangi'} posisi #${pos.id}${sold ? ` · ${sold}` : ''}` };
   }
 
-  // Berapa yang benar-benar masuk wallet dari transaksi keluar: selisih saldo, dengan
-  // gas dikembalikan untuk sisi ETH native (gas mengurangi saldo tapi bukan bagian
-  // dari hasil posisi). Nilainya dihitung di harga pool saat itu.
+  // Berapa yang benar-benar masuk wallet dari transaksi keluar, dibaca dari log
+  // Transfer di receipt (ETH native: saldo historis di blok itu, gas dikembalikan —
+  // gas mengurangi saldo tapi bukan bagian dari hasil posisi). Selisih saldo
+  // "sebelum/sesudah" hanya cadangan: RPC yang tertinggal satu blok pernah membuatnya
+  // nol, sehingga posisi #27 tercatat dari cache sinkron yang sudah basi.
+  // Nilainya dihitung di harga pool saat itu.
   async exitProceeds(pos, before, receipt) {
     try {
-      const after = await this.exec.balances([pos.token0, pos.token1]);
-      const d = (t) => {
-        let v = (after.get(String(t).toLowerCase()) || 0n) - (before.get(String(t).toLowerCase()) || 0n);
-        if (isNative(t) && receipt?.gasUsed && receipt?.effectiveGasPrice) {
-          v += BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice);
-        }
-        return v > 0n ? v : 0n;
-      };
-      const amount0 = d(pos.token0), amount1 = d(pos.token1);
+      const me = this.exec.address().toLowerCase();
+      let amount0, amount1;
+      try {
+        amount0 = await this.receivedIn(receipt, pos.token0, me);
+        amount1 = await this.receivedIn(receipt, pos.token1, me);
+      } catch (e) {
+        this.store.log('warn', `hasil keluar #${pos.id} dari receipt tidak terbaca (${e.message}) — pakai selisih saldo`, { quiet: true });
+        const after = await this.exec.balances([pos.token0, pos.token1]);
+        const d = (t) => {
+          let v = (after.get(String(t).toLowerCase()) || 0n) - (before.get(String(t).toLowerCase()) || 0n);
+          if (isNative(t) && receipt?.gasUsed && receipt?.effectiveGasPrice) {
+            v += BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice);
+          }
+          return v > 0n ? v : 0n;
+        };
+        amount0 = d(pos.token0); amount1 = d(pos.token1);
+      }
       if (amount0 === 0n && amount1 === 0n) return null;
       // harga penilai (pool sendiri kalau layak); exit_sqrt tetap harga pool apa adanya
       const s = await this.positions.markSlotFor(pos);

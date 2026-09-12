@@ -39,21 +39,47 @@ class Positions {
     return Number(r.lastInsertRowid);
   }
 
+  // Hasil penarikan DITAMBAHKAN ke catatan: out0/out1/out_quote menampung semua yang
+  // pernah keluar dari posisi (tarik sebagian + tutup), dan memecoin sisa yang belum
+  // terjual ikut bertambah — jadi PnL = out_quote − cost_quote tetap benar berapa kali
+  // pun posisi ditarik sebagian sebelum ditutup.
   // `left`: memecoin yang ikut keluar dan belum dijual — {token, amount, quote}; nilai
   // quote-nya (di harga tutup) sudah termasuk dalam outQuote.
-  markClosed(id, { out0, out1, outQuote, txHash, exitSqrt, left = null }) {
+  #addProceeds(id, { out0, out1, outQuote, left }) {
+    const prev = this.store.get('SELECT out0, out1, left_token, left_amount FROM positions WHERE id=?', id) || {};
+    const sum = (a, b) => (BigInt(a || '0') + BigInt(b ?? 0)).toString();
+    const sameLeft = left && (!prev.left_token || prev.left_token === left.token);
     this.store.run(
-      `UPDATE positions SET status='closed', closed_ts=?, out0=?, out1=?, out_quote=? + COALESCE(claimed_quote,0), tx_close=?, exit_sqrt=?, liquidity='0',
-         left_token=?, left_amount=?, left_quote=? WHERE id=?`,
-      Date.now(), String(out0 ?? 0), String(out1 ?? 0), outQuote ?? 0, txHash ?? null,
-      exitSqrt != null ? String(exitSqrt) : null,
-      left?.token || null, String(left?.amount ?? 0n), left?.quote || 0, id);
-    if (txHash) {
-      const tx = this.store.get('SELECT detail FROM txs WHERE hash=?', txHash);
-      const detail = JSON.parse(tx?.detail || '{}');
-      detail.closeProceeds = { amount0: String(out0 ?? 0), amount1: String(out1 ?? 0), quote: outQuote ?? 0 };
-      this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify(detail), txHash);
-    }
+      `UPDATE positions SET out0=?, out1=?, out_quote=COALESCE(out_quote,0)+?,
+         left_token=COALESCE(?, left_token), left_amount=?, left_quote=COALESCE(left_quote,0)+? WHERE id=?`,
+      sum(prev.out0, out0), sum(prev.out1, out1), outQuote ?? 0,
+      sameLeft ? left.token : null, sameLeft ? sum(prev.left_amount, left.amount) : (prev.left_amount || '0'),
+      sameLeft ? (left.quote || 0) : 0, id);
+  }
+
+  #noteProceeds(txHash, key, { out0, out1, outQuote }) {
+    if (!txHash) return;
+    const tx = this.store.get('SELECT detail FROM txs WHERE hash=?', txHash);
+    const detail = JSON.parse(tx?.detail || '{}');
+    detail[key] = { amount0: String(out0 ?? 0), amount1: String(out1 ?? 0), quote: outQuote ?? 0 };
+    this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify(detail), txHash);
+  }
+
+  markClosed(id, { out0, out1, outQuote, txHash, exitSqrt, left = null }) {
+    this.#addProceeds(id, { out0, out1, outQuote, left });
+    this.store.run(
+      `UPDATE positions SET status='closed', closed_ts=?, out_quote=out_quote + COALESCE(claimed_quote,0), tx_close=?, exit_sqrt=?, liquidity='0' WHERE id=?`,
+      Date.now(), txHash ?? null, exitSqrt != null ? String(exitSqrt) : null, id);
+    this.#noteProceeds(txHash, 'closeProceeds', { out0, out1, outQuote });
+  }
+
+  // Tarik sebagian: posisi tetap terbuka dengan likuiditas sisa, hasilnya dicatat
+  // seperti hasil tutup. Selama masih terbuka, PnL-nya = nilai kini + fee + yang sudah
+  // ditarik − modal (lihat sync/summary).
+  markDecreased(id, { liquidity, out0, out1, outQuote, txHash, left = null }) {
+    this.#addProceeds(id, { out0, out1, outQuote, left });
+    this.store.run('UPDATE positions SET liquidity=? WHERE id=?', String(liquidity), id);
+    this.#noteProceeds(txHash, 'decreaseProceeds', { out0, out1, outQuote });
   }
 
   // ---- memecoin sisa: dari "dinilai harga tutup" ke "hasil jual sesungguhnya" ----
@@ -342,7 +368,9 @@ class Positions {
       const valUsd = toUsd(valueQuote) ?? 0;
       const feeUsd = toUsd(feeQuote) ?? 0;
       const claimedUsd = toUsd(r.claimed_quote) ?? 0;
-      const pnlUsd = valUsd + feeUsd + claimedUsd - costUsd;
+      // out_quote posisi terbuka = hasil tarik sebagian yang sudah di wallet
+      const withdrawnUsd = toUsd(r.out_quote) ?? 0;
+      const pnlUsd = valUsd + feeUsd + claimedUsd + withdrawnUsd - costUsd;
 
       // HODL: kalau modal awal dibiarkan sebagai token, berapa nilainya sekarang?
       // Selisihnya = impermanent loss.
@@ -373,7 +401,7 @@ class Positions {
         markSqrt: mark && mark.ref ? mark.sqrt.toString() : null,
         markRef: mark?.ref ?? null,
         entrySqrt: Positions.entrySqrtOf(r),
-        valueUsd: valUsd, feeUsd, claimedUsd, costUsd, pnlUsd,
+        valueUsd: valUsd, feeUsd, claimedUsd, withdrawnUsd, costUsd, pnlUsd,
         pnlPct: costUsd > 0 ? (pnlUsd / costUsd) * 100 : 0,
         ilUsd: hodlUsd != null ? valUsd - hodlUsd : null,
         ageHours: (Date.now() - (r.opened_ts || Date.now())) / 3600000,
@@ -423,16 +451,19 @@ class Positions {
   // persis batas yang dipasang untuk membatasi kerugian.
   summary(ethUsd) {
     const liveById = new Map(this.live.map((p) => [p.id, p]));
-    const rows = this.store.all("SELECT id, cost_quote, quote_symbol, claimed_quote FROM positions WHERE status='open'")
+    const rows = this.store.all("SELECT id, cost_quote, out_quote, quote_symbol, claimed_quote FROM positions WHERE status='open'")
       .filter((r) => !liveById.get(r.id)?.empty);
-    let val = 0, fee = 0, cost = 0;
+    let val = 0, fee = 0, cost = 0, withdrawn = 0;
     for (const r of rows) {
       const k = r.quote_symbol === 'ETH' ? ethUsd : 1;
       const c = (r.cost_quote || 0) * k;
       cost += c;
+      // hasil tarik sebagian sudah di wallet (ikut kas), tapi modalnya masih utuh di
+      // cost_quote — tanpa ini posisi yang ditarik sebagian terbaca rugi sebesar tarikannya
+      withdrawn += (r.out_quote || 0) * k;
       const l = liveById.get(r.id);
       if (l) { val += l.valueUsd || 0; fee += l.feeUsd || 0; }
-      else val += c;   // belum tersinkron: modal dipakai sebagai taksiran nilai
+      else val += Math.max(0, c - (r.out_quote || 0) * k);   // belum tersinkron: sisa modal sebagai taksiran nilai
     }
     const open = rows.map((r) => liveById.get(r.id)).filter(Boolean).filter((p) => !p.empty);
     const closed = this.store.all("SELECT cost_quote, out_quote, quote_symbol FROM positions WHERE status='closed'");
@@ -446,7 +477,7 @@ class Positions {
     const lo = this.leftoverVal || { usd: 0, closeUsd: 0 };
     return {
       openCount: rows.length, exposureUsd: val, costUsd: cost, feeUsd: fee,
-      unrealizedUsd: val + fee - cost + (lo.usd - lo.closeUsd), realizedUsd: realized,
+      unrealizedUsd: val + fee + withdrawn - cost + (lo.usd - lo.closeUsd), realizedUsd: realized,
       leftoverUsd: lo.usd, leftoverCloseUsd: lo.closeUsd,
       inRange: open.filter((p) => p.inRange).length,
     };

@@ -582,6 +582,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       pos.syncing = row.status !== 'closed' && !live;
       pos.exitSqrt = row.exit_sqrt || null;
       pos.claimedUsd = (row.claimed_quote || 0) * k;
+      // hasil tarik sebagian yang sudah di wallet selagi posisi masih terbuka
+      pos.withdrawnUsd = row.status === 'closed' ? 0 : (row.out_quote || 0) * k;
       pos.compound = compound.status(row);
       pos.outUsd = outUsd;
       pos.quoteKind = row.quote_symbol === 'ETH' || row.quote_symbol === 'WETH' ? 'eth' : 'usd';
@@ -645,6 +647,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         if (t.kind === 'compound') {
           const run = store.get('SELECT reinvested_quote FROM compound_runs WHERE tx_hash=?', t.hash);
           if (run) ev.valueUsd = run.reinvested_quote * k;
+        }
+        // tarik sebagian: hasilnya dicatat sendiri, terpisah dari tutup
+        if (t.kind === 'decrease' && d.decreaseProceeds) {
+          ev.amount0 = d.decreaseProceeds.amount0; ev.amount1 = d.decreaseProceeds.amount1; ev.valueUsd = d.decreaseProceeds.quote * k;
         }
         if (t.hash === row.tx_close) {
           ev.amount0 = d.closeProceeds?.amount0 ?? row.out0; ev.amount1 = d.closeProceeds?.amount1 ?? row.out1; ev.valueUsd = d.closeProceeds?.quote != null ? d.closeProceeds.quote * k : null; ev.feesUsd = (row.fees_quote || 0) * k;
