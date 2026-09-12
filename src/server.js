@@ -162,7 +162,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   const usdPrice = async (a) => {
     if (QUOTES[a]) return QUOTES[a].kind === 'usd' ? 1 : engine.ethUsd || null;
     const mk = await Promise.race([market.token(a), new Promise((r) => setTimeout(() => r(null), 3000))]).catch(() => null);
-    return mk?.pairs?.find((p) => p.priceUsd && (p.base.address === a))?.priceUsd ?? null;
+    const pairs = mk?.pairs || [];
+    const asBase = pairs.find((p) => p.priceUsd && p.base.address === a);
+    if (asBase) return asBase.priceUsd;
+    // Token yang hanya muncul sebagai sisi kuotasi pool: harga USD base dibagi harga
+    // base dalam token ini (priceNative) = harga token ini.
+    const asQuote = pairs.find((p) => p.priceUsd && p.priceNative && p.quote.address === a);
+    return asQuote ? asQuote.priceUsd / asQuote.priceNative : null;
   };
 
   // Satu pintu untuk semua pemindaian wallet: tombol di dasbor, pembaruan otomatis
@@ -1184,7 +1190,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     // ?usd=1: sertakan harga & nilai USD tiap token bersaldo (dasbor). Bot Telegram
     // memanggil tanpa itu supaya tidak ikut menunggu DexScreener.
     'GET /api/manual/tokens': async (req, url) => {
-      const tokens = await manual.held();
+      // Satu balanceOf yang gagal (RPC 429) menggagalkan seluruh daftar — sekali
+      // coba lagi setelah jeda sebelum menyerah.
+      const tokens = await manual.held().catch(async (e) => {
+        log(`daftar token: ${e.message} — coba lagi`);
+        await new Promise((r) => setTimeout(r, 1500));
+        return manual.held();
+      });
       if (url.searchParams.get('usd') === '1') {
         await Promise.all(tokens.map(async (x) => {
           x.priceUsd = x.amount > 0 || x.isQuote ? await usdPrice(x.address) : null;
@@ -1192,6 +1204,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         }));
       }
       return { tokens };
+    },
+    // Harga USD untuk daftar alamat, TANPA membaca saldo lagi. Dasbor dulu memanggil
+    // /tokens?usd=1 yang membaca ulang semua saldo; kalau satu eth_call kena 429,
+    // seluruh harga hilang dan semua baris tampil "—".
+    'POST /api/manual/prices': async (req) => {
+      const b = await readBody(req);
+      const list = [...new Set((Array.isArray(b.addresses) ? b.addresses : [])
+        .map((x) => String(x || '').toLowerCase()).filter((x) => /^0x[0-9a-f]{40}$/.test(x)))].slice(0, 100);
+      const prices = {};
+      await Promise.all(list.map(async (a) => { prices[a] = await usdPrice(a).catch(() => null); }));
+      return { prices };
     },
     // Token yang ditempel lewat alamat di halaman Swap. Diperiksa dulu bahwa itu
     // memang token ERC-20 — alamat wallet/kontrak lain ditolak.

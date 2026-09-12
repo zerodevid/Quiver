@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Card, Spinner, Modal, Input, toast } from '@heroui/react';
-import { ArrowDownUp, ArrowRight, Brush, Check, ChevronDown, ChevronRight, CircleCheck, CircleX, Clock, Plus, Search, TriangleAlert, X } from 'lucide-react';
+import { ArrowDownUp, ArrowRight, Brush, Check, ChevronDown, ChevronLeft, ChevronRight, RefreshCw, CircleCheck, CircleX, Clock, Plus, Search, TriangleAlert, X } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { usePoll } from '../hooks';
@@ -164,15 +164,26 @@ function TokenPicker({ value, onChange, list, all, exclude, side, onImport }) {
 
 // Panel saldo di samping kartu swap: apa saja yang ada di wallet bot, nilainya, dan
 // token manual (yang bisa dihapus lagi). Klik baris = pakai sebagai sisi "dari".
-function Holdings({ tokens, dari, onUse, onRemove, onImport }) {
+const PER_HAL = 8;
+// Bernilai = ada harga dan nilainya minimal satu sen; sisanya (tanpa harga / debu)
+// dikumpulkan di bawah supaya aset yang berarti tidak tenggelam di antara memecoin.
+const bernilai = (x) => x.usd != null && x.usd >= 0.01;
+
+function Holdings({ tokens, dari, onUse, onRemove, onImport, harga, onRetryHarga }) {
   const { t } = useI18n();
   const [addr, setAddr] = useState('');
   const [kirim, setKirim] = useState(false);
   const [sapu, setSapu] = useState(false);
-  const rows = tokens.filter((x) => x.amount > 0 || x.custom)
-    .sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1) || b.amount - a.amount);
+  const [hal, setHal] = useState(0);
+  const rows = useMemo(() => tokens.filter((x) => x.amount > 0 || x.custom)
+    .sort((a, b) => (bernilai(b) - bernilai(a)) || (b.usd ?? -1) - (a.usd ?? -1) || b.amount - a.amount), [tokens]);
   const total = rows.reduce((s, x) => s + (x.usd || 0), 0);
   const adaHarga = rows.some((x) => x.usd != null);
+  const nBernilai = rows.filter(bernilai).length;
+  const nHal = Math.max(1, Math.ceil(rows.length / PER_HAL));
+  const halIni = Math.min(hal, nHal - 1);
+  const dari0 = halIni * PER_HAL;
+  const tampil = rows.slice(dari0, dari0 + PER_HAL);
   const a = addr.trim().toLowerCase();
 
   const tambah = async () => {
@@ -207,6 +218,12 @@ function Holdings({ tokens, dari, onUse, onRemove, onImport }) {
     <Panel title="Aset di wallet" desc="Klik baris untuk menukarnya."
       action={(
         <span className="flex items-center gap-2">
+          {harga === 'muat' && <Refreshing loading text="Memuat harga…" />}
+          {harga === 'gagal' && (
+            <Button size="sm" variant="ghost" onPress={onRetryHarga} className="text-danger">
+              <RefreshCw className="size-3.5" />{t('Harga gagal — coba lagi')}
+            </Button>
+          )}
           {adaHarga && <span className="num text-sm font-semibold">{usd(total)}</span>}
           <Button size="sm" variant="outline" onPress={sapuSisa} isPending={sapu}>
             <Brush className="size-3.5" />{t('Sapu sisa')}
@@ -215,8 +232,15 @@ function Holdings({ tokens, dari, onUse, onRemove, onImport }) {
       )} bodyClass="p-0">
       {rows.length ? (
         <div className="divide-y divide-border">
-          {rows.map((x) => (
-            <div key={x.address} className={`group flex items-center gap-3 px-4 py-2.5 text-sm ${x.address === dari ? 'bg-accent/5' : ''}`}>
+          {tampil.map((x, i) => (
+            <div key={x.address}>
+            {/* pembatas kelompok: baris pertama yang tidak bernilai */}
+            {harga !== 'muat' && nBernilai > 0 && dari0 + i === nBernilai && (
+              <div className="border-b border-border bg-default/40 px-4 py-1.5 text-[0.6875rem] font-medium uppercase tracking-wide text-muted">
+                {t('Tanpa nilai ({n})', { n: rows.length - nBernilai })}
+              </div>
+            )}
+            <div className={`group flex items-center gap-3 px-4 py-2.5 text-sm ${x.address === dari ? 'bg-accent/5' : ''}`}>
               <button type="button" disabled={!(x.amount > 0)} onClick={() => onUse(x.address)}
                 className="flex min-w-0 flex-1 items-center gap-3 text-left disabled:cursor-default">
                 <TokenIcon address={x.address} symbol={x.symbol} size={28} />
@@ -226,7 +250,7 @@ function Holdings({ tokens, dari, onUse, onRemove, onImport }) {
                     {x.custom && <span className="rounded bg-default px-1.5 py-px text-[0.6875rem] font-medium text-muted">{t('manual')}</span>}
                   </span>
                   <span className="num block truncate text-xs text-muted">
-                    {x.priceUsd != null ? usd(x.priceUsd, x.priceUsd < 1 ? 6 : 2) : '—'}
+                    {x.priceUsd != null ? usd(x.priceUsd, x.priceUsd < 1 ? 6 : 2) : harga === 'muat' ? '…' : t('tanpa harga')}
                   </span>
                 </span>
                 <span className="shrink-0 text-end">
@@ -241,9 +265,23 @@ function Holdings({ tokens, dari, onUse, onRemove, onImport }) {
                 </Button>
               )}
             </div>
+            </div>
           ))}
         </div>
       ) : <div className="p-4"><Empty title="Wallet kosong" /></div>}
+
+      {nHal > 1 && (
+        <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-2 text-xs text-muted">
+          <span className="num">{t('{a}–{b} dari {n}', { a: dari0 + 1, b: Math.min(dari0 + PER_HAL, rows.length), n: rows.length })}</span>
+          <span className="flex items-center gap-1">
+            <Button size="sm" variant="ghost" isIconOnly aria-label={t('Sebelumnya')} isDisabled={halIni === 0}
+              onPress={() => setHal(halIni - 1)} className="size-7"><ChevronLeft className="size-4" /></Button>
+            <span className="num min-w-10 text-center">{halIni + 1} / {nHal}</span>
+            <Button size="sm" variant="ghost" isIconOnly aria-label={t('Berikutnya')} isDisabled={halIni >= nHal - 1}
+              onPress={() => setHal(halIni + 1)} className="size-7"><ChevronRight className="size-4" /></Button>
+          </span>
+        </div>
+      )}
 
       {/* input token manual */}
       <form className="flex gap-2 border-t border-border p-3" onSubmit={(e) => { e.preventDefault(); if (isAddr(a)) tambah(); }}>
@@ -368,6 +406,7 @@ export default function Swap() {
   const { t } = useI18n();
   const { status, reload: reloadStatus } = useStatus();
   const [tokens, setTokens] = useState(null);
+  const [harga, setHarga] = useState('muat');   // 'muat' | 'ok' | 'gagal'
   const [dari, setDari] = useState('');
   const [ke, setKe] = useState('');
   const [jumlah, setJumlah] = useState('');
@@ -399,8 +438,24 @@ export default function Swap() {
     const d = await get('/api/manual/tokens');
     if (mine !== muatSeq.current) return d.tokens || [];
     pasang(d.tokens || []);
-    get('/api/manual/tokens?usd=1').then((u) => { if (mine === muatSeq.current && u.tokens) setTokens(u.tokens); });
+    muatHarga(d.tokens || [], mine);
     return d.tokens || [];
+  };
+  // Harga menyusul lewat endpoint sendiri — tidak membaca ulang saldo, jadi RPC
+  // yang sedang dibatasi tidak ikut menghapus semua harga.
+  const muatHarga = async (list, mine = muatSeq.current) => {
+    const addrs = list.filter((x) => x.amount > 0 || x.isQuote || x.custom).map((x) => x.address);
+    if (!addrs.length) return setHarga('ok');
+    setHarga('muat');
+    const r = await post('/api/manual/prices', { addresses: addrs });
+    if (mine !== muatSeq.current) return undefined;
+    if (r.error || !r.prices) return setHarga('gagal');
+    setTokens((cur) => (cur || []).map((x) => {
+      if (!(x.address in r.prices)) return x;
+      const priceUsd = r.prices[x.address];
+      return { ...x, priceUsd, usd: priceUsd != null ? x.amount * priceUsd : null };
+    }));
+    return setHarga('ok');
   };
   useEffect(() => { muat(); }, []);
 
@@ -644,7 +699,8 @@ export default function Swap() {
 
         {/* kolom kanan: saldo + riwayat */}
         <div className="flex min-w-0 flex-col gap-4">
-          <Holdings tokens={tokens} dari={dari} onUse={pakai} onRemove={hapus} onImport={impor} />
+          <Holdings tokens={tokens} dari={dari} onUse={pakai} onRemove={hapus} onImport={impor}
+            harga={harga} onRetryHarga={() => muatHarga(tokens || [])} />
           <Riwayat />
         </div>
       </div>
