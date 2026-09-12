@@ -453,7 +453,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       if (capital) {
         const deps = engine.capital.rows();
         const capAt = (ts) => capital.baselineUsd + deps.filter((d) => d.ts <= ts).reduce((a, d) => a + (d.kind === 'deposit' ? d.usd : -d.usd), 0);
-        for (const r of series) r.net = r.cash == null && !r.live ? null : r.total - capAt(r.ts);
+        // Titik "sekarang" pun tanpa kas tidak sah: sesaat setelah restart kas belum
+        // terbaca, total = posisi saja, dan ujung grafik anjlok sebesar seluruh kas.
+        for (const r of series) r.net = r.cash == null ? null : r.total - capAt(r.ts);
         if (baseline) baseline.net = baseline.cash == null ? null : baseline.total - capAt(baseline.ts);
       }
 

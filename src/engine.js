@@ -491,7 +491,7 @@ class Engine {
    * "tolak hook" sengaja TIDAK diterapkan di sini.
    */
   async ensureQuoteAsset(plan, rules, needQuoteRaw) {
-    const gasReserve = BigInt(this.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000);
+    const gasReserve = await this.gasReserve();
     const quoteTok = (plan.quoteSide === 0 ? plan.token0 : plan.token1).toLowerCase();
     const notes = [];
     const balOf = async (t) => {
@@ -659,7 +659,7 @@ class Engine {
     const rules = this.rulesFrom(act.target);
     const pk = plan.poolKey;
     const need0 = BigInt(plan.amount0Max), need1 = BigInt(plan.amount1Max);
-    const gasReserve = BigInt(this.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000); // 0,002 ETH
+    const gasReserve = await this.gasReserve();
     const notes = [];
     await this.topUpGas(notes);
 
@@ -1697,12 +1697,20 @@ class Engine {
     await this.compound.tick(Date.now(), new Set(triggers.map((t) => t.pos.id)));
   }
 
+  // Cadangan ETH native untuk gas: tetap dari config, atau biaya satu transaksi terberat
+  // saat harga gas tinggi (Executor.gasReserve). Exec tiruan di uji tidak punya: tetap.
+  async gasReserve() {
+    const fixed = BigInt(this.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000);
+    if (!this.exec?.gasReserve) return fixed;
+    try { return await this.exec.gasReserve(); } catch { return fixed; }
+  }
+
   // ETH native di bawah cadangan gas tapi ada WETH: buka bungkus sampai cadangannya
   // penuh lagi. Tanpa ini wallet yang kasnya berupa WETH pelan-pelan kehabisan gas —
   // padahal yang paling butuh gas justru transaksi keluar. Gagal di sini tidak
   // menghentikan entry maupun keluar: sisa ETH native mungkin masih cukup.
   async topUpGas(notes) {
-    const reserve = BigInt(this.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000);
+    const reserve = await this.gasReserve();
     try {
       const b = await this.exec.balances([ADDR.native, ADDR.weth]);
       const nat = b.get(ADDR.native) || 0n, weth = b.get(ADDR.weth) || 0n;
@@ -1724,7 +1732,7 @@ class Engine {
   // policy memotongnya lebih dalam. Sengaja dibaca segar (bukan this.cash yang bisa
   // berumur dua menit) karena hasilnya menentukan ukuran transaksi.
   async spendableCash() {
-    const reserve = BigInt(this.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000);
+    const reserve = await this.gasReserve();
     const b = await this.exec.balances([ADDR.native, ADDR.usdg, ADDR.weth]);
     const ethLike = (b.get(ADDR.native) || 0n) + (b.get(ADDR.weth) || 0n);
     const eth = ethLike > reserve ? ethLike - reserve : 0n;

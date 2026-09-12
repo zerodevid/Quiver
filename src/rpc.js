@@ -72,6 +72,10 @@ class RpcPool {
       // Bisa diset di config; kalau tidak, ditandai sendiri saat pertama kali menolak.
       noSend: !!e.no_send,
       fails: 0, cooldownUntil: 0, calls: 0, errors: 0, lastMs: 0, inflight: 0,
+      // Istirahat KHUSUS getLogs: endpoint yang membalas galat JSON-RPC untuk getLogs
+      // ("historical state is not available", "network is busy", "time budget") sering
+      // masih sehat untuk eth_call — jadi cuma jatah getLogs-nya yang dialihkan.
+      logsCooldownUntil: 0, logsErrors: 0,
     };
   }
 
@@ -82,7 +86,7 @@ class RpcPool {
     this.eps = endpoints.map((e) => {
       const n = this.makeEp(e);
       const o = old.get(e.url);
-      if (o) Object.assign(n, { calls: o.calls, errors: o.errors, lastMs: o.lastMs, fails: 0, cooldownUntil: 0 });
+      if (o) Object.assign(n, { calls: o.calls, errors: o.errors, logsErrors: o.logsErrors, lastMs: o.lastMs, fails: 0, cooldownUntil: 0 });
       return n;
     });
     for (const a of this.agents.values()) a.destroy();
@@ -182,21 +186,24 @@ class RpcPool {
     return !(e.maxLogBlocks && logSpan > e.maxLogBlocks);
   }
 
+  // Sampai kapan endpoint istirahat untuk jenis panggilan ini.
+  coolUntil(e, needsLogs) { return needsLogs ? Math.max(e.cooldownUntil, e.logsCooldownUntil) : e.cooldownUntil; }
+
   usable(needsLogs = false, logSpan = 0, needsArchive = false) {
     const now = Date.now();
     let pool = this.eps.filter((e) => this.canServe(e, needsLogs, logSpan, needsArchive));
     if (needsArchive && !pool.length) return [];
     if (!pool.length) pool = this.eps;             // tidak ada yang cocok: coba saja
-    const ok = pool.filter((e) => e.cooldownUntil < now);      // urutan daftar dipertahankan
+    const ok = pool.filter((e) => this.coolUntil(e, needsLogs) < now);      // urutan daftar dipertahankan
     if (ok.length) return ok;
     // semua istirahat: tetap coba, mulai dari yang istirahatnya paling cepat selesai
-    return pool.slice().sort((a, b) => a.cooldownUntil - b.cooldownUntil);
+    return pool.slice().sort((a, b) => this.coolUntil(a, needsLogs) - this.coolUntil(b, needsLogs));
   }
 
   allCoolingFor(needsLogs = false, logSpan = 0, needsArchive = false) {
     const now = Date.now();
     const pool = this.eps.filter((e) => this.canServe(e, needsLogs, logSpan, needsArchive));
-    return (pool.length ? pool : this.eps).every((e) => e.cooldownUntil > now);
+    return (pool.length ? pool : this.eps).every((e) => this.coolUntil(e, needsLogs) > now);
   }
 
   // Tinggi blok yang AMAN dipakai semua endpoint. Endpoint bisa beda 10-20 blok
@@ -212,7 +219,9 @@ class RpcPool {
 
   // ---- pemanggilan --------------------------------------------------------
   // calls: [{method, params}] -> hasil sejajar; melempar kalau semua endpoint gagal
-  async batch(calls, { timeoutMs = 30_000, logSpan = 0, archive = false } = {}) {
+  // `used` (opsional): objek yang diisi {ep} — endpoint yang terakhir melayani, supaya
+  // pemanggil bisa mengistirahatkannya kalau balasan 200-nya ternyata berisi galat.
+  async batch(calls, { timeoutMs = 30_000, logSpan = 0, archive = false, used = null } = {}) {
     if (!calls.length) return [];
     const out = new Array(calls.length).fill(null);
     const needsLogs = calls.some((c) => c.method === 'eth_getLogs');
@@ -221,6 +230,7 @@ class RpcPool {
       const eps = this.usable(needsLogs, logSpan, archive);
       if (!eps.length) throw new Error('tidak ada endpoint arsip terdaftar');
       const ep = eps[0];
+      if (used) used.ep = ep;
       const size = Math.min(ep.maxBatch, calls.length - pos);
       const slice = calls.slice(pos, pos + size);
       const payload = slice.map((c) => ({ jsonrpc: '2.0', id: this.id++, method: c.method, params: c.params || [] }));
@@ -316,13 +326,18 @@ class RpcPool {
 
   async blockNumber() { return parseInt(await this.call('eth_blockNumber'), 16); }
 
-  // eth_getLogs dengan failover antar-endpoint saat upstream menolak karena kapasitas.
+  // eth_getLogs dengan failover antar-endpoint saat upstream membalas galat.
   //
   // Ini beda dari kegagalan transport: upstream membalas 200 dengan error JSON-RPC
-  // ("returns more logs than the upstream will serve"), jadi kolam menganggapnya
-  // sukses dan tidak pindah endpoint. Mengecilkan rentang pun tidak menolong kalau
-  // SATU blok saja sudah melampaui batas endpoint itu — yang menolong cuma pindah ke
-  // endpoint dengan batas lebih longgar.
+  // ("returns more logs than the upstream will serve", "historical state is not
+  // available", "the network is busy", "backend exceeded time budget", "invalid block
+  // range"), jadi kolam menganggapnya sukses dan tidak pindah endpoint. Dulu hanya galat
+  // kapasitas yang dialihkan; galat lain langsung menggagalkan tick — dan karena
+  // endpointnya tidak diistirahatkan, tick berikutnya jatuh ke endpoint yang sama
+  // lagi: 844 kegagalan "historical state is not available" dalam 12 jam, kursor
+  // tertinggal, sinyal keluar target terlewat. Sekarang SEMUA galat getLogs
+  // mengistirahatkan jatah getLogs endpoint itu (eth_call-nya tetap dipakai) dan
+  // mencoba cadangan berikutnya; menyerah hanya kalau semua sudah dicoba.
   async getLogs(filter, { priority = false } = {}) {
     await this.logsSlot(priority);
     try { return await this._getLogs(filter); } finally { this.logsRelease(); }
@@ -330,12 +345,14 @@ class RpcPool {
 
   async _getLogs(filter) {
     const capacityErr = (m) => /more logs than|log.{0,12}limit|too many (?:logs|results)|response size|query returned more/i.test(m || '');
+    const busyErr = (m) => /429|too many requests|network is busy|rate limit/i.test(m || '');
     const eligible = this.eps.filter((e) => !e.noLogs);
+    const span = spanOf(filter);
     let lastErr = null;
     for (let attempt = 0; attempt < Math.max(1, eligible.length); attempt++) {
+      const used = {};
       try {
-        const span = spanOf(filter);
-        const out = await this.call('eth_getLogs', [filter], { timeoutMs: 45_000, logSpan: span });
+        const out = await this.call('eth_getLogs', [filter], { timeoutMs: 45_000, logSpan: span, used });
         // Sebagian upstream membalas `result: null` alih-alih daftar kosong saat gagal
         // di dalam. Kalau itu diterima sebagai "tidak ada log", satu rentang blok
         // hilang DIAM-DIAM padahal kursor tetap maju — aksi target di rentang itu
@@ -344,12 +361,22 @@ class RpcPool {
         return out;
       } catch (e) {
         lastErr = e;
-        if (!capacityErr(e.message)) throw e;
-        // Endpoint yang barusan dipakai adalah prioritas teratas yang sehat; istirahatkan
-        // sebentar supaya percobaan berikutnya jatuh ke cadangan di bawahnya.
-        const used = this.usable(true, spanOf(filter))[0];
-        if (used) { used.cooldownUntil = Date.now() + 8000; used.fails++; }
-        this.log(`getLogs ditolak ${new URL(used?.url || 'http://?').hostname} (kapasitas) — coba endpoint lain`);
+        // Semua endpoint sudah istirahat (kegagalan transport beruntun): tidak ada
+        // yang bisa dicoba lagi sekarang.
+        if (/semua endpoint RPC/.test(e.message)) throw e;
+        const ep = used.ep || this.usable(true, span)[0];
+        if (!ep) throw e;
+        const host = new URL(ep.url).hostname;
+        ep.logsErrors++;
+        // Kapasitas: 8 detik cukup, rentang berikutnya mungkin lebih ringan. Sibuk/429:
+        // lebih lama, mencoba lagi cepat cuma memperpanjang hukuman. Galat lain
+        // ("historical state", "time budget", "invalid range"): 20 detik — cukup untuk
+        // beberapa tick lewat endpoint lain sebelum yang ini dicoba lagi.
+        const ms = capacityErr(e.message) ? 8000 : busyErr(e.message) ? 30_000 : 20_000;
+        ep.logsCooldownUntil = Math.max(ep.logsCooldownUntil, Date.now() + ms);
+        lastErr = new Error(`${e.message} [${host}]`);
+        if (this.allCoolingFor(true, span)) break;
+        this.log(`getLogs ${host} gagal (${String(e.message).slice(0, 90)}) — istirahat getLogs ${ms / 1000}s, coba endpoint lain`);
       }
     }
     throw lastErr;
@@ -379,6 +406,7 @@ class RpcPool {
     return this.eps.map((e) => ({
       host: new URL(e.url).hostname, calls: e.calls, errors: e.errors,
       lastMs: e.lastMs, cooling: e.cooldownUntil > Date.now(),
+      logsCooling: e.logsCooldownUntil > Date.now(), logsErrors: e.logsErrors,
       noLogs: e.noLogs, noSend: e.noSend, maxLogBlocks: e.maxLogBlocks, archive: e.archive, inflight: e.inflight, url: e.url,
     }));
   }

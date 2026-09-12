@@ -423,7 +423,8 @@ class Manual {
   }
 
   // ---- saldo & simulasi tukar ---------------------------------------------
-  gasReserve() { return BigInt(this.engine.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000); }
+  // Cadangan gas ikut harga gas terkini (lihat Executor.gasReserveCached).
+  gasReserve() { return this.engine.exec?.gasReserveCached ? this.engine.exec.gasReserveCached() : BigInt(this.engine.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000); }
 
   daftarSaldo(p) {
     return [...new Set([ADDR.native, ADDR.usdg, ADDR.weth, ...(p ? [lc(p.token0), lc(p.token1)] : [])])];
@@ -687,7 +688,7 @@ class Manual {
     const h = (await this.held()).find((x) => x.address === lc(token));
     const dec = h?.decimals ?? 18;
     const bal = BigInt(h?.raw || '0');
-    const reserve = BigInt(this.engine.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000);
+    const reserve = this.gasReserve();
     const maks = isNative(token) ? (bal > reserve ? bal - reserve : 0n) : bal;
     const t = String(input).trim().toLowerCase();
     if (t === 'semua' || t === 'all' || t === 'max') return maks;

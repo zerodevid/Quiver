@@ -62,10 +62,46 @@ class Executor {
   }
 
   // ---- pengiriman transaksi ----------------------------------------------
+  // maxFeePerGas = gasPrice × pengali, TAPI tidak pernah di bawah 2× base fee blok
+  // terbaru. eth_gasPrice dari endpoint yang tertinggal (ordofi bisa 2rb blok di
+  // belakang) memberi harga basi; saat base fee melonjak, transaksinya ditolak
+  // "max fee per gas less than block base fee" — terjadi pada entry 2026-09-12 14:39.
   async gasFees() {
-    const gp = BigInt(await this.rpc.call('eth_gasPrice'));
+    const [gpr, blk] = await this.rpc.batch([
+      { method: 'eth_gasPrice' }, { method: 'eth_getBlockByNumber', params: ['latest', false] },
+    ]);
+    if (!gpr || gpr.error || !gpr.result) throw new Error(`eth_gasPrice: ${gpr?.error?.message || 'tidak ada balasan'}`);
+    const gp = BigInt(gpr.result);
     const mult = BigInt(Math.round((this.cfg.gas?.price_multiplier ?? 1.5) * 100));
-    return { maxFeePerGas: (gp * mult) / 100n, maxPriorityFeePerGas: BigInt(this.cfg.gas?.priority_wei ?? 10_000_000) };
+    const prio = BigInt(this.cfg.gas?.priority_wei ?? 10_000_000);
+    let maxFeePerGas = (gp * mult) / 100n;
+    const base = blk?.result?.baseFeePerGas ? BigInt(blk.result.baseFeePerGas) : 0n;
+    if (base * 2n + prio > maxFeePerGas) maxFeePerGas = base * 2n + prio;
+    this.lastFees = { maxFeePerGas, maxPriorityFeePerGas: prio, ts: Date.now() };
+    return { maxFeePerGas, maxPriorityFeePerGas: prio };
+  }
+
+  // Cadangan ETH native yang tidak boleh dipakai sebagai modal: cadangan dari config,
+  // atau — kalau harga gas sedang tinggi — biaya SATU transaksi terberat (batas gas
+  // maksimum × maxFeePerGas), mana yang lebih besar. Dengan cadangan tetap 0,002 ETH,
+  // lonjakan base fee membuat entry ETH (yang memakai seluruh ETH di atas cadangan)
+  // ditolak "insufficient funds for gas * price + value", dan yang lebih gawat:
+  // transaksi KELUAR ikut tidak terkirim. Harga gas di-cache 30 detik.
+  async gasReserve() {
+    try {
+      if (!(this.lastFees && Date.now() - this.lastFees.ts < 30_000)) await this.gasFees();
+    } catch { /* harga gas tidak terbaca: pakai yang terakhir diketahui / cadangan tetap */ }
+    return this.gasReserveCached();
+  }
+
+  // Versi sinkron untuk pemanggil yang tidak bisa menunggu (halaman manual): harga gas
+  // terakhir yang diketahui (≤ 10 menit), selain itu cadangan tetap.
+  gasReserveCached() {
+    const fixed = BigInt(this.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000);
+    const f = this.lastFees && Date.now() - this.lastFees.ts < 600_000 ? this.lastFees : null;
+    if (!f) return fixed;
+    const dyn = BigInt(this.cfg.gas?.max_gas_limit ?? 4_000_000) * f.maxFeePerGas;
+    return dyn > fixed ? dyn : fixed;
   }
 
   async estimateGas(tx) {
