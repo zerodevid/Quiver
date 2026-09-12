@@ -20,7 +20,7 @@ const { tr, localeContext } = require('./telegram-i18n');
 
 const W = 1200, H = 630, PAD = 56, SCALE = 2;
 const C = {
-  bg0: '#0E1015', bg1: '#181B23', text: '#F4F5F7', muted: '#8E93A3', faint: '#5C6170',
+  bg0: '#101416', bg1: '#191F22', text: '#F4F6F5', muted: '#A0AAA9', faint: '#84908F',
   line: 'rgba(255,255,255,0.09)', gold: '#D9AE45', amber: '#FBBF24',
   up: '#4ADE80', down: '#F87171', flat: '#C4C7D0',
 };
@@ -29,6 +29,19 @@ const FONT_DIR = path.join(__dirname, '..', 'public', 'fonts');
 const FONTS = ['Regular', 'Medium', 'SemiBold', 'Bold'].map((w) => path.join(FONT_DIR, `Inter-${w}.ttf`));
 const MARK = fs.readFileSync(path.join(__dirname, '..', 'public', 'logo-white.svg'), 'utf8')
   .replace(/<!--[\s\S]*?-->/g, '').replace(/<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
+const CHAIN_ICON = fs.readFileSync(path.join(__dirname, '..', 'public', 'robinhood-chain.jpg')).toString('base64');
+// Maskot rubah di kolom kanan, ekspresinya mengikuti PnL (public/mascots/*.png, PNG
+// transparan, tinggi 900 px — dirender ±620 px pada skala 2×). Dimuat sekali per proses.
+const MASCOT = Object.fromEntries(['flex', 'profit', 'loss', 'neutral'].map((m) => {
+  const png = fs.readFileSync(path.join(__dirname, '..', 'public', 'mascots', `${m}.png`));
+  const w = png.readUInt32BE(16), h = png.readUInt32BE(20);
+  return [m, { href: `data:image/png;base64,${png.toString('base64')}`, w, h }];
+}));
+// flex: untung besar (≥ FLEX_PCT% dari modal); profit/loss: arah PnL; neutral: nol / belum ada data.
+const FLEX_PCT = 20;
+const mood = (pnl, pnlPct) => (pnl > 0.005 ? (pnlPct >= FLEX_PCT ? 'flex' : 'profit') : pnl < -0.005 ? 'loss' : 'neutral');
+// Kolom kanan dipakai maskot: teks hero berhenti di sini.
+const MASCOT_X = 850;
 const QUOTE = new Set(['USDG', 'WETH', 'ETH', 'USDC', 'USDT']);
 
 // ---- format angka, sama persis dengan web/src/fmt.js ----------------------------
@@ -86,60 +99,83 @@ function txt(s, x, y, { size = 16, weight = 400, color = C.text, anchor = 'start
   const yy = base === 'middle' ? y + size * 0.36 : y;
   return `<text x="${x}" y="${yy}" font-size="${size}" font-weight="${weight}" fill="${color}" text-anchor="${anchor}">${esc(s)}${spans}</text>`;
 }
-const span = (s, { size, weight = 600, color, dx = 10, dy = 0 }) => `<tspan dx="${dx}" dy="${dy}" font-size="${size}" font-weight="${weight}" fill="${color}">${esc(s)}</tspan>`;
 function chip(s, x, y, { color = C.muted, fill = 'rgba(255,255,255,0.06)' } = {}) {
   const w = measure(s, 17, 500) + 24, h = 32;
   return { w, svg: `<rect x="${x}" y="${y - h / 2}" width="${w.toFixed(1)}" height="${h}" rx="8" fill="${fill}"/>` + txt(s, x + 12, y, { size: 17, weight: 500, color, base: 'middle' }) };
 }
 
-// Bingkai: latar, sinar sesuai arah PnL, lencana + nama di kiri atas, keterangan di
-// kanan atas, tagline di kanan bawah.
-function frame(tint, right, body) {
-  let lines = '';
-  for (let x = PAD; x < W; x += 80) lines += `<line x1="${x}" y1="0" x2="${x}" y2="${H}" stroke="rgba(255,255,255,0.035)" stroke-width="1"/>`;
+// Layout uses bounded text widths so large values and long labels stay within the card.
+function fit(s, width, size, weight = 500) {
+  if (measure(s, size, weight) <= width) return String(s);
+  const chars = Array.from(String(s));
+  while (chars.length && measure(chars.join('') + '…', size, weight) > width) chars.pop();
+  return chars.join('') + '…';
+}
+function fitted(s, x, y, width, options = {}) {
+  const size = options.size || 16, weight = options.weight || 500;
+  return txt(fit(s, width, size, weight), x, y, { ...options, size, weight });
+}
+function frame(tint, right, body, mascot) {
+  const context = right.replace(' · Robinhood Chain', '');
+  // Maskot mengisi ruang antara garis kepala (y=100) dan kotak statistik (y=421), rata kanan.
+  const m = MASCOT[mascot], mh = 312, mw = Math.round((m.w / m.h) * mh);
+  const mx = W - PAD + 8 - mw, my = 104;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="Inter">
 <defs>
-  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${C.bg0}"/><stop offset="1" stop-color="${C.bg1}"/></linearGradient>
-  <radialGradient id="glow" cx="${W - 140}" cy="120" r="560" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="${tint}" stop-opacity="0.2"/><stop offset="1" stop-color="${tint}" stop-opacity="0"/></radialGradient>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${C.bg1}"/><stop offset="1" stop-color="${C.bg0}"/></linearGradient>
+  <radialGradient id="glow" cx="${mx + mw / 2}" cy="${my + mh / 2}" r="${mh * 0.95}" gradientUnits="userSpaceOnUse"><stop stop-color="${tint}" stop-opacity="0.16"/><stop offset="1" stop-color="${tint}" stop-opacity="0"/></radialGradient>
+  <clipPath id="chain-icon"><circle cx="948" cy="582" r="10"/></clipPath>
 </defs>
-<rect width="${W}" height="${H}" fill="url(#bg)"/><rect width="${W}" height="${H}" fill="url(#glow)"/>${lines}
-<svg x="${PAD}" y="${PAD - 2}" width="220" height="40" viewBox="0 0 264 48">${MARK}</svg>
-${txt(right, W - PAD, PAD + 19, { size: 18, weight: 500, color: C.muted, anchor: 'end', base: 'middle' })}
-${txt(tr('LP copy-trading di Robinhood Chain'), W - PAD, H - PAD + 6, { size: 17, weight: 500, color: C.gold, anchor: 'end' })}
+<rect width="${W}" height="${H}" fill="url(#bg)"/><rect width="${W}" height="${H}" fill="url(#glow)"/>
+<rect x="0" y="0" width="${W}" height="3" fill="${tint}"/>
+<svg x="${PAD}" y="45" width="154" height="28" viewBox="0 0 264 48">${MARK}</svg>
+${txt(context, W - PAD, 61, { size: 17, weight: 500, color: C.muted, anchor: 'end', base: 'middle' })}
+<line x1="${PAD}" y1="100" x2="${W - PAD}" y2="100" stroke="${C.line}"/>
+<image x="938" y="572" width="20" height="20" clip-path="url(#chain-icon)" href="data:image/jpeg;base64,${CHAIN_ICON}"/>
+${txt('Robinhood Chain', 970, 583, { size: 17, weight: 500, color: C.muted, base: 'middle' })}
+<image x="${mx}" y="${my}" width="${mw}" height="${mh}" href="${m.href}"/>
 ${body}
 </svg>`;
 }
 
-// Judul (baris kedua): teks besar diikuti chip-chip kecil. x0 = posisi mulai.
 function title(s, chips, x0 = PAD) {
-  const y = 158;
-  let x = x0, out = txt(s, x, y, { size: 40, weight: 600, base: 'middle' });
-  x += measure(s, 40, 600) + 18;
-  for (const [label, style] of chips) {
-    if (!label) continue;
+  const y = 154;
+  const active = chips.filter(([label]) => label);
+  const chipWidth = active.reduce((sum, [label]) => sum + measure(label, 17, 500) + 34, 0);
+  const available = W - PAD - x0 - chipWidth - 22;
+  const text = fit(s, Math.max(120, available), 32, 600);
+  let x = x0 + measure(text, 32, 600) + 22;
+  let out = txt(text, x0, y, { size: 32, weight: 600, base: 'middle' });
+  for (const [label, style] of active) {
     const c = chip(label, x, y, style); out += c.svg; x += c.w + 10;
   }
   return out;
 }
-// Angka utama: label kecil, persen/dolar besar berwarna, angka kedua di sebelahnya,
-// dan satu baris keterangan di bawahnya.
+// Angka besar lalu angka kedua di sebelahnya (dolar ↔ persen), keduanya berhenti sebelum
+// kolom maskot; ukuran menyusut kalau angkanya panjang.
 function hero({ label, big, bigColor, side, sub, subColor = C.muted }) {
-  const y = 232;
-  return txt(label, PAD, y, { size: 20, weight: 500, color: C.muted })
-    + txt(big, PAD - 4, y + 118, { size: 124, weight: 700, color: bigColor, spans: side ? span(side, { size: 44, weight: 600, color: bigColor, dx: 22, dy: -10 }) : '' })
-    + (sub ? txt(sub, PAD, y + 168, { size: 20, weight: 400, color: subColor }) : '');
+  const room = MASCOT_X - PAD;
+  const sideSize = side ? Math.min(40, (room * 0.4) / Math.max(measure(side, 1, 600), 1)) : 0;
+  const sideW = side ? measure(side, sideSize, 600) + 22 : 0;
+  const size = Math.min(108, (room - sideW) / Math.max(measure(big, 1, 700), 1));
+  let out = txt(label, PAD, 226, { size: 18, weight: 500, color: C.muted });
+  out += txt(big, PAD - 3, 336, { size, weight: 700, color: bigColor });
+  if (side) out += txt(side, PAD - 3 + measure(big, size, 700) + 22, 336, { size: sideSize, weight: 600, color: bigColor });
+  if (sub) out += fitted(sub, PAD, 383, room, { size: 19, color: subColor });
+  return out;
 }
-// Deret statistik di bawah garis: [label, nilai, { extra: [teks, warna], color }]
 function statsRow(cols, footer) {
-  const y = 452;
-  let out = `<line x1="${PAD}" y1="${y}" x2="${W - PAD}" y2="${y}" stroke="${C.line}" stroke-width="1"/>`;
-  const cw = (W - PAD * 2) / cols.length;
+  const y = 421, cw = (W - PAD * 2) / cols.length;
+  let out = `<rect x="${PAD}" y="${y}" width="${W - PAD * 2}" height="124" rx="12" fill="#FFFFFF" fill-opacity="0.025" stroke="${C.line}"/>`;
   cols.forEach(([label, value, o = {}], i) => {
-    const cx = PAD + cw * i;
-    out += txt(label, cx, y + 40, { size: 18, weight: 500, color: C.muted });
-    out += txt(value, cx, y + 82, { size: 32, weight: 600, color: o.color || C.text, spans: o.extra ? span(o.extra[0], { size: 18, weight: 600, color: o.extra[1] }) : '' });
+    const cx = PAD + cw * i + 20, width = cw - 40;
+    if (i) out += `<line x1="${PAD + cw * i}" y1="${y + 24}" x2="${PAD + cw * i}" y2="${y + 100}" stroke="${C.line}"/>`;
+    out += fitted(label, cx, y + 30, width, { size: 16, color: C.muted });
+    const size = Math.min(29, width / Math.max(measure(value, 1, 600), 1));
+    out += txt(value, cx, y + 70, { size, weight: 600, color: o.color || C.text });
+    if (o.extra) out += fitted(o.extra[0], cx, y + 100, width, { size: 15, color: o.extra[1] });
   });
-  if (footer) out += txt(footer, PAD, H - PAD + 6, { size: 17, weight: 400, color: C.faint });
+  if (footer) out += fitted(footer, PAD, 588, 850, { size: 15, color: C.faint });
   return out;
 }
 // Lambang token: logo bulat (PNG/JPEG/GIF yang tersimpan di server), atau lingkaran
@@ -176,7 +212,7 @@ function positionSvg(p, { hideAmounts = false, icons = {} } = {}) {
   const feeUsd = (p.claimedUsd || 0) + (closed ? 0 : (p.feeUsd || 0));
   const status = closed ? tr('Ditutup') : p.empty ? tr('Likuiditas kosong') : p.inRange == null ? tr('belum tersinkron') : p.inRange ? 'in-range' : tr('di luar rentang');
   const pair = `${p.symbol0 || '?'} / ${p.symbol1 || '?'}`;
-  const y = 158;
+  const y = 154;
   let body = token(icons.token0, { address: p.token0, symbol: p.symbol0 }, PAD + 26, y, 26, 'c0')
     + token(icons.token1, { address: p.token1, symbol: p.symbol1 }, PAD + 64, y, 26, 'c1');
   body += title(pair, [
@@ -198,7 +234,7 @@ function positionSvg(p, { hideAmounts = false, icons = {} } = {}) {
     [tr('Fee diperoleh'), hideAmounts ? HIDDEN : usd(feeUsd), { color: C.up }],
     [tr(closed ? 'Ditahan' : 'Umur'), age(p.ageHours)],
   ], closed ? `${fmtDate(p.opened_ts)} › ${fmtDate(p.closed_ts)}` : tr('masuk {0}', [fmtDate(p.opened_ts)]));
-  return frame(sign(p.pnlUsd), `Uniswap ${String(p.venue || '').toUpperCase()} · Robinhood Chain`, body);
+  return frame(sign(p.pnlUsd), `Uniswap ${String(p.venue || '').toUpperCase()} · Robinhood Chain`, body, mood(p.pnlUsd, p.pnlPct));
 }
 
 // ---- kartu total portofolio -------------------------------------------------------
@@ -222,7 +258,7 @@ function totalSvg({ now, stats, since }, { hideAmounts = false } = {}) {
     [tr('Fee terkumpul'), hideAmounts ? HIDDEN : usd(now.feeUsd), { color: C.up }],
     [tr('Posisi terbaik'), stats?.best == null ? '—' : hideAmounts ? HIDDEN : usd(stats.best), { color: sign(stats?.best) }],
   ], since ? tr('sejak {0} · {1}', [fmtDayOnly(since), fmtDate(Date.now())]) : fmtDate(Date.now()));
-  return frame(sign(now.pnl), tr('Seluruh portofolio') + ' · Robinhood Chain', body);
+  return frame(sign(now.pnl), tr('Seluruh portofolio') + ' · Robinhood Chain', body, mood(now.pnl, pnlPct));
 }
 
 // ---- kartu PnL harian ---------------------------------------------------------------
@@ -250,7 +286,7 @@ function dailySvg({ day, rows, total: totalIn, count, monthTotal }, { hideAmount
     [tr('Win rate'), rows.length ? `${num((wins / rows.length) * 100, 0)}%` : '—', { color: !rows.length ? C.text : wins / rows.length >= 0.5 ? C.up : C.down }],
     [tr('Bulan ini'), hideAmounts ? HIDDEN : usd(monthTotal), { color: sign(monthTotal) }],
   ], tr('PnL terealisasi dari posisi yang ditutup pada {0}', [fmtDayOnly(ts)]));
-  return frame(sign(total), tr('PnL harian') + ' · Robinhood Chain', body);
+  return frame(sign(total), tr('PnL harian') + ' · Robinhood Chain', body, mood(total, dayPct));
 }
 
 // Pilih kartu dan gambar. lang 'id'|'en'; timeZone nama IANA (mis. 'Asia/Jakarta').
