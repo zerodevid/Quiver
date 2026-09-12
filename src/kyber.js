@@ -157,8 +157,26 @@ class Kyber {
     const hash = await this.exec.send(tx, { kind, detail: { ...(detail || {}), dex: q.dex, usdIn: q.usdIn, usdOut: q.usdOut } });
     const rc = await this.exec.waitReceipt(hash, 90_000);
     if (!rc.ok) throw new Error(`swap Kyber gagal (${hash})`);
-    const after = await outBal();
-    return { hash, amountOut: after > before ? after - before : 0n, quote: q, receipt: rc.receipt };
+    // Hasil dibaca dari log Transfer di receipt (pasti milik tx ini). Selisih saldo
+    // hanya cadangan (ETH native): node yang tertinggal satu blok pernah memberi 0 —
+    // dan 0 itu lalu tercatat sebagai "sisa terjual $0". Tidak terbaca = null, pemanggil
+    // memakai kutipan Kyber sebagai taksiran, bukan nol.
+    let amountOut = null;
+    if (String(tokenOut).toLowerCase() !== ADDR.native) {
+      const TOPIC_XFER = ethers.id('Transfer(address,address,uint256)');
+      let v = 0n;
+      for (const l of rc.receipt?.logs || []) {
+        if (String(l.address).toLowerCase() !== String(tokenOut).toLowerCase() || l.topics[0] !== TOPIC_XFER || l.topics.length !== 3) continue;
+        if (('0x' + l.topics[2].slice(-40)).toLowerCase() === String(me).toLowerCase()) v += BigInt(l.data);
+        if (('0x' + l.topics[1].slice(-40)).toLowerCase() === String(me).toLowerCase()) v -= BigInt(l.data);
+      }
+      if (v > 0n) amountOut = v;
+    }
+    if (amountOut == null) {
+      const after = await outBal();
+      amountOut = after > before ? after - before : null;
+    }
+    return { hash, amountOut, quote: q, receipt: rc.receipt };
   }
 }
 

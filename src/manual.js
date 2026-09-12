@@ -740,7 +740,9 @@ class Manual {
       kind: 'swap_manual', detail,
     });
     if (!r) throw new Error('Kyber tidak menemukan rute');
-    const keluar = Number(r.amountOut) / 10 ** (mo.decimals ?? 18);
+    // Hasil dari receipt; kalau tidak terbaca (ETH native + node tertinggal) pakai kutipan.
+    const outRaw = r.amountOut ?? BigInt(r.quote?.amountOut ?? 0);
+    const keluar = Number(outRaw) / 10 ** (mo.decimals ?? 18);
     // Yang dijual mungkin memecoin sisa dari posisi yang sudah tutup: PnL posisinya
     // dikoreksi ke hasil jual ini (FIFO kalau beberapa posisi menyimpan token yang sama).
     try {
@@ -754,7 +756,7 @@ class Manual {
     } catch { /* riwayat saja — swap-nya sudah terkirim */ }
     const note = `${masuk.toPrecision(6)} ${mi.symbol} → ${keluar.toPrecision(6)} ${mo.symbol}`;
     eng.notify(`swap manual: ${note}`);
-    return { txHash: r.hash, amountOut: r.amountOut.toString(), note, dex: r.quote?.dex || null };
+    return { txHash: r.hash, amountOut: outRaw.toString(), note, dex: r.quote?.dex || null };
   }
 }
 

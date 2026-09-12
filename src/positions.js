@@ -3,7 +3,7 @@
 // pemicu keluar mandiri (di luar rentang, stop loss, take profit, umur).
 const { ethers } = require('ethers');
 const { ADDR, ABI } = require('./chain');
-const { computePoolId, priceUsable } = require('./pools');
+const { computePoolId, priceUsable, sqrtClampedToRange } = require('./pools');
 const { unclaimedV4, unclaimedV3 } = require('./fees');
 const m = require('./v3math');
 
@@ -167,7 +167,7 @@ class Positions {
       const v4 = [...new Set(rows.filter((r) => r.venue !== 'v3').map((r) => r.pool_ref))];
       const slots = new Map(), liqs = new Map();
       if (v4.length) {
-        const [ss, ls] = await Promise.all([this.chain.slot0V4Many(v4), this.chain.poolLiquidityMany(v4)]);
+        const [ss, ls] = await Promise.all([this.chain.slot0V4Many(v4), this.chain.poolLiquidityMany(v4).catch(() => [])]);
         v4.forEach((id, i) => { slots.set(id, ss[i]); liqs.set(id, ls[i] ?? 0n); });
       }
       for (const a of new Set(rows.filter((r) => r.venue === 'v3').map((r) => r.pool_ref))) {
@@ -213,7 +213,14 @@ class Positions {
     if (priceUsable(s, poolLiq ?? 0n) && sane(s.sqrtPriceX96)) return { sqrt: s.sqrtPriceX96, ref: null };
     const alt = await this.chain.markSqrtForPair(r.token0, r.token1, r.pool_ref);
     if (alt && sane(alt.sqrtPriceX96)) return { sqrt: alt.sqrtPriceX96, ref: alt.poolRef };
-    if (r.exit_sqrt && sane(BigInt(r.exit_sqrt))) return { sqrt: BigInt(r.exit_sqrt), ref: 'exit' };
+    // Harga sendiri (keluar / pool mentah) bisa juga di batas tick — kalau rentang
+    // posisi diketahui, diapit ke tepinya: harga terakhir yang dilalui posisi ini.
+    const clamp = (x) => (r.tick_lower != null && r.tick_upper != null
+      ? sqrtClampedToRange(x, m.getSqrtRatioAtTick(r.tick_lower), m.getSqrtRatioAtTick(r.tick_upper)) : x);
+    if (r.exit_sqrt) {
+      const ex = clamp(BigInt(r.exit_sqrt));
+      if (sane(ex)) return { sqrt: ex, ref: 'exit' };
+    }
     if (own) {
       if ((priceUsable(s, poolLiq ?? 0n) || alt) && !this.markWarned.has(r.id)) {
         this.markWarned.add(r.id);
@@ -221,7 +228,8 @@ class Positions {
       }
       return { sqrt: own, ref: 'entry' };
     }
-    return { sqrt: s.sqrtPriceX96, ref: null };
+    const cl = clamp(s.sqrtPriceX96);
+    return { sqrt: cl, ref: cl === s.sqrtPriceX96 ? null : 'edge' };
   }
 
   // Baca harga pool posisi r lalu pilih harga penilainya; bentuknya slot0 supaya bisa
@@ -336,8 +344,10 @@ class Positions {
     // 2. state pool — harga DAN likuiditas aktif. Likuiditas nol berarti harganya
     //    tidak bisa dipercaya (lihat markSqrtForPair), jadi dibaca bersamaan.
     const poolIds = [...new Set(rows.filter((r) => r.venue === 'v4').map((r) => r.pool_ref))];
+    // Likuiditas yang gagal dibaca tidak boleh menjatuhkan sinkron: dianggap 0 → jatuh
+    // ke pool acuan / harga sendiri, yang aman.
     const [slots, poolLiq] = poolIds.length
-      ? await Promise.all([this.chain.slot0V4Many(poolIds), this.chain.poolLiquidityMany(poolIds)]) : [[], []];
+      ? await Promise.all([this.chain.slot0V4Many(poolIds), this.chain.poolLiquidityMany(poolIds).catch(() => [])]) : [[], []];
     const slotBy = new Map(poolIds.map((id, i) => [id, slots[i]]));
     const poolLiqBy = new Map(poolIds.map((id, i) => [id, poolLiq[i] ?? 0n]));
     for (const r of rows.filter((x) => x.venue === 'v3')) {
