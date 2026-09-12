@@ -897,8 +897,15 @@ const EN = {
   'Lepas': 'Detach',
   'Wallet dilepas, kunci dicadangkan': 'Wallet detached, key backed up',
   'Endpoint RPC': 'RPC endpoints',
-  'Permintaan dibagi otomatis: getLogs hanya ke endpoint yang sanggup, pembacaan state lampau hanya ke endpoint arsip, sisanya ke yang paling senggang. Perubahan berlaku tanpa restart.':
-    'Requests are routed automatically: getLogs only to endpoints that support it, historical state reads only to archive endpoints, everything else to the least busy one. Changes take effect without a restart.',
+  'Urutan = prioritas: yang teratas dipakai lebih dulu, yang di bawahnya cadangan saat ia gagal atau istirahat (429). getLogs hanya ke endpoint yang sanggup, pembacaan state lampau hanya ke endpoint arsip. Perubahan berlaku tanpa restart.':
+    'Order = priority: the top endpoint is used first; the ones below are fallbacks when it fails or is cooling down (429). getLogs only goes to endpoints that support it, historical state reads only to archive endpoints. Changes take effect without a restart.',
+  'Naikkan prioritas': 'Move up',
+  'Turunkan prioritas': 'Move down',
+  'Prioritas utama': 'Primary',
+  'Cadangan ke-{n}': 'Fallback #{n}',
+  'Prioritas utama — dipakai lebih dulu selama sehat': 'Primary — used first while healthy',
+  'Prioritas dinaikkan': 'Priority raised',
+  'Prioritas diturunkan': 'Priority lowered',
   'tanpa getLogs': 'no getLogs',
   'getLogs ≤ {n} blok': 'getLogs ≤ {n} blocks',
   'getLogs penuh': 'full getLogs',

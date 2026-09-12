@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Chip, Checkbox, Separator, Tabs, toast } from '@heroui/react';
-import { Pencil, Activity as Pulse, Trash2, KeyRound, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck } from 'lucide-react';
+import { Pencil, Activity as Pulse, Trash2, KeyRound, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck } from 'lucide-react';
 import SettingInfo from '../components/SettingInfo';
 import { get, post } from '../api';
 import { useStatus } from '../App';
@@ -132,7 +132,9 @@ function Caps({ e }) {
   );
 }
 
-function RpcRow({ e, onSave, onDelete }) {
+// `rank`/`total` = urutan prioritas; onMove(-1|+1) menggeser naik/turun. Yang teratas
+// dipakai lebih dulu, sisanya cadangan berurutan (lihat rpc.js usable()).
+function RpcRow({ e, rank, total, onSave, onDelete, onMove }) {
   const { t } = useI18n();
   const [edit, setEdit] = useState(false);
   const [f, setF] = useState(e);
@@ -142,8 +144,14 @@ function RpcRow({ e, onSave, onDelete }) {
   return (
     <div className="flex flex-col gap-3 py-4">
       <div className="flex flex-wrap items-start gap-4">
+        <div className="flex shrink-0 flex-col items-center gap-0.5">
+          <Button size="sm" variant="ghost" isIconOnly aria-label={t('Naikkan prioritas')} isDisabled={rank === 0} onPress={() => onMove(-1)}><ChevronUp className="size-4" /></Button>
+          <span className="num text-xs text-muted" title={rank === 0 ? t('Prioritas utama') : t('Cadangan ke-{n}', { n: rank })}>#{rank + 1}</span>
+          <Button size="sm" variant="ghost" isIconOnly aria-label={t('Turunkan prioritas')} isDisabled={rank === total - 1} onPress={() => onMove(1)}><ChevronDown className="size-4" /></Button>
+        </div>
         <div className="min-w-0 flex-1">
           <div className="mono break-all">{e.url}</div>
+          {rank === 0 && <div className="mt-0.5 text-xs text-accent">{t('Prioritas utama — dipakai lebih dulu selama sehat')}</div>}
           {e.headers && <div className="mono mt-0.5 text-xs text-muted">{Object.entries(e.headers).map(([k, v]) => `${k}: ${v}`).join(', ')}</div>}
           <div className="mt-2"><Caps e={e} /></div>
           {test && <div className={`mt-2 text-sm ${test.usable ? 'text-success' : 'text-danger'}`}>{test.error || test.summary}</div>}
@@ -208,10 +216,11 @@ function RpcTab({ d, setD }) {
   };
 
   return (
-    <Section title="Endpoint RPC" desc="Permintaan dibagi otomatis: getLogs hanya ke endpoint yang sanggup, pembacaan state lampau hanya ke endpoint arsip, sisanya ke yang paling senggang. Perubahan berlaku tanpa restart.">
+    <Section title="Endpoint RPC" desc="Urutan = prioritas: yang teratas dipakai lebih dulu, yang di bawahnya cadangan saat ia gagal atau istirahat (429). getLogs hanya ke endpoint yang sanggup, pembacaan state lampau hanya ke endpoint arsip. Perubahan berlaku tanpa restart.">
       <div className="divide-y divide-border rounded-md border border-border px-4">
-        {d.rpc.map((e) => (
-          <RpcRow key={e.id + e.url} e={e}
+        {d.rpc.map((e, i) => (
+          <RpcRow key={e.id + e.url} e={e} rank={i} total={d.rpc.length}
+            onMove={(dir) => { const l = current(); const j = i + dir; if (j < 0 || j >= l.length) return; [l[i], l[j]] = [l[j], l[i]]; saveList(l, dir < 0 ? 'Prioritas dinaikkan' : 'Prioritas diturunkan'); }}
             onSave={(f) => saveList(current().map((x) => (x.id === e.id ? { ...x, ...f, id: e.id } : x)), 'Endpoint diperbarui')}
             onDelete={async (id) => { if (await ask({ title: t('Hapus endpoint ini?'), confirm: t('Hapus'), danger: true })) saveList(current().filter((x) => x.id !== id), 'Endpoint dihapus'); }} />
         ))}

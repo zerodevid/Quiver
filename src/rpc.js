@@ -166,9 +166,12 @@ class RpcPool {
     return Math.max(0, Math.min(...this.eps.map((e) => e.cooldownUntil)) - now);
   }
 
-  // Endpoint yang boleh dipakai untuk sekumpulan panggilan ini.
-  // Diurutkan dari yang paling senggang supaya beban tersebar — menghajar satu
-  // endpoint terus-menerus persis yang memicu 429.
+  // Endpoint yang boleh dipakai untuk sekumpulan panggilan ini, URUT PRIORITAS:
+  // urutan daftar di config/halaman Pengaturan adalah urutannya. Yang teratas dipakai
+  // selama sehat; yang sedang istirahat (gagal, 429) turun ke belakang sehingga
+  // panggilan jatuh ke cadangan berikutnya, dan kembali ke atas begitu istirahatnya
+  // selesai. (Dulu diurutkan dari yang paling senggang supaya beban tersebar — tapi
+  // pemilik ingin menentukan sendiri endpoint mana yang diandalkan lebih dulu.)
   // logSpan: lebar rentang blok getLogs. Endpoint dengan max_log_blocks lebih kecil
   // dilewati — ordofi misalnya menggantung ~60 detik lalu membalas "network is busy"
   // untuk rentang 40rb blok, padahal endpoint resmi menjawab 900rb blok dalam 0,34 detik.
@@ -184,9 +187,10 @@ class RpcPool {
     let pool = this.eps.filter((e) => this.canServe(e, needsLogs, logSpan, needsArchive));
     if (needsArchive && !pool.length) return [];
     if (!pool.length) pool = this.eps;             // tidak ada yang cocok: coba saja
-    let ok = pool.filter((e) => e.cooldownUntil < now);
-    if (!ok.length) ok = pool;                     // semua istirahat: tetap coba
-    return ok.slice().sort((a, b) => (a.inflight - b.inflight) || (a.fails - b.fails) || (a.lastMs - b.lastMs));
+    const ok = pool.filter((e) => e.cooldownUntil < now);      // urutan daftar dipertahankan
+    if (ok.length) return ok;
+    // semua istirahat: tetap coba, mulai dari yang istirahatnya paling cepat selesai
+    return pool.slice().sort((a, b) => a.cooldownUntil - b.cooldownUntil);
   }
 
   allCoolingFor(needsLogs = false, logSpan = 0, needsArchive = false) {
@@ -341,8 +345,8 @@ class RpcPool {
       } catch (e) {
         lastErr = e;
         if (!capacityErr(e.message)) throw e;
-        // Endpoint yang barusan dipakai adalah yang paling senggang; istirahatkan
-        // sebentar supaya percobaan berikutnya jatuh ke endpoint lain.
+        // Endpoint yang barusan dipakai adalah prioritas teratas yang sehat; istirahatkan
+        // sebentar supaya percobaan berikutnya jatuh ke cadangan di bawahnya.
         const used = this.usable(true, spanOf(filter))[0];
         if (used) { used.cooldownUntil = Date.now() + 8000; used.fails++; }
         this.log(`getLogs ditolak ${new URL(used?.url || 'http://?').hostname} (kapasitas) — coba endpoint lain`);
