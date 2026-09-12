@@ -16,7 +16,8 @@ import { ask } from './ui';
 import { useAlertPrefs, alarm, bumpTitle, canDesktop } from './TargetAlerts';
 
 const KEY = 'quiver.stuck-seen';
-const keyOf = (it) => `${it.posId}:${it.token}`;
+// posId null = sisa yang disapu dari wallet, bukan dari posisi mana pun.
+const keyOf = (it) => `${it.posId ?? 'w'}:${it.token}`;
 // Sudah dibunyikan di tab ini? Disimpan per sesi tab supaya muat ulang halaman tidak
 // mengulang alarm untuk hal yang sama, tapi tab baru (besok) tetap diberi tahu.
 const seen = () => { try { return new Set(JSON.parse(sessionStorage.getItem(KEY) || '[]')); } catch { return new Set(); } };
@@ -30,13 +31,14 @@ export default function StuckAlert() {
   const { status, reload } = useStatus();
   const prefs = useAlertPrefs();
   const list = status?.leftovers || [];
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(null);   // kunci item yang sedang dijual, atau '*' untuk semua
   const [, tick] = useState(0);
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
 
-  // "sejak 12 mnt lalu" ikut bergerak tanpa menunggu poll.
-  useEffect(() => { const id = setInterval(() => tick((n) => n + 1), 15000); return () => clearInterval(id); }, []);
+  // Tiap detik: hitung mundur ke percobaan berikutnya harus benar-benar berdetak,
+  // dan "sejak 12 mnt lalu" ikut bergerak tanpa menunggu poll.
+  useEffect(() => { const id = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(id); }, []);
 
   useEffect(() => {
     if (!list.length) return;
@@ -62,11 +64,13 @@ export default function StuckAlert() {
 
   if (!list.length) return null;
 
-  const coba = async () => {
-    setBusy(true);
-    const r = await post('/api/leftovers/retry', {});
-    setBusy(false);
+  // Tanpa argumen: seluruh antrean. Dengan item: baris itu saja.
+  const coba = async (it = null) => {
+    setBusy(it ? keyOf(it) : '*');
+    const r = await post('/api/leftovers/retry', it ? { posId: it.posId ?? null, token: it.token } : {});
+    setBusy(null);
     if (r.error) toast.danger(r.error, { timeout: 12000 });
+    else if (it) toast.success(t('{s} terjual', { s: it.symbol || short(it.token) }));
     else toast.success(t('Terjual — antrean kosong'));
     reload();
   };
@@ -82,8 +86,18 @@ export default function StuckAlert() {
   return (
     <div role="alert" className="border-b-2 border-danger bg-danger/10">
       <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-2 px-4 py-3 sm:px-6 lg:px-8">
+        {list.length > 1 && (
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span className="font-semibold text-danger">{t('{n} token menunggu dijual', { n: list.length })}</span>
+            <Button size="sm" variant="outline" onPress={() => coba()} isPending={busy === '*'}>{t('Jual semua sekarang')}</Button>
+          </div>
+        )}
         {list.map((it) => {
           const rugi = it.lastLossBps != null ? num(it.lastLossBps / 100, 1) : lossPct(it.why), batas = capPct(it.why);
+          // Detik ke percobaan otomatis berikutnya. 0 = jatuh temponya sudah lewat,
+          // jadi tick berikutnya (tiap 1 dtk di server) akan mengutip ulang.
+          const sisa = Math.max(0, Math.ceil(((it.next || 0) - Date.now()) / 1000));
+          const jalan = busy === keyOf(it) || busy === '*';
           return (
             <div key={keyOf(it)} className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <span className="flex size-8 shrink-0 animate-pulse items-center justify-center rounded-full bg-danger text-white">
@@ -92,7 +106,10 @@ export default function StuckAlert() {
               <div className="min-w-0 flex-1 basis-64 text-sm">
                 <div className="font-semibold text-danger">
                   {t('{a} {s} belum terjual', { a: num(it.amountNum, 0), s: it.symbol || short(it.token) })}
-                  <span className="font-normal"> · {t('posisi #{id}', { id: it.posId })}</span>
+                  <span className="font-normal">
+                    {' · '}
+                    {it.posId == null ? t('sisa di wallet') : t('posisi #{id}', { id: it.posId })}
+                  </span>
                 </div>
                 <div className="text-foreground/80">
                   {rugi
@@ -100,14 +117,19 @@ export default function StuckAlert() {
                     : it.why}
                   {' '}
                   <span className="text-muted">
-                    {t('Dikutip ulang tiap {s} dtk — sudah {n}×{w}; dijual otomatis begitu lolos batas.', {
-                      s: status?.leftoverRetrySec || 5, n: num(it.tries || 0), w: it.since ? ` ${t('sejak {a}', { a: ago(it.since) })}` : '',
+                    {jalan || sisa === 0
+                      ? t('Sedang dieksekusi…')
+                      : t('Eksekusi otomatis berikutnya dalam {d} dtk', { d: sisa })}
+                    {t(' — sudah {n}×{w}; dijual otomatis begitu lolos batas.', {
+                      n: num(it.tries || 0), w: it.since ? ` ${t('sejak {a}', { a: ago(it.since) })}` : '',
                     })}
                   </span>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
-                <Button size="sm" variant="danger" onPress={coba} isPending={busy}>{t('Coba jual sekarang')}</Button>
+                <Button size="sm" variant="danger" onPress={() => coba(it)} isPending={jalan}>
+                  {t('Jual sekarang')}{!jalan && sisa > 0 ? ` · ${sisa}s` : ''}
+                </Button>
                 <Button size="sm" variant="outline" onPress={() => { location.hash = 'swap'; }}>{t('Jual manual')}</Button>
                 <Button size="sm" variant="outline" onPress={() => { location.hash = 'rules'; }}>{t('Ubah batas rugi')}</Button>
                 <Button size="sm" variant="ghost" isIconOnly aria-label={t('Keluarkan dari antrean')} onPress={() => buang(it)} className="text-muted">

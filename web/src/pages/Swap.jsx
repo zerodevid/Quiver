@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Card, Spinner, Modal, Input, toast } from '@heroui/react';
-import { ArrowDownUp, Check, ChevronDown, Plus, Search, TriangleAlert, X } from 'lucide-react';
+import { ArrowDownUp, Brush, Check, ChevronDown, Plus, Search, TriangleAlert, X } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { usePoll } from '../hooks';
@@ -168,6 +168,7 @@ function Holdings({ tokens, dari, onUse, onRemove, onImport }) {
   const { t } = useI18n();
   const [addr, setAddr] = useState('');
   const [kirim, setKirim] = useState(false);
+  const [sapu, setSapu] = useState(false);
   const rows = tokens.filter((x) => x.amount > 0 || x.custom)
     .sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1) || b.amount - a.amount);
   const total = rows.reduce((s, x) => s + (x.usd || 0), 0);
@@ -181,9 +182,37 @@ function Holdings({ tokens, dari, onUse, onRemove, onImport }) {
     if (ok) setAddr('');
   };
 
+  // Memasukkan memecoin yang nganggur di wallet ke antrean jual otomatis. Tidak
+  // mengirim transaksi apa pun di sini: yang menjual tetap antreannya, dengan batas
+  // rugi yang sama. Debu di bawah ambang sengaja tidak diantrekan.
+  const sapuSisa = async () => {
+    setSapu(true);
+    const r = await post('/api/leftovers/sweep', {});
+    setSapu(false);
+    if (r.error) return toast.danger(r.error, { timeout: 12000 });
+    if (r.queued?.length) {
+      return toast.success(t('{n} token masuk antrean jual', { n: r.queued.length }), {
+        description: r.queued.map((x) => x.label).join(', '), timeout: 12000,
+      });
+    }
+    return toast.warning(t('Tidak ada sisa yang layak dijual'), {
+      description: r.skipped?.length
+        ? t('{n} token dilewat: {w}', { n: r.skipped.length, w: r.skipped.slice(0, 3).map((x) => `${x.label} — ${x.why}`).join(' · ') })
+        : t('Wallet cuma berisi aset kuotasi dan token posisi yang masih terbuka.'),
+      timeout: 14000,
+    });
+  };
+
   return (
     <Panel title="Aset di wallet" desc="Klik baris untuk menukarnya."
-      action={adaHarga && <span className="num text-sm font-semibold">{usd(total)}</span>} bodyClass="p-0">
+      action={(
+        <span className="flex items-center gap-2">
+          {adaHarga && <span className="num text-sm font-semibold">{usd(total)}</span>}
+          <Button size="sm" variant="outline" onPress={sapuSisa} isPending={sapu}>
+            <Brush className="size-3.5" />{t('Sapu sisa')}
+          </Button>
+        </span>
+      )} bodyClass="p-0">
       {rows.length ? (
         <div className="divide-y divide-border">
           {rows.map((x) => (

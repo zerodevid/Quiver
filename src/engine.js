@@ -19,6 +19,9 @@ const fmtUnits = (raw, dec) => {
   const n = Number(raw) / 10 ** dec;
   return n >= 1 ? n.toFixed(2) : String(Number(n.toPrecision(3)));
 };
+// Asal sebuah sisa, untuk pesan. Antrean jual sekarang juga menampung token yang
+// disapu dari wallet (posId null) — bukan cuma yang keluar dari posisi.
+const asalSisa = (item) => (item.posId == null ? 'sisa di wallet' : `posisi #${item.posId}`);
 
 // Durasi singkat untuk kabar: "45 dtk", "3 mnt", "1 jam 20 mnt".
 function lamanya(ms) {
@@ -1164,10 +1167,10 @@ class Engine {
       try {
         this.positions.recordLeftoverSale({ posId: item.posId, token: item.token, amount, quoteToken: item.quote,
           txHash: r.hash, amountOut: r.amountOut, usdOut: r.quote?.usdOut, ethUsd: this.ethUsd });
-      } catch (e) { this.store.log('warn', `catat hasil jual sisa #${item.posId}: ${e.message}`, { quiet: true }); }
+      } catch (e) { this.store.log('warn', `catat hasil jual ${asalSisa(item)}: ${e.message}`, { quiet: true }); }
       const msg = `jual ${label} → $${(r.quote.usdOut || 0).toFixed(2)} (${r.quote.dex})`;
       if (!quiet) {
-        this.notify(`posisi #${item.posId}: ${msg}`, {
+        this.notify(`${asalSisa(item)}: ${msg}`, {
           kind: 'leftover', positionId: item.posId, txHash: r.hash, label, usdIn: r.quote.usdIn,
           usdOut: r.quote.usdOut, dex: r.quote.dex, tries: item.tries || 0,
         });
@@ -1185,13 +1188,13 @@ class Engine {
   // tiap percobaan: antrean mengecek tiap beberapa detik, dan kabar yang sama
   // ribuan kali hanya membuat orang kebal.
   alertLeftover(item, label, e) {
-    const cur = this.leftovers().find((x) => x.posId === item.posId && x.token === item.token);
+    const cur = this.leftovers().find((x) => this.sameLeftover(x, item));
     if (!cur) return;
     const first = (cur.tries || 0) <= 1;
     const due = Date.now() - (cur.alertedAt || 0) > 6 * 3600_000;
     if (!first && !due) return;
-    this.saveLeftovers(this.leftovers().map((x) => (x.posId === item.posId && x.token === item.token ? { ...x, alertedAt: Date.now() } : x)));
-    this.notify(`SISA BELUM TERJUAL: ${label} dari posisi #${item.posId} — ${e.message}`, {
+    this.saveLeftovers(this.leftovers().map((x) => (this.sameLeftover(x, item) ? { ...x, alertedAt: Date.now() } : x)));
+    this.notify(`SISA BELUM TERJUAL: ${label} dari ${asalSisa(item)} — ${e.message}`, {
       kind: 'leftover_stuck', positionId: item.posId, target: item.target, token: item.token,
       label, amount: item.amount, why: e.message, tries: cur.tries, next: cur.next, retrySec: this.leftoverRetrySec(),
       since: cur.since || null, reminder: !first,
@@ -1208,12 +1211,16 @@ class Engine {
     catch { return []; }
   }
   saveLeftovers(list) { this.store.setState('leftovers', JSON.stringify(list)); }
+  // Satu item dikenali dari pasangan (posisi, token). posId null = disapu dari wallet,
+  // bukan dari posisi — `?? null` menyamakan null dan undefined supaya item lama
+  // (yang belum punya field ini) tidak pernah tertukar dengan item sapuan.
+  sameLeftover(a, b) { return (a.posId ?? null) === (b.posId ?? null) && a.token === b.token; }
   // Item TIDAK pernah dibuang sendiri: uangnya masih tersangkut di wallet, jadi
   // peringatan dasbor dan daftar token swap harus terus melihatnya sampai terjual
   // atau dikeluarkan manual. `tries` cuma penghitung; jadwalnya tiap beberapa detik.
   keepLeftover(item, why) {
-    const old = this.leftovers().find((x) => x.posId === item.posId && x.token === item.token);
-    const list = this.leftovers().filter((x) => !(x.posId === item.posId && x.token === item.token));
+    const old = this.leftovers().find((x) => this.sameLeftover(x, item));
+    const list = this.leftovers().filter((x) => !this.sameLeftover(x, item));
     const tries = (item.tries || 0) + 1;
     const next = Date.now() + this.leftoverRetrySec() * 1000;
     list.push({ ...old, ...item, tries, next, why, since: old?.since || item.since || Date.now() });
@@ -1221,7 +1228,7 @@ class Engine {
     return { tries, next };
   }
   dropLeftover(item) {
-    this.saveLeftovers(this.leftovers().filter((x) => !(x.posId === item.posId && x.token === item.token)));
+    this.saveLeftovers(this.leftovers().filter((x) => !this.sameLeftover(x, item)));
   }
 
   // Dipanggil tiap detik (index.js). Tiap item dicek dengan SATU kutipan Kyber
@@ -1258,6 +1265,76 @@ class Engine {
         } catch (e) { this.store.log('warn', `coba ulang jual sisa #${item.posId}: ${e.message}`, { quiet: true }); }   // masih di antrean
       }
     } finally { this.leftoverBusy = false; }
+  }
+
+  // Sapu memecoin yang sudah telanjur duduk di wallet.
+  //
+  // sellLeftover hanya menangkap apa yang keluar dari tx keluar bot itu sendiri (dibaca
+  // dari log Transfer di receipt-nya), jadi token yang sudah ada lebih dulu — sisa run
+  // lama, LP manual, kiriman langsung — tidak pernah masuk antrean dan tidak pernah
+  // dijual siapa pun. Di sini isi wallet dibaca, tiap token non-kuotasi dikutip ke Kyber
+  // SEKALI, dan yang nilainya di atas ambang dimasukkan ke antrean yang sama seperti
+  // sisa posisi (posId null). Debu di bawah ambang sengaja dilewat: rutenya tidak akan
+  // pernah lolos batas rugi, dan item yang gagal selamanya cuma membuat pita peringatan
+  // kebal dibaca. Tidak ada transaksi yang dikirim di sini — hanya mengisi antrean;
+  // penjualannya tetap lewat retryLeftovers dengan pengaman yang sama.
+  async sweepWallet({ minUsd = 0.5, quote = ADDR.usdg } = {}) {
+    const me = this.exec.address();
+    if (!me) throw new Error('wallet bot belum diatur');
+    const q = String(quote).toLowerCase();
+    // Kandidat: semua token yang pernah dikenal bot + yang pernah masuk ke wallet
+    // (daftar yang sama dipakai halaman Swap, disegarkan oleh Manual.seenTokens).
+    const set = new Set();
+    for (const r of this.store.all('SELECT address FROM tokens')) if (r.address) set.add(String(r.address).toLowerCase());
+    try {
+      const st = JSON.parse(this.store.getState('swap_seen', '{}') || '{}');
+      if (st.wallet === me) for (const a of st.tokens || []) set.add(String(a).toLowerCase());
+    } catch { /* daftar tabel tokens saja sudah cukup */ }
+    // Token yang ditambahkan manual di halaman Swap ikut: justru yang begini yang
+    // paling sering nyangkut — belum pernah jadi posisi, jadi tidak ada di tabel
+    // tokens, dan sudah lewat jendela pindai Transfer kalau masuknya lama.
+    try {
+      const c = JSON.parse(this.store.getState('swap_tokens', '[]') || '[]');
+      if (Array.isArray(c)) for (const a of c) if (/^0x[0-9a-f]{40}$/i.test(a)) set.add(String(a).toLowerCase());
+    } catch { /* daftar manual boleh kosong */ }
+    // Aset kuotasi itu tujuan, bukan sisa. Token posisi yang masih terbuka juga tidak
+    // disentuh: itu bahan kerja (zap, tambah likuiditas), bukan sampah.
+    for (const a of Object.keys(QUOTES)) set.delete(a);
+    set.delete(ADDR.native);
+    for (const r of this.store.all("SELECT token0, token1 FROM positions WHERE status='open'")) {
+      for (const t of [r.token0, r.token1]) if (t) set.delete(String(t).toLowerCase());
+    }
+    for (const it of this.leftovers()) set.delete(String(it.token).toLowerCase());
+    const list = [...set];
+    if (!list.length) return { scanned: 0, queued: [], skipped: [] };
+
+    const bal = await this.exec.balances(list);
+    const punya = list.filter((a) => (bal.get(a) || 0n) > 0n);
+    const metas = await this.chain.tokens(punya);
+    const byAddr = new Map(metas.filter(Boolean).map((t) => [String(t.address).toLowerCase(), t]));
+
+    const queued = [], skipped = [];
+    for (const token of punya) {
+      const amount = bal.get(token);
+      const meta = byAddr.get(token) || {};
+      const label = `${fmtUnits(amount, meta.decimals ?? 18)} ${meta.symbol || token.slice(0, 8)}`;
+      // Satu kutipan per token: yang menentukan layak dijual atau tidak adalah berapa
+      // yang benar-benar bisa ditarik, bukan harga pool.
+      const k = await this.kyber.quote(token, q, amount).catch(() => null);
+      const usd = k?.usdOut ?? null;
+      if (usd == null || usd < minUsd) {
+        skipped.push({ token, label, usd,
+          why: !k ? 'Kyber tidak menemukan rute' : `cuma $${(usd || 0).toFixed(2)} (< $${minUsd})` });
+        continue;
+      }
+      this.keepLeftover({ posId: null, target: null, token, quote: q, amount: amount.toString(), tries: 0,
+        since: Date.now(), source: 'wallet', lastUsdOut: usd, lastUsdIn: k.usdIn ?? null }, 'baru disapu dari wallet, menunggu giliran');
+      queued.push({ token, label, usd });
+    }
+    if (queued.length) {
+      this.store.log('info', `sapu wallet: ${queued.length} token masuk antrean jual — ${queued.map((x) => `${x.label} (~$${x.usd.toFixed(2)})`).join(', ')}`);
+    }
+    return { scanned: punya.length, queued, skipped };
   }
 
   // Jaring pengaman terakhir untuk sinyal keluar.

@@ -64,6 +64,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       return { ...it, symbol: t?.symbol || null, decimals: t?.decimals ?? 18, amountNum: Number(it.amount || 0) / 10 ** (t?.decimals ?? 18) };
     });
   };
+  // Kunci satu item antrean dari body permintaan. posId BOLEH kosong: sisa yang
+  // disapu dari wallet tidak berasal dari posisi mana pun, dan Number(undefined)
+  // jadi NaN yang tidak akan pernah cocok dengan null di antrean.
+  const leftoverKey = (b) => ({
+    posId: b?.posId == null || b.posId === '' ? null : Number(b.posId),
+    token: String(b?.token || '').toLowerCase(),
+  });
+  const sameLeftover = (x, k) => (x.posId ?? null) === k.posId && String(x.token).toLowerCase() === k.token;
 
   // Token atau bukan? Wallet LP besar sering berupa KONTRAK (smart wallet, Safe),
   // jadi "punya kode" saja belum berarti token — yang menentukan adalah symbol() dan
@@ -1045,22 +1053,36 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
 
     // ---- sisa memecoin yang belum terjual setelah keluar posisi ----
     'GET /api/leftovers': () => ({ leftovers: leftoverRows() }),
-    'POST /api/leftovers/retry': async () => {
+    // Tanpa body: seluruh antrean. Dengan {posId, token}: satu item saja — tombol
+    // "jual sekarang" di pita peringatan menembak barisnya sendiri, bukan semuanya.
+    'POST /api/leftovers/retry': async (req) => {
       if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
-      const list = engine.leftovers();
+      const b = await readBody(req).catch(() => ({}));
+      const sel = leftoverKey(b);
+      const list = sel.token ? engine.leftovers().filter((x) => sameLeftover(x, sel)) : engine.leftovers();
       if (!list.length) return { ok: true, tried: 0 };
       // Jadwal tunggu dilewati: ini permintaan manual, bukan percobaan otomatis.
-      engine.saveLeftovers(list.map((x) => ({ ...x, next: 0 })));
+      const pilih = new Set(list.map((x) => `${x.posId ?? ''}:${x.token}`));
+      engine.saveLeftovers(engine.leftovers().map((x) => (pilih.has(`${x.posId ?? ''}:${x.token}`) ? { ...x, next: 0 } : x)));
       const errs = [];
-      for (const item of engine.leftovers()) {
+      for (const item of list) {
         try { await engine.sellToken(item); } catch (e) { errs.push(e.message); }
       }
       return { ok: true, tried: list.length, error: errs.length ? errs.join(' · ') : null };
     },
+    // Memasukkan sisa yang sudah telanjur duduk di wallet ke antrean yang sama.
+    // Tidak mengirim transaksi apa pun — cuma mengutip dan mengantre.
+    'POST /api/leftovers/sweep': async (req) => {
+      if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
+      const b = await readBody(req).catch(() => ({}));
+      const min = Number(b?.minUsd);
+      try { return { ok: true, ...(await engine.sweepWallet({ minUsd: Number.isFinite(min) && min >= 0 ? min : 0.5 })) }; }
+      catch (e) { log(`sapu wallet: ${e.message}`); return { error: e.message }; }
+    },
     'POST /api/leftovers/drop': async (req) => {
       const b = await readBody(req);
       const before = engine.leftovers().length;
-      engine.dropLeftover({ posId: Number(b.posId), token: String(b.token || '').toLowerCase() });
+      engine.dropLeftover(leftoverKey(b));
       return engine.leftovers().length < before ? { ok: true } : { error: 'tidak ada di antrean' };
     },
 
