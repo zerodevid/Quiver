@@ -343,7 +343,6 @@ npx vite build       # production build (deploy.sh does this automatically)
 | **Manual LP** | Three-step flow (pool → amount → range) with a live-recomputing preview. Pool picker is searchable and can discover pools directly from a token address via the v4 `Initialize` event (both currencies are indexed). |
 | **Swap** | Two-box swap card via Kyber, with quoted route cost and a hard stop on routes that lose more than the configured bound. |
 | **Wallet** | Wallet research — see [Wallet research](#wallet-research). |
-| **Scout** | The `lp scout` report, in the browser. |
 | **Settings** | LIVE/simulation, cadence, wallet, RPC endpoints (test & add), gas, engine, notifications, Telegram, dashboard token. Fields controlled by `.env` are shown read-only with the variable to change. |
 
 ### Target alerts
@@ -425,7 +424,7 @@ A paired chat can do **everything** the dashboard can. Treat `telegram.chat_ids`
 
 ## Wallet research
 
-Open any wallet in the **Wallet** page to see total profit, win rate, fees, average capital, a daily profit calendar, open positions, and the complete position history. Results are persisted in SQLite (`wallets`, `wpositions`, `wevents`, `wprices`), so reopening a wallet costs no RPC calls. The ⟳ button rescans; **Full history** scans from genesis (~10 minutes for ~150 positions, once).
+Open any wallet in the **Wallet** page to see total profit, win rate, fees, average capital, a daily profit calendar, the wallet's LP style (in-range share, typical range width, position size and age), open positions, and the complete position history. Results are persisted in SQLite (`wallets`, `wpositions`, `wevents`, `wprices`), so reopening a wallet costs no RPC calls. The ⟳ button rescans; **Full history** scans from genesis (~10 minutes for ~150 positions, once).
 
 Validation against LP Agent for a reference wallet (full history): closed positions 145 vs 146, win rate 81.55 % vs 82.39 %, fees $2 620.46 vs $2.62k, average capital $591.91 vs $589.08.
 
@@ -582,7 +581,7 @@ src/
 
 web/                  React dashboard source (Vite + HeroUI v3 + Tailwind v4)
   src/pages/          Overview · Positions · PositionDetail · Activity · Targets
-                      Rules · ManualLp · Swap · Wallet · Scout · Settings
+                      Rules · ManualLp · Swap · Wallet · Settings
   src/i18n.jsx        ID/EN dictionary
   check-ui.py         Playwright UI checks
   check-keys.py       i18n key coverage

@@ -127,7 +127,8 @@ batch dari chain, harganya dari DexScreener (`GET /api/wallet/holdings?address=`
 ## Riset wallet (tab **Wallet**)
 
 Buka wallet mana pun → total profit, win rate, fee, rata-rata modal, kalender profit
-harian, posisi berjalan, dan seluruh riwayat posisi. Semua disimpan di SQLite
+harian, profil gaya ber-LP (porsi in-range, lebar rentang, ukuran dan umur posisi yang
+khas), posisi berjalan, dan seluruh riwayat posisi. Semua disimpan di SQLite
 (`wallets`, `wpositions`, `wevents`, `wprices`), jadi membuka ulang tidak memanggil chain.
 Tombol ⟳ memindai ulang; opsi **Semua riwayat** memindai sejak awal chain (~10 menit
 untuk ~150 posisi, sekali saja).
@@ -635,7 +636,7 @@ src/market.js     data pasar pihak ketiga (DexScreener, lilin GeckoTerminal) unt
 src/telegram.js   bot Telegram: seluruh dasbor lewat obrolan
 web/              tampilan React + HeroUI v3 (sumber); web/dist = hasil build
                   halaman: Ringkasan, Posisi, Aktivitas, Target, Aturan,
-                  LP manual, Swap, Wallet, Scout, Pengaturan
+                  LP manual, Swap, Wallet, Pengaturan
 public/           tampilan lama (Tabler) — cadangan kalau web/dist belum dibuild
 ```
 

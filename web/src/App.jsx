@@ -2,7 +2,7 @@ import { createContext, lazy, Suspense, useContext, useState } from 'react';
 import { Button, Chip, Toast } from '@heroui/react';
 import {
   LayoutDashboard, Layers, ListChecks, Users, SlidersHorizontal, Wallet as WalletIcon,
-  Radar, Settings as SettingsIcon, Moon, Sun, Pause, Play, Menu, X,
+  Settings as SettingsIcon, Moon, Sun, Pause, Play, Menu, X,
   PlusCircle, ArrowDownUp,
 } from 'lucide-react';
 import { usePoll, useHash, useTheme } from './hooks';
@@ -22,7 +22,6 @@ const Activity = lazy(() => import('./pages/Activity'));
 const Targets = lazy(() => import('./pages/Targets'));
 const Rules = lazy(() => import('./pages/Rules'));
 const WalletPage = lazy(() => import('./pages/Wallet'));
-const Scout = lazy(() => import('./pages/Scout'));
 const Settings = lazy(() => import('./pages/Settings'));
 const ManualLp = lazy(() => import('./pages/ManualLp'));
 const Swap = lazy(() => import('./pages/Swap'));
@@ -50,13 +49,14 @@ const NAV = [
   ]],
   ['Riset', [
     ['wallet', 'Wallet', WalletIcon, WalletPage],
-    ['scout', 'Scout', Radar, Scout],
   ]],
   ['Sistem', [
     ['settings', 'Pengaturan', SettingsIcon, Settings],
   ]],
 ];
-const PAGES = { ...Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C]))), token: TokenDetail, pool: PoolDetail };
+// #scout dulu halaman sendiri; isinya sekarang ada di dalam Wallet. Tautan lama
+// (bookmark, pesan Telegram) tetap mendarat di tempat yang benar.
+const PAGES = { ...Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C]))), scout: WalletPage, token: TokenDetail, pool: PoolDetail };
 
 function NavLinks({ page, onPick }) {
   const { t } = useI18n();

@@ -3,7 +3,7 @@
 from playwright.sync_api import sync_playwright
 import re, sys
 B="http://127.0.0.1:8799"
-PAGES=["summary","positions","activity","targets","rules","wallet","scout","settings"]
+PAGES=["summary","positions","activity","targets","rules","wallet","settings"]
 # pola yang memang tidak perlu diterjemahkan
 SKIP=re.compile(r"^[\s\d.,%$€Ξ×–—·/()+\-]*$|^0x|^#\d|^v[34]$|USDG|WETH|ETH|Uniswap|lpcopy|Quiver|ntfy|pm2|RPC|API|URL|PnL|uPnL|DPR|IL|getLogs|LIVE|Permit2|Alchemy|Ankr|bps|gwei|ms$|Bearer|x-api-key|x-token|LP$|^—$|Indonesia|English")
 def texts(pg):

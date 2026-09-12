@@ -30,7 +30,7 @@ export default function WalletPage({ param }) {
   return (
     <>
       <PageHeader group="Riset" title="Wallet"
-        desc="PnL, fee, dan seluruh riwayat posisi LP wallet mana pun — dihitung langsung dari chain." />
+        desc="PnL, fee, gaya ber-LP, dan seluruh riwayat posisi wallet mana pun — dihitung langsung dari chain." />
       <form className="mb-4 flex items-start gap-2" onSubmit={(e) => { e.preventDefault(); open(); }}>
         <Text className="min-w-0 flex-1" aria="Alamat wallet" mono placeholder="0x… alamat wallet" value={addr} onChange={setAddr}
           isInvalid={addr !== '' && !valid} error="Alamat harus 0x diikuti 40 karakter hex." />

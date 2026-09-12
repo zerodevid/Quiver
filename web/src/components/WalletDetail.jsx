@@ -61,7 +61,37 @@ function ScanProgress({ job, compact }) {
   );
 }
 
-function Details({ s }) {
+// Profil gaya: BAGAIMANA wallet ini ber-LP, bukan berapa hasilnya — ukuran posisi,
+// lebar rentang, dan seberapa sering harga masih di dalam rentang. Inilah yang dulu
+// jadi isi halaman Scout terpisah; angkanya sama, hanya dihitung dari posisi berjalan
+// yang sudah ada di sini, jadi tidak perlu pemindaian kedua.
+const median = (a) => (a.length ? [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)] : 0);
+
+function styleOf(open) {
+  if (!open?.length) return null;
+  // curTick bisa kosong kalau harga pool gagal dibaca; kolom in_range dari pindai
+  // terakhir jadi cadangan, dan posisi yang tak punya keduanya tidak ikut dihitung
+  // supaya persentasenya tidak melar ke bawah.
+  const known = open.filter((p) => p.curTick != null || p.in_range != null);
+  const inRange = known.filter((p) => (p.curTick != null
+    ? p.curTick >= p.tick_lower && p.curTick < p.tick_upper : !!p.in_range));
+  const value = sum(open, (p) => p.live_value_q);
+  return {
+    n: open.length,
+    inRangePct: known.length ? (inRange.length / known.length) * 100 : null,
+    medWidthPct: median(open.map((p) => (1.0001 ** (p.tick_upper - p.tick_lower) - 1) * 100)),
+    medValueUsd: median(open.map((p) => p.live_value_q || 0)),
+    medAgeHours: median(open.map((p) => p.ageHours || 0)),
+    feeRatioPct: value > 0 ? (sum(open, (p) => p.live_fee_q) / value) * 100 : null,
+  };
+}
+// Rentang penuh menghasilkan angka astronomis (1,0001^1,77 juta tick); menyebutnya
+// "penuh" lebih berguna daripada mencetak 1e77%.
+const widthText = (w) => (w >= 10000 ? tt('penuh') : w >= 100 ? `${Math.round(w)}%` : `${w.toFixed(1)}%`);
+
+function Details({ s, open }) {
+  const { t } = useI18n();
+  const st = styleOf(open);
   const rows = [
     ['Rata-rata modal', usd(s.avgInvestedUsd || 0)],
     ['Laba per posisi', <span className={tone(s.expectedValueUsd)}>{usd(s.expectedValueUsd || 0)}</span>],
@@ -70,7 +100,28 @@ function Details({ s }) {
     ['Nilai posisi terbuka', usd(s.openValueUsd || 0)],
     ['Belum terealisasi', <span className={tone(s.unrealizedUsd)}>{usd(s.unrealizedUsd || 0)}</span>],
   ];
-  return <div className="divide-y divide-border">{rows.map(([k, v]) => <KV key={k} label={k}>{v}</KV>)}</div>;
+  const style = st ? [
+    ['Sedang in-range', st.inRangePct == null ? '—'
+      : <span className={st.inRangePct >= 50 ? 'text-success' : 'text-warning'}>{st.inRangePct.toFixed(0)}%</span>],
+    ['Lebar rentang khas', widthText(st.medWidthPct)],
+    ['Ukuran posisi khas', usd(st.medValueUsd, 0)],
+    ['Umur posisi khas', age(st.medAgeHours)],
+    ['Fee belum diklaim vs nilai', st.feeRatioPct == null ? '—'
+      : <span className="text-success">{st.feeRatioPct.toFixed(2)}%</span>],
+  ] : [];
+  return (
+    <div className="divide-y divide-border">
+      {rows.map(([k, v]) => <KV key={k} label={k}>{v}</KV>)}
+      {st && (
+        <>
+          <div className="pt-3 text-[0.6875rem] font-medium text-muted">
+            {t('Gaya LP · dari {n} posisi berjalan', { n: st.n })}
+          </div>
+          {style.map(([k, v]) => <KV key={k} label={k}>{v}</KV>)}
+        </>
+      )}
+    </div>
+  );
 }
 
 // Fee total = yang sudah ditarik + yang masih menempel di posisi.
@@ -321,7 +372,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
                 action={showTargetButton && (data.isTarget
                   ? <span className="flex items-center gap-1 text-xs font-medium text-success"><Check className="size-3.5" />{t('Sudah jadi target')}</span>
                   : <Button size="sm" variant="outline" onPress={makeTarget}><Plus className="size-3.5" />{t('Jadikan target')}</Button>)}>
-                <Details s={s} />
+                <Details s={s} open={data.open} />
               </Panel>
               <Panel title="Riwayat profit harian" className="lg:col-span-3"><PnlCalendar daily={data.daily} /></Panel>
             </div>

@@ -723,8 +723,8 @@ const EN = {
   'Gagal menyimpan': 'Save failed',
 
   // ---- wallet / riset ----
-  'PnL, fee, dan seluruh riwayat posisi LP wallet mana pun — dihitung langsung dari chain.':
-    'PnL, fees and the full LP position history of any wallet — computed straight from chain.',
+  'PnL, fee, gaya ber-LP, dan seluruh riwayat posisi wallet mana pun — dihitung langsung dari chain.':
+    'PnL, fees, LP style and the full position history of any wallet — computed straight from chain.',
   'Alamat wallet': 'Wallet address',
   'Jendela pindai': 'Scan window',
   'Buka': 'Open',
@@ -813,22 +813,15 @@ const EN = {
   'harga kini': 'current price',
   'harga keluar': 'exit price',
 
-  // ---- scout ----
-  'Potret cepat posisi yang sedang hidup: ukuran, lebar rentang, dan fee yang belum diklaim.':
-    'A quick snapshot of live positions: size, range width and unclaimed fees.',
-  'Periksa': 'Check',
-  'Nilai posisi hidup': 'Live position value',
-  '{n} posisi hidup': '{n} live positions',
+  // ---- profil gaya LP (dulu halaman Scout, sekarang di dalam Wallet) ----
+  'Gaya LP · dari {n} posisi berjalan': 'LP style · from {n} open positions',
   'Sedang in-range': 'Currently in range',
-  'median umur {h} jam': 'median age {h} hours',
-  'Ukuran & rentang khas': 'Typical size & range',
-  'lebar median {w}%': 'median width {w}%',
-  '{p}% dari nilai': '{p}% of value',
-  'Posisi hidup': 'Live positions',
-  '{n} posisi dilepas dalam jendela ini': '{n} positions released in this window',
-  'Tidak ada posisi hidup': 'No live positions',
-  'in': 'in',
-  'luar': 'out',
+  'Lebar rentang khas': 'Typical range width',
+  'Ukuran posisi khas': 'Typical position size',
+  'Umur posisi khas': 'Typical position age',
+  'Fee belum diklaim vs nilai': 'Unclaimed fees vs value',
+  'penuh': 'full',
+  'Periksa': 'Check',
   'Progres': 'Progress',
 
   // ---- pengaturan ----
