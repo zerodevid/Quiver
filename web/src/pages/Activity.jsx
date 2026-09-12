@@ -69,7 +69,7 @@ export default function Activity() {
               return (
                 <div className="min-w-20 whitespace-nowrap font-medium tabular-nums">
                   {a.value_quote == null ? <span className="text-muted">—</span>
-                    : a.quote_symbol === 'ETH' ? `${a.value_quote.toFixed(4)} Ξ` : usd(a.value_quote)}
+                    : (a.quote_symbol === 'ETH' || a.quote_symbol === 'WETH') ? `${a.value_quote.toFixed(4)} Ξ` : usd(a.value_quote)}
                   {kita != null && <div className="mt-1 text-xs font-normal text-muted">{t('kita {v}', { v: usd(kita) })}</div>}
                 </div>);
             } },

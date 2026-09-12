@@ -171,3 +171,14 @@ test('pool RPC failure stops before token swap or mint', async () => {
   assert.equal(f.stats().swaps, 0);
   assert.equal(f.stats().mint, undefined);
 });
+
+test('bridge runs at most once per entry even when the attempt after it fails and is retried', async () => {
+  const f = fixture({ complete: true });
+  let calls = 0;
+  f.e.ensureQuoteAsset = async () => { calls++; f.balances.set(ADDR.usdg, 212_259_831n); return ['jembatan ETH→USDG via Kyber (uji)']; };
+  const send = f.e.exec.send; let first = true;
+  f.e.exec.send = async (tx) => { if (tx.simulatedMint && first) { first = false; throw new Error('estimasi gas gagal (transaksi kemungkinan akan revert): execution reverted: STF'); } return send(tx); };
+  const r = await f.e.executeEntry(f.plan, {});
+  assert.equal(r.txHash, 'SIMULATED');
+  assert.equal(calls, 1, 'jembatan tidak diulang');
+});

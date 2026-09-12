@@ -729,6 +729,19 @@ class Manual {
     const eng = this.engine;
     if (!eng.exec.address()) throw new Error('belum ada wallet');
     if (eng.dryRun()) throw new Error('mode simulasi: tidak mengirim transaksi');
+    if (eng.stopping) throw new Error('bot sedang berhenti (restart) — coba lagi sebentar');
+    // Token yang sama sedang dijual antrean sisa otomatis: dua swap dari saldo yang sama
+    // → yang kedua revert (gas hangus) atau menjual jatah yang sudah dijual.
+    eng.selling = eng.selling || new Set();
+    const lockKey = lc(tokenIn);
+    if (eng.selling.has(lockKey)) throw new Error('token ini sedang dijual otomatis — tunggu sebentar');
+    eng.selling.add(lockKey);
+    try { return await this.doSwapLocked({ tokenIn, tokenOut, amountRaw }); }
+    finally { eng.selling.delete(lockKey); }
+  }
+
+  async doSwapLocked({ tokenIn, tokenOut, amountRaw }) {
+    const eng = this.engine;
     const rules = eng.rulesFrom(null);
     const [mi, mo] = await this.chain.tokens([tokenIn, tokenOut]);
     const masuk = Number(BigInt(amountRaw)) / 10 ** (mi.decimals ?? 18);

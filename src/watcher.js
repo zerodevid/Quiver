@@ -88,8 +88,14 @@ class Watcher {
     const res = await this.rpc.ethCallMany(need.map((id) => ({ to, data: iface.encodeFunctionData('ownerOf', [BigInt(id)]) })), 'latest', { strict: true });
     need.forEach((id, i) => {
       const w = res[i];
-      // ownerOf revert = NFT sudah dibakar; biarkan null supaya bisa diisi dari log Transfer
-      if (w && w !== '0x' && !/^0x0*$/.test(w)) this.cacheOwner(venue, id, asAddr(w));
+      if (w && w !== '0x' && !/^0x0*$/.test(w)) { this.cacheOwner(venue, id, asAddr(w)); return; }
+      // ownerOf revert = NFT sudah dibakar. Kalau burn-nya ada di rentang yang sama, log
+      // Transfer sudah mengisi pemiliknya. Kalau burn terjadi SESUDAH rentang ini (target
+      // menarik di satu tx lalu membakar di tx berikutnya, sebelum kita sempat membaca),
+      // pemilik terakhir yang kita catat dipakai — tanpa ini penarikannya tersaring sebagai
+      // "bukan milik target" dan cermin kita baru ditutup belakangan oleh rekonsiliasi.
+      const row = this.store.get('SELECT target FROM actions WHERE venue=? AND token_id=? ORDER BY id DESC LIMIT 1', venue, id);
+      if (row?.target) this.cacheOwner(venue, id, String(row.target).toLowerCase());
     });
   }
 

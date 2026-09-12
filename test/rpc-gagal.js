@@ -86,6 +86,26 @@ function dunia(st) {
     assert.strictEqual(await d.positions.confirmEmpty(withTx), false);
   });
 
+  await t('harga pool tidak terbaca: nilai TIDAK jadi $0 dan stop loss tidak terpicu', async () => {
+    const d = dunia({ liq: 5000000n, feeOk: true });
+    const [p1] = await d.positions.sync(2500);
+    assert.strictEqual(p1.valueStale, false);
+    const good = p1.valueUsd;
+    const SL = { exit: { stop_loss_pct: 5, take_profit_pct: 0, max_age_hours: 0, out_of_range_minutes: 0 } };
+    // (fixture: posisi kecil vs modal $110 → PnL terbaca sungguh-sungguh negatif → stop loss sah)
+    assert.strictEqual(d.positions.exitTriggers(SL).length, 1);
+    d.positions.chain.slot0V4Many = async (ids) => ids.map(() => null);
+    const [p2] = await d.positions.sync(2500);
+    assert.strictEqual(p2.valueStale, true);
+    assert.strictEqual(p2.valueUsd, good, 'nilai terakhir dipakai');
+    assert.strictEqual(p2.pnlPct, p1.pnlPct, 'PnL tidak berubah karena harga tak terbaca');
+    assert.strictEqual(d.positions.exitTriggers(SL).length, 0, 'angka basi tidak memicu keluar');
+    // tanpa riwayat (sinkron pertama gagal baca harga): nilai = modal − yang ditarik, bukan 0
+    d.positions.live = [];
+    const [p3] = await d.positions.sync(2500);
+    assert.ok(Math.abs(p3.valueUsd - 110) < 1e-9, String(p3.valueUsd));
+  });
+
   await t('confirmEmpty: gagal baca = tidak terkonfirmasi', async () => {
     const d = dunia({ liq: 0n, feeOk: true });
     const [p] = await d.positions.sync(2500);

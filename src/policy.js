@@ -135,6 +135,12 @@ function usdToQuote(usd, quoteKind, ethUsd) {
 function quoteToUsd(q, quoteKind, ethUsd) {
   return quoteKind === 'eth' ? q * ethUsd : q;
 }
+// Kurs USD per satu satuan aset kuotasi yang tercatat di baris posisi (kolom quote_symbol).
+// WETH sama dengan ETH — dulu banyak tempat hanya mengecek 'ETH', sehingga posisi berkuotasi
+// WETH senilai 0,08 WETH (~$200) terhitung $0,08 untuk anggaran harian, eksposur, dan PnL.
+function usdPerQuote(symbol, ethUsd) {
+  return symbol === 'ETH' || symbol === 'WETH' ? ethUsd : 1;
+}
 
 /**
  * Bangun rencana untuk aksi TAMBAH likuiditas (mint/increase).
@@ -166,7 +172,9 @@ function planEntry(act, ctx) {
   if (targetUsd < rules.filters.min_target_quote_usd) {
     return skip(`posisi target cuma $${targetUsd.toFixed(2)} (< $${rules.filters.min_target_quote_usd})`);
   }
-  if (ctx.openCount >= rules.filters.max_open_positions) return skip('jumlah posisi terbuka sudah mentok');
+  // Menambah ke posisi yang sudah kita cermin tidak membuka posisi baru.
+  const adding = ctx.existingUsd != null;
+  if (!adding && ctx.openCount >= rules.filters.max_open_positions) return skip('jumlah posisi terbuka sudah mentok');
 
   const range = planRange(rules, act, slot0.tick);
   const side = m.sideOfRange(slot0.tick, range.tickLower, range.tickUpper);
@@ -201,8 +209,11 @@ function planEntry(act, ctx) {
 
   // batas atas: potong L secara proporsional supaya tetap masuk
   const caps = [];
-  const capPer = sideNow !== 'both' ? Math.min(s.max_quote_per_position_usd, rules.onesided.max_quote_usd)
+  let capPer = sideNow !== 'both' ? Math.min(s.max_quote_per_position_usd, rules.onesided.max_quote_usd)
     : s.max_quote_per_position_usd;
+  // Tambahan ke posisi yang sudah ada: batas per posisi berlaku untuk TOTALNYA. Dulu yang
+  // dibatasi hanya tambahannya, jadi posisi $200 dengan batas $200 bisa tumbuh jadi $400.
+  if (adding) capPer = Math.max(0, capPer - Math.max(0, ctx.existingUsd));
   if (usd > capPer) caps.push(['batas per posisi', capPer]);
   const roomTotal = s.max_total_exposure_usd - ctx.openExposureUsd;
   if (usd > roomTotal) caps.push(['sisa jatah eksposur total', Math.max(0, roomTotal)]);
@@ -291,4 +302,4 @@ function planExit(act, ourPos, ctx) {
   };
 }
 
-module.exports = { DEFAULTS, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, tickSpacingFromFee };
+module.exports = { DEFAULTS, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };

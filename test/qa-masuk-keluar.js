@@ -469,6 +469,18 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     assert.strictEqual(n2, 0);
   });
 
+  await t('lonjakan harga gas / gasPrice ngawur dari RPC TIDAK membuat isi gas menukar ratusan dolar USDG', async () => {
+    const { eng } = engineWith({ balances: { [ETH]: 0n, [USDG]: 5_000_000_000n } });
+    eng.gasReserve = async () => 4_000_000n * 100_000_000_000n;   // 4 jt gas × 100 gwei = 0,4 ETH
+    const swaps = [];
+    eng.kyber.swap = async (a, b, amt) => { swaps.push(amt); return { hash: '0xg' }; };
+    await eng.topUpGas([]);
+    assert.strictEqual(swaps.length, 1);
+    assert.ok(swaps[0] <= 25_000_000n, `maks $25, dapat ${swaps[0]}`);
+    const c = await eng.spendableCash();
+    assert.ok(c.usdg >= 5000 - 25.0001, 'kas entry hanya dikurangi pembelian gas yang dibatasi');
+  });
+
   await t('ukuran posisi dihitung dari USDG SESUDAH isi gas (bukan gagal "kas kurang" gara-gara gas)', async () => {
     const { eng } = engineWith({ balances: { [ETH]: 5n * 10n ** 14n, [USDG]: 200_000_000n } });
     eng.gasReserve = async () => 2n * 10n ** 15n;
@@ -478,6 +490,103 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     const { eng: e2 } = engineWith({ balances: { [ETH]: 3n * 10n ** 15n, [USDG]: 200_000_000n } });
     e2.gasReserve = async () => 2n * 10n ** 15n;
     assert.strictEqual((await e2.spendableCash()).usdg, 200, 'gas cukup: USDG utuh');
+  });
+
+  await t('backfill setelah restart: entry v4 dinilai dengan poolKey dari DB, bukan dilewati "data pool tidak terbaca"', async () => {
+    const { eng, store } = engineWith();
+    store.run(`INSERT INTO actions(ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,tick_lower,tick_upper,liquidity,value_quote,quote_symbol)
+      VALUES(?,1,'0xbf',1,?,'v4','increase','321',?,?,?,3000,60,?,-600,600,'1000000',400,'USDG')`, Date.now() - 30_000, TARGET, POOL, USDG, MEME, ADDR.native);
+    eng.chain.slot0V4 = async () => ({ sqrtPriceX96: m.getSqrtRatioAtTick(0), tick: 0 });
+    let seen;
+    eng.handleEntry = async (act) => { seen = act; eng.decide(act.id, 'skip', 'uji'); };
+    await eng.backfillDecisions();
+    assert.ok(seen, 'aksi dinilai');
+    assert.deepStrictEqual(seen.poolKey, { currency0: USDG, currency1: MEME, fee: 3000, tickSpacing: 60, hooks: ADDR.native });
+  });
+
+  await t('harga pool / nilai target yang gagal dibaca saat pindai dibaca ulang sebelum menilai entry', async () => {
+    const { eng } = engineWith({ chain: {
+      slot0V4: async () => ({ sqrtPriceX96: m.getSqrtRatioAtTick(0), tick: 0 }),
+      valueInQuote: ({ amount0, amount1 }) => ({ value: Number(amount0) / 1e6 + Number(amount1) / 1e18, symbol: 'USDG', kind: 'usd' }),
+    } });
+    const act = { venue: 'v4', poolRef: POOL, token0: USDG, token1: MEME, tickLower: -600, tickUpper: 600, liquidity: String(10n ** 15n), slot0: null, valueQuote: null };
+    await eng.refreshActionState(act);
+    assert.ok(act.slot0);
+    assert.ok(act.valueQuote > 0, String(act.valueQuote));
+  });
+
+  await t('watcher: decrease target lalu burn di tx berikutnya (ownerOf revert) tetap dikenali milik target', async () => {
+    const { Watcher } = require('../src/watcher');
+    const store = new Store(':memory:');
+    store.run(`INSERT INTO actions(ts,block,tx_hash,log_index,target,venue,kind,token_id) VALUES(?,1,'0xa',1,?,'v4','increase','888')`, Date.now(), TARGET);
+    const w = new Watcher({ rpc: { ethCallMany: async (c) => c.map(() => null) }, store, chain: {}, log: () => {}, cfg: {} });
+    await w.resolveOwners('v4', ['888', '999']);
+    assert.strictEqual(w.knownOwner('v4', '888'), TARGET);
+    assert.strictEqual(w.knownOwner('v4', '999'), null);
+  });
+
+  await t('posisi berkuotasi WETH dinilai dalam dolar seperti ETH (anggaran, eksposur, PnL terealisasi)', async () => {
+    const { usdPerQuote } = require('../src/policy');
+    assert.strictEqual(usdPerQuote('WETH', 2500), 2500);
+    assert.strictEqual(usdPerQuote('ETH', 2500), 2500);
+    assert.strictEqual(usdPerQuote('USDG', 2500), 1);
+    const { eng, store } = engineWith();
+    store.run(`INSERT INTO positions(venue,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,status,opened_ts,closed_ts,cost_quote,out_quote,quote_symbol)
+      VALUES('v4','1',?,?,?,-60,60,'0','closed',?,?,0.08,0.09,'WETH')`, POOL, WETH, MEME, Date.now() - 1000, Date.now());
+    store.run(`INSERT INTO positions(venue,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,status,opened_ts,cost_quote,out_quote,quote_symbol)
+      VALUES('v4','2',?,?,?,-60,60,'5','open',?,0.04,0,'WETH')`, POOL, WETH, MEME, Date.now() - 1000);
+    const sum = eng.positions.summary(2500);
+    assert.ok(Math.abs(sum.realizedUsd - 25) < 1e-6, String(sum.realizedUsd));   // (0,09 − 0,08) × 2500
+    assert.ok(Math.abs(sum.costUsd - 100) < 1e-6, String(sum.costUsd));
+    const spent = store.get("SELECT COALESCE(SUM(cost_quote * CASE WHEN quote_symbol IN ('ETH','WETH') THEN ? ELSE 1 END),0) AS s FROM positions WHERE opened_ts > ?", 2500, Date.now() - 86400_000).s;
+    assert.ok(Math.abs(spent - 300) < 1e-6);
+  });
+
+  await t('policy: tambah ke posisi yang sudah dicermin — tidak kena batas jumlah posisi, batas $ per posisi dihitung dari total', async () => {
+    const { planEntry, rulesFor } = require('../src/policy');
+    const rules = rulesFor({ sizing: { mode: 'mirror', max_quote_per_position_usd: 200, max_total_exposure_usd: 10_000, daily_budget_usd: 10_000, min_quote_usd: 5 },
+      filters: { max_open_positions: 3, min_target_quote_usd: 1, allow_hooks: true } });
+    const chain = {
+      quoteSideOf: (t0) => (t0 === USDG ? { side: 0, symbol: 'USDG', decimals: 6, kind: 'usd' } : null),
+      valueInQuote: ({ amount0, amount1, sqrtPriceX96 }) => ({ value: Number(amount0) / 1e6 + Number(amount1) / 1e18 * (1e12 / m.priceFromSqrt(sqrtPriceX96, 0, 0)) / 1e12, symbol: 'USDG', kind: 'usd' }),
+    };
+    const slot0 = { sqrtPriceX96: m.getSqrtRatioAtTick(0), tick: 0 };
+    const act = { venue: 'v4', token0: USDG, token1: MEME, fee: 3000, tickSpacing: 60, tickLower: -600, tickUpper: 600, liquidity: String(10n ** 16n), valueQuote: 1000, tokenId: '7', target: TARGET };
+    const base = { chain, rules, slot0, dec0: 6, dec1: 18, ethUsd: 2500, openExposureUsd: 0, spentTodayUsd: 0, openCount: 3 };
+    assert.match(planEntry(act, base).reason, /mentok/);
+    const add = planEntry(act, { ...base, existingUsd: 150 });
+    assert.strictEqual(add.verdict, 'copy', add.reason);
+    assert.ok(add.plan.valueUsd <= 50.01, `sisa ruang $50, dapat ${add.plan.valueUsd}`);
+    assert.strictEqual(planEntry(act, { ...base, existingUsd: 200 }).verdict, 'skip', 'posisi sudah penuh');
+  });
+
+  await t('adopsi posisi: likuiditas gagal dibaca → jendela pindai TIDAK dimajukan, posisi diadopsi di percobaan berikutnya', async () => {
+    const IF_POSM = new ethers.Interface(ABI.posmV4);
+    let liqOk = false;
+    const pk = [USDG, MEME, 3000, 60, ethers.ZeroAddress];
+    const info = (-600n & 0xffffffn) << 8n | ((600n & 0xffffffn) << 32n);
+    const rpc = {
+      blockNumber: async () => 5000,
+      getLogs: async (f) => (f.topics[2] ? [{ blockNumber: '0x10', topics: [TOPIC.transfer, addrTopic(ethers.ZeroAddress), addrTopic(ME), pad(42)] }] : []),
+      ethCallMany: async (calls) => calls.map((c) => {
+        const fn = IF_POSM.parseTransaction({ data: c.data })?.name;
+        if (fn === 'ownerOf') return pad(ME);
+        if (fn === 'getPoolAndPositionInfo') return IF_POSM.encodeFunctionResult('getPoolAndPositionInfo', [pk, info]);
+        if (fn === 'getPositionLiquidity') return liqOk ? pad(10n ** 15n) : null;
+        return null;
+      }),
+    };
+    const { eng, store } = engineWith({ rpc });
+    eng.chain.slot0V4Many = async (ids) => ids.map(() => ({ sqrtPriceX96: m.getSqrtRatioAtTick(0), tick: 0 }));
+    eng.chain.valueInQuote = () => ({ value: 10, kind: 'usd', symbol: 'USDG' });
+    eng.chain.poolLiquidityMany = async (ids) => ids.map(() => 1n);
+    await eng.adoptOwnPositions(ME);
+    assert.strictEqual(store.getState('adopt_scanned_to', null), null, 'jendela tidak dimajukan');
+    assert.strictEqual(store.all('SELECT id FROM positions').length, 0);
+    liqOk = true;
+    await eng.adoptOwnPositions(ME);
+    assert.strictEqual(Number(store.getState('adopt_scanned_to')), 5000, store.all("SELECT msg FROM logs ORDER BY id DESC LIMIT 2").map((r) => r.msg).join(' | '));
+    assert.strictEqual(store.all("SELECT token_id FROM positions").map((r) => r.token_id).join(), '42');
   });
 
   // ---------------------------------------------------------------- sinkron & berhenti

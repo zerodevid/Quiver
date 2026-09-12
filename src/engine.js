@@ -9,7 +9,7 @@ const { Kyber } = require('./kyber');
 const { pickSwapPool } = require('./swappool');
 const { Compound } = require('./compound');
 const { Capital } = require('./capital');
-const { rulesFor, planEntry, planExit, quoteToUsd } = require('./policy');
+const { rulesFor, planEntry, planExit, quoteToUsd, usdPerQuote } = require('./policy');
 const { enumerateV4, livePositions } = require('./scout');
 const m = require('./v3math');
 
@@ -103,6 +103,12 @@ class Engine {
         token0: r.token0, token1: r.token1, fee: r.fee, tickSpacing: r.tick_spacing, hooks: r.hooks,
         tickLower: r.tick_lower, tickUpper: r.tick_upper, liquidity: r.liquidity,
         amount0: r.amount0, amount1: r.amount1, valueQuote: r.value_quote, quoteSymbol: r.quote_symbol,
+        // poolKey tidak disimpan di tabel actions, tapi semua bagiannya ada. Tanpa ini setiap
+        // entry v4 yang dinilai ulang (proses mati / berhenti di tengah daftar aksi) dilewati
+        // "data pool posisi target tidak terbaca".
+        poolKey: r.venue === 'v4' && r.token0 && r.token1 && r.fee != null && r.tick_spacing != null
+          ? { currency0: r.token0, currency1: r.token1, fee: r.fee, tickSpacing: r.tick_spacing, hooks: r.hooks || ADDR.native }
+          : null,
       };
       try {
         if (act.venue === 'v4' && act.poolRef) act.slot0 = await this.chain.slot0V4(act.poolRef);
@@ -129,19 +135,25 @@ class Engine {
       const last = Number(this.store.getState('adopt_scanned_to', 0));
       const blocks = last ? head - last + 2000 : (this.cfg.loop?.adopt_blocks ?? head);
       const { held } = await enumerateV4(this.rpc, me, head, blocks, 1_000_000);
-      this.store.setState('adopt_scanned_to', head);
+      // Penanda jendela pindai baru dimajukan kalau SEMUA kandidat terbaca. Dulu dimajukan
+      // sebelum posisinya dibaca: satu pembacaan RPC yang gagal membuat posisi wallet itu
+      // tidak diadopsi, dan pemindaian berikutnya tidak lagi mencakup bloknya — hilang.
+      const done = () => this.store.setState('adopt_scanned_to', head);
       const known = new Set(this.store.all("SELECT token_id FROM positions WHERE venue='v4' AND token_id IS NOT NULL").map((r) => r.token_id));
       let missing = [...held.keys()].filter((id) => !known.has(id));
-      if (!missing.length) return;
+      if (!missing.length) return done();
       // Transfer bisa menipu (urutan dalam satu blok); pastikan pemiliknya sekarang kita.
+      // strict: tidak terbaca melempar (dicoba lagi 10 menit lagi); revert = NFT dibakar.
       const owners = await this.rpc.ethCallMany(missing.map((id) => ({
         to: ADDR.posmV4, data: new ethers.Interface(ABI.posmV4).encodeFunctionData('ownerOf', [BigInt(id)]),
-      })));
+      })), 'latest', { strict: true });
       missing = missing.filter((id, i) => owners[i] && owners[i] !== '0x' && ('0x' + owners[i].slice(-40)).toLowerCase() === me);
-      if (!missing.length) return;
+      if (!missing.length) return done();
       const rows = await livePositions(this.rpc, this.chain, missing);
+      let incomplete = rows.length < missing.length;
       let n = 0;
       for (const r of rows) {
+        if (r.liqKnown === false) { incomplete = true; continue; }
         if (r.liquidity <= 0n) continue;
         // Modal & waktu buka asli dari riset wallet (menu Wallet) kalau pernah dipindai;
         // tanpa itu modal = nilai sekarang, sehingga PnL mulai dari nol saat diadopsi.
@@ -168,6 +180,8 @@ class Engine {
         n++;
       }
       if (n) this.log(`mengadopsi ${n} posisi v4 milik wallet yang belum tercatat`);
+      if (incomplete) throw new Error('sebagian posisi wallet belum terbaca dari RPC — dipindai ulang nanti');
+      done();
       this.cleared('adopsi', 'adopsi posisi: berhasil lagi');
     } catch (e) { this.trouble('adopsi', `adopsi posisi: ${e.message}`, { after: 3 }); }   // diulang tiap 10 menit
   }
@@ -326,6 +340,10 @@ class Engine {
     if (!act.token0 || !act.token1 || (act.venue === 'v4' && !act.poolKey)) {
       return this.decide(act.id, 'skip', 'data pool posisi target tidak terbaca (NFT sudah dibakar?)');
     }
+    // Harga pool / nilai posisi target yang gagal dibaca saat pemindaian (RPC sesaat) dulu
+    // berujung "state pool tidak terbaca" atau "posisi target cuma $0.00" — sinyal masuk
+    // hilang. Dibaca ulang di sini sebelum menilai.
+    if ((!act.slot0 || act.valueQuote == null) && act.poolRef) await this.refreshActionState(act);
     // sudah punya cermin posisi ini? berarti ini penambahan; ikut tambah lewat mint baru
     const cd = rules.filters.cooldown_seconds * 1000;
     const last = this.lastCopyAt.get(act.poolRef) || 0;
@@ -335,7 +353,7 @@ class Engine {
     const sum = this.positions.summary(this.ethUsd);
     const since = Date.now() - 86400_000;
     const spent = this.store.get(
-      "SELECT COALESCE(SUM(cost_quote * CASE quote_symbol WHEN 'ETH' THEN ? ELSE 1 END),0) AS s FROM positions WHERE opened_ts > ?",
+      "SELECT COALESCE(SUM(cost_quote * CASE WHEN quote_symbol IN ('ETH','WETH') THEN ? ELSE 1 END),0) AS s FROM positions WHERE opened_ts > ?",
       this.ethUsd, since)?.s || 0;
 
     if (rules.filters.min_pool_age_minutes > 0 && act.venue === 'v4' && act.poolRef) {
@@ -358,19 +376,29 @@ class Engine {
     // sengaja tidak — wallet uji sering kosong, dan simulasinya jadi tidak berguna.
     const live = !this.dryRun() && this.exec.address();
     const cash = live ? await this.spendableCash().catch(() => null) : null;
+    // Kalau kita sudah punya cermin posisi ini, target sedang MENAMBAH — jadi kita
+    // menambah juga, bukan membuka posisi kedua. Dicari SEBELUM menilai: batas jumlah
+    // posisi tidak berlaku (tidak ada posisi baru) dan batas per posisi dihitung dari total.
+    const mirror = this.store.get("SELECT * FROM positions WHERE status='open' AND mirror_of=? AND target=? AND token_id IS NOT NULL",
+      act.tokenId ?? '', act.target);
+    const mirrorLive = mirror && this.positions.live.find((p) => p.id === mirror.id);
+    const existingUsd = mirror
+      ? (mirrorLive?.valueUsd ?? Math.max(0, (mirror.cost_quote || 0) - (mirror.out_quote || 0)) * usdPerQuote(mirror.quote_symbol, this.ethUsd))
+      : null;
     const ctx = {
       chain: this.chain, rules, slot0: act.slot0, dec0: toks[0].decimals, dec1: toks[1].decimals,
       ethUsd: this.ethUsd, openExposureUsd: sum.exposureUsd, spentTodayUsd: spent, openCount: sum.openCount,
-      cash,
+      cash, existingUsd,
     };
-    const d = planEntry(act, ctx);
+    let d = planEntry(act, ctx);
+    // Rentang hasil aturan (recenter/scale/…) berbeda dari cermin yang ada: ini posisi BARU,
+    // jadi dinilai ulang dengan batas posisi baru.
+    if (mirror && d.verdict === 'copy' && !(mirror.tick_lower === d.plan.tickLower && mirror.tick_upper === d.plan.tickUpper)) {
+      d = planEntry(act, { ...ctx, existingUsd: null });
+    }
     if (d.verdict !== 'copy') return this.decide(act.id, 'skip', d.reason);
 
-    // Kalau kita sudah punya cermin posisi ini, target sedang MENAMBAH — jadi kita
-    // menambah juga, bukan membuka posisi kedua di rentang yang sama.
-    const existing = this.store.get(
-      "SELECT * FROM positions WHERE status='open' AND mirror_of=? AND target=? AND tick_lower=? AND tick_upper=?",
-      act.tokenId ?? '', act.target, d.plan.tickLower, d.plan.tickUpper);
+    const existing = mirror && mirror.tick_lower === d.plan.tickLower && mirror.tick_upper === d.plan.tickUpper ? mirror : null;
     if (existing && existing.token_id) {
       d.plan.action = 'increase';
       d.plan.tokenId = existing.token_id;
@@ -473,6 +501,22 @@ class Engine {
     } catch (e) {
       this.stats.errors++;
       this.decide(act.id, 'error', String(e.message).slice(0, 300), d.plan);
+    }
+  }
+
+  async refreshActionState(act) {
+    for (let i = 0; i < 3 && (!act.slot0 || act.valueQuote == null); i++) {
+      if (i) await new Promise((r) => setTimeout(r, 1000 * i));
+      try {
+        if (!act.slot0) act.slot0 = act.venue === 'v3' ? await this.chain.slot0V3(act.poolRef) : await this.chain.slot0V4(act.poolRef);
+        if (act.slot0 && act.valueQuote == null && act.tickLower != null && act.tickUpper != null && act.liquidity != null) {
+          const L = BigInt(act.liquidity) < 0n ? -BigInt(act.liquidity) : BigInt(act.liquidity);
+          const amt = m.amountsForLiquidity(act.slot0.sqrtPriceX96, m.getSqrtRatioAtTick(act.tickLower), m.getSqrtRatioAtTick(act.tickUpper), L);
+          const [t0, t1] = await this.chain.tokens([act.token0, act.token1]);
+          const v = this.chain.valueInQuote({ sqrtPriceX96: act.slot0.sqrtPriceX96, ...amt, dec0: t0.decimals, dec1: t1.decimals, token0: act.token0, token1: act.token1 });
+          if (v) { act.valueQuote = v.value; act.quoteSymbol = v.symbol; }
+        }
+      } catch { /* dicoba lagi */ }
     }
   }
 
@@ -695,7 +739,7 @@ class Engine {
       // pernah dibuka. Sekarang diulang dari saldo nyata. Setelah zap, langkah jembatan
       // dilewati (kas kuotasi sudah sengaja dibelanjakan) dan jumlah zap dibatasi total.
       for (let i = 0; ; i++) {
-        try { return await this.sendEntry(plan, act, trace, { resume: !!trace.zapped }); }
+        try { return await this.sendEntry(plan, act, trace, { resume: !!(trace.zapped || trace.bridged) }); }
         catch (e) {
           if (e.pendingMint || e.priorLanded || trace.minted || i >= waits.length || this.stopping || !Engine.retryableEntry(e)) throw e;
           // Tx yang tadi dianggap tidak masuk ternyata masuk: jangan kirim ulang apa pun.
@@ -824,7 +868,12 @@ class Engine {
       const qMeta = await this.chain.token(qTok);
       const needQuoteRaw = BigInt(Math.ceil((plan.valueQuote || 0) * 1.05 * 10 ** (qMeta?.decimals ?? 18)));
       if (needQuoteRaw > 0n) {
-        notes.push(...await this.ensureQuoteAsset(plan, rules, needQuoteRaw));
+        const bridged = await this.ensureQuoteAsset(plan, rules, needQuoteRaw);
+        // Jembatan hanya SEKALI per entry. Kalau percobaan ini gagal sesudahnya, percobaan
+        // ulang memakai kas yang sudah ada — tanpa ini, kas yang "hilang" ke dalam cadangan
+        // gas (cadangan dinamis melonjak) membuat setiap percobaan menukar USDG lagi.
+        if (bridged.length) trace.bridged = true;
+        notes.push(...bridged);
         bal = await this.exec.balances([plan.token0, plan.token1]);
       }
     }
@@ -2009,8 +2058,8 @@ class Engine {
       const rules = this.rulesFrom(null);
       if (rules?.swap?.enabled === false || !(this.ethUsd > 0)) return;
       const usdg = (await this.exec.balances([ADDR.usdg])).get(ADDR.usdg) || 0n;
-      const want = reserve - nat;
-      const pay = BigInt(Math.ceil((Number(want) / 1e18) * this.ethUsd * 1.03 * 1e6));
+      const want = Engine.gasTopupWei(reserve, nat, this.cfg);
+      const pay = Engine.gasTopupUsdg(want, this.ethUsd, this.cfg);
       if (pay < 1_000_000n || usdg < pay) return;   // < $1 atau USDG tidak cukup
       const r = await this.kyber.swap(ADDR.usdg, ADDR.native, pay, { slippageBps: 100, maxLossBps: 300, kind: 'gas_topup' });
       if (r) notes.push(`isi gas: beli ${fmtUnits(want, 18)} ETH dari ${fmtUnits(pay, 6)} USDG`);
@@ -2019,6 +2068,22 @@ class Engine {
       this.gasTopupFailedAt = Date.now();
       this.store.log('warn', `isi gas dari USDG gagal: ${e.message}`, { quiet: true });
     }
+  }
+
+  // Berapa ETH yang dibeli isi gas. Cadangan dinamis = batas gas × maxFee, jadi lonjakan
+  // harga gas — atau satu endpoint yang melaporkan eth_gasPrice ngawur — bisa membuatnya
+  // 0,2+ ETH; tanpa batas, isi gas akan menukar ratusan dolar USDG ke ETH. Target
+  // pembelian dibatasi 4× cadangan tetap, dan nilainya dibatasi gas.topup_max_usd ($25).
+  static gasTopupWei(reserve, have, cfg) {
+    const fixed = BigInt(cfg?.gas?.native_reserve_wei ?? 2_000_000_000_000_000);
+    const target = reserve < fixed * 4n ? reserve : fixed * 4n;
+    return target > have ? target - have : 0n;
+  }
+  static gasTopupUsdg(wei, ethUsd, cfg) {
+    if (!(wei > 0n) || !(ethUsd > 0)) return 0n;
+    const maxUsd = Number(cfg?.gas?.topup_max_usd ?? 25);
+    const usd = Math.min((Number(wei) / 1e18) * ethUsd * 1.03, Number.isFinite(maxUsd) && maxUsd > 0 ? maxUsd : 25);
+    return BigInt(Math.ceil(usd * 1e6));
   }
 
   // Kas yang bisa dipakai membuka posisi: USDG, dan ETH/WETH di atas cadangan gas (dalam
@@ -2035,7 +2100,7 @@ class Engine {
     // entry. Tanpa dikurangi di sini, posisi diukur dari USDG yang sebagiannya habis
     // untuk gas, lalu gagal "kas kurang".
     if (ethLike * 2n < reserve && this.ethUsd > 0) {
-      const gasUsdg = BigInt(Math.ceil((Number(reserve - ethLike) / 1e18) * this.ethUsd * 1.03 * 1e6));
+      const gasUsdg = Engine.gasTopupUsdg(Engine.gasTopupWei(reserve, ethLike, this.cfg), this.ethUsd, this.cfg);
       // syarat yang sama dengan topUpGas: hanya kalau pembelian itu memang akan terjadi
       if (gasUsdg >= 1_000_000n && usdg >= gasUsdg) usdg -= gasUsdg;
     }
@@ -2095,7 +2160,7 @@ class Engine {
     for (const r of rows) {
       const cand = pos.filter((p) => p.opened_ts <= r.ts && (!p.closed_ts || p.closed_ts > r.ts))
         .slice(0, Math.max(0, r.open_positions ?? Infinity));
-      const cost = cand.reduce((a, p) => a + (p.cost_quote || 0) * (p.quote_symbol === 'ETH' ? this.ethUsd : 1), 0);
+      const cost = cand.reduce((a, p) => a + (p.cost_quote || 0) * usdPerQuote(p.quote_symbol, this.ethUsd), 0);
       this.store.run('UPDATE equity SET pnl_quote=? WHERE ts=?',
         (r.realized_quote || 0) + (r.positions_quote || 0) + (r.fees_quote || 0) - cost, r.ts);
     }

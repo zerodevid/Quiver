@@ -304,7 +304,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   // dan kartu "per sumber" di Overview supaya angkanya sama persis.
   const pnlByTarget = (closed) => {
     const eth = engine.ethUsd;
-    const k = (q) => (q === 'ETH' ? eth : 1);
+    const k = (q) => (q === 'ETH' || q === 'WETH' ? eth : 1);
     closed ??= store.all("SELECT target, cost_quote, out_quote, quote_symbol FROM positions WHERE status='closed' AND closed_ts IS NOT NULL")
       .map((p) => ({ ...p, pnl: ((p.out_quote || 0) - (p.cost_quote || 0)) * k(p.quote_symbol) }));
     const live = new Map(engine.positions.live.map((p) => [p.id, p]));
@@ -393,6 +393,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     return { open, closed, wallets, activity };
   };
 
+  // Pool yang sedang dibuka LP manualnya (penjaga klik ganda, lihat POST /api/manual/lp/open).
+  const manualOpening = new Set();
   const routes = {
     'GET /api/overview': () => {
       const s = engine.positions.summary(engine.ethUsd);
@@ -427,7 +429,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const now = Date.now();
       const from = SPAN[range] ? now - SPAN[range] : 0;
       const eth = engine.ethUsd;
-      const k = (q) => (q === 'ETH' ? eth : 1);
+      const k = (q) => (q === 'ETH' || q === 'WETH' ? eth : 1);
       const s = engine.positions.summary(eth);
       const cash = engine.cash;
       const lo = s.leftoverUsd || 0;
@@ -1169,23 +1171,30 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     'POST /api/manual/lp/open': async (req) => {
       const b = await readBody(req);
       if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
-      const d = await manual.planLp({
-        poolRef: String(b.poolRef || ''), usd: Number(b.usd),
-        widthPct: b.widthPct != null ? Number(b.widthPct) : 25,
-        lowerPct: b.lowerPct != null ? Number(b.lowerPct) : null,
-        upperPct: b.upperPct != null ? Number(b.upperPct) : null,
-        tickLower: b.tickLower != null ? Math.round(Number(b.tickLower)) : null,
-        tickUpper: b.tickUpper != null ? Math.round(Number(b.tickUpper)) : null,
-        full: !!b.full,
-      });
-      if (d.error) return d;
+      // Klik ganda (dasbor lambat merespons, tombol Telegram ditekan dua kali) dulu membuka
+      // DUA posisi — rencana kedua dibuat sebelum posisi pertama tercatat.
+      const lockKey = String(b.poolRef || '').toLowerCase();
+      if (manualOpening.has(lockKey)) return { error: 'pembukaan LP di pool ini masih diproses — tunggu hasilnya' };
+      manualOpening.add(lockKey);
       try {
-        const r = await manual.openLp(d.plan);
-        return { ok: true, tx: r.txHash, positionId: r.positionId, note: r.note };
-      } catch (e) {
-        log(`LP manual: ${e.message}`);
-        return { error: e.message };
-      }
+        const d = await manual.planLp({
+          poolRef: String(b.poolRef || ''), usd: Number(b.usd),
+          widthPct: b.widthPct != null ? Number(b.widthPct) : 25,
+          lowerPct: b.lowerPct != null ? Number(b.lowerPct) : null,
+          upperPct: b.upperPct != null ? Number(b.upperPct) : null,
+          tickLower: b.tickLower != null ? Math.round(Number(b.tickLower)) : null,
+          tickUpper: b.tickUpper != null ? Math.round(Number(b.tickUpper)) : null,
+          full: !!b.full,
+        });
+        if (d.error) return d;
+        try {
+          const r = await manual.openLp(d.plan);
+          return { ok: true, tx: r.txHash, positionId: r.positionId, note: r.note };
+        } catch (e) {
+          log(`LP manual: ${e.message}`);
+          return { error: e.message };
+        }
+      } finally { manualOpening.delete(lockKey); }
     },
     // ?usd=1: sertakan harga & nilai USD tiap token bersaldo (dasbor). Bot Telegram
     // memanggil tanpa itu supaya tidak ikut menunggu DexScreener.

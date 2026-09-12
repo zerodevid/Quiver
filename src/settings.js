@@ -138,6 +138,11 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
   };
   const refuseIfLive = () => {
     if (privateKeyFromEnv()) return { error: 'Kunci wallet diatur lewat LPCOPY_PRIVATE_KEY di .env — ganti atau hapus di berkas itu lalu restart.' };
+    // Kunci diganti di tengah entry/keluar/penjualan: transaksi berikutnya (mint, jual token
+    // zap) ditandatangani wallet LAIN yang tidak memegang tokennya.
+    // (Mode LIVE sudah wajib mati, tapi entry yang dimulai sebelum mode dimatikan tetap
+    // berjalan sampai selesai.)
+    if ((engine.activeEntries || 0) > 0 || engine.exiting?.size > 0 || engine.selling?.size > 0 || engine.compound?.running) return { error: 'Bot sedang memproses transaksi (masuk/keluar/jual sisa) — tunggu sampai selesai, lalu coba lagi.' };
     return !engine.dryRun() ? { error: 'Matikan mode LIVE dulu sebelum mengganti wallet.' } : null;
   };
 

@@ -111,9 +111,10 @@ async function livePositions(rpc, chain, tokenIds) {
       inf = d[1];
     } catch { return; }
     if (/^0x0+$/.test(pk.currency1) && pk.fee === 0) return; // sudah dibakar
-    const L = liq[i] && liq[i] !== '0x' ? BigInt(liq[i]) : 0n;
+    const liqKnown = !!(liq[i] && liq[i] !== '0x');
+    const L = liqKnown ? BigInt(liq[i]) : 0n;
     rows.push({
-      tokenId: id, poolKey: pk, poolId: computePoolId(pk),
+      tokenId: id, poolKey: pk, poolId: computePoolId(pk), liqKnown,
       tickLower: Number(BigInt.asIntN(24, (inf >> 8n) & 0xffffffn)),
       tickUpper: Number(BigInt.asIntN(24, (inf >> 32n) & 0xffffffn)),
       liquidity: L,

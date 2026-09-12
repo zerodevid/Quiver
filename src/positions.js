@@ -6,6 +6,7 @@ const { ADDR, ABI } = require('./chain');
 const { computePoolId, priceUsable } = require('./pools');
 const { unclaimedV4, unclaimedV3 } = require('./fees');
 const m = require('./v3math');
+const { usdPerQuote } = require('./policy');
 
 const IF_POSM = new ethers.Interface(ABI.posmV4);
 const IF_NPM = new ethers.Interface(ABI.npmV3);
@@ -117,7 +118,7 @@ class Positions {
       rem -= take;
       const frac = Number(take) / Number(left);
       const share = gotUsd * (Number(take) / Number(sold));
-      const k = r.quote_symbol === 'ETH' ? ethUsd : 1;
+      const k = usdPerQuote(r.quote_symbol, ethUsd);
       const gotQuote = share / k;
       const closeQuote = (r.left_quote || 0) * frac;
       this.store.run('UPDATE positions SET out_quote = out_quote - ? + ?, left_quote = left_quote - ?, left_amount=? WHERE id=?',
@@ -176,7 +177,7 @@ class Positions {
       const toks = await this.chain.tokens([...new Set(rows.flatMap((r) => [r.token0, r.token1]))]);
       const dec = new Map(toks.filter(Boolean).map((t) => [t.address, t.decimals]));
       for (const r of rows) {
-        const k = r.quote_symbol === 'ETH' ? ethUsd : 1;
+        const k = usdPerQuote(r.quote_symbol, ethUsd);
         // token sisa dinilai dengan harga penilai, bukan harga pool yang mungkin sudah kosong
         const mk = await this.markFor(r, slots.get(r.pool_ref), liqs.get(r.pool_ref));
         const v = this.leftoverQuote(r, BigInt(r.left_amount), mk ? { sqrtPriceX96: mk.sqrt } : null, dec);
@@ -280,7 +281,7 @@ class Positions {
     const toks = await this.chain.tokens([r.token0, r.token1]);
     const dec = new Map(toks.filter(Boolean).map((t) => [t.address, t.decimals]));
     const v = this.leftoverQuote(r, amt, mk ? { sqrtPriceX96: mk.sqrt } : null, dec);
-    const k = r.quote_symbol === 'ETH' ? ethUsd : 1;
+    const k = usdPerQuote(r.quote_symbol, ethUsd);
     if (v != null) return v * k;
     // harga tidak terbaca: proporsional dari nilai tutup
     const total = rows.reduce((a, x) => a + BigInt(x.left_amount), 0n);
@@ -388,6 +389,7 @@ class Positions {
     const metaBy = new Map(metas.map((t) => [t.address, t]));
 
     const out = [];
+    const prevLive = new Map((this.live || []).map((p) => [p.id, p]));
     for (const r of rows) {
       const s = slotBy.get(r.pool_ref);
       const L = liqBy.get(r.id) ?? BigInt(r.liquidity || '0');
@@ -421,7 +423,14 @@ class Positions {
       const kind = this.chain.quoteSideOf(r.token0, r.token1)?.kind || 'usd';
       const toUsd = (x) => (x == null ? null : (kind === 'eth' ? x * ethUsd : x));
       const costUsd = toUsd(r.cost_quote) ?? 0;
-      const valUsd = toUsd(valueQuote) ?? 0;
+      // Harga tidak terbaca (RPC) ≠ posisi bernilai $0. Dulu nilainya 0 → PnL −100% →
+      // stop loss (kalau disetel) menutup posisi sungguhan di harga pasar, dan kurva
+      // ekuitas anjlok sesaat. Pakai nilai terakhir yang diketahui dan tandai basi;
+      // pemicu berbasis PnL tidak dinilai dari angka basi.
+      const withdrawnUsd0 = toUsd(r.out_quote) ?? 0;
+      const valueStale = valueQuote == null && L > 0n;
+      const valUsd = valueQuote != null ? toUsd(valueQuote)
+        : L > 0n ? (prevLive.get(r.id)?.valueUsd ?? Math.max(0, costUsd - withdrawnUsd0)) : 0;
       const feeUsd = toUsd(feeQuote) ?? 0;
       const claimedUsd = toUsd(r.claimed_quote) ?? 0;
       // out_quote posisi terbuka = hasil tarik sebagian yang sudah di wallet
@@ -464,6 +473,7 @@ class Positions {
         // Kosong hanya kalau chain BENAR-BENAR menjawab nol — bukan karena gagal dibaca.
         empty: L === 0n && !liqStale.has(r.id),
         liqStale: liqStale.has(r.id),
+        valueStale,
       });
     }
     this.live = out;
@@ -511,6 +521,9 @@ class Positions {
     for (const p of this.live) {
       const e = rules.exit;
       if (p.empty) { outs.push({ pos: p, reason: 'likuiditas sudah nol di chain' }); continue; }
+      // Nilai/likuiditas basi (RPC gagal): stop loss, take profit, dan di-luar-rentang tidak
+      // boleh dinilai dari angka lama — tunggu sinkron yang terbaca.
+      if (p.valueStale || p.liqStale) continue;
       if (e.stop_loss_pct > 0 && p.pnlPct <= -Math.abs(e.stop_loss_pct)) {
         outs.push({ pos: p, reason: `stop loss ${p.pnlPct.toFixed(1)}%` }); continue;
       }
@@ -546,7 +559,7 @@ class Positions {
       .filter((r) => !liveById.get(r.id)?.empty);
     let val = 0, fee = 0, cost = 0, withdrawn = 0;
     for (const r of rows) {
-      const k = r.quote_symbol === 'ETH' ? ethUsd : 1;
+      const k = usdPerQuote(r.quote_symbol, ethUsd);
       const c = (r.cost_quote || 0) * k;
       cost += c;
       // hasil tarik sebagian sudah di wallet (ikut kas), tapi modalnya masih utuh di
@@ -560,7 +573,7 @@ class Positions {
     const closed = this.store.all("SELECT cost_quote, out_quote, quote_symbol FROM positions WHERE status='closed'");
     let realized = rows.reduce((sum, r) => sum + (r.claimed_quote || 0) * (['ETH', 'WETH'].includes(r.quote_symbol) ? ethUsd : 1), 0);
     for (const c of closed) {
-      const k = c.quote_symbol === 'ETH' ? ethUsd : 1;
+      const k = usdPerQuote(c.quote_symbol, ethUsd);
       realized += ((c.out_quote || 0) - (c.cost_quote || 0)) * k;
     }
     // Memecoin sisa yang belum dijual: out_quote posisinya masih memakai harga tutup,
