@@ -639,7 +639,7 @@ class Engine {
       // Zap sudah jadi tapi LP-nya gagal: token yang terbeli jangan ditinggal telanjang
       // di wallet — masuk antrean jual, seperti sisa posisi. Rescue gagal tidak boleh
       // menutupi galat aslinya.
-      if (trace.zapped) await this.rescueZap(plan, trace.zapped, e).catch((x) => this.store?.log?.('warn', `antrekan token zap gagal: ${x.message}`, { quiet: true }));
+      if (trace.zapped && !e.pendingMint) await this.rescueZap(plan, trace.zapped, e).catch((x) => this.store?.log?.('warn', `antrekan token zap gagal: ${x.message}`, { quiet: true }));
       throw e;
     }
     finally { this.activeEntries--; }
@@ -857,21 +857,59 @@ class Engine {
       : (plan.venue === 'v3'
         ? this.exec.buildV3Mint({ ...finalPlan, amount0Min: 0, amount1Min: 0 }, this.exec.deadline())
         : this.exec.buildV4Mint(finalPlan, this.exec.deadline()));
-    const hash = await this.exec.send(tx, { kind: adding ? 'increase' : 'mint', detail: { pool: plan.poolRef, target: plan.target, venue: plan.venue } });
+    // Rencana ikut disimpan di tabel txs: kalau receipt-nya gagal dibaca (RPC tumbang,
+    // lewat batas tunggu), bookPendingMints membukukan posisinya belakangan dari receipt —
+    // lengkap dengan tautan ke target, bukan cuma "diadopsi" tanpa asal-usul.
+    const hash = await this.exec.send(tx, { kind: adding ? 'increase' : 'mint', detail: {
+      pool: plan.poolRef, target: plan.target, venue: plan.venue,
+      plan: Engine.planForBooking(finalPlan), zapped: trace.zapped ? { ...trace.zapped, before: String(trace.zapped.before) } : null,
+    } });
     const rc = await this.exec.waitReceipt(hash, 90_000);
+    if (rc.timeout) {
+      const e = new Error(`mint ${hash} belum terkonfirmasi setelah 90 detik — posisinya dibukukan otomatis begitu receipt terbaca`);
+      e.pendingMint = true;   // jangan jual token zap: mint-nya mungkin sedang masuk
+      throw e;
+    }
     if (!rc.ok) throw new Error(`mint gagal (${hash})`);
+    return this.recordEntry(finalPlan, hash, rc.receipt, { amt, sqrt: s2, notes });
+  }
+
+  // Bagian rencana yang cukup untuk membukukan posisi belakangan (JSON polos, tanpa BigInt).
+  static planForBooking(p) {
+    const keep = ['venue', 'action', 'poolRef', 'poolKey', 'token0', 'token1', 'fee', 'tickSpacing', 'hooks', 'tickLower', 'tickUpper',
+      'liquidity', 'amount0Max', 'amount1Max', 'valueQuote', 'valueUsd', 'quoteSymbol', 'quoteKind', 'quoteSide', 'target', 'mirrorOf', 'tokenId', 'positionId', 'singleSide'];
+    const out = {};
+    for (const k of keep) if (p[k] !== undefined) out[k] = p[k];
+    return JSON.parse(JSON.stringify(out, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
+  }
+
+  // Pembukuan sesudah mint/increase terkonfirmasi. `amt`/`sqrt` dari alur masuk kalau
+  // ada; kalau dibukukan belakangan (bookPendingMints) modalnya dibaca dari receipt —
+  // token yang benar-benar keluar dari wallet — dan harga masuknya dari pool saat ini.
+  async recordEntry(plan, hash, receipt, { amt = null, sqrt = null, notes = [] } = {}) {
+    const adding = plan.action === 'increase' && plan.tokenId;
+    const L = BigInt(plan.liquidity);
+    const me = this.exec.address().toLowerCase();
+    if (!amt) {
+      const spent = async (tok, max) => {
+        try { return await this.spentIn(receipt, tok, me); }
+        catch { return BigInt(max || '0'); }   // ETH native tak terisolasi: taksiran batas rencana
+      };
+      amt = { amount0: await spent(plan.token0, plan.amount0Max), amount1: await spent(plan.token1, plan.amount1Max) };
+    }
+    if (!sqrt) sqrt = plan.venue === 'v3' ? await this.chain.slot0V3(plan.poolRef) : await this.chain.slot0V4(plan.poolRef);
+    const s2 = sqrt;
 
     // 4. tokenId dari log Transfer (0x0 -> kita)
-    const me = this.exec.address();
     let tokenId = null;
-    for (const l of rc.receipt.logs || []) {
+    for (const l of receipt.logs || []) {
       const mgr = plan.venue === 'v3' ? ADDR.npmV3 : ADDR.posmV4;
       if (l.address.toLowerCase() === mgr && l.topics[0] === TOPIC.transfer
         && asAddr(l.topics[1]) === '0x0000000000000000000000000000000000000000'
         && asAddr(l.topics[2]) === me) tokenId = BigInt(l.topics[3]).toString();
     }
     const toks = await this.chain.tokens([plan.token0, plan.token1]);
-    const v = this.chain.valueInQuote({
+    const v = s2 && this.chain.valueInQuote({
       sqrtPriceX96: s2.sqrtPriceX96, amount0: amt.amount0, amount1: amt.amount1,
       dec0: toks[0].decimals, dec1: toks[1].decimals, token0: plan.token0, token1: plan.token1,
     });
@@ -887,17 +925,20 @@ class Engine {
         (amt.amount1 + BigInt(prev.cost1 || '0')).toString(),
         v?.value ?? 0, plan.positionId);
     }
-    const positionId = adding ? plan.positionId : this.positions.record(finalPlan, {
+    const positionId = adding ? plan.positionId : this.positions.record(plan, {
       tokenId, txHash: hash, target: plan.target,
       cost0: amt.amount0.toString(), cost1: amt.amount1.toString(), costQuote: v?.value ?? plan.valueQuote,
-      entrySqrt: s2.sqrtPriceX96,
+      entrySqrt: s2?.sqrtPriceX96 ?? null,
     });
+    // Penanda "sudah dibukukan" di tabel txs — bookPendingMints tidak mengulanginya.
+    const trow = this.store?.get?.('SELECT detail FROM txs WHERE hash=?', hash);
+    if (trow) { let d = {}; try { d = JSON.parse(trow.detail || '{}'); } catch { /* detail lama */ } d.recorded = positionId; this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify(d), hash); }
     const pair = `${toks[0].symbol}/${toks[1].symbol}`;
     // v.value dinyatakan dalam aset kuotasi pool (bisa ETH), BUKAN dolar — dulu dicetak
     // langsung dengan "$" sehingga posisi 0,079 ETH terbaca "$0,08" alih-alih ~$195.
     const usdVal = quoteToUsd(v?.value ?? 0, v?.kind || 'usd', this.ethUsd);
     return {
-      txHash: hash, positionId, adding: !!adding, pair, valueUsd: usdVal, curTick: s2.tick ?? null, steps: notes,
+      txHash: hash, positionId, adding: !!adding, pair, valueUsd: usdVal, curTick: s2?.tick ?? null, steps: notes,
       note: `${adding ? 'tambah ' : ''}${pair} $${usdVal.toFixed(2)}${notes.length ? ' (' + notes.join(', ') + ')' : ''}`,
     };
   }
@@ -951,6 +992,18 @@ class Engine {
   // receipt-nya — bukan dari selisih saldo "sebelum/sesudah", yang bisa nol kalau RPC
   // yang dibaca masih tertinggal satu blok, atau tercemar tx lain di antaranya.
   async receivedIn(receipt, token, owner) {
+    const v = await this.netFlow(receipt, token, owner);
+    return v > 0n ? v : 0n;
+  }
+
+  // Berapa `token` yang BERSIH keluar dari `owner` pada transaksi ini (modal mint).
+  async spentIn(receipt, token, owner) {
+    const v = await this.netFlow(receipt, token, owner);
+    return v < 0n ? -v : 0n;
+  }
+
+  // Arus bersih `token` ke `owner` di transaksi ini: positif = masuk, negatif = keluar.
+  async netFlow(receipt, token, owner) {
     if (!isNative(token)) {
       let value = 0n;
       for (const l of receipt.logs || []) {
@@ -958,7 +1011,7 @@ class Engine {
         if (asAddr(l.topics[2]) === owner) value += BigInt(l.data);
         if (asAddr(l.topics[1]) === owner) value -= BigInt(l.data);
       }
-      return value > 0n ? value : 0n;
+      return value;
     }
     // ETH native tidak punya Transfer. Baca saldo historis di blok receipt
     // agar retry setelah timeout tidak menghitung aktivitas wallet di blok lain.
@@ -970,8 +1023,7 @@ class Engine {
     const others = (block?.transactions || []).filter((t) => t.hash !== hash
       && (String(t.from).toLowerCase() === owner || String(t.to).toLowerCase() === owner));
     if (!block || others.length) throw new Error('saldo ETH pada blok transaksi tidak dapat diisolasi');
-    const value = after - before + BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice);
-    return value > 0n ? value : 0n;
+    return after - before + BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice);
   }
 
   async recordFeeClaim(pos, hash, receipt) {
@@ -1105,6 +1157,34 @@ class Engine {
       kind: 'exit', positionId: pos.id, txHash: null, full: true, auto: true, target: pos.target, mirrorOf: pos.mirror_of, reason: 'likuiditas sudah nol di chain, hasil tidak ditemukan',
     });
     return null;
+  }
+
+  // Tx mint/increase bot yang sudah terkirim tapi posisinya belum dibukukan (receipt
+  // gagal dibaca / lewat batas tunggu). Sukses → dibukukan dari receipt lengkap dengan
+  // tautan target; revert → ditandai gagal dan token hasil zap-nya diantrekan dijual;
+  // tidak pernah masuk (30 menit tanpa receipt) → sama seperti revert.
+  async bookPendingMints() {
+    if (!this.exec.address()) return;
+    const rows = this.store.all("SELECT hash, ts, kind, detail FROM txs WHERE kind IN ('mint','increase') AND status != 'gagal' AND ts > ? ORDER BY ts", Date.now() - 24 * 3600_000);
+    for (const r of rows) {
+      let d; try { d = JSON.parse(r.detail || '{}'); } catch { continue; }
+      if (!d.plan || d.recorded) continue;
+      if (Date.now() - r.ts < 120_000) continue;   // alur masuknya sendiri masih menunggu (90 dtk)
+      if (d.plan.action === 'increase' && d.plan.positionId && this.exiting.has(d.plan.positionId)) continue;
+      let receipt = null;
+      try { receipt = await this.rpc.call('eth_getTransactionReceipt', [r.hash]); } catch { continue; }
+      const failed = receipt ? BigInt(receipt.status) !== 1n : Date.now() - r.ts > 30 * 60_000;
+      if (!receipt && !failed) continue;
+      if (failed) {
+        this.store.run("UPDATE txs SET status='gagal' WHERE hash=?", r.hash);
+        this.store.log('warn', `mint ${r.hash.slice(0, 12)}… ${receipt ? 'revert' : 'tidak pernah masuk'} — ${d.zapped ? 'token zap diantrekan dijual' : 'dana tetap di wallet'}`);
+        if (d.zapped) await this.rescueZap({ target: d.target }, { ...d.zapped, before: BigInt(d.zapped.before) }, new Error('mint gagal')).catch(() => {});
+        continue;
+      }
+      const res = await this.recordEntry(d.plan, r.hash, receipt);
+      const msg = `posisi #${res.positionId} dibukukan belakangan dari receipt ${r.hash.slice(0, 12)}… — ${res.note}`;
+      this.notify(msg, { kind: 'entry', positionId: res.positionId, txHash: r.hash, target: d.target, mirrorOf: d.plan.mirrorOf, valueUsd: res.valueUsd, pair: res.pair });
+    }
   }
 
   // Tx keluar bot (burn/decrease) yang sudah terkirim tapi hasilnya belum dibukukan —
@@ -1585,6 +1665,7 @@ class Engine {
     await sekali('claim', 'pencatatan claim fee', this.reconcileFeeClaims());
     await sekali('rekon', 'rekonsiliasi keluar', this.reconcileExits());
     await this.positions.sync(this.ethUsd);
+    await sekali('buku-masuk', 'pembukuan mint tertunda', this.bookPendingMints());
     await sekali('buku-keluar', 'pembukuan tx keluar tertunda', this.bookPendingExits());
     await sekali('kas', 'saldo kas', this.refreshCash());
     await sekali('sisa', 'nilai token sisa', this.positions.refreshLeftovers(this.ethUsd, this.exec.address()));

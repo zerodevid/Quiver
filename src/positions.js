@@ -17,6 +17,7 @@ class Positions {
     this.live = [];      // hasil sinkron terakhir, dipakai dashboard
     this.lastSync = 0;
     this.syncing = null; // sinkron yang sedang berjalan, dipakai bersama
+    this.markWarned = new Set();   // posisi yang harga pool-nya sudah dilaporkan gila
   }
 
   open() {
@@ -196,12 +197,31 @@ class Positions {
   // Balikan { sqrt, ref } — ref null = harga pool sendiri, 'exit'/'entry', atau pool_ref acuan.
   async markFor(r, s, poolLiq) {
     if (!s) return null;
-    if (priceUsable(s, poolLiq ?? 0n)) return { sqrt: s.sqrtPriceX96, ref: null };
+    // Harga pool yang lolos priceUsable pun bisa gila: pool berlikuiditas 1 wei sesudah
+    // rug / satu swap liar menaruh harga 1e9× harga wajar tanpa menyentuh tepi tick —
+    // dasbor pernah menunjukkan "milyaran dolar". Batas: harga penilai tidak boleh lebih
+    // dari MARK_RATIO_MAX× (atau kurang dari 1/MARK_RATIO_MAX×) harga masuk posisi.
+    // Memecoin memang bisa 100× atau −99%, tapi 1000× dalam umur satu posisi bukan
+    // sesuatu yang layak dipercaya dari satu pool tipis.
+    const own = Positions.entrySqrtOf(r) ? BigInt(Positions.entrySqrtOf(r)) : null;
+    const sane = (sqrt) => {
+      if (own == null || own === 0n || sqrt == null) return true;
+      const hi = sqrt > own ? sqrt : own, lo = sqrt > own ? own : sqrt;
+      // rasio harga = (sqrt_hi/sqrt_lo)^2 ; dibandingkan tanpa float
+      return hi * hi < lo * lo * BigInt(Positions.MARK_RATIO_MAX);
+    };
+    if (priceUsable(s, poolLiq ?? 0n) && sane(s.sqrtPriceX96)) return { sqrt: s.sqrtPriceX96, ref: null };
     const alt = await this.chain.markSqrtForPair(r.token0, r.token1, r.pool_ref);
-    if (alt) return { sqrt: alt.sqrtPriceX96, ref: alt.poolRef };
-    if (r.exit_sqrt) return { sqrt: BigInt(r.exit_sqrt), ref: 'exit' };
-    const entry = Positions.entrySqrtOf(r);
-    return entry ? { sqrt: BigInt(entry), ref: 'entry' } : { sqrt: s.sqrtPriceX96, ref: null };
+    if (alt && sane(alt.sqrtPriceX96)) return { sqrt: alt.sqrtPriceX96, ref: alt.poolRef };
+    if (r.exit_sqrt && sane(BigInt(r.exit_sqrt))) return { sqrt: BigInt(r.exit_sqrt), ref: 'exit' };
+    if (own) {
+      if ((priceUsable(s, poolLiq ?? 0n) || alt) && !this.markWarned.has(r.id)) {
+        this.markWarned.add(r.id);
+        this.log(`harga pool posisi #${r.id} ${s.sqrtPriceX96 > own ? '>' : '< 1/'}${Positions.MARK_RATIO_MAX}× harga masuk — dinilai di harga masuk`);
+      }
+      return { sqrt: own, ref: 'entry' };
+    }
+    return { sqrt: s.sqrtPriceX96, ref: null };
   }
 
   // Baca harga pool posisi r lalu pilih harga penilainya; bentuknya slot0 supaya bisa
@@ -254,6 +274,8 @@ class Positions {
   // balik dari jumlah token yang disetor. Di dalam rentang, amount1 = L·(√P − √A),
   // jadi √P = √A + amount1/L. Semua token di satu sisi = harga di luar rentang saat
   // mint; batas rentangnya yang dipakai.
+  static get MARK_RATIO_MAX() { return 1000; }
+
   static entrySqrtOf(r) {
     if (r.entry_sqrt) return r.entry_sqrt;
     try {
@@ -370,6 +392,13 @@ class Positions {
         if (vf) feeQuote = vf.value;
       }
       if (f.unknown) feeQuote = r.fees_quote ?? null;   // fee tidak terbaca: angka terakhir, bukan nol
+      // Pagar nominal: fee tak berhingga atau > 10× modal (+$100) bukan rezeki, tapi
+      // perhitungan yang rusak (slot fee salah baca, harga gila) — pakai angka terakhir.
+      if (feeQuote != null && (!Number.isFinite(feeQuote) || feeQuote > Math.max(r.cost_quote || 0, 1) * 10 + 100)) {
+        if (!this.markWarned.has(`fee:${r.id}`)) { this.markWarned.add(`fee:${r.id}`); this.log(`fee posisi #${r.id} terbaca ${feeQuote} — tidak masuk akal, pakai angka terakhir`); }
+        feeQuote = Number.isFinite(r.fees_quote) ? r.fees_quote : 0;
+      }
+      if (valueQuote != null && !Number.isFinite(valueQuote)) valueQuote = null;
       const kind = this.chain.quoteSideOf(r.token0, r.token1)?.kind || 'usd';
       const toUsd = (x) => (x == null ? null : (kind === 'eth' ? x * ethUsd : x));
       const costUsd = toUsd(r.cost_quote) ?? 0;

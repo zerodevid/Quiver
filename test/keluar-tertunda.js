@@ -168,6 +168,47 @@ const txRow = (d, kind, hash, detail) => d.store.run('INSERT INTO txs(hash,ts,ki
     assert.strictEqual(pos(d).status, 'open');
   });
 
+  await t('mint yang receipt-nya tertunda dibukukan belakangan dengan tautan target & modal dari receipt', async () => {
+    const d = dunia({ liq: 5_000_000n, receipts: {} });
+    const TGT = '0x' + '22'.repeat(20);
+    const plan = { venue: 'v4', action: 'mint', poolRef: POOL, poolKey: { hooks: ADDR.native }, token0: ADDR.usdg, token1: MEME, fee: 3000, tickSpacing: 60,
+      tickLower: -100, tickUpper: 100, liquidity: '4000000', amount0Max: '99000000', amount1Max: '0', valueQuote: 95, valueUsd: 95, quoteSymbol: 'USDG', target: TGT, mirrorOf: '555' };
+    d.store.run('INSERT INTO txs(hash,ts,kind,status,detail) VALUES(?,?,?,?,?)', TX, Date.now() - 5 * 60_000, 'mint', 'pending',
+      JSON.stringify({ pool: POOL, target: TGT, venue: 'v4', plan, zapped: null }));
+    await d.e.bookPendingMints();                     // receipt belum ada, < 30 menit: tunggu
+    assert.strictEqual(d.store.all("SELECT id FROM positions WHERE mirror_of='555'").length, 0);
+    // receipt: 95 USDG keluar dari wallet, NFT #4242 dicetak ke kita
+    d.st.receipts[TX] = { status: '0x1', gasUsed: '0x0', effectiveGasPrice: '0x0', logs: [
+      xfer(ADDR.usdg, ME, ADDR.poolManager, 95_000_000n),
+      { address: ADDR.posmV4, topics: [TOPIC.transfer, pad('0x' + '0'.repeat(40)), pad(ME), hex(4242)], data: '0x' },
+    ] };
+    await d.e.bookPendingMints();
+    const p = d.store.get("SELECT * FROM positions WHERE mirror_of='555'");
+    assert.ok(p, 'posisi tercatat');
+    assert.strictEqual(p.token_id, '4242');
+    assert.strictEqual(p.target, TGT);
+    assert.strictEqual(p.cost0, '95000000');
+    assert.ok(Math.abs(p.cost_quote - 95) < 1e-6, `cost ${p.cost_quote}`);
+    assert.strictEqual(p.tx_open, TX);
+    assert.ok(d.e.notified.some((n) => /dibukukan belakangan/.test(n.msg)));
+    await d.e.bookPendingMints();                     // tidak dobel
+    assert.strictEqual(d.store.all("SELECT id FROM positions WHERE mirror_of='555'").length, 1);
+  });
+
+  await t('mint revert setelah zap: ditandai gagal, token zap masuk antrean jual', async () => {
+    const d = dunia({ liq: 5_000_000n, receipts: { [TX]: receipt({ status: '0x0' }) } });
+    d.e.exec.balances = async (l) => new Map(l.map((a) => [a, a === MEME ? 700n : 0n]));
+    d.e.rulesFrom = () => ({ exit: {}, swap: {} });
+    d.store.run('INSERT INTO txs(hash,ts,kind,status,detail) VALUES(?,?,?,?,?)', TX, Date.now() - 5 * 60_000, 'mint', 'pending',
+      JSON.stringify({ pool: POOL, target: null, venue: 'v4', plan: { action: 'mint', liquidity: '1' }, zapped: { token: MEME, quote: ADDR.usdg, before: '100' } }));
+    await d.e.bookPendingMints();
+    assert.strictEqual(d.store.get('SELECT status FROM txs WHERE hash=?', TX).status, 'gagal');
+    const q = JSON.parse(d.store.getState('leftovers'));
+    assert.strictEqual(q.length, 1);
+    assert.strictEqual(q[0].amount, '600');           // hanya yang terbeli (700 − 100)
+    assert.strictEqual(q[0].source, 'zap');
+  });
+
   console.log(`\n${pass} ok, ${fail} gagal`);
   process.exit(fail ? 1 : 0);
 })();
