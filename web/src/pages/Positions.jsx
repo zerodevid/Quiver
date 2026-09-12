@@ -67,8 +67,16 @@ export function SyncState({ syncedAt, pending }) {
   );
 }
 
-// Dari mana posisi ini datang: wallet target yang disalin — beserta nomor NFT posisi
-// aslinya — atau tidak menyalin siapa pun (dibuka manual / sudah ada di wallet).
+// Dari mana posisi ini datang: wallet target yang disalin, nomor NFT posisi aslinya,
+// dan bagaimana posisi asli itu berakhir — semuanya dalam satu kolom, supaya salinan
+// kita dan aslinya terbaca dalam satu tatapan tanpa menambah lebar tabel.
+//
+// PnL target dinilai terhadap modal target sendiri, yang jarang sebesar modal kita;
+// itu sebabnya persennya ikut ditampilkan — dolarnya hanya bercerita soal ukuran
+// taruhan mereka. Angkanya dari pemindaian wallet: wallet yang belum pernah diriset
+// tidak punya angka sama sekali, dan posisi target yang masih terbuka bernilai
+// sebesar pemindaian terakhir, bukan harga sekarang — keduanya dikatakan apa adanya
+// daripada disajikan sebagai kabar pasti.
 function Source({ p }) {
   const { t } = useI18n();
   if (!p.target) {
@@ -78,39 +86,29 @@ function Source({ p }) {
       </span>
     );
   }
-  return (
-    <a href={'#targets/' + p.target} className="group block max-w-40" title={p.target}>
-      {p.targetLabel && <div className="truncate font-medium group-hover:underline">{p.targetLabel}</div>}
-      <div className="mono text-xs whitespace-nowrap text-muted group-hover:text-foreground">
-        {short(p.target)}{p.mirror_of ? ` · #${p.mirror_of}` : ''}
-      </div>
-    </a>
-  );
-}
-
-// PnL posisi asli di wallet target, disandingkan dengan PnL kita di baris yang sama.
-// Modal keduanya jarang sama besar, jadi yang sebanding adalah persennya — dolarnya
-// hanya bercerita soal ukuran taruhan target. Angkanya dari pemindaian wallet itu:
-// wallet yang belum pernah diriset tidak punya angka, dan posisi target yang masih
-// terbuka dinilai sebesar pemindaian terakhir, bukan harga sekarang.
-function MirrorPnl({ p }) {
-  const { t } = useI18n();
-  if (!p.target) return <span className="text-muted">—</span>;
   const m = p.mirror;
-  if (!m) {
-    return (
-      <span className="text-xs text-muted" title={t('Wallet target ini belum diriset, jadi hasil posisi aslinya belum diketahui. Buka halaman target dan pindai wallet-nya.')}>
-        {t('belum dipindai')}
-      </span>
-    );
-  }
   return (
-    <div className={`whitespace-nowrap ${tone(m.pnlUsd)}`} title={t('modal target {v}', { v: usd(m.costUsd) })}>
-      {usd(m.pnlUsd)}
-      <div className="text-xs">
-        {m.pnlPct == null ? '' : pct(m.pnlPct, 2)}
-        {m.stale && <span className="text-muted"> · {t('masih terbuka')}</span>}
-      </div>
+    <div className="max-w-48">
+      <a href={'#targets/' + p.target} className="group block" title={p.target}>
+        {p.targetLabel && <div className="truncate font-medium group-hover:underline">{p.targetLabel}</div>}
+        <div className="mono text-xs whitespace-nowrap text-muted group-hover:text-foreground">
+          {short(p.target)}{p.mirror_of ? ` · #${p.mirror_of}` : ''}
+        </div>
+      </a>
+      {!m ? (
+        <div className="text-xs text-muted" title={t('Wallet target ini belum diriset, jadi hasil posisi aslinya belum diketahui. Buka halaman target dan pindai wallet-nya.')}>
+          {t('belum dipindai')}
+        </div>
+      ) : (
+        <div className="mt-0.5 text-xs" title={t('modal target {v}', { v: usd(m.costUsd) })}>
+          <span className="text-muted">{t('PnL target')}</span>{' '}
+          <span className={`num ${tone(m.pnlUsd)}`}>{usd(m.pnlUsd)}{m.pnlPct == null ? '' : ` ${pct(m.pnlPct, 2)}`}</span>
+          {/* baris sendiri, bukan disambung dengan titik: kalimatnya sudah sepanjang
+              kolom, dan pemisah yang menggantung di ujung baris lebih berisik
+              daripada satu baris tambahan */}
+          {m.stale && <div className="text-muted">{t('masih terbuka')}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -191,7 +189,7 @@ export default function Positions({ param }) {
           ]} />
       </Panel>
       <Panel title={t('Posisi tertutup ({n})', { n: closed.length })} bodyClass="p-0"
-        desc="Sumber = wallet yang disalin. PnL target dihitung dari modal target sendiri, jadi yang sebanding persennya, bukan dolarnya."
+        desc="Kolom Sumber memuat wallet yang disalin beserta hasil posisi aslinya. Modal target jarang sebesar modal kita, jadi yang sebanding persennya, bukan dolarnya."
         action={closed.length > 0 && <Totals items={[['PnL', usd(closedPnl), tone(closedPnl)]]} />}>
         <DataTable label="Posisi tertutup" rows={closed} rowKey={(c) => c.id} searchable pageSize={20} onRow={(c) => setHist(c.id)}
           defaultSort={{ column: 'at', direction: 'descending' }}
@@ -207,11 +205,10 @@ export default function Positions({ param }) {
               search: (c) => `${c.targetLabel || ''} ${c.target || ''}`, render: (c) => <Source p={c} /> },
             { key: 'cost', label: 'Modal', align: 'end', sort: (c) => c.cost_quote, render: (c) => usd(c.cost_quote) },
             { key: 'out', label: 'Hasil', align: 'end', sort: (c) => c.out_quote, render: (c) => usd(c.out_quote) },
-            { key: 'pnl', label: 'PnL kita', align: 'end', sort: (c) => (c.out_quote || 0) - (c.cost_quote || 0), render: (c) => {
+            { key: 'pnl', label: 'PnL', align: 'end', sort: (c) => (c.out_quote || 0) - (c.cost_quote || 0), render: (c) => {
               const v = (c.out_quote || 0) - (c.cost_quote || 0);
               return <div className={`whitespace-nowrap ${tone(v)}`}>{usd(v)}<div className="text-xs">{c.cost_quote > 0 ? pct((v / c.cost_quote) * 100, 2) : ''}</div></div>;
             } },
-            { key: 'tpnl', label: 'PnL target', align: 'end', sort: (c) => c.mirror?.pnlPct ?? null, render: (c) => <MirrorPnl p={c} /> },
             { key: 'dur', label: 'Durasi', align: 'end', sort: (c) => (c.closed_ts || 0) - (c.opened_ts || 0), render: (c) => (
               <span className="whitespace-nowrap text-muted">{c.opened_ts && c.closed_ts ? age((c.closed_ts - c.opened_ts) / 3600000) : '—'}</span>) },
             { key: 'at', label: 'Ditutup', align: 'end', sort: (c) => c.closed_ts, render: (c) => <span className="whitespace-nowrap text-muted">{ago(c.closed_ts)}</span> },

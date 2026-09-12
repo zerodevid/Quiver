@@ -463,13 +463,12 @@ const EN = {
   'di luar bot': 'outside bot',
   // ---- asal posisi: target yang disalin vs hasil kita ----
   'Posisi ini tidak menyalin target mana pun: dibuka manual, atau sudah ada di wallet sebelum bot memantaunya.': 'This position copies no target: it was opened manually, or was already in the wallet before the bot started tracking it.',
-  'PnL kita': 'Our PnL',
   'PnL target': 'Target PnL',
   'belum dipindai': 'not scanned yet',
   'masih terbuka': 'still open',
   'modal target {v}': "target's capital {v}",
   'Wallet target ini belum diriset, jadi hasil posisi aslinya belum diketahui. Buka halaman target dan pindai wallet-nya.': 'This target wallet has not been researched, so the original position\u2019s result is unknown. Open the target page and scan the wallet.',
-  'Sumber = wallet yang disalin. PnL target dihitung dari modal target sendiri, jadi yang sebanding persennya, bukan dolarnya.': "Source = the wallet being copied. The target's PnL is measured against the target's own capital, so compare the percentages, not the dollars.",
+  'Kolom Sumber memuat wallet yang disalin beserta hasil posisi aslinya. Modal target jarang sebesar modal kita, jadi yang sebanding persennya, bukan dolarnya.': "The Source column carries the wallet being copied along with how its original position ended. The target's capital is rarely the size of ours, so compare the percentages, not the dollars.",
   // ---- jual sisa memecoin ----
   'Jual memecoin sisa setelah keluar': 'Sell leftover memecoin after exit',
   'Token yang diterima saat menutup posisi dijual balik ke USDG/ETH lewat agregator Kyber': 'Tokens received when closing a position are sold back to USDG/ETH via the Kyber aggregator',
