@@ -590,7 +590,7 @@ class WalletResearch {
     const idV4 = [...new Set(fresh.filter((r) => r.venue !== 'v3').map((r) => r.pool_ref))];
     if (idV4.length) {
       try {
-        const [s, pl] = await Promise.all([this.chain.slot0V4Many(idV4), this.chain.poolLiquidityMany(idV4)]);
+        const [s, pl] = await Promise.all([this.chain.slot0V4Many(idV4), this.chain.poolLiquidityMany(idV4).catch(() => [])]);
         idV4.forEach((id, i) => { if (s[i]) { slotBy.set(id, s[i]); poolLiqBy.set(id, pl[i] ?? 0n); } });
       } catch (e) { this.log(`nilai posisi terbuka: harga v4 gagal: ${e.message}`); }
     }

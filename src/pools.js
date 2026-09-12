@@ -391,9 +391,16 @@ function priceUsable(slot, liquidity) {
 // yang menempel di batas diapit ke tepi rentang posisi — harga terakhir yang benar-
 // benar dilalui posisi itu. Komposisi tokennya sama (semua di satu sisi), hanya
 // nilainya yang jadi masuk akal.
+// Diapit juga kalau harganya masih "di dalam batas tick" tapi >MARK_RATIO_MAX× di luar
+// tepi terdekat — pool sisa 1 wei sesudah rug menaruh harga 1e9× tanpa menyentuh batas.
+const MARK_RATIO_MAX = 1000n;
 function sqrtClampedToRange(sqrt, sa, sb) {
-  if (sqrt == null || sqrtSane(sqrt)) return sqrt;
-  return sqrt < sa ? sa : sb;
+  if (sqrt == null) return sqrt;
+  const edge = sqrt < sa ? sa : sqrt > sb ? sb : null;
+  if (edge == null) return sqrt;                       // di dalam rentang: wajar
+  if (!sqrtSane(sqrt)) return edge;
+  const hi = sqrt > edge ? sqrt : edge, lo = sqrt > edge ? edge : sqrt;
+  return lo > 0n && hi * hi < lo * lo * MARK_RATIO_MAX ? sqrt : edge;   // rasio harga = (√hi/√lo)²
 }
 
 // Harga acuan untuk pasangan token: dari pool lain yang memuat pasangan yang sama
@@ -402,7 +409,8 @@ function sqrtClampedToRange(sqrt, sa, sb) {
 // bisa dipanggil beruntun dan pasangan yang sama tidak perlu dibaca ulang.
 Chain.prototype.markSqrtForPair = async function markSqrtForPair(token0, token1, skipRef) {
   const a = String(token0 || '').toLowerCase(), b = String(token1 || '').toLowerCase();
-  const key = `${a}|${b}`;
+  // pool yang dikecualikan ikut jadi kunci: pasangan sama, posisi di pool berbeda
+  const key = `${a}|${b}|${String(skipRef || '').toLowerCase()}`;
   const now = Date.now();
   this._markCache ??= new Map();
   const hit = this._markCache.get(key);

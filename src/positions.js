@@ -3,7 +3,7 @@
 // pemicu keluar mandiri (di luar rentang, stop loss, take profit, umur).
 const { ethers } = require('ethers');
 const { ADDR, ABI } = require('./chain');
-const { computePoolId, priceUsable, sqrtClampedToRange } = require('./pools');
+const { computePoolId, priceUsable } = require('./pools');
 const { unclaimedV4, unclaimedV3 } = require('./fees');
 const m = require('./v3math');
 
@@ -200,23 +200,32 @@ class Positions {
     // Harga pool yang lolos priceUsable pun bisa gila: pool berlikuiditas 1 wei sesudah
     // rug / satu swap liar menaruh harga 1e9× harga wajar tanpa menyentuh tepi tick —
     // dasbor pernah menunjukkan "milyaran dolar". Batas: harga penilai tidak boleh lebih
-    // dari MARK_RATIO_MAX× (atau kurang dari 1/MARK_RATIO_MAX×) harga masuk posisi.
+    // dari MARK_RATIO_MAX× (atau kurang dari 1/MARK_RATIO_MAX×) pembandingnya: harga
+    // masuk posisi, atau — kalau itu tidak tercatat — tepi rentang posisi yang terdekat.
     // Memecoin memang bisa 100× atau −99%, tapi 1000× dalam umur satu posisi bukan
     // sesuatu yang layak dipercaya dari satu pool tipis.
     const own = Positions.entrySqrtOf(r) ? BigInt(Positions.entrySqrtOf(r)) : null;
-    const sane = (sqrt) => {
-      if (own == null || own === 0n || sqrt == null) return true;
-      const hi = sqrt > own ? sqrt : own, lo = sqrt > own ? own : sqrt;
+    const hasRange = r.tick_lower != null && r.tick_upper != null;
+    const sa = hasRange ? m.getSqrtRatioAtTick(r.tick_lower) : null;
+    const sb = hasRange ? m.getSqrtRatioAtTick(r.tick_upper) : null;
+    const nearEdge = (x) => (x < sa ? sa : x > sb ? sb : x);   // di dalam rentang: dirinya sendiri
+    const ratioOk = (x, ref) => {
+      const hi = x > ref ? x : ref, lo = x > ref ? ref : x;
       // rasio harga = (sqrt_hi/sqrt_lo)^2 ; dibandingkan tanpa float
-      return hi * hi < lo * lo * BigInt(Positions.MARK_RATIO_MAX);
+      return lo > 0n && hi * hi < lo * lo * BigInt(Positions.MARK_RATIO_MAX);
+    };
+    const sane = (x) => {
+      if (x == null) return true;
+      if (own) return ratioOk(x, own);
+      if (hasRange) return ratioOk(x, nearEdge(x));
+      return true;
     };
     if (priceUsable(s, poolLiq ?? 0n) && sane(s.sqrtPriceX96)) return { sqrt: s.sqrtPriceX96, ref: null };
     const alt = await this.chain.markSqrtForPair(r.token0, r.token1, r.pool_ref);
     if (alt && sane(alt.sqrtPriceX96)) return { sqrt: alt.sqrtPriceX96, ref: alt.poolRef };
-    // Harga sendiri (keluar / pool mentah) bisa juga di batas tick — kalau rentang
-    // posisi diketahui, diapit ke tepinya: harga terakhir yang dilalui posisi ini.
-    const clamp = (x) => (r.tick_lower != null && r.tick_upper != null
-      ? sqrtClampedToRange(x, m.getSqrtRatioAtTick(r.tick_lower), m.getSqrtRatioAtTick(r.tick_upper)) : x);
+    // Harga sendiri (keluar / pool mentah) bisa juga gila atau di batas tick — kalau
+    // rentang posisi diketahui, diapit ke tepinya: harga terakhir yang dilalui posisi ini.
+    const clamp = (x) => (hasRange && !sane(x) ? nearEdge(x) : x);
     if (r.exit_sqrt) {
       const ex = clamp(BigInt(r.exit_sqrt));
       if (sane(ex)) return { sqrt: ex, ref: 'exit' };

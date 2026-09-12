@@ -171,6 +171,27 @@ const row = (d, id) => d.store.get('SELECT * FROM positions WHERE id=?', id);
     dekat(d.positions.summary(ETH).leftoverUsd, 700, 'harga masuk 0,001 × 700.000');
   });
 
+  await t('pool kosong tanpa harga masuk maupun pool acuan: harga diapit ke tepi rentang posisi', async () => {
+    const d = dunia({ price: 1e-30, poolLiq: 0n });
+    d.positions.chain.slot0V4Many = async (ids) => ids.map(() => ({ sqrtPriceX96: sqrtOf(1e-30), tick: 887271 }));
+    const id = tutup(d);
+    // rentang 1000 … ~2700 MEME/USDG; harga pool (1e-30) di bawahnya → tepi bawah = 1000
+    const lo = mm.priceToTick(1000, 6, 18);
+    d.store.run('UPDATE positions SET tick_lower=?, tick_upper=? WHERE id=?', lo, lo + 10000, id);
+    await d.positions.refreshLeftovers(ETH, W);
+    dekat(d.positions.summary(ETH).leftoverUsd, 700, 'tepi bawah 0,001 × 700.000');
+  });
+
+  await t('pool kosong, harga keluar di batas tick: harga keluar diapit ke tepi, bukan dipakai mentah', async () => {
+    const d = dunia({ price: 1e-30, poolLiq: 0n });
+    d.positions.chain.slot0V4Many = async (ids) => ids.map(() => ({ sqrtPriceX96: sqrtOf(1e-30), tick: 887271 }));
+    const id = tutup(d);
+    const lo = mm.priceToTick(1000, 6, 18);
+    d.store.run('UPDATE positions SET tick_lower=?, tick_upper=?, exit_sqrt=? WHERE id=?', lo, lo + 10000, sqrtOf(1e-30).toString(), id);
+    await d.positions.refreshLeftovers(ETH, W);
+    dekat(d.positions.summary(ETH).leftoverUsd, 700, 'tepi bawah 0,001 × 700.000');
+  });
+
   await t('token hilang dari wallet (dijual di luar bot): dianggap terjual di harga kini', async () => {
     const d = dunia({ price: 1000, balance: 200_000n * E18 });   // tersisa 200.000 dari 700.000
     const id = tutup(d);
