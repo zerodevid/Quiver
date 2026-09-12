@@ -392,6 +392,8 @@ const EN = {
   'Tambah token: alamat 0x…': 'Add token: 0x… address',
   'Alamat token': 'Token address',
   'Swap terakhir': 'Recent swaps',
+  'Dari halaman ini maupun bot Telegram.': 'From this page or the Telegram bot.',
+  '{n} sukses': '{n} succeeded',
   'Belum ada swap': 'No swaps yet',
   'Swap yang dikirim dari halaman ini atau bot Telegram muncul di sini.': 'Swaps sent from this page or the Telegram bot show up here.',
   '{s} ditambahkan': '{s} added',

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Card, Spinner, Modal, Input, toast } from '@heroui/react';
-import { ArrowDownUp, Brush, Check, ChevronDown, Plus, Search, TriangleAlert, X } from 'lucide-react';
+import { ArrowDownUp, ArrowRight, Brush, Check, ChevronDown, ChevronRight, CircleCheck, CircleX, Clock, Plus, Search, TriangleAlert, X } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { usePoll } from '../hooks';
-import { PageHeader, Notice, Loading, KV, Panel, Empty, Dot } from '../components/ui';
+import { PageHeader, Notice, Loading, KV, Panel, Empty, Refreshing, TxHash } from '../components/ui';
 import TokenIcon, { TokenSym } from '../components/TokenIcon';
-import { usd, num, short, ago, TXSTATUS } from '../fmt';
+import { usd, num, pct, short, ago, TXSTATUS } from '../fmt';
 import { useI18n } from '../i18n';
 
 const PORSI = [['25%', '25%'], ['50%', '50%'], ['75%', '75%'], ['semua', 'Maks']];
@@ -259,32 +259,105 @@ function Holdings({ tokens, dari, onUse, onRemove, onImport }) {
 
 // Swap manual terakhir, dari tabel txs. Baris lama (sebelum token & jumlah ikut
 // dicatat) hanya punya nilai USD-nya.
+const STATUS_ICON = { sukses: CircleCheck, pending: Clock, gagal: CircleX };
+// Nama DEX dari Kyber datang mentah ("uniswapv3", "uniswap-v4"); rapikan yang dikenal saja.
+const dexName = (s) => String(s).replace(/^uniswap-?v(\d)$/i, 'Uniswap v$1').replace(/^kyberswap.*/i, 'KyberSwap');
+const STATUS_CLS = {
+  sukses: 'bg-success/10 text-success', pending: 'bg-warning/10 text-warning', gagal: 'bg-danger/10 text-danger',
+};
+
+function SwapRow({ x }) {
+  const { t } = useI18n();
+  const d = x.detail || {};
+  const st = TXSTATUS[x.status];
+  const Ikon = STATUS_ICON[x.status] || Clock;
+  const cls = STATUS_CLS[x.status] || 'bg-default text-muted';
+  // Selisih nilai: berapa persen yang hilang (atau didapat) antara nilai masuk dan keluar.
+  const selisih = d.usdIn > 0 && d.usdOut != null ? ((d.usdOut - d.usdIn) / d.usdIn) * 100 : null;
+  const meta = [
+    (d.usdIn != null && d.usdOut != null) ? <span key="usd" className="num">{usd(d.usdIn)} → {usd(d.usdOut)}</span>
+      : (d.usdIn ?? d.usdOut) != null && <span key="usd" className="num">≈ {usd(d.usdIn ?? d.usdOut)}</span>,
+    selisih != null && Math.abs(selisih) >= 0.05 && (
+      <span key="pct" className={`num ${selisih < -1 ? 'text-danger' : selisih > 0 ? 'text-success' : ''}`}>{pct(selisih, 2)}</span>
+    ),
+    d.dex && <span key="dex" className="truncate">{t('lewat {d}', { d: dexName(d.dex) })}</span>,
+    x.gasUsd != null && <span key="gas" className="num">{t('gas {v}', { v: usd(x.gasUsd, x.gasUsd < 0.01 ? 4 : 2) })}</span>,
+  ].filter(Boolean);
+  const Chip = () => (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.6875rem] font-medium ${cls}`}>
+      <Ikon className="size-3" />{t(st?.[0] || x.status)}
+    </span>
+  );
+
+  return (
+    <div className="flex items-start gap-3 px-4 py-3 text-sm">
+      {/* pasangan lambang: token dijual di depan, token diterima menyusul di belakangnya */}
+      <span className="mt-0.5 flex shrink-0 items-center">
+        <TokenIcon address={d.tokenIn} symbol={d.symbolIn} size={28} />
+        <TokenIcon address={d.tokenOut} symbol={d.symbolOut} size={28} className="-ml-2" />
+      </span>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-medium">
+          {d.symbolIn ? (
+            <>
+              <span className="whitespace-nowrap"><span className="num">{num(d.amountIn, 6)}</span> <TokenSym address={d.tokenIn} symbol={d.symbolIn} /></span>
+              <ArrowRight className="size-3.5 shrink-0 text-muted" />
+              <span className="whitespace-nowrap">
+                {d.amountOut > 0 ? <><span className="num">{num(d.amountOut, 6)}</span> </> : null}<TokenSym address={d.tokenOut} symbol={d.symbolOut} />
+              </span>
+            </>
+          ) : <span className="num">{usd(d.usdIn)} → {usd(d.usdOut)}</span>}
+        </div>
+        {meta.length > 0 && (
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted">
+            {meta.map((m, i) => <span key={m.key} className="flex items-center gap-1.5">{i > 0 && <span aria-hidden="true">·</span>}{m}</span>)}
+          </div>
+        )}
+        {x.status === 'gagal' && x.error && (
+          <div className="mt-1 flex items-start gap-1 text-xs text-danger">
+            <TriangleAlert className="mt-px size-3 shrink-0" /><span className="line-clamp-2 break-words">{x.error}</span>
+          </div>
+        )}
+        {/* di HP: hash & waktu pindah ke bawah supaya kolom kanan tidak menyempit */}
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted sm:hidden">
+          <Chip /><TxHash hash={x.hash} /><span aria-hidden="true">·</span><span className="tabular-nums">{ago(x.ts)}</span>
+        </div>
+      </div>
+
+      <div className="hidden shrink-0 flex-col items-end gap-1 sm:flex">
+        <Chip />
+        <span className="flex items-center gap-2 text-xs text-muted">
+          <TxHash hash={x.hash} /><span aria-hidden="true">·</span><span className="tabular-nums" title={new Date(x.ts).toLocaleString()}>{ago(x.ts)}</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function Riwayat() {
   const { t } = useI18n();
-  const { data } = usePoll('/api/manual/swaps', 15000);
+  const { data, loading } = usePoll('/api/manual/swaps', 15000);
   const list = data?.swaps || [];
+  const ringkas = list.reduce((a, x) => {
+    if (x.status === 'sukses') a.n += 1;
+    const v = x.detail?.usdIn ?? x.detail?.usdOut;
+    if (x.status === 'sukses' && v != null) a.usd += v;
+    return a;
+  }, { n: 0, usd: 0 });
   return (
-    <Panel title="Swap terakhir" bodyClass="p-0">
+    <Panel title="Swap terakhir" desc="Dari halaman ini maupun bot Telegram."
+      action={list.length ? (
+        <span className="flex items-center gap-2 text-xs text-muted">
+          <Refreshing loading={loading} />
+          <span className="num">{t('{n} sukses', { n: ringkas.n })}</span>
+          {ringkas.usd > 0 && <><span aria-hidden="true">·</span><span className="num font-medium text-foreground">{usd(ringkas.usd)}</span></>}
+          <a href="#activity" className="inline-flex items-center gap-1 text-accent hover:underline">{t('Semua')}<ChevronRight className="size-3" /></a>
+        </span>
+      ) : null} bodyClass="p-0">
       {list.length ? (
         <div className="divide-y divide-border">
-          {list.map((x) => {
-            const d = x.detail || {};
-            const st = TXSTATUS[x.status];
-            return (
-              <div key={x.hash} className="flex items-center gap-3 px-4 py-2.5 text-sm">
-                <Dot tone={st?.[1] || 'default'} title={st?.[0] || x.status} />
-                <span className="min-w-0 flex-1 truncate">
-                  {d.symbolIn ? (
-                    <><span className="num">{num(d.amountIn, 6)}</span> <TokenSym address={d.tokenIn} symbol={d.symbolIn} />
-                      <span className="text-muted"> → </span>
-                      {d.amountOut != null && <span className="num">{num(d.amountOut, 6)} </span>}<TokenSym address={d.tokenOut} symbol={d.symbolOut} /></>
-                  ) : <span className="num">{usd(d.usdIn)} → {usd(d.usdOut)}</span>}
-                </span>
-                <span className="mono hidden shrink-0 text-xs text-muted sm:inline">{short(x.hash)}</span>
-                <span className="shrink-0 tabular-nums text-xs text-muted">{ago(x.ts)}</span>
-              </div>
-            );
-          })}
+          {list.map((x) => <SwapRow key={x.hash} x={x} />)}
         </div>
       ) : <div className="p-4"><Empty title="Belum ada swap" sub="Swap yang dikirim dari halaman ini atau bot Telegram muncul di sini." /></div>}
     </Panel>

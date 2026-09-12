@@ -1212,8 +1212,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     },
     // Riwayat swap manual terakhir, untuk panel di sebelah kartu swap.
     'GET /api/manual/swaps': () => ({
-      swaps: store.all("SELECT hash, ts, status, error, detail FROM txs WHERE kind='swap_manual' ORDER BY ts DESC LIMIT 8")
-        .map((r) => { let d = {}; try { d = JSON.parse(r.detail || '{}') || {}; } catch { /* abaikan */ } return { ...r, detail: d }; }),
+      swaps: store.all("SELECT hash, ts, status, error, detail, gas_used, gas_price FROM txs WHERE kind='swap_manual' ORDER BY ts DESC LIMIT 8")
+        .map((r) => {
+          let d = {}; try { d = JSON.parse(r.detail || '{}') || {}; } catch { /* abaikan */ }
+          // Biaya gas dalam USD memakai kurs ETH sekarang — cukup untuk riwayat singkat.
+          const gasUsd = r.gas_used && r.gas_price && engine.ethUsd
+            ? (Number(r.gas_used) * Number(BigInt(r.gas_price))) / 1e18 * engine.ethUsd : null;
+          return { hash: r.hash, ts: r.ts, status: r.status, error: r.error, detail: d, gasUsd };
+        }),
     }),
     // Saldo untuk langkah "Nominal" — tampil sebelum pratinjau pertama selesai dihitung.
     'GET /api/manual/saldo': async (req, url) => {
