@@ -476,11 +476,27 @@ class Positions {
   // dari sinkron bisa datang dari node yang tertinggal/rusak, dan menutup posisi
   // berdasarkan itu berarti $110 hilang dari pembukuan tanpa transaksi. Gagal baca
   // = belum pasti = false.
+  //
+  // Posisi yang BARU dibuka (< 15 menit): node yang tertinggal (ordofi bisa ribuan blok)
+  // belum mengenal mint-nya dan menjawab likuiditas 0 — dua kali berturut-turut kalau
+  // kebetulan dua-duanya jatuh ke node itu. Menutupnya berarti posisi hidup tercatat
+  // tutup $0 dan tidak pernah diadopsi lagi (tokenId-nya sudah "dikenal"). Jadi node yang
+  // menjawab harus sekaligus menunjukkan receipt mint-nya, dalam satu batch.
   async confirmEmpty(pos) {
     try {
       const call = pos.venue === 'v4'
         ? { to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(pos.token_id)]) }
         : { to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('positions', [BigInt(pos.token_id)]) };
+      if (Date.now() - (pos.opened_ts || 0) < 15 * 60_000) {
+        if (!pos.tx_open || !this.rpc.batch) return false;
+        const [cr, rr] = await this.rpc.batch([
+          { method: 'eth_call', params: [call, 'latest'] },
+          { method: 'eth_getTransactionReceipt', params: [pos.tx_open] },
+        ]);
+        if (!rr || rr.error || !rr.result || !cr || cr.error || !cr.result || cr.result === '0x') return false;
+        const L0 = pos.venue === 'v4' ? BigInt(cr.result) : BigInt(IF_NPM.decodeFunctionResult('positions', cr.result)[7]);
+        return L0 === 0n;
+      }
       const [w] = await this.rpc.ethCallMany([call]);
       if (!w || w === '0x') return false;
       const L = pos.venue === 'v4' ? BigInt(w) : BigInt(IF_NPM.decodeFunctionResult('positions', w)[7]);

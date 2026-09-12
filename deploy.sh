@@ -20,6 +20,10 @@ echo "build tampilan…"
 rsync -az --exclude node_modules --exclude data --exclude logs --exclude config.json \
   src test public package.json README.md lp ecosystem.config.cjs deploy.sh .env.example "$HOST:~/$NAME/"
 ssh "$HOST" "mkdir -p ~/$NAME/web"
-rsync -az --delete web/dist "$HOST:~/$NAME/web/"
-ssh "$HOST" "cd ~/$NAME && npm install --omit=dev --silent 2>/dev/null; if pm2 describe $NAME >/dev/null 2>&1; then pm2 restart $NAME >/dev/null && echo 'pm2: $NAME di-restart'; else pm2 start ecosystem.config.cjs >/dev/null && pm2 save >/dev/null && echo 'pm2: $NAME dimulai (baru)'; fi"
+# Unggah aset dulu; tab lama tetap membutuhkan chunk dari build sebelumnya.
+# index dipublikasikan terakhir, setelah semua berkas yang dirujuknya tersedia.
+ssh "$HOST" "mkdir -p ~/$NAME/web/dist"
+rsync -az --exclude index.html web/dist/ "$HOST:~/$NAME/web/dist/"
+rsync -az web/dist/index.html "$HOST:~/$NAME/web/dist/"
+ssh "$HOST" "cd ~/$NAME && npm install --omit=dev --silent 2>/dev/null; if pm2 describe $NAME >/dev/null 2>&1; then pm2 restart ecosystem.config.cjs --only $NAME >/dev/null && pm2 save >/dev/null && echo 'pm2: $NAME di-restart'; else pm2 start ecosystem.config.cjs >/dev/null && pm2 save >/dev/null && echo 'pm2: $NAME dimulai (baru)'; fi"
 echo "terkirim. dasbor: ${LPCOPY_DASHBOARD_URL:-(isi LPCOPY_DASHBOARD_URL di .env)}"

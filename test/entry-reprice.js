@@ -8,7 +8,7 @@ const m = require('../src/v3math');
 const TOKEN = '0x451b42a15100c340ca12f7c66de06fac5ea2d751';
 function fixture({ venue = 'v4', ticks = [-323405], enabled = true, singleSide, loss = 0, complete = false, approvalTick } = {}) {
   const e = Object.create(Engine.prototype);
-  e.cfg = { gas: {} }; e.ethUsd = 2500;
+  e.cfg = { gas: {} }; e.ethUsd = 2500; e.entryRetryWaits = [0, 0];
   e.rulesFrom = () => ({ swap: { enabled, max_slippage_bps: 150, max_price_impact_bps: 500 } });
   e.topUpGas = async () => {};
   const balances = new Map([[TOKEN, 0n], [ADDR.usdg, 70_000_000n]]);
@@ -34,6 +34,8 @@ function fixture({ venue = 'v4', ticks = [-323405], enabled = true, singleSide, 
         m.getSqrtRatioAtTick(plan.tickLower), m.getSqrtRatioAtTick(plan.tickUpper), BigInt(tx.plan.liquidity));
       for (const [i, tok] of [[0, TOKEN], [1, ADDR.usdg]]) {
         assert.ok(amounts['amount' + i] <= balances.get(tok), 'mint has enough token' + i);
+        // v3: amountDesired DISETOR apa adanya — di atas saldo = revert "STF" di chain.
+        assert.ok(BigInt(tx.plan['amount' + i + 'Max']) <= balances.get(tok), 'token maximum never exceeds wallet balance (v3 STF)');
         assert.ok(amounts['amount' + i] <= BigInt(tx.plan['amount' + i + 'Max']), 'mint respects token maximum');
       }
       assert.ok(e.chain.valueInQuote({ ...amounts, sqrtPriceX96: m.getSqrtRatioAtTick(forcedTick ?? ticks[Math.min(reads - 1, ticks.length - 1)]) }).value <= 200.000001);
@@ -81,10 +83,21 @@ test('explicit single-sided mode rejects entry into range without buying BOW', a
   await assert.rejects(f.e.executeEntry(f.plan, {}), /harga sudah masuk rentang/);
   assert.equal(f.stats().swaps, 0);
 });
-test('moving price stops after two corrective swaps without mint', async () => {
-  const f = fixture({ ticks: [-323405, -328000, -334000] });
-  await assert.rejects(f.e.executeEntry(f.plan, {}), /harga berubah setelah swap/);
-  assert.equal(f.stats().swaps, 2); assert.equal(f.stats().mint, undefined);
+test('moving price during zaps: opens what the balance fits instead of selling the zap back', async () => {
+  const f = fixture({ ticks: [-323405, -328000, -334000], complete: true });
+  const r = await f.e.executeEntry(f.plan, {});
+  assert.equal(r.txHash, 'SIMULATED');
+  assert.ok(f.stats().swaps <= 3, 'zap dibatasi lintas percobaan');
+  assert.ok(BigInt(f.stats().mint.liquidity) > 0n);
+});
+test('zaps are capped across retries and a hopeless entry stops (no endless buy/sell)', async () => {
+  // Harga lari terus: setiap zap cuma memberi 10% dari yang dibutuhkan.
+  const f = fixture({ ticks: [-323405], loss: 0.9, complete: true });
+  const state = new Map();
+  f.e.store = { getState: (k, d) => state.get(k) ?? d, setState: (k, v) => state.set(k, v), log: () => {}, get: () => null };
+  await assert.rejects(f.e.executeEntry(f.plan, {}), /harga berubah setelah swap|saldo kurang untuk zap/);
+  assert.ok(f.stats().swaps <= 3, `zap ${f.stats().swaps}× — harus berhenti`);
+  assert.equal(f.stats().mint, undefined);
 });
 test('RPC failure is not a zero balance; genuine zero remains valid', async () => {
   const e = Object.create(Executor.prototype); e.address = () => ADDR.usdg;
@@ -110,13 +123,15 @@ test('full simulated execution: historical BOW tick path and fee/slippage matrix
   assert.equal(completed, 36);
 });
 
-test('price crossing range during approvals must stop before sending mint', async () => {
+test('price crossing range during approvals: never mints without the token; the retry buys it and opens', async () => {
   // Belum ada zap (rencana USDG saja), lalu harga masuk rentang saat approval: butuh BOW
-  // yang tidak dimiliki — berhenti, tidak ada token yang tersangkut.
+  // yang tidak dimiliki. Percobaan pertama berhenti sebelum mint; percobaan ulang menilai
+  // dari harga baru, membeli BOW, dan membuka posisinya (dulu: entry hilang begitu saja).
   const f = fixture({ ticks: [-323399], approvalTick: -323458, complete: true });
-  await assert.rejects(f.e.executeEntry(f.plan, {}), /saldo token pool tidak mencukupi pada harga saat mint/);
-  assert.equal(f.stats().swaps, 0);
-  assert.equal(f.stats().mint, undefined);
+  const r = await f.e.executeEntry(f.plan, {});
+  assert.equal(r.txHash, 'SIMULATED');
+  assert.equal(f.stats().swaps, 1);
+  assert.equal(f.stats().bridge, 1, 'jembatan tidak diulang');
 });
 
 test('price drift during approvals after a zap refits the size instead of stranding the token', async () => {

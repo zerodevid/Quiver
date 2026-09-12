@@ -108,9 +108,31 @@ async function main() {
   fs.writeFileSync(pidFile, String(process.pid));
   const cleanup = () => { try { fs.unlinkSync(pidFile); } catch { /* sudah hilang */ } };
   process.on('exit', cleanup);
-  process.on('SIGTERM', () => { cleanup(); process.exit(0); });
 
   const engine = new Engine({ rpc, store, chain, cfg, log });
+
+  // Berhenti dengan tertib. pm2 restart (setiap deploy) mengirim SIGINT; dulu proses
+  // langsung keluar — entry yang sudah zap tapi belum mint meninggalkan token telanjang,
+  // tx keluar yang belum dibukukan menunggu sinkron berikutnya. Sekarang tidak ada
+  // pekerjaan baru yang dimulai, dan pekerjaan yang sedang jalan ditunggu (maks 100 dtk;
+  // kill_timeout pm2 di ecosystem.config.cjs 120 dtk). Sinyal kedua = keluar paksa.
+  // (Didaftarkan sebelum init: backfill & sinkron awal juga bisa mengirim transaksi.)
+  const timers = [];
+  let stopping = false;
+  const shutdown = async (sig) => {
+    if (stopping) { log(`${sig} kedua — keluar paksa`); cleanup(); process.exit(1); }
+    stopping = true;
+    for (const t of timers) clearInterval(t);
+    const busy = !engine.idle();
+    if (busy) log(`berhenti (${sig}) — menunggu transaksi yang sedang berjalan selesai…`);
+    const clean = await engine.drain(100_000);
+    log(clean ? 'berhenti' : 'berhenti — batas tunggu habis, sebagian pekerjaan dilanjutkan saat hidup lagi');
+    try { telegram?.stop(); } catch { /* abaikan */ }
+    cleanup();
+    process.exit(0);
+  };
+  process.on('SIGINT', () => { shutdown('SIGINT'); });
+  process.on('SIGTERM', () => { shutdown('SIGTERM'); });
 
   // Bot Telegram memakai pintu API yang sama dengan dasbor (server.api). Ia dibuat
   // lebih dulu supaya halaman Pengaturan bisa menampilkan status & kode sambungnya,
@@ -148,15 +170,16 @@ async function main() {
   const eqMs = (cfg.loop?.equity_seconds || 300) * 1000;
   log(`mode: ${engine.dryRun() ? 'SIMULASI (tidak mengirim transaksi)' : 'LIVE'} | target aktif: ${engine.watcher.enabledSet().size}`);
 
-  setInterval(() => engine.tick().catch((e) => log(`tick: ${e.message}`)), pollMs);
-  setInterval(() => engine.syncPositions().catch((e) => log(`sync: ${e.message}`)), syncMs);
-  setInterval(() => engine.snapshotEquity().catch((e) => log(`equity: ${e.message}`)), eqMs);
-  // Memecoin sisa yang ditolak dijual diburu terus: tiap detik dilihat apakah
-  // jadwalnya (aturan `leftover_retry_sec`) sudah tiba; kalau ya, dikutip ulang.
-  setInterval(() => engine.retryLeftovers().catch((e) => log(`jual sisa: ${e.message}`)), 1000);
-  setInterval(() => store.prune(30), 3600_000);
+  timers.push(
+    setInterval(() => engine.tick().catch((e) => log(`tick: ${e.message}`)), pollMs),
+    setInterval(() => engine.syncPositions().catch((e) => log(`sync: ${e.message}`)), syncMs),
+    setInterval(() => engine.snapshotEquity().catch((e) => log(`equity: ${e.message}`)), eqMs),
+    // Memecoin sisa yang ditolak dijual diburu terus: tiap detik dilihat apakah
+    // jadwalnya (aturan `leftover_retry_sec`) sudah tiba; kalau ya, dikutip ulang.
+    setInterval(() => engine.retryLeftovers().catch((e) => log(`jual sisa: ${e.message}`)), 1000),
+    setInterval(() => store.prune(30), 3600_000),
+  );
 
-  process.on('SIGINT', () => { log('berhenti'); telegram.stop(); cleanup(); process.exit(0); });
 }
 
 main().catch((e) => { console.error('fatal:', e); process.exit(1); });

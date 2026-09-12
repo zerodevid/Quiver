@@ -45,7 +45,7 @@ function dunia(st) {
   };
   const positions = new Positions({ rpc, store, chain, log: () => {} });
   const r = store.run(`INSERT INTO positions(venue,pool_ref,token_id,token0,token1,tick_lower,tick_upper,status,opened_ts,cost_quote,quote_symbol,liquidity,fees_quote)
-    VALUES('v4',?,'77',?,?,-100,100,'open',?,110,'USDG','5000000',1.5)`, POOL, ADDR.usdg, MEME, Date.now());
+    VALUES('v4',?,'77',?,?,-100,100,'open',?,110,'USDG','5000000',1.5)`, POOL, ADDR.usdg, MEME, st.openedTs ?? Date.now() - 3600_000);
   return { store, positions, id: Number(r.lastInsertRowid), st };
 }
 
@@ -67,6 +67,23 @@ function dunia(st) {
     const [p] = await d.positions.sync(2500);
     assert.strictEqual(p.empty, true);
     assert.strictEqual(await d.positions.confirmEmpty(p), true);
+  });
+
+  await t('posisi BARU dibaca nol oleh node tertinggal: tidak dikonfirmasi kosong tanpa receipt mint di node yang sama', async () => {
+    const d = dunia({ liq: 0n, feeOk: true, openedTs: Date.now() - 60_000 });
+    const [p] = await d.positions.sync(2500);
+    assert.strictEqual(p.empty, true);
+    // tanpa tx_open (tak bisa dibuktikan): tidak dikonfirmasi
+    assert.strictEqual(await d.positions.confirmEmpty(p), false);
+    const withTx = { ...p, tx_open: '0xm1' };
+    // node belum punya receipt mint → jawaban nol-nya tidak dipercaya
+    d.positions.rpc.batch = async (calls) => calls.map((c) => (c.method === 'eth_call' ? { result: hex(0n) } : { result: null }));
+    assert.strictEqual(await d.positions.confirmEmpty(withTx), false);
+    // node yang sama menunjukkan receipt mint DAN likuiditas nol → sungguh kosong
+    d.positions.rpc.batch = async (calls) => calls.map((c) => (c.method === 'eth_call' ? { result: hex(0n) } : { result: { status: '0x1' } }));
+    assert.strictEqual(await d.positions.confirmEmpty(withTx), true);
+    d.positions.rpc.batch = async (calls) => calls.map((c) => (c.method === 'eth_call' ? { result: hex(5n) } : { result: { status: '0x1' } }));
+    assert.strictEqual(await d.positions.confirmEmpty(withTx), false);
   });
 
   await t('confirmEmpty: gagal baca = tidak terkonfirmasi', async () => {

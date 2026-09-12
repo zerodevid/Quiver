@@ -58,22 +58,33 @@ class Chain {
         calls.push({ to: a, data: IF_ERC20.encodeFunctionData('decimals') });
         calls.push({ to: a, data: IF_ERC20.encodeFunctionData('name') });
       }
-      const res = await this.rpc.ethCallMany(calls);
+      // strict: galat RPC sementara (kuota) melempar, BUKAN jadi "decimals 18". Dulu
+      // pembacaan yang gagal disimpan permanen ke tabel tokens — token 9 desimal (NUKE)
+      // yang sempat terbaca 18 akan dinilai 10⁹× salah selamanya: ukuran posisi, batas
+      // $ per posisi, dan PnL ikut ngawur. decimals() yang benar-benar revert (token
+      // non-standar) tetap jatuh ke 18, tapi hasil yang tidak terbaca tidak disimpan.
+      const res = await this.rpc.ethCallMany(calls, 'latest', { strict: true });
       miss.forEach((a, i) => {
-        const dec = (h) => { try { return IF_ERC20.decodeFunctionResult('decimals', h)[0]; } catch { return 18; } };
+        const dec = (h) => { try { return IF_ERC20.decodeFunctionResult('decimals', h)[0]; } catch { return null; } };
         const str = (h, fn) => { try { return IF_ERC20.decodeFunctionResult(fn, h)[0]; } catch { return '?'; } };
+        const d = res[i * 3 + 1] ? dec(res[i * 3 + 1]) : null;
         const t = {
           address: a,
           symbol: res[i * 3] ? String(str(res[i * 3], 'symbol')).slice(0, 24) : '?',
-          decimals: res[i * 3 + 1] ? Number(dec(res[i * 3 + 1])) : 18,
+          decimals: d != null ? Number(d) : 18,
           name: res[i * 3 + 2] ? String(str(res[i * 3 + 2], 'name')).slice(0, 64) : '',
         };
+        // Tanpa symbol DAN decimals: kemungkinan besar bukan jawaban sah (node tertinggal
+        // belum mengenal kontraknya) — dipakai sekali, tidak disimpan, dibaca ulang nanti.
+        if (d == null && t.symbol === '?') return this.tokenCache.set(a, { ...t, unverified: true });
         this.tokenCache.set(a, t);
         this.store.run('INSERT OR REPLACE INTO tokens(address,symbol,name,decimals,seen_ts) VALUES(?,?,?,?,?)',
           t.address, t.symbol, t.name, t.decimals, Date.now());
       });
     }
-    return want.map((a) => this.tokenCache.get(a));
+    const out = want.map((a) => this.tokenCache.get(a));
+    for (const t of out) if (t?.unverified) this.tokenCache.delete(t.address);
+    return out;
   }
   async token(a) { return (await this.tokens([a]))[0]; }
 

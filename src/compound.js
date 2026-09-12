@@ -108,7 +108,20 @@ class Compound {
       this.engine.exiting.add(id);
       try {
         const receipt = await this.engine.rpc.call('eth_getTransactionReceipt', [row.hash]);
-        if (!receipt) continue;
+        if (!receipt) {
+          // Tx yang tidak pernah masuk (terbuang dari mempool) dulu tetap "pending" selamanya
+          // — dan executeExit menolak menutup posisi selama compound-nya belum selesai:
+          // posisi tidak bisa ditutup sama sekali. Setelah 30 menit dan chain tidak mengenal
+          // hash-nya, ditandai gagal.
+          if (Date.now() - row.ts > 30 * 60_000) {
+            const known = await this.engine.rpc.call('eth_getTransactionByHash', [row.hash]).catch(() => 'tak terbaca');
+            if (!known) {
+              this.store.run("UPDATE txs SET status='gagal' WHERE hash=?", row.hash);
+              this.store.run('UPDATE compound_settings SET last_note=? WHERE position_id=?', 'transaksi compound tidak pernah masuk', id);
+            }
+          }
+          continue;
+        }
         const ok = BigInt(receipt.status) === 1n;
         this.store.run('UPDATE txs SET status=? WHERE hash=?', ok ? 'sukses' : 'gagal', row.hash);
         if (ok) await this.finish(pos, row.hash, receipt);

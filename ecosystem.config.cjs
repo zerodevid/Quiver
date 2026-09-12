@@ -10,6 +10,9 @@ module.exports = {
     autorestart: true,
     max_restarts: 50,
     restart_delay: 5000,
+    // Waktu yang diberikan pm2 antara SIGINT dan SIGKILL. Bawaan 1,6 detik memotong entry
+    // di tengah (zap sudah, mint belum). index.js menunggu pekerjaan berjalan maks 100 dtk.
+    kill_timeout: 120000,
     // Server ini cuma 1,9 GB dan sudah menampung rht + robinhood-lp + omniroute.
     // Batas 250M memberi ruang aman; pemakaian normal Quiver ~80M.
     max_memory_restart: '250M',

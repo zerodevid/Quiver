@@ -128,59 +128,110 @@ class Executor {
     return run;
   }
 
+  // Revert karena HARGA (kutipan basi, slippage) memang jawaban sah — mengulang estimasi
+  // di detik berikutnya tidak mengubahnya; lapisan pemanggil (Kyber) yang mengutip ulang.
+  static priceRevert(msg) {
+    return /return amount|not enough|slippage|too little|too much requested|maximum ?amount|minimum ?amount|price ?slippage|insufficient ?output/i.test(String(msg || ''));
+  }
+
   async sendTransaction(tx, { kind = 'lain', detail = null, guard = null } = {}) {
     if (guard && !guard()) throw new Error('transaksi otomatis dibatalkan karena pengaturan berubah');
     const w = this.loadWallet();
     if (!w) throw new Error('tidak ada kunci privat — mode kirim butuh wallet');
     const from = w.address;
-    // Nonce dibaca ulang dari chain SETIAP kirim, bukan hanya sekali. Wallet ini bisa
-    // dipakai program lain (bot robinhood-lp di server yang sama); nonce yang disimpan
-    // di memori langsung basi begitu program itu mengirim satu transaksi.
-    const pending = parseInt(await this.rpc.call('eth_getTransactionCount', [from, 'pending']), 16);
-    this.nonce = this.nonce == null ? pending : Math.max(this.nonce, pending);
-    const fees = await this.gasFees();
-    let gasLimit;
+    const waits = this.retryWaits || [1500, 3000];
     // gasMul: pengali batas gas. Default 1,3x; swap agregator butuh 2x karena router
     // menjalankan swap lewat panggilan tingkat rendah yang estimasinya kurang.
     const mul = BigInt(Math.round((tx.gasMul || 1.3) * 10));
-    try { gasLimit = (await this.estimateGas(tx)) * mul / 10n; }
-    catch (e) { throw new Error(`estimasi gas gagal (transaksi kemungkinan akan revert): ${e.message}`); }
     const capGas = BigInt(this.cfg.gas?.max_gas_limit ?? 4_000_000);
+    // Estimasi yang revert TEPAT SETELAH approval/zap sering bukan revert sungguhan: kolam
+    // RPC berpindah ke endpoint yang tertinggal beberapa blok (ordofi bisa ribuan blok) dan
+    // di sana izin/saldo barunya belum ada. Empat mint v3 11–12 Sep gagal "STF" dua detik
+    // setelah approval — dan token zap-nya lalu dijual rugi. Diulang dengan jeda dulu.
+    let gasLimit;
+    for (let i = 0; ; i++) {
+      try { gasLimit = (await this.estimateGas(tx)) * mul / 10n; break; }
+      catch (e) {
+        if (i >= waits.length || Executor.priceRevert(e.message)) {
+          throw new Error(`estimasi gas gagal (transaksi kemungkinan akan revert): ${e.message}`);
+        }
+        this.log(`estimasi gas ${kind} gagal (${String(e.message).slice(0, 80)}) — mungkin node tertinggal, coba lagi`);
+        await new Promise((r) => setTimeout(r, waits[i]));
+      }
+    }
     if (gasLimit > capGas) gasLimit = capGas;
 
-    const req = {
-      chainId: CHAIN_ID, type: 2, to: tx.to, data: tx.data,
-      value: tx.value ? BigInt(tx.value) : 0n,
-      nonce: this.nonce, gasLimit, ...fees,
-    };
-    const raw = await w.signTransaction(req);
-    if (guard && !guard()) throw new Error('transaksi otomatis dibatalkan karena pengaturan berubah');
-    // Hash transaksi yang sudah ditandatangani sudah pasti, sebelum dikirim ke mana pun.
-    // Ini yang membedakan "benar-benar gagal" dari "sudah masuk tapi jawabannya hilang".
-    const hash0 = ethers.keccak256(raw);
-    let hash;
-    try {
-      hash = this.rpc.sendRaw ? await this.rpc.sendRaw(raw) : await this.rpc.call('eth_sendRawTransaction', [raw]);
-    } catch (e) {
-      // Pengiriman disiarkan ke beberapa endpoint. Kalau siaran PERTAMA sudah masuk,
-      // percobaan berikutnya menjawab "nonce too low"/"already known" — dan dulu itu
-      // dianggap kegagalan, padahal transaksinya berhasil. Akibatnya fatal: posisi
-      // benar-benar terbuka di chain tapi tidak pernah tercatat bot (terjadi pada
-      // salinan pertama, 2026-09-10: mint $200 sukses, dicatat sebagai galat).
-      // Jadi: tanya chain dulu sebelum menyerah.
-      const landed = await this.txLanded(hash0);
-      if (!landed) {
-        this.nonce = null;  // paksa sinkron ulang nonce di percobaan berikutnya
-        e.txHash = hash0;   // pemanggil yang mengulang bisa memastikan tx ini memang tidak masuk
-        throw e;
+    // "nonce too low" = nonce itu sudah TERPAKAI di chain oleh tx lain (wallet ini juga
+    // dipakai bot lain, atau nonce dibaca dari node tertinggal). Tx yang kita tandatangani
+    // dengan nonce itu tidak akan pernah masuk, jadi aman ditandatangani ulang dengan nonce
+    // baru — KECUALI tx yang memakai nonce itu ternyata tx kita sendiri dari percobaan
+    // sebelumnya (dikirim ulang oleh pemanggil): itu dicek dulu, supaya tidak mint dua kali.
+    for (let attempt = 0; ; attempt++) {
+      // Nonce dibaca ulang dari chain SETIAP kirim, bukan hanya sekali. Wallet ini bisa
+      // dipakai program lain (bot robinhood-lp di server yang sama); nonce yang disimpan
+      // di memori langsung basi begitu program itu mengirim satu transaksi.
+      const pending = parseInt(await this.rpc.call('eth_getTransactionCount', [from, 'pending']), 16);
+      this.nonce = this.nonce == null ? pending : Math.max(this.nonce, pending);
+      const fees = await this.gasFees();
+      const req = {
+        chainId: CHAIN_ID, type: 2, to: tx.to, data: tx.data,
+        value: tx.value ? BigInt(tx.value) : 0n,
+        nonce: this.nonce, gasLimit, ...fees,
+      };
+      const raw = await w.signTransaction(req);
+      if (guard && !guard()) throw new Error('transaksi otomatis dibatalkan karena pengaturan berubah');
+      // Hash transaksi yang sudah ditandatangani sudah pasti, sebelum dikirim ke mana pun.
+      // Ini yang membedakan "benar-benar gagal" dari "sudah masuk tapi jawabannya hilang".
+      const hash0 = ethers.keccak256(raw);
+      let hash;
+      try {
+        hash = this.rpc.sendRaw ? await this.rpc.sendRaw(raw) : await this.rpc.call('eth_sendRawTransaction', [raw]);
+      } catch (e) {
+        // Pengiriman disiarkan ke beberapa endpoint. Kalau siaran PERTAMA sudah masuk,
+        // percobaan berikutnya menjawab "nonce too low"/"already known" — dan dulu itu
+        // dianggap kegagalan, padahal transaksinya berhasil. Akibatnya fatal: posisi
+        // benar-benar terbuka di chain tapi tidak pernah tercatat bot (terjadi pada
+        // salinan pertama, 2026-09-10: mint $200 sukses, dicatat sebagai galat).
+        // Jadi: tanya chain dulu sebelum menyerah.
+        const landed = await this.txLanded(hash0);
+        if (!landed) {
+          e.txHash = hash0;   // pemanggil yang mengulang bisa memastikan tx ini memang tidak masuk
+          const nonceLow = /nonce too low|nonce has already been used|invalid nonce|nonce.{0,20}(too small|expired)/i.test(e.message);
+          if (!nonceLow) {
+            // Nonce TIDAK dilepas: tx ini mungkin tetap masuk belakangan (semua endpoint
+            // timeout padahal satu menerimanya). Kirim berikutnya memakai nonce yang sama,
+            // jadi paling banyak satu dari keduanya yang bisa masuk.
+            this.recentUnlanded = [...(this.recentUnlanded || []), { hash: hash0, nonce: req.nonce, ts: Date.now() }].slice(-10);
+            throw e;
+          }
+          const mine = await this.priorLanded(req.nonce);
+          if (mine) {
+            const err = new Error(`nonce ${req.nonce} sudah dipakai transaksi kita sebelumnya ${mine.slice(0, 12)}… yang ternyata masuk — tidak dikirim ulang`);
+            err.priorLanded = mine;
+            this.nonce = null;
+            throw err;
+          }
+          this.nonce = null;
+          if (attempt >= 2) throw e;
+          this.log(`kirim ${kind}: ${String(e.message).slice(0, 80)} — nonce disinkron ulang, kirim lagi`);
+          await new Promise((r) => setTimeout(r, waits[Math.min(attempt, waits.length - 1)] || 0));
+          continue;
+        }
+        this.log(`kirim dijawab galat (${String(e.message).slice(0, 60)}) tetapi transaksi ${hash0.slice(0, 12)}… SUDAH masuk — dilanjutkan`);
+        hash = hash0;
       }
-      this.log(`kirim dijawab galat (${String(e.message).slice(0, 60)}) tetapi transaksi ${hash0.slice(0, 12)}… SUDAH masuk — dilanjutkan`);
-      hash = hash0;
+      this.nonce = req.nonce + 1;
+      this.store.run('INSERT OR REPLACE INTO txs(hash,ts,kind,status,detail) VALUES(?,?,?,?,?)',
+        hash, Date.now(), kind, 'pending', detail ? JSON.stringify(detail) : null);
+      return hash;
     }
-    this.nonce++;
-    this.store.run('INSERT OR REPLACE INTO txs(hash,ts,kind,status,detail) VALUES(?,?,?,?,?)',
-      hash, Date.now(), kind, 'pending', detail ? JSON.stringify(detail) : null);
-    return hash;
+  }
+
+  // Tx kita yang tadinya dianggap tidak masuk, dengan nonce ini, ternyata masuk?
+  async priorLanded(nonce) {
+    const cands = (this.recentUnlanded || []).filter((x) => x.nonce === nonce && Date.now() - x.ts < 30 * 60_000);
+    for (const c of cands) if (await this.txLanded(c.hash, 2)) return c.hash;
+    return null;
   }
 
   // Apakah transaksi dengan hash ini sudah dikenal chain? Diberi beberapa detik karena

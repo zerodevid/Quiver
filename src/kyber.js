@@ -103,8 +103,12 @@ class Kyber {
         if (r || attempt === 2) return r;
       } catch (e) {
         lastErr = e;
-        // Hanya harga basi yang layak diulang; gerbang keamanan & batas rugi tidak.
-        if (!/Return amount is not enough|not enough|slippage|revert/i.test(e.message) || /router Kyber tidak cocok|nilai ETH tx|menyimpang|rugi/.test(e.message)) throw e;
+        // Hanya harga basi yang layak diulang; gerbang keamanan & batas rugi tidak. Swap
+        // yang REVERT di chain juga diulang (kutipan basi, #154 12 Sep: zap batal padahal
+        // detik berikutnya rute yang sama lolos) — revert tidak memindahkan token apa pun.
+        // Yang TIDAK pernah diulang: receipt belum terbaca (tx-nya mungkin masih masuk).
+        if (e.pending) throw e;
+        if (!(e.reverted || /Return amount is not enough|not enough|slippage|revert/i.test(e.message)) || /router Kyber tidak cocok|nilai ETH tx|menyimpang|rugi/.test(e.message)) throw e;
         this.log(`swap Kyber percobaan ${attempt + 1} tertolak harga basi — kutipan ulang, toleransi ${(Math.min(slippageBps * (attempt + 2), maxLossBps || slippageBps * 3) / 100).toFixed(1)}%`);
       }
       await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
@@ -156,7 +160,12 @@ class Kyber {
     const tx = { to: this.router(), data: built.data, value: value.toString(), gasMul: 2 };
     const hash = await this.exec.send(tx, { kind, detail: { ...(detail || {}), dex: q.dex, usdIn: q.usdIn, usdOut: q.usdOut } });
     const rc = await this.exec.waitReceipt(hash, 90_000);
-    if (!rc.ok) throw new Error(`swap Kyber gagal (${hash})`);
+    if (rc.timeout) {
+      const e = new Error(`swap Kyber ${hash} belum terkonfirmasi setelah 90 detik`);
+      e.pending = true; e.txHash = hash;
+      throw e;
+    }
+    if (!rc.ok) { const e = new Error(`swap Kyber gagal (${hash})`); e.reverted = true; e.txHash = hash; throw e; }
     // Hasil dibaca dari log Transfer di receipt (pasti milik tx ini). Selisih saldo
     // hanya cadangan (ETH native): node yang tertinggal satu blok pernah memberi 0 —
     // dan 0 itu lalu tercatat sebagai "sisa terjual $0". Tidak terbaca = null, pemanggil
