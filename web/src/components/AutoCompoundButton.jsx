@@ -32,11 +32,16 @@ export default function AutoCompoundButton({ p, reload, disabled = false }) {
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
+  // Status ON/OFF jadi titik warna + label kecil, bukan bagian dari teks tombol:
+  // tombolnya tetap bentuk tombol biasa, statusnya terbaca sekilas.
+  const on = !!(p.compound?.enabled ?? data?.enabled);
   const valid = Number(minimum) >= 0.01 && Number(minimum) <= 1000000
     && Number.isInteger(Number(interval)) && Number(interval) >= 1 && Number(interval) <= 10080;
   return <>
-    <Button size="sm" variant="secondary" isDisabled={disabled || p.empty} onPress={show}>
-      {t('Auto-compound')} · {(p.compound?.enabled ?? data?.enabled) ? 'ON' : 'OFF'}
+    <Button size="sm" variant="outline" isDisabled={disabled || p.empty} onPress={show}>
+      <span aria-hidden className={`size-1.5 rounded-full ${on ? 'bg-success' : 'bg-muted/50'}`} />
+      {t('Auto-compound')}
+      <span className={`text-[11px] font-medium tracking-wide ${on ? 'text-success' : 'text-muted'}`}>{on ? 'ON' : 'OFF'}</span>
     </Button>
     <Modal isOpen={open} onOpenChange={setOpen}>
       <Modal.Backdrop isDismissable={!busy}>

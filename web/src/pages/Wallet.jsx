@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Button } from '@heroui/react';
+import { Button, Chip } from '@heroui/react';
 import { Search, ChevronRight } from 'lucide-react';
 import { get } from '../api';
 import { PageHeader, Panel, Text, DataTable } from '../components/ui';
@@ -46,7 +46,10 @@ export default function WalletPage({ param }) {
                 { key: 'a', label: 'Wallet', sort: (w) => w.label || w.address, search: (w) => `${w.label || ''} ${w.address}`, render: (w) => (
                   <button type="button" onClick={() => open(w.address)} className="text-start hover:underline">
                     {w.label && <div className="font-medium">{w.label}</div>}
-                    <div className="mono">{short(w.address)}</div>
+                    <div className="flex items-center gap-2">
+                      <span className="mono">{short(w.address)}</span>
+                      {w.isTarget && <Chip size="sm" variant="soft" color="accent" className="whitespace-nowrap">{t('target tersimpan')}</Chip>}
+                    </div>
                   </button>) },
                 { key: 'n', label: 'Posisi', align: 'end', sort: (w) => w.positions_n, render: (w) => num(w.positions_n) },
                 { key: 'win', label: 'Win rate', align: 'end', sort: (w) => w.stats?.winRatePct, render: (w) => (w.stats?.winRatePct == null ? '—' : `${w.stats.winRatePct.toFixed(0)}%`) },

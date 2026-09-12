@@ -166,7 +166,8 @@ export default function App() {
 
   return (
     <StatusCtx.Provider value={{ status, reload }}>
-      <Toast.Provider />
+      {/* Toast di atas: peringatan target tidak ketiban baris tabel paling bawah. */}
+      <Toast.Provider placement="top" />
       <ConfirmHost />
       <div className="flex min-h-dvh">
         {/* sidebar desktop */}
