@@ -118,6 +118,60 @@ function GrowthChart({ p, view }) {
   );
 }
 
+// Jembatan PnL kumulatif → PnL bersih. Dua angka "PnL" yang beda $20-an tanpa
+// keterangan terbaca sebagai bug. Selisihnya biaya yang dibayar dari wallet di luar
+// posisi: gas (dihitung dari tabel txs) dan sisanya — slippage swap, pergerakan
+// harga ETH yang dipegang — yang tidak bisa dipisah satu per satu.
+function PnlGap({ p }) {
+  const { t } = useI18n();
+  const n = p.now, c = p.capital;
+  if (n.netPnl == null) return null;
+  const gas = n.gasUsd || 0;
+  const other = n.netPnl - (n.pnl - gas);
+  const signed = (v) => `${v > 0.005 ? '+' : ''}${usd(v)}`;
+  const Row = ({ label, sub, v, strong }) => (
+    <div className={`flex items-baseline justify-between gap-4 py-1.5 ${strong ? 'font-medium' : ''}`}>
+      <span className="min-w-0">{t(label)}{sub && <span className="ml-2 text-xs text-muted">{sub}</span>}</span>
+      <span className={`num shrink-0 ${tone(v)}`}>{signed(v)}</span>
+    </div>
+  );
+  return (
+    <details className="group mt-4 border-t border-border pt-3 text-sm">
+      <summary className="flex cursor-pointer list-none flex-wrap items-baseline justify-between gap-x-4 gap-y-1 [&::-webkit-details-marker]:hidden">
+        <span className="font-medium">
+          <span className="mr-1.5 inline-block text-muted transition-transform group-open:rotate-90">›</span>
+          {t('Kenapa PnL kumulatif dan PnL bersih berbeda?')}
+        </span>
+        <span className="num text-xs text-muted">
+          {t('{a} − gas {g} {o} = {b}', { a: usd(n.pnl), g: usd(gas), o: `${other < 0 ? '−' : '+'} ${usd(Math.abs(other))}`, b: usd(n.netPnl) })}
+        </span>
+      </summary>
+      <div className="mt-2 max-w-2xl pl-4">
+        <p className="text-xs text-muted">
+          {t('PnL kumulatif menjumlahkan hasil tiap posisi: hasil keluar dikurangi modal posisi itu. PnL bersih membandingkan nilai wallet sekarang dengan modal, jadi semua yang dibayar dari wallet di luar posisi ikut terhitung. PnL bersih adalah untung yang benar-benar bertambah.')}
+        </p>
+        <div className="mt-2 divide-y divide-border">
+          <Row label="PnL kumulatif (hasil posisi)" v={n.pnl} />
+          <Row label="Gas" sub={t('{n} transaksi, termasuk yang gagal', { n: num(n.gasTxCount || 0) })} v={-gas} />
+          <Row label="Slippage swap & pergerakan harga ETH" sub={t('sisa selisih')} v={other} />
+          <Row label="PnL bersih" v={n.netPnl} strong />
+        </div>
+        {c && (
+          <p className="mt-2 text-xs text-muted">
+            {t('Modal {m} = isi wallet saat bot mulai mencatat ({d}) {b} + dana masuk {i}', {
+              m: usd(n.capitalNet), d: new Date(c.baselineTs).toLocaleDateString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }),
+              b: usd(c.baselineUsd), i: usd(c.depositsUsd),
+            })}
+            {c.withdrawalsUsd > 0.005 && t(' − penarikan {w}', { w: usd(c.withdrawalsUsd) })}
+            {'. '}
+            {t('Transfer masuk setelah bot mulai mencatat — termasuk pengisian dana awal — dihitung sebagai modal, bukan untung.')}
+          </p>
+        )}
+      </div>
+    </details>
+  );
+}
+
 // Ke mana uangnya: satu batang per pos, satu warna. Yang dibandingkan besarnya,
 // bukan identitasnya — jadi tidak perlu palet kategori dan legenda.
 function Composition({ now, ethUsd }) {
@@ -299,6 +353,7 @@ export default function Overview() {
             <Segmented size="sm" aria="Rentang waktu" value={range} onChange={setRange} options={RANGES} />
           </div>}>
           {p ? <GrowthChart p={p} view={view} /> : <Loading />}
+          {p && view !== 'value' && <PnlGap p={p} />}
         </Panel>
         <Panel title="Komposisi portofolio" bodyClass="px-4 pt-1 pb-2">
           {now ? <Composition now={now} ethUsd={d.chain.ethUsd} /> : <Loading />}

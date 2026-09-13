@@ -482,6 +482,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         for (let i = 1; i <= MAX; i++) series.push(rows[Math.min(rows.length - 1, Math.floor(i * step) - 1)]);
       }
 
+      const gasSince = (ts) => {
+        const g = store.all('SELECT gas_used, gas_price FROM txs WHERE ts >= ? AND gas_used IS NOT NULL AND gas_price IS NOT NULL', ts);
+        const eth = g.reduce((a, t) => a + (Number(t.gas_used) * Number(BigInt(t.gas_price))) / 1e18, 0);
+        return { gasUsd: eth * (engine.ethUsd || 0), gasTxCount: g.length };
+      };
+
       // Posisi tertutup: bahan kalender (dikelompokkan per hari di browser, pakai
       // zona waktu pengguna) dan statistik menang/kalah.
       const closed = store.all("SELECT target, opened_ts, closed_ts, cost_quote, out_quote, quote_symbol FROM positions WHERE status='closed' AND closed_ts IS NOT NULL ORDER BY closed_ts")
@@ -508,6 +514,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           // memuat biaya zap, gas, dan swap ETH↔USDG yang tidak ada di PnL per-posisi.
           capitalNet: capital && cash ? capital.capitalUsd : null,
           netPnl: capital && cash ? value - capital.capitalUsd : null,
+          // Gas semua transaksi bot (yang gagal pun bayar gas) sejak modal mulai dicatat —
+          // biaya terbesar yang ada di PnL bersih tapi tidak di PnL posisi. Dinilai di
+          // harga ETH sekarang, sama seperti daftar transaksi.
+          ...gasSince(capital?.baselineTs ?? 0),
         },
         capital: capital ? { ...capital, deposits: engine.capital.rows().map((d) => ({
           ts: d.ts, kind: d.kind, symbol: d.symbol, amount: Number(d.amount) / (d.symbol === 'USDG' ? 1e6 : 1e18), usd: d.usd, ethUsd: d.eth_usd, txHash: d.tx_hash, counterparty: d.counterparty,
