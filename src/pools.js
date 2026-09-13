@@ -228,18 +228,36 @@ Chain.prototype.ethUsd = async function ethUsd(fallback = 2500) {
       ]),
     }));
     const liqs = await this.rpc.ethCallMany(liqCalls);
-    let best = null;
+    // Kandidat: pool berlikuiditas aktif > 0 dan harga wajar (tick tidak menempel di
+    // batas). currency0 = ETH(18), currency1 = USDG(6) -> harga = USDG per ETH.
+    const cands = [];
     list.forEach((p, i) => {
       const s = slots[i]; if (!s || s.sqrtPriceX96 === 0n) return;
-      const L = liqs[i] && liqs[i] !== '0x' ? BigInt(liqs[i]) : 0n;
-      if (!best || L > best.L) best = { p, s, L };
+      const L = liqs[i] && liqs[i] !== '0x' ? BigInt(liqs[i]) & ((1n << 128n) - 1n) : 0n;
+      if (!priceUsable(s, L)) return;
+      const price = m.priceFromSqrt(s.sqrtPriceX96, 18, 6);
+      if (price > 100 && price < 100_000) cands.push({ p, s, L, price });
     });
-    if (!best) return fallback;
-    // currency0 = ETH(18), currency1 = USDG(6) -> harga = USDG per ETH
-    const price = m.priceFromSqrt(best.s.sqrtPriceX96, 18, 6);
-    if (price > 100 && price < 100_000) { this._ethUsd = price; this._ethUsdAt = now; this._ethPoolId = best.p.poolId; return price; }
-    return fallback;
+    const pick = Chain.pickEthPrice(cands);
+    if (!pick) return fallback;
+    if (pick.outlier) this.log(`harga ETH: pool terdalam $${pick.outlier.toFixed(0)} menyimpang dari pool lain — dipakai median $${pick.price.toFixed(0)}`);
+    this._ethUsd = pick.price; this._ethUsdAt = now; this._ethPoolId = pick.poolId;
+    return pick.price;
   } catch { return fallback; }
+};
+
+// Harga ETH dari daftar pool kandidat: pool terdalam, KECUALI harganya menyimpang > 3%
+// dari median tiga pool terdalam — satu pool yang baru saja disapu (atau salah baca dari
+// node tertinggal) tidak boleh menggeser semua batas dolar, ukuran posisi, dan PnL.
+// Balikan { price, poolId, outlier } — outlier = harga pool terdalam yang ditolak.
+Chain.pickEthPrice = function pickEthPrice(cands) {
+  if (!cands.length) return null;
+  const top = [...cands].sort((a, b) => (a.L > b.L ? -1 : a.L < b.L ? 1 : 0)).slice(0, 3);
+  const best = top[0];
+  if (top.length < 3) return { price: best.price, poolId: best.p.poolId, outlier: null };
+  const median = [...top].sort((a, b) => a.price - b.price)[1];
+  if (Math.abs(best.price - median.price) / median.price <= 0.03) return { price: best.price, poolId: best.p.poolId, outlier: null };
+  return { price: median.price, poolId: median.p.poolId, outlier: best.price };
 };
 
 // Harga ETH pada blok lampau, dari pool ETH/USDG yang sama (butuh node arsip).
