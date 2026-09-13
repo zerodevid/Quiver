@@ -29,6 +29,19 @@ export default function PositionSnapshot({ id, onUpdate }) {
   const current = closed ? sqrtPrice(p.exitSqrt, p.dec0, p.dec1, p.quoteSide) : p.curSqrt ? sqrtPrice(p.curSqrt, p.dec0, p.dec1, p.quoteSide) : p.curTick != null ? tickPrice(p.curTick, p.dec0, p.dec1, p.quoteSide) : null;
   const quote = p.quoteSide === 0 ? p.symbol0 : p.symbol1;
   const base = p.quoteSide === 0 ? p.symbol1 : p.symbol0;
+  // Nilai dolar tiap token: aset kuotasi langsung (USDG = $1, ETH/WETH = harga ETH),
+  // token spekulatif lewat harga pool saat ini (atau harga keluar untuk posisi tertutup).
+  // Modal yang disetor dinilai dengan harga masuk (itulah dolar yang benar-benar
+  // masuk); saldo & fee dengan harga sekarang.
+  const quoteUsd = p.quoteKind === 'eth' ? data.ethUsd : 1;
+  const entry = sqrtPrice(p.entrySqrt, p.dec0, p.dec1, p.quoteSide);
+  const tokUsd = (side, raw, at) => {
+    if (raw == null || !quoteUsd) return null;
+    const n = Number(raw) / 10 ** (p[`dec${side}`] ?? 18);
+    if (side === p.quoteSide) return n * quoteUsd;
+    return at ? n * at * quoteUsd : null;
+  };
+  const Usd = ({ side, raw, at = current }) => { const v = tokUsd(side, raw, at); return v == null ? null : <span className="num text-muted">{usd(v)}</span>; };
   return <section className="mb-5 space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <h3 className="text-sm font-semibold">{t('Posisi ini')}</h3>
@@ -53,9 +66,10 @@ export default function PositionSnapshot({ id, onUpdate }) {
         {[0, 1].map((side) => <div key={side} className="min-w-0 rounded-lg border border-border p-3">
           <div className="mb-3 flex items-center gap-2"><TokenIcon address={p[`token${side}`]} symbol={p[`symbol${side}`]} size={24} /><span className="min-w-0 break-words font-medium">{p[`symbol${side}`]}</span></div>
           <div className="num break-words text-lg font-semibold">{amount(p[`amount${side}`], p[`dec${side}`])}</div>
+          <div className="text-xs"><Usd side={side} raw={p[`amount${side}`]} /></div>
           <div className="mt-3 space-y-1 text-xs">
-            <div className="flex justify-between gap-2"><span className="text-muted">{t('Modal disetor')}</span><span className="num">{amount(p[`cost${side}`], p[`dec${side}`])}</span></div>
-            {!closed && <div className="flex justify-between gap-2"><span className="text-muted">{t('Fee belum diklaim')}</span><span className="num text-success">{amount(p[`fee${side}`], p[`dec${side}`])}</span></div>}
+            <div className="flex justify-between gap-2"><span className="text-muted">{t('Modal disetor')}</span><span className="whitespace-nowrap"><span className="num">{amount(p[`cost${side}`], p[`dec${side}`])}</span> <Usd side={side} raw={p[`cost${side}`]} at={entry} /></span></div>
+            {!closed && <div className="flex justify-between gap-2"><span className="text-muted">{t('Fee belum diklaim')}</span><span className="whitespace-nowrap"><span className="num text-success">{amount(p[`fee${side}`], p[`dec${side}`])}</span> <Usd side={side} raw={p[`fee${side}`]} /></span></div>}
           </div>
         </div>)}
       </div>
