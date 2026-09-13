@@ -13,6 +13,8 @@ const exact = {
   'target memindahkan posisinya': ['The target transferred its position', 'Target memindahkan posisi'],
   'sinyal keluar terlewat — posisi target sudah kosong': ['The target position is empty; closing the matching bot position', 'Posisi target sudah kosong; menutup posisi bot yang terkait'],
   'ikut-keluar dimatikan': ['Following target exits is disabled', 'Opsi mengikuti penutupan target dinonaktifkan'],
+  'target sedang dimatikan': ['The target is disabled', 'Target sedang dinonaktifkan'],
+  'bot sedang dijeda': ['The bot is paused', 'Bot sedang dijeda'],
   'kita tidak punya cermin posisi ini': ['No matching bot position', 'Tidak ada posisi bot yang terkait'],
   'porsi keluar nol': ['No liquidity to withdraw', 'Tidak ada likuiditas yang dapat ditarik'],
   'likuiditas sudah nol di chain': ['On-chain liquidity is zero', 'Likuiditas di chain sudah nol'],

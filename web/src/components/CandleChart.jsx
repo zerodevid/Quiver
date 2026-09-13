@@ -34,6 +34,8 @@ function palette() {
     up: cssColor('--success'), down: cssColor('--danger'), accent: cssColor('--accent'), warning: cssColor('--warning'),
     muted: cssColor('--muted'), border: cssColor('--border'), fg: cssColor('--foreground'),
     text: dark ? '#9a9aa3' : '#6b6b76',
+    // label crosshair di sumbu: kontras tinggi terhadap kanvas, bukan abu tipis
+    label: dark ? '#3a3a42' : '#4a4a55',
   };
 }
 
@@ -150,8 +152,9 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
     const el = box.current;
     const chart = createChart(el, {
       autoSize: true,
-      layout: { background: { color: 'transparent' }, textColor: pal.text, fontFamily: 'ui-sans-serif, system-ui, sans-serif', fontSize: 11, attributionLogo: false },
-      grid: { vertLines: { visible: false }, horzLines: { color: withAlpha(pal.border, 0.7), style: LineStyle.Dotted } },
+      layout: { background: { color: 'transparent' }, textColor: pal.text, fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif', fontSize: 11, attributionLogo: false },
+      // garis bantu: rambut utuh & redup — titik-titik terbaca sebagai ambang, bukan grid
+      grid: { vertLines: { visible: false }, horzLines: { color: withAlpha(pal.border, 0.6), style: LineStyle.Solid } },
       rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.08 } },
       timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 3, minBarSpacing: 2,
         tickMarkFormatter: (ts, type) => {
@@ -161,7 +164,9 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
         } },
       localization: { locale: fmtLocale(), priceFormatter: (p) => fmtPrice(p),
         timeFormatter: (ts) => new Date(ts * 1000).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) },
-      crosshair: { mode: CrosshairMode.Normal, vertLine: { labelBackgroundColor: pal.muted }, horzLine: { labelBackgroundColor: pal.muted } },
+      crosshair: { mode: CrosshairMode.Normal,
+        vertLine: { color: withAlpha(pal.muted, 0.7), style: LineStyle.Dashed, width: 1, labelBackgroundColor: pal.label },
+        horzLine: { color: withAlpha(pal.muted, 0.7), style: LineStyle.Dashed, width: 1, labelBackgroundColor: pal.label } },
       handleScale: { axisPressedMouseMove: true }, handleScroll: true,
     });
     const series = chart.addSeries(CandlestickSeries, {
@@ -187,8 +192,8 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
   // Warna mengikuti tema.
   useEffect(() => {
     const r = ref.current; if (!r) return;
-    r.chart.applyOptions({ layout: { textColor: pal.text }, grid: { horzLines: { color: withAlpha(pal.border, 0.7) } },
-      crosshair: { vertLine: { labelBackgroundColor: pal.muted }, horzLine: { labelBackgroundColor: pal.muted } } });
+    r.chart.applyOptions({ layout: { textColor: pal.text }, grid: { horzLines: { color: withAlpha(pal.border, 0.6) } },
+      crosshair: { vertLine: { color: withAlpha(pal.muted, 0.7), labelBackgroundColor: pal.label }, horzLine: { color: withAlpha(pal.muted, 0.7), labelBackgroundColor: pal.label } } });
     r.series.applyOptions({ upColor: pal.up, downColor: pal.down, wickUpColor: pal.up, wickDownColor: pal.down });
   }, [pal]);
 
@@ -197,14 +202,18 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
     const r = ref.current; if (!r) return;
     r.dom = dom;
     r.series.setData(data);
-    r.vol.setData(data.map((d) => ({ time: d.time, value: d.value, color: withAlpha(d.close >= d.open ? pal.up : pal.down, 0.35) })));
+    r.vol.setData(data.map((d) => ({ time: d.time, value: d.value, color: withAlpha(d.close >= d.open ? pal.up : pal.down, 0.28) })));
     r.chart.priceScale('right').applyOptions({ mode: log ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal });
     for (const l of r.lines) r.series.removePriceLine(l);
     r.lines = [];
     const line = (p, color, title, style = LineStyle.Dashed) => { if (p > 0) r.lines.push(r.series.createPriceLine({ price: p, color, lineWidth: 1, lineStyle: style, axisLabelVisible: true, title })); };
     line(entry?.p, pal.muted, t('masuk'));
     line(exit?.p, pal.warning, t('keluar'));
-    if (now > 0 && !exit) line(now, withAlpha(pal.fg, 0.6), '', LineStyle.Solid);
+    // Harga pool kini hanya digaris kalau berbeda dari penutupan lilin terakhir —
+    // kalau sama, label nilai terakhir seri sudah menunjukkannya; dua label kembar
+    // di sumbu (merah 0,0106 dan putih 0,0106) cuma berisik.
+    const lastClose = data[data.length - 1]?.close;
+    if (now > 0 && !exit && !(lastClose > 0 && Math.abs(now / lastClose - 1) < 0.003)) line(now, withAlpha(pal.fg, 0.55), t('kini'), LineStyle.Dotted);
     r.overlay.set({ range, entryT, exitT, entryBefore, c: pal, dark: pal.dark });
     r.markers.setMarkers([
       ...(entryT != null && !entryBefore ? [{ time: entryT, position: 'belowBar', color: pal.accent, shape: 'arrowUp', text: t('masuk') }] : []),

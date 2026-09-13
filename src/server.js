@@ -461,25 +461,37 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // dibuang penjarangan bisa saja puncak atau lembahnya (drawdown 7 hari terbaca
       // $70.96 padahal $73.63).
       const extremes = {};
+      const keep = new Set();   // indeks titik penting yang tidak boleh dibuang penjarangan
       for (const [key, pick] of [['pnl', (r) => r.pnl], ['net', (r) => r.net], ['value', (r) => (r.cash == null ? null : r.total)]]) {
         let hi = -Infinity, lo2 = Infinity, peak = -Infinity, dd = 0, n = 0;
-        for (const r of rows) {
+        let iHi = -1, iLo = -1, iPeak = -1, iDdPeak = -1, iDdTrough = -1;
+        rows.forEach((r, i) => {
           const v = pick(r);
-          if (v == null) continue;
-          n++; hi = Math.max(hi, v); lo2 = Math.min(lo2, v); peak = Math.max(peak, v); dd = Math.max(dd, peak - v);
-        }
-        if (n) extremes[key] = { hi, lo: lo2, dd };
+          if (v == null) return;
+          n++;
+          if (v > hi) { hi = v; iHi = i; }
+          if (v < lo2) { lo2 = v; iLo = i; }
+          if (v > peak) { peak = v; iPeak = i; }
+          if (peak - v > dd) { dd = peak - v; iDdPeak = iPeak; iDdTrough = i; }
+        });
+        if (!n) continue;
+        for (const i of [iHi, iLo, iDdPeak, iDdTrough]) if (i >= 0) keep.add(i);
+        // ts puncak/lembah supaya grafik bisa menandai titik yang sama dengan angkanya
+        extremes[key] = { hi, lo: lo2, dd, hiTs: rows[iHi].ts, loTs: rows[iLo].ts,
+          ddPeakTs: iDdPeak >= 0 ? rows[iDdPeak].ts : null, ddTroughTs: iDdTrough >= 0 ? rows[iDdTrough].ts : null };
       }
 
       // Satu titik tiap 5 menit = 8.640 titik per 30 hari, jauh lebih rapat daripada
-      // piksel grafiknya. Ambil titik terakhir tiap ember; titik pertama dan titik
-      // "sekarang" tetap ikut.
+      // piksel grafiknya. Ambil titik terakhir tiap ember; titik pertama, titik
+      // "sekarang", dan puncak/lembah di atas tetap ikut — tanpa itu lonjakan yang
+      // menjadi "Tertinggi" atau dasar drawdown bisa hilang dari garisnya.
       const MAX = 360;
       let series = rows;
       if (rows.length > MAX + 1) {
         const step = rows.length / MAX;
-        series = [rows[0]];
-        for (let i = 1; i <= MAX; i++) series.push(rows[Math.min(rows.length - 1, Math.floor(i * step) - 1)]);
+        const idx = new Set([0, ...keep]);
+        for (let i = 1; i <= MAX; i++) idx.add(Math.min(rows.length - 1, Math.floor(i * step) - 1));
+        series = [...idx].sort((a, b) => a - b).map((i) => rows[i]);
       }
 
       const gasSince = (ts) => {
