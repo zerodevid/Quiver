@@ -218,7 +218,7 @@ export default function App() {
 
           <StuckAlert />
           <main className="mx-auto w-full max-w-[90rem] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7" data-reveal="main">
-            <Suspense fallback={<Loading />}><Page key={page + (param || '')} param={param} /></Suspense>
+            <Suspense fallback={<Loading page />}><Page key={page + (param || '')} param={param} /></Suspense>
           </main>
           <footer className="mx-auto w-full max-w-[90rem] px-4 pb-5 text-[0.6875rem] text-muted sm:px-6 lg:px-8" data-reveal="foot">
             {t('Quiver · cermin posisi likuiditas Uniswap v3/v4 · Robinhood Chain (4663)')}

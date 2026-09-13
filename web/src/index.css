@@ -193,6 +193,21 @@ html.app-enter [data-reveal="foot"] { animation: q-fade .4s ease .35s both; }
 [data-brand].brand-arrive .q-arrow { transform-box: fill-box; animation: q-shoot .85s cubic-bezier(.3, 0, .2, 1) both; }
 [data-brand].brand-arrive .q-chev { animation: q-pulse .85s ease-in-out both; }
 [data-brand].brand-arrive .brand-sub { animation: q-fade .45s ease .3s both; }
+/* --- kerangka muat ---------------------------------------------------------
+   Tulang abu-abu berkilau sekali lewat (Loading di components/ui.jsx). Warna sengaja
+   lebih pucat dari garis tepi supaya terbaca sebagai "belum ada", bukan sebagai isi. */
+:root, .light { --skel: oklch(0.925 0.004 286); --skel-shine: oklch(1 0 0 / .55); }
+.dark { --skel: oklch(0.235 0.006 286); --skel-shine: oklch(1 0 0 / .06); }
+.skel { position: relative; overflow: hidden; border-radius: 0.25rem; background: var(--skel); }
+.skel::after {
+  content: ''; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent 20%, var(--skel-shine) 50%, transparent 80%);
+  animation: q-shimmer 1.8s ease-in-out infinite;
+}
+.loading-in { animation: q-fade .3s ease .15s both; }
+@keyframes q-shimmer { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .skel::after, .loading-in { animation: none; } }
+
 @keyframes q-shoot { 0%, 100% { transform: none; } 38% { transform: translateX(-9px); } 62% { transform: translateX(11px); } }
 @keyframes q-pulse { 0%, 50%, 100% { opacity: 1; } 66% { opacity: .4; } }
 @keyframes q-fade { from { opacity: 0; } to { opacity: 1; } }

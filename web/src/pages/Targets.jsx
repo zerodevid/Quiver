@@ -280,7 +280,7 @@ export default function Targets({ param }) {
   const [adding, setAdding] = useState(false);
   const valid = /^0x[0-9a-fA-F]{40}$/.test(addr.trim());
 
-  if (param) return !d ? <Loading /> : <TargetDetail address={param} targets={d.targets} reload={reload} enabledOf={enabledOf} onToggle={toggle} />;
+  if (param) return !d ? <Loading page /> : <TargetDetail address={param} targets={d.targets} reload={reload} enabledOf={enabledOf} onToggle={toggle} />;
 
   const add = async () => {
     setBusy(true);

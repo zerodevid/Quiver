@@ -86,8 +86,68 @@ export function Empty({ title, sub }) {
   );
 }
 
-export function Loading({ text = 'Memuat…' }) {
-  return <div className="flex items-center justify-center gap-3 py-12 text-sm text-muted"><Spinner size="sm" color="current" />{t(text)}</div>;
+// Kerangka muat: bentuk halaman/panel yang akan datang, bukan roda berputar di ruang
+// kosong — mata sudah tahu ke mana harus melihat begitu datanya tiba, dan tata letak
+// tidak melompat. Muncul setelah 150 ms (kelas loading-in) supaya muatan yang cepat
+// tidak berkedip. `page` = kerangka satu halaman (judul, ubin angka, dua panel);
+// tanpa itu = beberapa baris untuk isi panel. Teks hanya tampil kalau diberikan
+// (mis. "Membaca isi wallet dari chain…" untuk proses yang memang lama); selebihnya
+// cukup untuk pembaca layar.
+const Bone = ({ w = '100%', h = '0.75rem', className = '' }) => (
+  <div className={`skel ${className}`} style={{ width: w, height: h }} aria-hidden="true" />
+);
+const ROW_W = ['72%', '88%', '58%', '80%', '66%', '76%'];
+const Rows = ({ n = 3 }) => (
+  <div className="space-y-3" aria-hidden="true">
+    {ROW_W.slice(0, n).map((w, i) => (
+      <div key={i} className="flex items-center gap-3">
+        <Bone w="1.25rem" h="1.25rem" className="shrink-0 rounded-full!" />
+        <Bone w={w} />
+        <Bone w="3.5rem" className="ms-auto shrink-0" />
+      </div>
+    ))}
+  </div>
+);
+export function Loading({ text = null, page = false }) {
+  const label = t(text || 'Memuat…');
+  if (page) {
+    return (
+      <div className="loading-in" role="status" aria-live="polite" aria-label={label}>
+        <div className="mb-5 border-b border-border pb-4">
+          <Bone w="11rem" h="1.25rem" />
+          <Bone w="24rem" className="mt-3 max-w-full" />
+        </div>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
+            <Card key={i} className="min-w-0 gap-2! p-3.5!">
+              <Bone w="45%" h="0.625rem" />
+              <Bone w="70%" h="1.375rem" />
+              <Bone w="55%" h="0.625rem" />
+            </Card>
+          ))}
+        </div>
+        <div className="mt-4 grid gap-4 lg:grid-cols-3">
+          <Card className="min-w-0 gap-0! p-0! lg:col-span-2">
+            <div className="border-b border-border px-4 py-3.5"><Bone w="9rem" h="0.875rem" /></div>
+            <div className="p-4"><Rows n={6} /></div>
+          </Card>
+          <Card className="min-w-0 gap-0! p-0!">
+            <div className="border-b border-border px-4 py-3.5"><Bone w="7rem" h="0.875rem" /></div>
+            <div className="p-4"><Rows n={4} /></div>
+          </Card>
+        </div>
+        <span className="sr-only">{label}</span>
+      </div>
+    );
+  }
+  return (
+    <div className="loading-in px-4 py-5" role="status" aria-live="polite" aria-label={label}>
+      <Rows n={3} />
+      {text
+        ? <div className="mt-4 flex items-center gap-2 text-xs text-muted"><Spinner size="sm" color="current" />{label}</div>
+        : <span className="sr-only">{label}</span>}
+    </div>
+  );
 }
 
 // Penanda "sedang mengambil data baru" untuk kepala panel. Tabel TIDAK pernah

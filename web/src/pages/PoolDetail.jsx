@@ -36,7 +36,7 @@ export default function PoolDetail({ param }) {
   const limit = focus ? Math.min(1000, Math.max(120, Math.ceil(sinceOpen / SECS[tf]) + 40)) : 240;
   const { data: m } = usePoll(pool ? `/api/market?pool=${ref}&tf=${tf}&limit=${limit}&token=${pool.baseToken || ''}` : null, 30000);
 
-  if (!d) return <Loading />;
+  if (!d) return <Loading page />;
   if (d.error) return <Empty title="Pool tidak ditemukan" sub={d.error} />;
 
   const quote = pool.quoteSide === 0 ? pool.symbol0 : pool.quoteSide === 1 ? pool.symbol1 : null;

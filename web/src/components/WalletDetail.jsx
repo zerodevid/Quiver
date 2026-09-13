@@ -345,7 +345,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
     </div>
   );
 
-  if (loading && !data) return <Loading text="Memuat data wallet…" />;
+  if (loading && !data) return <Loading page text="Memuat data wallet…" />;
   return (
     <>
       {toolbar}

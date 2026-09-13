@@ -118,7 +118,7 @@ export function Changes({ pc }) {
 
 export function MarketPanel({ pair, pool }) {
   const { t } = useI18n();
-  if (!pair) return <Loading />;
+  if (!pair) return <Loading page />;
   if (pair.error) return <div className="p-4"><Empty title="Data pasar tidak tersedia" sub={pair.error} /></div>;
   const tx = pair.txns?.h24;
   return (
@@ -163,7 +163,7 @@ export default function PositionDetail({ id }) {
   const reloadAll = useCallback(async () => { await Promise.all([reload(), reloadMarket()]); }, [reload, reloadMarket]);
   const [resync, syncing] = useResync(reloadAll);
 
-  if (!d) return <Loading />;
+  if (!d) return <Loading page />;
   if (d.error) return <Empty title="Posisi tidak ditemukan" sub={d.error} />;
 
   const closed = p.status === 'closed';

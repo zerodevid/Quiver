@@ -544,7 +544,7 @@ export default function Swap() {
   const header = <PageHeader group="Aksi" title="Swap"
     desc="Menukar aset lewat agregator Kyber — rute yang sama dipakai bot untuk zap dan menjual memecoin sisa." />;
 
-  if (tokens === null) return (<>{header}<Loading /></>);
+  if (tokens === null) return (<>{header}<Loading page /></>);
 
   if (hasil) {
     return (

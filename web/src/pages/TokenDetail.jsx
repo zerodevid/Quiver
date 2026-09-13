@@ -45,7 +45,7 @@ export default function TokenDetail({ param }) {
   useEffect(() => { window.scrollTo(0, 0); }, []);
   const { data: m } = usePoll(sel ? `/api/market?pool=${sel.pool}&tf=${tf}&limit=${LIMIT[tf]}&token=${a}&currency=usd&pair=0` : null, 30000);
 
-  if (!d) return <Loading />;
+  if (!d) return <Loading page />;
   if (d.error) return <Empty title="Token tidak ditemukan" sub={d.error} />;
 
   const tk = d.token;

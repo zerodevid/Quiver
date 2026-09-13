@@ -127,7 +127,7 @@ export default function Positions({ param }) {
   const { claim, claiming } = useClaimFees(reload);
   // Klik baris -> laci riwayat posisi (transaksi & catatan bot).
   const [hist, setHist] = useState(null);
-  if (param) return <Suspense fallback={<Loading />}><PositionDetail id={param} /></Suspense>;
+  if (param) return <Suspense fallback={<Loading page />}><PositionDetail id={param} /></Suspense>;
   const header = <PageHeader group="Pemantauan" title="Posisi" desc="Posisi LP milik bot — nilai, fee, dan PnL diperbarui dari chain tiap 30 detik. Klik baris untuk melihat riwayat transaksi dan catatan bot." />;
   // Belum ada balasan sama sekali: tampilkan di tempat tabel akan muncul, bukan
   // halaman kosong — dan kalau servernya tidak terjangkau, katakan begitu.

@@ -20,7 +20,7 @@ export default function Activity() {
   const { t } = useI18n();
   const { data: d } = usePoll('/api/activity?limit=200', 8000);
   const [filter, setFilter] = useState('all');
-  if (!d) return <Loading />;
+  if (!d) return <Loading page />;
   const all = d.activity;
   const n = (v) => all.filter((a) => a.verdict === v).length;
   const rows = all.filter((a) => filter === 'all' || a.verdict === filter);

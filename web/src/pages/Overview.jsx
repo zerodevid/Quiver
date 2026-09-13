@@ -281,7 +281,7 @@ export default function Overview() {
     await Promise.all([reloadPos(), reloadPortfolio()]);
   }, [reloadPos, reloadPortfolio]);
   const [resync, syncing] = useResync(reloadAll);
-  if (!d) return <Loading />;
+  if (!d) return <Loading page />;
   const s = d.summary, T = d.totals || {};
   // Kursor bisa sedikit MENDAHULUI kepala rantai yang terakhir dibaca; itu sinkron,
   // bukan "tertinggal −19 blok".
