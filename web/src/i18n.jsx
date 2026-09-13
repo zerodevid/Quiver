@@ -543,6 +543,9 @@ const EN = {
   'Jeda': 'Pause',
   'Lanjutkan': 'Resume',
   'Ganti tema': 'Toggle theme',
+  'Keluar dari dasbor': 'Sign out',
+  'Keluar dari dasbor?': 'Sign out of the dashboard?',
+  'Untuk masuk lagi perlu token akses.': 'You will need the access token to sign in again.',
   'Menu': 'Menu',
   'Bahasa': 'Language',
   'Quiver · cermin posisi likuiditas Uniswap v3/v4 · Robinhood Chain (4663)':

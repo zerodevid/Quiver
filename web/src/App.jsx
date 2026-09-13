@@ -2,7 +2,7 @@ import { createContext, lazy, Suspense, useContext, useEffect, useState } from '
 import { Button, Chip, Toast } from '@heroui/react';
 import {
   LayoutDashboard, Layers, ListChecks, Users, SlidersHorizontal, Wallet as WalletIcon,
-  Settings as SettingsIcon, Moon, Sun, Pause, Play, Menu, X,
+  Settings as SettingsIcon, Moon, Sun, Pause, Play, Menu, X, LogOut,
   PlusCircle, ArrowDownUp,
 } from 'lucide-react';
 import { usePoll, useHash, useTheme } from './hooks';
@@ -13,7 +13,7 @@ import { QuiverLogo } from './components/Logo';
 import { AlertBell, useTargetAlerts } from './components/TargetAlerts';
 import StuckAlert from './components/StuckAlert';
 
-import { Loading, ConfirmHost } from './components/ui';
+import { Loading, ConfirmHost, ask } from './components/ui';
 import { hideSplash } from './splash';
 
 // Tiap halaman dimuat saat dibuka — pustaka grafik cuma diunduh untuk Ringkasan.
@@ -108,6 +108,12 @@ function StatusFoot({ status, reload, theme, toggleTheme }) {
   const { t, locale, setLocale } = useI18n();
   const m = status?.mode;
   const pause = async () => { await post('/api/mode', { paused: !m?.paused }); reload(); };
+  // Bukan lewat api.post: /logout membalas redirect ke halaman masuk, bukan JSON.
+  const logout = async () => {
+    if (!(await ask({ title: t('Keluar dari dasbor?'), body: t('Untuk masuk lagi perlu token akses.'), confirm: t('Keluar dari dasbor') }))) return;
+    await fetch('/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+    location.href = '/';
+  };
   return (
     <div className="flex flex-col gap-2.5 border-t border-border p-3">
       <div className="rounded-md border border-border px-3 py-2.5">
@@ -128,6 +134,12 @@ function StatusFoot({ status, reload, theme, toggleTheme }) {
           {theme === 'dark' ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
         </Button>
         <AlertBell placement="top" />
+        {/* Hanya saat gerbang token menyala; tanpa token tidak ada sesi yang bisa ditutup. */}
+        {m?.auth && (
+          <Button size="sm" variant="outline" isIconOnly aria-label={t('Keluar dari dasbor')} onPress={logout}>
+            <LogOut className="size-3.5" />
+          </Button>
+        )}
         {/* Pemilih bahasa: dua pilihan saja, jadi cukup satu tombol berganti. */}
         <div className="flex rounded-md border border-border p-0.5" role="group" aria-label={t('Bahasa')}>
           {Object.entries(LOCALES).map(([k, name]) => (

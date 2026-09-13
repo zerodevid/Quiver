@@ -253,6 +253,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   // rotasi token (lewat sessionCookie yang dioper ke rute Pengaturan).
   const sessionCookie = (req, token) =>
     `lpcopy_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${isHttps(req) ? '; Secure' : ''}`;
+  // Tombol keluar: cookie yang sama dikosongkan dan langsung kedaluwarsa.
+  const clearCookie = (req) => `lpcopy_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${isHttps(req) ? '; Secure' : ''}`;
   // IP klien untuk rem laju login: di balik Cloudflare IP asli ada di header, bukan
   // di soket (yang selalu Cloudflare/loopback).
   const clientIp = (req) => req.headers['cf-connecting-ip']
@@ -409,7 +411,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       };
       const skipTop = store.all("SELECT reason, COUNT(*) n FROM decisions WHERE verdict='skip' GROUP BY reason ORDER BY n DESC LIMIT 6");
       return {
-        mode: { dry_run: engine.dryRun(), paused: engine.paused(), wallet: engine.exec.address() },
+        // auth: gerbang token menyala → dasbor menampilkan tombol keluar.
+        mode: { dry_run: engine.dryRun(), paused: engine.paused(), wallet: engine.exec.address(), auth: !!tokenNow() },
         chain: { head: engine.head, cursor: engine.cursor, lag: engine.head - engine.cursor, ethUsd: engine.ethUsd, headSpread: engine.headSpread },
         stats: { ...engine.stats, uptimeSec: Math.round((Date.now() - engine.stats.startedAt) / 1000), lastError: engine.lastError },
         totals: tot,
@@ -1533,6 +1536,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SEC_HEADERS });
           res.end(LOGIN_PAGE(true));
         });
+      }
+      // Keluar: hapus cookie sesi lalu kembali ke halaman masuk. Cookie SameSite=Lax
+      // tidak ikut POST lintas situs, jadi tak ada yang bisa mengeluarkan orang lain.
+      if (url.pathname === '/logout' && req.method === 'POST') {
+        res.writeHead(302, { location: '/', 'set-cookie': clearCookie(req), 'cache-control': 'no-store' });
+        return res.end();
       }
       // Aset vendor, font, dan favicon boleh lewat supaya halaman masuk bisa tampil rapi.
       const isPublicAsset = url.pathname.startsWith('/vendor/') || url.pathname.startsWith('/fonts/') || url.pathname === '/favicon.svg';
