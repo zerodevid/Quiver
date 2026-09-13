@@ -76,7 +76,7 @@ export default function WalletHoldings({ address }) {
       {!data && !err ? <Loading text="Membaca isi wallet dari chain…" /> : data && (
         <>
           <DataTable label="Isi wallet" rows={rows} rowKey={(x) => x.address} columns={cols}
-            searchable pageSize={15} defaultSort={{ column: 'usd', direction: 'descending' }}
+            searchable pageSize={5} defaultSort={{ column: 'usd', direction: 'descending' }}
             empty={<Empty title="Wallet ini kosong" sub="Tidak ada ETH maupun token ERC-20 yang terdeteksi." />} />
           <p className="px-4 py-3 text-xs text-muted">
             {t('Saldo dibaca langsung dari chain; harga dari DexScreener (pool paling likuid).')}
