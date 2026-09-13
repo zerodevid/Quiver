@@ -820,6 +820,12 @@ class Engine {
       throw new Error('posisi sedang diproses — tunggu konfirmasi transaksi');
     }
     this.activeEntries = (this.activeEntries || 0) + 1;
+    // Token pool ini sedang dikumpulkan untuk mint: antrean jual sisa (tiap detik), tombol
+    // jual, dan swap manual tidak boleh menjualnya di tengah jalan — dulu token hasil zap
+    // bisa terjual sebelum mint, lalu mint revert/mengecil dan zap-nya dibayar percuma.
+    const held = [plan.token0, plan.token1].filter(Boolean).map((x) => String(x).toLowerCase());
+    this.entryTokens = this.entryTokens || new Map();
+    for (const tk of held) this.entryTokens.set(tk, (this.entryTokens.get(tk) || 0) + 1);
     const trace = {};
     const waits = this.entryRetryWaits || [3000, 8000];
     try {
@@ -846,8 +852,17 @@ class Engine {
       if (trace.zapped && !e.pendingMint && !e.priorLanded && !trace.minted) await this.rescueZap(plan, trace.zapped, e).catch((x) => this.store?.log?.('warn', `antrekan token zap gagal: ${x.message}`, { quiet: true }));
       throw e;
     }
-    finally { this.activeEntries--; }
+    finally {
+      this.activeEntries--;
+      for (const tk of held) {
+        const n = (this.entryTokens.get(tk) || 1) - 1;
+        if (n > 0) this.entryTokens.set(tk, n); else this.entryTokens.delete(tk);
+      }
+    }
   }
+
+  // Token ini sedang dipakai entry yang berjalan?
+  tokenInEntry(token) { return !!this.entryTokens?.has(String(token || '').toLowerCase()); }
 
   // Galat entry yang TIDAK layak diulang: keputusan/batas pengguna, kas yang memang
   // kurang, pengaman Kyber, dan tx yang mungkin masih masuk. Selain itu (RPC, revert
@@ -1769,6 +1784,10 @@ class Engine {
     // revert (gas hangus), atau ikut menjual jatah item lain. Yang tertahan tetap antre.
     this.selling = this.selling || new Set();
     const lockKey = String(item.token).toLowerCase();
+    if (this.tokenInEntry(lockKey)) {
+      this.keepLeftover({ ...item, amount: String(item.amount) }, 'menunggu entry yang memakai token ini selesai');
+      return null;
+    }
     if (this.selling.has(lockKey)) {
       this.keepLeftover({ ...item, amount: String(item.amount), next: 0 }, 'menunggu penjualan token yang sama selesai');
       return null;
@@ -1937,6 +1956,7 @@ class Engine {
     try {
       for (const item of this.leftovers()) {
         if (Date.now() < (item.next || 0)) continue;
+        if (this.tokenInEntry(item.token)) continue;   // dijual sesudah entry-nya selesai
         const rules = this.rulesFrom(item.target);
         try {
           const bal = (await this.exec.balances([item.token])).get(item.token) || 0n;
@@ -2007,6 +2027,7 @@ class Engine {
       for (const t of [r.token0, r.token1]) if (t) set.delete(String(t).toLowerCase());
     }
     for (const it of this.leftovers()) set.delete(String(it.token).toLowerCase());
+    for (const tk of this.entryTokens?.keys() || []) set.delete(tk);   // bahan entry yang sedang berjalan
     const list = [...set];
     if (!list.length) return { scanned: 0, queued: [], skipped: [] };
 

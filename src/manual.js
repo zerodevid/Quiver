@@ -735,6 +735,7 @@ class Manual {
     eng.selling = eng.selling || new Set();
     const lockKey = lc(tokenIn);
     if (eng.selling.has(lockKey)) throw new Error('token ini sedang dijual otomatis — tunggu sebentar');
+    if (eng.tokenInEntry?.(lockKey)) throw new Error('token ini sedang dipakai membuka posisi — tunggu entry-nya selesai');
     eng.selling.add(lockKey);
     try { return await this.doSwapLocked({ tokenIn, tokenOut, amountRaw }); }
     finally { eng.selling.delete(lockKey); }
