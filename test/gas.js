@@ -41,14 +41,28 @@ function exec(gasPrice, baseFee, { fail: f = false } = {}) {
     assert.strictEqual(f.maxFeePerGas, 150_000_000n);
   });
 
+  await t('gasPrice ngawur dari satu endpoint (500 gwei, base 0,08): maxFee diapit ke batas 10 gwei', async () => {
+    const e = exec(500n * GWEI, 85_000_000n);
+    const f = await e.gasFees();
+    assert.strictEqual(f.maxFeePerGas, 10n * GWEI);
+    assert.ok(await e.gasReserve() <= 4_000_000n * 10n * GWEI, 'cadangan dinamis ikut terbatas');
+  });
+
+  await t('base fee sungguhan di atas batas: melempar dengan petunjuk gas.max_fee_gwei; batas bisa dinaikkan', async () => {
+    await assert.rejects(exec(30n * GWEI, 20n * GWEI).gasFees(), /gas.max_fee_gwei/);
+    const e = exec(30n * GWEI, 20n * GWEI);
+    e.cfg.gas.max_fee_gwei = 100;
+    assert.strictEqual((await e.gasFees()).maxFeePerGas, 45n * GWEI);
+  });
+
   await t('gas murah: cadangan = cadangan tetap 0,002 ETH', async () => {
     assert.strictEqual(await exec(100_000_000n, 50_000_000n).gasReserve(), 2_000_000_000_000_000n);
   });
 
-  await t('gas mahal (5 gwei): cadangan = 4 jt gas × maxFee, bukan 0,002 ETH', async () => {
-    const e = exec(5n * GWEI, 5n * GWEI);
+  await t('gas mahal (4 gwei): cadangan = 4 jt gas × maxFee, bukan 0,002 ETH', async () => {
+    const e = exec(4n * GWEI, 4n * GWEI);
     const r = await e.gasReserve();
-    assert.strictEqual(r, 4_000_000n * (10n * GWEI + 10_000_000n));
+    assert.strictEqual(r, 4_000_000n * (8n * GWEI + 10_000_000n));
     assert.strictEqual(e.gasReserveCached(), r, 'versi sinkron memakai harga terakhir');
   });
 

@@ -982,6 +982,8 @@ const EN = {
     'Network gas price × this number. 1.5 = 50% above the current price.',
   'Priority fee (gwei)': 'Priority fee (gwei)',
   'Batas gas per transaksi': 'Gas limit per transaction',
+  'Batas harga gas (gwei)': 'Gas price cap (gwei)',
+  'Harga gas per unit tidak pernah melebihi angka ini, walau satu RPC melaporkan harga yang ngawur. Harga normal jaringan ini sekitar 0,1 gwei.': 'The per-unit gas price never exceeds this, even if one RPC reports a bogus price. Normal for this network is about 0.1 gwei.',
   'Cadangan ETH untuk gas': 'ETH reserved for gas',
   'ETH sebanyak ini tidak pernah dipakai untuk LP maupun swap.':
     'This much ETH is never used for LP or swaps.',

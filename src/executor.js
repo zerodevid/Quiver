@@ -77,9 +77,25 @@ class Executor {
     let maxFeePerGas = (gp * mult) / 100n;
     const base = blk?.result?.baseFeePerGas ? BigInt(blk.result.baseFeePerGas) : 0n;
     if (base * 2n + prio > maxFeePerGas) maxFeePerGas = base * 2n + prio;
+    // Batas atas (gas.max_fee_gwei, bawaan 10 gwei ≈ 100× harga normal chain ini). Tanpa
+    // ini satu endpoint yang melaporkan eth_gasPrice/baseFee ngawur membuat maxFee ×
+    // batas gas melampaui saldo: SEMUA tx ditolak "insufficient funds" — termasuk tx
+    // keluar — dan cadangan gas dinamis melonjak (isi gas menukar USDG ke ETH). Kalau
+    // base fee sungguhan di atas batas, tx-nya memang tidak akan masuk: dilempar dengan
+    // pesan yang menunjuk ke pengaturannya.
+    const cap = Executor.maxFeeCap(this.cfg);
+    if (maxFeePerGas > cap) {
+      if (base + prio > cap) throw new Error(`harga gas ${Executor.gwei(base)} gwei di atas batas gas.max_fee_gwei (${Executor.gwei(cap)}) — naikkan batasnya kalau memang sedang mahal`);
+      maxFeePerGas = cap;
+    }
     this.lastFees = { maxFeePerGas, maxPriorityFeePerGas: prio, ts: Date.now() };
     return { maxFeePerGas, maxPriorityFeePerGas: prio };
   }
+  static maxFeeCap(cfg) {
+    const g = Number(cfg?.gas?.max_fee_gwei);
+    return BigInt(Math.round((Number.isFinite(g) && g > 0 ? g : 10) * 1e9));
+  }
+  static gwei(wei) { return String(Number((Number(wei) / 1e9).toPrecision(4))); }
 
   // Cadangan ETH native yang tidak boleh dipakai sebagai modal: cadangan dari config,
   // atau — kalau harga gas sedang tinggi — biaya SATU transaksi terberat (batas gas

@@ -311,6 +311,7 @@ const FORMS = {
       F.num('price_multiplier', 'Pengali harga gas', { lo: 1, hi: 5 }),
       F.num('priority_gwei', 'Priority fee (gwei)', { hi: 100 }),
       F.int('max_gas_limit', 'Batas gas per transaksi', { lo: 100000, hi: 30000000 }),
+      F.num('max_fee_gwei', 'Batas harga gas (gwei)', { lo: 0.01, hi: 10000 }),
       F.num('reserve_eth', 'Cadangan ETH tak tersentuh', { hi: 10, unit: 'ETH' }),
     ],
   },

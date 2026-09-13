@@ -93,6 +93,7 @@
   "Batas fee pool": "Maximum pool fee",
   "Pengali harga gas": "Gas price multiplier",
   "Batas gas per transaksi": "Gas limit per transaction",
+  "Batas harga gas (gwei)": "Gas price cap (gwei)",
   "Cadangan ETH tak tersentuh": "Minimum ETH reserve",
   "🔧 Mesin": "🔧 Engine",
   "Perubahan interval baru berlaku setelah proses di-restart.": "Restart the process to apply interval changes.",

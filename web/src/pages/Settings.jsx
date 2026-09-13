@@ -477,6 +477,7 @@ export default function Settings() {
                       ['price_multiplier', 'Pengali harga gas', 'Harga gas jaringan × angka ini. 1,5 = 50% di atas harga saat itu.'],
                       ['priority_gwei', 'Priority fee (gwei)', 'Biaya prioritas tambahan per unit gas, dalam gwei. Ini bukan total biaya transaksi.'],
                       ['max_gas_limit', 'Batas gas per transaksi', 'Jumlah maksimum unit gas untuk satu transaksi, bukan jumlah ETH. Batas terlalu kecil dapat membuat transaksi gagal.'],
+                      ['max_fee_gwei', 'Batas harga gas (gwei)', 'Harga gas per unit tidak pernah melebihi angka ini, walau satu RPC melaporkan harga yang ngawur. Harga normal jaringan ini sekitar 0,1 gwei.'],
                       ['reserve_eth', 'Cadangan ETH untuk gas', 'ETH sebanyak ini tidak pernah dipakai untuk LP maupun swap.'],
                     ]} />
                 </Tabs.Panel>
