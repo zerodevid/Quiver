@@ -41,6 +41,7 @@ function dunia(telegram) {
   const engine = {
     cfg, store, ethUsd: 2500, positions: pos, watcher: { unsupported: new Map() }, cash: { usd: 1000 },
     exec: { address: () => null, balances: async () => new Map() }, leftovers: () => [], dryRun: () => true,
+    freshCash() { return this.cash; }, refreshCash: async () => null,
   };
   const server = createServer({ engine, store, cfg, cfgPath, chain: {}, rpc: {}, log: () => {}, telegram });
   store.run('INSERT INTO tokens(address,symbol,decimals) VALUES(?,?,?)', ADDR.usdg, 'USDG', 6);

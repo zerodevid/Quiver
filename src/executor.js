@@ -34,6 +34,11 @@ class Executor {
     this.wallet = null;
     this.nonce = null;
     this.approved = new Set();
+    // Penanda tx terakhir yang tercatat masuk blok (lihat waitReceipt): berapa kali
+    // sudah terjadi, dan di blok berapa. Pembaca saldo yang di-cache (engine.cash)
+    // membandingkan hitungannya untuk tahu bacaannya sudah basi.
+    this.txSeq = 0;
+    this.minedBlock = 0;
   }
 
   // ---- dompet -------------------------------------------------------------
@@ -277,6 +282,9 @@ class Executor {
         const ok = BigInt(r.status) === 1n;
         this.store.run('UPDATE txs SET status=?, gas_used=?, gas_price=? WHERE hash=?',
           ok ? 'sukses' : 'gagal', parseInt(r.gasUsed, 16), r.effectiveGasPrice || null, hash);
+        // Gagal pun membakar gas: saldo ETH berubah, kas yang di-cache ikut basi.
+        this.txSeq++;
+        this.minedBlock = Math.max(this.minedBlock, parseInt(r.blockNumber, 16) || 0);
         return { ok, receipt: r };
       }
       await new Promise((s) => setTimeout(s, 700));

@@ -59,6 +59,7 @@ class Engine {
     this.failStreak = 0;
     this.headSpread = 0;
     this.cash = null;              // saldo kas terakhir, lihat refreshCash()
+    this.cashSeq = -1;             // exec.txSeq saat kas terakhir dibaca — beda = basi
   }
 
   rulesFrom(targetAddr) {
@@ -2369,12 +2370,39 @@ class Engine {
   // total portofolio menghitung dana dua kali sesaat setelah posisi dibuka.
   async refreshCash() {
     if (!this.exec.address()) { this.cash = null; return null; }
-    const b = await this.exec.balances([ADDR.native, ADDR.usdg, ADDR.weth]);
+    // Bacaan pertama sesudah sebuah tx masuk blok dipatok di blok tx itu (atau
+    // sesudahnya): endpoint yang tertinggal beberapa blok akan menjawab saldo LAMA
+    // untuk 'latest' — kas pun tampak belum berkurang/bertambah padahal posisinya sudah
+    // tercatat. Endpoint yang belum punya blok itu menjawab galat sementara dan kolam
+    // RPC pindah ke endpoint lain. Bacaan berikutnya kembali ke 'latest'.
+    const seq = this.exec.txSeq;
+    const block = seq !== this.cashSeq && this.exec.minedBlock ? '0x' + this.exec.minedBlock.toString(16) : 'latest';
+    const b = await this.exec.balances([ADDR.native, ADDR.usdg, ADDR.weth], block);
     const eth = Number(b.get(ADDR.native) || 0n) / 1e18;
     const weth = Number(b.get(ADDR.weth) || 0n) / 1e18;
     const usdg = Number(b.get(ADDR.usdg) || 0n) / 1e6;
     this.cash = { usdg, eth, weth, usd: usdg + (eth + weth) * this.ethUsd, ts: Date.now() };
+    this.cashSeq = seq;
     return this.cash;
+  }
+
+  // Kas untuk dasbor: this.cash kalau belum ada tx yang masuk blok sejak dibaca,
+  // kalau tidak dibaca ulang dulu. this.cash disegarkan tiap sinkron (30 detik); di
+  // antaranya posisi bisa dibuka/ditutup dan tabel positions langsung berubah, kasnya
+  // belum. Dasbor lalu menjumlahkan kas lama + posisi baru (total KELEBIHAN sebesar
+  // modal posisi) atau kas lama tanpa posisi yang baru tutup (total KEKURANGAN sebesar
+  // hasilnya) sampai semenit kemudian. Nilai token sisa ikut dibaca ulang: ia pun
+  // baru berubah di sinkron, padahal tutup posisi menyisakan token (total kurang) dan
+  // penjualan sisa memindahkannya ke kas (dihitung dua kali). Permintaan yang datang
+  // bersamaan (overview dipoll tiap 5 detik oleh beberapa tab) berbagi satu bacaan.
+  // Gagal dibaca: kas lama, bukan null — angka basi sesaat lebih baik daripada kartu kosong.
+  async freshCash() {
+    if (!this.exec.address()) return null;
+    if (this.cash && this.cashSeq === this.exec.txSeq) return this.cash;
+    this.cashRefresh ??= this.refreshCash()
+      .then((c) => this.positions.refreshLeftovers(this.ethUsd, this.exec.address()).catch(() => null).then(() => c))
+      .finally(() => { this.cashRefresh = null; });
+    return this.cashRefresh.catch(() => this.cash);
   }
 
   async snapshotEquity() {

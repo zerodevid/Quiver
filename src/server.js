@@ -398,7 +398,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   // Pool yang sedang dibuka LP manualnya (penjaga klik ganda, lihat POST /api/manual/lp/open).
   const manualOpening = new Set();
   const routes = {
-    'GET /api/overview': () => {
+    'GET /api/overview': async () => {
+      // Kas dibaca ulang kalau ada tx yang masuk blok sejak bacaan terakhir (lihat
+      // Engine.freshCash) — dipanggil SEBELUM summary supaya nilai token sisa yang
+      // ikut disegarkan di sana terpakai.
+      const cash = await engine.freshCash();
       const s = engine.positions.summary(engine.ethUsd);
       const eq = store.all('SELECT ts,total_quote,realized_quote,fees_quote,open_positions FROM equity ORDER BY ts DESC LIMIT 500').reverse();
       const dec = store.get("SELECT COUNT(*) n FROM decisions WHERE verdict IN ('copy','dry')")?.n || 0;
@@ -410,9 +414,16 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         errors: store.get("SELECT COUNT(*) n FROM decisions WHERE verdict='error'")?.n || 0,
       };
       const skipTop = store.all("SELECT reason, COUNT(*) n FROM decisions WHERE verdict='skip' GROUP BY reason ORDER BY n DESC LIMIT 6");
+      // Total portofolio & PnL sekarang — angka yang sama dengan /api/portfolio, tapi
+      // tanpa kurva/kalender, jadi cukup murah untuk ikut dipoll tiap 5 detik (judul tab).
+      const value = (cash?.usd || 0) + s.exposureUsd + (s.leftoverUsd || 0) + s.feeUsd;
+      const pnl = s.realizedUsd + s.unrealizedUsd;
+      const capital = engine.capital?.summary?.() || null;
+      const wallet = engine.positions.lastSync ? { value, pnl, netPnl: capital && cash ? value - capital.capitalUsd : null } : null;
       return {
         // auth: gerbang token menyala → dasbor menampilkan tombol keluar.
         mode: { dry_run: engine.dryRun(), paused: engine.paused(), wallet: engine.exec.address(), auth: !!tokenNow() },
+        wallet,
         chain: { head: engine.head, cursor: engine.cursor, lag: engine.head - engine.cursor, ethUsd: engine.ethUsd, headSpread: engine.headSpread },
         stats: { ...engine.stats, uptimeSec: Math.round((Date.now() - engine.stats.startedAt) / 1000), lastError: engine.lastError },
         totals: tot,
@@ -426,15 +437,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     // Portofolio milik kita: total sekarang, kurva pertumbuhan, PnL per hari, dan
     // kinerja per sumber (target yang disalin / manual). Terpisah dari /api/overview
     // karena overview dipoll tiap 5 detik — data ini cukup tiap setengah menit.
-    'GET /api/portfolio': (req, url) => {
+    'GET /api/portfolio': async (req, url) => {
       const SPAN = { '24h': 864e5, '7d': 7 * 864e5, '30d': 30 * 864e5, all: 0 };
       const range = url.searchParams.get('range') in SPAN ? url.searchParams.get('range') : '7d';
       const now = Date.now();
       const from = SPAN[range] ? now - SPAN[range] : 0;
       const eth = engine.ethUsd;
       const k = (q) => (q === 'ETH' || q === 'WETH' ? eth : 1);
+      const cash = await engine.freshCash();      // sebelum summary, lihat /api/overview
       const s = engine.positions.summary(eth);
-      const cash = engine.cash;
       const lo = s.leftoverUsd || 0;
       const value = (cash?.usd || 0) + s.exposureUsd + lo + s.feeUsd;
       const pnl = s.realizedUsd + s.unrealizedUsd;
@@ -613,7 +624,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     // dikirim. Yang dibalas cuma waktu sinkronnya: daftarnya diambil pemanggil lewat
     // GET seperti biasa, supaya cuma ada satu jalan data ke tabel.
     'POST /api/positions/sync': async () => {
-      try { await engine.positions.resync(engine.ethUsd); }
+      // Kas dan nilai token sisa ikut dibaca ulang: tombol ini menjanjikan angka segar
+      // untuk seluruh halaman, termasuk kartu total portofolio.
+      const books = engine.refreshCash().then(() => engine.positions.refreshLeftovers(engine.ethUsd, engine.exec.address())).catch(() => null);
+      try { await Promise.all([engine.positions.resync(engine.ethUsd), books]); }
       catch (e) { return { error: e.message, syncedAt: engine.positions.lastSync }; }
       return { ok: true, syncedAt: engine.positions.lastSync };
     },

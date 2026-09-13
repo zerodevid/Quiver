@@ -896,6 +896,54 @@ async function t(name, fn) {
     assert.deepStrictEqual(closed, ['5']);
   });
 
+  await t('kas dasbor dibaca ulang begitu ada tx yang masuk blok — bukan menunggu sinkron 30 detik', async () => {
+    const { eng } = harness({ balances: RICH });
+    const bal = { usdg: 1_000_000_000n };
+    const reads = [];
+    eng.exec.balances = async (list, block = 'latest') => {
+      reads.push(block);
+      return new Map(list.map((tk) => [String(tk).toLowerCase(), String(tk).toLowerCase() === USDG ? bal.usdg : 0n]));
+    };
+    eng.positions.refreshLeftovers = async () => {};
+    eng.ethUsd = 2500;
+    // Bacaan pertama: 'latest', kas $1000.
+    assert.strictEqual((await eng.freshCash()).usdg, 1000);
+    assert.deepStrictEqual(reads, ['latest']);
+    // Tanpa tx, permintaan berikutnya memakai cache — tidak ada RPC lagi.
+    assert.strictEqual((await eng.freshCash()).usdg, 1000);
+    assert.strictEqual(reads.length, 1);
+    // Posisi dibuka: $200 keluar dari wallet, tx masuk blok 500. Kas lama ($1000)
+    // + posisi baru ($200) = total kelebihan $200 — bug yang dilaporkan.
+    bal.usdg = 800_000_000n;
+    eng.exec.txSeq++; eng.exec.minedBlock = 500;
+    // Dua permintaan bersamaan (dua tab) berbagi satu bacaan, dipatok di blok tx-nya.
+    const [a, b] = await Promise.all([eng.freshCash(), eng.freshCash()]);
+    assert.strictEqual(a.usdg, 800); assert.strictEqual(b.usdg, 800);
+    assert.deepStrictEqual(reads, ['latest', '0x1f4']);
+    // Sesudah itu kembali 'latest' (setoran masuk tanpa tx dari bot tetap terbaca).
+    bal.usdg = 850_000_000n;
+    await eng.refreshCash();
+    assert.strictEqual(eng.cash.usdg, 850);
+    assert.strictEqual(reads[2], 'latest');
+    // RPC gagal saat kas basi: angka lama dikembalikan, bukan null/lempar.
+    eng.exec.txSeq++;
+    eng.exec.balances = async () => { throw new Error('429'); };
+    assert.strictEqual((await eng.freshCash()).usdg, 850);
+  });
+
+  await t('receipt yang terbaca menandai tx masuk blok — sukses maupun gagal (gas tetap terbakar)', async () => {
+    const { Executor } = require('../src/executor');
+    const store = new Store(':memory:');
+    const calls = [];
+    const rpc = { call: async (m, [h]) => { calls.push(m); return { status: h === '0xbad' ? '0x0' : '0x1', gasUsed: '0x5208', blockNumber: '0x64' }; } };
+    const ex = new Executor({ rpc, store, chain: {}, cfg: {}, log: () => {} });
+    assert.strictEqual(ex.txSeq, 0);
+    await ex.waitReceipt('0xgood');
+    assert.strictEqual(ex.txSeq, 1); assert.strictEqual(ex.minedBlock, 100);
+    await ex.waitReceipt('0xbad');
+    assert.strictEqual(ex.txSeq, 2);
+  });
+
   console.log(`\n${pass} lulus, ${fail} gagal`);
   process.exit(fail ? 1 : 0);
 })();

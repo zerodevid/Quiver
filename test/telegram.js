@@ -119,6 +119,7 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
     saveLeftovers: () => {}, dropLeftover: () => {}, sellToken: async () => 'terjual',
     executeExit: async () => ({ txHash: '0xee' }),
     rulesFrom: () => rulesFor(cfg.rules, null),
+    freshCash() { return this.cash || null; }, refreshCash: async () => null,
     notify(msg, detail) { if (this.onNotify) this.onNotify(msg, detail); },
     dibuka: [], ditukar: [],
     executeEntry: async function (plan, act) { this.dibuka.push({ plan, act }); return { txHash: '0xmint', positionId: 9, note: 'USDG/MEME $50,00' }; },

@@ -37,6 +37,7 @@ function dunia({ live = [], lastSync = T0, resync } = {}) {
   const engine = {
     cfg, store, ethUsd: 2500, positions: pos, watcher: { unsupported: new Map() },
     exec: { address: () => null, balances: async () => new Map() }, leftovers: () => [], dryRun: () => true,
+    freshCash: async () => null, refreshCash: async () => null,
   };
   const server = createServer({ engine, store, cfg, cfgPath, chain: {}, rpc: {}, log: () => {}, telegram: null });
   store.run('INSERT INTO tokens(address,symbol,decimals) VALUES(?,?,?)', ADDR.usdg, 'USDG', 6);
