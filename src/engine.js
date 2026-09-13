@@ -389,9 +389,11 @@ class Engine {
     }
     const sum = this.positions.summary(this.ethUsd);
     const since = Date.now() - 86400_000;
-    const spent = this.store.get(
+    // Anggaran harian = modal posisi yang DIBUKA 24 jam terakhir + TAMBAHAN ke posisi yang
+    // lebih tua (dulu tidak terhitung: menambah ke posisi berumur 2 hari lolos anggaran).
+    const spent = (this.store.get(
       "SELECT COALESCE(SUM(cost_quote * CASE WHEN quote_symbol IN ('ETH','WETH') THEN ? ELSE 1 END),0) AS s FROM positions WHERE opened_ts > ?",
-      this.ethUsd, since)?.s || 0;
+      this.ethUsd, since)?.s || 0) + this.increasesUsdSince(since);
 
     if (rules.filters.min_pool_age_minutes > 0 && act.venue === 'v4' && act.poolRef) {
       try {
@@ -467,6 +469,19 @@ class Engine {
       this.decide(act.id, 'error', String(e.message).slice(0, 300), d.plan);
       this.store.log('error', `eksekusi masuk: ${e.message}`);
     }
+  }
+
+  // Nilai (USD) tambahan likuiditas yang berhasil disalin sejak `since`, ke posisi yang
+  // dibuka SEBELUM `since` (yang lebih baru sudah terhitung lewat cost_quote-nya).
+  increasesUsdSince(since) {
+    const rows = this.store.all(
+      "SELECT d.plan FROM decisions d JOIN positions p ON p.id = d.position_id WHERE d.verdict='copy' AND d.ts > ? AND p.opened_ts <= ? AND d.plan IS NOT NULL",
+      since, since);
+    let usd = 0;
+    for (const r of rows) {
+      try { const pl = JSON.parse(r.plan); if (pl.action === 'increase' && Number.isFinite(pl.valueUsd)) usd += pl.valueUsd; } catch { /* rencana lama */ }
+    }
+    return usd;
   }
 
   async handleExit(act, rules) {

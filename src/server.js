@@ -1568,6 +1568,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       return res.end(img.buf);
     }
     if (routes[key]) {
+      // CSRF: permintaan yang mengubah sesuatu harus datang dari halaman dasbor sendiri.
+      // Peramban modern selalu mengirim Origin (dan Sec-Fetch-Site) pada POST; asal lain
+      // ditolak. Tanpa header (curl, skrip, bot Telegram lewat callApi) tetap lewat —
+      // gerbang tokennya yang menjaga.
+      if (req.method !== 'GET') {
+        const origin = req.headers.origin;
+        const site = req.headers['sec-fetch-site'];
+        let host = null;
+        try { host = origin ? new URL(origin).host : null; } catch { host = '(rusak)'; }
+        if ((host && host !== req.headers.host) || site === 'cross-site') return json(res, 403, { error: 'permintaan lintas situs ditolak' });
+      }
       // Detail kesalahan tak terduga hanya ke log; ke klien pesan generik supaya
       // path filesystem / detail RPC tidak bocor. Kesalahan yang memang perlu
       // ditampilkan sudah dikembalikan tiap rute sebagai {error} dengan status 200.

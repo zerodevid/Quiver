@@ -678,5 +678,6 @@
   "{0} mnt": "{0}m",
   "📤 Bagikan kartu": "📤 Share card",
   "📤 Bagikan total PnL": "📤 Share total PnL",
-  "Kartu dikirim.": "Card sent."
+  "Kartu dikirim.": "Card sent.",
+  "❌ Grup tidak bisa disambungkan: semua anggota grup akan bisa mengendalikan bot. Sambungkan dari chat pribadi, atau nyalakan telegram.allow_groups di config kalau memang disengaja.": "❌ Groups cannot be paired: every member would be able to control the bot. Pair from a private chat, or enable telegram.allow_groups in the config if that is intended."
 }

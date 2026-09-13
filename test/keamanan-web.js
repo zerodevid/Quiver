@@ -32,7 +32,7 @@ function serve({ throws = false } = {}) {
   const pos = { live: [], lastSync: 0, resync: async () => {} };
   const engine = {
     cfg, store, ethUsd: 2500, positions: pos, watcher: { unsupported: new Map() },
-    exec: { address: () => null, balances: async () => new Map() }, leftovers: () => [], dryRun: () => true,
+    exec: { address: () => null, balances: async () => new Map() }, leftovers: () => [], dryRun: () => true, paused: () => store.getState('paused', '0') === '1',
     // status() melempar pesan yang memuat "rahasia" -> harus tidak bocor ke klien.
     compound: throws ? { status: () => { throw new Error('detail internal /etc/rahasia'); }, configure: () => {} } : undefined,
   };
@@ -56,6 +56,23 @@ function serve({ throws = false } = {}) {
       assert.equal(r.headers.get('x-frame-options'), 'DENY');
       assert.match(r.headers.get('content-security-policy') || '', /frame-ancestors 'none'/);
       assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+    } finally { await s.close(); }
+  });
+
+  await t('CSRF: POST /api dari Origin lain atau Sec-Fetch-Site cross-site ditolak; asal sendiri & tanpa Origin lewat', async () => {
+    const s = await serve();
+    try {
+      const hdr = (extra) => ({ 'content-type': 'application/json', authorization: `Bearer ${TOKEN}`, ...extra });
+      const host = s.base.replace('http://', '');
+      const bad = await fetch(`${s.base}/api/mode`, { method: 'POST', headers: hdr({ origin: 'https://jahat.example' }), body: '{"paused":true}' });
+      assert.equal(bad.status, 403);
+      const bad2 = await fetch(`${s.base}/api/mode`, { method: 'POST', headers: hdr({ 'sec-fetch-site': 'cross-site' }), body: '{"paused":true}' });
+      assert.equal(bad2.status, 403);
+      assert.equal(s.store.getState('paused', '0'), '0', 'tidak ada yang berubah');
+      const ok = await fetch(`${s.base}/api/mode`, { method: 'POST', headers: hdr({ origin: `http://${host}`, 'sec-fetch-site': 'same-origin' }), body: '{"paused":true}' });
+      assert.equal(ok.status, 200);
+      const ok2 = await fetch(`${s.base}/api/mode`, { method: 'POST', headers: hdr({}), body: '{"paused":false}' });
+      assert.equal(ok2.status, 200);
     } finally { await s.close(); }
   });
 

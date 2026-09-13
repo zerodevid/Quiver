@@ -661,6 +661,12 @@ class Telegram {
     if (!this.chats().includes(chatId)) {
       const m = text.match(PAIR_RE);
       if (m) {
+        // Bot ini bisa menutup posisi dan menyalakan LIVE; di grup SEMUA anggota bisa
+        // menekan tombolnya. Hanya chat pribadi yang boleh disambungkan, kecuali
+        // telegram.allow_groups sengaja dinyalakan di config.
+        if (msg.chat.type && msg.chat.type !== 'private' && !this.cfg.telegram?.allow_groups) {
+          return this.send(chatId, tr("❌ Grup tidak bisa disambungkan: semua anggota grup akan bisa mengendalikan bot. Sambungkan dari chat pribadi, atau nyalakan telegram.allow_groups di config kalau memang disengaja."));
+        }
         const r = this.tryPair(chatId, m[1]);
         if (r.error) return this.send(chatId, `❌ ${esc(note(r.error))}`);
         return this.screen(chatId, null, 'h', tr("✅ Chat tersambung. Selamat datang di <b>Quiver</b>.\n\n"));
