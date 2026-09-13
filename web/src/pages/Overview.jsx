@@ -351,6 +351,15 @@ export default function Overview() {
             empty={<Empty title="Tidak ada posisi aktif" sub="Posisi muncul di sini setelah bot menyalin LP dari wallet target." />}
             columns={[
               { key: 'pair', label: 'Pasangan', sort: (x) => `${x.symbol0}/${x.symbol1}`, render: (x) => <Pair p={x} /> },
+              // Versi ringkas kolom Sumber di halaman Posisi: cukup siapa yang disalin
+              // (rincian PnL target ada di sana), supaya panel ringkasan tetap padat.
+              { key: 'tgt', label: 'Sumber', sort: (x) => x.targetLabel || x.target || '', render: (x) => (
+                x.target ? (
+                  <a href={'#targets/' + x.target} className="group block max-w-40" title={x.target}>
+                    {x.targetLabel && <div className="truncate font-medium group-hover:underline">{x.targetLabel}</div>}
+                    <div className="mono text-xs whitespace-nowrap text-muted group-hover:text-foreground">{short(x.target)}</div>
+                  </a>
+                ) : <span className="text-xs text-muted">{t('Manual / di luar bot')}</span>) },
               { key: 'range', label: 'Rentang harga', sortable: false, render: (x) => (
                 <PriceRange lo={x.tick_lower} hi={x.tick_upper} cur={x.curTick}
                   dec0={x.dec0} dec1={x.dec1} quoteSide={x.quoteSide} symbol0={x.symbol0} symbol1={x.symbol1}
