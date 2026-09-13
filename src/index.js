@@ -31,10 +31,22 @@ async function main() {
   const store = new Store(cfg.db.path);
   const logFile = path.join(ROOT, 'logs', 'lpcopy.log');
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  // Di bawah pm2 stdout sudah ditulis ke logs/<nama>.log (ecosystem.config.cjs) — untuk
+  // instance "lpcopy" itu berkas yang SAMA, jadi setiap baris dulu tercatat dua kali dan
+  // berkasnya tumbuh tanpa batas. Di bawah pm2 cukup stdout (rotasi: pm2-logrotate).
+  // Tanpa pm2 (npm start) tetap ditulis ke berkas, diputar di 20 MB.
+  const underPm2 = process.env.pm_id !== undefined;
+  const LOG_MAX = 20 * 1024 * 1024;
+  let logBytes = (() => { try { return fs.statSync(logFile).size; } catch { return 0; } })();
   const log = (msg) => {
     const line = `${ts()} ${msg}`;
     console.log(line);
-    try { fs.appendFileSync(logFile, line + '\n'); } catch { /* abaikan */ }
+    if (underPm2) return;
+    try {
+      if (logBytes > LOG_MAX) { fs.renameSync(logFile, `${logFile}.1`); logBytes = 0; }
+      fs.appendFileSync(logFile, line + '\n');
+      logBytes += Buffer.byteLength(line) + 1;
+    } catch { /* abaikan */ }
   };
   // Hanya NAMA variabel yang dicatat — nilainya tidak pernah masuk log.
   if (DOTENV.file) {

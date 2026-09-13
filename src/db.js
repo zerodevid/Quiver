@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS decisions (
   FOREIGN KEY(action_id) REFERENCES actions(id)
 );
 CREATE INDEX IF NOT EXISTS idx_dec_ts ON decisions(ts DESC);
+-- handle() menanyakan "sudah diputuskan?" untuk SETIAP aksi, dan backfill menggabungkan
+-- actions dengan decisions: tanpa indeks keduanya memindai seluruh tabel (O(n²) saat start).
+CREATE INDEX IF NOT EXISTS idx_dec_action ON decisions(action_id);
 
 -- posisi milik kita
 CREATE TABLE IF NOT EXISTS positions (
@@ -85,6 +88,7 @@ CREATE TABLE IF NOT EXISTS positions (
 );
 CREATE INDEX IF NOT EXISTS idx_pos_status ON positions(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pos_token ON positions(venue, token_id) WHERE token_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_pos_mirror ON positions(mirror_of, target);
 
 -- cache metadata pool
 CREATE TABLE IF NOT EXISTS pools (
@@ -115,6 +119,7 @@ CREATE TABLE IF NOT EXISTS txs (
   gas_used   INTEGER, gas_price TEXT, gas_quote REAL,
   error      TEXT, detail TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_txs_kind_ts ON txs(kind, ts);
 
 -- wallet_quote: kas di wallet (USDG + ETH + WETH, USD); NULL = tidak terbaca.
 -- total_quote = kas + nilai posisi + fee belum diklaim.
