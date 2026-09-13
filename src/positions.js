@@ -515,11 +515,14 @@ class Positions {
   }
 
   // Posisi yang perlu ditutup karena aturan mandiri (bukan karena target keluar).
+  // `rules`: objek aturan, atau fungsi (posisi) -> aturan. Engine memakai fungsi supaya
+  // aturan keluar PER TARGET (stop loss, take profit, umur, di luar rentang) berlaku —
+  // form aturan per-target menampilkannya, dan dulu diam-diam diabaikan.
   exitTriggers(rules) {
     const now = Date.now();
     const outs = [];
     for (const p of this.live) {
-      const e = rules.exit;
+      const e = (typeof rules === 'function' ? rules(p) : rules).exit;
       if (p.empty) { outs.push({ pos: p, reason: 'likuiditas sudah nol di chain' }); continue; }
       // Nilai/likuiditas basi (RPC gagal): stop loss, take profit, dan di-luar-rentang tidak
       // boleh dinilai dari angka lama — tunggu sinkron yang terbaca.

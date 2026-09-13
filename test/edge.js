@@ -773,6 +773,129 @@ async function t(name, fn) {
     assert.strictEqual((await w.scan(1, 1)).length, 0);
   });
 
+  await t('target dimatikan tapi masih punya cermin terbuka -> HANYA sinyal keluar untuk cermin itu yang dicatat', async () => {
+    const w = watcherWith({
+      modLiq: [], npm: [],
+      xferV4: [
+        log(ADDR.posmV4, [TOPIC_TRANSFER, pad32(TARGET), pad32(LAIN), pad32('0x7b')]),   // cermin kita (#123)
+        log(ADDR.posmV4, [TOPIC_TRANSFER, pad32(TARGET), pad32(LAIN), pad32('0x7c')]),   // bukan cermin
+      ],
+    });
+    w.store.run('UPDATE targets SET enabled=0 WHERE address=?', TARGET);
+    w.store.run(`INSERT INTO positions(venue,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,target,mirror_of,status,opened_ts)
+      VALUES('v4','5',?,?,?,-600,600,'1',?,'123','open',?)`, POOL, USDG, MEME, TARGET, Date.now());
+    const acts = await w.scan(1, 1);
+    assert.deepStrictEqual(acts.map((a) => [a.kind, a.tokenId]), [['transfer_out', '123']]);
+  });
+
+  await t('bot dijeda -> sinyal MASUK dilewati, sinyal KELUAR target tetap diikuti', async () => {
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
+      targetLiquidityAfter: 6n * 10n ** 19n,
+    });
+    store.run("INSERT INTO state(k,v) VALUES('paused','1')");
+    await eng.handle(rec(store, action({ tokenId: '1000' })));
+    assert.match(verdictOf(store).reason, /dijeda/);
+    await eng.handle(rec(store, action({ kind: 'decrease', liquidity: (-4n * 10n ** 19n).toString() })));
+    assert.strictEqual(verdictOf(store).verdict, 'copy', verdictOf(store).reason);
+    assert.strictEqual(sent.filter((x) => x.kind === 'decrease').length, 1);
+  });
+
+  await t('target dimatikan -> entry dilewati, tapi keluar penuh untuk cermin yang ada tetap diikuti', async () => {
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
+      targetLiquidityAfter: 0n,
+    });
+    store.run('UPDATE targets SET enabled=0');
+    await eng.handle(rec(store, action({ tokenId: '1000' })));
+    assert.match(verdictOf(store).reason, /dimatikan/);
+    await eng.handle(rec(store, action({ kind: 'decrease', liquidity: (-(10n ** 20n)).toString() })));
+    assert.strictEqual(verdictOf(store).verdict, 'copy', verdictOf(store).reason);
+    assert.strictEqual(sent.filter((x) => x.kind === 'burn').length, 1);
+  });
+
+  await t('target punya posisi A & B identik, kita cuma cermin A; target tutup B -> cermin A TIDAK ikut ditutup', async () => {
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
+      targetLiquidityAfter: 0n,
+    });
+    await eng.handle(rec(store, action({ kind: 'decrease', tokenId: '888', liquidity: (-(10n ** 20n)).toString() })));
+    assert.strictEqual(verdictOf(store).verdict, 'skip');
+    assert.strictEqual(sent.length, 0);
+    assert.strictEqual(store.get('SELECT status FROM positions').status, 'open');
+  });
+
+  await t('cadangan pool+rentang tetap bekerja untuk posisi yang asal tokenId-nya tidak tercatat', async () => {
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      positions: [{ tokenId: '5', mirrorOf: null, liquidity: (10n ** 20n).toString() }],
+      targetLiquidityAfter: 0n,
+    });
+    await eng.handle(rec(store, action({ kind: 'decrease', tokenId: '888', liquidity: (-(10n ** 20n)).toString() })));
+    assert.strictEqual(verdictOf(store).verdict, 'copy', verdictOf(store).reason);
+    assert.strictEqual(sent.filter((x) => x.kind === 'burn').length, 1);
+  });
+
+  await t('dua cermin untuk satu posisi target (rentang berbeda) -> tarik sebagian mengenai KEDUANYA, satu keputusan', async () => {
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      positions: [
+        { tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() },
+        { tokenId: '6', mirrorOf: '999', liquidity: (2n * 10n ** 20n).toString(), tickLower: -1200, tickUpper: 1200 },
+      ],
+      targetLiquidityAfter: 6n * 10n ** 19n,
+    });
+    const a = rec(store, action({ kind: 'decrease', liquidity: (-4n * 10n ** 19n).toString() }));
+    await eng.handle(a);
+    assert.strictEqual(sent.filter((x) => x.kind === 'decrease').length, 2);
+    assert.deepStrictEqual(store.all('SELECT liquidity FROM positions ORDER BY id').map((r) => r.liquidity), [(6n * 10n ** 19n).toString(), (12n * 10n ** 19n).toString()]);
+    assert.strictEqual(store.get('SELECT COUNT(*) n FROM decisions WHERE action_id=?', a.id).n, 1);
+    assert.strictEqual(verdictOf(store).verdict, 'copy');
+  });
+
+  await t('dua cermin, target menambah di rentang cermin KEDUA -> menambah cermin kedua, bukan posisi baru', async () => {
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      positions: [
+        { tokenId: '5', mirrorOf: '999', liquidity: (10n ** 19n).toString(), tickLower: -1200, tickUpper: 1200 },
+        { tokenId: '6', mirrorOf: '999', liquidity: (10n ** 19n).toString() },
+      ],
+    });
+    await eng.handle(rec(store, action()));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'copy', v.reason);
+    assert.match(v.reason, /menambah posisi #2/);
+    assert.strictEqual(sent.filter((x) => x.kind === 'increase').length, 1);
+    assert.strictEqual(store.get("SELECT COUNT(*) n FROM positions WHERE status='open'").n, 2);
+  });
+
+  await t('stop loss PER TARGET berlaku di pemicu keluar mandiri (global mati); target lain & posisi manual pakai global', async () => {
+    const { eng, store } = harness({ balances: RICH, positions: [
+      { tokenId: '5', mirrorOf: '999', liquidity: '1000' },
+      { tokenId: '6', mirrorOf: '998', liquidity: '1000' },
+    ] });
+    const LAIN2 = '0x' + '77'.repeat(20);
+    store.run('INSERT INTO targets(address,label,enabled,added_ts) VALUES(?,?,1,?)', LAIN2, 'lain', Date.now());
+    store.run('UPDATE positions SET target=? WHERE token_id=?', LAIN2, '6');
+    store.run('UPDATE targets SET rules=? WHERE address=?', JSON.stringify({ exit: { stop_loss_pct: 10 } }), TARGET);
+    const rows = store.all("SELECT * FROM positions ORDER BY id");
+    eng.positions.live = rows.map((r) => ({ ...r, pnlPct: -50, inRange: true, ageHours: 1 }));
+    for (const k of ['reconcileFeeClaims', 'reconcileExits', 'bookPendingMints', 'bookPendingExits', 'recoverStrandedZaps', 'refreshCash']) eng[k] = async () => {};
+    eng.compound.reconcile = async () => {}; eng.compound.tick = async () => {};
+    eng.positions.sync = async () => eng.positions.live;
+    eng.positions.refreshLeftovers = async () => {};
+    eng.capital.available = () => false;
+    eng.cfg.prices = { auto_eth_price: false };
+    eng.lastAdopt = Date.now();
+    const closed = [];
+    eng.executeExit = async (plan, pos) => { closed.push(pos.token_id); return { note: 'ok' }; };
+    await eng.syncPositionsOnce();
+    assert.deepStrictEqual(closed, ['5']);
+  });
+
   console.log(`\n${pass} lulus, ${fail} gagal`);
   process.exit(fail ? 1 : 0);
 })();

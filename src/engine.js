@@ -325,8 +325,12 @@ class Engine {
     if (act.id != null && this.store.get('SELECT 1 FROM decisions WHERE action_id=?', act.id)) return;
     const t = this.store.get('SELECT * FROM targets WHERE address=?', act.target);
     if (!t) return;
-    if (!t.enabled) return this.decide(act.id, 'skip', 'target sedang dimatikan');
-    if (this.paused()) return this.decide(act.id, 'skip', 'bot sedang dijeda');
+    // Jeda dan target yang dimatikan hanya menghentikan MASUK. Sinyal keluar target
+    // untuk posisi yang sudah kita pegang tetap diikuti: dulu keduanya diputuskan "skip"
+    // selamanya — keluar penuh baru tertolong rekonsiliasi, tarik sebagian hilang.
+    const exit = act.kind === 'decrease' || act.kind === 'transfer_out';
+    if (!exit && !t.enabled) return this.decide(act.id, 'skip', 'target sedang dimatikan');
+    if (!exit && this.paused()) return this.decide(act.id, 'skip', 'bot sedang dijeda');
     const rules = this.rulesFrom(act.target);
 
     if (act.kind === 'increase') return this.handleEntry(act, rules);
@@ -388,22 +392,27 @@ class Engine {
     // Kalau kita sudah punya cermin posisi ini, target sedang MENAMBAH — jadi kita
     // menambah juga, bukan membuka posisi kedua. Dicari SEBELUM menilai: batas jumlah
     // posisi tidak berlaku (tidak ada posisi baru) dan batas per posisi dihitung dari total.
-    const mirror = this.store.get("SELECT * FROM positions WHERE status='open' AND mirror_of=? AND target=? AND token_id IS NOT NULL",
+    // Bisa lebih dari satu cermin (mode rentang selain "exact"): yang menentukan adalah
+    // cermin dengan rentang yang SAMA dengan rencana; itu yang ditambah.
+    const mirrors = this.store.all("SELECT * FROM positions WHERE status='open' AND mirror_of=? AND target=? AND token_id IS NOT NULL ORDER BY id",
       act.tokenId ?? '', act.target);
-    const mirrorLive = mirror && this.positions.live.find((p) => p.id === mirror.id);
-    const existingUsd = mirror
-      ? (mirrorLive?.valueUsd ?? Math.max(0, (mirror.cost_quote || 0) - (mirror.out_quote || 0)) * usdPerQuote(mirror.quote_symbol, this.ethUsd))
-      : null;
+    const usdOfMirror = (mp) => {
+      const lv = this.positions.live.find((p) => p.id === mp.id);
+      return lv?.valueUsd ?? Math.max(0, (mp.cost_quote || 0) - (mp.out_quote || 0)) * usdPerQuote(mp.quote_symbol, this.ethUsd);
+    };
+    let mirror = mirrors[0] || null;
     const ctx = {
       chain: this.chain, rules, slot0: act.slot0, dec0: toks[0].decimals, dec1: toks[1].decimals,
       ethUsd: this.ethUsd, openExposureUsd: sum.exposureUsd, spentTodayUsd: spent, openCount: sum.openCount,
-      cash, existingUsd,
+      cash, existingUsd: mirror ? usdOfMirror(mirror) : null,
     };
     let d = planEntry(act, ctx);
-    // Rentang hasil aturan (recenter/scale/…) berbeda dari cermin yang ada: ini posisi BARU,
-    // jadi dinilai ulang dengan batas posisi baru.
+    // Rentang hasil aturan (recenter/scale/…) tidak sama dengan cermin pertama: cari cermin
+    // lain yang rentangnya sama; kalau tidak ada, ini posisi BARU dengan batas posisi baru.
     if (mirror && d.verdict === 'copy' && !(mirror.tick_lower === d.plan.tickLower && mirror.tick_upper === d.plan.tickUpper)) {
-      d = planEntry(act, { ...ctx, existingUsd: null });
+      const same = mirrors.find((mp) => mp.tick_lower === d.plan.tickLower && mp.tick_upper === d.plan.tickUpper) || null;
+      mirror = same;
+      d = planEntry(act, { ...ctx, existingUsd: same ? usdOfMirror(same) : null });
     }
     if (d.verdict !== 'copy') return this.decide(act.id, 'skip', d.reason);
 
@@ -437,48 +446,27 @@ class Engine {
   }
 
   async handleExit(act, rules) {
-    // Cari cermin posisinya. Aksi transfer_out tidak membawa info pool sama sekali
-    // (cuma tokenId), jadi query cadangan hanya dipakai kalau datanya memang ada —
-    // mengikat undefined ke SQLite akan melempar.
-    let pos = this.store.get(
-      "SELECT * FROM positions WHERE status='open' AND mirror_of=? AND target=?", act.tokenId ?? '', act.target);
-    if (!pos && act.poolRef && act.tickLower != null && act.tickUpper != null) {
-      // Cadangan: cocokkan lewat pool + rentang. Target bisa punya beberapa posisi
-      // identik di pool yang sama, jadi ambil yang TERTUA supaya deterministik, dan
-      // catat pemakaiannya — kalau jalur ini sering terpakai, berarti mirror_of tidak
-      // tercatat dengan benar saat masuk.
-      pos = this.store.get(
-        "SELECT * FROM positions WHERE status='open' AND pool_ref=? AND target=? AND tick_lower=? AND tick_upper=? ORDER BY id ASC LIMIT 1",
+    // SEMUA cermin posisi ini. Dengan mode rentang selain "exact" satu posisi target bisa
+    // punya dua cermin (target menambah di rentang yang dihitung ulang berbeda); dulu hanya
+    // satu yang ikut ditarik/ditutup.
+    let mirrors = this.store.all(
+      "SELECT * FROM positions WHERE status='open' AND mirror_of=? AND target=? ORDER BY id", act.tokenId ?? '', act.target);
+    if (!mirrors.length && act.poolRef && act.tickLower != null && act.tickUpper != null) {
+      // Cadangan pool + rentang HANYA untuk posisi yang asal tokenId-nya tidak tercatat
+      // (mirror_of kosong). Dulu semua posisi ikut: target yang punya posisi A dan B
+      // identik — kita cuma mencermin A — menutup B, lalu cermin A ikut ditutup.
+      // (Aksi transfer_out tidak membawa info pool; mengikat undefined ke SQLite melempar.)
+      const pos = this.store.get(
+        "SELECT * FROM positions WHERE status='open' AND pool_ref=? AND target=? AND tick_lower=? AND tick_upper=? AND mirror_of IS NULL ORDER BY id ASC LIMIT 1",
         act.poolRef, act.target, act.tickLower, act.tickUpper);
-      if (pos) this.store.log('warn', `cermin posisi dicocokkan lewat pool+rentang (bukan tokenId) untuk aksi #${act.tokenId} -> posisi #${pos.id}`);
-    }
-    if (!pos) return this.decide(act.id, 'skip', 'tidak ada cermin posisi yang cocok');
-
-    // Target memindahkan/menjual NFT posisinya: buat kita itu sinyal keluar penuh.
-    if (act.kind === 'transfer_out') {
-      const poolKeyT = pos.venue === 'v4' ? await this.poolKeyOf(pos) : null;
-      const planT = {
-        venue: pos.venue, action: 'burn', full: true, positionId: pos.id, tokenId: pos.token_id,
-        liquidity: pos.liquidity, poolKey: poolKeyT, poolRef: pos.pool_ref,
-        mirrorOf: act.tokenId, target: act.target,
-      };
-      if (!rules.exit.follow_target) return this.decide(act.id, 'skip', 'ikut-keluar dimatikan');
-      if (this.dryRun() || !this.exec.address()) return this.decide(act.id, 'dry', 'target memindahkan posisinya', planT);
-      try {
-        const r = await this.executeExitRetry(planT, pos);
-        this.decide(act.id, 'copy', `target memindahkan posisinya — ${r.note}`, planT, r.txHash, pos.id);
-        this.notify(`LP ditutup: target memindahkan posisinya — ${r.note}`, {
-          kind: 'exit', positionId: pos.id, txHash: r.txHash, full: true, sold: r.sold,
-          target: act.target, mirrorOf: act.tokenId, reason: 'target memindahkan posisinya',
-        });
-      } catch (e) {
-        this.stats.errors++;
-        this.decide(act.id, 'error', String(e.message).slice(0, 300), planT);
+      if (pos) {
+        this.store.log('warn', `cermin posisi dicocokkan lewat pool+rentang (bukan tokenId) untuk aksi #${act.tokenId} -> posisi #${pos.id}`);
+        mirrors = [pos];
       }
-      return;
     }
+    if (!mirrors.length) return this.decide(act.id, 'skip', 'tidak ada cermin posisi yang cocok');
 
-    // berapa L target sebelum menarik? = L sekarang + yang ditarik
+    // berapa L target sebelum menarik? = L sesudah aksi + yang ditarik
     //
     // Gagal baca TIDAK boleh dianggap nol: nol berarti "target tutup penuh" dan cermin
     // kita di-burn seluruhnya — padahal target mungkin cuma menarik 10%. Dicoba beberapa
@@ -490,34 +478,77 @@ class Engine {
     // terbaca tutup penuh), dan node yang tertinggal menjawab likuiditas SEBELUM aksi.
     // Aksi lain pada NFT yang sama di blok yang sama (sesudah aksi ini) dikembalikan dulu.
     let before = null;
-    for (let i = 0; i < 3 && before == null; i++) {
-      if (i) await new Promise((r) => setTimeout(r, 1500));
+    if (act.kind === 'decrease') {
+      for (let i = 0; i < 3 && before == null; i++) {
+        if (i) await new Promise((r) => setTimeout(r, 1500));
+        try {
+          const got = await this.targetLiquidity(act.venue, act.tokenId, act.block);
+          if (got != null) {
+            const after = got.atBlock ? got.liquidity - this.laterDeltasInBlock(act) : got.liquidity;
+            before = after + (-BigInt(act.liquidity));
+          }
+        } catch { /* coba lagi */ }
+      }
+      if (before == null) {
+        this.store.log('warn', `likuiditas target #${act.tokenId} tidak terbaca dari RPC — aksi keluar dilewati (rekonsiliasi menutup kalau target memang keluar penuh)`);
+        return this.decide(act.id, 'skip', 'likuiditas target tidak terbaca dari RPC');
+      }
+    }
+
+    const outs = [];
+    for (const pos of mirrors) outs.push(await this.exitMirror(act, rules, pos, before));
+    if (outs.length === 1) {
+      const o = outs[0];
+      return this.decide(act.id, o.verdict, o.reason, o.plan, o.txHash ?? null, o.positionId ?? null);
+    }
+    // Beberapa cermin, satu keputusan per aksi.
+    const pick = outs.find((o) => o.verdict === 'copy') || outs.find((o) => o.verdict === 'error')
+      || outs.find((o) => o.verdict === 'dry') || outs[0];
+    const reason = outs.map((o) => `#${o.posId}: ${o.reason}`).join(' · ');
+    return this.decide(act.id, pick.verdict, reason.slice(0, 600), pick.plan, pick.txHash ?? null, pick.positionId ?? null);
+  }
+
+  // Satu cermin untuk satu aksi keluar target. Tidak menulis keputusan — hasilnya
+  // dikembalikan ke handleExit: {verdict, reason, plan, txHash, positionId, posId}.
+  async exitMirror(act, rules, pos, before) {
+    const out = (verdict, reason, plan = null, extra = {}) => ({ verdict, reason, plan, posId: pos.id, ...extra });
+    // Target memindahkan/menjual NFT posisinya: buat kita itu sinyal keluar penuh.
+    if (act.kind === 'transfer_out') {
+      const poolKeyT = pos.venue === 'v4' ? await this.poolKeyOf(pos) : null;
+      const planT = {
+        venue: pos.venue, action: 'burn', full: true, positionId: pos.id, tokenId: pos.token_id,
+        liquidity: pos.liquidity, poolKey: poolKeyT, poolRef: pos.pool_ref,
+        mirrorOf: act.tokenId, target: act.target,
+      };
+      if (!rules.exit.follow_target) return out('skip', 'ikut-keluar dimatikan');
+      if (this.dryRun() || !this.exec.address()) return out('dry', 'target memindahkan posisinya', planT);
       try {
-        const got = await this.targetLiquidity(act.venue, act.tokenId, act.block);
-        if (got != null) {
-          const after = got.atBlock ? got.liquidity - this.laterDeltasInBlock(act) : got.liquidity;
-          before = after + (-BigInt(act.liquidity));
-        }
-      } catch { /* coba lagi */ }
+        const r = await this.executeExitRetry(planT, pos);
+        this.notify(`LP ditutup: target memindahkan posisinya — ${r.note}`, {
+          kind: 'exit', positionId: pos.id, txHash: r.txHash, full: true, sold: r.sold,
+          target: act.target, mirrorOf: act.tokenId, reason: 'target memindahkan posisinya',
+        });
+        return out('copy', `target memindahkan posisinya — ${r.note}`, planT, { txHash: r.txHash, positionId: pos.id });
+      } catch (e) {
+        this.stats.errors++;
+        return out('error', String(e.message).slice(0, 300), planT);
+      }
     }
-    if (before == null) {
-      this.store.log('warn', `likuiditas target #${act.tokenId} tidak terbaca dari RPC — aksi keluar dilewati (rekonsiliasi menutup kalau target memang keluar penuh)`);
-      return this.decide(act.id, 'skip', 'likuiditas target tidak terbaca dari RPC');
-    }
+
     const poolKey = pos.venue === 'v4' ? await this.poolKeyOf(pos) : null;
     const d = planExit({ ...act, liquidityBefore: before }, { ...pos, poolKey }, { rules });
-    if (d.verdict !== 'copy') return this.decide(act.id, 'skip', d.reason);
-    if (this.dryRun() || !this.exec.address()) return this.decide(act.id, 'dry', d.reason, d.plan);
+    if (d.verdict !== 'copy') return out('skip', d.reason);
+    if (this.dryRun() || !this.exec.address()) return out('dry', d.reason, d.plan);
     try {
       const r = await this.executeExitRetry(d.plan, pos);
-      this.decide(act.id, 'copy', `${d.reason} — ${r.note}`, d.plan, r.txHash, pos.id);
       this.notify(`LP ditutup: ${r.note}`, {
         kind: 'exit', positionId: pos.id, txHash: r.txHash, full: !!d.plan.full, sold: r.sold,
         target: act.target, mirrorOf: act.tokenId, reason: d.reason,
       });
+      return out('copy', `${d.reason} — ${r.note}`, d.plan, { txHash: r.txHash, positionId: pos.id });
     } catch (e) {
       this.stats.errors++;
-      this.decide(act.id, 'error', String(e.message).slice(0, 300), d.plan);
+      return out('error', String(e.message).slice(0, 300), d.plan);
     }
   }
 
@@ -2113,8 +2144,8 @@ class Engine {
     await sekali('zap-yatim', 'pemulihan zap tanpa LP', this.recoverStrandedZaps());
     await sekali('kas', 'saldo kas', this.refreshCash());
     await sekali('sisa', 'nilai token sisa', this.positions.refreshLeftovers(this.ethUsd, this.exec.address()));
-    const globalRules = rulesFor(this.cfg.rules);
-    const triggers = this.positions.exitTriggers(globalRules);
+    // Aturan target posisinya sendiri (posisi manual/adopsi tanpa target: aturan global).
+    const triggers = this.positions.exitTriggers((p) => this.rulesFrom(p.target));
     for (const t of triggers) {
       if (this.stopping) break;
       if (this.exiting.has(t.pos.id)) continue;

@@ -137,7 +137,14 @@ class Watcher {
     // Hanya target yang menyala. Aksi target yang dimatikan tidak dicatat sama sekali —
     // tidak menambah daftar aktivitas dan tidak memicu peringatan di dasbor. Bot memang
     // tidak menyalin apa pun dari target mati, jadi tidak ada sinyal yang hilang.
-    const targets = this.enabledSet();
+    //
+    // Satu pengecualian: target yang dimatikan tapi masih punya cermin terbuka. Sinyal
+    // KELUAR-nya untuk cermin itu tetap diambil (dan hanya itu, disaring di bawah) —
+    // mematikan target berarti berhenti menyalin, bukan meninggalkan posisi yang sudah
+    // dibuka tanpa diikuti saat target menariknya.
+    const enabled = this.enabledSet();
+    const exitOnly = this.disabledWithMirrors(enabled);
+    const targets = new Set([...enabled, ...exitOnly.keys()]);
     if (!targets.size) return [];
     const { modLiq, xferV4, npm } = await this.fetchRange(fromBlock, toBlock);
     const actions = [];
@@ -224,7 +231,7 @@ class Watcher {
 
     // Siapa pengirim transaksi LP yang tidak didukung itu? Kalau target, beri
     // peringatan keras — sekali per target, supaya log tidak banjir.
-    if (unsupportedTx.size) await this.warnIfTargetUnsupported([...unsupportedTx], targets);
+    if (unsupportedTx.size) await this.warnIfTargetUnsupported([...unsupportedTx], enabled);
 
     await this.resolveOwners('v4', v4Rows.map((r) => r.tokenId));
 
@@ -258,6 +265,25 @@ class Watcher {
       });
     }
     out.sort((x, y) => x.block - y.block || x.logIndex - y.logIndex);
+    if (!exitOnly.size) return out;
+    return out.filter((a) => {
+      const ids = exitOnly.get(a.target);
+      if (!ids) return true;
+      return (a.kind === 'decrease' || a.kind === 'transfer_out') && ids.has(String(a.tokenId));
+    });
+  }
+
+  // target dimatikan -> Set(tokenId posisi target yang masih kita cermin)
+  disabledWithMirrors(enabled) {
+    const out = new Map();
+    const rows = this.store.all(`SELECT p.target, p.mirror_of FROM positions p JOIN targets t ON t.address = p.target
+      WHERE p.status='open' AND p.mirror_of IS NOT NULL AND t.enabled = 0`);
+    for (const r of rows) {
+      const a = String(r.target).toLowerCase();
+      if (enabled.has(a)) continue;
+      if (!out.has(a)) out.set(a, new Set());
+      out.get(a).add(String(r.mirror_of));
+    }
     return out;
   }
 

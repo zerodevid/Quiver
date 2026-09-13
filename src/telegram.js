@@ -1346,7 +1346,7 @@ class Telegram {
   kesehatan(o) {
     const macet = o.lastSync && Date.now() - o.lastSync > 3 * 60_000;
     const rpcIstirahat = (o.rpc || []).filter((r) => r.cooling).length;
-    if (o.mode.paused) return tr("⏸ <b>Dijeda</b> — aksi target tidak disalin");
+    if (o.mode.paused) return tr("⏸ <b>Dijeda</b> — posisi baru target tidak disalin");
     if (o.chain.lag > 30) return tr("⚠️ <b>Tertinggal {0} blok</b> — aksi target terlambat terbaca", [num(o.chain.lag)]);
     if (macet) return tr("⚠️ <b>Sinkron posisi macet</b> — terakhir {0}", [esc(ago(o.lastSync))]);
     if (rpcIstirahat) return tr("⚠️ <b>{0} RPC istirahat</b> — memakai cadangan", [rpcIstirahat]);
@@ -1802,7 +1802,7 @@ class Telegram {
     await this.api('POST', '/api/mode', { paused });
     if (ack) await ack(paused ? tr("Penyalinan dijeda") : tr("Penyalinan dilanjutkan"));
     const note = paused
-      ? tr("⏸ <b>Penyalinan dijeda.</b> Aksi target tetap dipantau dan dicatat, tapi tidak ada transaksi baru. Posisi yang sudah terbuka tetap dipantau untuk keluar.\n\n")
+      ? tr("⏸ <b>Penyalinan dijeda.</b> Posisi baru dari target tidak disalin. Posisi yang sudah terbuka tetap dilindungi: sinyal keluar target dan aturan keluar tetap dijalankan.\n\n")
       : tr("▶️ <b>Penyalinan dilanjutkan.</b>\n\n");
     return this.screen(chatId, msgId, msgId ? 's' : 'h', note);
   }

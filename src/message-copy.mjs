@@ -30,6 +30,13 @@ const exact = {
 };
 // Captures retain amounts, symbols and identifiers. Nested reasons are translated recursively.
 const rules = [
+  [/^sinyal masuk basi — target masuk (.+) lalu \(batas (.+)\); harga & pool sudah berubah, tidak disalin$/s,
+    'Stale entry signal — the target entered {1} ago (limit {2}); price and pool have moved, not copied',
+    'Sinyal masuk basi — target masuk {1} lalu (batas {2}); harga & pool sudah berubah, tidak disalin'],
+  [/^(\d+) jam (\d+) mnt$/, '{1} h {2} min', '{1} jam {2} mnt'],
+  [/^(\d+) jam$/, '{1} h', '{1} jam'],
+  [/^(\d+) mnt$/, '{1} min', '{1} mnt'],
+  [/^(\d+) dtk$/, '{1} s', '{1} dtk'],
   [/^(.+) \(rentang dikecilkan ke (\d+) blok\)$/s, '{1} (scan range reduced to {2} blocks)', '{1} (rentang pindai dikurangi menjadi {2} blok)'],
   [/^semua endpoint RPC \(yang mendukung getLogs\) tumbang: (.+)$/s, 'All RPC endpoints supporting getLogs failed: {1}', 'Semua endpoint RPC yang mendukung getLogs gagal: {1}'],
   [/^semua endpoint RPC tumbang: (.+)$/s, 'All RPC endpoints failed: {1}', 'Semua endpoint RPC gagal: {1}'],
