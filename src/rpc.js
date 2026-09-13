@@ -238,6 +238,10 @@ class RpcPool {
     return /429|too many|rate.?limit|exceeded|capacity|busy|timeout|timed out|try again|unavailable|no backend|internal error|header not found|missing trie|historical state|upstream|relay|overload/i.test(msg);
   }
 
+  static isRevert(err) {
+    return !!err && (err.code === 3 || /revert/i.test(String(err.message || '')));
+  }
+
   // ---- pemanggilan --------------------------------------------------------
   // calls: [{method, params}] -> hasil sejajar; melempar kalau semua endpoint gagal
   // `used` (opsional): objek yang diisi {ep} — endpoint yang terakhir melayani, supaya
@@ -479,7 +483,10 @@ class RpcPool {
       return { method: 'eth_call', params: [tx, block] };
     }));
     if (strict) {
-      const bad = res.find((r) => !r || r.transient);
+      // Hanya REVERT yang sah dibaca null. Galat lain — sementara, atau "block not found"
+      // / "state not available" dari node yang tidak punya blok yang diminta — melempar:
+      // pemanggil strict justru menyamakan null dengan "NFT dibakar / likuiditas nol".
+      const bad = res.find((r) => !r || r.transient || (r.error && !RpcPool.isRevert(r.error)));
       if (bad) throw new Error(`eth_call tidak terbaca dari RPC: ${bad?.error?.message || 'tidak ada balasan'}`);
     }
     return res.map((r) => (r && !r.error ? r.result : null));

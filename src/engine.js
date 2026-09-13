@@ -484,12 +484,20 @@ class Engine {
     // kita di-burn seluruhnya — padahal target mungkin cuma menarik 10%. Dicoba beberapa
     // kali; kalau tetap tidak terbaca, aksi ini dilewati: kalau target memang keluar
     // penuh, rekonsiliasi keluar (tiap sinkron) yang menutupnya.
+    //
+    // Dibaca DI BLOK AKSI itu (state sesudah blok), bukan `latest`: saat bot tertinggal,
+    // `latest` sudah memuat aksi target sesudahnya (tarik 50% lalu 50% lagi → aksi pertama
+    // terbaca tutup penuh), dan node yang tertinggal menjawab likuiditas SEBELUM aksi.
+    // Aksi lain pada NFT yang sama di blok yang sama (sesudah aksi ini) dikembalikan dulu.
     let before = null;
     for (let i = 0; i < 3 && before == null; i++) {
       if (i) await new Promise((r) => setTimeout(r, 1500));
       try {
-        const now = await this.targetLiquidity(act.venue, act.tokenId);
-        if (now != null) before = now + (-BigInt(act.liquidity));
+        const got = await this.targetLiquidity(act.venue, act.tokenId, act.block);
+        if (got != null) {
+          const after = got.atBlock ? got.liquidity - this.laterDeltasInBlock(act) : got.liquidity;
+          before = after + (-BigInt(act.liquidity));
+        }
       } catch { /* coba lagi */ }
     }
     if (before == null) {
@@ -557,15 +565,36 @@ class Engine {
   // (atau nol) — sehingga tarik sebagian 10% oleh target bisa jadi tutup penuh cermin
   // kita. NPM v3 me-revert positions() untuk NFT yang sudah dibakar (decrease+collect+burn
   // dalam satu multicall, pola keluar paling umum); revert sah itu = likuiditas nol.
-  async targetLiquidity(venue, tokenId) {
-    if (venue === 'v3') {
-      const [w] = await this.rpc.ethCallMany([{ to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('positions', [BigInt(tokenId)]) }], 'latest', { strict: true });
-      if (w == null) return 0n;   // revert sah (strict melempar untuk galat sementara): NFT dibakar
-      if (w === '0x') return null;
-      try { return BigInt(IF_NPM.decodeFunctionResult('positions', w)[7]); } catch { return null; }
+  async targetLiquidity(venue, tokenId, block = null) {
+    const read = async (tag) => {
+      if (venue === 'v3') {
+        const [w] = await this.rpc.ethCallMany([{ to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('positions', [BigInt(tokenId)]) }], tag, { strict: true });
+        if (w == null) return 0n;   // revert sah (strict melempar untuk galat lain): NFT dibakar
+        if (w === '0x') return null;
+        try { return BigInt(IF_NPM.decodeFunctionResult('positions', w)[7]); } catch { return null; }
+      }
+      const [w] = await this.rpc.ethCallMany([{ to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(tokenId)]) }], tag, { strict: true });
+      return w && w !== '0x' ? BigInt(w) : null;
+    };
+    // Blok aksi dulu; node yang belum/tidak lagi punya state blok itu melempar → `latest`.
+    if (block != null && Number.isSafeInteger(Number(block)) && Number(block) > 0) {
+      try {
+        const L = await read('0x' + Number(block).toString(16));
+        if (L != null) return { liquidity: L, atBlock: true };
+      } catch { /* pakai latest */ }
     }
-    const [w] = await this.rpc.ethCallMany([{ to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(tokenId)]) }], 'latest', { strict: true });
-    return w && w !== '0x' ? BigInt(w) : null;
+    const L = await read('latest');
+    return L == null ? null : { liquidity: L, atBlock: false };
+  }
+
+  // Jumlah delta likuiditas aksi target lain pada NFT yang sama, di blok yang sama,
+  // SESUDAH aksi ini (urutan log). State "di blok" sudah memuat semuanya.
+  laterDeltasInBlock(act) {
+    if (act.block == null || act.logIndex == null || act.tokenId == null) return 0n;
+    const rows = this.store.all(
+      "SELECT liquidity FROM actions WHERE target=? AND venue=? AND token_id=? AND block=? AND log_index>? AND kind IN ('increase','decrease') AND liquidity IS NOT NULL",
+      act.target, act.venue, String(act.tokenId), act.block, act.logIndex);
+    return rows.reduce((a, r) => { try { return a + BigInt(r.liquidity); } catch { return a; } }, 0n);
   }
 
   // poolKey posisi kita. Sumber utamanya baris DB sendiri — itu dicatat saat mint dan
@@ -2006,7 +2035,16 @@ class Engine {
         ? { to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('positions', [BigInt(r.mirror_of)]) }
         : { to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(r.mirror_of)]) })), 'latest', { strict: true });
       res = out.map((w, i) => {
-        if (rows[i].venue !== 'v3') return w && w !== '0x' ? BigInt(w) : null;
+        if (rows[i].venue !== 'v3') {
+          if (!w || w === '0x') return null;
+          const L = BigInt(w);
+          // NFT yang belum dikenal node TIDAK revert di v4 — getPositionLiquidity menjawab 0.
+          // Node yang tertinggal (ordofi ~2rb blok) karena itu melihat posisi target yang baru
+          // dimint sebagai "kosong", dan cermin kita yang baru dibuka ditutup. Nol hanya
+          // dipercaya untuk cermin yang sudah >10 menit, sama seperti revert di v3.
+          if (L === 0n && Date.now() - (rows[i].opened_ts || 0) <= 10 * 60_000) return null;
+          return L;
+        }
         // Revert dipercaya sebagai "dibakar" hanya untuk cermin yang sudah >10 menit: node
         // yang tertinggal juga me-revert NFT target yang baru saja dimint.
         if (w == null) return Date.now() - (rows[i].opened_ts || 0) > 10 * 60_000 ? 0n : null;
