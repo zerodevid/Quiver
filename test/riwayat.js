@@ -118,6 +118,28 @@ function isiPosisi(store) {
     assert.equal(x.position.closeUsd, 148); assert.equal(x.position.outUsd, 215.15);
   });
 
+  await t('dua posisi berurutan di pool yang sama: mint/zap tetangga tidak bocor ke riwayat', async () => {
+    // #6 dan #7 seperti di lp2: pool sama, #7 dibuka 90 detik setelah #6 ditutup,
+    // dan sebelum #7 ada zap yang GAGAL berlanjut ke mint (entry batal) — bukan milik siapa pun.
+    const P2 = '0x' + '77'.repeat(32), T1 = T0 + 5_000_000;
+    const pos = (id, opened, closed, txo, txc) => store.run(`INSERT INTO positions(id,venue,token_id,pool_ref,token0,token1,status,opened_ts,closed_ts,
+      cost_quote,out_quote,quote_symbol,tx_open,tx_close) VALUES(?,'v4',?,?,?,?,'closed',?,?,80,80,'USDG',?,?)`, id, String(id * 100), P2, ADDR.usdg, MEME, opened, closed, txo, txc);
+    pos(6, T1 + 30_000, T1 + 120_000, '0xmint6', '0xburn6');
+    pos(7, T1 + 200_000, T1 + 500_000, '0xmint7', '0xburn7');
+    const tx = (hash, ts, kind, detail) => store.run('INSERT INTO txs(hash,ts,kind,status,detail) VALUES(?,?,?,?,?)', hash, ts, kind, 'sukses', JSON.stringify(detail));
+    tx('0xzap6', T1 + 20_000, 'zap_swap', { pool: P2, usdIn: 40, usdOut: 39 });
+    tx('0xmint6', T1 + 30_000, 'mint', { pool: P2, recorded: 6 });                                    // mint lama: zap ditaksir
+    tx('0xburn6', T1 + 120_000, 'burn', { position: 6, closeProceeds: { amount0: '80000000', amount1: '0', quote: 80 } });
+    tx('0xzapBatal', T1 + 150_000, 'zap_swap', { pool: P2, usdIn: 30, usdOut: 29 });   // entry batal: tidak ada mint sesudahnya
+    tx('0xmint7', T1 + 200_000, 'mint', { pool: P2, recorded: 7, zapped: { hashes: ['0xzap7'] } });   // mint baru: zap-nya tercatat
+    tx('0xzap7', T1 + 190_000, 'zap_swap', { pool: P2, usdIn: 40, usdOut: 39 });
+    tx('0xburn7', T1 + 500_000, 'burn', { position: 7, closeProceeds: { amount0: '80000000', amount1: '0', quote: 80 } });
+    const h6 = await api('GET', '/api/position/history', {}, { id: '6' });
+    assert.deepEqual(h6.events.map((e) => e.hash), ['0xzap6', '0xmint6', '0xburn6']);
+    const h7 = await api('GET', '/api/position/history', {}, { id: '7' });
+    assert.deepEqual(h7.events.map((e) => e.hash), ['0xzap7', '0xmint7', '0xburn7']);
+  });
+
   await t('posisi tidak ada -> error', async () => {
     const x = await api('GET', '/api/position/history', {}, { id: '999' });
     assert.equal(x.error, 'posisi tidak ditemukan');

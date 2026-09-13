@@ -222,6 +222,17 @@ const hasilSinkron = (id, extra = {}) => ({
     assert.equal(c.mirror.pnlUsd, -40);
   });
 
+  await t('posisi target ber-kuotasi WETH: angka riset sudah USD, tidak dikali harga ETH lagi', async () => {
+    // lp2 #2: target "Smart LP" modal $30.001 tampil $75 juta karena dikali harga ETH dua kali.
+    const { store, api } = dunia();
+    target(store, PAUS, 'Smart LP');
+    risetPosisi(store, PAUS, '1152470', { invested: 30001.33, pnl: 11761.05, quote: 'WETH' });
+    tutup(store, 26, { out: 232.58, target: PAUS, mirrorOf: '1152470' });
+    const c = (await api('GET', '/api/positions', {}, {})).closed[0];
+    assert.ok(Math.abs(c.mirror.costUsd - 30001.33) < 1e-9, `modal ${c.mirror.costUsd}`);
+    assert.ok(Math.abs(c.mirror.pnlUsd - 11761.05) < 1e-9, `pnl ${c.mirror.pnlUsd}`);
+  });
+
   await t('target yang belum diriset: sumbernya tetap disebut, angkanya kosong', async () => {
     const { store, api } = dunia();
     target(store, PAUS, 'Sniper kecil');
@@ -249,17 +260,6 @@ const hasilSinkron = (id, extra = {}) => ({
     tutup(store, 24, { target: PAUS, mirrorOf: '2302256' });
     const c = (await api('GET', '/api/positions', {}, {})).closed[0];
     assert.equal(c.mirror, null);
-  });
-
-  await t('PnL target dalam ETH dikonversi ke USD seperti kolom lain', async () => {
-    const { store, api } = dunia();                               // ethUsd = 2500
-    target(store, PAUS, 'Paus ETH');
-    risetPosisi(store, PAUS, '999', { invested: 2, pnl: 0.4, quote: 'ETH' });
-    tutup(store, 25, { target: PAUS, mirrorOf: '999' });
-    const c = (await api('GET', '/api/positions', {}, {})).closed[0];
-    assert.equal(c.mirror.costUsd, 5000);
-    assert.equal(c.mirror.pnlUsd, 1000);
-    assert.equal(c.mirror.pnlPct, 20, 'persennya tidak berubah oleh kurs');
   });
 
   console.log(`\n${pass} lulus, ${fail} gagal`);

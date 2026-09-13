@@ -574,13 +574,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         const w = r.mirror_of
           ? store.get('SELECT * FROM wpositions WHERE wallet=? AND venue=? AND token_id=?', r.target, r.venue, r.mirror_of)
           : null;
-        const kq = w ? k(w.quote_symbol) : 1;
+        // Nilai di wpositions SUDAH dalam USD (lihat WalletResearch.persist) — sisi
+        // kuotasi ETH tidak boleh dikalikan harga ETH lagi: dulu target ber-kuotasi WETH
+        // tampil bermodal $75 juta di kolom asal.
         return {
           targetLabel: tLabel.get(r.target) || null,
           mirror: !w ? null : {
             tokenId: w.token_id, status: w.status,
-            costUsd: (w.invested_q || 0) * kq,
-            pnlUsd: (w.pnl_q || 0) * kq,
+            costUsd: w.invested_q || 0,
+            pnlUsd: w.pnl_q || 0,
             pnlPct: w.invested_q > 0 ? (w.pnl_q / w.invested_q) * 100 : null,
             openedTs: w.opened_ts, closedTs: w.closed_ts,
             // Posisi target yang masih terbuka bernilai sebesar pemindaian terakhir
@@ -673,21 +675,49 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const parse = (d) => { try { return JSON.parse(d || '{}') || {}; } catch { return {}; } };
       const gasUsd = (t) => (t.gas_used && t.gas_price ? (Number(t.gas_used) * Number(BigInt(t.gas_price))) / 1e18 * engine.ethUsd : null);
       // Transaksi yang menyentuh posisi ini: hash buka/tutup, yang mencatat nomor posisi
-      // di detailnya (tutup, jual sisa), keputusan yang menaut ke posisi ini, dan
-      // swap/mint di pool yang sama selama posisi hidup (zap tidak menyimpan nomor posisi —
+      // di detailnya (tutup, jual sisa, tambah), keputusan yang menaut ke posisi ini, dan
+      // zap di pool yang sama selama posisi hidup (zap tidak menyimpan nomor posisi —
       // nomornya baru ada setelah mint sukses).
       const lo = (row.opened_ts || 0) - 15 * 60_000, hi = (row.closed_ts || Date.now()) + 60_000;
       const txs = store.all(`
         SELECT * FROM txs WHERE hash IN (?, ?)
            OR json_extract(detail, '$.position') = ?
+           OR json_extract(detail, '$.recorded') = ?
+           OR (kind = 'increase' AND (json_extract(detail, '$.plan.positionId') = ? OR json_extract(detail, '$.plan.tokenId') = ?))
            OR EXISTS (SELECT 1 FROM json_each(txs.detail, '$.positionSales') sale WHERE json_extract(sale.value, '$.position') = ?)
            OR hash IN (SELECT tx_hash FROM decisions WHERE position_id = ? AND tx_hash IS NOT NULL)
-           OR (json_extract(detail, '$.pool') = ? AND ts BETWEEN ? AND ? AND kind IN ('zap_swap', 'mint', 'increase', 'bridge_swap'))
-        ORDER BY ts`, row.tx_open, row.tx_close, id, id, id, row.pool_ref, lo, hi);
+           OR (json_extract(detail, '$.pool') = ? AND ts BETWEEN ? AND ? AND kind IN ('zap_swap', 'mint', 'increase'))
+        ORDER BY ts`, row.tx_open, row.tx_close, id, id, id, row.token_id, id, id, row.pool_ref, lo, hi);
+      // Pool yang sama bisa dimasuki dua posisi berurutan (lp2 #6 dan #7 berselang 90
+      // detik): mint tetangga dan zap-nya ikut tersaring lewat jendela pool. Mint/tambah
+      // hanya milik posisi ini kalau memang tertaut ke nomornya. Zap: mint yang dibukukan
+      // sejak `zapped.hashes` menyebut hash zap-nya persis; mint lama tanpa catatan itu
+      // memakai taksiran — zap milik mint/tambah pertama yang menyusulnya di pool itu.
+      // Zap yang tidak disebut mint mana pun dan tidak disusul mint kita (entry batal)
+      // bukan riwayat posisi ini.
       const decByTx = new Map(store.all(`
         SELECT d.tx_hash, d.verdict, d.reason, a.kind AS action_kind, a.value_quote, a.quote_symbol
         FROM decisions d JOIN actions a ON a.id = d.action_id
         WHERE d.position_id = ? AND d.tx_hash IS NOT NULL`, id).map((d) => [d.tx_hash, d]));
+      const mine = (t) => {
+        if (t.hash === row.tx_open || t.hash === row.tx_close || decByTx.has(t.hash)) return true;
+        const d = parse(t.detail);
+        return d.position === id || d.recorded === id || !!d.positionSales?.some((s) => s.position === id)
+          || (t.kind === 'increase' && (d.plan?.positionId === id || String(d.plan?.tokenId ?? '') === String(row.token_id)));
+      };
+      const entries = store.all(`SELECT hash, ts, kind, detail FROM txs
+        WHERE json_extract(detail, '$.pool') = ? AND ts >= ? AND kind IN ('mint', 'increase') AND status != 'gagal' ORDER BY ts`, row.pool_ref, lo);
+      const zapHashes = new Set(entries.filter(mine).flatMap((e) => parse(e.detail).zapped?.hashes || []));
+      const zapMine = (z) => {
+        if (zapHashes.has(z.hash)) return true;
+        const owner = entries.find((e) => e.ts >= z.ts);
+        return !!owner && mine(owner) && !parse(owner.detail).zapped;
+      };
+      for (let i = txs.length - 1; i >= 0; i--) {
+        const t = txs[i];
+        if (mine(t) || (t.kind === 'zap_swap' && zapMine(t))) continue;
+        txs.splice(i, 1);
+      }
       const seen = new Set();
       const events = txs.filter((t) => !seen.has(t.hash) && seen.add(t.hash)).map((t) => {
         const d = parse(t.detail);

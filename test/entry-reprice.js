@@ -213,3 +213,22 @@ test('stale balance and no receipt amount (unknown): retries reads, then continu
   const b2 = await f.e.balancesAfterSwap([TOKEN], TOKEN, 0n, 100n, { tries: 3, waitMs: 0 });
   assert.equal(n, 3); assert.equal(b2.get(TOKEN), 100n, 'angka receipt dipakai setelah percobaan habis');
 });
+test('v3: booked from the IncreaseLiquidity event, not the planned amounts', async () => {
+  // Di v3 NPM menyetor amountDesired (rencana + ruang slippage) apa adanya, jadi posisi
+  // nyata ~1% lebih besar dari rencana. lp2 #2/#3: modal tercatat 1,2% di bawah chain.
+  const { TOPIC } = require('../src/chain');
+  const f = fixture({ venue: 'v3', complete: true });
+  let booked;
+  f.e.positions = { record: (plan, r) => { booked = { plan, ...r }; return 1; } };
+  f.e.store = { get: () => null, run: () => {}, log: () => {} };
+  const w = (v) => '0x' + BigInt(v).toString(16).padStart(64, '0');
+  f.e.exec.waitReceipt = async () => ({ ok: true, receipt: { logs: [{
+    address: ADDR.npmV3, topics: [TOPIC.increaseLiq, w(1152471)],
+    data: '0x' + [w(3100000000000000n), w(20053532020992362n), w(1952790474080453n)].map((x) => x.slice(2)).join(''),
+  }] } });
+  const r = await f.e.executeEntry(f.plan, {});
+  assert.equal(r.txHash, 'SIMULATED');
+  assert.equal(booked.cost0, '20053532020992362');
+  assert.equal(booked.cost1, '1952790474080453');
+  assert.equal(booked.plan.liquidity, '3100000000000000');
+});

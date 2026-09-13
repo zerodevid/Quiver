@@ -1293,8 +1293,21 @@ class Engine {
   // token yang benar-benar keluar dari wallet — dan harga masuknya dari pool saat ini.
   async recordEntry(plan, hash, receipt, { amt = null, sqrt = null, notes = [] } = {}) {
     const adding = plan.action === 'increase' && plan.tokenId;
-    const L = BigInt(plan.liquidity);
+    let L = BigInt(plan.liquidity);
     const me = this.exec.address().toLowerCase();
+    // Di v3 amountDesired (= amount*Max, sudah termasuk ruang slippage) adalah jumlah yang
+    // DISETOR: NPM menghitung likuiditas dari angka itu dan menarik sebanyak itu, jadi
+    // posisi nyatanya ~1% lebih besar dari `amt`/`L` rencana (lp2 #2 dan #3: modal
+    // tercatat 1,2% di bawah token yang benar-benar keluar dari wallet). Kejadian
+    // IncreaseLiquidity di receipt memuat angka sebenarnya — itu yang dibukukan.
+    if (plan.venue === 'v3') {
+      for (const l of receipt.logs || []) {
+        if (l.address.toLowerCase() !== ADDR.npmV3 || l.topics[0] !== TOPIC.increaseLiq) continue;
+        const b = ethers.getBytes(l.data);
+        const w = (i) => BigInt(ethers.hexlify(b.slice(i * 32, i * 32 + 32)));
+        if (w(0) > 0n) { L = w(0); amt = { amount0: w(1), amount1: w(2) }; plan = { ...plan, liquidity: L.toString() }; }
+      }
+    }
     if (!amt) {
       const spent = async (tok, max) => {
         try { return await this.spentIn(receipt, tok, me); }
