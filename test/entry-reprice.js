@@ -182,3 +182,34 @@ test('bridge runs at most once per entry even when the attempt after it fails an
   assert.equal(r.txHash, 'SIMULATED');
   assert.equal(calls, 1, 'jembatan tidak diulang');
 });
+
+// Node yang tertinggal: saldo sesudah zap terbaca seperti sebelum zap. Receipt (amountOut)
+// sudah membuktikan token masuk, jadi bot tidak boleh zap kedua kalinya.
+test('stale balance after a confirmed zap (lagging node): no second zap, mint proceeds with receipt-proven amount', async () => {
+  const f = fixture({ complete: true });
+  f.e.ensureQuoteAsset = async () => { f.balances.set(ADDR.usdg, 212_259_831n); return []; };
+  const realBalances = f.e.exec.balances;
+  let stale = null, staleReads = 0;
+  f.e.exec.balances = async (toks) => { if (stale && staleReads-- > 0) return new Map(stale); return realBalances(toks); };
+  const kyberSwap = f.e.kyber.swap;
+  f.e.kyber.swap = async (pay, buy, amount) => {
+    stale = new Map(f.balances); staleReads = 3;   // tiga pembacaan berikutnya "sebelum zap"
+    const before = f.balances.get(buy);
+    await kyberSwap(pay, buy, amount);
+    return { hash: '0xzap', amountOut: f.balances.get(buy) - before };
+  };
+  const r = await f.e.executeEntry(f.plan, {});
+  assert.equal(r.txHash, 'SIMULATED');
+  assert.equal(f.stats().swaps, 1, 'hanya satu zap');
+});
+
+test('stale balance and no receipt amount (unknown): retries reads, then continues with what it sees', async () => {
+  const f = fixture({ complete: true });
+  f.e.ensureQuoteAsset = async () => { f.balances.set(ADDR.usdg, 212_259_831n); return []; };
+  const bal = await f.e.balancesAfterSwap([TOKEN], TOKEN, 0n, null, { tries: 2, waitMs: 0 });
+  assert.equal(bal.get(TOKEN), 0n);
+  let n = 0;
+  f.e.exec.balances = async () => { n++; return new Map([[TOKEN, 5n]]); };
+  const b2 = await f.e.balancesAfterSwap([TOKEN], TOKEN, 0n, 100n, { tries: 3, waitMs: 0 });
+  assert.equal(n, 3); assert.equal(b2.get(TOKEN), 100n, 'angka receipt dipakai setelah percobaan habis');
+});

@@ -1111,7 +1111,7 @@ class Engine {
       if (kz) {
         notes.push(`zap ${idx === 0 ? 'beli token0' : 'beli token1'} via Kyber`);
         noteZap(kz.hash);
-        bal = await this.exec.balances([plan.token0, plan.token1]);
+        bal = await this.balancesAfterSwap([plan.token0, plan.token1], buyTok, boughtBefore, kz.amountOut);
         continue;
       }
       for (const a of await this.exec.ensureRouterAllowance(payTok)) {
@@ -1145,7 +1145,8 @@ class Engine {
       if (!rc.ok) throw new Error(`swap zap gagal (${h})`);
       notes.push(`zap ${idx === 0 ? 'beli token0' : 'beli token1'}`);
       noteZap(h);
-      bal = await this.exec.balances([plan.token0, plan.token1]);
+      const gotDirect = await this.receivedIn(rc.receipt, buyTok, this.exec.address().toLowerCase()).catch(() => null);
+      bal = await this.balancesAfterSwap([plan.token0, plan.token1], buyTok, boughtBefore, gotDirect);
     }
 
     // 2. sesuaikan L dengan saldo nyata setelah swap (lebih aman dari slippage)
@@ -1241,6 +1242,26 @@ class Engine {
     trace.minted = hash;
     try { return await this.recordEntry(finalPlan, hash, rc.receipt, { amt, sqrt: s2, notes }); }
     catch (e) { e.pendingMint = true; e.message = `mint ${hash} berhasil tetapi pembukuan tertunda: ${e.message}`; throw e; }
+  }
+
+  // Saldo sesudah swap yang SUDAH terkonfirmasi. Kolam RPC bisa berpindah ke node yang
+  // tertinggal beberapa blok: saldo yang dibaca masih sebelum swap, bot mengira token
+  // belum masuk dan zap lagi — token lebihnya duduk di wallet. Receipt sudah membuktikan
+  // `gained` token masuk, jadi pembacaan di bawah before+gained ditolak: dicoba lagi
+  // beberapa kali, terakhir memakai angka yang dibuktikan receipt.
+  async balancesAfterSwap(tokens, token, before, gained, { tries = 5, waitMs = 700 } = {}) {
+    const key = String(token).toLowerCase();
+    const expect = gained != null && gained > 0n ? BigInt(before ?? 0n) + BigInt(gained) : null;
+    let bal = null;
+    for (let i = 0; i < tries; i++) {
+      if (i) await new Promise((r) => setTimeout(r, waitMs));
+      try { bal = await this.exec.balances(tokens); } catch (e) { if (i === tries - 1) throw e; continue; }
+      if (expect == null || (bal.get(key) || 0n) >= expect) return bal;
+    }
+    if (!bal) throw new Error('gagal membaca saldo sesudah swap');
+    this.store?.log?.('warn', `saldo ${key.slice(0, 10)}… dari RPC (${bal.get(key) || 0n}) masih di bawah hasil swap yang terbukti di receipt (${expect}) — node tertinggal; memakai angka receipt`, { quiet: true });
+    bal.set(key, expect);
+    return bal;
   }
 
   // Bagian rencana yang cukup untuk membukukan posisi belakangan (JSON polos, tanpa BigInt).
