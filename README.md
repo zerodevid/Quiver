@@ -28,6 +28,13 @@
   <a href="README.id.md">Bahasa Indonesia</a>
 </p>
 
+<p align="center">
+  <a href="docs/quiver-demo-en.mp4">
+    <img src="docs/demo-poster.jpg" alt="Quiver demo video — 3:06, 1080p" width="800" />
+  </a><br />
+  <sub>Narrated walkthrough of the dashboard (3:06). Wallet addresses and target names are censored. <a href="docs/quiver-demo-en.srt">Subtitles</a></sub>
+</p>
+
 ## Overview
 
 Quiver is a self-hosted application that watches target wallets on Robinhood Chain and copies supported Uniswap v3 and v4 liquidity actions according to configurable rules. It also supports manual LP management, swaps, wallet research, and PnL reporting.
@@ -205,6 +212,20 @@ The suites cover execution rules, wallet accounting, fee claims, compounding, Te
 
 Optional frontend checks are in `web/check-ui.py`, `web/check-keys.py`, and `web/audit-i18n.py`. Review each script's setup requirements before running it; browser checks require Python Playwright and its browser binaries.
 
+### Demo video
+
+`demo/` renders a narrated walkthrough of the dashboard (1080p60 MP4 + SRT) with headless
+Chromium, ffmpeg and a local TTS model. Wallet addresses and target labels are replaced
+before they reach the browser, blurred, and audited during recording; every non-GET
+`/api` request is blocked, so recording cannot act on a live bot. See
+[`demo/README.md`](demo/README.md).
+
+```sh
+cd demo && npm install
+export QTOKEN=…                    # dashboard access token; dashboard reachable at 127.0.0.1:20150 (or QBASE)
+QLANG=en npm run voice && QLANG=en npm run studio && QLANG=en npm run record && QLANG=en npm run compose
+```
+
 ## Deployment
 
 Build the frontend, install production dependencies on the host, and run a single backend process. The repository includes a PM2 configuration:
@@ -261,10 +282,12 @@ src/                   Backend, execution, research, API, and Telegram
 web/                   React dashboard and frontend checks
 public/                Shared assets, fonts, and legacy dashboard
 test/                 JavaScript regression suites
+demo/                  Demo video pipeline (privacy-scrubbed recording, narration, composition)
+docs/                  Demo video, poster, and subtitles
 config.example.json    Non-secret configuration template
 .env.example           Credential variable template
 ecosystem.config.cjs   PM2 process configuration
 deploy.sh              Maintainer deployment helper
 ```
 
-`data/`, `logs/`, and `web/dist/` are generated locally and excluded from Git.
+`data/`, `logs/`, `web/dist/`, and `demo/out/` are generated locally and excluded from Git.

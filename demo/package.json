@@ -1,0 +1,16 @@
+{
+  "name": "quiver-demo-video",
+  "private": true,
+  "type": "module",
+  "description": "Pipeline video demo Quiver: sensor data, rekaman adegan, narasi, komposisi",
+  "scripts": {
+    "voice": "node voice.mjs",
+    "studio": "node studio.mjs",
+    "record": "node record.mjs",
+    "compose": "node compose.mjs"
+  },
+  "dependencies": {
+    "kokoro-js": "^1.2.1",
+    "playwright-core": "^1.56.0"
+  }
+}

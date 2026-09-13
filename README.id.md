@@ -1,5 +1,12 @@
 # Quiver — copy-LP untuk Robinhood Chain
 
+<p align="center">
+  <a href="docs/quiver-demo-en.mp4">
+    <img src="docs/demo-poster.jpg" alt="Video demo Quiver — 3:06, 1080p" width="800" />
+  </a><br />
+  <sub>Tur dasbor bernarasi (3:06, narasi Inggris). Alamat wallet dan nama target disensor. <a href="docs/quiver-demo-en.srt">Subtitle</a></sub>
+</p>
+
 Mencermin posisi likuiditas (LP) Uniswap **v4 dan v3** dari satu atau banyak wallet
 target di Robinhood Chain (chainId 4663), dengan dashboard untuk memantau dan menyetel
 semuanya. Default-nya **mode simulasi** — tidak mengirim transaksi sampai kamu
@@ -616,6 +623,20 @@ berbentuk pil). Halaman dimuat terpisah (`React.lazy`) — beban awal 79 KB gzip
 Cache: `/assets/*` hasil Vite bernama-hash -> `private, immutable` (browser menyimpan,
 Cloudflare tidak, karena ada di balik gerbang token); `index.html` selalu `no-store`.
 
+## Video demo
+
+`demo/` merender video presentasi dasbor bernarasi (MP4 1080p60 + SRT) dengan Chromium
+headless, ffmpeg, dan model TTS lokal. Alamat wallet dan label target diganti nilai palsu
+*sebelum* sampai ke browser, diblur, lalu diaudit selama rekaman — kalau ada yang lolos,
+video tidak dirakit. Semua request non-GET ke `/api` diblokir, jadi rekaman tidak bisa
+menyentuh bot yang sedang jalan. Rincian, naskah, dan opsi suara: [`demo/README.md`](demo/README.md).
+
+```sh
+cd demo && npm install
+export QTOKEN=…                    # token akses dasbor; dasbor terjangkau di 127.0.0.1:20150 (atau QBASE)
+QLANG=id npm run voice && QLANG=id npm run studio && QLANG=id npm run record && QLANG=id npm run compose
+```
+
 ## Struktur
 
 ```
@@ -639,6 +660,7 @@ web/              tampilan React + HeroUI v3 (sumber); web/dist = hasil build
                   halaman: Ringkasan, Posisi, Aktivitas, Target, Aturan,
                   LP manual, Swap, Wallet, Pengaturan
 public/           tampilan lama (Tabler) — cadangan kalau web/dist belum dibuild
+demo/             pipeline video demo (rekaman tersensor, narasi, komposisi); demo/out tidak masuk git
 ```
 
 ## Uji edge case

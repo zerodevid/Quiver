@@ -18,3 +18,6 @@ mnemonic.txt
 node_modules/
 web/dist/
 .DS_Store
+
+# Video demo: hasil render, cache respons, model TTS, frame mentah
+demo/out/
