@@ -764,6 +764,15 @@ async function t(name, fn) {
     assert.strictEqual(acts[0].tokenId, '123');
   });
 
+  await t('target dimatikan -> aksinya tidak dicatat (aktivitas & peringatan diam)', async () => {
+    const w = watcherWith({
+      modLiq: [], npm: [],
+      xferV4: [log(ADDR.posmV4, [TOPIC_TRANSFER, pad32(TARGET), pad32(LAIN), pad32('0x7b')])],
+    });
+    w.store.run('UPDATE targets SET enabled=0 WHERE address=?', TARGET);
+    assert.strictEqual((await w.scan(1, 1)).length, 0);
+  });
+
   console.log(`\n${pass} lulus, ${fail} gagal`);
   process.exit(fail ? 1 : 0);
 })();

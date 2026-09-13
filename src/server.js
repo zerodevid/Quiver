@@ -907,6 +907,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
                       AND b.kind = 'increase' AND b.id < a.id) AS adding
         FROM actions a LEFT JOIN decisions d ON d.action_id = a.id
         WHERE a.id > ? AND a.kind = 'increase' AND a.ts > ?
+          AND a.target IN (SELECT address FROM targets WHERE enabled = 1)
         ORDER BY a.id LIMIT 20`, Number(raw), Date.now() - 15 * 60_000);
       const toks = new Map(store.all('SELECT address,symbol FROM tokens').map((t) => [t.address, t.symbol]));
       const labels = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));

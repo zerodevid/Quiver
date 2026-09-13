@@ -50,9 +50,6 @@ class Watcher {
   enabledSet() {
     return new Set(this.targets().filter((t) => t.enabled).map((t) => t.address.toLowerCase()));
   }
-  allSet() {
-    return new Set(this.targets().map((t) => t.address.toLowerCase()));
-  }
 
   // Peringatan sekali per target: target memakai router LP yang posisinya bukan NFT,
   // sehingga tidak bisa dicermin. Tanpa ini, bot terlihat "sehat" padahal buta.
@@ -137,7 +134,10 @@ class Watcher {
 
   // ---- olah satu rentang -> daftar aksi ----------------------------------
   async scan(fromBlock, toBlock) {
-    const targets = this.allSet();
+    // Hanya target yang menyala. Aksi target yang dimatikan tidak dicatat sama sekali —
+    // tidak menambah daftar aktivitas dan tidak memicu peringatan di dasbor. Bot memang
+    // tidak menyalin apa pun dari target mati, jadi tidak ada sinyal yang hilang.
+    const targets = this.enabledSet();
     if (!targets.size) return [];
     const { modLiq, xferV4, npm } = await this.fetchRange(fromBlock, toBlock);
     const actions = [];
