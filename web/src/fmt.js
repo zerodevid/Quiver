@@ -14,6 +14,9 @@ export const num = (v, d = 0) => (v == null ? '—' : Number(v).toLocaleString(l
 export const short = (a) => (a ? a.slice(0, 6) + '…' + a.slice(-4) : '—');
 // Penjelajah blok Robinhood Chain — tautan transaksi di riwayat posisi dan aktivitas.
 export const txHref = (hash) => (hash ? `https://robinhoodchain.blockscout.com/tx/${hash}` : null);
+export const addrHref = (a) => (a ? `https://robinhoodchain.blockscout.com/address/${a}` : null);
+// Portofolio LP wallet di LPAgent — pembanding luar untuk angka riset kita.
+export const lpagentHref = (a) => (a ? `https://app.lpagent.io/portfolio?address=${a}&chain=ROBINHOOD` : null);
 export const tone = (v) => (v > 0.005 ? 'text-success' : v < -0.005 ? 'text-danger' : '');
 export const widthPct = (lo, hi) => (1.0001 ** (hi - lo) - 1) * 100;
 

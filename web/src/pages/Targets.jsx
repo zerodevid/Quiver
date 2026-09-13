@@ -3,11 +3,11 @@ import { Button, Card, Chip, Switch, toast } from '@heroui/react';
 import { Trash2, SlidersHorizontal, Plus, ChevronRight, ArrowLeft, Copy, Pencil, Check as CheckIcon, X } from 'lucide-react';
 import { usePoll } from '../hooks';
 import { post } from '../api';
-import { PageHeader, Panel, Text, Empty, Loading, Stat, ask } from '../components/ui';
+import { PageHeader, Panel, Text, Empty, Loading, Stat, ExtLink, ask } from '../components/ui';
 import RulesForm from '../components/RulesForm';
 import WalletDetail from '../components/WalletDetail';
 import WalletHoldings from '../components/WalletHoldings';
-import { usd, kUsd, tone, ago, short } from '../fmt';
+import { usd, kUsd, tone, ago, short, addrHref, lpagentHref } from '../fmt';
 import { useI18n } from '../i18n';
 
 // Editor aturan per-target — dipakai di kartu (dilipat) dan di halaman detail.
@@ -236,6 +236,11 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
             <span className="mono break-all text-muted">{tg.address}</span>
             <Button size="sm" variant="ghost" isIconOnly aria-label={t('Salin alamat')}
               onPress={() => { navigator.clipboard?.writeText(tg.address); toast.success(t('Alamat tersalin')); }}><Copy className="size-3.5" /></Button>
+          </div>
+          {/* Lihat wallet ini di luar: portofolio LPAgent dan penjelajah blok. */}
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+            <ExtLink href={lpagentHref(tg.address)}>LPAgent</ExtLink>
+            <ExtLink href={addrHref(tg.address)}>Blockscout</ExtLink>
           </div>
         </div>
         <div className="flex items-center gap-3">
