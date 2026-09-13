@@ -313,9 +313,10 @@ class RpcPool {
         const base = rateLimited ? 8000 : 1000;
         ep.cooldownUntil = Date.now() + Math.min(rateLimited ? 60_000 : 30_000, base * 2 ** Math.min(ep.fails - 1, 3));
         this.log(`rpc ${new URL(ep.url).hostname} gagal (${e.message}) — istirahat ${Math.round((ep.cooldownUntil - Date.now()) / 1000)}s`);
+        // Slot dilepas oleh `finally` di bawah — yang juga jalan saat melempar dari sini.
+        // Dulu dilepas dua kali: `inflight` jadi negatif dan max_inflight tidak lagi
+        // membatasi apa pun (lebih banyak 429 justru saat semua endpoint sedang marah).
         if (this.allCoolingFor(needsLogs, logSpan, archive)) {
-          ep.inflight--;
-          this.release();
           throw new Error(`semua endpoint RPC${needsLogs ? ' (yang mendukung getLogs)' : ''} tumbang: ${e.message}`);
         }
       } finally { ep.inflight--; this.release(); }
