@@ -751,6 +751,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
 
       const costUsd = (row.cost_quote || 0) * k;
       const outUsd = row.status === 'closed' ? (row.out_quote || 0) * k : null;
+      // Posisi terbuka: PnL-nya dari sinkron live (angka yang sama dengan tabel),
+      // beserta pecahannya — nilai LP vs modal, IL vs sekadar memegang token, fee —
+      // supaya laci bisa menjelaskan KENAPA minus/plus, bukan cuma angkanya.
+      const live = row.status === 'closed' ? null : engine.positions.live.find((p) => p.id === id);
+      const open = live ? {
+        pnlUsd: live.pnlUsd, valueUsd: live.valueUsd, feeUsd: live.feeUsd, claimedUsd: live.claimedUsd,
+        withdrawnUsd: live.withdrawnUsd, ilUsd: live.ilUsd, inRange: live.inRange, valueStale: !!live.valueStale,
+        entryPrice: Positions.entrySqrtOf(row), curSqrt: live.curSqrt, quoteSide: live.quoteSide, dec0: live.dec0, dec1: live.dec1,
+      } : null;
       return {
         position: {
           id: row.id, venue: row.venue, token_id: row.token_id, pool_ref: row.pool_ref, status: row.status,
@@ -762,7 +771,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           closeUsd: events.find((e) => e.hash === row.tx_close)?.valueUsd ?? null,
           swapDeltaUsd: events.some((e) => e.saleDeltaUsd != null) ? events.reduce((sum, e) => sum + (e.saleDeltaUsd || 0), 0) : null,
           costUsd, outUsd, feesUsd: (row.fees_quote || 0) * k,
-          pnlUsd: outUsd != null ? outUsd - costUsd : null,
+          pnlUsd: outUsd != null ? outUsd - costUsd : (open?.pnlUsd ?? null),
+          open,
           leftToken: row.left_token || null, leftAmount: row.left_amount || '0', leftUsd: (row.left_quote || 0) * k,
           leftSymbol: row.left_token ? (toks.get(row.left_token)?.symbol || null) : null,
           leftDec: row.left_token ? (toks.get(row.left_token)?.decimals ?? 18) : 18,

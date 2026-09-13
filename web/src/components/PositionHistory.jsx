@@ -10,7 +10,7 @@ import { X, ChartCandlestick } from 'lucide-react';
 import { get } from '../api';
 import { Stat, Empty, Loading, Notice, TxHash } from './ui';
 import TokenIcon, { TokenPair } from './TokenIcon';
-import { usd, pct, tone, age, ago, short, qty, fmtQty, locale as fmtLocale } from '../fmt';
+import { usd, pct, tone, age, ago, short, qty, fmtQty, sqrtPrice, locale as fmtLocale } from '../fmt';
 import { useI18n, reason } from '../i18n';
 
 // Jenis transaksi -> label & warna chip.
@@ -28,6 +28,60 @@ const KIND = {
   swap_manual: ['Swap manual', 'accent'],
 };
 const VERDICT = { copy: ['Disalin', 'success'], dry: ['Simulasi', 'accent'], skip: ['Dilewati', 'default'], error: ['Gagal', 'danger'] };
+
+// Kenapa PnL posisi terbuka minus/plus. Angka PnL sendiri tidak menjawab apa-apa;
+// yang ditanya orang adalah "harga turun, IL, atau fee-nya kecil?". Dipecah jadi:
+// pergerakan harga kalau token sekadar dipegang, impermanent loss di atas itu, dan
+// fee (belum diklaim + sudah diklaim). Ketiganya dijumlah = PnL di kartu atas.
+function PnlWhy({ p }) {
+  const { t } = useI18n();
+  const o = p.open;
+  if (!o || o.pnlUsd == null) return null;
+  const cost = p.costUsd || 0;
+  const lp = o.valueUsd + (o.withdrawnUsd || 0) - cost;          // nilai LP sekarang vs modal
+  const fees = (o.feeUsd || 0) + (o.claimedUsd || 0);
+  const il = o.ilUsd;                                             // nilai LP − kalau dipegang
+  const hodl = il != null ? lp - il : null;                       // kalau dipegang − modal
+  const entry = sqrtPrice(o.entryPrice, o.dec0, o.dec1, o.quoteSide);
+  const now = sqrtPrice(o.curSqrt, o.dec0, o.dec1, o.quoteSide);
+  const move = entry && now ? ((now - entry) / entry) * 100 : null;
+  const signed = (v) => `${v > 0.005 ? '+' : ''}${usd(v)}`;
+  const Row = ({ label, sub, v, strong, indent }) => (
+    <div className={`flex items-baseline justify-between gap-4 py-1.5 ${strong ? 'font-medium' : ''} ${indent ? 'pl-4' : ''}`}>
+      <span className="min-w-0">{t(label)}{sub && <span className="ml-2 text-xs text-muted">{sub}</span>}</span>
+      <span className={`num shrink-0 ${tone(v)}`}>{signed(v)}</span>
+    </div>
+  );
+  let why;
+  if (o.pnlUsd < -0.005) {
+    why = lp < -0.005
+      ? t('Minus karena nilai likuiditasnya turun {d} dari modal — {r} — dan fee {f} belum cukup menutupnya.', {
+        d: usd(-lp),
+        r: move != null && move < 0 ? t('harga pool turun {m} dari titik masuk', { m: pct(Math.abs(move), 1).replace('+', '') })
+          : move != null && move > 0 ? t('harga naik {m}, tapi impermanent loss-nya lebih besar', { m: pct(move, 1).replace('+', '') })
+            : t('harga bergerak menjauhi titik masuk'),
+        f: usd(fees),
+      })
+      : t('Minus walau likuiditasnya untung: selisihnya dari biaya di luar posisi.');
+  } else if (o.pnlUsd > 0.005) {
+    why = lp < -0.005
+      ? t('Plus berkat fee {f}, yang menutup penurunan nilai likuiditas {d}.', { f: usd(fees), d: usd(-lp) })
+      : t('Plus dari nilai likuiditas yang naik {d} dan fee {f}.', { d: usd(lp), f: usd(fees) });
+  } else why = t('Impas: pergerakan harga dan fee saling menutup.');
+  return (
+    <div className="mb-4 rounded-lg border border-border p-3 text-sm">
+      <div className="mb-1 font-semibold">{t('Kenapa PnL-nya begini')}</div>
+      <p className="text-xs text-muted">{why}{o.valueStale && ' ' + t('(harga pool belum terbaca — memakai nilai terakhir)')}</p>
+      <div className="mt-2 divide-y divide-border">
+        <Row label="Nilai likuiditas vs modal" sub={t('{v} sekarang · modal {c}', { v: usd(o.valueUsd + (o.withdrawnUsd || 0)), c: usd(cost) })} v={lp} />
+        {hodl != null && <Row label="Kalau token sekadar dipegang" sub={move != null ? t('harga {m}', { m: pct(move, 1) }) : null} v={hodl} indent />}
+        {il != null && <Row label="Impermanent loss" sub={t('dibanding memegang token')} v={il} indent />}
+        <Row label="Fee" sub={o.claimedUsd > 0.005 ? t('belum diklaim {u} + sudah diklaim {c}', { u: usd(o.feeUsd), c: usd(o.claimedUsd) }) : t('belum diklaim')} v={fees} />
+        <Row label="PnL" v={o.pnlUsd} strong />
+      </div>
+    </div>
+  );
+}
 
 const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
 // Saldo token yang berpindah di satu kejadian: mint/tambah = masuk ke posisi,
@@ -184,13 +238,14 @@ export default function PositionHistory({ id, onClose }) {
               {d && (
                 <>
                   <div className="mb-4 grid grid-cols-1 min-[360px]:grid-cols-2 gap-3">
-                    <Stat label={closed ? 'PnL total (LP + sisa)' : 'PnL (belum terealisasi)'} value={usd(p.pnlUsd ?? 0)} valueClass={tone(p.pnlUsd)}
-                      sub={p.costUsd > 0 && p.pnlUsd != null ? pct((p.pnlUsd / p.costUsd) * 100, 2) : null} />
+                    <Stat label={closed ? 'PnL total (LP + sisa)' : 'PnL (belum terealisasi)'} value={p.pnlUsd == null ? '—' : usd(p.pnlUsd)} valueClass={tone(p.pnlUsd)}
+                      sub={p.costUsd > 0 && p.pnlUsd != null ? pct((p.pnlUsd / p.costUsd) * 100, 2) : t('belum tersinkron')} />
                     <Stat label="Umur" value={age(hours)} sub={p.opened_ts ? t('dibuka {w}', { w: ago(p.opened_ts) }) : null} />
                     <Stat label="Fee didapat" value={usd(p.feesUsd)} valueClass={p.feesUsd > 0.005 ? 'text-success' : ''}
                       sub={p.costUsd > 0 ? pct((p.feesUsd / p.costUsd) * 100, 2).replace('+', '') : null} />
                     <Stat label="Modal" value={usd(p.costUsd)} sub={closed ? t('hasil {v}', { v: usd(p.outUsd) }) : null} />
                   </div>
+                  {!closed && <PnlWhy p={p} />}
                   <PositionSnapshot key={id} id={id} onUpdate={() => setRevision((v) => v + 1)} />
                   {closed && <div className="mb-4 rounded-lg border border-border p-3 text-sm">
                     <div className="flex justify-between gap-3"><span>{t('Hasil LP saat tutup (taksiran)')}</span><span className="num">{usd(p.closeUsd)}</span></div>
