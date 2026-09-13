@@ -115,6 +115,7 @@ const blockAt = (msAgo) => ({ number: '0x3e8', timestamp: '0x' + Math.floor((Dat
       { ...entryAct({ tokenId: '41', logIndex: 2 }), kind: 'decrease', liquidity: '-1000000', txHash: '0x' + 'f'.repeat(64) },
     ];
     await eng.tick();
+    await eng.settled();
     const rows = store.all('SELECT a.kind, d.verdict, d.reason FROM actions a JOIN decisions d ON d.action_id=a.id ORDER BY a.log_index');
     assert.strictEqual(rows.length, 2);
     assert.strictEqual(rows[0].kind, 'increase'); assert.strictEqual(rows[0].verdict, 'skip'); assert.match(rows[0].reason, /basi/);

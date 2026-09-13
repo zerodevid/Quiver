@@ -245,7 +245,7 @@ class Engine {
   // langsung process.exit — token zap yang sudah terbeli tertinggal tanpa LP.
   idle() {
     return !this.busy && !(this.activeEntries > 0) && !(this.exiting?.size > 0) && !this.leftoverBusy
-      && !this.compound?.running && !(this.selling?.size > 0) && !this.syncBusy;
+      && !this.compound?.running && !(this.selling?.size > 0) && !this.syncBusy && !this.pumpingExit && !this.pumpingEntry;
   }
   async drain(timeoutMs = 100_000) {
     this.stopping = true;
@@ -275,21 +275,11 @@ class Engine {
       this.store.setState('cursor', this.cursor);
       const fresh = this.watcher.persist(acts);
       this.stats.actions += fresh.length;
-      // Sedang berhenti (deploy/restart): aksi yang belum ditangani TIDAK dieksekusi
-      // setengah jalan — sudah tersimpan tanpa keputusan, backfillDecisions menilainya
-      // saat proses hidup lagi (kalau masih segar).
-      for (const a of fresh) {
-        if (this.stopping) break;
-        // Galat satu aksi tidak boleh memutus aksi lain di rentang yang sama: kursor sudah
-        // maju, jadi aksi yang tidak sempat ditangani baru dinilai saat restart — dan saat
-        // itu sudah "lampau". Dicatat sebagai keputusan galat supaya terlihat.
-        try { await this.handle(a); }
-        catch (e) {
-          this.stats.errors++;
-          if (a.id != null && !this.store.get('SELECT 1 FROM decisions WHERE action_id=?', a.id)) this.decide(a.id, 'error', String(e.message).slice(0, 300));
-          this.store.log('error', `aksi ${a.kind} #${a.tokenId ?? '?'}: ${e.message}`);
-        }
-      }
+      // Aksi TIDAK ditangani di sini: pemindaian jalan terus sementara aksi diproses
+      // oleh dua antrean (lihat enqueue). Dulu tick menunggu tiap aksi selesai — satu
+      // entry (zap, approval, receipt 90 dtk, ulangan) menahan pemindaian beberapa menit,
+      // dan sinyal keluar target di blok-blok berikutnya baru terbaca setelahnya.
+      this.enqueue(fresh);
       // Pendengar luar (dasbor) diberi tahu aksi baru — mis. untuk memperbarui riset
       // wallet target. Galat pendengar tidak boleh mengganggu siklus copy.
       if (fresh.length && this.onFreshActions) {
@@ -311,6 +301,40 @@ class Engine {
       if (this.failStreak > 2) await new Promise((r) => setTimeout(r, Math.min(15000, 1000 * this.failStreak)));
     } finally { this.busy = false; }
   }
+
+  // Dua antrean terpisah: KELUAR (tarik/tutup/pindah — melindungi dana, tidak boleh
+  // menunggu) dan MASUK (satu per satu, supaya kas tidak dipakai dua entry sekaligus).
+  // Keduanya berjalan bersamaan dengan pemindaian. Sedang berhenti (deploy/restart):
+  // yang belum ditangani tidak dimulai — sudah tersimpan tanpa keputusan,
+  // backfillDecisions menilainya saat proses hidup lagi (entry basi dilewati).
+  static isExitKind(kind) { return kind === 'decrease' || kind === 'transfer_out'; }
+  enqueue(actions) {
+    this.exitQueue = this.exitQueue || []; this.entryQueue = this.entryQueue || [];
+    for (const a of actions) (Engine.isExitKind(a.kind) ? this.exitQueue : this.entryQueue).push(a);
+    this.pumps = this.pumps || {};
+    for (const w of ['exit', 'entry']) if (!this.pumps[w]) this.pumps[w] = this.pump(w).finally(() => { this.pumps[w] = null; });
+  }
+  // Menunggu kedua antrean kosong (uji & pemanggil yang perlu hasilnya).
+  async settled() { while (this.pumps && (this.pumps.exit || this.pumps.entry)) await Promise.all([this.pumps.exit, this.pumps.entry].filter(Boolean)); }
+  async pump(which) {
+    const q = which === 'exit' ? this.exitQueue : this.entryQueue;
+    const flag = which === 'exit' ? 'pumpingExit' : 'pumpingEntry';
+    this[flag] = true;
+    try {
+      while (q.length && !this.stopping) {
+        const a = q.shift();
+        // Galat satu aksi tidak boleh memutus aksi lain: kursor sudah maju, jadi aksi yang
+        // tidak sempat ditangani baru dinilai saat restart. Dicatat sebagai keputusan galat.
+        try { await this.handle(a); }
+        catch (e) {
+          this.stats.errors++;
+          if (a.id != null && !this.store.get('SELECT 1 FROM decisions WHERE action_id=?', a.id)) this.decide(a.id, 'error', String(e.message).slice(0, 300));
+          this.store.log('error', `aksi ${a.kind} #${a.tokenId ?? '?'}: ${e.message}`);
+        }
+      }
+    } finally { this[flag] = false; }
+  }
+  queued() { return (this.exitQueue?.length || 0) + (this.entryQueue?.length || 0); }
 
   decide(actionId, verdict, reason, plan = null, txHash = null, positionId = null) {
     this.store.run('INSERT INTO decisions(action_id,ts,verdict,reason,plan,tx_hash,position_id) VALUES(?,?,?,?,?,?,?)',
