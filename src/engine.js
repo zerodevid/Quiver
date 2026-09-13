@@ -83,7 +83,8 @@ class Engine {
   // Aksi yang sempat tercatat tapi belum diputuskan (mis. proses mati di tengah jalan).
   // Aturannya: di mode LIVE aksi lampau TIDAK BOLEH dieksekusi — sinyal LP yang sudah
   // basah beberapa jam bukan lagi sinyal. Di mode simulasi tetap dievaluasi supaya
-  // terlihat "seandainya" -nya.
+  // terlihat "seandainya" -nya (entry yang basi tetap dilewati di handleEntry, sama
+  // seperti LIVE).
   async backfillDecisions() {
     const stale = (this.cfg.loop?.stale_action_seconds ?? 300) * 1000;
     const rows = this.store.all(`
@@ -337,6 +338,14 @@ class Engine {
   }
 
   async handleEntry(act, rules) {
+    // Sinyal masuk yang sudah basi tidak disalin. Kursor dilanjutkan dari blok tersimpan,
+    // jadi setelah VPS/RPC mati sejam pemindaian mengejar dan menemukan entry target dari
+    // sejam lalu — dulu langsung dibuka di harga sekarang, lalu ditutup lagi beberapa tick
+    // kemudian begitu sinyal keluarnya (yang juga sudah lama) terbaca: zap, fee pool, dan
+    // gas dibayar dua kali untuk posisi yang tidak ada gunanya. Sinyal KELUAR tetap diikuti
+    // berapa pun umurnya — itu melindungi dana.
+    const stale = await this.staleEntry(act);
+    if (stale) return this.decide(act.id, 'skip', stale);
     if (!act.token0 || !act.token1 || (act.venue === 'v4' && !act.poolKey)) {
       return this.decide(act.id, 'skip', 'data pool posisi target tidak terbaca (NFT sudah dibakar?)');
     }
@@ -502,6 +511,27 @@ class Engine {
       this.stats.errors++;
       this.decide(act.id, 'error', String(e.message).slice(0, 300), d.plan);
     }
+  }
+
+  // Alasan lewati kalau aksi masuk ini lebih tua dari loop.stale_action_seconds (bawaan
+  // 300; 0 = mati), selain itu null. act.ts hanya taksiran (nomor blok × ~101 ms dari
+  // blok acuan), jadi sebelum sinyal dibuang umurnya dipastikan dari timestamp blok asli.
+  // Blok tidak terbaca: taksirannya dipakai — ia cenderung MENGECILKAN umur saat blok
+  // melambat, bukan membesarkannya.
+  async staleEntry(act) {
+    const limitMs = Number(this.cfg.loop?.stale_action_seconds ?? 300) * 1000;
+    if (!(limitMs > 0) || act.ts == null) return null;
+    let ts = Number(act.ts);
+    if (Date.now() - ts <= limitMs) return null;
+    if (act.block != null) {
+      try {
+        const b = await this.rpc.call('eth_getBlockByNumber', ['0x' + Number(act.block).toString(16), false]);
+        if (b?.timestamp) ts = parseInt(b.timestamp, 16) * 1000;
+      } catch { /* pakai taksiran */ }
+    }
+    const age = Date.now() - ts;
+    if (age <= limitMs) return null;
+    return `sinyal masuk basi — target masuk ${lamanya(age)} lalu (batas ${lamanya(limitMs)}); harga & pool sudah berubah, tidak disalin`;
   }
 
   async refreshActionState(act) {
