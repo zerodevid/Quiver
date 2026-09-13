@@ -373,16 +373,24 @@ class Executor {
     };
   }
 
-  // Tambah likuiditas ke posisi yang sudah ada: actions 0x000d (INCREASE + SETTLE_PAIR),
-  // pola yang sama dipakai LP lain di chain ini.
+  // Tambah likuiditas ke posisi yang sudah ada.
+  //
+  // INCREASE_LIQUIDITY sekaligus MENCAIRKAN fee yang sudah terkumpul di posisi itu: delta
+  // tiap token = fee − yang disetor. Kalau fee di satu token lebih besar dari setorannya
+  // (posisi di luar rentang: setoran satu sisi saja, fee di sisi lain positif), delta itu
+  // POSITIF — dan SETTLE_PAIR (_getFullDebt) me-revert DeltaNotNegative. Dulu 0x000d
+  // (INCREASE + SETTLE_PAIR) dipakai; entry "menambah posisi" seperti itu selalu gagal,
+  // padahal zap-nya sudah terbayar. CLOSE_CURRENCY membayar kalau minus dan mengambil
+  // kalau plus, jadi keduanya aman; kelebihan ETH native disapu balik.
   buildV4Increase(plan, deadlineSec) {
     const pk = plan.poolKey;
     const owner = this.address();
-    const acts = [ACT.INCREASE_LIQUIDITY, ACT.SETTLE_PAIR];
+    const acts = [ACT.INCREASE_LIQUIDITY, ACT.CLOSE_CURRENCY, ACT.CLOSE_CURRENCY];
     const params = [
       coder.encode(['uint256', 'uint256', 'uint128', 'uint128', 'bytes'],
         [plan.tokenId, plan.liquidity, plan.amount0Max, plan.amount1Max, '0x']),
-      coder.encode(['address', 'address'], [pk.currency0, pk.currency1]),
+      coder.encode(['address'], [pk.currency0]),
+      coder.encode(['address'], [pk.currency1]),
     ];
     let value = 0n;
     if (isNative(pk.currency0)) {
