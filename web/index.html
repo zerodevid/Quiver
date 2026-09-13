@@ -16,23 +16,107 @@
       } catch (e) {}
     })();
   </script>
+  <style>
+    /* Gaya layar pembuka ditulis di sini, bukan di CSS bundel: harus tetap benar
+       walau stylesheet bundel belum (atau gagal) dimuat. */
+    #splash {
+      --sp-bg: #f7f7f7; --sp-fg: #202B31; --sp-track: rgba(32, 43, 49, .12);
+      position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 22px; padding: 0 16px;
+      background: var(--background, var(--sp-bg)); color: var(--foreground, var(--sp-fg));
+      font: 14px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+      transition: opacity .35s ease, visibility 0s linear .35s;
+    }
+    .dark #splash { --sp-bg: #0c0c0e; --sp-fg: #ffffff; --sp-track: rgba(255, 255, 255, .14); }
+    #splash[data-state="leaving"] { opacity: 0; visibility: hidden; }
+    #splash .sp-logo { display: flex; align-items: center; gap: 14px; }
+    #splash svg { display: block; fill: currentColor; }
+    #splash .sp-mark { width: 61px; height: 40px; overflow: visible; }
+    #splash .sp-word { width: 152px; height: 40px; }
+    /* Masuk: panah meluncur dari kiri, chevron menyusul, nama merek muncul terakhir.
+       Lalu berulang pelan — panah "ditarik" dan dilepas — selama data dimuat. */
+    #splash .sp-arrow { animation: sp-in .55s cubic-bezier(.2, .8, .2, 1) both, sp-shoot 1.6s ease-in-out .9s infinite; }
+    #splash .sp-chev { animation: sp-pop .45s cubic-bezier(.2, .8, .2, 1) .22s both, sp-pulse 1.6s ease-in-out .9s infinite; }
+    #splash .sp-word { animation: sp-rise .5s ease .38s both; }
+    #splash .sp-bar { position: relative; width: 120px; height: 2px; overflow: hidden; border-radius: 2px; background: var(--sp-track); }
+    #splash .sp-bar span { position: absolute; inset: 0 auto 0 0; width: 40%; border-radius: 2px; background: currentColor; animation: sp-bar 1.1s ease-in-out infinite; }
+    #splash .sp-msg { margin: 0; max-width: 22rem; text-align: center; color: inherit; opacity: .75; }
+    #splash a.sp-msg { text-decoration: underline; }
+    #splash.sp-failed .sp-bar { display: none; }
+    #splash.sp-failed svg path { animation: none; }
+    @keyframes sp-in { from { opacity: 0; transform: translateX(-18px); } to { opacity: 1; transform: none; } }
+    @keyframes sp-pop { from { opacity: 0; transform: translateX(-6px) scale(.85); } to { opacity: 1; transform: none; } }
+    @keyframes sp-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    @keyframes sp-shoot { 0%, 100% { transform: none; } 35% { transform: translateX(-4px); } 55% { transform: translateX(5px); } }
+    @keyframes sp-pulse { 0%, 45%, 100% { opacity: 1; } 60% { opacity: .45; } }
+    @keyframes sp-bar { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+    @media (prefers-reduced-motion: reduce) {
+      #splash svg, #splash svg path, #splash .sp-bar span { animation: none !important; }
+      #splash .sp-bar span { width: 100%; opacity: .5; }
+    }
+  </style>
 </head>
 <body class="bg-background text-foreground">
-  <div id="root">
-    <div id="startup" role="status" style="max-width:32rem;margin:15vh auto;padding:1.5rem;font:15px/1.6 system-ui">
-      <p id="startup-message">Memuat Quiver…</p>
-      <a href="" style="color:inherit;text-decoration:underline">Muat ulang halaman</a>
+  <!-- Layar pembuka: di LUAR #root, jadi tidak dihapus React saat aplikasi mulai
+       menggambar. Tampil sejak byte pertama HTML, sebelum JS dimuat; App yang
+       menutupnya (src/splash.js) setelah data pertama tiba. -->
+  <div id="splash" role="status" aria-live="polite">
+    <div class="sp-logo">
+      <svg class="sp-mark" viewBox="0 0 73 48" aria-hidden="true">
+        <path class="sp-arrow" d="M0 19H26L16 8L24 0L46 24L24 48L16 40L26 30H0Z"/>
+        <path class="sp-chev" d="M43 11L51 3L73 24L51 46L43 38L56 24Z"/>
+      </svg>
+      <svg class="sp-word" viewBox="82 0 182 48" role="img" aria-label="Quiver">
+        <path fill-rule="evenodd" d="M99 9C88 9 82 15 82 24S88 39 99 39C102 39 105 38 107 37L113 43L118 38L112 32C114 30 115 27 115 24C115 15 109 9 99 9ZM99 15C105 15 108 18 108 24S105 33 99 33S89 30 89 24S93 15 99 15Z M120 10H127V27C127 31 130 33 134 33S141 31 141 27V10H148V27C148 35 143 39 134 39S120 35 120 27Z M154 10H161V38H154Z M166 10H174L183 31L192 10H200L187 38H179Z M204 10H229V16H211V21H227V27H211V32H229V38H204Z M234 10H250C258 10 262 14 262 20C262 24 260 27 256 28L264 38H255L248 29H241V38H234ZM241 16V23H249C253 23 255 22 255 20S253 16 249 16Z"/>
+      </svg>
     </div>
+    <div class="sp-bar"><span></span></div>
+    <p id="startup-message" class="sp-msg" hidden></p>
+    <a id="startup-reload" class="sp-msg" href="" hidden>Muat ulang halaman</a>
   </div>
+  <div id="root"></div>
   <noscript>Aktifkan JavaScript untuk membuka dasbor Quiver.</noscript>
   <script>
-    // Tetap terlihat jika entry JS gagal dimuat sebelum React sempat berjalan.
-    window.addEventListener('error', function (event) {
-      var message = document.getElementById('startup-message');
-      if (message && (event.error || event.target && event.target.tagName === 'SCRIPT')) {
-        message.textContent = 'Aplikasi gagal dimuat. Muat ulang halaman untuk mengambil versi terbaru.';
+    // Pesan gagal HANYA untuk berkas aplikasi sendiri yang tidak termuat (entry JS,
+    // chunk, CSS) atau galat dari skrip kita sebelum aplikasi sempat berjalan.
+    // Galat lain bukan urusan layar ini: ekstensi wallet (MetaMask, Rabby, …) yang
+    // menyuntik skrip ke setiap halaman sering melempar galat sendiri — dulu itu
+    // menahan layar pembuka di "gagal dimuat" padahal dasbornya jalan normal.
+    (function () {
+      function fail(text) {
+        var splash = document.getElementById('splash');
+        if (!splash) return;
+        var message = document.getElementById('startup-message');
+        message.textContent = text;
+        message.hidden = false;
+        document.getElementById('startup-reload').hidden = false;
+        splash.classList.add('sp-failed');
       }
-    }, true);
+      var ours = function (url) { return !!url && String(url).indexOf(location.origin + '/') === 0; };
+      window.addEventListener('error', function (event) {
+        if (window.__quiverBooted) return;   // setelah jalan, AppBoundary yang menangani
+        var el = event.target;
+        var fileMissing = el && (el.tagName === 'SCRIPT' || el.tagName === 'LINK') && ours(el.src || el.href);
+        var ourScriptThrew = event.error && ours(event.filename);
+        if (!fileMissing && !ourScriptThrew) return;
+        // Berkas kita tidak termuat biasanya sesaat (server sedang restart saat deploy,
+        // koneksi putus): coba sekali lagi otomatis. Paling cepat sekali per 30 detik,
+        // supaya tidak berputar kalau penyebabnya menetap.
+        var last = 0;
+        try { last = Number(sessionStorage.getItem('quiver-boot-retry') || 0); } catch (e) {}
+        if (fileMissing && Date.now() - last > 30000) {
+          try { sessionStorage.setItem('quiver-boot-retry', String(Date.now())); } catch (e) {}
+          fail('Aplikasi gagal dimuat — mencoba lagi…');
+          setTimeout(function () { location.reload(); }, 3000);
+          return;
+        }
+        fail('Aplikasi gagal dimuat. Muat ulang halaman untuk mengambil versi terbaru.');
+      }, true);
+      // Jaringan lambat atau entry tertahan: jangan diam selamanya di logo.
+      setTimeout(function () {
+        if (!window.__quiverBooted) fail('Memuat lebih lama dari biasanya. Periksa koneksi, lalu muat ulang halaman.');
+      }, 20000);
+    })();
   </script>
   <script type="module" src="/src/main.jsx"></script>
 </body>

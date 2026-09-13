@@ -2,6 +2,7 @@ import { Component, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import { I18nProvider, initLocale } from './i18n';
+import { hideSplash, armSplashTimeout } from './splash';
 import './index.css';
 
 // Halaman dimuat per potongan (chunk) dengan nama ber-hash. Sesudah deploy, tab
@@ -17,12 +18,15 @@ window.addEventListener('vite:preloadError', (e) => {
   window.location.reload();
 });
 
+// Entry termuat: galat sesudah titik ini bukan "aplikasi gagal dimuat" (lihat index.html).
+window.__quiverBooted = true;
 initLocale();
+armSplashTimeout();
 
 class AppBoundary extends Component {
   state = { error: null };
   static getDerivedStateFromError(error) { return { error }; }
-  componentDidCatch(error, info) { console.error('Dashboard render failed', error, info); }
+  componentDidCatch(error, info) { console.error('Dashboard render failed', error, info); hideSplash(); }
   render() {
     if (!this.state.error) return this.props.children;
     return (

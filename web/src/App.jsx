@@ -1,4 +1,4 @@
-import { createContext, lazy, Suspense, useContext, useState } from 'react';
+import { createContext, lazy, Suspense, useContext, useEffect, useState } from 'react';
 import { Button, Chip, Toast } from '@heroui/react';
 import {
   LayoutDashboard, Layers, ListChecks, Users, SlidersHorizontal, Wallet as WalletIcon,
@@ -14,6 +14,7 @@ import { AlertBell, useTargetAlerts } from './components/TargetAlerts';
 import StuckAlert from './components/StuckAlert';
 
 import { Loading, ConfirmHost } from './components/ui';
+import { hideSplash } from './splash';
 
 // Tiap halaman dimuat saat dibuka — pustaka grafik cuma diunduh untuk Ringkasan.
 const Overview = lazy(() => import('./pages/Overview'));
@@ -160,7 +161,9 @@ export default function App() {
   const param = rest.join('/') || null;
   const [theme, toggleTheme] = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
-  const { data: status, reload } = usePoll('/api/overview', 5000);
+  const { data: status, error: statusError, reload } = usePoll('/api/overview', 5000);
+  // Layar pembuka ditutup begitu status pertama (atau galatnya) tiba.
+  useEffect(() => { if (status || statusError) hideSplash(); }, [status, statusError]);
   const Page = PAGES[page] || Overview;
   useTargetAlerts();
 
