@@ -6,6 +6,7 @@ import PnlCalendar from '../components/PnlCalendar';
 import GrowthChart from '../components/GrowthChart';
 import ShareButton, { ShareDialog, totalCard, dailyCard } from '../components/ShareCard';
 import { Pair, SyncState } from './Positions';
+import PositionHistory from '../components/PositionHistory';
 import { usd, tone, num, pct, age, ago, short, txHref, locale as fmtLocale, TXKIND, TXSTATUS } from '../fmt';
 import { useI18n, reason } from '../i18n';
 
@@ -269,6 +270,9 @@ export default function Overview() {
   const { data: p, reload: reloadPortfolio } = usePoll('/api/portfolio?range=' + range, 30000);
   // Sama dengan halaman Posisi: endpoint murah, jadi posisi baru muncul dalam ~5 detik.
   const { data: pos, reload: reloadPos } = usePoll('/api/positions', 5000);
+  // Klik baris posisi aktif -> laci riwayat yang sama dengan halaman Posisi (PnL,
+  // komposisi token, transaksi); nama token tetap menaut ke halaman tokennya.
+  const [hist, setHist] = useState(null);
   const { data: tx } = usePoll('/api/txs', 10000);
   // Satu sinkron chain menyegarkan SELURUH halaman, bukan cuma tabelnya: kartu total
   // portofolio dan PnL dihitung dari hasil sinkron yang sama, dan dua angka untuk
@@ -298,6 +302,7 @@ export default function Overview() {
       </PageHeader>
       {/* Kartu PnL harian: hari yang diklik di kalender. Server merakit datanya sendiri. */}
       <ShareDialog card={shareDay && cal ? dailyCard({ day: shareDay, pnl: cal.daily[shareDay] }) : null} onClose={() => setShareDay(null)} />
+      <PositionHistory id={hist} onClose={() => setHist(null)} />
       <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Stat label="Total portofolio" value={now ? usd(now.value) : '—'}
           sub={!now ? null : now.cash
@@ -346,11 +351,11 @@ export default function Overview() {
           <a href="#positions" className="font-medium text-accent hover:underline">{t('Semua posisi →')}</a>
         </div>}>
         {!pos?.positions ? <Loading text="Memuat posisi…" /> : (
-          <DataTable label="Posisi aktif" rows={open} rowKey={(x) => x.id} dense
+          <DataTable label="Posisi aktif" rows={open} rowKey={(x) => x.id} dense onRow={(x) => setHist(x.id)}
             defaultSort={{ column: 'val', direction: 'descending' }}
             empty={<Empty title="Tidak ada posisi aktif" sub="Posisi muncul di sini setelah bot menyalin LP dari wallet target." />}
             columns={[
-              { key: 'pair', label: 'Pasangan', sort: (x) => `${x.symbol0}/${x.symbol1}`, render: (x) => <Pair p={x} /> },
+              { key: 'pair', label: 'Pasangan', sort: (x) => `${x.symbol0}/${x.symbol1}`, render: (x) => <Pair p={x} link={false} /> },
               // Versi ringkas kolom Sumber di halaman Posisi: cukup siapa yang disalin
               // (rincian PnL target ada di sana), supaya panel ringkasan tetap padat.
               { key: 'tgt', label: 'Sumber', sort: (x) => x.targetLabel || x.target || '', render: (x) => (
