@@ -28,8 +28,8 @@ function Totals({ items }) {
 
 // Dipakai juga panel "Posisi aktif" di Ringkasan. Nama pasangan menaut ke halaman
 // detail posisi (grafik harga, titik masuk, data pasar); di halaman Posisi (link=false)
-// seluruh barisnya sudah membuka laci riwayat, jadi tiap simbol menaut ke halaman
-// tokennya sendiri — klik baris = laci, klik token = halaman token.
+// seluruh barisnya sudah membuka laci riwayat, jadi nama pasangan menaut ke halaman
+// pool-nya (seperti di Aktivitas) — klik baris = laci, klik pasangan = halaman pool.
 export function Pair({ p, link = true }) {
   const { t } = useI18n();
   const name = `${p.symbol0 || '?'}/${p.symbol1 || '?'}`;
@@ -38,7 +38,7 @@ export function Pair({ p, link = true }) {
       <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={20} />
       <div className="min-w-0">
         {link ? <a href={'#positions/' + p.id} className="font-medium whitespace-nowrap hover:underline">{name}</a>
-          : <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} sep="/" className="font-medium" />}
+          : <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} sep="/" className="font-medium" />}
         <div className="mt-0.5 flex items-center gap-1.5 text-xs whitespace-nowrap text-muted">
           <span className="uppercase">{p.venue}</span><span>·</span><span className="num">{num(p.fee / 10000, 2)}%</span>
           {p.syncing ? <><span>·</span><Spinner size="sm" color="current" className="size-3" />
@@ -199,7 +199,7 @@ export default function Positions({ param }) {
             { key: 'pair', label: 'Pasangan', sort: (c) => `${c.symbol0}/${c.symbol1}`, search: (c) => `${c.symbol0}/${c.symbol1} ${c.token_id}`, render: (c) => (
               <div className="flex items-center gap-2.5">
                 <TokenPair token0={c.token0} token1={c.token1} symbol0={c.symbol0} symbol1={c.symbol1} size={20} />
-                <div><PairName token0={c.token0} token1={c.token1} symbol0={c.symbol0} symbol1={c.symbol1} sep="/" className="font-medium" />
+                <div><PairName token0={c.token0} token1={c.token1} symbol0={c.symbol0} symbol1={c.symbol1} pool={c.pool_ref} sep="/" className="font-medium" />
                   <div className="mono mt-0.5 text-xs text-muted">{String(c.venue || '').toUpperCase()} · #{c.token_id}</div></div>
               </div>) },
             { key: 'tgt', label: 'Sumber', sort: (c) => c.targetLabel || c.target,
