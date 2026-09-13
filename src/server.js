@@ -3,7 +3,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const { rulesFor, DEFAULTS } = require('./policy');
+const { rulesFor, DEFAULTS, validateRules } = require('./policy');
 const { scoutWallet } = require('./scout');
 const { WalletResearch, summarize } = require('./wallet');
 const { createSettingsRoutes } = require('./settings');
@@ -882,8 +882,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const b = await readBody(req);
       const addr = String(b.address || '').toLowerCase().trim();
       if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
+      const v = validateRules(b.rules || null);
+      if (v.error) return { error: v.error };
       store.run('INSERT OR IGNORE INTO targets(address,label,enabled,added_ts,rules,notes) VALUES(?,?,?,?,?,?)',
-        addr, b.label || null, b.enabled === false ? 0 : 1, Date.now(), b.rules ? JSON.stringify(b.rules) : null, b.notes || null);
+        addr, b.label || null, b.enabled === false ? 0 : 1, Date.now(), v.rules ? JSON.stringify(v.rules) : null, b.notes || null);
       return { ok: true };
     },
     'POST /api/targets/toggle': async (req) => {
@@ -893,8 +895,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     },
     'POST /api/targets/rules': async (req) => {
       const b = await readBody(req);
+      const v = validateRules(b.rules || null);
+      if (v.error) return { error: v.error };
       store.run('UPDATE targets SET rules=?, label=COALESCE(?,label) WHERE address=?',
-        b.rules ? JSON.stringify(b.rules) : null, b.label ?? null, String(b.address).toLowerCase());
+        v.rules ? JSON.stringify(v.rules) : null, b.label ?? null, String(b.address).toLowerCase());
       return { ok: true };
     },
     'POST /api/targets/label': async (req) => {
@@ -961,13 +965,21 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     'GET /api/rules': () => ({ rules: rulesFor(cfg.rules), defaults: DEFAULTS, raw: cfg.rules || {} }),
     'POST /api/rules': async (req) => {
       const b = await readBody(req);
-      cfg.rules = b.rules || {};
+      const v = validateRules(b.rules || {});
+      if (v.error) return { error: v.error };
+      cfg.rules = v.rules || {};
       saveCfg();
       return { ok: true, rules: rulesFor(cfg.rules) };
     },
     'POST /api/mode': async (req) => {
       const b = await readBody(req);
-      if (typeof b.dry_run === 'boolean') { cfg.mode = cfg.mode || {}; cfg.mode.dry_run = b.dry_run; saveCfg(); }
+      if (typeof b.dry_run === 'boolean') {
+        // Menyalakan LIVE lewat pintu ini harus sama ketatnya dengan halaman Pengaturan
+        // (/api/settings/live): butuh wallet dan konfirmasi tertulis. Kembali ke simulasi bebas.
+        if (b.dry_run === false && !engine.exec.address()) return { error: 'Pasang wallet dulu sebelum menyalakan LIVE.' };
+        if (b.dry_run === false && String(b.confirm || '') !== 'LIVE') return { error: 'Ketik LIVE untuk konfirmasi.' };
+        cfg.mode = cfg.mode || {}; cfg.mode.dry_run = b.dry_run; saveCfg();
+      }
       if (typeof b.paused === 'boolean') store.setState('paused', b.paused ? '1' : '0');
       return { ok: true, mode: { dry_run: engine.dryRun(), paused: engine.paused() } };
     },

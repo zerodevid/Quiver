@@ -61,6 +61,107 @@ const DEFAULTS = {
   },
 };
 
+// Bentuk & batas setiap aturan. Dipakai dua kali: menolak isian yang salah di API
+// (validateRules) dan merapikan aturan yang sudah tersimpan (rulesFor) — config lama atau
+// isian form yang lolos dulu tidak boleh menjatuhkan eksekusi. Contoh nyata: slippage
+// 150.5 dari kolom angka membuat BigInt(150.5) melempar di SETIAP entry; slippage ≥10000
+// membuat minOut negatif.
+//   [tipe, min, max]  tipe: num | int | bool | enum(list) | list
+const RULE_SPEC = {
+  sizing: {
+    mode: ['enum', ['mirror', 'pct', 'multiplier', 'fixed_quote']],
+    pct: ['num', 0, 100_000], multiplier: ['num', 0, 1000],
+    fixed_quote_usd: ['num', 0, 1e9], fixed_quote_eth: ['num', 0, 1e6],
+    min_quote_usd: ['num', 0, 1e9], max_quote_per_position_usd: ['num', 0, 1e9],
+    max_total_exposure_usd: ['num', 0, 1e9], daily_budget_usd: ['num', 0, 1e9],
+  },
+  range: {
+    mode: ['enum', ['exact', 'recenter', 'scale', 'width_pct', 'full']],
+    scale: ['num', 0.01, 100], width_pct: ['num', 0.01, 100_000],
+    align: ['enum', ['nearest', 'down', 'up']], min_width_ticks: ['int', 0, 1_774_544],
+  },
+  onesided: { policy: ['enum', ['copy', 'skip', 'recenter']], max_quote_usd: ['num', 0, 1e9] },
+  swap: { enabled: ['bool'], max_slippage_bps: ['int', 0, 5000], max_price_impact_bps: ['int', 0, 10_000] },
+  exit: {
+    follow_target: ['bool'], follow_partial: ['bool'],
+    out_of_range_minutes: ['num', 0, 1e7], stop_loss_pct: ['num', 0, 100], take_profit_pct: ['num', 0, 1e6],
+    max_age_hours: ['num', 0, 1e6], sell_leftover: ['bool'], sell_max_loss_bps: ['int', 0, 10_000],
+    leftover_retry_sec: ['int', 1, 86_400],
+  },
+  filters: {
+    allow_hooks: ['bool'], quote_whitelist: ['list'], token_blacklist: ['list'], token_whitelist: ['list'],
+    min_pool_age_minutes: ['num', 0, 1e7], min_target_quote_usd: ['num', 0, 1e9],
+    max_open_positions: ['int', 0, 100_000], cooldown_seconds: ['num', 0, 1e7],
+    venues: ['list'], max_fee_bps: ['int', 0, 1_000_000],
+  },
+};
+
+// Satu nilai menurut spesifikasinya: { ok, value } atau { error }.
+function checkRule(spec, v, key = null) {
+  const [type, a, b] = spec;
+  // Stop loss sejak dulu dibaca sebagai besaran (Math.abs): "-10" = rugi 10%, bukan mati.
+  if (key === 'stop_loss_pct' && Number(v) < 0) v = Math.abs(Number(v));
+  if (type === 'bool') {
+    if (typeof v === 'boolean') return { value: v };
+    if (v === 'true' || v === 1) return { value: true };
+    if (v === 'false' || v === 0) return { value: false };
+    return { error: 'harus ya/tidak' };
+  }
+  if (type === 'enum') return a.includes(v) ? { value: v } : { error: `harus salah satu dari ${a.join(', ')}` };
+  if (type === 'list') {
+    const arr = Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : null;
+    if (!arr) return { error: 'harus berupa daftar' };
+    return { value: arr.map((x) => String(x).trim()).filter(Boolean) };
+  }
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v.replace(',', '.')) : v;
+  if (typeof n !== 'number' || !Number.isFinite(n)) return { error: 'harus angka' };
+  if (type === 'int' && !Number.isInteger(n)) return { error: 'harus bilangan bulat' };
+  if (n < a || n > b) return { error: `harus di antara ${a} dan ${b}` };
+  return { value: n };
+}
+
+// Periksa aturan dari API (global atau override per target — boleh sebagian). Kunci yang
+// tidak dikenal dibiarkan. Balikan { rules } (sudah dirapikan) atau { error }.
+function validateRules(input) {
+  if (input == null) return { rules: null };
+  if (typeof input !== 'object' || Array.isArray(input)) return { error: 'aturan harus berupa objek' };
+  const out = JSON.parse(JSON.stringify(input));
+  for (const [g, fields] of Object.entries(RULE_SPEC)) {
+    if (out[g] == null) continue;
+    if (typeof out[g] !== 'object' || Array.isArray(out[g])) return { error: `${g}: harus berupa objek` };
+    for (const [k, spec] of Object.entries(fields)) {
+      if (!(k in out[g])) continue;
+      const r = checkRule(spec, out[g][k], k);
+      if (r.error) return { error: `${g}.${k} ${r.error}` };
+      out[g][k] = r.value;
+    }
+    if (out[g].venues && out[g].venues.some((x) => !['v3', 'v4'].includes(x))) return { error: 'filters.venues hanya boleh v3 dan/atau v4' };
+  }
+  return { rules: out };
+}
+
+// Aturan hasil gabungan yang tidak lolos spesifikasi diganti bawaan (bilangan bps yang
+// cuma kurang bulat dibulatkan saja), supaya satu nilai rusak di config tidak mematikan
+// semua entry/keluar.
+function normalizeRules(r) {
+  for (const [g, fields] of Object.entries(RULE_SPEC)) {
+    r[g] = r[g] && typeof r[g] === 'object' ? r[g] : {};
+    for (const [k, spec] of Object.entries(fields)) {
+      if (!(k in r[g]) && !(k in (DEFAULTS[g] || {}))) continue;
+      let v = r[g][k];
+      if (spec[0] === 'int' && typeof v === 'number' && Number.isFinite(v)) v = Math.round(v);
+      const c = checkRule(spec, v, k);
+      if (!c.error) { r[g][k] = c.value; continue; }
+      if (spec[0] === 'num' || spec[0] === 'int') {
+        const n = k === 'stop_loss_pct' ? Math.abs(Number(v)) : Number(v);
+        if (Number.isFinite(n)) { r[g][k] = Math.min(spec[2], Math.max(spec[1], spec[0] === 'int' ? Math.round(n) : n)); continue; }
+      }
+      r[g][k] = DEFAULTS[g][k];
+    }
+  }
+  return r;
+}
+
 function deepMerge(base, over) {
   const out = { ...base };
   for (const [k, v] of Object.entries(over || {})) {
@@ -71,7 +172,7 @@ function deepMerge(base, over) {
 function rulesFor(globalRules, targetRulesJson) {
   let per = null;
   try { per = targetRulesJson ? JSON.parse(targetRulesJson) : null; } catch { per = null; }
-  return deepMerge(deepMerge(DEFAULTS, globalRules || {}), per || {});
+  return normalizeRules(deepMerge(deepMerge(DEFAULTS, globalRules || {}), per || {}));
 }
 
 // ---- rentang --------------------------------------------------------------
@@ -308,4 +409,4 @@ function planExit(act, ourPos, ctx) {
   };
 }
 
-module.exports = { DEFAULTS, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };
+module.exports = { DEFAULTS, RULE_SPEC, validateRules, normalizeRules, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };

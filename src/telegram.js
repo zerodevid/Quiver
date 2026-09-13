@@ -268,8 +268,8 @@ const RULE_GROUPS = [
   {
     g: 'swap', title: '🔁 Tukar aset', fields: [
       F.bool('enabled', 'Boleh menukar aset untuk masuk'),
-      F.bps('max_slippage_bps', 'Toleransi geser harga', { when: (r) => r.swap.enabled }),
-      F.bps('max_price_impact_bps', 'Batas rugi rute', { when: (r) => r.swap.enabled }),
+      F.bps('max_slippage_bps', 'Toleransi geser harga', { hi: 5000, when: (r) => r.swap.enabled }),
+      F.bps('max_price_impact_bps', 'Batas rugi rute', { hi: 10000, when: (r) => r.swap.enabled }),
     ],
   },
   {
@@ -277,11 +277,11 @@ const RULE_GROUPS = [
       F.bool('follow_target', 'Ikut keluar saat target keluar'),
       F.bool('follow_partial', 'Ikut menarik sebagian', { when: (r) => r.exit.follow_target }),
       F.int('out_of_range_minutes', 'Tutup kalau di luar rentang selama (menit)', { help: '0 = mati.' }),
-      F.pct('stop_loss_pct', 'Tutup kalau rugi (%)', { help: '0 = mati.' }),
+      F.pct('stop_loss_pct', 'Tutup kalau rugi (%)', { hi: 100, help: '0 = mati.' }),
       F.pct('take_profit_pct', 'Tutup kalau untung (%)', { help: '0 = mati.' }),
       F.num('max_age_hours', 'Tutup setelah (jam)', { hi: 100000, help: '0 = mati.' }),
       F.bool('sell_leftover', 'Jual otomatis memecoin sisa'),
-      F.bps('sell_max_loss_bps', 'Batas rugi saat menjual sisa', { when: (r) => r.exit.sell_leftover }),
+      F.bps('sell_max_loss_bps', 'Batas rugi saat menjual sisa', { hi: 10000, when: (r) => r.exit.sell_leftover }),
       F.int('leftover_retry_sec', 'Cek ulang sisa tiap (detik)', { lo: 1, hi: 3600, when: (r) => r.exit.sell_leftover,
         help: 'Satu kutipan Kyber per token per interval; dijual begitu ruginya di bawah batas. Terlalu rapat bisa kena batas laju Kyber.' }),
     ],
@@ -371,7 +371,7 @@ function parseVal(spec, raw) {
   let n = Number(t.replace(/[$%\s]/g, '').replace(',', '.'));
   if (spec.type === 'bps' && /%$/.test(t.trim())) n = n * 100;
   if (!Number.isFinite(n)) throw new Error(tr("harus berupa angka"));
-  if (spec.type === 'int') n = Math.round(n);
+  if (spec.type === 'int' || spec.type === 'bps') n = Math.round(n);
   if (n < spec.lo || n > spec.hi) throw new Error(tr("harus antara {0} dan {1}", [spec.lo, spec.hi]));
   return n;
 }
@@ -1181,14 +1181,18 @@ class Telegram {
   async writeRule(chatId, g, k, v) {
     const cur = await this.readRules(chatId);
     const raw = dset({ ...cur.raw }, g, k, v);
-    if (cur.scope === 'g') await this.api('POST', '/api/rules', { rules: raw });
-    else await this.api('POST', '/api/targets/rules', { address: cur.scope, rules: raw });
+    const r = cur.scope === 'g'
+      ? await this.api('POST', '/api/rules', { rules: raw })
+      : await this.api('POST', '/api/targets/rules', { address: cur.scope, rules: raw });
+    // Server menolak nilai di luar batas (mis. slippage > 5000 bps): tampilkan, jangan diam.
+    if (r?.error) throw new Error(r.error);
   }
   async clearRule(chatId, g, k) {
     const cur = await this.readRules(chatId);
     if (cur.scope === 'g') return;                  // di tingkat global tidak ada yang bisa dilepas
     const raw = ddel(JSON.parse(JSON.stringify(cur.raw)), g, k);
-    await this.api('POST', '/api/targets/rules', { address: cur.scope, rules: Object.keys(raw).length ? raw : null });
+    const r = await this.api('POST', '/api/targets/rules', { address: cur.scope, rules: Object.keys(raw).length ? raw : null });
+    if (r?.error) throw new Error(r.error);
   }
 
   // ---- kabar penting (notifikasi terdorong) ----------------------------------
