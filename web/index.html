@@ -14,6 +14,8 @@
         var el = document.documentElement;
         el.classList.add(t); el.setAttribute('data-theme', t);
       } catch (e) {}
+      // penanda layar pembuka masih tampil (lihat .brand-sub di index.css)
+      document.documentElement.classList.add('has-splash');
     })();
   </script>
   <style>
@@ -25,11 +27,17 @@
       align-items: center; justify-content: center; gap: 22px; padding: 0 16px;
       background: var(--background, var(--sp-bg)); color: var(--foreground, var(--sp-fg));
       font: 14px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
-      transition: opacity .35s ease, visibility 0s linear .35s;
+      transition: opacity .35s ease, visibility 0s linear .35s, background-color .4s ease;
     }
     .dark #splash { --sp-bg: #0c0c0e; --sp-fg: #ffffff; --sp-track: rgba(255, 255, 255, .14); }
     #splash[data-state="leaving"] { opacity: 0; visibility: hidden; }
-    #splash .sp-logo { display: flex; align-items: center; gap: 14px; }
+    /* Terbang ke header: latar memudar, logo mengecil ke tempatnya (isi halaman
+       baru muncul menjelang mendarat — lihat .app-enter di src/index.css). */
+    #splash[data-state="flying"] { background-color: transparent; pointer-events: none; }
+    #splash[data-state="flying"] .sp-bar, #splash[data-state="flying"] .sp-msg { opacity: 0; transition: opacity .2s ease; }
+    /* Jarak tanda–nama sama dengan logo header (9 satuan viewBox × 40/48), jadi
+       logo bisa diskalakan tepat ke ukurannya tanpa bergeser. */
+    #splash .sp-logo { display: flex; align-items: center; gap: 7.5px; transform-origin: center; transition: transform .62s cubic-bezier(.22, 1, .36, 1); }
     #splash svg { display: block; fill: currentColor; }
     #splash .sp-mark { width: 61px; height: 40px; overflow: visible; }
     #splash .sp-word { width: 152px; height: 40px; }

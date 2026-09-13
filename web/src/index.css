@@ -169,3 +169,35 @@ td .mono { white-space: nowrap; }
   .modal__dialog, .alert-dialog__dialog { max-width: calc(100vw - 2rem); }
   .button { max-width: 100%; }
 }
+
+/* --- sambutan logo -----------------------------------------------------------
+   Layar pembuka → dasbor, bertahap (src/splash.js):
+   1. Latar memudar, logo terbang ke logo header. Menu dan isi halaman BELUM tampil
+      (html.has-splash), jadi logo melintas di atas bidang kosong — hanya kerangka
+      sidebar/header sebagai tujuan, bukan menyeberangi kartu dan angka.
+   2. Menjelang mendarat (html.app-enter) menu lalu isi halaman muncul berurutan
+      dari atas, geser naik tipis. Saat mendarat panah logo "menembak" SEKALI —
+      ditarik, dilepas, chevron berkedip — lalu diam.
+   Satuan translate di dalam SVG = satuan viewBox (264 lebar untuk 121px), jadi
+   9 satuan ≈ 4px di layar. */
+html.has-splash [data-reveal], html.has-splash [data-brand] .brand-sub, html.brand-pending [data-brand] .brand-sub { opacity: 0; }
+html.app-enter [data-reveal="nav"] { animation: q-rise .5s cubic-bezier(.22, 1, .36, 1) both; }
+html.app-enter [data-reveal="main"] > * { animation: q-rise .55s cubic-bezier(.22, 1, .36, 1) both; animation-delay: .32s; }
+html.app-enter [data-reveal="main"] > :nth-child(1) { animation-delay: .06s; }
+html.app-enter [data-reveal="main"] > :nth-child(2) { animation-delay: .1s; }
+html.app-enter [data-reveal="main"] > :nth-child(3) { animation-delay: .14s; }
+html.app-enter [data-reveal="main"] > :nth-child(4) { animation-delay: .18s; }
+html.app-enter [data-reveal="main"] > :nth-child(5) { animation-delay: .22s; }
+html.app-enter [data-reveal="main"] > :nth-child(6) { animation-delay: .26s; }
+html.app-enter [data-reveal="foot"] { animation: q-fade .4s ease .35s both; }
+[data-brand].brand-arrive .q-arrow { transform-box: fill-box; animation: q-shoot .85s cubic-bezier(.3, 0, .2, 1) both; }
+[data-brand].brand-arrive .q-chev { animation: q-pulse .85s ease-in-out both; }
+[data-brand].brand-arrive .brand-sub { animation: q-fade .45s ease .3s both; }
+@keyframes q-shoot { 0%, 100% { transform: none; } 38% { transform: translateX(-9px); } 62% { transform: translateX(11px); } }
+@keyframes q-pulse { 0%, 50%, 100% { opacity: 1; } 66% { opacity: .4; } }
+@keyframes q-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes q-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  html.app-enter [data-reveal], html.app-enter [data-reveal] > *,
+  [data-brand].brand-arrive .q-arrow, [data-brand].brand-arrive .q-chev, [data-brand].brand-arrive .brand-sub { animation: none !important; }
+}

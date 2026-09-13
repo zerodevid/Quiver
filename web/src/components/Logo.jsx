@@ -1,15 +1,23 @@
 // Outlined vector artwork: no font or bitmap dependency. Inherits the theme color.
-const MARK = 'M0 19H26L16 8L24 0L46 24L24 48L16 40L26 30H0ZM43 11L51 3L73 24L51 46L43 38L56 24Z';
+// Tanda dipecah jadi panah + chevron supaya keduanya bisa dianimasikan terpisah
+// (sambutan setelah layar pembuka, lihat src/splash.js dan .brand-arrive di index.css).
+const ARROW = 'M0 19H26L16 8L24 0L46 24L24 48L16 40L26 30H0Z';
+const CHEVRON = 'M43 11L51 3L73 24L51 46L43 38L56 24Z';
+const MARK = ARROW + CHEVRON;
 const WORDMARK = 'M99 9C88 9 82 15 82 24S88 39 99 39C102 39 105 38 107 37L113 43L118 38L112 32C114 30 115 27 115 24C115 15 109 9 99 9ZM99 15C105 15 108 18 108 24S105 33 99 33S89 30 89 24S93 15 99 15Z M120 10H127V27C127 31 130 33 134 33S141 31 141 27V10H148V27C148 35 143 39 134 39S120 35 120 27Z M154 10H161V38H154Z M166 10H174L183 31L192 10H200L187 38H179Z M204 10H229V16H211V21H227V27H211V32H229V38H204Z M234 10H250C258 10 262 14 262 20C262 24 260 27 256 28L264 38H255L248 29H241V38H234ZM241 16V23H249C253 23 255 22 255 20S253 16 249 16Z';
 
 export function QuiverMark({ className = 'size-7' }) {
   return <svg viewBox="0 0 73 48" className={className} aria-hidden="true"><path fill="currentColor" d={MARK} /></svg>;
 }
 
-export function QuiverLogo({ className = 'h-7 w-auto' }) {
+export function QuiverLogo({ className = 'h-7 w-auto', ...rest }) {
   return (
-    <svg width="154" height="28" viewBox="0 0 264 48" className={className} role="img" aria-label="Quiver">
-      <g fill="currentColor" fillRule="evenodd"><path d={MARK} /><path d={WORDMARK} /></g>
+    <svg width="154" height="28" viewBox="0 0 264 48" className={className} role="img" aria-label="Quiver" overflow="visible" {...rest}>
+      <g fill="currentColor" fillRule="evenodd">
+        <path className="q-arrow" d={ARROW} />
+        <path className="q-chev" d={CHEVRON} />
+        <path className="q-word" d={WORDMARK} />
+      </g>
     </svg>
   );
 }

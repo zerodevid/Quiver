@@ -144,9 +144,10 @@ function StatusFoot({ status, reload, theme, toggleTheme }) {
 
 function Brand() {
   return (
-    <a href="#summary" className="flex shrink-0 flex-col items-start gap-2 text-foreground" aria-label="Quiver">
-      <QuiverLogo className="h-[22px] w-[121px]" />
-      <span className="flex items-center gap-1.5 text-[0.6875rem] leading-4 text-muted">
+    // data-brand/data-brand-logo: tujuan logo layar pembuka saat terbang ke header
+    <a href="#summary" data-brand className="flex shrink-0 flex-col items-start gap-2 text-foreground" aria-label="Quiver">
+      <QuiverLogo className="h-[22px] w-[121px]" data-brand-logo="" />
+      <span className="brand-sub flex items-center gap-1.5 text-[0.6875rem] leading-4 text-muted">
         <img src="/robinhood-chain.jpg" alt="" width="14" height="14" className="size-3.5 shrink-0 rounded-full" />
         Robinhood Chain
       </span>
@@ -176,15 +177,16 @@ export default function App() {
         {/* sidebar desktop */}
         <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col border-r border-border bg-surface lg:flex">
           <div className="flex h-[76px] items-center border-b border-border px-5"><Brand /></div>
-          <div className="flex-1 overflow-y-auto px-2 py-4"><NavLinks page={page} /></div>
-          <StatusFoot status={status} reload={reload} theme={theme} toggleTheme={toggleTheme} />
+          {/* data-reveal: disembunyikan selama layar pembuka, muncul berurutan setelah logo mendarat */}
+          <div className="flex-1 overflow-y-auto px-2 py-4" data-reveal="nav"><NavLinks page={page} /></div>
+          <div data-reveal="nav"><StatusFoot status={status} reload={reload} theme={theme} toggleTheme={toggleTheme} /></div>
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
           {/* header mobile */}
           <header className="sticky top-0 z-30 flex h-[72px] items-center justify-between border-b border-border bg-surface/90 px-4 backdrop-blur lg:hidden">
             <Brand />
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1" data-reveal="nav">
               <span className="mr-1 hidden min-[360px]:inline"><ModeBadge m={status?.mode} /></span>
               <AlertBell placement="bottom" variant="ghost" iconClass="size-4" />
               <Button size="sm" variant="ghost" isIconOnly aria-label={t('Ganti tema')} onPress={toggleTheme}>
@@ -203,10 +205,10 @@ export default function App() {
           )}
 
           <StuckAlert />
-          <main className="mx-auto w-full max-w-[90rem] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
+          <main className="mx-auto w-full max-w-[90rem] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7" data-reveal="main">
             <Suspense fallback={<Loading />}><Page key={page + (param || '')} param={param} /></Suspense>
           </main>
-          <footer className="mx-auto w-full max-w-[90rem] px-4 pb-5 text-[0.6875rem] text-muted sm:px-6 lg:px-8">
+          <footer className="mx-auto w-full max-w-[90rem] px-4 pb-5 text-[0.6875rem] text-muted sm:px-6 lg:px-8" data-reveal="foot">
             {t('Quiver · cermin posisi likuiditas Uniswap v3/v4 · Robinhood Chain (4663)')}
           </footer>
         </div>
