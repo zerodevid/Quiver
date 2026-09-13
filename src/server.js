@@ -436,21 +436,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const value = (cash?.usd || 0) + s.exposureUsd + lo + s.feeUsd;
       const pnl = s.realizedUsd + s.unrealizedUsd;
 
-      // Satu titik tiap 5 menit = 8.640 titik per 30 hari, jauh lebih rapat daripada
-      // piksel grafiknya. Ambil titik terakhir tiap ember; titik pertama tetap ikut.
       const rows = store.all(`SELECT ts, wallet_quote AS cash, positions_quote AS pos, fees_quote AS fee,
         total_quote AS total, pnl_quote AS pnl, open_positions AS n FROM equity WHERE ts >= ? ORDER BY ts`, from);
-      const MAX = 360;
-      let series = rows;
-      if (rows.length > MAX) {
-        const step = rows.length / MAX;
-        series = [rows[0]];
-        for (let i = 1; i <= MAX; i++) series.push(rows[Math.min(rows.length - 1, Math.floor(i * step) - 1)]);
-      }
       // Titik "sekarang" supaya ujung grafik sama dengan angka di kartu, bukan
       // tertinggal sampai 5 menit di belakangnya.
       if (engine.positions.lastSync) {
-        series = [...series, { ts: now, cash: cash ? cash.usd : null, pos: s.exposureUsd + lo, fee: s.feeUsd, total: value, pnl, n: s.openCount, live: true }];
+        rows.push({ ts: now, cash: cash ? cash.usd : null, pos: s.exposureUsd + lo, fee: s.feeUsd, total: value, pnl, n: s.openCount, live: true });
       }
       // Titik terakhir SEBELUM jendela: patokan "berubah berapa dalam rentang ini".
       const baseline = from ? store.get('SELECT ts, pnl_quote AS pnl, total_quote AS total, wallet_quote AS cash FROM equity WHERE ts < ? ORDER BY ts DESC LIMIT 1', from) || null : null;
@@ -463,8 +454,32 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         const capAt = (ts) => capital.baselineUsd + deps.filter((d) => d.ts <= ts).reduce((a, d) => a + (d.kind === 'deposit' ? d.usd : -d.usd), 0);
         // Titik "sekarang" pun tanpa kas tidak sah: sesaat setelah restart kas belum
         // terbaca, total = posisi saja, dan ujung grafik anjlok sebesar seluruh kas.
-        for (const r of series) r.net = r.cash == null ? null : r.total - capAt(r.ts);
+        for (const r of rows) r.net = r.cash == null ? null : r.total - capAt(r.ts);
         if (baseline) baseline.net = baseline.cash == null ? null : baseline.total - capAt(baseline.ts);
+      }
+      // Tertinggi/terendah/drawdown dari SEMUA titik, sebelum dijarangkan: titik yang
+      // dibuang penjarangan bisa saja puncak atau lembahnya (drawdown 7 hari terbaca
+      // $70.96 padahal $73.63).
+      const extremes = {};
+      for (const [key, pick] of [['pnl', (r) => r.pnl], ['net', (r) => r.net], ['value', (r) => (r.cash == null ? null : r.total)]]) {
+        let hi = -Infinity, lo2 = Infinity, peak = -Infinity, dd = 0, n = 0;
+        for (const r of rows) {
+          const v = pick(r);
+          if (v == null) continue;
+          n++; hi = Math.max(hi, v); lo2 = Math.min(lo2, v); peak = Math.max(peak, v); dd = Math.max(dd, peak - v);
+        }
+        if (n) extremes[key] = { hi, lo: lo2, dd };
+      }
+
+      // Satu titik tiap 5 menit = 8.640 titik per 30 hari, jauh lebih rapat daripada
+      // piksel grafiknya. Ambil titik terakhir tiap ember; titik pertama dan titik
+      // "sekarang" tetap ikut.
+      const MAX = 360;
+      let series = rows;
+      if (rows.length > MAX + 1) {
+        const step = rows.length / MAX;
+        series = [rows[0]];
+        for (let i = 1; i <= MAX; i++) series.push(rows[Math.min(rows.length - 1, Math.floor(i * step) - 1)]);
       }
 
       // Posisi tertutup: bahan kalender (dikelompokkan per hari di browser, pakai
@@ -479,7 +494,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const by = pnlByTarget(closed);
 
       return {
-        range, from, series, baseline,
+        range, from, series, baseline, extremes,
         now: {
           value, cash, positionsUsd: s.exposureUsd, feeUsd: s.feeUsd, costUsd: s.costUsd,
           // memecoin sisa dari posisi yang sudah tutup, belum dijual, di harga kini

@@ -1404,7 +1404,9 @@ class Telegram {
     ]);
     const s = o.summary, t = o.totals, now = pf?.now, st = pf?.stats;
     const pnl = s.realizedUsd + s.unrealizedUsd;
-    const pnlPct = now?.capital > 0 ? (pnl / now.capital) * 100 : null;
+    // modal nyata kalau terlacak; "nilai − PnL" melingkar (PnL besar → pembagi kecil)
+    const cap = now?.capitalNet ?? now?.capital;
+    const pnlPct = cap > 0 ? (pnl / cap) * 100 : null;
     const L = [
       tr("📊 <b>Ringkasan</b> · {0}", [o.mode.dry_run ? tr("🧪 SIMULASI") : '🟢 LIVE']),
       tr("<code>{0}</code> · sinkron {1}", [esc(shortA(o.mode.wallet)), esc(ago(o.lastSync))]),

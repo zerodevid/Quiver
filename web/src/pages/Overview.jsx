@@ -46,12 +46,19 @@ function GrowthChart({ p, view }) {
     : view === 'pnl'
       ? last - (p.range === 'all' ? 0 : (p.baseline?.pnl ?? 0))
       : last - first;
-  const cap = view === 'net' ? p.now.capitalNet : p.now.capital;
+  // Persen terhadap modal nyata (baseline + setoran − penarikan) kalau terlacak.
+  // "Nilai − PnL" hanya cadangan: angka itu melingkar — makin besar PnL, makin
+  // kecil pembaginya (PnL $154.62 terbaca 40.97% padahal modal $399.62 → 38.69%).
+  const cap = p.now.capitalNet ?? p.now.capital;
   const vals = pts.map((x) => x.v);
-  const hi = Math.max(...vals), lo = Math.min(...vals);
-  // drawdown terdalam: jarak terbesar dari puncak sebelumnya ke titik sesudahnya
-  let peak = -Infinity, dd = 0;
-  for (const v of vals) { peak = Math.max(peak, v); dd = Math.max(dd, peak - v); }
+  // Tertinggi/drawdown dari server, dihitung atas semua titik sebelum dijarangkan.
+  let { hi, lo, dd } = p.extremes?.[view] || {};
+  if (hi == null) {
+    hi = Math.max(...vals); lo = Math.min(...vals);
+    // drawdown terdalam: jarak terbesar dari puncak sebelumnya ke titik sesudahnya
+    let peak = -Infinity; dd = 0;
+    for (const v of vals) { peak = Math.max(peak, v); dd = Math.max(dd, peak - v); }
+  }
 
   const spanMs = pts[pts.length - 1].t - pts[0].t;
   const tickFmt = (v) => (spanMs <= 36 * 3600e3

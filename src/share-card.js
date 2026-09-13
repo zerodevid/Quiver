@@ -240,7 +240,9 @@ function positionSvg(p, { hideAmounts = false, icons = {} } = {}) {
 // ---- kartu total portofolio -------------------------------------------------------
 // now/stats: bentuk yang sama dengan /api/portfolio; since: posisi pertama dibuka.
 function totalSvg({ now, stats, since }, { hideAmounts = false } = {}) {
-  const pnlPct = now.capital > 0 ? (now.pnl / now.capital) * 100 : null;
+  // modal nyata kalau terlacak; "nilai − PnL" melingkar (PnL besar → pembagi kecil)
+  const cap = now.capitalNet ?? now.capital;
+  const pnlPct = cap > 0 ? (now.pnl / cap) * 100 : null;
   const wr = stats?.winRatePct;
   const body = title(tr('Total PnL'), [
     [tr('{0} posisi terbuka', [now.openCount || 0])],
