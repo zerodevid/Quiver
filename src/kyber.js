@@ -28,6 +28,14 @@ const IF_ERC20 = new ethers.Interface([
 ]);
 
 const kTok = (t) => (String(t).toLowerCase() === ADDR.native ? NATIVE : t);
+// MetaAggregationRouterV2: dua pintu masuk, keduanya membawa SwapDescriptionV2 —
+// diverifikasi dari calldata build sungguhan (2026-09-13: selector 0xe21fd0e9).
+const DESC = 'tuple(address srcToken,address dstToken,address[] srcReceivers,uint256[] srcAmounts,address[] feeReceivers,uint256[] feeAmounts,address dstReceiver,uint256 amount,uint256 minReturnAmount,uint256 flags,bytes permit)';
+const IF_ROUTER = new ethers.Interface([
+  `function swap(tuple(address callTarget,address approveTarget,bytes targetData,${DESC} desc,bytes clientData) execution)`,
+  `function swapSimpleMode(address caller,${DESC} desc,bytes executorData,bytes clientData)`,
+]);
+const sameTok = (a, b) => String(a).toLowerCase() === String(kTok(b)).toLowerCase();
 
 class Kyber {
   constructor({ exec, rpc, cfg, log }) {
@@ -70,6 +78,17 @@ class Kyber {
       if (!r.ok || j?.code !== 0 || !j?.data?.data) return null;
       return j.data;
     } catch { return null; }
+  }
+
+  // Isi calldata yang dikembalikan API: ke mana hasil swap dikirim, token apa, berapa
+  // yang dibayar, dan minimum yang diterima. null kalau bentuknya tidak dikenal —
+  // calldata yang tidak bisa dibaca tidak pernah dikirim.
+  static inspect(data) {
+    let p;
+    try { p = IF_ROUTER.parseTransaction({ data }); } catch { return null; }
+    if (!p) return null;
+    const d = p.name === 'swap' ? p.args[0].desc : p.args[1];
+    return { fn: p.name, srcToken: d.srcToken, dstToken: d.dstToken, dstReceiver: d.dstReceiver, amount: BigInt(d.amount), minReturn: BigInt(d.minReturnAmount) };
   }
 
   // Rugi rute dalam bps menurut nilai USD Kyber sendiri (fee pool + dampak harga).
@@ -145,6 +164,18 @@ class Kyber {
     if (BigInt(built.amountIn) !== amountIn || BigInt(built.amountOut) < minOut) {
       throw new Error(`hasil build Kyber menyimpang (masuk ${built.amountIn}, keluar ${built.amountOut} < ${minOut})`);
     }
+    // 5. Angka di atas cuma klaim API tentang dirinya sendiri. Yang dieksekusi adalah
+    //    calldata-nya: dibaca dan dicocokkan — penerima hasil = wallet kita, token benar,
+    //    jumlah bayar = amountIn, minimum terima ≥ kutipan − 2× slippage (build memakai
+    //    amountOut-nya sendiri sebagai dasar minReturn). API yang berubah/dibajak tidak
+    //    bisa mengarahkan hasil ke alamat lain atau mengosongkan minReturn.
+    const cd = Kyber.inspect(built.data);
+    if (!cd) throw new Error('calldata Kyber tidak dikenali — tidak dikirim');
+    if (String(cd.dstReceiver).toLowerCase() !== String(me).toLowerCase()) throw new Error(`calldata Kyber janggal: penerima ${cd.dstReceiver} bukan wallet kita`);
+    if (!sameTok(cd.srcToken, tokenIn) || !sameTok(cd.dstToken, tokenOut)) throw new Error(`calldata Kyber janggal: token ${cd.srcToken}→${cd.dstToken}`);
+    if (cd.amount !== amountIn) throw new Error(`calldata Kyber janggal: jumlah bayar ${cd.amount} ≠ ${amountIn}`);
+    const floor = (q.amountOut * BigInt(Math.max(0, 10_000 - 2 * slippageBps))) / 10_000n;
+    if (cd.minReturn < floor) throw new Error(`calldata Kyber janggal: minimum terima ${cd.minReturn} < ${floor}`);
 
     // Izin token masuk: tepat sejumlah amountIn, langsung ke router whitelist.
     if (!nativeIn) {

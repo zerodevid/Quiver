@@ -141,7 +141,11 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     };
     const k = new Kyber({ exec, rpc: { ethCallMany: async () => [pad(10n ** 30n)] }, cfg: {}, log: () => {} });
     k.quote = async () => ({ routeSummary: {}, routerAddress: k.router(), amountOut: 1000n, usdIn: 1, usdOut: 1, dex: 'uji' });
-    k.build = async () => ({ routerAddress: k.router(), transactionValue: '0', amountIn: '100', amountOut: '1000', data: '0x' });
+    // calldata sungguhan (swap MetaAggregationRouterV2): pengaman calldata membacanya
+    const DESC = 'tuple(address srcToken,address dstToken,address[] srcReceivers,uint256[] srcAmounts,address[] feeReceivers,uint256[] feeAmounts,address dstReceiver,uint256 amount,uint256 minReturnAmount,uint256 flags,bytes permit)';
+    const IFK = new ethers.Interface([`function swap(tuple(address callTarget,address approveTarget,bytes targetData,${DESC} desc,bytes clientData) execution)`]);
+    const data = IFK.encodeFunctionData('swap', [[ME, ME, '0x', [USDG, MEME, [], [], [], [], ME, 100n, 980n, 0, '0x'], '0x']]);
+    k.build = async () => ({ routerAddress: k.router(), transactionValue: '0', amountIn: '100', amountOut: '1000', data });
     return { k, sent };
   };
 
