@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Plus, Minus, ArrowLeftRight, CircleDollarSign } from 'lucide-react';
 import { usePoll } from '../hooks';
-import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Dot } from '../components/ui';
+import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Pick, Dot } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
 import { usd, ago, short, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
 import { useI18n, reason } from '../i18n';
@@ -20,16 +20,40 @@ export default function Activity() {
   const { t } = useI18n();
   const { data: d } = usePoll('/api/activity?limit=200', 8000);
   const [filter, setFilter] = useState('all');
+  // Saringan tambahan: jenis aksi (buka/tambah/kurangi/klaim) dan wallet target.
+  // Ketiganya saling mengiris; hitungan tiap tombol mengikuti dua saringan lainnya,
+  // jadi angkanya selalu = jumlah baris yang bakal tampil kalau tombol itu diklik.
+  const [kind, setKind] = useState('all');
+  const [target, setTarget] = useState('all');
   if (!d) return <Loading page />;
   const all = d.activity;
-  const n = (v) => all.filter((a) => a.verdict === v).length;
-  const rows = all.filter((a) => filter === 'all' || a.verdict === filter);
-  const opts = [['all', 'Semua', all.length], ['copy', 'Disalin', n('copy')], ['dry', 'Simulasi', n('dry')],
+  const byKind = (a) => kind === 'all' || (kind === 'mint' ? (a.kind === 'mint' || a.kind === 'increase') : a.kind === kind);
+  const byTarget = (a) => target === 'all' || a.target === target;
+  const byVerdict = (a) => filter === 'all' || a.verdict === filter;
+  const rows = all.filter((a) => byVerdict(a) && byKind(a) && byTarget(a));
+  const base = all.filter((a) => byKind(a) && byTarget(a));
+  const n = (v) => base.filter((a) => a.verdict === v).length;
+  const opts = [['all', 'Semua', base.length], ['copy', 'Disalin', n('copy')], ['dry', 'Simulasi', n('dry')],
     ['skip', 'Dilewati', n('skip')], ['error', 'Gagal', n('error')]].filter(([id, , c]) => id === 'all' || c > 0 || id === filter);
+  // mint dan increase sama-sama "masuk" — di pemantauan v4 mint tercatat sebagai
+  // increase pertama, jadi keduanya dijadikan satu tombol.
+  const baseK = all.filter((a) => byVerdict(a) && byTarget(a));
+  const nk = (k) => baseK.filter((a) => (k === 'mint' ? (a.kind === 'mint' || a.kind === 'increase') : a.kind === k)).length;
+  const kinds = [['all', 'Semua aksi', baseK.length], ['mint', 'Tambah / buka', nk('mint')], ['decrease', 'Kurangi', nk('decrease')],
+    ['collect', 'Klaim fee', nk('collect')]].filter(([id, , c]) => id === 'all' || c > 0 || id === kind);
+  const targets = [...new Map(all.map((a) => [a.target, a.targetLabel])).entries()]
+    .sort((x, y) => (x[1] || x[0]).localeCompare(y[1] || y[0]))
+    .map(([addr, label]) => [addr, label ? `${label} · ${short(addr)}` : short(addr)]);
   return (
     <>
       <PageHeader group="Pemantauan" title="Aktivitas" desc="Setiap gerakan LP wallet target dan keputusan bot atasnya." />
-      <div className="mb-3"><Segmented aria="Saring keputusan" value={filter} onChange={setFilter} options={opts} /></div>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Segmented aria="Saring keputusan" value={filter} onChange={setFilter} options={opts} />
+        <Segmented aria="Saring jenis aksi" value={kind} onChange={setKind} options={kinds} />
+        {targets.length > 1 && (
+          <Pick className="w-56" aria="Saring target" value={target} onChange={setTarget} options={[['all', 'Semua target'], ...targets]} />
+        )}
+      </div>
       <Panel bodyClass="activity-table p-0">
         <DataTable label="Aktivitas" rows={rows} rowKey={(a) => a.id} searchable pageSize={25}
           defaultSort={{ column: 'ts', direction: 'descending' }}
