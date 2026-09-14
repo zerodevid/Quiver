@@ -126,25 +126,29 @@ function StatusFoot({ status, reload, theme, toggleTheme }) {
           <span className="mono text-xs text-muted">{m?.wallet ? short(m.wallet) : t('belum ada')}</span>
         </div>
       </div>
-      <div className="flex gap-1.5">
-        <Button size="sm" variant="outline" className="flex-1" onPress={pause} isDisabled={!m}>
-          {m?.paused ? <><Play className="size-3.5" />{t('Lanjutkan')}</> : <><Pause className="size-3.5" />{t('Jeda')}</>}
-        </Button>
-        <Button size="sm" variant="outline" isIconOnly aria-label={t('Ganti tema')} onPress={toggleTheme}>
-          {theme === 'dark' ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
-        </Button>
-        <AlertBell placement="top" />
-        {/* Hanya saat gerbang token menyala; tanpa token tidak ada sesi yang bisa ditutup. */}
-        {m?.auth && (
-          <Button size="sm" variant="outline" isIconOnly aria-label={t('Keluar dari dasbor')} onPress={logout}>
-            <LogOut className="size-3.5" />
+      {/* Jeda/lanjut satu-satunya aksi yang mengubah bot — berdiri sendiri, selebar sidebar. */}
+      <Button size="sm" variant="outline" className="w-full" onPress={pause} isDisabled={!m}>
+        {m?.paused ? <><Play className="size-3.5" />{t('Lanjutkan')}</> : <><Pause className="size-3.5" />{t('Jeda')}</>}
+      </Button>
+      {/* Baris alat: ikon tanpa bingkai di kiri, pemilih bahasa di kanan — mengikuti gaya header HP. */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-0.5">
+          <Button size="sm" variant="ghost" isIconOnly aria-label={t('Ganti tema')} onPress={toggleTheme}>
+            {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
           </Button>
-        )}
-        {/* Pemilih bahasa: dua pilihan saja, jadi cukup satu tombol berganti. */}
-        <div className="flex rounded-md border border-border p-0.5" role="group" aria-label={t('Bahasa')}>
+          <AlertBell placement="top" variant="ghost" iconClass="size-4" />
+          {/* Hanya saat gerbang token menyala; tanpa token tidak ada sesi yang bisa ditutup. */}
+          {m?.auth && (
+            <Button size="sm" variant="ghost" isIconOnly aria-label={t('Keluar dari dasbor')} onPress={logout}>
+              <LogOut className="size-4" />
+            </Button>
+          )}
+        </div>
+        {/* Pemilih bahasa: dua pilihan saja, jadi cukup kontrol bersegmen. */}
+        <div className="flex h-8 items-center rounded-md bg-default/60 p-0.5" role="group" aria-label={t('Bahasa')}>
           {Object.entries(LOCALES).map(([k, name]) => (
             <button key={k} onClick={() => setLocale(k)} type="button" title={name} aria-pressed={locale === k}
-              className={`rounded px-1.5 text-[0.6875rem] font-medium uppercase transition-colors ${locale === k ? 'bg-default text-foreground' : 'text-muted hover:text-foreground'}`}>
+              className={`h-full rounded-[5px] px-2.5 text-[0.6875rem] font-semibold uppercase tracking-wide transition-colors ${locale === k ? 'bg-surface text-foreground shadow-sm' : 'text-muted hover:text-foreground'}`}>
               {k}
             </button>
           ))}
