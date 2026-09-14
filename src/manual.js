@@ -713,6 +713,63 @@ class Manual {
     return { ...r, lateMs: Date.now() - f.ts };
   }
 
+  // ---- ambil alih / kembalikan kendali posisi cermin ------------------------
+  // Ambil alih = posisi dilepas dari target: keluar/tarik sebagian/tambahan target tidak
+  // diikuti, rekonsiliasi keluar dilewati, aturan keluar mandiri (SL/TP/umur/luar
+  // rentang) tidak berlaku. Hubungannya ke target (target, mirror_of) tetap tersimpan,
+  // jadi bisa dikembalikan — selama posisi target itu masih ada di chain. Sesudah posisi
+  // target tertutup, tidak ada lagi yang bisa diikuti: posisinya tetap manual.
+  takeoverRow(id) {
+    const pos = this.store.get('SELECT * FROM positions WHERE id=?', Number(id));
+    if (!pos) return { error: 'posisi tidak ditemukan' };
+    if (pos.status !== 'open') return { error: 'posisi sudah tertutup' };
+    if (!pos.target || !pos.mirror_of) return { error: 'posisi ini tidak mengikuti target — sudah dalam kendali manual' };
+    return { pos };
+  }
+
+  async takeover(id) {
+    const { pos, error } = this.takeoverRow(id);
+    if (error) throw new Error(error);
+    if (pos.takeover_ts != null) return { ok: true, takeoverTs: pos.takeover_ts };
+    if (this.engine.exiting?.has(pos.id)) throw new Error('posisi sedang ditutup — tunggu hasilnya');
+    const ts = Date.now();
+    this.store.run('UPDATE positions SET takeover_ts=? WHERE id=? AND takeover_ts IS NULL', ts, pos.id);
+    this.store.log('info', `posisi #${pos.id} diambil alih manual — tidak lagi mengikuti target #${pos.mirror_of}`);
+    return { ok: true, takeoverTs: ts };
+  }
+
+  // Status posisi target untuk tombol/konfirmasi "kembalikan". targetOpen null = tidak terbaca.
+  async handBackInfo(id) {
+    const { pos, error } = this.takeoverRow(id);
+    if (error) return { error };
+    let liq = null;
+    try { liq = (await this.engine.targetLiquidity(pos.venue, pos.mirror_of))?.liquidity ?? null; } catch { /* tidak terbaca */ }
+    const e = this.engine.rulesFrom(pos.target).exit;
+    return {
+      id: pos.id, takeoverTs: pos.takeover_ts, target: pos.target, tokenId: pos.mirror_of,
+      targetOpen: liq == null ? null : liq > 0n,
+      exit: {
+        followTarget: !!e.follow_target, followPartial: !!e.follow_partial,
+        stopLossPct: e.stop_loss_pct, takeProfitPct: e.take_profit_pct,
+        maxAgeHours: e.max_age_hours, outOfRangeMinutes: e.out_of_range_minutes,
+      },
+    };
+  }
+
+  async handBack(id) {
+    const info = await this.handBackInfo(id);
+    if (info.error) throw new Error(info.error);
+    if (info.takeoverTs == null) return { ok: true };
+    if (info.targetOpen === false) throw new Error(`target sudah menutup posisi #${info.tokenId} — tidak ada yang bisa diikuti lagi, posisi ini tetap manual`);
+    if (info.targetOpen == null) throw new Error('status posisi target tidak terbaca dari RPC — coba lagi sebentar');
+    // Hitungan "di luar rentang sejak" direset: waktu selama manual tidak boleh langsung
+    // memicu tutup begitu dikembalikan.
+    this.store.setState(`oor:${info.id}`, 0);
+    this.store.run('UPDATE positions SET takeover_ts=NULL WHERE id=?', info.id);
+    this.store.log('info', `posisi #${info.id} dikembalikan ke otomatis — mengikuti target #${info.tokenId} lagi`);
+    return { ok: true };
+  }
+
   async openLp(plan) {
     const eng = this.engine;
     if (!eng.exec.address()) throw new Error('belum ada wallet');

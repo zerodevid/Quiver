@@ -30,6 +30,11 @@ const exact = {
 };
 // Captures retain amounts, symbols and identifiers. Nested reasons are translated recursively.
 const rules = [
+  [/^posisi #(.+) dalam kendali manual — (keluar|tambahan) target tidak diikuti$/s,
+    'Position #{1} is under manual control — target {2} not followed',
+    'Posisi #{1} dalam kendali manual — {2} target tidak diikuti'],
+  [/^keluar$/, 'exit', 'keluar'],
+  [/^tambahan$/, 'add', 'tambahan'],
   [/^diikuti manual (.+) setelah target masuk$/s,
     'Followed manually {1} after the target entered',
     'Diikuti manual {1} setelah target masuk'],

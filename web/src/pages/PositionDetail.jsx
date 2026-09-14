@@ -14,6 +14,7 @@ import { usePoll, useResync } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
 import AutoCompoundButton from '../components/AutoCompoundButton';
+import TakeoverButton from '../components/TakeoverButton';
 import ShareButton, { positionCard } from '../components/ShareCard';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
@@ -216,7 +217,8 @@ export default function PositionDetail({ id }) {
                       <Spinner size="sm" color="current" className="size-3" />{t(p.syncing ? 'menyinkronkan…' : 'belum tersinkron')}
                     </span>}
                 {p.target
-                  ? <><span>·</span><a href={'#targets/' + p.target} className="hover:underline">{t('menyalin')} {p.targetLabel || <span className="mono">{short(p.target)}</span>}</a></>
+                  ? <><span>·</span><a href={'#targets/' + p.target} className="hover:underline">{t('menyalin')} {p.targetLabel || <span className="mono">{short(p.target)}</span>}</a>
+                    {p.takeover_ts != null && !closed && <span className="rounded bg-warning/15 px-1.5 py-0.5 font-medium text-warning" title={t('Diambil alih {w} — bot tidak mengikuti target dan tidak menutup otomatis.', { w: ago(p.takeover_ts) })}>{t('Kendali manual')}</span>}</>
                   : <><span>·</span><span>{t('di luar bot')}</span></>}
               </div>
             </div>
@@ -233,6 +235,7 @@ export default function PositionDetail({ id }) {
             {!closed && !p.empty && <>
               <span aria-hidden className="mx-1 hidden h-5 w-px bg-border sm:block" />
               <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} />
+              <TakeoverButton p={p} reload={reload} disabled={claiming != null || closing != null} />
               <Button size="sm" variant="outline" isPending={claiming != null} isDisabled={closing != null || claiming != null} onPress={() => claim(p)}>{t('Claim fee')}</Button>
               <Button size="sm" variant="danger-soft" isPending={closing != null} isDisabled={claiming != null || closing != null} onPress={() => close(p)}>{t('Tutup posisi')}</Button>
             </>}

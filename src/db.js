@@ -271,6 +271,9 @@ function open(dbPath) {
     db.exec(`ALTER TABLE positions ADD COLUMN left_amount TEXT DEFAULT '0'`);
     db.exec('ALTER TABLE positions ADD COLUMN left_quote REAL DEFAULT 0');
   }
+  // Kendali manual ("ambil alih"): waktu posisi cermin dilepas dari target. NULL =
+  // otomatis. Lihat Manual.takeover.
+  if (!posCols.has('takeover_ts')) db.exec('ALTER TABLE positions ADD COLUMN takeover_ts INTEGER');
   const wpCols = new Set(db.prepare('PRAGMA table_info(wpositions)').all().map((c) => c.name));
   if (!wpCols.has('held_tok')) {
     db.exec(`ALTER TABLE wpositions ADD COLUMN held_tok TEXT DEFAULT '0'`);

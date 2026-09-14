@@ -995,6 +995,76 @@ async function t(name, fn) {
     assert.match((await manual.planFollow({ actionId: out.id })).error, /hanya aksi buka/);
   });
 
+  await t('ambil alih: keluar, tambahan, rekonsiliasi, dan SL target tidak menyentuh posisi; kembalikan -> ikut lagi', async () => {
+    const { Manual } = require('../src/manual');
+    const { eng, store, sent } = harness({
+      balances: RICH,
+      positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
+      targetLiquidityAfter: 6n * 10n ** 19n,
+    });
+    const manual = new Manual({ engine: eng, store, chain: eng.chain, rpc: eng.rpc, log: () => {} });
+    const id = store.get('SELECT id FROM positions').id;
+    await manual.takeover(id);
+    assert.ok(store.get('SELECT takeover_ts FROM positions WHERE id=?', id).takeover_ts > 0);
+
+    // target menarik 40%: tidak diikuti
+    await eng.handle(rec(store, action({ kind: 'decrease', liquidity: (-4n * 10n ** 19n).toString() })));
+    let v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'skip');
+    assert.match(v.reason, /posisi #\d+ dalam kendali manual — keluar target tidak diikuti/);
+    // target menambah: tidak diikuti
+    await eng.handle(rec(store, action({ kind: 'increase', ts: Date.now() })));
+    v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'skip');
+    assert.match(v.reason, /tambahan target tidak diikuti/);
+    // rekonsiliasi (target tampak kosong) tidak menutup
+    const closed = [];
+    eng.executeExit = async (plan, pos) => { closed.push(pos.id); return { note: 'ok' }; };
+    let reads = 0;
+    const ecm = eng.rpc.ethCallMany;
+    eng.rpc.ethCallMany = async (c, ...r) => { reads++; return ecm(c, ...r); };
+    await eng.reconcileExits(); await eng.reconcileExits();
+    assert.strictEqual(reads, 0, 'posisi manual bahkan tidak dibaca rekonsiliasi');
+    // stop loss yang terpicu tidak menutup
+    store.run('UPDATE positions SET liquidity=? WHERE id=?', (10n ** 20n).toString(), id);
+    const row = store.get('SELECT * FROM positions WHERE id=?', id);
+    eng.positions.live = [{ ...row, pnlPct: -80, inRange: true, ageHours: 1 }];
+    store.run('UPDATE targets SET rules=? WHERE address=?', JSON.stringify({ exit: { stop_loss_pct: 10 } }), TARGET);
+    for (const k of ['reconcileFeeClaims', 'reconcileExits', 'bookPendingMints', 'bookPendingExits', 'recoverStrandedZaps', 'refreshCash']) eng[k] = async () => {};
+    eng.compound.reconcile = async () => {}; eng.compound.tick = async () => {};
+    eng.positions.sync = async () => eng.positions.live;
+    eng.positions.refreshLeftovers = async () => {};
+    eng.capital.available = () => false;
+    eng.cfg.prices = { auto_eth_price: false };
+    eng.lastAdopt = Date.now();
+    await eng.syncPositionsOnce();
+    assert.deepStrictEqual(closed, [], 'stop loss tidak berlaku selama kendali manual');
+    assert.strictEqual(sent.length, 0, 'tidak ada transaksi apa pun');
+
+    // kembalikan (target masih punya likuiditas) -> SL berlaku lagi
+    await manual.handBack(id);
+    assert.strictEqual(store.get('SELECT takeover_ts FROM positions WHERE id=?', id).takeover_ts, null);
+    await eng.syncPositionsOnce();
+    assert.deepStrictEqual(closed, [id]);
+  });
+
+  await t('kembalikan ditolak kalau target sudah menutup posisinya; posisi tanpa target tidak bisa diambil alih', async () => {
+    const { Manual } = require('../src/manual');
+    const { eng, store } = harness({
+      balances: RICH,
+      positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
+      targetLiquidityAfter: 0n,
+    });
+    const manual = new Manual({ engine: eng, store, chain: eng.chain, rpc: eng.rpc, log: () => {} });
+    const id = store.get('SELECT id FROM positions').id;
+    await manual.takeover(id);
+    assert.strictEqual((await manual.handBackInfo(id)).targetOpen, false);
+    await assert.rejects(manual.handBack(id), /target sudah menutup posisi #999/);
+    assert.ok(store.get('SELECT takeover_ts FROM positions WHERE id=?', id).takeover_ts > 0, 'tetap manual');
+    store.run('UPDATE positions SET target=NULL, mirror_of=NULL WHERE id=?', id);
+    await assert.rejects(manual.takeover(id), /tidak mengikuti target/);
+  });
+
   console.log(`\n${pass} lulus, ${fail} gagal`);
   process.exit(fail ? 1 : 0);
 })();

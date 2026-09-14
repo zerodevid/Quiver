@@ -615,7 +615,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         ageHours: (Date.now() - (r.opened_ts || Date.now())) / 3600000,
         syncing: true,
       });
-      return { positions: positions.map((p) => ({ ...p, compound: compound.status(p), ...origin(p) })), closed, syncedAt: engine.positions.lastSync };
+      // takeover_ts dibaca dari basis data, bukan hasil sinkron (bisa berumur 30 detik):
+      // tombol ambil alih/kembalikan harus langsung berganti.
+      const takeover = new Map(store.all("SELECT id, takeover_ts FROM positions WHERE status='open'").map((r) => [r.id, r.takeover_ts]));
+      return { positions: positions.map((p) => ({ ...p, takeover_ts: takeover.get(p.id) ?? null, compound: compound.status(p), ...origin(p) })), closed, syncedAt: engine.positions.lastSync };
     },
     // Tombol "Perbarui" di tabel posisi. Poll biasa cuma mengulang hasil sinkron
     // terakhir — yang berumur sampai 30 detik — jadi tombol yang hanya memuat ulang
@@ -671,6 +674,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       pos.outUsd = outUsd;
       pos.quoteKind = row.quote_symbol === 'ETH' || row.quote_symbol === 'WETH' ? 'eth' : 'usd';
       pos.targetLabel = row.target ? (store.get('SELECT label FROM targets WHERE address=?', row.target)?.label || null) : null;
+      pos.target = row.target; pos.mirror_of = row.mirror_of; pos.takeover_ts = row.takeover_ts ?? null;
       // Token spekulatif = yang bukan aset kuotasi; dasar harga di grafik.
       pos.baseToken = pos.quoteSide === 0 ? row.token1 : pos.quoteSide === 1 ? row.token0 : row.token0;
       return { position: pos, ethUsd: engine.ethUsd, syncedAt: engine.positions.lastSync };
@@ -1501,6 +1505,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       if (!Number.isSafeInteger(id) || id <= 0) return { error: 'ID posisi tidak valid' };
       try { return await engine.claimFees(id); }
       catch (e) { return { error: e.message }; }
+    },
+    // Kendali manual posisi cermin (lihat Manual.takeover). GET …/handback memeriksa posisi
+    // target di chain untuk modal konfirmasi "kembalikan".
+    'POST /api/positions/takeover': async (req) => {
+      const b = await readBody(req);
+      try { return await manual.takeover(b.id); } catch (e) { return { error: e.message }; }
+    },
+    'GET /api/positions/handback': async (req, url) => manual.handBackInfo(url.searchParams.get('id')),
+    'POST /api/positions/handback': async (req) => {
+      const b = await readBody(req);
+      try { return await manual.handBack(b.id); } catch (e) { return { error: e.message }; }
     },
     'POST /api/positions/close': async (req) => {
       const b = await readBody(req);

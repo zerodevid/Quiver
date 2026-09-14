@@ -423,6 +423,10 @@ class Engine {
     // cermin dengan rentang yang SAMA dengan rencana; itu yang ditambah.
     const mirrors = this.store.all("SELECT * FROM positions WHERE status='open' AND mirror_of=? AND target=? AND token_id IS NOT NULL ORDER BY id",
       act.tokenId ?? '', act.target);
+    // Cermin yang sedang dalam kendali manual: tambahan target tidak diikuti — menambah
+    // modal ke posisi yang sengaja diambil alih adalah keputusan pemiliknya.
+    const held = mirrors.find((mp) => mp.takeover_ts != null);
+    if (held) return this.decide(act.id, 'skip', `posisi #${held.id} dalam kendali manual — tambahan target tidak diikuti`);
     const usdOfMirror = (mp) => {
       const lv = this.positions.live.find((p) => p.id === mp.id);
       return lv?.valueUsd ?? Math.max(0, (mp.cost_quote || 0) - (mp.out_quote || 0)) * usdPerQuote(mp.quote_symbol, this.ethUsd);
@@ -497,7 +501,7 @@ class Engine {
       // identik — kita cuma mencermin A — menutup B, lalu cermin A ikut ditutup.
       // (Aksi transfer_out tidak membawa info pool; mengikat undefined ke SQLite melempar.)
       const pos = this.store.get(
-        "SELECT * FROM positions WHERE status='open' AND pool_ref=? AND target=? AND tick_lower=? AND tick_upper=? AND mirror_of IS NULL ORDER BY id ASC LIMIT 1",
+        "SELECT * FROM positions WHERE status='open' AND pool_ref=? AND target=? AND tick_lower=? AND tick_upper=? AND mirror_of IS NULL AND takeover_ts IS NULL ORDER BY id ASC LIMIT 1",
         act.poolRef, act.target, act.tickLower, act.tickUpper);
       if (pos) {
         this.store.log('warn', `cermin posisi dicocokkan lewat pool+rentang (bukan tokenId) untuk aksi #${act.tokenId} -> posisi #${pos.id}`);
@@ -505,6 +509,12 @@ class Engine {
       }
     }
     if (!mirrors.length) return this.decide(act.id, 'skip', 'tidak ada cermin posisi yang cocok');
+    // Kendali manual: sinyal keluar target tidak diikuti untuk cermin itu.
+    const manualHeld = mirrors.filter((mp) => mp.takeover_ts != null);
+    mirrors = mirrors.filter((mp) => mp.takeover_ts == null);
+    if (!mirrors.length) {
+      return this.decide(act.id, 'skip', `posisi #${manualHeld.map((mp) => mp.id).join(', #')} dalam kendali manual — keluar target tidak diikuti`);
+    }
 
     // berapa L target sebelum menarik? = L sesudah aksi + yang ditarik
     //
@@ -1534,6 +1544,10 @@ class Engine {
   // berubah, dan rekonsiliasi yang mengurusnya.
   async executeExitRetry(plan, pos, { waits = this.exitRetryWaits || [3000, 10_000, 30_000] } = {}) {
     for (let i = 0; ; i++) {
+      // Diambil alih manual di sela jeda coba-ulang: keluar otomatis ini batal.
+      if (i > 0 && this.store.get('SELECT takeover_ts FROM positions WHERE id=?', pos.id)?.takeover_ts != null) {
+        throw new Error(`posisi #${pos.id} diambil alih manual — keluar otomatis dibatalkan`);
+      }
       try { return await this.executeExit(plan, pos); }
       catch (e) {
         if (!e.notSent || i >= waits.length) throw e;
@@ -2150,7 +2164,7 @@ class Engine {
     // v3 ikut diperiksa: dulu hanya v4, jadi cermin v3 yang sinyal keluarnya terlewat
     // menggantung selamanya.
     const rows = this.store.all(
-      "SELECT * FROM positions WHERE status='open' AND venue IN ('v4','v3') AND target IS NOT NULL AND mirror_of IS NOT NULL AND token_id IS NOT NULL");
+      "SELECT * FROM positions WHERE status='open' AND venue IN ('v4','v3') AND target IS NOT NULL AND mirror_of IS NOT NULL AND token_id IS NOT NULL AND takeover_ts IS NULL");
     if (!rows.length) { this.goneStreak = new Map(); return; }
     this.goneStreak = this.goneStreak || new Map();
     let res;
@@ -2244,6 +2258,9 @@ class Engine {
     for (const t of triggers) {
       if (this.stopping) break;
       if (this.exiting.has(t.pos.id)) continue;
+      // Kendali manual: aturan keluar mandiri tidak berlaku. Dibaca dari basis data, bukan
+      // hasil sinkron (bisa berumur 30 detik). Posisi yang kosong di chain tetap dibukukan.
+      if (!t.pos.empty && this.store.get('SELECT takeover_ts FROM positions WHERE id=?', t.pos.id)?.takeover_ts != null) continue;
       if (t.pos.empty) {
         // Menutup di database tanpa transaksi = hasil $0 tercatat selamanya. Dibaca
         // ulang dulu; kalau ternyata masih ada, biarkan sinkron berikutnya yang menilai.

@@ -9,6 +9,7 @@ import { TokenPair, PairName } from '../components/TokenIcon';
 const PositionDetail = lazy(() => import('./PositionDetail'));
 import PositionHistory from '../components/PositionHistory';
 import AutoCompoundButton from '../components/AutoCompoundButton';
+import TakeoverButton from '../components/TakeoverButton';
 import { usd, pct, tone, age, ago, short, num } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -96,6 +97,12 @@ function Source({ p }) {
           {short(p.target)}{p.mirror_of ? ` · #${p.mirror_of}` : ''}
         </div>
       </a>
+      {p.takeover_ts != null && p.status !== 'closed' && (
+        <div className="mt-1 inline-flex rounded bg-warning/15 px-1.5 py-0.5 text-[0.6875rem] font-medium text-warning"
+          title={t('Diambil alih {w} — bot tidak mengikuti target dan tidak menutup otomatis.', { w: ago(p.takeover_ts) })}>
+          {t('Kendali manual')}
+        </div>
+      )}
       {!m ? (
         <div className="text-xs text-muted" title={t('Wallet target ini belum diriset, jadi hasil posisi aslinya belum diketahui. Buka halaman target dan pindai wallet-nya.')}>
           {t('belum dipindai')}
@@ -184,6 +191,7 @@ export default function Positions({ param }) {
             { key: 'act', label: '', sortable: false, className: 'text-end', render: (p) => (
               <div className="flex flex-wrap gap-2 justify-end">
                 <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} />
+                <TakeoverButton p={p} reload={reload} disabled={claiming != null || closing != null} />
                 <Button size="sm" variant="secondary" isPending={claiming === p.id} isDisabled={claiming != null || closing != null || p.empty} onPress={() => claim(p)}>{t('Claim fee')}</Button>
                 <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={closing != null || claiming != null} onPress={() => close(p)}>{t('Tutup')}</Button>
               </div>) },
