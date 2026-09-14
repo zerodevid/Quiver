@@ -9,6 +9,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Button, Spinner } from '@heroui/react';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { breakEven } from '../breakeven';
 import CandleChart from '../components/CandleChart';
 import { usePoll, useResync } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
@@ -71,18 +72,23 @@ export function PriceChart({ p, m, tf }) {
   if (m?.ohlcv?.error) return <Empty title="Grafik harga tidak tersedia" sub={m.ohlcv.error} />;
   if (!candles.length) return <Empty title="Belum ada lilin harga" sub="GeckoTerminal belum punya riwayat harga untuk pool ini." />;
 
+  const bep = breakEven(p);
   const closed = p.status === 'closed';
   const quote = p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null;
   return (
     <div>
-      <CandleChart candles={candles} tf={tf} quote={quote} range={range}
+      {bep && <p className="mb-2 text-xs text-warning">
+        {t('Harga BEP')}: {bep.price > 0 ? <>{price(bep.price)} {quote}{pNow > 0 && <> · {pct((bep.price / pNow - 1) * 100, 2)} {t('dari harga sekarang')}</>}</> : t(bep.reason)}
+      </p>}
+      <CandleChart key={`${p.pool_ref || p.baseToken || "pool"}:${p.id || "none"}`} candles={candles} tf={tf} quote={quote} range={range}
         entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: pEntry } : null}
         exit={closed ? { t: p.closed_ts, p: pExit } : null}
-        now={closed ? null : pNow} />
+        now={closed ? null : pNow} bep={bep?.price} />
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
         {range && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang posisi')}</span>}
         {p.opened_ts && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 w-px border-l-2 border-dashed border-accent" />{t('saat masuk')}</span>}
         {pEntry != null && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-px w-4 border-t border-dashed border-muted" />{t('harga masuk')}</span>}
+        {bep?.price > 0 && <span className="inline-flex items-center gap-1.5 text-warning"><span aria-hidden className="inline-block w-4 border-t-2 border-dashed border-warning" />BEP {price(bep.price)} {quote}</span>}
         {full && <span>{t('Seluruh rentang')}</span>}
         <span className="ml-auto">{t('lilin {tf} · GeckoTerminal', { tf })}</span>
       </div>
@@ -167,6 +173,7 @@ export default function PositionDetail({ id }) {
   if (!d) return <Loading page />;
   if (d.error) return <Empty title="Posisi tidak ditemukan" sub={d.error} />;
 
+  const bep = breakEven(p);
   const closed = p.status === 'closed';
   const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
   const a = at(p.tick_lower), b = at(p.tick_upper);
@@ -275,6 +282,10 @@ export default function PositionDetail({ id }) {
               {edge && <div className={edge.ok ? 'text-success' : 'text-warning'}>{edge.text}</div>}
             </div>
           </div>
+          {bep && <div className="mb-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm">
+            <div className="font-medium">{t('Harga BEP')}: {bep.price > 0 ? <span className="num">{price(bep.price)} {quote}{pNow > 0 && <span className="ml-2 text-xs">({pct((bep.price / pNow - 1) * 100, 2)} {t('dari harga sekarang')})</span>}</span> : t(bep.reason)}</div>
+            <p className="mt-1 text-xs text-muted">{t('Estimasi termasuk fee saat ini dan hasil penarikan; tanpa fee mendatang, gas, dan slippage.')}</p>
+          </div>}
           {view === 'dex' ? <DexEmbed pool={p.pool_ref} /> : !m ? <Loading /> : <PriceChart p={p} m={m} tf={tf} />}
         </Panel>
 
@@ -283,7 +294,7 @@ export default function PositionDetail({ id }) {
             <div className="divide-y divide-border">
               <KV label="Rentang">
                 <div className="flex flex-col items-end gap-1">
-                  <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={p.curTick} dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide}
+                  <PriceRange position={p} lo={p.tick_lower} hi={p.tick_upper} cur={p.curTick} dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide}
                     symbol0={p.symbol0} symbol1={p.symbol1} entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />
                 </div>
               </KV>

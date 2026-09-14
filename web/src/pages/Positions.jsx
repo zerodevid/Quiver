@@ -176,7 +176,7 @@ export default function Positions({ param }) {
           columns={[
             { key: 'pair', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <Pair p={p} link={false} /> },
             { key: 'range', label: 'Rentang harga', sortable: false, render: (p) => (
-              <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={p.curTick}
+              <PriceRange position={p} lo={p.tick_lower} hi={p.tick_upper} cur={p.curTick}
                 dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1}
                 entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />) },
             { key: 'val', label: 'Nilai', align: 'end', sort: (p) => p.valueUsd, render: (p) => (

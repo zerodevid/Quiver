@@ -7,6 +7,7 @@ import {
 } from '@heroui/react';
 import { Inbox, Search, ArrowLeft, Copy, Check, ExternalLink, RefreshCw } from 'lucide-react';
 import { price, tickPrice, sqrtPrice, widthPct, pct, short, txHref, ago } from '../fmt';
+import { breakEven } from '../breakeven';
 import { useTick } from '../hooks';
 import { translate as t } from '../i18n';
 
@@ -213,7 +214,7 @@ export function Notice({ status = 'default', title, children }) {
 // tick Uniswap linear terhadap log harga — jarak yang sama di layar berarti
 // perubahan harga persen yang sama.
 export function PriceRange({
-  lo, hi, cur, entrySqrt, exitSqrt, dec0, dec1, quoteSide, symbol0, symbol1, showPrices = true,
+  lo, hi, cur, entrySqrt, exitSqrt, dec0, dec1, quoteSide, symbol0, symbol1, showPrices = true, position = null,
 }) {
   if (lo == null || hi == null) return <span className="text-muted">—</span>;
   // Rentang penuh (tick ±887272, dibulatkan ke tick spacing): harganya 3e-39 … 3e+38,
@@ -246,11 +247,13 @@ export function PriceRange({
   const pExit = sqrtPrice(exitSqrt, dec0, dec1, quoteSide);
   const pNow = pExit ?? (cur != null ? at(cur) : null);   // posisi tertutup: harga saat keluar
   const closed = pExit != null;
+  const bep = position ? breakEven(position) : null;
+  const bepPrice = bep?.price > 0 && Number.isFinite(bep.price) ? bep.price : null;
 
   // Sumbu logaritmik: rentang + bantalan, diperlebar bila harga masuk/kini ada di luar
   // rentang supaya penandanya tetap terlihat, bukan menempel di tepi.
   const L = Math.log;
-  const pts = [pLo, pHi, pEntry, pNow].filter((x) => x != null && x > 0);
+  const pts = [pLo, pHi, pEntry, pNow, bepPrice].filter((x) => x != null && x > 0);
   const dataLo = Math.min(...pts), dataHi = Math.max(...pts);
   const pad = (L(pHi) - L(pLo) || 1) * 0.5;
   const min = Math.min(L(pLo) - pad, L(dataLo) - pad * 0.4);
@@ -281,6 +284,7 @@ export function PriceRange({
     t('Rentang {lo} – {hi}{q} per {b}', { lo: price(pLo), hi: price(pHi), q: quote ? ' ' + quote : '', b: base || '—' }),
     pEntry != null ? t('Harga masuk {p}', { p: price(pEntry) }) : null,
     pNow != null ? t(closed ? 'Harga keluar {p}{m}' : 'Harga kini {p}{m}', { p: price(pNow), m: move != null ? ` (${pct(move, 1)})` : '' }) : null,
+    bep ? `${t('Harga BEP')}: ${bepPrice ? `${price(bepPrice)} ${quote || ''}` : t(bep.reason)}` : null,
     t('Lebar {w}% ({x}×) · tick {lo} … {hi}', { w: widthPct(lo, hi).toFixed(0), x: (pHi / pLo).toFixed(2), lo, hi }),
   ].filter(Boolean).join('\n');
 
@@ -299,6 +303,7 @@ export function PriceRange({
         <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-default" />
         <div className={`absolute top-1/2 h-2 -translate-y-1/2 rounded-[1px] border-x-2 ${band}`}
           style={{ left: `${at100(pLo)}%`, width: `${Math.max(2, at100(pHi) - at100(pLo))}%` }} />
+        {bepPrice && <div className="absolute inset-y-0 z-10 w-0 -translate-x-1/2 border-l-2 border-dashed border-warning" style={{ left: `${at100(bepPrice)}%` }} title={`${t('Harga BEP')}: ${price(bepPrice)} ${quote || ''}`} />}
         {/* masuk: garis tipis & redup; kini/keluar: titik tegas berbingkai warna kartu */}
         {pEntry != null && <div className="absolute inset-y-0.5 w-0.5 -translate-x-1/2 rounded-full bg-muted" style={{ left: `${at100(pEntry)}%` }} title={t('harga masuk')} />}
         {pNow != null && <div className="absolute top-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground ring-2 ring-surface" style={{ left: `${at100(pNow)}%` }} title={t(closed ? 'harga keluar' : 'harga kini')} />}
@@ -316,6 +321,9 @@ export function PriceRange({
         </div>
       )}
       {edge && <div className="mt-0.5 text-xs">{edge}</div>}
+      {bep && <div className="num mt-0.5 text-xs text-warning">
+        {bepPrice ? <><span aria-hidden className="mr-1 inline-block h-2 border-l-2 border-dashed border-warning" />BEP {price(bepPrice)}{quote && <> {quote}</>}{pNow > 0 && <span className="block">{pct((bepPrice / pNow - 1) * 100, 1)} {t('dari harga sekarang')}</span>}</> : <>BEP: {t(bep.reason)}</>}
+      </div>}
     </div>
   );
 }

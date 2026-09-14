@@ -366,7 +366,7 @@ export default function Overview() {
                   </a>
                 ) : <span className="text-xs text-muted">{t('Manual / di luar bot')}</span>) },
               { key: 'range', label: 'Rentang harga', sortable: false, render: (x) => (
-                <PriceRange lo={x.tick_lower} hi={x.tick_upper} cur={x.curTick}
+                <PriceRange position={x} lo={x.tick_lower} hi={x.tick_upper} cur={x.curTick}
                   dec0={x.dec0} dec1={x.dec1} quoteSide={x.quoteSide} symbol0={x.symbol0} symbol1={x.symbol1}
                   entrySqrt={x.entrySqrt} exitSqrt={x.exitSqrt} showPrices={false} />) },
               { key: 'val', label: 'Nilai', align: 'end', sort: (x) => x.valueUsd, render: (x) => (

@@ -42,7 +42,7 @@ export function BotPositions({ open, closed, onFocus, focusId, loading = false, 
           { key: 'pair', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <Pair p={p} /> },
           { key: 'st', label: 'Status', sort: (p) => p.status, render: (p) => <Status open={p.status === 'open'} /> },
           { key: 'range', label: 'Rentang harga', sortable: false, render: (p) => (
-            <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={p.status === 'open' ? p.curTick : null}
+            <PriceRange position={p} lo={p.tick_lower} hi={p.tick_upper} cur={p.status === 'open' ? p.curTick : null}
               dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1}
               entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />) },
           { key: 'cost', label: 'Modal', align: 'end', sort: (p) => p.costUsd, render: (p) => usd(p.costUsd) },

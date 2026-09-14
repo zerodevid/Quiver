@@ -92,7 +92,7 @@ function domainOf(cs, o) {
   const q = (arr, f) => { const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(f * (s.length - 1)))]; };
   let lo = Math.min(q(cs.map((c) => c.l), 0.03), ...cs.map((c) => Math.min(c.o, c.c)));
   let hi = Math.max(q(cs.map((c) => c.h), 0.97), ...cs.map((c) => Math.max(c.o, c.c)));
-  for (const p of [o.entryP, o.exitP, o.nowP]) if (p > 0) { lo = Math.min(lo, p); hi = Math.max(hi, p); }
+  for (const p of [o.entryP, o.exitP, o.nowP, o.bep]) if (p > 0) { lo = Math.min(lo, p); hi = Math.max(hi, p); }
   if (o.range && o.range.hi / o.range.lo < 3.5) { lo = Math.min(lo, o.range.lo); hi = Math.max(hi, o.range.hi); }
   return { lo, hi };
 }
@@ -105,7 +105,7 @@ function domainOf(cs, o) {
  * entry   : { t(ms), p }  exit : { t(ms), p }  now : harga kini — semuanya opsional
  * height  : tinggi px
  */
-export default function CandleChart({ candles, tf, quote, range = null, entry = null, exit = null, now = null, height = 384 }) {
+export default function CandleChart({ candles, tf, quote, range = null, entry = null, exit = null, now = null, bep = null, height = 384 }) {
   const box = useRef(null);
   const ref = useRef(null);            // { chart, series, vol, overlay, markers }
   const [hover, setHover] = useState(null);
@@ -143,7 +143,7 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
   };
   const entryT = snap(entry?.t), exitT = snap(exit?.t);
   const entryBefore = !!(entry?.t && data.length && data[0].time * 1000 > entry.t);
-  const dom = useMemo(() => domainOf(data.map((d) => ({ o: d.open, h: d.high, l: d.low, c: d.close })), { entryP: entry?.p, exitP: exit?.p, nowP: now, range }), [data, entry?.p, exit?.p, now, range]);
+  const dom = useMemo(() => domainOf(data.map((d) => ({ o: d.open, h: d.high, l: d.low, c: d.close })), { entryP: entry?.p, exitP: exit?.p, nowP: now, bep, range }), [data, entry?.p, exit?.p, now, bep, range]);
   // Log kalau rentang harga yang tampil lebih dari 4× — pergerakan persen jadi sebanding.
   const log = scale ? scale === 'log' : !!(dom && dom.hi / dom.lo > 4);
 
@@ -209,6 +209,7 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
     const line = (p, color, title, style = LineStyle.Dashed) => { if (p > 0) r.lines.push(r.series.createPriceLine({ price: p, color, lineWidth: 1, lineStyle: style, axisLabelVisible: true, title })); };
     line(entry?.p, pal.muted, t('masuk'));
     line(exit?.p, pal.warning, t('keluar'));
+    line(bep, pal.warning, 'BEP');
     // Harga pool kini hanya digaris kalau berbeda dari penutupan lilin terakhir —
     // kalau sama, label nilai terakhir seri sudah menunjukkannya; dua label kembar
     // di sumbu (merah 0,0106 dan putih 0,0106) cuma berisik.
@@ -221,7 +222,7 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
     ]);
     r.chart.timeScale().fitContent();
     r.chart.timeScale().applyOptions({ rightOffset: 3 });
-  }, [data, dom, log, entry?.p, exit?.p, entryT, exitT, entryBefore, now, range, pal]);
+  }, [data, dom, log, entry?.p, exit?.p, entryT, exitT, entryBefore, now, bep, range, pal]);
 
   const last = data[data.length - 1];
   const h = hover || (last && { ...last, v: last.value });
