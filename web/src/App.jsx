@@ -7,10 +7,10 @@ import {
 } from 'lucide-react';
 import { usePoll, useHash, useTheme } from './hooks';
 import { post } from './api';
-import { short } from './fmt';
+import { short, usd } from './fmt';
 import { useI18n, LOCALES } from './i18n';
 import { QuiverLogo } from './components/Logo';
-import { AlertBell, useTargetAlerts } from './components/TargetAlerts';
+import { AlertBell, useTargetAlerts, setBaseTitle } from './components/TargetAlerts';
 import StuckAlert from './components/StuckAlert';
 
 import { Loading, ConfirmHost, ask } from './components/ui';
@@ -177,6 +177,15 @@ export default function App() {
   const { data: status, error: statusError, reload } = usePoll('/api/overview', 5000);
   // Layar pembuka ditutup begitu status pertama (atau galatnya) tiba.
   useEffect(() => { if (status || statusError) hideSplash(); }, [status, statusError]);
+  // Judul tab ikut angka hidup: "Quiver · $1.234,56 · +$56,78" (digulir, lihat setBaseTitle) — total portofolio dan
+  // PnL (bersih kalau modal terlacak, kalau tidak PnL posisi), sama dengan kartu di
+  // Ringkasan. Dibaca dari sebelah tab lain tanpa membuka dasbornya.
+  const w = status?.wallet;
+  useEffect(() => {
+    if (!w) return;
+    const pnl = w.netPnl ?? w.pnl;
+    setBaseTitle(`Quiver · ${usd(w.value)} · ${pnl > 0 ? '+' : ''}${usd(pnl)}`);
+  }, [w?.value, w?.pnl, w?.netPnl]);
   const Page = PAGES[page] || Overview;
   useTargetAlerts();
 

@@ -81,17 +81,38 @@ export function alarm() {
   }
 }
 
-// ---- judul tab: "(3) Quiver" selama tab tidak dilihat ----------------------
-let unseen = 0, baseTitle = null;
+// ---- judul tab: "(3) Quiver · $1.234,56 · +$56,78" -------------------------
+// Satu tempat yang menulis document.title: judul dasar (total portofolio & PnL,
+// diperbarui App tiap poll) dan awalan jumlah peringatan yang belum dilihat selama
+// tab tidak dilihat. Kalau ditulis terpisah, angka yang berubah saat tab
+// tersembunyi menghapus awalan "(3)"-nya, atau sebaliknya.
+// Tab sempit cuma memuat belasan huruf, jadi judul yang panjang digulir pelan
+// (satu huruf tiap ~0,4 detik) seperti papan berjalan: angka dan nama merek
+// bergantian lewat. Awalan "(3)" tidak ikut bergulir.
+let unseen = 0, baseTitle = 'Quiver', shift = 0, ticker = null;
+const renderTitle = () => {
+  let body = baseTitle;
+  if (ticker) { const s = baseTitle + ' · '; body = s.slice(shift) + s.slice(0, shift); }
+  document.title = unseen ? `(${unseen}) ${body}` : body;
+};
+export function setBaseTitle(title) {
+  if (title === baseTitle) return;
+  baseTitle = title;
+  // hanya bergulir kalau ada yang perlu digulir (judul polos "Quiver" diam)
+  if (title.length > 12 && !ticker) {
+    ticker = setInterval(() => { shift = (shift + 1) % (baseTitle.length + 3); renderTitle(); }, 400);
+  } else if (title.length <= 12 && ticker) { clearInterval(ticker); ticker = null; shift = 0; }
+  if (shift >= baseTitle.length + 3) shift = 0;
+  renderTitle();
+}
 export function bumpTitle(n) {
   if (!document.hidden) return;
-  if (!unseen) baseTitle = document.title;
   unseen += n;
-  document.title = `(${unseen}) ${baseTitle}`;
+  renderTitle();
 }
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && unseen) { unseen = 0; document.title = baseTitle; }
+    if (!document.hidden && unseen) { unseen = 0; renderTitle(); }
   });
 }
 
