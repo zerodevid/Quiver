@@ -944,6 +944,57 @@ async function t(name, fn) {
     assert.strictEqual(ex.txSeq, 2);
   });
 
+  await t('ikuti manual aksi yang dilewati: dicatat sebagai cermin target (keluar tetap otomatis), keputusan jadi disalin', async () => {
+    const { Manual } = require('../src/manual');
+    const { eng, store } = harness({ balances: RICH, targetLiquidityAfter: 10n ** 20n });
+    const act = rec(store, action({ ts: Date.now() - 42 * 60_000 }));
+    eng.decide(act.id, 'skip', 'cooldown pool 20s');
+    const manual = new Manual({ engine: eng, store, chain: eng.chain, rpc: eng.rpc, log: () => {} });
+    const row = () => store.get('SELECT a.*, d.verdict FROM actions a JOIN decisions d ON d.action_id=a.id WHERE a.id=?', act.id);
+    assert.ok(Manual.followable(row(), manual.openMirrorKeys()), 'aksi masuk yang dilewati bisa diikuti');
+
+    const pv = await manual.planFollow({ actionId: act.id, usd: 60 });
+    assert.ok(!pv.error, pv.error);
+    assert.strictEqual(pv.plan.target, TARGET);
+    assert.strictEqual(pv.plan.mirrorOf, '999');
+    assert.ok(pv.follow.ageMs >= 42 * 60_000, 'keterlambatan dikirim ke modal');
+    assert.strictEqual(pv.follow.exit.followTarget, true);
+    // rentang = aturan target (exact) atas rentang target
+    assert.deepStrictEqual([pv.plan.tickLower, pv.plan.tickUpper], [-600, 600]);
+
+    let used = null;
+    eng.executeEntry = async (plan, a) => {
+      used = { plan, a };
+      const id = eng.positions.record(plan, { tokenId: '5001', txHash: '0xmint', target: plan.target });
+      return { txHash: '0xmint', positionId: id, note: 'USDG/MEME $60.00', pair: 'USDG/MEME', valueUsd: 60 };
+    };
+    const r = await manual.follow({ actionId: act.id, usd: 60 });
+    assert.strictEqual(used.a.target, TARGET);
+    const pos = store.get('SELECT target, mirror_of FROM positions WHERE id=?', r.positionId);
+    assert.deepStrictEqual({ ...pos }, { target: TARGET, mirror_of: '999' }, 'posisi = cermin posisi target');
+    const d = store.get('SELECT verdict, reason, position_id, plan FROM decisions WHERE action_id=?', act.id);
+    assert.strictEqual(d.verdict, 'copy');
+    assert.match(d.reason, /^diikuti manual 42 mnt setelah target masuk — /);
+    assert.strictEqual(d.position_id, r.positionId);
+    assert.strictEqual(JSON.parse(d.plan).followedManually.reason, 'cooldown pool 20s', 'keputusan semula tidak hilang');
+    assert.strictEqual(store.get('SELECT COUNT(*) n FROM decisions WHERE action_id=?', act.id).n, 1);
+    assert.ok(!Manual.followable(row(), manual.openMirrorKeys()), 'sesudah diikuti tombolnya hilang');
+    assert.match((await manual.planFollow({ actionId: act.id })).error, /sudah disalin/);
+  });
+
+  await t('ikuti manual ditolak kalau target sudah menutup posisinya', async () => {
+    const { Manual } = require('../src/manual');
+    const { eng, store } = harness({ balances: RICH, targetLiquidityAfter: 0n });
+    const act = rec(store, action());
+    eng.decide(act.id, 'error', 'rute Kyber rugi 19.4% (batas 5.9%)');
+    const manual = new Manual({ engine: eng, store, chain: eng.chain, rpc: eng.rpc, log: () => {} });
+    assert.match((await manual.planFollow({ actionId: act.id })).error, /target sudah menutup/);
+    // aksi keluar tidak pernah bisa diikuti
+    const out = rec(store, action({ kind: 'decrease' }));
+    eng.decide(out.id, 'skip', 'kita tidak punya cermin posisi ini');
+    assert.match((await manual.planFollow({ actionId: out.id })).error, /hanya aksi buka/);
+  });
+
   console.log(`\n${pass} lulus, ${fail} gagal`);
   process.exit(fail ? 1 : 0);
 })();

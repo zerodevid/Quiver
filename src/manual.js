@@ -43,6 +43,13 @@ function ticksFromPct({ curTick, quoteSide, lowerPct, upperPct }) {
   const [a, b] = quoteSide === 1 ? [curTick + dTurun, curTick + dNaik] : [curTick - dNaik, curTick - dTurun];
   return { tickLower: Math.floor(a), tickUpper: Math.ceil(b) };
 }
+function lamanya(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} dtk`;
+  if (s < 3600) return `${Math.round(s / 60)} mnt`;
+  const j = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  return m ? `${j} jam ${m} mnt` : `${j} jam`;
+}
 const feeDinamis = (f) => f != null && (Number(f) & DYNAMIC_FEE) !== 0;
 const feePctOf = (f) => (f == null || feeDinamis(f) ? null : Number(f) / 10000);
 
@@ -269,13 +276,18 @@ class Manual {
    * penyalinan otomatis untuk menghitung rentang dan menilai posisi.
    * Mengembalikan { error } atau { plan, preview, warnings }.
    */
-  async planLp({ poolRef, usd, widthPct = 25, lowerPct = null, upperPct = null, tickLower = null, tickUpper = null, full = false }) {
+  // `pool` (opsional): deskriptor pool yang sudah jadi (bentuk poolByRef) — dipakai
+  // followPlan untuk pool yang belum ada di tabel pools. `target`: aturan target itu
+  // yang dipakai, dan `ranged` = rentang tick dihitung lewat planRange aturan itu
+  // (mode exact/recenter/scale…) dari tick yang diberikan, persis jalur salin otomatis.
+  async planLp({ poolRef, usd, widthPct = 25, lowerPct = null, upperPct = null, tickLower = null, tickUpper = null, full = false,
+    pool = null, target = null, ranged = false }) {
     const eng = this.engine;
-    const p = await this.poolByRef(poolRef);
+    const p = pool || await this.poolByRef(poolRef);
     if (!p) return { error: 'pool tidak dikenal — pilih dari daftar atau pantau dulu targetnya' };
     if (p.quoteSide == null) return { error: `pasangan ${p.pair} tidak punya aset kuotasi yang dikenal (USDG/ETH/WETH)` };
 
-    const rules = eng.rulesFrom(null);
+    const rules = eng.rulesFrom(target);
     if (p.hasHooks && !rules.filters.allow_hooks) {
       return { error: `pool ini memakai hook ${String(p.hooks).slice(0, 10)}… — hook bisa mengunci penarikan. Nyalakan "Izinkan pool ber-hook" di Aturan kalau memang disengaja.` };
     }
@@ -312,7 +324,9 @@ class Manual {
       tickLower: tickLower ?? slot0.tick, tickUpper: tickUpper ?? slot0.tick,
     };
     let range;
-    if (tickLower != null && tickUpper != null) {
+    if (ranged && tickLower != null && tickUpper != null) {
+      range = planRange(rules, actLike, slot0.tick);
+    } else if (tickLower != null && tickUpper != null) {
       const sp = p.tickSpacing || 60;
       range = {
         tickLower: m.alignTick(Math.min(tickLower, tickUpper), sp, 'down'),
@@ -362,7 +376,7 @@ class Manual {
       amount0Max: pad(est.amount0).toString(), amount1Max: pad(est.amount1).toString(),
       valueQuote: est.value, quoteSymbol: p.quoteSymbol, quoteKind: p.quoteKind, quoteSide: p.quoteSide,
       valueUsd, side, singleSide,
-      mirrorOf: null, target: null, manual: true,
+      mirrorOf: null, target: target ?? null, manual: true,
       curTick: slot0.tick,
     };
 
@@ -578,6 +592,125 @@ class Manual {
     s.set(lc(plan.token1), get(plan.token1) - BigInt(plan.amount1));
     for (const [t, v] of s) if (v < 0n) s.set(t, 0n);
     return { langkah, masalah, sesudah: s };
+  }
+
+  // ---- ikuti manual aksi target yang gagal / dilewati ----------------------
+  // Target membuka posisi, bot tidak ikut (dilewati: cooldown, batas, sinyal basi;
+  // gagal: rute zap rugi, kas kurang). Pengguna boleh memutuskan ikut belakangan.
+  // Posisinya dicatat SEBAGAI CERMIN posisi target itu (target + mirror_of = tokenId
+  // target), jadi keluarnya tetap otomatis: ikut tutup/tarik sebagian saat target
+  // keluar (handleExit), rekonsiliasi kalau sinyal keluar terlewat, dan aturan keluar
+  // mandiri target itu. Jalur rencananya planLp (batas, kas, hook, simulasi swap),
+  // rentangnya planRange aturan target — sama dengan salinan otomatis.
+  poolFromAction(a, toks) {
+    const qs = this.chain.quoteSideOf(a.token0, a.token1);
+    return {
+      poolRef: a.pool_ref, venue: a.venue, token0: a.token0, token1: a.token1,
+      fee: a.fee, tickSpacing: a.tick_spacing, hooks: a.hooks, poolAddr: a.venue === 'v3' ? a.pool_ref : null,
+      symbol0: toks[0].symbol, symbol1: toks[1].symbol, dec0: toks[0].decimals, dec1: toks[1].decimals,
+      pair: `${toks[0].symbol}/${toks[1].symbol}`, feePct: feePctOf(a.fee), dynamicFee: feeDinamis(a.fee),
+      hasHooks: !!(a.hooks && !/^0x0+$/i.test(a.hooks)),
+      quoteSymbol: qs?.symbol || null, quoteSide: qs?.side ?? null, quoteKind: qs?.kind || null,
+    };
+  }
+
+  // Syarat aksi yang boleh diikuti, tanpa RPC — dipakai juga daftar Aktivitas.
+  static followable(a, openMirrors) {
+    return (a.kind === 'increase' || a.kind === 'mint') && (a.venue === 'v4' || a.venue === 'v3')
+      && (a.verdict === 'skip' || a.verdict === 'error') && !!a.token_id && !!a.pool_ref
+      && a.tick_lower != null && a.tick_upper != null
+      && !openMirrors.has(`${a.target}|${a.token_id}`);
+  }
+
+  openMirrorKeys() {
+    return new Set(this.store.all("SELECT target, mirror_of FROM positions WHERE status='open' AND target IS NOT NULL AND mirror_of IS NOT NULL")
+      .map((r) => `${r.target}|${r.mirror_of}`));
+  }
+
+  async followContext(actionId) {
+    const a = this.store.get(`SELECT a.*, d.id AS decision_id, d.verdict, d.reason, d.plan
+      FROM actions a LEFT JOIN decisions d ON d.action_id = a.id WHERE a.id=?`, Number(actionId));
+    if (!a) return { error: 'aksi tidak ditemukan' };
+    if (!a.verdict) return { error: 'aksi ini masih diproses bot — tunggu keputusannya' };
+    if (a.verdict === 'copy' || a.verdict === 'dry') return { error: 'aksi ini sudah disalin bot' };
+    const mirror = this.store.get("SELECT id FROM positions WHERE status='open' AND target=? AND mirror_of=?", a.target, a.token_id ?? '');
+    if (mirror) return { error: `posisi target ini sudah diikuti oleh posisi #${mirror.id}` };
+    if (!Manual.followable(a, new Set())) return { error: 'hanya aksi buka/tambah posisi yang gagal atau dilewati yang bisa diikuti' };
+    // Target yang sudah keluar penuh: posisi kita tidak punya pasangan untuk diikuti keluar.
+    let targetLiq = null;
+    try { targetLiq = (await this.engine.targetLiquidity(a.venue, a.token_id))?.liquidity ?? null; } catch { /* tidak terbaca */ }
+    if (targetLiq === 0n) return { error: 'target sudah menutup posisi ini — tidak ada yang bisa diikuti' };
+    const toks = await this.chain.tokens([a.token0, a.token1]);
+    const rules = this.engine.rulesFrom(a.target);
+    let botPlan = null;
+    try { botPlan = a.plan ? JSON.parse(a.plan) : null; } catch { /* rencana lama */ }
+    const t = this.store.get('SELECT label FROM targets WHERE address=?', a.target);
+    const k = a.quote_symbol === 'ETH' || a.quote_symbol === 'WETH' ? this.engine.ethUsd : 1;
+    const targetUsd = a.value_quote != null ? a.value_quote * k : null;
+    // Nominal usulan: ukuran yang tadinya direncanakan bot (sudah melewati batas-batas),
+    // kalau tidak ada — batas per posisi, tidak lebih besar dari posisi target.
+    const cap = rules.sizing.max_quote_per_position_usd;
+    const suggestUsd = Number.isFinite(botPlan?.valueUsd) && botPlan.valueUsd > 0 ? botPlan.valueUsd
+      : targetUsd != null ? Math.min(cap, targetUsd) : cap;
+    const e = rules.exit;
+    return {
+      a, toks, rules,
+      info: {
+        actionId: a.id, ts: a.ts, ageMs: Date.now() - a.ts, target: a.target, targetLabel: t?.label || null,
+        tokenId: a.token_id, venue: a.venue, pair: `${toks[0].symbol}/${toks[1].symbol}`,
+        verdict: a.verdict, reason: a.reason, targetUsd, suggestUsd: Math.floor(suggestUsd * 100) / 100,
+        targetOpen: targetLiq == null ? null : targetLiq > 0n,
+        exit: {
+          followTarget: !!e.follow_target, followPartial: !!e.follow_partial,
+          stopLossPct: e.stop_loss_pct, takeProfitPct: e.take_profit_pct,
+          maxAgeHours: e.max_age_hours, outOfRangeMinutes: e.out_of_range_minutes, sellLeftover: !!e.sell_leftover,
+        },
+      },
+    };
+  }
+
+  async planFollow({ actionId, usd }) {
+    const c = await this.followContext(actionId);
+    if (c.error) return c;
+    const nominal = usd != null && usd !== '' ? Number(usd) : c.info.suggestUsd;
+    const r = await this.planLp({
+      pool: this.poolFromAction(c.a, c.toks), poolRef: c.a.pool_ref, usd: nominal,
+      tickLower: c.a.tick_lower, tickUpper: c.a.tick_upper, ranged: true, target: c.a.target,
+    });
+    if (r.error) return { ...r, follow: c.info };
+    r.plan.mirrorOf = c.a.token_id;
+    r.plan.targetRange = [c.a.tick_lower, c.a.tick_upper];
+    r.plan.targetValueUsd = c.info.targetUsd;
+    return { ...r, follow: { ...c.info, usd: nominal } };
+  }
+
+  async follow({ actionId, usd }) {
+    const eng = this.engine;
+    if (!eng.exec.address()) throw new Error('belum ada wallet');
+    if (eng.dryRun()) throw new Error('mode simulasi: tidak mengirim transaksi');
+    // Direncanakan ulang di sini, di harga & saldo sekarang — bukan rencana pratinjau
+    // yang bisa berumur beberapa menit selama modal konfirmasi terbuka.
+    const d = await this.planFollow({ actionId, usd });
+    if (d.error) throw new Error(d.error);
+    const { plan, follow: f } = d;
+    const slot0 = plan.venue === 'v3' ? await this.chain.slot0V3(plan.poolRef) : await this.chain.slot0V4(plan.poolRef);
+    const r = await eng.executeEntry(plan, { target: f.target, tokenId: f.tokenId, slot0 });
+    const late = lamanya(Date.now() - f.ts);
+    const prev = this.store.get('SELECT id, verdict, reason FROM decisions WHERE action_id=? ORDER BY id DESC LIMIT 1', f.actionId);
+    // Keputusan aksi ini diganti jadi "disalin" (satu keputusan per aksi); keputusan
+    // semula ikut disimpan di rencananya supaya jejaknya tidak hilang.
+    const saved = { ...plan, followedManually: { at: Date.now(), lateMs: Date.now() - f.ts, verdict: prev?.verdict, reason: prev?.reason } };
+    if (prev) {
+      this.store.run('UPDATE decisions SET verdict=?, reason=?, plan=?, tx_hash=?, position_id=? WHERE id=?',
+        'copy', `diikuti manual ${late} setelah target masuk — ${r.note}`.slice(0, 600), JSON.stringify(saved), r.txHash, r.positionId, prev.id);
+    }
+    eng.lastCopyAt?.set(plan.poolRef, Date.now());
+    eng.notify(`LP diikuti manual (${late} setelah target): ${r.note}`, {
+      kind: 'entry', positionId: r.positionId, txHash: r.txHash, adding: !!r.adding,
+      pair: r.pair, valueUsd: r.valueUsd, curTick: r.curTick, steps: r.steps,
+      target: f.target, mirrorOf: f.tokenId, reason: `diikuti manual ${late} setelah target masuk`,
+    });
+    return { ...r, lateMs: Date.now() - f.ts };
   }
 
   async openLp(plan) {

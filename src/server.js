@@ -979,6 +979,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         ORDER BY a.ts DESC, a.id DESC LIMIT ?`, limit);
       const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
       const labels = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
+      const mirrors = manual.openMirrorKeys();
       for (const r of rows) {
         r.targetLabel = labels.get(r.target) || null;
         r.symbol0 = toks.get(r.token0)?.symbol || null;
@@ -986,8 +987,33 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         r.dec0 = toks.get(r.token0)?.decimals ?? 18;
         r.dec1 = toks.get(r.token1)?.decimals ?? 18;
         r.quoteSide = quoteSideOf(r.token0, r.token1);
+        // Buka/tambah posisi yang gagal atau dilewati dan belum punya cermin: tombol
+        // "Ikuti" (status posisi target di chain baru diperiksa saat pratinjau).
+        r.followable = Manual.followable(r, mirrors);
       }
       return { activity: rows };
+    },
+    // Ikuti manual aksi target yang gagal/dilewati. `plan` = pratinjau (tanpa transaksi)
+    // untuk modal konfirmasi; POST tanpa /plan mengirim transaksinya. Keluarnya tetap
+    // otomatis — lihat Manual.follow.
+    'POST /api/activity/follow/plan': async (req) => {
+      const b = await readBody(req);
+      try { return await manual.planFollow({ actionId: Number(b.actionId), usd: b.usd }); }
+      catch (e) { return { error: e.message }; }
+    },
+    'POST /api/activity/follow': async (req) => {
+      const b = await readBody(req);
+      if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
+      const lockKey = `follow:${Number(b.actionId)}`;
+      if (manualOpening.has(lockKey)) return { error: 'aksi ini sedang diikuti — tunggu hasilnya' };
+      manualOpening.add(lockKey);
+      try {
+        const r = await manual.follow({ actionId: Number(b.actionId), usd: b.usd });
+        return { ok: true, tx: r.txHash, positionId: r.positionId, note: r.note, lateMs: r.lateMs };
+      } catch (e) {
+        log(`ikuti manual aksi #${b.actionId}: ${e.message}`);
+        return { error: e.message };
+      } finally { manualOpening.delete(lockKey); }
     },
     // Umpan untuk peringatan "target membuka posisi" di dasbor (toast + suara).
     // Dipoll tiap beberapa detik, jadi sengaja ringan: panggilan pertama (tanpa

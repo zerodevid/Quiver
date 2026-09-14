@@ -30,6 +30,12 @@ const exact = {
 };
 // Captures retain amounts, symbols and identifiers. Nested reasons are translated recursively.
 const rules = [
+  [/^diikuti manual (.+) setelah target masuk$/s,
+    'Followed manually {1} after the target entered',
+    'Diikuti manual {1} setelah target masuk'],
+  [/^LP diikuti manual \((.+) setelah target\): (.+)$/s,
+    'LP followed manually ({1} after the target): {2}',
+    'LP diikuti manual ({1} setelah target): {2}'],
   [/^sinyal masuk basi — target masuk (.+) lalu \(batas (.+)\); harga & pool sudah berubah, tidak disalin$/s,
     'Stale entry signal — the target entered {1} ago (limit {2}); price and pool have moved, not copied',
     'Sinyal masuk basi — target masuk {1} lalu (batas {2}); harga & pool sudah berubah, tidak disalin'],

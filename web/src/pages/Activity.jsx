@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { Plus, Minus, ArrowLeftRight, CircleDollarSign } from 'lucide-react';
+import { Plus, Minus, ArrowLeftRight, CircleDollarSign, UserPlus } from 'lucide-react';
+import { Button } from '@heroui/react';
 import { usePoll } from '../hooks';
 import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Pick, Dot } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
 import { usd, ago, short, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
 import { useI18n, reason } from '../i18n';
+import FollowDialog from '../components/FollowDialog';
 
 // Ikon per jenis aksi: arah gerakan terbaca tanpa membaca labelnya.
 const IKON = { increase: Plus, mint: Plus, decrease: Minus, collect: CircleDollarSign };
@@ -18,7 +20,9 @@ function ukuranKita(a) {
 
 export default function Activity() {
   const { t } = useI18n();
-  const { data: d } = usePoll('/api/activity?limit=200', 8000);
+  const { data: d, reload } = usePoll('/api/activity?limit=200', 8000);
+  // Aksi yang sedang dipertimbangkan untuk diikuti manual (modal konfirmasi).
+  const [follow, setFollow] = useState(null);
   const [filter, setFilter] = useState('all');
   // Saringan tambahan: jenis aksi (buka/tambah/kurangi/klaim) dan wallet target.
   // Ketiganya saling mengiris; hitungan tiap tombol mengikuti dua saringan lainnya,
@@ -47,6 +51,7 @@ export default function Activity() {
   return (
     <>
       <PageHeader group="Pemantauan" title="Aktivitas" desc="Setiap gerakan LP wallet target dan keputusan bot atasnya." />
+      <FollowDialog action={follow} onClose={() => setFollow(null)} onDone={() => reload()} />
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <Segmented aria="Saring keputusan" value={filter} onChange={setFilter} options={opts} />
         <Segmented aria="Saring jenis aksi" value={kind} onChange={setKind} options={kinds} />
@@ -106,6 +111,11 @@ export default function Activity() {
                     <span className={k?.[1] === 'danger' ? 'text-danger' : k?.[1] === 'success' ? 'text-success' : ''}>{k ? t(k[0]) : (a.verdict || '—')}</span>
                   </div>
                   {a.reason && <div className="mt-1.5 whitespace-normal break-words text-xs leading-relaxed text-muted" title={reason(a.reason)}>{reason(a.reason)}</div>}
+                  {a.followable && (
+                    <Button size="sm" variant="secondary" className="mt-2" onPress={() => setFollow(a)}>
+                      <UserPlus className="size-3.5" />{t('Ikuti manual')}
+                    </Button>
+                  )}
                 </div>);
             } },
           ]} />
