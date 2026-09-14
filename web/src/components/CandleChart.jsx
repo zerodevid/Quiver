@@ -156,7 +156,7 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
       // garis bantu: rambut utuh & redup — titik-titik terbaca sebagai ambang, bukan grid
       grid: { vertLines: { visible: false }, horzLines: { color: withAlpha(pal.border, 0.6), style: LineStyle.Solid } },
       rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.08 } },
-      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 3, minBarSpacing: 2,
+      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 3, minBarSpacing: 2, shiftVisibleRangeOnNewBar: false,
         tickMarkFormatter: (ts, type) => {
           const d = new Date(ts * 1000);
           return type <= 1 ? d.toLocaleDateString(fmtLocale(), { day: 'numeric', month: 'short' })
@@ -197,13 +197,22 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
     r.series.applyOptions({ upColor: pal.up, downColor: pal.down, wickUpColor: pal.up, wickDownColor: pal.down });
   }, [pal]);
 
+  // Apply the scale mode only when it changes: reapplying it on each poll
+  // resets manual price-axis scaling in Lightweight Charts.
+  useEffect(() => {
+    ref.current?.chart.priceScale('right').applyOptions({ mode: log ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal });
+  }, [log]);
+
+  // Data and overlays can refresh without fitting the user's viewport again.
+  // Fit once for each candle interval, after that interval has data.
+  const fittedTf = useRef(null);
+
   // Data, skala, dan lapisan posisi.
   useEffect(() => {
     const r = ref.current; if (!r) return;
     r.dom = dom;
     r.series.setData(data);
     r.vol.setData(data.map((d) => ({ time: d.time, value: d.value, color: withAlpha(d.close >= d.open ? pal.up : pal.down, 0.28) })));
-    r.chart.priceScale('right').applyOptions({ mode: log ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal });
     for (const l of r.lines) r.series.removePriceLine(l);
     r.lines = [];
     const line = (p, color, title, style = LineStyle.Dashed) => { if (p > 0) r.lines.push(r.series.createPriceLine({ price: p, color, lineWidth: 1, lineStyle: style, axisLabelVisible: true, title })); };
@@ -220,9 +229,12 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
       ...(entryT != null && !entryBefore ? [{ time: entryT, position: 'belowBar', color: pal.accent, shape: 'arrowUp', text: t('masuk') }] : []),
       ...(exitT != null ? [{ time: exitT, position: 'aboveBar', color: pal.warning, shape: 'arrowDown', text: t('keluar') }] : []),
     ]);
-    r.chart.timeScale().fitContent();
-    r.chart.timeScale().applyOptions({ rightOffset: 3 });
-  }, [data, dom, log, entry?.p, exit?.p, entryT, exitT, entryBefore, now, bep, range, pal]);
+    if (data.length && fittedTf.current !== tf) {
+      r.chart.timeScale().fitContent();
+      r.chart.timeScale().applyOptions({ rightOffset: 3 });
+      fittedTf.current = tf;
+    }
+  }, [data, tf, dom, entry?.p, exit?.p, entryT, exitT, entryBefore, now, bep, range, pal]);
 
   const last = data[data.length - 1];
   const h = hover || (last && { ...last, v: last.value });
