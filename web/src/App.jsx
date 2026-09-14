@@ -3,7 +3,7 @@ import { Button, Chip, Toast } from '@heroui/react';
 import {
   LayoutDashboard, Layers, ListChecks, Users, SlidersHorizontal, Wallet as WalletIcon,
   Settings as SettingsIcon, Moon, Sun, Pause, Play, Menu, X, LogOut,
-  PlusCircle, ArrowDownUp,
+  PlusCircle, ArrowDownUp, BookOpen,
 } from 'lucide-react';
 import { usePoll, useHash, useTheme } from './hooks';
 import { post } from './api';
@@ -26,6 +26,7 @@ const WalletPage = lazy(() => import('./pages/Wallet'));
 const Settings = lazy(() => import('./pages/Settings'));
 const ManualLp = lazy(() => import('./pages/ManualLp'));
 const Swap = lazy(() => import('./pages/Swap'));
+const Learn = lazy(() => import('./pages/Learn'));
 // Tidak ada di menu: dibuka dari lambang token (#token/0x…) dan nama pasangan (#pool/0x…).
 const TokenDetail = lazy(() => import('./pages/TokenDetail'));
 const PoolDetail = lazy(() => import('./pages/PoolDetail'));
@@ -50,6 +51,7 @@ const NAV = [
   ]],
   ['Riset', [
     ['wallet', 'Wallet', WalletIcon, WalletPage],
+    ['learn', 'Belajar LP', BookOpen, Learn],
   ]],
   ['Sistem', [
     ['settings', 'Pengaturan', SettingsIcon, Settings],

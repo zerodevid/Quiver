@@ -1,0 +1,10 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { simulation } from './math.js';
+const near = (a,b) => assert.ok(Math.abs(a-b)<1e-7, `${a} != ${b}`);
+test('entry value matches capital and HODL',()=>{const s=simulation({lo:80,hi:120,current:100});near(s.principal,100);near(s.il,0);near(s.pnl,0);});
+test('below range base only, above range quote only; value caps',()=>{const s=simulation({lo:80,hi:120,current:60});near(s.quote,0);near(s.evaluate(140).base,0);near(s.evaluate(140).principal,s.evaluate(200).principal);});
+test('LP loses versus identical initial hold away from entry without fees',()=>{for(const current of [30,80,95,110,120,200]) assert.ok(simulation({lo:80,hi:120,current}).il<=1e-8);});
+test('BEP solves total PnL including fixed quote fees and costs',()=>{const s=simulation({lo:80,hi:120,current:70,fees:8,costs:2});near(s.evaluate(s.bep.price).pnl,0);});
+test('single sided buy and sell entry allocations',()=>{near(simulation({lo:60,hi:90,current:100}).initial.base,0);near(simulation({lo:110,hi:150,current:100}).initial.quote,0);});
+test('unreachable and invalid cases',()=>{assert.ok(simulation({lo:80,hi:120,current:100,costs:500}).bep.reason);assert.throws(()=>simulation({lo:120,hi:80,current:100}));});

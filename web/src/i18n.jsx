@@ -943,6 +943,7 @@ const EN = {
   'di dalam · {n}% ke tepi atas': 'in range · {n}% to upper edge',
   'di luar · {n}% di bawah': 'out · {n}% below',
   'di luar · {n}% di atas': 'out · {n}% above',
+  'Belajar LP': 'Learn LP',
   'Harga BEP': 'Break-even price',
   'dari harga sekarang': 'from current price',
   'Data BEP belum tersedia.': 'Break-even data is not available yet.',
