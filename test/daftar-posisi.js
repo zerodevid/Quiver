@@ -191,6 +191,22 @@ const hasilSinkron = (id, extra = {}) => ({
     assert.equal(daftar.positions[0].valueUsd, 210, 'angka terakhir yang diketahui tetap disajikan');
   });
 
+  await t('PnL tabel tertutup dalam USD sama dengan detail untuk WETH, ETH, dan USDG', async () => {
+    for (const quote of ['WETH', 'ETH', 'USDG']) {
+      const { store, api } = dunia();
+      tutup(store, 30);
+      const k = quote === 'USDG' ? 1 : 2500;
+      store.run('UPDATE positions SET cost_quote=?, out_quote=?, quote_symbol=? WHERE id=30', 100.26 / k, 38.83 / k, quote);
+      const c = (await api('GET', '/api/positions', {}, {})).closed[0];
+      const detail = (await api('GET', '/api/position', {}, { id: '30' })).position;
+      assert.ok(Math.abs(c.costUsd - 100.26) < 1e-9);
+      assert.ok(Math.abs(c.outUsd - 38.83) < 1e-9);
+      assert.ok(Math.abs(c.pnlUsd + 61.43) < 1e-9);
+      assert.equal(c.pnlUsd, detail.pnlUsd);
+      assert.equal(c.pnlPct, detail.pnlPct);
+    }
+  });
+
   // ---- asal posisi: siapa yang disalin, dan bagaimana hasil aslinya --------------
   // Tabel posisi tertutup menyandingkan PnL kita dengan PnL posisi target yang kita
   // cermin. Tanpa itu, satu-satunya cara membandingkan keduanya adalah membuka

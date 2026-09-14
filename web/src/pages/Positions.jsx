@@ -151,7 +151,7 @@ export default function Positions({ param }) {
   }
   const open = d.positions, closed = d.closed;
   const openPnl = sum(open, (p) => p.pnlUsd);
-  const closedPnl = sum(closed, (c) => (c.out_quote || 0) - (c.cost_quote || 0));
+  const closedPnl = sum(closed, (c) => c.pnlUsd);
   const pending = open.filter((p) => p.syncing).length;
   const dash = (p, node) => (p.syncing ? <span className="text-muted">—</span> : node);
 
@@ -212,11 +212,11 @@ export default function Positions({ param }) {
               </div>) },
             { key: 'tgt', label: 'Sumber', sort: (c) => c.targetLabel || c.target,
               search: (c) => `${c.targetLabel || ''} ${c.target || ''}`, render: (c) => <Source p={c} /> },
-            { key: 'cost', label: 'Modal', align: 'end', sort: (c) => c.cost_quote, render: (c) => usd(c.cost_quote) },
-            { key: 'out', label: 'Hasil', align: 'end', sort: (c) => c.out_quote, render: (c) => usd(c.out_quote) },
-            { key: 'pnl', label: 'PnL', align: 'end', sort: (c) => (c.out_quote || 0) - (c.cost_quote || 0), render: (c) => {
-              const v = (c.out_quote || 0) - (c.cost_quote || 0);
-              return <div className={`whitespace-nowrap ${tone(v)}`}>{usd(v)}<div className="text-xs">{c.cost_quote > 0 ? pct((v / c.cost_quote) * 100, 2) : ''}</div></div>;
+            { key: 'cost', label: 'Modal', align: 'end', sort: (c) => c.costUsd, render: (c) => usd(c.costUsd) },
+            { key: 'out', label: 'Hasil', align: 'end', sort: (c) => c.outUsd, render: (c) => usd(c.outUsd) },
+            { key: 'pnl', label: 'PnL', align: 'end', sort: (c) => c.pnlUsd, render: (c) => {
+              const v = c.pnlUsd;
+              return <div className={`whitespace-nowrap ${tone(v)}`}>{usd(v)}<div className="text-xs">{c.pnlPct != null ? pct(c.pnlPct, 2) : ''}</div></div>;
             } },
             { key: 'dur', label: 'Durasi', align: 'end', sort: (c) => (c.closed_ts || 0) - (c.opened_ts || 0), render: (c) => (
               <span className="whitespace-nowrap text-muted">{c.opened_ts && c.closed_ts ? age((c.closed_ts - c.opened_ts) / 3600000) : '—'}</span>) },

@@ -605,7 +605,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       for (const r of closed) {
         r.symbol0 = toks.get(r.token0)?.symbol || null;
         r.symbol1 = toks.get(r.token1)?.symbol || null;
-        Object.assign(r, origin(r));
+        const costUsd = (r.cost_quote || 0) * k(r.quote_symbol);
+        const outUsd = (r.out_quote || 0) * k(r.quote_symbol);
+        Object.assign(r, origin(r), {
+          costUsd, outUsd, pnlUsd: outUsd - costUsd,
+          pnlPct: costUsd > 0 ? ((outUsd - costUsd) / costUsd) * 100 : null,
+        });
       }
       const positions = store.all("SELECT * FROM positions WHERE status='open' ORDER BY opened_ts").map((r) => live.get(r.id) || {
         ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
