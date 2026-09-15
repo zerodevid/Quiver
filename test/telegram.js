@@ -235,11 +235,15 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     w.bot.api = async () => ({ positions, closed });
     const [text, markup] = await w.bot.posisi();
     assert.match(text, /🔴 −\$53,74/);
-    assert.match(text, /Sumber: &lt;Trader&amp;/);
+    assert.match(text, /&lt;Trader&amp;/);
     assert.match(text, /WETH\/MEME/);
-    assert.match(text, /Sumber: Bang GE/);
+    assert.match(text, /Bang GE/);
     assert.match(text, /🔴 −\$250,00/);
-    assert.ok(!text.includes('<pre>'));
+    assert.ok(text.includes('<pre>'));
+    assert.match(text, /Pair\s+Sumber\s+PnL/);
+    for (const block of text.matchAll(/<pre>([\s\S]*?)<\/pre>/g)) {
+      for (const line of block[1].split('\n')) assert.ok(Array.from(line.replace(/&(?:amp|lt|gt);/g, 'x')).length <= 42, line);
+    }
     assert.ok(text.length < 4096);
     const buttons = markup.inline_keyboard.flat();
     assert.match(buttons.find((b) => b.callback_data === 'p:1').text, /^🔴/);
@@ -835,7 +839,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.match(teks, /PnL <b>🟢 \+\$18,50<\/b>/);
     assert.match(teks, /Kas wallet\s+\$400,00/);
     assert.match(teks, /Posisi terbuka · 1/);
-    assert.match(teks, /USDG\/MEME<\/b> · \$205,00\nPnL 🟢 \+\$6,50/);
+    assert.match(teks, /USDG\/MEME\s+Bang GE\s+🟢 \+\$6,50/);
     assert.match(teks, /Rekam jejak · 1 ditutup/);
     assert.match(teks, /Bang GE\s+1 buka/);
     assert.match(teks, /akan disalin \(simulasi\)/);

@@ -35,13 +35,15 @@ const pnlText = (n) => `${pnlMark(n)} ${sgn(n)}`;
 const compact = (s, max = 48) => { const chars = Array.from(String(s ?? '').replace(/\s+/g, ' ').trim()); return chars.length > max ? chars.slice(0, max - 1).join('') + '…' : chars.join(''); };
 const pairText = (p) => `${compact(p.symbol0 || '?', 20)}/${compact(p.symbol1 || '?', 20)}`;
 const sourceText = (p) => p.targetLabel ? compact(p.targetLabel) : p.target ? shortA(p.target) : tr('Manual');
-const positionBlock = (p) => [
-  `<b>${esc(pairText(p))}</b>`,
-  tr('Sumber: {0}', [esc(sourceText(p))]),
-  tr('Nilai {0} · fee {1}', [usd(p.valueUsd), usd(p.feeUsd)]),
-  `PnL <b>${pnlText(p.pnlUsd)}</b>`,
-  p.inRange == null ? tr('⏳ Menunggu sinkronisasi') : p.inRange ? tr('Dalam rentang') : tr('🟡 di luar rentang'),
-].join('\n');
+// Keep mobile tables narrow; color markers occupy the final column so their
+// platform-dependent emoji width cannot shift any following column.
+const positionTable = (positions, history = false) => kolom([
+  ['Pair', tr('Sumber'), 'PnL'],
+  ...positions.flatMap((p) => [
+    [compact(pairText(p), 13), compact(sourceText(p), 10), pnlText(p.pnlUsd)],
+    ...(history ? [[`#${compact(p.token_id, 12)}`, compact(ago(p.closed_ts), 10), '']] : []),
+  ]),
+]);
 const shortA = (a) => (a ? `${String(a).slice(0, 6)}…${String(a).slice(-4)}` : '—');
 const shortH = (h) => (h ? `${String(h).slice(0, 10)}…` : '—');
 // Buang nol di ekor pecahan: "1,50" -> "1,5", "1,00" -> "1". Angka tanpa koma
@@ -1457,7 +1459,7 @@ class Telegram {
     L.push('');
     L.push(tr("<b>💼 Posisi terbuka · {0}</b>{1}", [open.length, open.length ? tr("  🟢 {0} in · 🟡 {1} luar", [s.inRange, open.length - s.inRange]) : '']));
     if (open.length) {
-      L.push(open.slice(0, 6).map((p) => `<b>${esc(pairText(p))}</b> · ${usd(p.valueUsd)}\nPnL ${pnlText(p.pnlUsd)}`).join('\n\n'));
+      L.push(positionTable(open.slice(0, 6)));
       if (open.length > 6) L.push(tr("<i>+{0} posisi lainnya</i>", [open.length - 6]));
     } else L.push(tr("<i>Belum ada posisi terbuka.</i>"));
 
@@ -1549,7 +1551,7 @@ class Telegram {
     if (!open.length) L.push(tr('\nBelum ada posisi terbuka.'));
     else {
       L.push(tr('Nilai {0} · fee {1}', [usd(tot.v), usd(tot.f)]), `PnL <b>${pnlText(tot.p)}</b>`, '');
-      L.push(visible.map(positionBlock).join('\n\n'));
+      L.push(positionTable(visible));
     }
     const rows = visible.map((p) => [btn(`${pnlMark(p.pnlUsd)} ${pairText(p)} · ${sgn(p.pnlUsd)}`, `p:${p.id}`)]);
     const nav = (current, count, history) => {
@@ -1564,12 +1566,7 @@ class Telegram {
     nav(openPage, open.length, false);
     if (closed.length) {
       L.push('', tr('<b>Terakhir ditutup</b>'), '');
-      L.push(closed.slice(closedPage * size, (closedPage + 1) * size).map((c) => [
-        `<b>${esc(pairText(c))}</b>`,
-        tr('Sumber: {0}', [esc(sourceText(c))]),
-        `PnL <b>${pnlText(c.pnlUsd)}</b>`,
-        `#${esc(compact(c.token_id, 24))} · ${esc(ago(c.closed_ts))}`,
-      ].join('\n')).join('\n\n'));
+      L.push(positionTable(closed.slice(closedPage * size, (closedPage + 1) * size), true));
       nav(closedPage, closed.length, true);
     }
     L.push('', tr('<i>Ketuk posisi untuk detail dan tindakan.</i>'));
