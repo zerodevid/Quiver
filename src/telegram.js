@@ -29,6 +29,19 @@ const nf = (n, d = 2) => Number(n).toLocaleString(locale() === 'en' ? 'en-US' : 
 const usd = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '—' : `$${nf(n, d)}`);
 const pct = (n, d = 1) => (n == null || !Number.isFinite(Number(n)) ? '—' : `${n >= 0 ? '+' : ''}${nf(n, d)}%`);
 const sgn = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '—' : `${n >= 0 ? '+' : '−'}$${nf(Math.abs(n), d)}`);
+// Telegram messages cannot set text colors; keep the sign and a semantic marker.
+const pnlMark = (n) => n == null || !Number.isFinite(Number(n)) || Number(n) === 0 ? '⚪️' : Number(n) < 0 ? '🔴' : '🟢';
+const pnlText = (n) => `${pnlMark(n)} ${sgn(n)}`;
+const compact = (s, max = 48) => { const chars = Array.from(String(s ?? '').replace(/\s+/g, ' ').trim()); return chars.length > max ? chars.slice(0, max - 1).join('') + '…' : chars.join(''); };
+const pairText = (p) => `${compact(p.symbol0 || '?', 20)}/${compact(p.symbol1 || '?', 20)}`;
+const sourceText = (p) => p.targetLabel ? compact(p.targetLabel) : p.target ? shortA(p.target) : tr('Manual');
+const positionBlock = (p) => [
+  `<b>${esc(pairText(p))}</b>`,
+  tr('Sumber: {0}', [esc(sourceText(p))]),
+  tr('Nilai {0} · fee {1}', [usd(p.valueUsd), usd(p.feeUsd)]),
+  `PnL <b>${pnlText(p.pnlUsd)}</b>`,
+  p.inRange == null ? tr('⏳ Menunggu sinkronisasi') : p.inRange ? tr('Dalam rentang') : tr('🟡 di luar rentang'),
+].join('\n');
 const shortA = (a) => (a ? `${String(a).slice(0, 6)}…${String(a).slice(-4)}` : '—');
 const shortH = (h) => (h ? `${String(h).slice(0, 10)}…` : '—');
 // Buang nol di ekor pecahan: "1,50" -> "1,5", "1,00" -> "1". Angka tanpa koma
@@ -791,6 +804,7 @@ class Telegram {
       case 'h': return out(...(await this.home()));
       case 'o': return out(...(await this.overview()));
       case 'b': return out(...(await this.saldo()));
+      case 'pl': return out(...(await this.posisi(rest[0], rest[1])));
       case 'p': return rest[0] ? out(...(await this.posisiDetail(rest[0]))) : out(...(await this.posisi()));
       case 'pc': return out(...(await this.tutupKonfirm(rest[0])));
       // Kartu bagikan: gambar PnL (src/share-card.js) dikirim sebagai foto ke chat ini;
@@ -1390,7 +1404,7 @@ class Telegram {
       o.mode.dry_run ? tr("Mode simulasi: transaksi salin tidak dikirim ke chain.") : tr("Mode LIVE: transaksi menggunakan dana wallet."),
       '',
       pf?.now?.cash ? tr("💰 Portofolio <b>{0}</b>", [usd(pf.now.value)]) : null,
-      `📈 PnL <b>${sgn(pnl)}</b>${pf?.delta24 != null ? tr(" · 24 jam {0}", [sgn(pf.delta24)]) : ''}`,
+      `PnL <b>${pnlText(pnl)}</b>${pf?.delta24 != null ? tr(" · 24 jam {0}", [sgn(pf.delta24)]) : ''}`,
       tr("💼 {0} posisi · {1}{2}", [s.openCount, usd(s.exposureUsd), s.openCount ? ` · ${s.inRange}/${s.openCount} in-range` : '']),
       '',
       tr("Pilih <b>Target</b> untuk mengikuti wallet, atau <b>LP manual</b> untuk membuka posisi sendiri.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap.</i>"),
@@ -1427,7 +1441,7 @@ class Telegram {
 
     // 1. Uang: angka terbesar di atas, tebal; rinciannya di tabel yang lurus.
     if (now?.cash) L.push(tr("💰 Portofolio <b>{0}</b>", [usd(now.value)]));
-    L.push(`${pnl >= 0 ? '📈' : '📉'} PnL <b>${sgn(pnl)}</b>${pnlPct != null ? ` ${pct(pnlPct)}` : ''}${pf?.delta24 != null ? tr(" · 24 jam {0}", [sgn(pf.delta24)]) : ''}`);
+    L.push(`PnL <b>${pnlText(pnl)}</b>${pnlPct != null ? ` ${pct(pnlPct)}` : ''}${pf?.delta24 != null ? tr(" · 24 jam {0}", [sgn(pf.delta24)]) : ''}`);
     L.push(angka([
       [tr("kas wallet"), now?.cash ? usd(now.cash.usd) : null],
       [tr("dalam posisi"), usd(s.exposureUsd)],
@@ -1443,9 +1457,7 @@ class Telegram {
     L.push('');
     L.push(tr("<b>💼 Posisi terbuka · {0}</b>{1}", [open.length, open.length ? tr("  🟢 {0} in · 🟡 {1} luar", [s.inRange, open.length - s.inRange]) : '']));
     if (open.length) {
-      L.push(kolom(open.slice(0, 6).map((p) => [
-        `${p.symbol0}/${p.symbol1}`.slice(0, 14), usd(p.valueUsd), sgn(p.pnlUsd), p.inRange ? 'in' : tr("luar"),
-      ]), 'lrrl'));
+      L.push(open.slice(0, 6).map((p) => `<b>${esc(pairText(p))}</b> · ${usd(p.valueUsd)}\nPnL ${pnlText(p.pnlUsd)}`).join('\n\n'));
       if (open.length > 6) L.push(tr("<i>+{0} posisi lainnya</i>", [open.length - 6]));
     } else L.push(tr("<i>Belum ada posisi terbuka.</i>"));
 
@@ -1523,30 +1535,45 @@ class Telegram {
     return [L.filter((x) => x != null).join('\n'), kb([[btn(tr("🔄 Segarkan"), 'b'), btn(tr("💼 Posisi"), 'p')], [BACK_HOME]])];
   }
 
-  async posisi() {
+  async posisi(openPage = 0, closedPage = 0) {
     const d = await this.api('GET', '/api/positions');
     const open = (d.positions || []).filter((p) => !p.empty);
+    const closed = d.closed || [];
+    const size = 4;
+    const page = (n, count) => Math.min(Math.max(0, Math.floor(Number(n) || 0)), Math.max(0, Math.ceil(count / size) - 1));
+    openPage = page(openPage, open.length);
+    closedPage = page(closedPage, closed.length);
+    const visible = open.slice(openPage * size, (openPage + 1) * size);
     const tot = open.reduce((a, p) => ({ v: a.v + (p.valueUsd || 0), f: a.f + (p.feeUsd || 0), p: a.p + (p.pnlUsd || 0) }), { v: 0, f: 0, p: 0 });
-    const L = [tr("<b>💼 Posisi terbuka — {0}</b>", [open.length])];
-    if (!open.length) L.push(tr("\nBelum ada posisi terbuka."));
+    const L = [tr('<b>💼 Posisi terbuka — {0}</b>', [open.length])];
+    if (!open.length) L.push(tr('\nBelum ada posisi terbuka.'));
     else {
-      L.push(`${usd(tot.v)} · fee ${usd(tot.f)} · <b>${sgn(tot.p)}</b>`);
-      // Emoji sengaja TIDAK masuk blok monospace: lebarnya tidak satu karakter dan
-      // merusak kelurusan kolom. Statusnya ditulis sebagai kata.
-      L.push(kolom(open.map((p) => [
-        `${p.symbol0}/${p.symbol1}`, usd(p.valueUsd), sgn(p.pnlUsd), p.inRange ? 'in' : tr("luar"),
-      ]), 'lrr'));
+      L.push(tr('Nilai {0} · fee {1}', [usd(tot.v), usd(tot.f)]), `PnL <b>${pnlText(tot.p)}</b>`, '');
+      L.push(visible.map(positionBlock).join('\n\n'));
     }
-    const rows = open.map((p) => [btn(`${p.inRange ? '🟢' : '🟡'} ${p.symbol0}/${p.symbol1}  ${usd(p.valueUsd)}`, `p:${p.id}`)]);
-    const closed = (d.closed || []).slice(0, 6);
+    const rows = visible.map((p) => [btn(`${pnlMark(p.pnlUsd)} ${pairText(p)} · ${sgn(p.pnlUsd)}`, `p:${p.id}`)]);
+    const nav = (current, count, history) => {
+      if (count <= size) return;
+      L.push(tr('Halaman {0}/{1}', [current + 1, Math.ceil(count / size)]));
+      const route = (n) => history ? `pl:${openPage}:${n}` : `pl:${n}:${closedPage}`;
+      rows.push([
+        ...(current > 0 ? [btn(tr(history ? '← Riwayat' : '← Posisi'), route(current - 1))] : []),
+        ...((current + 1) * size < count ? [btn(tr(history ? 'Riwayat →' : 'Posisi →'), route(current + 1))] : []),
+      ]);
+    };
+    nav(openPage, open.length, false);
     if (closed.length) {
-      L.push(tr("<b>Terakhir ditutup</b>"));
-      L.push(kolom(closed.map((c) => {
-        const pnl = (c.out_quote || 0) - (c.cost_quote || 0);
-        return [`#${c.token_id}`, sgn(pnl), ago(c.closed_ts)];
-      }), 'lr'));
+      L.push('', tr('<b>Terakhir ditutup</b>'), '');
+      L.push(closed.slice(closedPage * size, (closedPage + 1) * size).map((c) => [
+        `<b>${esc(pairText(c))}</b>`,
+        tr('Sumber: {0}', [esc(sourceText(c))]),
+        `PnL <b>${pnlText(c.pnlUsd)}</b>`,
+        `#${esc(compact(c.token_id, 24))} · ${esc(ago(c.closed_ts))}`,
+      ].join('\n')).join('\n\n'));
+      nav(closedPage, closed.length, true);
     }
-    return [L.filter((x) => x != null).join('\n'), kb([...rows, [btn(tr("🔄 Segarkan"), 'p'), BACK_HOME]])];
+    L.push('', tr('<i>Ketuk posisi untuk detail dan tindakan.</i>'));
+    return [L.join('\n'), kb([...rows, [btn(tr('🔄 Segarkan'), `pl:${openPage}:${closedPage}`), BACK_HOME]])];
   }
 
   async posisiDetail(id) {
@@ -1560,7 +1587,8 @@ class Telegram {
       '',
       // Angka yang paling dicari ditaruh di luar tabel supaya bisa ditebalkan:
       // isi blok <pre> selalu polos.
-      `<b>${sgn(p.pnlUsd)}</b>  ${pct(p.pnlPct)}`,
+      `PnL <b>${pnlText(p.pnlUsd)}</b>  ${pct(p.pnlPct)}`,
+      tr('Sumber: {0}', [esc(sourceText(p))]),
       angka([
         [tr("nilai"), usd(p.valueUsd)],
         [tr("modal"), usd(p.costUsd)],

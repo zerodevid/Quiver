@@ -87,5 +87,15 @@
   "♻️ Minimum {0} · periksa setiap {1} menit": "♻️ Minimum {0} · periksa setiap {1} menit",
   "<i>Sinkronisasi terakhir: {0}</i>": "<i>Sinkronisasi terakhir: {0}</i>",
   "Pemeriksaan terakhir: {0}": "Pemeriksaan terakhir: {0}",
-  "hasil keluar": "hasil"
+  "hasil keluar": "hasil",
+  "Sumber: {0}": "Sumber: {0}",
+  "Nilai {0} · fee {1}": "Nilai {0} · fee {1}",
+  "Dalam rentang": "Dalam rentang",
+  "Manual": "Manual",
+  "Halaman {0}/{1}": "Halaman {0}/{1}",
+  "← Riwayat": "← Riwayat",
+  "Riwayat →": "Riwayat →",
+  "← Posisi": "← Posisi",
+  "Posisi →": "Posisi →",
+  "<i>Ketuk posisi untuk detail dan tindakan.</i>": "<i>Ketuk posisi untuk detail dan tindakan.</i>"
 }

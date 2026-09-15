@@ -3,7 +3,11 @@ import { Button, Card, Spinner, toast } from '@heroui/react';
 import { Search, Check, TriangleAlert, Anchor, ArrowRight } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
-import { PageHeader, Notice, PriceRange, Empty, KV } from '../components/ui';
+import { usePoll } from '../hooks';
+import CandleChart from '../components/CandleChart';
+import { PageHeader, Notice, PriceRange, Empty, KV, Segmented } from '../components/ui';
+import { orientCandles, TFS, SECS, LiveBadge } from './PositionDetail';
+import { useLivePrice, useLiveCandles } from '../liveCandles';
 import TokenIcon, { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, num, ago, price, tickPrice, locale } from '../fmt';
 import { useI18n } from '../i18n';
@@ -212,6 +216,65 @@ function AutoSwap({ p }) {
             ? t('Jumlah yang dijual sudah termasuk ruang slippage {s}%; kelebihannya tetap di wallet.', { s: num(p.slippageBps / 100, 2) })
             : <span className="text-danger">{t('Auto-swap dimatikan di Aturan — pembukaan akan berhenti di langkah pertama.')}</span>}
         </p>
+      )}
+    </div>
+  );
+}
+
+// Grafik harga pool dengan pita rentang yang sedang dipilih, supaya terlihat
+// sebelum membuka posisi di mana rentangnya jatuh terhadap pergerakan harga.
+// Pitanya mengikuti ketikan (dari persen × harga kini); begitu pratinjau untuk
+// masukan yang sama datang, batasnya diganti harga tick yang sudah dibulatkan.
+// Tanpa pratinjau (nominal belum diisi), harga kini diambil dari lilin terakhir.
+function GrafikRentang({ pool, lo, up, full, rentangOk, pratinjau, hargaKini }) {
+  const { t } = useI18n();
+  const [tf, setTf] = useState('1h');
+  const baseToken = pool.quoteSide === 0 ? pool.token1 : pool.token0;
+  const { data: m } = usePoll(`/api/market?pool=${pool.poolRef}&tf=${tf}&limit=240&pair=0&token=${baseToken || ''}`, 30000);
+  const live = useLivePrice(pool.poolRef, pool);
+  const acuan = live?.price ?? hargaKini;
+  const oriented = useMemo(() => orientCandles(m?.ohlcv, baseToken, acuan), [m, baseToken, acuan]);
+  const candles = useLiveCandles(oriented, SECS[tf], live, `${pool.poolRef}:${tf}`);
+  const kini = acuan ?? candles[candles.length - 1]?.c ?? null;
+  const quote = pool.quoteSide === 0 ? pool.symbol0 : pool.quoteSide === 1 ? pool.symbol1 : null;
+
+  const range = useMemo(() => {
+    if (full || !rentangOk) return null;
+    if (pratinjau) {
+      const a = tickPrice(pratinjau.tickLower, pratinjau.dec0, pratinjau.dec1, pratinjau.quoteSide);
+      const b = tickPrice(pratinjau.tickUpper, pratinjau.dec0, pratinjau.dec1, pratinjau.quoteSide);
+      if (a > 0 && b > 0) return { lo: Math.min(a, b), hi: Math.max(a, b) };
+    }
+    return kini > 0 ? { lo: kini * (1 + lo / 100), hi: kini * (1 + up / 100) } : null;
+  }, [full, rentangOk, pratinjau, kini, lo, up]);
+
+  return (
+    <div className="rounded-md border border-border p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs text-muted">
+          {range ? <>{t('Rentang')} <span className="num text-foreground">{price(range.lo)} – {price(range.hi)}</span>{quote ? ` ${quote}` : ''}</>
+            : full ? t('Seluruh rentang') : t('Harga pool')}
+        </span>
+        <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />
+      </div>
+      {!m ? (
+        <div className="flex h-[300px] items-center justify-center"><Spinner /></div>
+      ) : m.ohlcv?.error ? (
+        <Empty title="Grafik harga tidak tersedia" sub={m.ohlcv.error} />
+      ) : !candles.length ? (
+        <Empty title="Belum ada lilin harga" sub="GeckoTerminal belum punya riwayat harga untuk pool ini." />
+      ) : (
+        <>
+          <CandleChart key={pool.poolRef} candles={candles} tf={tf} quote={quote} range={range} now={kini} pickRange height={300} />
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+            {range && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang yang akan di-LP')}</span>}
+            {full && <span>{t('Seluruh rentang — tidak ada batas untuk digambar.')}</span>}
+            <span className="ml-auto inline-flex items-center gap-3">
+              {live && <LiveBadge />}
+              {t('lilin {tf} · GeckoTerminal', { tf })}
+            </span>
+          </div>
+        </>
       )}
     </div>
   );
@@ -507,6 +570,10 @@ export default function ManualLp() {
 
           <Langkah n={3} title="Rentang harga" done={siap}>
             <div className="flex flex-col gap-3">
+              {pool && (
+                <GrafikRentang pool={pool} lo={lo} up={up} full={full} rentangOk={rentangOk} hargaKini={hargaKini}
+                  pratinjau={pSiap && !hitung ? pSiap : null} />
+              )}
               <Chips value={full ? 'full' : PRESET.find(([a, b]) => a === lo && b === up)?.[2]}
                 onPick={(v) => {
                   if (v === 'full') return setFull(true);

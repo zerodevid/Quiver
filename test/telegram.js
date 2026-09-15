@@ -227,6 +227,36 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
 (async () => {
   console.log('bot Telegram\n');
 
+  await t('posisi: rugi merah, sumber, history USD, dan halaman tetap ringkas', async () => {
+    const w = build();
+    const base = (await w.api('GET', '/api/positions')).positions[0];
+    const positions = Array.from({ length: 13 }, (_, i) => ({ ...base, id: i + 1, symbol1: '<LONG&' + 'TOKEN'.repeat(20), targetLabel: '<Trader&' + 'name '.repeat(30), pnlUsd: i === 0 ? -53.74 : i === 1 ? 0 : null, inRange: true }));
+    const closed = Array.from({ length: 13 }, (_, i) => ({ token_id: 800 + i, symbol0: 'WETH', symbol1: 'MEME', target: TARGET, targetLabel: i ? null : 'Bang GE', pnlUsd: -250, cost_quote: 1, out_quote: 0.9, closed_ts: Date.now() }));
+    w.bot.api = async () => ({ positions, closed });
+    const [text, markup] = await w.bot.posisi();
+    assert.match(text, /🔴 −\$53,74/);
+    assert.match(text, /Sumber: &lt;Trader&amp;/);
+    assert.match(text, /WETH\/MEME/);
+    assert.match(text, /Sumber: Bang GE/);
+    assert.match(text, /🔴 −\$250,00/);
+    assert.ok(!text.includes('<pre>'));
+    assert.ok(text.length < 4096);
+    const buttons = markup.inline_keyboard.flat();
+    assert.match(buttons.find((b) => b.callback_data === 'p:1').text, /^🔴/);
+    assert.match(buttons.find((b) => b.callback_data === 'p:2').text, /^⚪️/);
+    assert.match(buttons.find((b) => b.callback_data === 'p:3').text, /^⚪️/);
+    assert.ok(buttons.some((b) => b.callback_data === 'pl:1:0'));
+    assert.ok(buttons.some((b) => b.callback_data === 'pl:0:1'));
+    await w.bot.handle(cbq('pl:1:1'));
+    const next = lastOut(w.sent).params;
+    assert.ok(next.reply_markup.inline_keyboard.flat().some((b) => b.callback_data === 'p:5'));
+    assert.match(next.text, /#804/);
+    assert.ok(!next.text.includes('#800'));
+    const [last] = await w.bot.posisi(999, 999);
+    assert.match(last, /#812/);
+    w.bot.stop();
+  });
+
   // ---- gerbang chat -------------------------------------------------------
   await t('chat asing tidak dilayani dan tidak bocor apa pun', async () => {
     const w = build();
@@ -802,10 +832,10 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     const teks = lastOut(w.sent).params.text;
     assert.match(teks, /✅ Sehat/);
     assert.match(teks, /💰 Portofolio <b>\$606,50<\/b>/, `nilai = kas + posisi + fee:\n${teks}`);
-    assert.match(teks, /PnL <b>\+\$18,50<\/b>/);
+    assert.match(teks, /PnL <b>🟢 \+\$18,50<\/b>/);
     assert.match(teks, /Kas wallet\s+\$400,00/);
     assert.match(teks, /Posisi terbuka · 1/);
-    assert.match(teks, /USDG\/MEME\s+\$205,00\s+\+\$6,50\s+in/);
+    assert.match(teks, /USDG\/MEME<\/b> · \$205,00\nPnL 🟢 \+\$6,50/);
     assert.match(teks, /Rekam jejak · 1 ditutup/);
     assert.match(teks, /Bang GE\s+1 buka/);
     assert.match(teks, /akan disalin \(simulasi\)/);

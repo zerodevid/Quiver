@@ -11,6 +11,7 @@ import { Button, Spinner } from '@heroui/react';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
 import { breakEven } from '../breakeven';
 import CandleChart from '../components/CandleChart';
+import { useLivePrice, useLiveCandles, LIVE_MS } from '../liveCandles';
 import { usePoll, useResync } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
@@ -38,6 +39,24 @@ const qty = (raw, dec) => (raw == null ? null : Number(raw) / 10 ** (dec ?? 18))
 const fmtQty = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleString(fmtLocale(), { maximumSignificantDigits: v >= 1000 ? 6 : 4 }));
 export const kUsd = (v) => (v == null ? '—' : Math.abs(v) >= 1e6 ? usd(v / 1e6, 2) + 'M' : Math.abs(v) >= 1e4 ? usd(v / 1e3, 1) + 'k' : usd(v));
 
+// GeckoTerminal diminta memakai token spekulatif sebagai dasar harga; kalau ia
+// membalasnya terbalik (atau dasar pool berbeda), lilin dibalik supaya searah
+// dengan harga tick pool. Dicek terhadap harga acuan (ref) kalau ada: arah yang
+// paling dekat menang.
+export function orientCandles(ohlcv, baseToken, ref) {
+  let cs = ohlcv?.candles || [];
+  if (!cs.length) return [];
+  const inv = (c) => ({ t: c.t, o: 1 / c.o, h: 1 / c.l, l: 1 / c.h, c: 1 / c.c, v: c.v });
+  const last = cs[cs.length - 1];
+  let flip = ohlcv.base?.address && baseToken && ohlcv.base.address !== baseToken;
+  if (ref > 0 && last?.c > 0) {
+    const dOk = Math.abs(Math.log(last.c / ref)), dInv = Math.abs(Math.log((1 / last.c) / ref));
+    if (Math.min(dOk, dInv) < 2) flip = dInv < dOk;
+  }
+  if (flip) cs = cs.map(inv);
+  return cs.filter((c) => c.o > 0 && c.h > 0 && c.l > 0 && c.c > 0);
+}
+
 // Grafik lilin + rentang posisi + penanda masuk/keluar. Dipakai juga halaman pool:
 // tanpa posisi (tick_lower null) yang tergambar hanya lilin dan harga kini.
 export function PriceChart({ p, m, tf }) {
@@ -49,25 +68,12 @@ export function PriceChart({ p, m, tf }) {
   const range = hasRange && !full ? { lo: Math.min(a, b), hi: Math.max(a, b) } : null;
   const pEntry = sqrtPrice(p.entrySqrt, p.dec0, p.dec1, p.quoteSide);
   const pExit = sqrtPrice(p.exitSqrt, p.dec0, p.dec1, p.quoteSide);
-  const pNow = p.curSqrt ? sqrtPrice(p.curSqrt, p.dec0, p.dec1, p.quoteSide) : (p.curTick != null ? at(p.curTick) : null);
+  // Posisi yang sudah ditutup dilihat sebagai riwayat: tanpa harga live.
+  const live = useLivePrice(p.pool_ref, p, p.status !== 'closed');
+  const pNow = live?.price ?? (p.curSqrt ? sqrtPrice(p.curSqrt, p.dec0, p.dec1, p.quoteSide) : (p.curTick != null ? at(p.curTick) : null));
 
-  const candles = useMemo(() => {
-    let cs = m?.ohlcv?.candles || [];
-    if (!cs.length) return [];
-    // GeckoTerminal diminta memakai token spekulatif sebagai dasar harga; kalau ia
-    // membalasnya terbalik (atau dasar pool berbeda), lilin dibalik supaya searah
-    // dengan rentang posisi. Dicek terhadap harga kini: arah yang paling dekat menang.
-    const ref = pNow ?? pEntry;
-    const inv = (c) => ({ t: c.t, o: 1 / c.o, h: 1 / c.l, l: 1 / c.h, c: 1 / c.c, v: c.v });
-    const last = cs[cs.length - 1];
-    let flip = m.ohlcv.base?.address && p.baseToken && m.ohlcv.base.address !== p.baseToken;
-    if (ref > 0 && last?.c > 0) {
-      const dOk = Math.abs(Math.log(last.c / ref)), dInv = Math.abs(Math.log((1 / last.c) / ref));
-      if (Math.min(dOk, dInv) < 2) flip = dInv < dOk;
-    }
-    if (flip) cs = cs.map(inv);
-    return cs.filter((c) => c.o > 0 && c.h > 0 && c.l > 0 && c.c > 0);
-  }, [m, p.baseToken, pNow, pEntry]);
+  const oriented = useMemo(() => orientCandles(m?.ohlcv, p.baseToken, pNow ?? pEntry), [m, p.baseToken, pNow, pEntry]);
+  const candles = useLiveCandles(oriented, SECS[tf], live, `${p.pool_ref}:${tf}`);
 
   if (m?.ohlcv?.error) return <Empty title="Grafik harga tidak tersedia" sub={m.ohlcv.error} />;
   if (!candles.length) return <Empty title="Belum ada lilin harga" sub="GeckoTerminal belum punya riwayat harga untuk pool ini." />;
@@ -90,9 +96,23 @@ export function PriceChart({ p, m, tf }) {
         {pEntry != null && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-px w-4 border-t border-dashed border-muted" />{t('harga masuk')}</span>}
         {bep?.price > 0 && <span className="inline-flex items-center gap-1.5 text-warning"><span aria-hidden className="inline-block w-4 border-t-2 border-dashed border-warning" />BEP {price(bep.price)} {quote}</span>}
         {full && <span>{t('Seluruh rentang')}</span>}
-        <span className="ml-auto">{t('lilin {tf} · GeckoTerminal', { tf })}</span>
+        <span className="ml-auto inline-flex items-center gap-3">
+          {live && <LiveBadge />}
+          {t('lilin {tf} · GeckoTerminal', { tf })}
+        </span>
       </div>
     </div>
+  );
+}
+
+// Penanda bahwa lilin terakhir digerakkan harga chain, bukan menunggu GeckoTerminal.
+export function LiveBadge() {
+  const { t } = useI18n();
+  return (
+    <span className="inline-flex items-center gap-1.5 text-success" title={t('Harga dibaca langsung dari pool tiap {s} detik', { s: LIVE_MS / 1000 })}>
+      <span className="relative flex size-1.5"><span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-60" /><span className="relative inline-flex size-1.5 rounded-full bg-success" /></span>
+      {t('live')}
+    </span>
   );
 }
 

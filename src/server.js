@@ -850,6 +850,19 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       ]);
       return { pair, ohlcv, tfs: Object.keys(TF) };
     },
+    // Harga pool langsung dari chain (slot0) untuk grafik realtime. Lilin GeckoTerminal
+    // tertinggal hingga semenit; harga ini yang menggerakkan lilin terakhir di UI.
+    // Disimpan 2,5 detik per pool: banyak tab yang membuka pool sama berbagi satu
+    // eth_call, dan RPC yang dipakai bot tidak ikut terkuras.
+    'GET /api/price': async (req, url) => {
+      const ref = String(url.searchParams.get('pool') || '').toLowerCase();
+      if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(ref)) return { error: 'pool tidak valid' };
+      return market.memo(`slot0:${ref}`, 2500, async () => {
+        const slot = ref.length === 66 ? (await chain.slot0V4Many([ref]))[0] : await chain.slot0V3(ref);
+        if (slot?.sqrtPriceX96 == null || BigInt(slot.sqrtPriceX96) === 0n) return { error: 'harga pool tidak terbaca' };
+        return { pool: ref, tick: slot.tick ?? null, sqrt: slot.sqrtPriceX96.toString(), ts: Date.now() };
+      });
+    },
     // Detail satu token: metadata, semua pool-nya (DexScreener), posisi bot yang
     // memakainya, posisi wallet yang pernah diriset, dan gerakan target di token itu.
     'GET /api/token': async (req, url) => {

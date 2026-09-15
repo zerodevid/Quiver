@@ -55,6 +55,7 @@ export default function PoolDetail({ param }) {
   // Grafik: harga pool + (kalau ada) rentang dan titik masuk posisi yang dipilih.
   const chartP = {
     ...(focus || {}),
+    pool_ref: ref,
     dec0: pool.dec0, dec1: pool.dec1, quoteSide: pool.quoteSide, symbol0: pool.symbol0, symbol1: pool.symbol1,
     baseToken: pool.baseToken, curSqrt: pool.curSqrt, curTick: pool.curTick,
     tick_lower: focus?.tick_lower ?? null, tick_upper: focus?.tick_upper ?? null,

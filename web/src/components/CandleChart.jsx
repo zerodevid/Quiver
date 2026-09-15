@@ -93,7 +93,10 @@ function domainOf(cs, o) {
   let lo = Math.min(q(cs.map((c) => c.l), 0.03), ...cs.map((c) => Math.min(c.o, c.c)));
   let hi = Math.max(q(cs.map((c) => c.h), 0.97), ...cs.map((c) => Math.max(c.o, c.c)));
   for (const p of [o.entryP, o.exitP, o.nowP, o.bep]) if (p > 0) { lo = Math.min(lo, p); hi = Math.max(hi, p); }
-  if (o.range && o.range.hi / o.range.lo < 3.5) { lo = Math.min(lo, o.range.lo); hi = Math.max(hi, o.range.hi); }
+  if (o.range && (o.pickRange || o.range.hi / o.range.lo < 3.5)) { lo = Math.min(lo, o.range.lo); hi = Math.max(hi, o.range.hi); }
+  // Saat memilih rentang, batasnya tidak boleh menempel di tepi: label sumbunya
+  // tertutup legenda OHLC dan tombol skala di pojok atas.
+  if (o.pickRange) { const f = Math.max(1.03, (hi / lo) ** 0.12); lo /= f; hi *= f; }
   return { lo, hi };
 }
 
@@ -103,9 +106,11 @@ function domainOf(cs, o) {
  * quote   : simbol aset kuotasi (legenda)
  * range   : { lo, hi } harga rentang posisi, atau null
  * entry   : { t(ms), p }  exit : { t(ms), p }  now : harga kini — semuanya opsional
+ * pickRange : rentang sedang dipilih (LP manual) — kedua batasnya selalu masuk
+ *             sumbu, selebar apa pun, dan diberi label harga di sumbu
  * height  : tinggi px
  */
-export default function CandleChart({ candles, tf, quote, range = null, entry = null, exit = null, now = null, bep = null, height = 384 }) {
+export default function CandleChart({ candles, tf, quote, range = null, entry = null, exit = null, now = null, bep = null, pickRange = false, height = 384 }) {
   const box = useRef(null);
   const ref = useRef(null);            // { chart, series, vol, overlay, markers }
   const [hover, setHover] = useState(null);
@@ -143,7 +148,7 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
   };
   const entryT = snap(entry?.t), exitT = snap(exit?.t);
   const entryBefore = !!(entry?.t && data.length && data[0].time * 1000 > entry.t);
-  const dom = useMemo(() => domainOf(data.map((d) => ({ o: d.open, h: d.high, l: d.low, c: d.close })), { entryP: entry?.p, exitP: exit?.p, nowP: now, bep, range }), [data, entry?.p, exit?.p, now, bep, range]);
+  const dom = useMemo(() => domainOf(data.map((d) => ({ o: d.open, h: d.high, l: d.low, c: d.close })), { entryP: entry?.p, exitP: exit?.p, nowP: now, bep, range, pickRange }), [data, entry?.p, exit?.p, now, bep, range, pickRange]);
   // Log kalau rentang harga yang tampil lebih dari 4× — pergerakan persen jadi sebanding.
   const log = scale ? scale === 'log' : !!(dom && dom.hi / dom.lo > 4);
 
@@ -159,7 +164,7 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
       timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 3, minBarSpacing: 2, shiftVisibleRangeOnNewBar: false,
         tickMarkFormatter: (ts, type) => {
           const d = new Date(ts * 1000);
-          return type <= 1 ? d.toLocaleDateString(fmtLocale(), { day: 'numeric', month: 'short' })
+          return type <= 2 ? d.toLocaleDateString(fmtLocale(), { day: 'numeric', month: 'short' })
             : d.toLocaleTimeString(fmtLocale(), { hour: '2-digit', minute: '2-digit' });
         } },
       localization: { locale: fmtLocale(), priceFormatter: (p) => fmtPrice(p),
@@ -219,6 +224,10 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
     line(entry?.p, pal.muted, t('masuk'));
     line(exit?.p, pal.warning, t('keluar'));
     line(bep, pal.warning, 'BEP');
+    if (pickRange && range) {
+      line(range.hi, pal.accent, t('batas atas'));
+      line(range.lo, pal.accent, t('batas bawah'));
+    }
     // Harga pool kini hanya digaris kalau berbeda dari penutupan lilin terakhir —
     // kalau sama, label nilai terakhir seri sudah menunjukkannya; dua label kembar
     // di sumbu (merah 0,0106 dan putih 0,0106) cuma berisik.
@@ -234,7 +243,7 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
       r.chart.timeScale().applyOptions({ rightOffset: 3 });
       fittedTf.current = tf;
     }
-  }, [data, tf, dom, entry?.p, exit?.p, entryT, exitT, entryBefore, now, bep, range, pal]);
+  }, [data, tf, dom, entry?.p, exit?.p, entryT, exitT, entryBefore, now, bep, range, pickRange, pal]);
 
   const last = data[data.length - 1];
   const h = hover || (last && { ...last, v: last.value });
