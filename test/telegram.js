@@ -934,8 +934,8 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     const w = build();
     await w.bot.handle(cbq('f'));
     const teks = lastOut(w.sent).params.text;
-    assert.match(teks, /dicoba 2×/, `teks antrean salah:\n${teks}`);
-    assert.match(teks, /sejak \d+ (dtk|mnt) lalu/, `waktu mulai tersangkut harus tampil:\n${teks}`);
+    assert.match(teks, /dicoba\s+2×/, `teks antrean salah:\n${teks}`);
+    assert.match(teks, /sejak\s+\d+ (dtk|mnt) lalu/, `waktu mulai tersangkut harus tampil:\n${teks}`);
     assert.match(teks, /rugi rute rugi 18%|rute rugi 18%/);
   });
 
@@ -1726,6 +1726,29 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.match(nyata(baris[0]), /^a&b +1$/, nyata(baris[0]));
     assert.match(nyata(baris[1]), /^panjang +22,50$/, nyata(baris[1]));
     assert.strictEqual(kolom([]), null, 'tabel kosong harus null supaya bisa disaring');
+  });
+
+  await t('tabel membungkus teks panjang tanpa menghilangkan data atau merusak HTML', async () => {
+    const { kolom } = require('../src/telegram');
+    const label = 'Label panjang untuk nilai yang perlu dibaca seluruhnya';
+    const value = '0x' + 'abcdef'.repeat(12);
+    const html = kolom([[label, value], ['<token&>', '1234567890.1234567890']], 'lr');
+    const lines = html.replace(/<\/?pre>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').split('\n');
+    assert.ok(lines.every((line) => Array.from(line).length <= 40));
+    assert.ok(html.includes('&lt;token&amp;&gt;'));
+    // Two 19-character columns separated by two spaces; reconstruct wrapped data.
+    assert.strictEqual(lines.slice(0, 4).map((line) => line.slice(21).trim()).join(''), value);
+  });
+
+  await t('halaman data memakai tabel dan navigasinya tetap tersedia', async () => {
+    const w = build();
+    for (const route of ['t', 'a:0', 'x', 's', 'sr', 'sf:gas', 'sn', 'sc', 'f', 'wl', 'r:0']) {
+      await w.bot.handle(cbq(route));
+      const output = lastOut(w.sent).params;
+      assert.match(output.text, /<pre>/, route);
+      assert.ok(output.reply_markup.inline_keyboard.length, route);
+    }
+    w.bot.stop();
   });
 
   await t('harga dari tick identik untuk kedua susunan pool', async () => {

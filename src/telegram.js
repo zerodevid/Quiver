@@ -148,12 +148,33 @@ function kolom(rows, align = '') {
   const isi = rows.filter((r) => r.some((c) => c != null && c !== ''));
   if (!isi.length) return null;
   const n = Math.max(...isi.map((r) => r.length));
-  const w = [];
-  for (let i = 0; i < n; i++) w[i] = Math.max(...isi.map((r) => String(r[i] ?? '').length));
-  const baris = isi.map((r) => Array.from({ length: n }, (_, i) => {
-    const c = String(r[i] ?? '');
-    return align[i] === 'r' ? c.padStart(w[i]) : c.padEnd(w[i]);
-  }).join('  ').trimEnd());
+  const cells = isi.map((r) => Array.from({ length: n }, (_, i) => String(r[i] ?? '').replace(/\s+/g, ' ').trim()));
+  const length = (v) => Array.from(v).length;
+  const w = Array.from({ length: n }, (_, i) => Math.max(...cells.map((r) => length(r[i]))));
+  // Wrap long labels and values instead of widening the whole Telegram message.
+  while (w.reduce((a, b) => a + b, 0) + (n - 1) * 2 > 40) {
+    const i = w.indexOf(Math.max(...w));
+    if (w[i] <= 6) break;
+    w[i]--;
+  }
+  const wrap = (value, width) => {
+    const chars = Array.from(value), lines = [];
+    while (chars.length > width) {
+      let at = chars.slice(0, width + 1).lastIndexOf(' ');
+      if (at <= 0) at = width;
+      lines.push(chars.splice(0, at).join(''));
+      if (chars[0] === ' ') chars.shift();
+    }
+    lines.push(chars.join(''));
+    return lines;
+  };
+  const baris = cells.flatMap((r) => {
+    const wrapped = r.map((c, i) => wrap(c, w[i] || 1));
+    return Array.from({ length: Math.max(...wrapped.map((c) => c.length)) }, (_, line) => wrapped.map((c, i) => {
+      const value = c[line] || '', padding = ' '.repeat(w[i] - length(value));
+      return align[i] === 'r' ? padding + value : value + padding;
+    }).join('  ').trimEnd());
+  });
   return `<pre>${baris.map(esc).join('\n')}</pre>`;
 }
 const tabel = (rows) => kolom(rows.filter(([, v]) => v != null && v !== ''));
@@ -1637,10 +1658,12 @@ class Telegram {
       tr("Fee ditambahkan ke posisi v4 yang sama. Hanya fee yang dipakai; gas dibayar dari wallet. Sisa token yang tidak cocok dengan rasio LP masuk ke wallet."),
       '',
       `Status: <b>${c.enabled ? 'ON' : 'OFF'}</b>`,
-      tr("Minimum ditambahkan: {0}", [usd(c.minUsd)]),
-      tr("Periksa setiap {0} menit", [c.intervalMinutes]),
-      tr("Total ditambahkan (perkiraan): {0}", [usd(c.compoundedUsd)]),
-      c.lastCheck ? tr("Pemeriksaan terakhir: {0}", [esc(ago(c.lastCheck))]) : null,
+      angka([
+        [tr('Minimum'), usd(c.minUsd)],
+        [tr('Interval'), tr('{0} menit', [c.intervalMinutes])],
+        [tr('Total ditambahkan'), usd(c.compoundedUsd)],
+        [tr('Terakhir'), c.lastCheck ? ago(c.lastCheck) : '—'],
+      ]),
       c.lastNote ? esc(note(tr(c.lastNote))) : null,
       '',
       tr("Berjalan saat LIVE dan bot tidak dijeda. Slippage serta batas posisi mengikuti Aturan. Mengaktifkan mengizinkan transaksi otomatis."),
@@ -1672,8 +1695,14 @@ class Telegram {
     for (const t of d.targets) {
       L.push('');
       L.push(`${t.enabled ? '🟢' : '⚪️'} <b>${esc(t.label || shortA(t.address))}</b>`);
-      L.push(tr("  <code>{0}</code> · {1} aksi · {2} disalin", [esc(shortA(t.address)), num(t.actions), num(t.copied)]));
-      L.push(tr("  posisi kita: {0} ({1}){2}", [t.openPositions, usd(t.openCostQuote), t.lastActionTs ? tr(" · aksi terakhir {0}", [ago(t.lastActionTs)]) : '']));
+      L.push(tabel([
+        ['Wallet', shortA(t.address)],
+        [tr('aksi terpantau'), num(t.actions)],
+        [tr('disalin'), num(t.copied)],
+        [tr('posisi kita'), num(t.openPositions)],
+        [tr('modal posisi'), usd(t.openCostQuote)],
+        [tr('Terakhir'), t.lastActionTs ? ago(t.lastActionTs) : '—'],
+      ]));
     }
     if (!d.targets.length) L.push(tr("\nBelum ada target. Tambahkan satu wallet untuk mulai mengikuti."));
     const rows = d.targets.map((t) => [
@@ -1712,7 +1741,7 @@ class Telegram {
       L.push(angka([
         [tr("posisi terbaca"), s.positionsN != null ? num(s.positionsN) : null],
         [tr("menang"), s.winRatePct != null ? `${nf(s.winRatePct, 0)}%` : null],
-        ['PnL', s.pnlUsd != null ? sgn(s.pnlUsd) : null],
+        ['PnL', s.pnlUsd != null ? pnlText(s.pnlUsd) : null],
       ]));
     }
     return [L.filter((x) => x != null).join('\n'), kb([
@@ -1733,10 +1762,14 @@ class Telegram {
     for (const a of rows) {
       const pair = a.symbol0 && a.symbol1 ? `${a.symbol0}/${a.symbol1}` : (a.pool_ref ? shortA(a.pool_ref) : '—');
       L.push('');
-      L.push(`${icon[a.verdict] || '•'} <b>${esc(a.kind)}</b> ${esc(pair)} · ${esc(a.targetLabel || shortA(a.target))}`);
-      L.push(`  ${a.value_quote ? `${nf(a.value_quote, 2)} ${esc(a.quote_symbol || '')} · ` : ''}${ago(a.ts)}`);
-      if (a.reason) L.push(`  <i>${esc(note(a.reason))}</i>`);
-      if (a.decision_tx) L.push(tr("  tx <code>{0}</code>", [esc(shortH(a.decision_tx))]));
+      L.push(`${icon[a.verdict] || '•'} <b>${esc(a.kind)}</b> ${esc(pair)}`);
+      L.push(tabel([
+        [tr('Sumber'), a.targetLabel || shortA(a.target)],
+        [tr('nilai'), a.value_quote != null ? `${nf(a.value_quote, 2)} ${a.quote_symbol || ''}` : '—'],
+        [tr('Waktu'), ago(a.ts)],
+        ['Tx', a.decision_tx ? shortH(a.decision_tx) : null],
+      ]));
+      if (a.reason) L.push(`<i>${esc(note(a.reason))}</i>`);
     }
     if (!rows.length) L.push(tr("\nBelum ada aksi terpantau."));
     const nav = [];
@@ -1749,7 +1782,7 @@ class Telegram {
     const d = await this.api('GET', '/api/logs');
     const icon = { error: '⛔', warn: '⚠️', info: 'ℹ️' };
     const L = [tr("<b>📝 Catatan terakhir</b>"), ''];
-    for (const r of d.logs.slice(0, 25)) L.push(`${icon[r.level] || '•'} <i>${esc(ago(r.ts))}</i> ${esc(note(r.msg))}`);
+    for (const r of d.logs.slice(0, 25)) L.push(`${icon[r.level] || '•'} <b>${esc(ago(r.ts))}</b>\n${esc(note(r.msg))}\n`);
     if (!d.logs.length) L.push(tr("(kosong)"));
     return [L.join('\n'), kb([[btn(tr("🔄 Segarkan"), 'l'), BACK_HOME]])];
   }
@@ -1759,7 +1792,10 @@ class Telegram {
     const L = [tr("<b>🧾 Transaksi terakhir</b>"), ''];
     for (const t of d.txs.slice(0, 20)) {
       L.push(`${t.status === 'ok' ? '✅' : t.status === 'error' ? '⛔' : '⏳'} <b>${esc(t.kind)}</b> · ${esc(ago(t.ts))}`);
-      L.push(`  <code>${esc(shortH(t.hash))}</code>${t.gas_quote ? ` · gas ${usd(t.gas_quote, 4)}` : ''}`);
+      L.push(tabel([
+        ['Tx', shortH(t.hash)],
+        ['Gas', t.gas_quote != null ? usd(t.gas_quote, 4) : null],
+      ]));
       if (t.error) L.push(`  <i>${esc(String(t.error).slice(0, 120))}</i>`);
     }
     if (!d.txs.length) L.push(tr("(belum ada)"));
@@ -1791,7 +1827,7 @@ class Telegram {
     const grp = localizeSchema(RULE_GROUPS)[gi];
     const cur = await this.readRules(chatId);
     const L = [`<b>${esc(grp.title)}</b> — ${esc(cur.scope === 'g' ? tr("semua target") : cur.label)}`, ''];
-    const rows = [];
+    const rows = [], values = [];
     grp.fields.forEach((spec, fi) => {
       const v = this.resolvedRule(cur.resolved, grp.g, spec.k);
       const own = dget(cur.raw, grp.g, spec.k) !== undefined;
@@ -1800,12 +1836,14 @@ class Telegram {
       // tetap bisa diubah — cuma diberi tanda, karena tombol yang hilang-muncul
       // sendiri lebih membingungkan daripada satu baris keterangan.
       const inert = spec.when && !spec.when(cur.resolved);
-      L.push(`${own && cur.scope !== 'g' ? '• ' : ''}<b>${esc(spec.label)}</b>: ${esc(showVal(spec, v))}${inert ? tr(" <i>· tidak dipakai di mode ini</i>") : ''}`);
+      values.push([`${own && cur.scope !== 'g' ? '• ' : ''}${spec.label}`, `${showVal(spec, v)}${inert ? ' *' : ''}`]);
       if (spec.type === 'bool') rows.push([btn(`${v ? '✅' : '❌'} ${spec.label}`.slice(0, 40), `rb:${gi}:${fi}`)]);
       else if (spec.type === 'pilih') rows.push([btn(`✏️ ${spec.label}`.slice(0, 40), `rp:${gi}:${fi}`)]);
       else rows.push([btn(`✏️ ${spec.label}`.slice(0, 40), `re:${gi}:${fi}`)]);
       if (own && cur.scope !== 'g') rows[rows.length - 1].push(btn('↺', `rx:${gi}:${fi}`));
     });
+    L.push(tabel(values));
+    if (grp.fields.some((spec) => spec.when && !spec.when(cur.resolved))) L.push(tr('* Tidak dipakai di mode ini.'));
     return [L.join('\n'), kb([...rows, [btn(tr("↩︎ Aturan"), 'r'), BACK_HOME]])];
   }
 
@@ -1817,10 +1855,15 @@ class Telegram {
       '',
       `Mode: <b>${st.mode.dry_run ? tr("🧪 SIMULASI") : '🟢 LIVE'}</b>${st.mode.paused ? tr(" · ⏸ dijeda") : ''}`,
       `Wallet: <code>${esc(st.wallet.address || tr('(belum ada)'))}</code>`,
-      `RPC: ${st.rpc.length} endpoint`,
-      tr("Gas: pengali {0} · cadangan {1} ETH", [nf(st.gas.price_multiplier, 2), nf(st.gas.reserve_eth, 4)]),
-      tr("Mesin: pindai tiap {0} ms · sinkron {1} dtk", [num(st.loop.poll_ms), num(st.loop.sync_seconds)]),
-      tr("Notifikasi: ntfy {0} · Telegram {1} chat", [st.notify.ntfy_topic ? `<code>${esc(st.notify.ntfy_topic)}</code>` : tr("mati"), this.chats().length]),
+      tabel([
+        ['RPC', `${st.rpc.length} endpoint`],
+        [tr('Pengali gas'), nf(st.gas.price_multiplier, 2)],
+        [tr('Cadangan ETH'), nf(st.gas.reserve_eth, 4)],
+        [tr('Interval pindai'), `${num(st.loop.poll_ms)} ms`],
+        [tr('Sinkronisasi'), `${num(st.loop.sync_seconds)} s`],
+        ['ntfy', st.notify.ntfy_topic || tr('mati')],
+        ['Telegram', `${this.chats().length} chat`],
+      ]),
     ];
     return [L.join('\n'), kb([
       [btn(st.mode.dry_run ? tr("🟢 Nyalakan LIVE") : tr("🧪 Kembali ke simulasi"), 'sl')],
@@ -1873,7 +1916,9 @@ class Telegram {
     st.rpc.forEach((e) => {
       L.push(`<b>${e.id + 1}. ${esc(e.host || hostOf(e.url))}</b>${e.secret ? ' 🔐' : ''}${e.cooling ? tr(" ❄️ istirahat") : ''}`);
       const tag = [e.no_logs ? tr("tanpa getLogs") : null, e.max_log_blocks ? tr("getLogs ≤ {0} blok", [num(e.max_log_blocks)]) : null, e.archive ? tr("arsip") : null].filter(Boolean);
-      L.push(tr("   {0} panggilan · {1} galat · {2} ms{3}", [num(e.calls), num(e.errors), num(e.lastMs), tag.length ? ` · ${esc(tag.join(', '))}` : '']));
+      L.push(angka([[tr('Panggilan'), num(e.calls)], [tr('galat'), num(e.errors)], ['Latency', `${num(e.lastMs)} ms`]]));
+      if (tag.length) L.push(esc(tag.join(' · ')));
+      L.push('');
     });
     const rows = st.rpc.map((e) => [btn(tr("🔬 Uji {0}", [e.host]).slice(0, 30), `sr:${e.id}`), btn('🗑', `srd:${e.id}`)]);
     return [L.join('\n'), kb([...rows, [btn(tr("➕ Tambah endpoint"), 'sra')], [btn(tr("↩︎ Pengaturan"), 's'), BACK_HOME]])];
@@ -1904,8 +1949,8 @@ class Telegram {
     const cur = f.pick(st);
     const L = [`<b>${esc(f.title)}</b>`, ''];
     const rows = [];
+    L.push(tabel(f.fields.map((spec) => [spec.label, showVal(spec, cur[spec.k])])));
     f.fields.forEach((spec, i) => {
-      L.push(`<b>${esc(spec.label)}</b>: ${esc(showVal(spec, cur[spec.k]))}`);
       rows.push([btn(spec.type === 'bool' ? `${cur[spec.k] ? '✅' : '❌'} ${spec.label}`.slice(0, 40) : `✏️ ${spec.label}`.slice(0, 40),
         spec.type === 'bool' ? `sfb:${name}:${i}` : `sfe:${name}:${i}`)]);
     });
@@ -1921,7 +1966,7 @@ class Telegram {
       `ntfy: ${st.notify.ntfy_topic ? `<code>${esc(st.notify.ntfy_topic)}</code>` : tr("(mati)")}`,
       '',
       tr("<b>Kirim ke Telegram</b>"),
-      ...localizeSchema(NOTIF).map(([k, lbl]) => `${n[k] ? '✅' : '❌'} ${esc(lbl)}`),
+      tabel(localizeSchema(NOTIF).map(([k, lbl]) => [lbl, n[k] ? tr('ya') : tr('tidak')])),
     ];
     return [L.join('\n'), kb([
       ...localizeSchema(NOTIF).map(([k, lbl]) => [btn(`${n[k] ? '✅' : '❌'} ${lbl}`.slice(0, 40), `snb:${k}`)]),
@@ -1933,7 +1978,7 @@ class Telegram {
   async chatsScreen() {
     const ids = this.chats();
     const L = [tr("<b>💬 Chat Telegram yang berwenang</b>"), ''];
-    for (const c of ids) L.push(`• <code>${esc(c)}</code>`);
+    if (ids.length) L.push(kolom([['#', 'Chat ID'], ...ids.map((c, i) => [i + 1, c])]));
     if (!ids.length) L.push(tr("(kosong)"));
     L.push('');
     L.push(tr("Chat di daftar ini bisa melakukan <b>semua</b> yang dasbor bisa, termasuk menyalakan LIVE dan menutup posisi. Lepaskan chat yang tidak kamu kenali."));
@@ -1955,7 +2000,11 @@ class Telegram {
     if (!d.leftovers.length) L.push(tr("Kosong — tidak ada sisa yang menunggu dijual."));
     for (const it of d.leftovers) {
       L.push(tr("• posisi #{0} · <code>{1}</code>", [it.posId, esc(it.symbol || shortA(it.token))]));
-      L.push(tr("  dicoba {0}×{1}{2}", [num(it.tries || 0), it.since ? tr(" sejak {0}", [esc(ago(it.since))]) : '', it.lastLossBps != null ? tr(" · rugi kini {0}%", [nf(it.lastLossBps / 100, 1)]) : '']));
+      L.push(tabel([
+        [tr('dicoba'), `${num(it.tries || 0)}×`],
+        [tr('sejak'), it.since ? ago(it.since) : '—'],
+        [tr('rugi kini'), it.lastLossBps != null ? `${nf(it.lastLossBps / 100, 1)}%` : null],
+      ]));
       if (it.why) L.push(`  <i>${esc(note(it.why))}</i>`);
     }
     L.push('');
@@ -2422,24 +2471,22 @@ class Telegram {
         [tr("posisi terbuka"), w.open.length],
         [tr("posisi ditutup"), w.closed.length],
         [tr("menang"), s.winRatePct != null ? `${nf(s.winRatePct, 0)}%` : null],
-        ['PnL', s.pnlUsd != null ? sgn(s.pnlUsd) : null],
+        ['PnL', s.pnlUsd != null ? pnlText(s.pnlUsd) : null],
         [tr("fee dikumpulkan"), s.feesUsd != null ? sgn(s.feesUsd) : null],
         [tr("modal diputar"), s.investedUsd != null ? sgn(s.investedUsd) : null],
       ]),
     ];
     if (w.open.length) {
       L.push(tr("<b>Posisi terbuka</b>"));
-      L.push(tabel(w.open.slice(0, 8).map((p) => [
-        `${p.symbol0}/${p.symbol1}`,
-        `${usd(p.invested_q)} · fee ${usd(p.feeShown)} · ${dur((p.ageHours || 0) * 3600)}`,
-      ])));
+      L.push(kolom([['Pair', tr('modal posisi'), 'Fee'], ...w.open.slice(0, 8).map((p) => [
+        compact(pairText(p), 13), usd(p.invested_q), usd(p.feeShown),
+      ])], 'lrr'));
     }
     if (w.closed.length) {
       L.push(tr("<b>Terakhir ditutup</b>"));
-      L.push(tabel(w.closed.slice(0, 8).map((p) => [
-        `${p.symbol0}/${p.symbol1}`,
-        `${sgn(p.pnl_q)} ${pct(p.pnlPct)} · ${ago(p.closed_ts)}`,
-      ])));
+      L.push(kolom([['Pair', tr('Waktu'), 'PnL'], ...w.closed.slice(0, 8).map((p) => [
+        compact(pairText(p), 13), ago(p.closed_ts), pnlText(p.pnl_q),
+      ])]));
     }
     return [L.filter((x) => x != null).join('\n'), kb([
       [btn(tr("🔄 Perbarui riset"), `tr:${addr}`)],
@@ -2451,9 +2498,10 @@ class Telegram {
   async walletList() {
     const d = await this.api('GET', '/api/wallets');
     const L = [tr("<b>📇 Wallet yang pernah diriset</b>"), ''];
-    for (const w of d.wallets.slice(0, 20)) {
-      L.push(tr("• <code>{0}</code> {1} — {2} posisi · {3}", [esc(shortA(w.address)), esc(w.label || ''), w.positions_n || 0, ago(w.last_scan_ts)]));
-    }
+    if (d.wallets.length) L.push(kolom([
+      ['Wallet', tr('posisi'), tr('Terakhir')],
+      ...d.wallets.slice(0, 20).map((w) => [compact(w.label || shortA(w.address), 14), w.positions_n || 0, ago(w.last_scan_ts)]),
+    ]));
     if (!d.wallets.length) L.push(tr("(belum ada)"));
     return [L.join('\n'), kb([
       ...d.wallets.slice(0, 12).map((w) => [btn(`${(w.label || shortA(w.address)).slice(0, 28)}`, `wr:${w.address}`)]),

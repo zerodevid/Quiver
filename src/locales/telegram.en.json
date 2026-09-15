@@ -690,5 +690,19 @@
   "← Posisi": "← Positions",
   "Posisi →": "Positions →",
   "<i>Ketuk posisi untuk detail dan tindakan.</i>": "<i>Tap a position for details and actions.</i>",
-  "Sumber": "Source"
+  "Sumber": "Source",
+  "Terakhir": "Last",
+  "Waktu": "Time",
+  "Pengali gas": "Gas multiplier",
+  "Cadangan ETH": "ETH reserve",
+  "Interval pindai": "Scan interval",
+  "Sinkronisasi": "Sync interval",
+  "Panggilan": "Calls",
+  "* Tidak dipakai di mode ini.": "* Unused in this mode.",
+  "dicoba": "Attempts",
+  "sejak": "Since",
+  "rugi kini": "Current loss",
+  "Minimum": "Minimum",
+  "Interval": "Interval",
+  "Total ditambahkan": "Total added"
 }
