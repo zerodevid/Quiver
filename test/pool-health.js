@@ -93,5 +93,13 @@ const token = '0x' + 'ab'.repeat(20), owner = '0x' + 'cd'.repeat(20), poolAddr =
     assert.equal((await alchemyHolders(second, persistedCfg, token)).holderCount, 2);
     assert.ok(!fs.readFileSync(path.join(dir, 'holders', token + '.json'), 'utf8').includes('private-key'));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  let fallbackUsed = false;
+  const failover = await scanAlchemy(async (url, options) => {
+    if (url === 'first') return { ok: false, status: 429 };
+    fallbackUsed = true;
+    return fakeFetch(url, options);
+  }, [{ url: 'first' }, { url: 'second' }], token);
+  assert.ok(fallbackUsed);
+  assert.equal(failover.holderCount, 2);
   console.log('Pool health and holder scan checks passed');
 })().catch((e) => { console.error(e); process.exitCode = 1; });

@@ -55,8 +55,8 @@ module.exports = { holders, normalizeHolders };
 const jobs = new WeakMap();
 function alchemyHolders(market, cfg, address) {
   if (!validAddress(address) || /^0x0{40}$/i.test(address)) return Promise.resolve({ error: 'invalid_token' });
-  const endpoint = cfg.chain?.endpoints?.find((e) => { try { return new URL(e.url).hostname === 'robinhood-mainnet.g.alchemy.com'; } catch { return false; } });
-  if (!endpoint) return holders(market, address);
+  const endpoints = cfg.chain?.endpoints?.filter((e) => { try { return new URL(e.url).hostname === 'robinhood-mainnet.g.alchemy.com'; } catch { return false; } });
+  if (!endpoints?.length) return holders(market, address);
   let state = jobs.get(market);
   if (!state) { state = { running: false, cache: new Map(), histories: new Map() }; jobs.set(market, state); }
   const token = address.toLowerCase();
@@ -77,7 +77,7 @@ function alchemyHolders(market, cfg, address) {
   state.running = true;
   const pending = { token, error: 'scanning', source: 'Alchemy' };
   state.cache.set(token, { until: Date.now() + 660000, value: pending });
-  scanAlchemy(market.fetch, endpoint, token, (progress) => { pending.progress = progress; }, state.histories.get(token) || state.histories.set(token, {}).get(token)).catch(() => ({ token, error: 'unavailable', source: 'Alchemy' })).then((value) => {
+  scanAlchemy(market.fetch, endpoints, token, (progress) => { pending.progress = progress; }, state.histories.get(token) || state.histories.set(token, {}).get(token)).catch(() => ({ token, error: 'unavailable', source: 'Alchemy' })).then((value) => {
     state.cache.set(token, { until: Date.now() + (value.error === 'scan_limit' ? 6 * 3600000 : value.error ? 5 * 60000 : 15 * 60000), value });
     if (cacheFile && !value.error) {
       try {
@@ -97,11 +97,13 @@ function alchemyHolders(market, cfg, address) {
 async function scanAlchemy(fetchImpl, endpoint, token, progress = () => {}, history = {}) {
   const snapshotAt = history.discovery?.snapshotAt || Date.now();
   const deadline = Date.now() + 600000;
-  let id = 0;
+  let id = 0, activeEndpoint = 0;
+  const endpoints = Array.isArray(endpoint) ? endpoint : [endpoint];
   const once = async (calls) => {
     if (Date.now() >= deadline) throw new Error('scan_timeout');
     const body = calls.map(([method, params]) => ({ jsonrpc: '2.0', id: ++id, method, params }));
-    const response = await fetchImpl(endpoint.url, { method: 'POST', headers: { 'content-type': 'application/json', ...endpoint.headers }, body: JSON.stringify(body.length === 1 ? body[0] : body), signal: AbortSignal.timeout(Math.min(12000, deadline - Date.now())) });
+    const selected = endpoints[activeEndpoint];
+    const response = await fetchImpl(selected.url, { method: 'POST', headers: { 'content-type': 'application/json', ...selected.headers }, body: JSON.stringify(body.length === 1 ? body[0] : body), signal: AbortSignal.timeout(Math.min(12000, deadline - Date.now())) });
     if (!response.ok) throw new Error('rpc_unavailable');
     const json = await response.json(), results = Array.isArray(json) ? json : [json];
     return body.map((call) => { const r = results.find((x) => x.id === call.id); if (!r || r.error || r.result == null) throw new Error('rpc_unavailable'); return r.result; });
@@ -109,7 +111,7 @@ async function scanAlchemy(fetchImpl, endpoint, token, progress = () => {}, hist
   const request = async (calls) => {
     for (let attempt = 0; ; attempt++) {
       try { return await once(calls); }
-      catch (e) { if (attempt >= 3 || Date.now() >= deadline) throw e; await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt)); }
+      catch (e) { if (attempt >= 3 || Date.now() >= deadline) throw e; activeEndpoint = (activeEndpoint + 1) % endpoints.length; await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt)); }
     }
   };
   const [latestBlock] = await request([['eth_blockNumber', []]]);
