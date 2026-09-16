@@ -4,6 +4,7 @@
 // Memakai ulang grafik dan panel pasar dari halaman detail posisi. Kalau bot pernah
 // membuka posisi di pool ini, posisi itu digambar di grafik (rentang + titik masuk)
 // dan tabelnya menunjukkan PnL tiap posisi serta totalnya.
+import PoolHealth from '../components/PoolHealth';
 import { useEffect, useState } from 'react';
 import { usePoll } from '../hooks';
 import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, ExtLink } from '../components/ui';
@@ -96,6 +97,8 @@ export default function PoolDetail({ param }) {
           sub={t('{o} terbuka · {c} ditutup', { o: d.open.length, c: d.closed.length })} />
         <Stat label="Nilai posisi terbuka" value={d.open.length ? usd(openVal + openFee) : '—'} sub={d.open.length ? t('modal {v}', { v: usd(openCost) }) : null} />
       </div>
+
+      <PoolHealth pool={{ ...pool, pool_ref: ref }} pair={pair} open={d.open} />
 
       <div className="grid items-start gap-3 lg:grid-cols-3">
         <Panel title={t('Harga {b} / {q}', { b: base, q: quote || '?' })} className="lg:col-span-2"

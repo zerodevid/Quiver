@@ -1,0 +1,97 @@
+'use strict';
+const assert = require('node:assert/strict');
+const { Interface } = require('ethers');
+const multi = new Interface(['function aggregate3((address target,bool allowFailure,bytes callData)[] calls) payable returns ((bool success,bytes returnData)[] results)']);
+const { normalizeHolders, scanAlchemy, alchemyHolders } = require('../src/holders');
+const { ADDR } = require('../src/chain');
+const token = '0x' + 'ab'.repeat(20), owner = '0x' + 'cd'.repeat(20), poolAddr = '0x' + 'ef'.repeat(20);
+(async () => {
+  const { poolHealth } = await import('../web/src/poolHealth.mjs');
+  const now = Date.now();
+  const pair = { base: { address: token }, fetchedAt: now, liquidityUsd: 100000, priceChange: { h24: 1, h1: 1 }, txns: { h24: { buys: 50, sells: 40 } } };
+  const holders = { token, fetchedAt: now, holderCount: 1000, hasMore: true, items: Array.from({ length: 10 }, (_, i) => ({ address: 'wallet'+i, percent: 1, kind: 'address' })) };
+  const input = { pool: { baseToken: token, pool_ref: poolAddr, fee: 3000 }, pair, holders, now };
+  assert.equal(poolHealth(input).status, 'healthy');
+  assert.equal(poolHealth({ ...input, holders: null }).status, 'unknown');
+  assert.equal(poolHealth({ ...input, pair: null }).status, 'unknown');
+  assert.equal(poolHealth({ ...input, pair: { ...pair, fetchedAt: now - 130000 } }).status, 'unknown');
+  assert.equal(poolHealth({ ...input, holders: { ...holders, token: owner } }).status, 'unknown');
+  assert.equal(poolHealth({ ...input, holders: { ...holders, fetchedAt: now - 1200001 } }).status, 'unknown');
+  assert.equal(poolHealth({ ...input, pair: { ...pair, liquidityUsd: 5648, priceChange: { h24: -74, h1: -19.5 } } }).status, 'risk');
+  assert.equal(poolHealth({ ...input, pair: { ...pair, liquidityUsd: null } }).status, 'unknown');
+  assert.equal(poolHealth({ ...input, holders: { ...holders, items: [{ address: owner, percent: 30, kind: 'address' }, ...holders.items] } }).status, 'risk');
+  const infrastructure = poolHealth({ ...input, holders: { ...holders, items: [{ address: ADDR.poolManager, kind: 'pool_manager', percent: 70 }, { address: poolAddr, kind: 'contract', percent: 10 }, ...holders.items] } });
+  assert.equal(infrastructure.largest, 1);
+  assert.equal(infrastructure.status, 'healthy');
+  assert.equal(poolHealth({ ...input, holders: { ...holders, items: [], hasMore: true } }).status, 'unknown');
+  const supply = 10n ** 30n;
+  const normalized = normalizeHolders({ total_supply: String(supply), holders_count: '2', decimals: 18 }, { items: [{ address_hash: { hash: owner }, value: String(supply / 4n) }] }, token, now);
+  assert.equal(normalized.items[0].percent, 25);
+  assert.equal(normalizeHolders({ total_supply: '0' }, { items: [] }, token).error, 'invalid_data');
+  let calls = [];
+  const fakeFetch = async (_, options) => {
+    const body = JSON.parse(options.body), batch = Array.isArray(body) ? body : [body];
+    const result = batch.map(({ id, method, params }) => {
+      calls.push([method, params]);
+      let value;
+      if (method === 'eth_blockNumber') value = '0x123';
+      else if (method === 'alchemy_getAssetTransfers') value = { transfers: [{ from: ADDR.native, to: owner, rawContract: { address: token, value: '0x64' } }, { from: owner, to: poolAddr, rawContract: { address: token, value: '0x28' } }] };
+      else if (method === 'eth_getCode') value = params[0] === owner ? '0x' : '0x1234';
+      else if (params[0].to === '0xca11bde05977b3631167028862be2a173976ca11') value = multi.encodeFunctionResult('aggregate3', [multi.decodeFunctionData('aggregate3', params[0].data)[0].map((call) => [true, '0x' + (call.callData.endsWith(owner.slice(2)) ? '3c' : '28').padStart(64, '0')])]);
+      else if (params[0].data === '0x18160ddd') value = '0x64';
+      else if (params[0].data === '0x313ce567') value = '0x12';
+      else value = params[0].data.endsWith(owner.slice(2)) ? '0x3c' : '0x28';
+      return { id, result: value };
+    });
+    return { ok: true, json: async () => Array.isArray(body) ? result.reverse() : result[0] };
+  };
+  const history = {};
+  const scanned = await scanAlchemy(fakeFetch, { url: 'https://example.invalid' }, token, () => {}, history);
+  assert.equal(scanned.holderCount, 2);
+  assert.equal(scanned.top10Pct, 100);
+  assert.equal(scanned.items[0].percent, 60);
+  assert.equal(scanned.items[1].isContract, true);
+  assert.equal(scanned.block, 0x123);
+  assert.ok(calls.filter(([m]) => m === 'eth_call').every(([, p]) => p[1] === '0x123'));
+  assert.equal((await alchemyHolders({}, {}, 'invalid')).error, 'invalid_token');
+  assert.equal(history.block, '0x123');
+  assert.equal(history.ledger.get(owner), 60n);
+  const incompleteFetch = async (url, options) => {
+    const response = await fakeFetch(url, options);
+    const json = await response.json();
+    const body = JSON.parse(options.body), batch = Array.isArray(body) ? body : [body];
+    for (const call of batch) if (call.method === 'eth_call' && call.params[0].data === '0x18160ddd') {
+      (Array.isArray(json) ? json : [json]).find((r) => r.id === call.id).result = '0x65';
+    }
+    return { ok: true, json: async () => json };
+  };
+  assert.equal((await scanAlchemy(incompleteFetch, { url: 'unused' }, token)).error, 'incomplete');
+  assert.equal(poolHealth({ ...input, pair: { ...pair, base: { address: owner } } }).status, 'unknown');
+  assert.equal(poolHealth({ ...input, pool: { ...input.pool, fee: null } }).status, 'unknown');
+  assert.equal(poolHealth({ ...input, holders: { ...holders, holderCount: 90 } }).status, 'warn');
+  assert.equal(poolHealth({ ...input, open: [{ inRange: false }] }).status, 'warn');
+  assert.equal(poolHealth({ ...input, pool: { ...input.pool, fee: 0x800000 } }).status, 'warn');
+  let released;
+  const waiting = new Promise((resolve) => { released = resolve; });
+  const background = { fetch: async (...args) => { await waiting; return fakeFetch(...args); } };
+  const cfg = { chain: { endpoints: [{ url: 'https://robinhood-mainnet.g.alchemy.com/v2/private-key' }] } };
+  assert.equal((await alchemyHolders(background, cfg, token)).error, 'scanning');
+  assert.equal((await alchemyHolders(background, cfg, token)).error, 'scanning');
+  released();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const ready = await alchemyHolders(background, cfg, token);
+  assert.equal(ready.holderCount, 2);
+  assert.ok(!JSON.stringify(ready).includes('private-key'));
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'holder-cache-'));
+  try {
+    const persistedCfg = { ...cfg, db: { path: path.join(dir, 'test.db') } };
+    const first = { fetch: fakeFetch };
+    await alchemyHolders(first, persistedCfg, token);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const second = { fetch: async () => { throw new Error('cache should prevent RPC'); } };
+    assert.equal((await alchemyHolders(second, persistedCfg, token)).holderCount, 2);
+    assert.ok(!fs.readFileSync(path.join(dir, 'holders', token + '.json'), 'utf8').includes('private-key'));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  console.log('Pool health and holder scan checks passed');
+})().catch((e) => { console.error(e); process.exitCode = 1; });

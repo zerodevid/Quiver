@@ -291,3 +291,13 @@ deploy.sh              Maintainer deployment helper
 ```
 
 `data/`, `logs/`, `web/dist/`, and `demo/out/` are generated locally and excluded from Git.
+
+### Pool health and holder distribution
+
+Pool detail shows explicit market/position warnings, a heuristic health status, holder count and top-address concentration. Missing, mismatched or stale data cannot yield a healthy status. Thresholds are visible in the panel; this is not a contract audit.
+
+Holder scans reuse the configured Alchemy Robinhood endpoint without exposing its URL/key to the browser. The background scanner enumerates ERC-20 transfers, checks candidate balances and total supply at one fixed block, and only publishes a count when balances reconcile with supply. It excludes zero balances; counts refer to addresses, not distinct people. PoolManager, the viewed v3 pool and burn addresses are excluded from the concentration warning; other contracts remain included and are labelled.
+
+One scan runs at a time, with bounded history, address counts and request timeouts. Results are cached for 15 minutes; subsequent successful scans read new transfers. Verified snapshots and discovery state are saved beside the configured database in `holders/`. An incomplete index, nonstandard token accounting, provider failure or scan limit is shown as unavailable rather than an estimated total. Restarts reuse the verified cache; absent or damaged caches are rebuilt. If no Alchemy endpoint is configured, Blockscout is used (optional `BLOCKSCOUT_API_KEY` for its Pro API).
+
+Validation: `node test/pool-health.js`. Provider references: [Alchemy Transfers API](https://www.alchemy.com/docs/reference/transfers-api-quickstart) and [Blockscout holders API](https://docs.blockscout.com/api-reference/get-token-holders).

@@ -850,6 +850,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       ]);
       return { pair, ohlcv, tfs: Object.keys(TF) };
     },
+    'GET /api/holders': async (req, url) => require('./holders').alchemyHolders(market, cfg, url.searchParams.get('token')),
     // Harga pool langsung dari chain (slot0) untuk grafik realtime. Lilin GeckoTerminal
     // tertinggal hingga semenit; harga ini yang menggerakkan lilin terakhir di UI.
     // Disimpan 2,5 detik per pool: banyak tab yang membuka pool sama berbagi satu
