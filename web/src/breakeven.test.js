@@ -10,3 +10,5 @@ test('unreachable above quote-only cap', () => assert.match(breakEven({ ...p, co
 test('existing base fees allow BEP above range', () => near(breakEven({ ...p, cost_quote: 150, fee0: '10' }).price, 5));
 test('inverse quote and mixed decimals preserve BEP', () => near(breakEven({ ...p, quoteSide: 0, dec0: 6, dec1: 18, liquidity: '100000000000000', tick_lower: tick(1e12 / 4), tick_upper: tick(1e12) }).price, breakEven(p).price));
 test('hide inactive and reject stale data', () => { assert.equal(breakEven({ ...p, inRange: true }), null); assert.equal(breakEven({ ...p, status: 'closed' }), null); assert.ok(breakEven({ ...p, valueStale: true }).reason); });
+
+test('depth panel can request BEP for an in-range open position', () => near(breakEven({ ...p, inRange: true, status: 'open' }, { all: true }).price, breakEven(p).price));

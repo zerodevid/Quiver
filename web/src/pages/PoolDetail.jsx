@@ -4,6 +4,7 @@
 // Memakai ulang grafik dan panel pasar dari halaman detail posisi. Kalau bot pernah
 // membuka posisi di pool ini, posisi itu digambar di grafik (rentang + titik masuk)
 // dan tabelnya menunjukkan PnL tiap posisi serta totalnya.
+import LiquidityRisk from '../components/LiquidityRisk';
 import PoolHealth from '../components/PoolHealth';
 import { useEffect, useState } from 'react';
 import { usePoll } from '../hooks';
@@ -135,6 +136,8 @@ export default function PoolDetail({ param }) {
           </Panel>
         </div>
       </div>
+
+      <div className="mt-4"><LiquidityRisk key={ref} pool={{ ...pool, pool_ref: ref }} focus={focus} /></div>
 
       <BotPositions open={d.open} closed={d.closed} onFocus={setFocus} focusId={focus?.id} loading={loading} className="mt-4" />
       <WalletPositions rows={d.wallets} loading={loading} className="mt-4" />

@@ -850,6 +850,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       ]);
       return { pair, ohlcv, tfs: Object.keys(TF) };
     },
+    'GET /api/pool-depth': async (req, url) => {
+      const ref = String(url.searchParams.get('ref') || '').toLowerCase();
+      if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(ref)) return { error: 'pool tidak valid' };
+      return market.memo(`depth:${ref}`, 30000, () => require('./pool-depth').poolDepth({ rpc, chain, store, engine }, ref));
+    },
     'GET /api/holders': async (req, url) => require('./holders').alchemyHolders(market, cfg, url.searchParams.get('token')),
     // Harga pool langsung dari chain (slot0) untuk grafik realtime. Lilin GeckoTerminal
     // tertinggal hingga semenit; harga ini yang menggerakkan lilin terakhir di UI.

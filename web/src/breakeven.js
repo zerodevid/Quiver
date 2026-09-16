@@ -1,7 +1,7 @@
 // Solve LP value + existing fees + proceeds = deposited capital in quote units.
 // Liquidity is rebalanced throughout the range; future fees and exit costs are excluded.
-export function breakEven(p) {
-  if (p.status === 'closed' || p.inRange !== false || p.empty) return null;
+export function breakEven(p, { all = false } = {}) {
+  if (p.status === 'closed' || (!all && p.inRange !== false) || p.empty) return null;
   const unavailable = { reason: 'Data BEP belum tersedia.' };
   if (p.valueStale || p.liqStale || p.markRef || ![0, 1].includes(p.quoteSide) ||
       p.tick_lower == null || p.tick_upper == null || p.dec0 == null || p.dec1 == null ||
