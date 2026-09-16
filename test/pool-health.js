@@ -77,6 +77,7 @@ const token = '0x' + 'ab'.repeat(20), owner = '0x' + 'cd'.repeat(20), poolAddr =
   const cfg = { chain: { endpoints: [{ url: 'https://robinhood-mainnet.g.alchemy.com/v2/private-key' }] } };
   assert.equal((await alchemyHolders(background, cfg, token)).error, 'scanning');
   assert.equal((await alchemyHolders(background, cfg, token)).error, 'scanning');
+  assert.equal((await alchemyHolders(background, cfg, owner)).queued, true);
   released();
   await new Promise((resolve) => setTimeout(resolve, 25));
   const ready = await alchemyHolders(background, cfg, token);

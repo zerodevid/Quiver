@@ -73,7 +73,7 @@ function alchemyHolders(market, cfg, address) {
   }
   const hit = state.cache.get(token);
   if (hit && hit.until > Date.now()) return Promise.resolve(hit.value);
-  if (state.running) return Promise.resolve({ token, error: 'scanning', source: 'Alchemy' });
+  if (state.running) return Promise.resolve({ token, error: 'scanning', queued: true, source: 'Alchemy' });
   state.running = true;
   const pending = { token, error: 'scanning', source: 'Alchemy' };
   state.cache.set(token, { until: Date.now() + 660000, value: pending });

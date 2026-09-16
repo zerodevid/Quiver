@@ -1493,6 +1493,7 @@ const EN = {
   "Tidak melewati ambang dominasi": "Below concentration thresholds",
   "Saldo diperiksa: {n}/{total} alamat": "Balances checked: {n}/{total} addresses",
   "Riwayat: {n} halaman transfer": "History: {n} transfer pages",
+  'Menunggu giliran pemindaian holder; data pasar tetap diperiksa.': 'Waiting for the holder scan slot; market checks remain active.',
 };
 
 const DICT = { id: null, en: EN };
