@@ -422,7 +422,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const wallet = engine.positions.lastSync ? { value, pnl, netPnl: capital && cash ? value - capital.capitalUsd : null } : null;
       return {
         // auth: gerbang token menyala → dasbor menampilkan tombol keluar.
-        mode: { dry_run: engine.dryRun(), paused: engine.paused(), wallet: engine.exec.address(), auth: !!tokenNow() },
+        mode: { dry_run: engine.dryRun(), paused: engine.paused(), wallet: engine.exec.address(), auth: !!tokenNow(), drawdown: engine.drawdownStatus() },
         wallet,
         chain: { head: engine.head, cursor: engine.cursor, lag: engine.head - engine.cursor, ethUsd: engine.ethUsd, headSpread: engine.headSpread },
         stats: { ...engine.stats, uptimeSec: Math.round((Date.now() - engine.stats.startedAt) / 1000), lastError: engine.lastError },
@@ -999,6 +999,22 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       store.run('DELETE FROM targets WHERE address=?', String(b.address).toLowerCase());
       return { ok: true };
     },
+    // Gambar & indikator grafik lanjutan (garis tren, fibonacci, dst) per pool —
+    // disimpan di server supaya tetap ada saat halaman dibuka lagi, bukan cuma di
+    // localStorage browser yang dipakai orang itu saja.
+    'GET /api/chart/overlays': (req, url) => {
+      const ref = String(url.searchParams.get('pool') || '').trim().toLowerCase();
+      if (!ref) return { error: 'pool tidak valid' };
+      const raw = store.getState(`chart_overlays:${ref}`);
+      return { data: raw ? JSON.parse(raw) : null };
+    },
+    'POST /api/chart/overlays': async (req) => {
+      const b = await readBody(req);
+      const ref = String(b.pool || '').trim().toLowerCase();
+      if (!ref) return { error: 'pool tidak valid' };
+      store.setState(`chart_overlays:${ref}`, JSON.stringify(b.data || {}));
+      return { ok: true };
+    },
     'GET /api/activity': (req, url) => {
       const limit = Math.min(300, Number(url.searchParams.get('limit') || 120));
       const rows = store.all(`
@@ -1259,6 +1275,27 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       return data;
     },
 
+    // Pencarian global (Cmd/Ctrl+K di dasbor): satu kotak, lompat ke target, token,
+    // pool, atau wallet yang pernah diriset — semuanya sudah ada di DB lokal, jadi
+    // tidak perlu memanggil chain/DexScreener untuk sekadar melompat halaman.
+    'GET /api/search': async (req, url) => {
+      const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
+      if (q.length < 2) return { results: [] };
+      const like = `%${q}%`;
+      const results = [];
+      for (const r of store.all(
+        "SELECT address,label FROM targets WHERE LOWER(COALESCE(label,'')) LIKE ? OR address LIKE ? ORDER BY added_ts DESC LIMIT 6", like, like))
+        results.push({ type: 'target', address: r.address, label: r.label });
+      for (const r of store.all(
+        "SELECT address,symbol,name FROM tokens WHERE LOWER(COALESCE(symbol,'')) LIKE ? OR LOWER(COALESCE(name,'')) LIKE ? OR address LIKE ? ORDER BY seen_ts DESC LIMIT 6", like, like, like))
+        results.push({ type: 'token', address: r.address, symbol: r.symbol, name: r.name });
+      for (const r of store.all(
+        "SELECT address,label FROM wallets WHERE LOWER(COALESCE(label,'')) LIKE ? OR address LIKE ? ORDER BY last_scan_ts DESC LIMIT 6", like, like))
+        results.push({ type: 'wallet', address: r.address, label: r.label });
+      for (const p of await manual.pools({ q, limit: 6 }))
+        results.push({ type: 'pool', poolRef: p.poolRef, pair: p.pair, symbol0: p.symbol0, symbol1: p.symbol1 });
+      return { results };
+    },
     // Wallet yang juga tersimpan sebagai target dipinjamkan nama targetnya bila
     // wallet itu sendiri belum diberi label — supaya daftar riset tidak menampilkan
     // alamat telanjang untuk wallet yang sudah kita kenal.

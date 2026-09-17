@@ -24,15 +24,18 @@ async function t(name, fn) {
 
 // Server nyata yang mendengar di port acak. `throws` menanam rute yang meledak
 // supaya jalur penanganan galat 500 bisa diuji.
-function serve({ throws = false } = {}) {
+function serve({ throws = false, wallet = null } = {}) {
   const store = new Store(':memory:');
   const cfg = { mode: { dry_run: true }, rules: {}, gas: {}, loop: {}, prices: {}, chain: { endpoints: [] }, server: { auth_token: TOKEN }, notify: {}, wallet: {} };
   const cfgPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lpcopy-sec-')), 'config.json');
   fs.writeFileSync(cfgPath, JSON.stringify(cfg));
   const pos = { live: [], lastSync: 0, resync: async () => {} };
+  const exec = wallet
+    ? { address: () => wallet.address.toLowerCase(), balances: async () => new Map(), loadWallet: () => wallet }
+    : { address: () => null, balances: async () => new Map() };
   const engine = {
     cfg, store, ethUsd: 2500, positions: pos, watcher: { unsupported: new Map() },
-    exec: { address: () => null, balances: async () => new Map() }, leftovers: () => [], dryRun: () => true, paused: () => store.getState('paused', '0') === '1',
+    exec, leftovers: () => [], dryRun: () => true, paused: () => store.getState('paused', '0') === '1',
     // status() melempar pesan yang memuat "rahasia" -> harus tidak bocor ke klien.
     compound: throws ? { status: () => { throw new Error('detail internal /etc/rahasia'); }, configure: () => {} } : undefined,
   };
@@ -131,6 +134,27 @@ function serve({ throws = false } = {}) {
       const blocked = await attempt('salah');
       assert.equal(blocked.status, 429, 'sesudah 10 gagal harus 429');
       assert.ok(blocked.headers.get('retry-after'), 'sertakan Retry-After');
+    } finally { await s.close(); }
+  });
+
+  await t('/api/settings/wallet/export: token salah ditolak, password lemah ditolak, token+password benar -> keystore V3 valid', async () => {
+    const { ethers } = require('ethers');
+    const wallet = ethers.Wallet.createRandom();
+    const s = await serve({ wallet });
+    try {
+      const hdr = { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` };
+      const post = (b) => fetch(`${s.base}/api/settings/wallet/export`, { method: 'POST', headers: hdr, body: JSON.stringify(b) });
+      const bad = await post({ token: 'salah', password: 'password123' });
+      assert.equal((await bad.json()).error, 'Token salah.');
+      const weak = await post({ token: TOKEN, password: '123' });
+      assert.match((await weak.json()).error, /minimal 8/);
+      const ok = await post({ token: TOKEN, password: 'password123' });
+      const body = await ok.json();
+      assert.equal(body.ok, true);
+      assert.equal(body.address, wallet.address.toLowerCase());
+      assert.equal(JSON.stringify(body.keystore).toLowerCase().includes(wallet.privateKey.slice(2).toLowerCase()), false, 'PK mentah tidak boleh nangkring di keystore');
+      const decrypted = await ethers.Wallet.fromEncryptedJson(JSON.stringify(body.keystore), 'password123');
+      assert.equal(decrypted.address, wallet.address);
     } finally { await s.close(); }
   });
 

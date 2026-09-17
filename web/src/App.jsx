@@ -12,6 +12,7 @@ import { useI18n, LOCALES } from './i18n';
 import { QuiverLogo } from './components/Logo';
 import { AlertBell, useTargetAlerts, setBaseTitle } from './components/TargetAlerts';
 import StuckAlert from './components/StuckAlert';
+import SearchModal, { SearchTrigger } from './components/GlobalSearch';
 
 import { Loading, ConfirmHost, ask } from './components/ui';
 import { hideSplash } from './splash';
@@ -88,6 +89,7 @@ function NavLinks({ page, onPick }) {
 
 // Warna & teks mode dipakai di sidebar dan header HP — satu sumber.
 const modeOf = (m) => (!m ? null : m.paused ? ['Dijeda', 'bg-muted', 'text-muted']
+  : m.drawdown?.tripped ? ['Drawdown', 'bg-warning', 'text-warning']
   : m.dry_run ? ['Simulasi', 'bg-accent', 'text-accent'] : ['Live', 'bg-danger', 'text-danger']);
 
 function ModeBadge({ m }) {
@@ -200,12 +202,16 @@ export default function App() {
       {/* Toast di atas: peringatan target tidak ketiban baris tabel paling bawah. */}
       <Toast.Provider placement="top" />
       <ConfirmHost />
+      <SearchModal />
       <div className="flex min-h-dvh">
         {/* sidebar desktop */}
         <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col border-r border-border bg-surface lg:flex">
           <div className="flex h-[76px] items-center border-b border-border px-5"><Brand /></div>
           {/* data-reveal: disembunyikan selama layar pembuka, muncul berurutan setelah logo mendarat */}
-          <div className="flex-1 overflow-y-auto px-2 py-4" data-reveal="nav"><NavLinks page={page} /></div>
+          <div className="flex-1 overflow-y-auto px-2 py-4" data-reveal="nav">
+            <div className="mb-3 px-0.5"><SearchTrigger /></div>
+            <NavLinks page={page} />
+          </div>
           <div data-reveal="nav"><StatusFoot status={status} reload={reload} theme={theme} toggleTheme={toggleTheme} /></div>
         </aside>
 
@@ -215,6 +221,7 @@ export default function App() {
             <Brand />
             <div className="flex items-center gap-1" data-reveal="nav">
               <span className="mr-1 hidden min-[360px]:inline"><ModeBadge m={status?.mode} /></span>
+              <SearchTrigger compact />
               <AlertBell placement="bottom" variant="ghost" iconClass="size-4" />
               <Button size="sm" variant="ghost" isIconOnly aria-label={t('Ganti tema')} onPress={toggleTheme}>
                 {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}

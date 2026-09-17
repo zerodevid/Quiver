@@ -18,6 +18,10 @@ const token = '0x' + 'ab'.repeat(20), owner = '0x' + 'cd'.repeat(20), poolAddr =
   assert.equal(poolHealth({ ...input, holders: { ...holders, token: owner } }).status, 'unknown');
   assert.equal(poolHealth({ ...input, holders: { ...holders, fetchedAt: now - 1200001 } }).status, 'unknown');
   assert.equal(poolHealth({ ...input, pair: { ...pair, liquidityUsd: 5648, priceChange: { h24: -74, h1: -19.5 } } }).status, 'risk');
+  const dropWithUsd = poolHealth({ ...input, pair: { ...pair, priceUsd: '0.002', liquidityUsd: 5648, priceChange: { h24: -74, h1: -19.5 } } });
+  const h24Signal = dropWithUsd.signals.find((s) => s.key.includes('24 jam'));
+  assert.ok(h24Signal.key.includes('{usd}'));
+  assert.ok(Math.abs(h24Signal.values.usd - 0.002 * 0.74) < 1e-9);
   assert.equal(poolHealth({ ...input, pair: { ...pair, liquidityUsd: null } }).status, 'unknown');
   assert.equal(poolHealth({ ...input, holders: { ...holders, items: [{ address: owner, percent: 30, kind: 'address' }, ...holders.items] } }).status, 'risk');
   const infrastructure = poolHealth({ ...input, holders: { ...holders, items: [{ address: ADDR.poolManager, kind: 'pool_manager', percent: 70 }, { address: poolAddr, kind: 'contract', percent: 10 }, ...holders.items] } });

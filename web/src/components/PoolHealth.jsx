@@ -1,7 +1,7 @@
 import { ShieldCheck, TriangleAlert, CircleHelp, ExternalLink } from 'lucide-react';
 import { usePoll, useTick } from '../hooks';
 import { useI18n } from '../i18n';
-import { num, ago, short } from '../fmt';
+import { num, ago, short, price } from '../fmt';
 import { poolHealth } from '../poolHealth.mjs';
 
 const STATUS = {
@@ -31,7 +31,7 @@ export default function PoolHealth({ pool, pair, open = [] }) {
       <div className="grid gap-5 p-4 lg:grid-cols-2">
         <div className="min-w-0">
           <h3 className="mb-2 text-xs font-medium text-muted">{t('Peringatan dari data')}</h3>
-          {h.signals.length ? <ul className="space-y-2">{h.signals.map((s, i) => <li key={i} className="flex items-start gap-2 text-sm leading-relaxed"><TriangleAlert size={15} aria-hidden className={`mt-1 shrink-0 ${s.level === 'risk' ? 'text-danger' : 'text-warning'}`} /><span>{t(s.key, Object.fromEntries(Object.entries(s.values).map(([key, value]) => [key, Number.isFinite(Number(value)) ? num(Number(value), 2) : value])))}</span></li>)}</ul> : <p className="text-sm">{t(h.status === 'healthy' ? 'Tidak ada indikator yang melewati ambang peringatan.' : 'Belum ada peringatan terukur dari data yang tersedia.')}</p>}
+          {h.signals.length ? <ul className="space-y-2">{h.signals.map((s, i) => <li key={i} className="flex items-start gap-2 text-sm leading-relaxed"><TriangleAlert size={15} aria-hidden className={`mt-1 shrink-0 ${s.level === 'risk' ? 'text-danger' : 'text-warning'}`} /><span>{t(s.key, Object.fromEntries(Object.entries(s.values).map(([key, value]) => [key, key === 'usd' ? '$' + price(Number(value)) : Number.isFinite(Number(value)) ? num(Number(value), 2) : value])))}</span></li>)}</ul> : <p className="text-sm">{t(h.status === 'healthy' ? 'Tidak ada indikator yang melewati ambang peringatan.' : 'Belum ada peringatan terukur dari data yang tersedia.')}</p>}
           {h.missing.length > 0 && <div className="mt-3 space-y-1 border-t border-border pt-3 text-xs leading-relaxed text-muted">{h.missing.map((key) => <p key={key}>{t(key)}</p>)}</div>}
         </div>
         <div className="min-w-0">

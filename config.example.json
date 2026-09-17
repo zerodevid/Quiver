@@ -57,6 +57,9 @@
   "scout": {
     "blocks": 900000
   },
+  "risk": {
+    "max_daily_drawdown_pct": 0
+  },
   "notify": {
     "ntfy_topic": null
   },

@@ -1516,6 +1516,8 @@ const EN = {
   "Data harga 24 jam atau likuiditas belum lengkap.": "24-hour price or liquidity data is incomplete.",
   "Harga turun {value}% dalam 24 jam.": "Price fell {value}% in 24 hours.",
   "Harga turun {value}% dalam 1 jam.": "Price fell {value}% in 1 hour.",
+  "Harga turun {value}% (≈{usd}) dalam 24 jam.": "Price fell {value}% (≈{usd}) in 24 hours.",
+  "Harga turun {value}% (≈{usd}) dalam 1 jam.": "Price fell {value}% (≈{usd}) in 1 hour.",
   "Likuiditas hanya ${value}; transaksi besar dapat menggeser harga.": "Liquidity is only ${value}; large trades may move the price.",
   "FDV {value}× likuiditas pool; valuasi jauh lebih besar dari likuiditas.": "FDV is {value}× pool liquidity; valuation is much larger than liquidity.",
   "{value}% transaksi 24 jam adalah jual (jumlah transaksi, bukan nilai jual).": "{value}% of 24-hour trades are sells (trade count, not sell value).",
@@ -1536,6 +1538,19 @@ const EN = {
   "Saldo diperiksa: {n}/{total} alamat": "Balances checked: {n}/{total} addresses",
   "Riwayat: {n} halaman transfer": "History: {n} transfer pages",
   'Menunggu giliran pemindaian holder; data pasar tetap diperiksa.': 'Waiting for the holder scan slot; market checks remain active.',
+  'Garis tren': 'Trend line',
+  'Garis horizontal': 'Horizontal line',
+  'Kanal harga': 'Price channel',
+  'Fibonacci retracement': 'Fibonacci retracement',
+  'Kotak': 'Rectangle',
+  'Gambar bebas': 'Freehand',
+  'Hapus semua gambar': 'Clear all drawings',
+  'Hapus semua gambar di grafik ini?': 'Clear all drawings on this chart?',
+  'Cari…': 'Search…',
+  'Cari target, token, pool, atau wallet — alamat atau simbol…': 'Search targets, tokens, pools, or wallets — address or symbol…',
+  'Ketik untuk mencari…': 'Type to search…',
+  'Mencari…': 'Searching…',
+  'Tidak ada hasil untuk "{q}"': 'No results for "{q}"',
 };
 
 const DICT = { id: null, en: EN };

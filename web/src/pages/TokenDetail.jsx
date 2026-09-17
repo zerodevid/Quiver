@@ -5,7 +5,7 @@
 // Dibuka dari lambang atau simbol token di mana pun di dasbor: #token/0x….
 import { useEffect, useState } from 'react';
 import { Button } from '@heroui/react';
-import CandleChart from '../components/CandleChart';
+import AdvancedChart from '../components/AdvancedChart';
 import { usePoll } from '../hooks';
 import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink } from '../components/ui';
 import TokenIcon, { TokenPair, PairName } from '../components/TokenIcon';
@@ -27,10 +27,12 @@ const venueOf = (p) => (p.labels?.length ? p.labels.join(' ') : p.dexId || '');
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
 const fmtAmt = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleString(fmtLocale(), { maximumSignificantDigits: v >= 1000 ? 7 : 5 }));
 
-function TokenChart({ m, tf }) {
+function TokenChart({ m, tf, poolRef }) {
   if (m?.ohlcv?.error) return <Empty title="Grafik harga tidak tersedia" sub={m.ohlcv.error} />;
   if (!m?.ohlcv?.candles?.length) return <Empty title="Belum ada lilin harga" sub="GeckoTerminal belum punya riwayat harga untuk pool ini." />;
-  return <CandleChart candles={m.ohlcv.candles} tf={tf} quote="USD" />;
+  // key={tf}: ganti rentang lilin memuat ulang grafik dari awal (KLineChart mengulang
+  // seluruh riwayat saat periode berganti) — gambar & indikator tetap karena disimpan per pool, bukan per instance.
+  return <AdvancedChart key={tf} candles={m.ohlcv.candles} tf={tf} quote="USD" poolRef={poolRef} />;
 }
 
 export default function TokenDetail({ param }) {
@@ -105,7 +107,7 @@ export default function TokenDetail({ param }) {
           action={sel && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}>
           {d.market?.error ? <Empty title="Data pasar tidak tersedia" sub={d.market.error} />
             : !sel ? <Empty title="Belum ada pool terindeks" sub="DexScreener belum mengenal pool untuk token ini." />
-              : !m ? <Loading /> : <TokenChart m={m} tf={tf} />}
+              : !m ? <Loading /> : <TokenChart m={m} tf={tf} poolRef={sel.pool} />}
           {sel && <div className="mt-2 text-end text-xs text-muted">{t('lilin {tf} · GeckoTerminal', { tf })}</div>}
         </Panel>
 

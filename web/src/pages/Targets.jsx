@@ -297,6 +297,8 @@ export default function Targets({ param }) {
 
   const list = d?.targets || [];
   const on = list.filter((x) => enabledOf(x)).length;
+  // Yang aktif ditaruh di atas supaya langsung terlihat, tanpa mengubah urutan sesama status.
+  const sorted = [...list].sort((a, b) => (enabledOf(b) ? 1 : 0) - (enabledOf(a) ? 1 : 0));
   return (
     <>
       <PageHeader group="Copy" title="Target"
@@ -331,7 +333,7 @@ export default function Targets({ param }) {
             <span className="w-24" />
           </div>
           <div className="divide-y divide-border">
-            {list.map((x) => <TargetRow key={x.address + (x.rules || '')} tg={x} enabled={enabledOf(x)} onToggle={toggle} onChanged={reload} />)}
+            {sorted.map((x) => <TargetRow key={x.address + (x.rules || '')} tg={x} enabled={enabledOf(x)} onToggle={toggle} onChanged={reload} />)}
           </div>
         </Card>
       ) : (

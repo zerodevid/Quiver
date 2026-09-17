@@ -10,7 +10,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { Button, Spinner } from '@heroui/react';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
 import { breakEven } from '../breakeven';
-import CandleChart from '../components/CandleChart';
+import AdvancedChart from '../components/AdvancedChart';
 import { useLivePrice, useLiveCandles, LIVE_MS } from '../liveCandles';
 import { usePoll, useResync } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
@@ -86,7 +86,8 @@ export function PriceChart({ p, m, tf }) {
       {bep && <p className="mb-2 text-xs text-warning">
         {t('Harga BEP')}: {bep.price > 0 ? <>{price(bep.price)} {quote}{pNow > 0 && <> · {pct((bep.price / pNow - 1) * 100, 2)} {t('dari harga sekarang')}</>}</> : t(bep.reason)}
       </p>}
-      <CandleChart key={`${p.pool_ref || p.baseToken || "pool"}:${p.id || "none"}`} candles={candles} tf={tf} quote={quote} range={range}
+      <AdvancedChart key={`${p.pool_ref || p.baseToken || "pool"}:${p.id || "none"}:${tf}`}
+        candles={candles} tf={tf} quote={quote} poolRef={p.pool_ref || p.baseToken || null} range={range}
         entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: pEntry } : null}
         exit={closed ? { t: p.closed_ts, p: pExit } : null}
         now={closed ? null : pNow} bep={bep?.price} />

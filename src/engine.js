@@ -33,6 +33,12 @@ function lamanya(ms) {
   const j = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
   return m ? `${j} jam ${m} mnt` : `${j} jam`;
 }
+// Kunci hari (YYYY-MM-DD) di suatu zona waktu — dipakai breaker drawdown harian
+// supaya "hari" mengikuti zona yang sama dengan kartu bagikan (telegram.timezone),
+// bukan UTC server.
+function dayKeyIn(ts, timeZone) {
+  try { return new Date(ts).toLocaleDateString('en-CA', { timeZone }); } catch { return new Date(ts).toLocaleDateString('en-CA'); }
+}
 
 class Engine {
   constructor({ rpc, store, chain, cfg, log }) {
@@ -240,6 +246,55 @@ class Engine {
   dryRun() { return this.cfg.mode?.dry_run !== false; }
   paused() { return this.store.getState('paused', this.cfg.mode?.paused ? '1' : '0') === '1'; }
 
+  // ---- breaker drawdown harian ---------------------------------------------
+  // Beda dari jeda manual: ini otomatis, dan cuma menghentikan ENTRY baru — posisi
+  // yang sudah terbuka tetap dikelola dan bisa keluar (stop loss, ikut target, dst).
+  // 0 = mati, sama seperti stop_loss_pct dkk.
+  maxDailyDrawdownPct() { return Number(this.cfg.risk?.max_daily_drawdown_pct) || 0; }
+  dayKey(ts = Date.now()) { return dayKeyIn(ts, this.cfg.telegram?.timezone || undefined); }
+
+  // Dipanggil dari snapshotEquity (bukan tiap tick) — butuh total ekuitas yang kasnya
+  // baru dibaca dari chain. Puncak hari ini disimpan di store supaya bertahan restart;
+  // begitu tersentuh sekali, entry baru dijeda sampai kunci hari berganti (bukan sampai
+  // ekuitas pulih — pemicunya kejadian sekali, bukan keadaan yang terus dipantau, jadi
+  // tidak akan "hidup lagi" beberapa detik lalu terpicu lagi kalau ekuitas naik-turun
+  // tipis di sekitar batas).
+  updateDrawdown(total) {
+    const today = this.dayKey();
+    let peak = Number(this.store.getState('dd_peak'));
+    if (this.store.getState('dd_day') !== today) {
+      peak = total;
+      this.store.setState('dd_day', today);
+      this.store.setState('dd_tripped', '0');
+    } else if (!Number.isFinite(peak) || total > peak) {
+      peak = total;
+    }
+    this.store.setState('dd_peak', String(peak));
+    const pct = this.maxDailyDrawdownPct();
+    // Mati, atau portofolio terlalu kecil untuk persentasenya berarti (hindari
+    // "turun 50%" cuma karena puncaknya $0,02 debu sisa token).
+    if (!pct || peak < 1 || this.store.getState('dd_tripped') === '1') return;
+    const ddPct = ((peak - total) / peak) * 100;
+    if (ddPct >= pct) {
+      this.store.setState('dd_tripped', '1');
+      this.notify(`Drawdown harian ${ddPct.toFixed(1)}% (puncak $${peak.toFixed(2)} → $${total.toFixed(2)}) menyentuh batas ${pct}% — entry baru dijeda sampai hari berikutnya. Posisi yang sudah ada tetap dikelola.`);
+    }
+  }
+  drawdownTripped() {
+    if (!this.maxDailyDrawdownPct()) return false;
+    return this.store.getState('dd_day') === this.dayKey() && this.store.getState('dd_tripped') === '1';
+  }
+  // Untuk dasbor: status breaker walau belum tersentuh.
+  drawdownStatus() {
+    const peak = Number(this.store.getState('dd_peak'));
+    return {
+      enabled: this.maxDailyDrawdownPct() > 0,
+      pct: this.maxDailyDrawdownPct(),
+      peakUsd: this.store.getState('dd_day') === this.dayKey() && Number.isFinite(peak) ? peak : null,
+      tripped: this.drawdownTripped(),
+    };
+  }
+
   // ---- satu siklus --------------------------------------------------------
   // Proses sedang berhenti? Tunggu sampai tidak ada transaksi yang berjalan: entry di
   // tengah zap, tx keluar yang belum dibukukan, penjualan sisa, compound. Dulu SIGINT
@@ -356,6 +411,7 @@ class Engine {
     const exit = act.kind === 'decrease' || act.kind === 'transfer_out';
     if (!exit && !t.enabled) return this.decide(act.id, 'skip', 'target sedang dimatikan');
     if (!exit && this.paused()) return this.decide(act.id, 'skip', 'bot sedang dijeda');
+    if (!exit && this.drawdownTripped()) return this.decide(act.id, 'skip', `drawdown harian menyentuh batas ${this.maxDailyDrawdownPct()}% — entry baru dijeda sampai besok`);
     const rules = this.rulesFrom(act.target);
 
     if (act.kind === 'increase') return this.handleEntry(act, rules);
@@ -2436,10 +2492,15 @@ class Engine {
     // Memecoin sisa yang belum terjual ikut dihitung sebagai "posisi": tanpa ini
     // kurva total anjlok saat posisi tutup dan melonjak lagi saat sisanya terjual.
     const lo = s.leftoverUsd || 0;
+    const total = (w || 0) + s.exposureUsd + lo + s.feeUsd;
     this.store.run(
       'INSERT OR REPLACE INTO equity(ts,wallet_quote,positions_quote,total_quote,realized_quote,fees_quote,open_positions,pnl_quote) VALUES(?,?,?,?,?,?,?,?)',
-      Date.now(), w, s.exposureUsd + lo, (w || 0) + s.exposureUsd + lo + s.feeUsd, s.realizedUsd, s.feeUsd, s.openCount,
+      Date.now(), w, s.exposureUsd + lo, total, s.realizedUsd, s.feeUsd, s.openCount,
       s.realizedUsd + s.unrealizedUsd);
+    // Wallet terpasang tapi kas gagal dibaca siklus ini: `total` anjlok palsu sebesar
+    // kas yang hilang (lihat komentar `w` di atas) — lewati breaker, jangan terpicu
+    // gara-gara RPC seret, bukan portofolio yang sungguh rugi.
+    if (!this.exec.address() || cash) this.updateDrawdown(total);
   }
 
   // Titik ekuitas dari sebelum kolom pnl_quote ada. PnL-nya bisa direkonstruksi dari

@@ -26,8 +26,8 @@ function cssColor(name) {
   hexCache.set(raw, hex);
   return hex;
 }
-const withAlpha = (hex, a) => hex + Math.round(a * 255).toString(16).padStart(2, '0');
-function palette() {
+export const withAlpha = (hex, a) => hex + Math.round(a * 255).toString(16).padStart(2, '0');
+export function palette() {
   const dark = document.documentElement.classList.contains('dark');
   return {
     dark,

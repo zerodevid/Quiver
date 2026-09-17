@@ -3,7 +3,9 @@
 // gas, notifikasi, mesin, dan token akses dasbor.
 //
 // Aturan keamanan yang dipegang di sini:
-//  - Kunci privat TIDAK PERNAH dikirim balik ke browser — hanya alamatnya.
+//  - Kunci privat mentah TIDAK PERNAH dikirim balik ke browser — hanya alamatnya, atau
+//    (lewat /wallet/export, digembok token dashboard yang diketik ulang) keystore V3
+//    terenkripsi password yang diisi saat itu juga, tidak pernah disimpan di server.
 //  - Kunci lama tidak pernah dihapus diam-diam: dipindah ke berkas cadangan bertanggal.
 //  - URL/header RPC yang mengandung API key selalu disamarkan di respons; untuk
 //    endpoint yang tidak diubah, browser cukup mengirim id-nya dan rahasianya tetap
@@ -187,6 +189,14 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
     return n;
   };
 
+  // Sama seperti GET /api/overview: kas + posisi + sisa + fee belum diklaim. Dipakai
+  // di kartu status breaker drawdown supaya angkanya konsisten dengan Ringkasan.
+  const equityNow = async () => {
+    const cash = await engine.freshCash();
+    const s = engine.positions.summary(engine.ethUsd);
+    return (cash?.usd || 0) + s.exposureUsd + (s.leftoverUsd || 0) + s.feeUsd;
+  };
+
   return {
     'GET /api/settings': async () => {
       const addr = exec.address();
@@ -214,6 +224,10 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
           fromEnv: privateKeyFromEnv() ? 'LPCOPY_PRIVATE_KEY' : null,
         },
         mode: { dry_run: engine.dryRun(), paused: engine.paused() },
+        risk: {
+          max_daily_drawdown_pct: cfg.risk?.max_daily_drawdown_pct ?? 0,
+          status: { ...engine.drawdownStatus(), equityUsd: await equityNow() },
+        },
         rpc: rpcView(),
         gas: {
           price_multiplier: cfg.gas?.price_multiplier ?? 1.5,
@@ -267,6 +281,29 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
       return { ok: true, backup: bak ? path.basename(bak) : null };
     },
 
+    // Ekspor wallet sebagai keystore V3 terenkripsi (format sama dengan geth/MetaMask),
+    // bukan kunci privat mentah — walau responsnya kesadap atau nyangkut di cache/log,
+    // isinya tak berguna tanpa password yang diketik saat itu juga (tidak disimpan).
+    // Digembok token dashboard yang diketik ulang: cookie sesi HttpOnly tidak bisa
+    // dibaca lewat XSS, jadi ini lapis kedua yang nyata, bukan formalitas.
+    'POST /api/settings/wallet/export': async (req) => {
+      const b = await readBody(req);
+      const TOKEN = cfg.server?.auth_token || null;
+      if (!TOKEN) return { error: 'Setel token dashboard dulu di tab Keamanan sebelum bisa mengekspor wallet.' };
+      const supplied = Buffer.from(String(b.token || ''));
+      const real = Buffer.from(TOKEN);
+      if (supplied.length !== real.length || !crypto.timingSafeEqual(supplied, real)) return { error: 'Token salah.' };
+      const addr = exec.address();
+      if (!addr) return { error: 'Tidak ada wallet terpasang.' };
+      const pass = String(b.password || '');
+      if (pass.length < 8) return { error: 'Password keystore minimal 8 karakter.' };
+      let w;
+      try { w = exec.loadWallet(); } catch (e) { return { error: e.message }; }
+      const keystore = await w.encrypt(pass);
+      log(`wallet ${addr} diekspor sebagai keystore terenkripsi`);
+      return { ok: true, address: addr, keystore: JSON.parse(keystore) };
+    },
+
     // ---- mode ----
     'POST /api/settings/live': async (req) => {
       const b = await readBody(req);
@@ -279,6 +316,17 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
       saveCfg();
       log(`mode diubah ke ${b.live ? 'LIVE' : 'SIMULASI'} dari halaman Pengaturan`);
       return { ok: true, dry_run: cfg.mode.dry_run };
+    },
+
+    // ---- risiko ----
+    'POST /api/settings/risk': async (req) => {
+      const b = await readBody(req);
+      try {
+        cfg.risk = { ...(cfg.risk || {}), max_daily_drawdown_pct: num(b.max_daily_drawdown_pct, 0, 100, 'Batas drawdown harian') };
+      } catch (e) { return { error: e.message }; }
+      saveCfg();
+      log(`batas drawdown harian diubah ke ${cfg.risk.max_daily_drawdown_pct}% dari halaman Pengaturan`);
+      return { ok: true, max_daily_drawdown_pct: cfg.risk.max_daily_drawdown_pct };
     },
 
     // ---- RPC ----

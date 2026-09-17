@@ -109,6 +109,7 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
     stats: { startedAt: Date.now() - 60_000, ticks: 12 },
     dryRun: () => cfg.mode.dry_run !== false,
     paused: () => store.getState('paused', '0') === '1',
+    drawdownStatus: () => ({ enabled: false, pct: 0, peakUsd: null, tripped: false }),
     positions: { live, lastSync: Date.now(), summary: () => ({ openCount: 1, exposureUsd: 205, costUsd: 200, feeUsd: 1.5, unrealizedUsd: 6.5, realizedUsd: 12, inRange: 1 }) },
     watcher: { unsupported: new Map() },
     exec: {

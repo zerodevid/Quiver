@@ -134,7 +134,11 @@ function routes(cfg, dir) {
     cfg, cfgPath, log: (m) => logs.push(m), readBody: async (req) => req.__body,
     store: { setState() {}, getState: () => null },
     rpc: { stats: () => [], reconfigure() {} },
-    engine: { dryRun: () => true, paused: () => false, exec: { address: () => null, keyPath: () => path.join(dir, 'key'), resetWallet() {} } },
+    engine: {
+      dryRun: () => true, paused: () => false, drawdownStatus: () => ({ enabled: false, pct: 0, peakUsd: null, tripped: false }),
+      freshCash: async () => null, ethUsd: 2500, positions: { summary: () => ({ exposureUsd: 0, leftoverUsd: 0, feeUsd: 0 }) },
+      exec: { address: () => null, keyPath: () => path.join(dir, 'key'), resetWallet() {} },
+    },
     telegram: null,
   });
   const call = (key, body = {}) => r[key]({ __body: body, headers: {} }, new URL('http://x/'), {});

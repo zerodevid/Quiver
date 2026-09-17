@@ -11,6 +11,8 @@
   "dependencies": {
     "@heroui/react": "^3.2.4",
     "@heroui/styles": "^3.2.4",
+    "ethers": "^6.17.0",
+    "klinecharts": "^10.0.3",
     "lightweight-charts": "^5.2.1",
     "lucide-react": "^1.44.0",
     "react": "^19.3.0",

@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Chip, Checkbox, Separator, Tabs, toast } from '@heroui/react';
-import { Pencil, Activity as Pulse, Trash2, KeyRound, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck } from 'lucide-react';
+import { Pencil, Activity as Pulse, Trash2, KeyRound, Unlock, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { Wallet as EthersWallet } from 'ethers';
 import SettingInfo from '../components/SettingInfo';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { PageHeader, Loading, Notice, Text, Pick, Toggle, ask } from '../components/ui';
-import { num, locale as fmtLocale } from '../fmt';
+import { num, usd, locale as fmtLocale } from '../fmt';
 import { useI18n, translate as tt } from '../i18n';
 
 const amt = (v, d = 4) => (v == null ? '—' : Number(v).toLocaleString(fmtLocale(), { maximumFractionDigits: d }));
 
 const SETTINGS_NAV = [
   ['wallet', 'Wallet & mode', 'Dana dan mode transaksi', Wallet],
+  ['risk', 'Drawdown harian', 'Jeda otomatis kalau rugi kebablasan', ShieldAlert],
   ['rpc', 'RPC', 'Koneksi ke jaringan', Network],
   ['gas', 'Gas', 'Biaya dan cadangan transaksi', Fuel],
   ['notify', 'Notifikasi', 'Kabar ke ponsel lewat ntfy', Bell],
@@ -40,6 +42,13 @@ function WalletTab({ d, reload }) {
   const [liveTxt, setLiveTxt] = useState('');
   const [rm, setRm] = useState('');
   const [busy, setBusy] = useState('');
+  const [expToken, setExpToken] = useState('');
+  const [expPass, setExpPass] = useState('');
+  const [expPass2, setExpPass2] = useState('');
+  const [ksFile, setKsFile] = useState(null);
+  const [ksPass, setKsPass] = useState('');
+  const [ksBusy, setKsBusy] = useState(false);
+  const [ksResult, setKsResult] = useState(null);
   const act = async (key, url, body, ok) => {
     setBusy(key);
     const r = await post(url, body);
@@ -49,7 +58,7 @@ function WalletTab({ d, reload }) {
     return r;
   };
   return (
-    <Section title="Wallet bot" desc={<>{t('Pakai wallet khusus bot, jangan wallet utama. Kunci privat disimpan di server')} (<span className="mono">{w.fromEnv ? `.env · ${w.fromEnv}` : w.keyFile}</span>) {t('dan tidak pernah ditampilkan lagi.')}</>}>
+    <Section title="Wallet bot" desc={<>{t('Pakai wallet khusus bot, jangan wallet utama. Kunci privat disimpan di server')} (<span className="mono">{w.fromEnv ? `.env · ${w.fromEnv}` : w.keyFile}</span>) {t('dan tidak pernah dikirim mentah — cuma bisa diekspor sebagai keystore terenkripsi.')}</>}>
       {w.address ? (
         <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-3">
           <div className="sm:col-span-2"><dt className="text-xs text-muted">{t('Alamat')}</dt><dd className="mono mt-0.5 break-all">{w.address}</dd></div>
@@ -62,6 +71,77 @@ function WalletTab({ d, reload }) {
           <div><dt className="text-xs text-muted">WETH</dt><dd className="num mt-0.5 font-medium">{amt(w.balances?.weth, 6)}</dd></div>
         </dl>
       ) : <Notice>{t('Belum ada wallet terpasang. Bot hanya bisa berjalan dalam mode simulasi.')}</Notice>}
+
+      {w.address && (
+        <>
+          <Separator />
+          <div className="flex flex-col gap-3 rounded-md border border-border p-4">
+            <div className="font-medium">{t('Ekspor wallet')}</div>
+            <p className="text-sm text-muted">
+              {t('Menghasilkan berkas keystore terenkripsi (format sama dengan geth/MetaMask) yang bisa diimpor ke wallet lain lewat "Import via JSON". Kunci privat mentah tidak pernah dikirim — tanpa password di bawah, isi berkasnya tidak berguna. Butuh token dashboard, diketik ulang di sini, bukan diambil dari sesi login.')}
+            </p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Text label="Token dashboard" type="password" mono placeholder="token" value={expToken} onChange={setExpToken} autoComplete="off" />
+              <Text label="Password keystore baru" type="password" placeholder="min. 8 karakter" value={expPass} onChange={setExpPass} autoComplete="off" />
+              <Text label="Ulangi password" type="password" placeholder="min. 8 karakter" value={expPass2} onChange={setExpPass2} autoComplete="off" />
+            </div>
+            <Button variant="outline" className="w-fit" isDisabled={!expToken || expPass.length < 8 || expPass !== expPass2} isPending={busy === 'exp'}
+              onPress={async () => {
+                setBusy('exp');
+                const r = await post('/api/settings/wallet/export', { token: expToken, password: expPass });
+                setBusy('');
+                setExpToken(''); setExpPass(''); setExpPass2('');
+                if (r.error) { toast.danger(r.error); return; }
+                const blob = new Blob([JSON.stringify(r.keystore, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `quiver-${r.address.slice(0, 8)}-keystore.json`;
+                document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(url);
+                toast.success(tt('Keystore terunduh — simpan berkas dan password-nya di tempat aman.'));
+              }}>
+              <KeyRound className="size-4" />{t('Unduh keystore')}</Button>
+          </div>
+        </>
+      )}
+
+      <Separator />
+      <div className="flex flex-col gap-3 rounded-md border border-border p-4">
+        <div className="font-medium">{t('Buka keystore (offline)')}</div>
+        <p className="text-sm text-muted">
+          {t('Buat wallet yang cuma terima kunci privat mentah (mis. OKX Wallet), bukan file keystore — dekripsi berkas keystore di sini. Ini berjalan sepenuhnya di peramban kamu, dihitung di komputer sendiri; berkas dan password TIDAK dikirim ke server Quiver atau ke mana pun.')}
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-muted">{t('Berkas keystore (.json)')}</label>
+            <input type="file" accept=".json,application/json" className="text-sm file:mr-3 file:rounded-md file:border file:border-border file:bg-transparent file:px-3 file:py-1.5 file:text-sm"
+              onChange={(e) => { setKsFile(e.target.files?.[0] || null); setKsResult(null); }} />
+          </div>
+          <Text label="Password keystore" type="password" placeholder="password saat mengekspor" value={ksPass} onChange={setKsPass} autoComplete="off" />
+        </div>
+        <Button variant="outline" className="w-fit" isDisabled={!ksFile || !ksPass} isPending={ksBusy}
+          onPress={async () => {
+            setKsBusy(true); setKsResult(null);
+            try {
+              const text = await ksFile.text();
+              const w = await EthersWallet.fromEncryptedJson(text, ksPass);
+              setKsResult({ address: w.address, pk: w.privateKey });
+            } catch (e) {
+              toast.danger(e.shortMessage || e.message || tt('Gagal membuka keystore.'));
+            } finally { setKsBusy(false); setKsPass(''); }
+          }}>
+          <Unlock className="size-4" />{t('Buka')}</Button>
+        {ksResult && (
+          <div className="flex flex-col gap-2 rounded-md border border-danger/40 bg-danger/5 p-3">
+            <p className="text-xs font-medium text-danger">{t('Jangan discreenshot atau disalin ke aplikasi catatan. Tutup setelah dipakai.')}</p>
+            <div><dt className="text-xs text-muted">{t('Alamat')}</dt><dd className="mono mt-0.5 break-all text-sm">{ksResult.address}</dd></div>
+            <div><dt className="text-xs text-muted">{t('Kunci privat')}</dt><dd className="mono mt-0.5 break-all text-sm">{ksResult.pk}</dd></div>
+            <Button size="sm" variant="outline" className="w-fit" onPress={() => { navigator.clipboard?.writeText(ksResult.pk); toast.success(tt('Kunci privat disalin.')); }}>
+              <Copy className="size-4" />{t('Salin kunci privat')}</Button>
+            <Button size="sm" variant="ghost" className="w-fit" onPress={() => { setKsResult(null); setKsFile(null); }}>{t('Tutup')}</Button>
+          </div>
+        )}
+      </div>
 
       <Separator />
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -114,6 +194,62 @@ function WalletTab({ d, reload }) {
             </div>
           )}
         </>
+      )}
+    </Section>
+  );
+}
+
+// ---------------- drawdown harian ----------------
+function RiskTab({ d, setD }) {
+  const { t } = useI18n();
+  const st = d.risk?.status || {};
+  const saved = String(d.risk?.max_daily_drawdown_pct ?? 0);
+  const [pct, setPct] = useState(saved);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const dirty = pct !== saved;
+  const save = async (event) => {
+    event.preventDefault();
+    if (busy || !dirty) return;
+    setBusy(true); setError('');
+    const r = await post('/api/settings/risk', { max_daily_drawdown_pct: pct });
+    setBusy(false);
+    if (r.error) return setError(r.error);
+    setPct(String(r.max_daily_drawdown_pct));
+    setD((prev) => ({ ...prev, risk: { ...prev.risk, max_daily_drawdown_pct: r.max_daily_drawdown_pct } }));
+    toast.success(t('Batas drawdown tersimpan'));
+  };
+  const ddNow = st.peakUsd > 0 ? Math.max(0, ((st.peakUsd - (st.equityUsd ?? st.peakUsd)) / st.peakUsd) * 100) : null;
+  return (
+    <Section title="Drawdown harian" desc="Jeda ENTRY baru kalau ekuitas hari ini turun terlalu jauh dari puncaknya. Bukan penutup posisi paksa: posisi yang sudah terbuka tetap dikelola dan bisa keluar seperti biasa (stop loss, ikut target, dst). Breaker direset otomatis begitu hari berganti.">
+      <form onSubmit={save} className="flex flex-col gap-5">
+        <div className="flex items-start gap-1 rounded-xl border border-border bg-surface-secondary/30 p-4 md:max-w-sm">
+          <div className="min-w-0 flex-1">
+            <Text label="Batas drawdown harian (%, 0=mati)" type="number" value={pct} onChange={setPct} isDisabled={busy} />
+            <p className="mt-2 text-xs text-muted">{t('0 = nonaktif')}</p>
+          </div>
+          <SettingInfo title="Batas drawdown harian">
+            {t('Dihitung dari puncak ekuitas (kas + posisi + fee belum diklaim) sejak awal hari — zona waktu diatur di tab Telegram, kosong = zona server. Begitu ekuitas turun sebesar persentase ini dari puncaknya, entry baru dijeda sampai hari berganti. Diperiksa tiap kali ekuitas dicatat (interval "Sinkron ekuitas" di tab Mesin), bukan seketika.')}
+          </SettingInfo>
+        </div>
+        {error && <div role="alert"><Notice status="danger">{error}</Notice></div>}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+          <span role="status" className="text-sm text-muted">{t(dirty ? 'Ada perubahan belum disimpan' : 'Semua perubahan tersimpan')}</span>
+          <div className="flex gap-2">
+            {dirty && <Button variant="ghost" isDisabled={busy} onPress={() => { setPct(saved); setError(''); }}>{t('Batal')}</Button>}
+            <Button type="submit" isDisabled={!dirty || busy} isPending={busy}>{t('Simpan perubahan')}</Button>
+          </div>
+        </div>
+      </form>
+
+      <Separator />
+      <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-3">
+        <div><dt className="text-xs text-muted">{t('Ekuitas sekarang')}</dt><dd className="num mt-0.5 font-medium">{usd(st.equityUsd)}</dd></div>
+        <div><dt className="text-xs text-muted">{t('Puncak hari ini')}</dt><dd className="num mt-0.5 font-medium">{st.peakUsd != null ? usd(st.peakUsd) : '—'}</dd></div>
+        <div><dt className="text-xs text-muted">{t('Turun dari puncak')}</dt><dd className="num mt-0.5 font-medium">{ddNow != null ? `${ddNow.toFixed(1)}%` : '—'}</dd></div>
+      </dl>
+      {st.enabled && st.tripped && (
+        <div className="mt-4"><Notice status="warning">{t('Batas tersentuh hari ini — entry baru dijeda sampai besok. Posisi yang sudah ada tetap dikelola seperti biasa.')}</Notice></div>
       )}
     </Section>
   );
@@ -470,6 +606,7 @@ export default function Settings() {
               </Tabs.ListContainer>
               <div className="min-w-0 flex-1">
                 <Tabs.Panel id="wallet"><WalletTab d={d} reload={load} /></Tabs.Panel>
+                <Tabs.Panel id="risk"><RiskTab d={d} setD={setD} /></Tabs.Panel>
                 <Tabs.Panel id="rpc"><RpcTab d={d} setD={setD} /></Tabs.Panel>
                 <Tabs.Panel id="gas" shouldForceMount className="data-[inert]:hidden">
                   <SimpleForm title="Gas" desc="Berlaku untuk transaksi berikutnya, tanpa restart." url="/api/settings/gas" okText="Pengaturan gas tersimpan"

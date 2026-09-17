@@ -9,7 +9,15 @@ export function poolHealth({ pool = {}, pair, holders, open = [], now = Date.now
     const change = pair.priceChange || {};
     if (!finite(change.h24) || !finite(pair.liquidityUsd)) missing.push('Data harga 24 jam atau likuiditas belum lengkap.');
     for (const [window, severe, warn] of [['h24', -50, -20], ['h1', -20, -10]]) {
-      if (finite(change[window]) && change[window] <= warn) add(change[window] <= severe ? 'risk' : 'warn', window === 'h24' ? 'Harga turun {value}% dalam 24 jam.' : 'Harga turun {value}% dalam 1 jam.', { value: Math.abs(change[window]).toFixed(1) });
+      if (finite(change[window]) && change[window] <= warn) {
+        const usdMove = finite(pair.priceUsd) ? Math.abs(pair.priceUsd * change[window] / 100) : null;
+        const value = Math.abs(change[window]).toFixed(1);
+        add(change[window] <= severe ? 'risk' : 'warn',
+          usdMove != null
+            ? (window === 'h24' ? 'Harga turun {value}% (≈{usd}) dalam 24 jam.' : 'Harga turun {value}% (≈{usd}) dalam 1 jam.')
+            : (window === 'h24' ? 'Harga turun {value}% dalam 24 jam.' : 'Harga turun {value}% dalam 1 jam.'),
+          usdMove != null ? { value, usd: usdMove } : { value });
+      }
     }
     if (finite(pair.liquidityUsd) && pair.liquidityUsd < 50000) add(pair.liquidityUsd < 10000 ? 'risk' : 'warn', 'Likuiditas hanya ${value}; transaksi besar dapat menggeser harga.', { value: Math.round(pair.liquidityUsd) });
     if (pair.liquidityUsd > 0 && pair.fdv / pair.liquidityUsd > 100) add('warn', 'FDV {value}× likuiditas pool; valuasi jauh lebih besar dari likuiditas.', { value: Math.round(pair.fdv / pair.liquidityUsd) });
