@@ -91,11 +91,30 @@ class Kyber {
     return { fn: p.name, srcToken: d.srcToken, dstToken: d.dstToken, dstReceiver: d.dstReceiver, amount: BigInt(d.amount), minReturn: BigInt(d.minReturnAmount) };
   }
 
-  // Rugi rute dalam bps menurut nilai USD Kyber sendiri (fee pool + dampak harga).
-  static lossBps(q) {
-    if (!q?.usdIn || !q?.usdOut || q.usdIn <= 0) return null;
-    return ((q.usdIn - q.usdOut) / q.usdIn) * 10_000;
+  // Rugi rute dalam bps (fee pool + dampak harga), menurut nilai USD Kyber sendiri.
+  //
+  // `ref` = pembanding independen dari pemanggil, dipakai untuk sisi yang TIDAK dihargai
+  // Kyber: { usdIn, usdPerOut, outDecimals }. Ini bukan hiasan. Kyber mengembalikan
+  // amountInUsd/amountOutUsd kosong justru pada memecoin tipis yang paling butuh gerbang
+  // batas rugi, dan dulu itu membuat fungsi ini mengembalikan null — sementara gerbangnya
+  // menulis `loss != null && loss > batas`, jadi gerbang dilewati DIAM-DIAM. Diukur
+  // 17 Sep 2026 atas 244 swap sejak modal mulai dicatat: 223 swap yang punya harga USD
+  // meleset +0,4% dari taksiran harga tutup, 21 swap tanpa harga USD meleset −33,6%
+  // (−$105; −$100 di antaranya dari satu posisi, #82, yang gerbangnya sempat menolak
+  // berkali-kali di 42–57% lalu lolos begitu satu kutipan datang tanpa harga USD).
+  //
+  // Saat menjual sisa, sisi keluar SELALU bisa dinilai sendiri — token keluarnya aset
+  // kuotasi — jadi satu sisi saja dari Kyber sudah cukup untuk mengukur.
+  static routeLoss(q, ref = null) {
+    if (!q) return null;
+    const usdIn = (q.usdIn ?? ref?.usdIn) || null;
+    const usdOut = q.usdOut ?? (ref?.usdPerOut != null && ref?.outDecimals != null
+      ? (Number(q.amountOut) / 10 ** ref.outDecimals) * ref.usdPerOut
+      : null);
+    if (!(usdIn > 0) || usdOut == null) return null;
+    return { bps: ((usdIn - usdOut) / usdIn) * 10_000, usdIn, usdOut };
   }
+  static lossBps(q, ref = null) { return Kyber.routeLoss(q, ref)?.bps ?? null; }
 
   /**
    * Swap exact-in. Mengembalikan { hash, amountOut, quote } — amountOut diukur dari
@@ -103,7 +122,7 @@ class Kyber {
    * boleh pakai cadangan). Melempar galat kalau pengaman gagal atau batas rugi terlampaui
    * — tidak pernah diam-diam mengirim sesuatu yang tidak aman.
    */
-  async swap(tokenIn, tokenOut, amountIn, { slippageBps = 150, maxLossBps = null, kind = 'kyber_swap', detail = null } = {}) {
+  async swap(tokenIn, tokenOut, amountIn, { slippageBps = 150, maxLossBps = null, kind = 'kyber_swap', detail = null, ref = null, requireLoss = false } = {}) {
     if (!this.enabled() || amountIn <= 0n) return null;
     const me = this.exec.address();
     const nativeIn = String(tokenIn).toLowerCase() === ADDR.native;
@@ -118,7 +137,7 @@ class Kyber {
       // tidak ikut dilonggarkan, jadi rute yang buruk tetap ditolak.
       const slip = Math.min(slippageBps * (attempt + 1), maxLossBps || slippageBps * 3);
       try {
-        const r = await this.attempt(tokenIn, tokenOut, amountIn, { slippageBps: slip, maxLossBps, kind, detail, me, nativeIn });
+        const r = await this.attempt(tokenIn, tokenOut, amountIn, { slippageBps: slip, maxLossBps, kind, detail, me, nativeIn, ref, requireLoss });
         if (r || attempt === 2) return r;
       } catch (e) {
         lastErr = e;
@@ -135,7 +154,7 @@ class Kyber {
     throw lastErr || new Error('swap Kyber gagal setelah 3 percobaan');
   }
 
-  async attempt(tokenIn, tokenOut, amountIn, { slippageBps, maxLossBps, kind, detail, me, nativeIn }) {
+  async attempt(tokenIn, tokenOut, amountIn, { slippageBps, maxLossBps, kind, detail, me, nativeIn, ref = null, requireLoss = false }) {
     // Rute kadang "tidak ditemukan" sesaat walau beberapa detik kemudian ada — coba 3 kali.
     let q = null, built = null;
     for (let i = 0; i < 3 && !built; i++) {
@@ -145,12 +164,18 @@ class Kyber {
     }
     if (!q || !built) return null;
 
-    const loss = Kyber.lossBps(q);
-    if (maxLossBps != null && loss != null && loss > maxLossBps) {
-      const e = new Error(`rute Kyber rugi ${(loss / 100).toFixed(1)}% (batas ${(maxLossBps / 100).toFixed(1)}%) — $${q.usdIn?.toFixed(2)} → $${q.usdOut?.toFixed(2)}`);
+    const loss = Kyber.routeLoss(q, ref);
+    // Tidak terukur = tidak dikirim, untuk pemanggil yang memintanya (penjualan otomatis).
+    // "Tidak tahu ruginya berapa" bukan alasan sah membuang token tanpa batas; yang tidak
+    // terukur masuk antrean coba-ulang dan dikabarkan, bukan dieksekusi buta.
+    if (maxLossBps != null && requireLoss && !loss) {
+      throw new Error('rugi rute tidak terukur (Kyber tanpa harga USD dan tanpa pembanding) — tidak dijual');
+    }
+    if (maxLossBps != null && loss && loss.bps > maxLossBps) {
+      const e = new Error(`rute Kyber rugi ${(loss.bps / 100).toFixed(1)}% (batas ${(maxLossBps / 100).toFixed(1)}%) — $${loss.usdIn.toFixed(2)} → $${loss.usdOut.toFixed(2)}`);
       // Angkanya ikut dibawa supaya peringatan "sisa belum terjual" bisa menampilkan
       // nilai token vs yang bisa ditarik tanpa mengurai teks galat.
-      e.loss = { lossBps: loss, maxLossBps, usdIn: q.usdIn ?? null, usdOut: q.usdOut ?? null, dex: q.dex || null };
+      e.loss = { lossBps: loss.bps, maxLossBps, usdIn: loss.usdIn, usdOut: loss.usdOut, dex: q.dex || null };
       throw e;
     }
 

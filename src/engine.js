@@ -1941,6 +1941,66 @@ class Engine {
     finally { this.selling.delete(lockKey); }
   }
 
+  // Pembanding harga independen untuk satu penjualan sisa, supaya gerbang batas rugi
+  // tidak bergantung pada apakah Kyber kebetulan punya feed harga token itu.
+  //   usdIn   : nilai `amount` di harga pool posisinya sendiri (valueLeftover sudah
+  //             memakai markFor, yang menjepit harga pool gila ke harga masuk posisi)
+  //   usdPerOut/outDecimals : sisi keluar selalu aset kuotasi — nilainya kita tahu persis
+  // null di salah satu sisi bukan kegagalan: routeLoss memakai apa pun yang ada.
+  async sellRef(item, amount) {
+    const out = QUOTES[String(item.quote).toLowerCase()] || null;
+    const ref = {
+      usdIn: null,
+      usdPerOut: out ? (out.kind === 'eth' ? this.ethUsd : 1) : null,
+      outDecimals: out?.decimals ?? null,
+    };
+    try {
+      const rows = this.positions.leftoverRows(item.token)
+        .filter((r) => item.posId == null || r.id === item.posId);
+      if (rows.length) ref.usdIn = await this.positions.valueLeftover(rows, amount, this.ethUsd);
+    } catch (e) {
+      this.store.log('warn', `pembanding harga sisa ${String(item.token).slice(0, 10)}…: ${e.message}`, { quiet: true });
+    }
+    if (!(ref.usdIn > 0)) ref.usdIn = null;
+    return ref;
+  }
+
+  // Jumlah terbesar yang masih muat di batas rugi, dicari biner lewat kutipan Kyber.
+  //
+  // Semua-atau-tidak hanya menyisakan dua akhir yang sama-sama buruk: macet selamanya,
+  // atau dibuang utuh di harga berapa pun. Yang terjadi di produksi selalu yang kedua,
+  // lewat celah gerbang di atas, dan polanya sama persis pada ketiga kejadian terbesar —
+  // ditolak berkali-kali selagi Kyber punya harga, lalu DI MENIT YANG SAMA satu kutipan
+  // tanpa harga USD lolos dan seluruh sisa berangkat:
+  //   #82  13 Sep 18:55 ditolak 42,0% → 18:56 ditolak 56,6% → 18:56 terjual $72,76 ($173)
+  //   #175 15 Sep 18:59 ditolak 93,2% → 18:59 terjual $7,26
+  //   #187 16 Sep 10:18 ditolak 88,2% → 10:18 terjual $4,14
+  // Sesudah celah itu ditutup, yang tersisa justru akhir pertama — karena itu potongan.
+  // Jual sebanyak yang pool sanggup serap sekarang, sisanya kembali ke antrean: jeda
+  // antar percobaan memberi likuiditas dan arb waktu memulihkan harga, dan itu justru
+  // yang tidak pernah didapat kalau semuanya dibuang dalam satu tx.
+  //
+  // Hanya kutipan (GET), tidak ada tx yang dikirim. MAX_PROBE langkah dipakai supaya
+  // biayanya tetap ~5 HTTP per penjualan yang bermasalah.
+  async fitSell(item, amount, rules, ref) {
+    const MAX_PROBE = 5, MIN_CHUNK_USD = 2;
+    const maxLoss = rules.exit.sell_max_loss_bps;
+    const usdOf = (part) => (ref.usdIn != null ? (ref.usdIn * Number(part)) / Number(amount) : null);
+    let ok = null, lo = 0n, hi = amount;
+    for (let i = 0; i < MAX_PROBE && hi - lo > amount / 100n; i++) {
+      const mid = lo + (hi - lo) / 2n;
+      if (mid <= 0n) break;
+      // Terlalu kecil untuk membayar gasnya sendiri (~$0,16/jual): berhenti mengecilkan.
+      const usd = usdOf(mid);
+      if (usd != null && usd < MIN_CHUNK_USD) break;
+      const q = await this.kyber.quote(item.token, item.quote, mid);
+      const loss = q ? Kyber.routeLoss(q, { ...ref, usdIn: usdOf(mid) }) : null;
+      if (loss && loss.bps <= maxLoss) { ok = { amount: mid, loss: loss.bps, usdOut: loss.usdOut }; lo = mid; }
+      else hi = mid;
+    }
+    return ok;
+  }
+
   async sellTokenLocked(item, rules, { quiet }) {
     // Penjualan butuh gas: ETH native di bawah cadangan diisi dulu (dari WETH/USDG).
     await this.topUpGas([]).catch(() => {});
@@ -1958,25 +2018,49 @@ class Engine {
       this.keepLeftover({ ...item, amount: String(item.amount) }, `saldo belum terbaca: ${e.message}`);
       throw new Error(`${label} belum terjual: ${e.message}`);
     }
+    const ref = await this.sellRef(item, amount);
+    const swapOpts = {
+      slippageBps: rules.swap.max_slippage_bps, maxLossBps: rules.exit.sell_max_loss_bps,
+      kind: 'sell_leftover', detail: { position: item.posId }, ref, requireLoss: true,
+    };
+    let sold = amount;
     try {
-      let r = await this.kyber.swap(item.token, item.quote, amount, {
-        slippageBps: rules.swap.max_slippage_bps, maxLossBps: rules.exit.sell_max_loss_bps,
-        kind: 'sell_leftover', detail: { position: item.posId },
-      });
+      let r = null;
+      try {
+        r = await this.kyber.swap(item.token, item.quote, amount, swapOpts);
+      } catch (e) {
+        // Jumlah penuh tidak muat di batas rugi: cari potongan terbesar yang muat dan
+        // jual itu dulu. Sisanya tetap di antrean, bukan hangus dan bukan dibuang paksa.
+        if (!e.loss) throw e;
+        const fit = await this.fitSell(item, amount, rules, ref);
+        if (!fit) throw e;
+        this.log(`sisa ${label}: jumlah penuh rugi ${(e.loss.lossBps / 100).toFixed(1)}%, dijual bertahap ${(Number(fit.amount * 1000n / amount) / 10).toFixed(0)}% dulu (rugi ${(fit.loss / 100).toFixed(1)}%)`);
+        sold = fit.amount;
+        r = await this.kyber.swap(item.token, item.quote, sold, swapOpts);
+      }
       // Kyber belum mengenal rutenya (pool token baru sering belum terindeks): coba jual
       // langsung ke pool yang kita kenal — pool posisinya sendiri dan pool berpasangan sama.
-      if (!r) r = await this.sellViaPool(item, amount, rules);
+      if (!r) { sold = amount; r = await this.sellViaPool(item, amount, rules); }
       if (!r) throw new Error('Kyber tidak menemukan rute (pool langsung juga tidak bisa)');
-      this.dropLeftover(item);
+      const rest = amount - sold;
+      // Penjualan sebagian itu kemajuan, bukan kegagalan: penghitung percobaan dan
+      // kutipan lama direset supaya pita peringatan tidak menumpuk seolah macet.
+      if (rest > 0n) this.keepLeftover({ ...item, amount: rest.toString(), tries: 0, lastLossBps: null, lastUsdIn: null, lastUsdOut: null },
+        'sebagian terjual, sisanya menunggu likuiditas');
+      else this.dropLeftover(item);
       try {
-        this.positions.recordLeftoverSale({ posId: item.posId, token: item.token, amount, quoteToken: item.quote,
+        this.positions.recordLeftoverSale({ posId: item.posId, token: item.token, amount: sold, quoteToken: item.quote,
           txHash: r.hash, amountOut: r.amountOut, usdOut: r.quote?.usdOut, ethUsd: this.ethUsd });
       } catch (e) { this.store.log('warn', `catat hasil jual ${asalSisa(item)}: ${e.message}`, { quiet: true }); }
-      const msg = `jual ${label} → $${(r.quote.usdOut || 0).toFixed(2)} (${r.quote.dex})`;
+      // usdOut Kyber bisa kosong pada token tipis; sisi keluar aset kuotasi, jadi nilainya
+      // dihitung sendiri daripada melaporkan "$0,00" untuk penjualan yang berhasil.
+      const usdOut = r.quote?.usdOut ?? (r.amountOut != null && ref.usdPerOut != null
+        ? (Number(r.amountOut) / 10 ** ref.outDecimals) * ref.usdPerOut : null);
+      const msg = `jual ${label}${rest > 0n ? ' (sebagian)' : ''} → $${(usdOut || 0).toFixed(2)} (${r.quote.dex})`;
       if (!quiet) {
         this.notify(`${asalSisa(item)}: ${msg}`, {
-          kind: 'leftover', positionId: item.posId, txHash: r.hash, label, usdIn: r.quote.usdIn,
-          usdOut: r.quote.usdOut, dex: r.quote.dex, tries: item.tries || 0,
+          kind: 'leftover', positionId: item.posId, txHash: r.hash, label, usdIn: r.quote.usdIn ?? ref.usdIn,
+          usdOut, dex: r.quote.dex, tries: item.tries || 0, partial: rest > 0n,
         });
       }
       return msg;
@@ -2107,8 +2191,9 @@ class Engine {
           const amount = bal < BigInt(item.amount) ? bal : BigInt(item.amount);
           if (amount === 0n) { this.dropLeftover(item); continue; }
           const q = await this.kyber.quote(item.token, item.quote, amount);
-          const { Kyber } = require('./kyber');
-          const loss = q ? Kyber.lossBps(q) : null;
+          const ref = await this.sellRef(item, amount);
+          const lossRef = q ? Kyber.routeLoss(q, ref) : null;
+          const loss = lossRef?.bps ?? null;
           // Tanpa rute Kyber: jalur pool langsung dicoba (sellToken → sellViaPool), paling
           // sering tiap 60 detik per item — tiap percobaan membaca & menyimulasikan pool.
           if (!q && Date.now() - (item.poolTriedAt || 0) > 60_000) {
@@ -2116,13 +2201,30 @@ class Engine {
             await this.sellToken({ ...item, poolTriedAt: Date.now() });
             continue;
           }
-          if (!q || (loss != null && loss > rules.exit.sell_max_loss_bps)) {
+          // Rugi yang TIDAK terukur diperlakukan sama dengan rugi di atas batas: ditahan.
+          // Dulu `loss != null` membuat kutipan tanpa harga USD lolos begitu saja ke
+          // penjualan penuh — jalur yang sama yang menguras posisi #82.
+          if (!q || loss == null || loss > rules.exit.sell_max_loss_bps) {
             const why = !q ? 'Kyber tidak menemukan rute'
-              : `rute Kyber rugi ${(loss / 100).toFixed(1)}% (batas ${(rules.exit.sell_max_loss_bps / 100).toFixed(1)}%) — $${q.usdIn?.toFixed(2)} → $${q.usdOut?.toFixed(2)}`;
+              : loss == null ? 'rugi rute tidak terukur (Kyber tanpa harga USD dan tanpa pembanding)'
+                : `rute Kyber rugi ${(loss / 100).toFixed(1)}% (batas ${(rules.exit.sell_max_loss_bps / 100).toFixed(1)}%) — $${lossRef.usdIn.toFixed(2)} → $${lossRef.usdOut.toFixed(2)}`;
             const e = new Error(why);
-            if (q) e.loss = { lossBps: loss, maxLossBps: rules.exit.sell_max_loss_bps, usdIn: q.usdIn, usdOut: q.usdOut, dex: q.dex };
+            if (lossRef) e.loss = { lossBps: loss, maxLossBps: rules.exit.sell_max_loss_bps, usdIn: lossRef.usdIn, usdOut: lossRef.usdOut, dex: q.dex };
+            // Jumlah penuh tidak muat, tapi sebagian mungkin muat. Pencarian potongan
+            // memakan ~5 kutipan, sementara loop ini berjalan tiap detik untuk tiap item —
+            // jadi dua rem: hanya untuk yang sudah gagal beberapa kali (rugi yang sekadar
+            // berkedip biasanya hilang sendiri di tick berikutnya, tidak perlu dipotong),
+            // dan paling sering tiap 60 detik. Penjualan pertama sesudah tutup tidak lewat
+            // sini — sellTokenLocked memotong langsung begitu jumlah penuh ditolak.
+            if (q && (item.tries || 0) >= 3 && Date.now() - (item.fitTriedAt || 0) > 60_000) {
+              this.saveLeftovers(this.leftovers().map((x) => (this.sameLeftover(x, item) ? { ...x, fitTriedAt: Date.now() } : x)));
+              if (await this.fitSell(item, amount, rules, ref)) {
+                await this.sellToken({ ...item, amount: amount.toString(), fitTriedAt: Date.now() });
+                continue;
+              }
+            }
             // Kutipan terbaru disimpan supaya pita di dasbor menunjukkan angka kini.
-            this.keepLeftover({ ...item, amount: amount.toString(), lastLossBps: loss, lastUsdOut: q?.usdOut ?? null, lastUsdIn: q?.usdIn ?? null }, why);
+            this.keepLeftover({ ...item, amount: amount.toString(), lastLossBps: loss, lastUsdOut: lossRef?.usdOut ?? null, lastUsdIn: lossRef?.usdIn ?? null }, why);
             const meta = await this.chain.token(item.token).catch(() => null);
             this.alertLeftover(item, `${(Number(amount) / 10 ** (meta?.decimals ?? 18)).toPrecision(4)} ${meta?.symbol || item.token.slice(0, 8)}`, e);
             continue;

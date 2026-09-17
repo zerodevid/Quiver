@@ -903,7 +903,10 @@ class Manual {
     const q = await eng.kyber.quote(tokenIn, tokenOut, BigInt(amountRaw));
     if (!q) return { error: 'Kyber tidak menemukan rute untuk pasangan ini' };
     const { Kyber } = require('./kyber');
-    const loss = Kyber.lossBps(q);
+    // Sisi keluar dinilai sendiri kalau itu aset kuotasi: tanpa ini "biaya rute" kosong
+    // persis pada token tipis yang paling perlu dilihat angkanya sebelum menekan tukar.
+    const qo = QUOTES[lc(tokenOut)] || null;
+    const loss = Kyber.lossBps(q, qo && { usdPerOut: qo.kind === 'eth' ? eng.ethUsd : 1, outDecimals: qo.decimals });
     const rules = eng.rulesFrom(null);
     return {
       symbolIn: mi.symbol, symbolOut: mo.symbol,
