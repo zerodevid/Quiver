@@ -1,5 +1,7 @@
-// Peringatan "target membuka posisi" ala terminal trading: toast di dasbor, bunyi
-// singkat, dan notifikasi desktop kalau tab ini sedang tidak dilihat.
+// Peringatan ala terminal trading: toast di dasbor, bunyi singkat, dan notifikasi
+// desktop kalau tab ini sedang tidak dilihat. Dua kejadian: target membuka posisi
+// (bot menyalin) dan posisi salinan ditutup — yang kedua selalu membawa PnL-nya,
+// dan bunyinya beda supaya tanpa melihat layar pun tahu itu buka atau tutup.
 //
 // Preferensinya per browser (localStorage), bukan di config server: bunyi dan izin
 // notifikasi memang milik perangkat — laptop di meja boleh berbunyi, HP jangan.
@@ -7,7 +9,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button, Popover, toast } from '@heroui/react';
 import { Bell, BellOff } from 'lucide-react';
 import { get } from '../api';
-import { usd, short } from '../fmt';
+import { usd, pct, age, short } from '../fmt';
 import { useI18n, reason as reasonText, translate } from '../i18n';
 import { Toggle } from './ui';
 
@@ -27,7 +29,9 @@ export function setAlertPrefs(patch) {
 export const useAlertPrefs = () => useSyncExternalStore((f) => { subs.add(f); return () => subs.delete(f); }, () => prefs);
 
 // ---- bunyi ----------------------------------------------------------------
-// Dua nada pendek disintesis lewat WebAudio — tanpa berkas audio yang perlu diunduh.
+// Nada-nada pendek disintesis lewat WebAudio — tanpa berkas audio yang perlu diunduh.
+// Tiga suara: chime (buka: dua nada sine naik), cashout (tutup untung: tiga nada
+// triangle naik cepat, "ka-ching") dan loss (tutup rugi: dua nada rendah turun).
 // Browser baru mengizinkan audio setelah ada interaksi pengguna, jadi konteksnya
 // dibuka pada klik/ketikan pertama di halaman; sebelum itu bunyi diam-diam gagal.
 let ctx = null;
@@ -59,6 +63,29 @@ export function chime() {
     o.connect(g).connect(c.destination);
     o.start(now + dt);
     o.stop(now + dt + 0.55);
+  }
+}
+
+// Tutup posisi: untung = tiga nada triangle naik cepat lalu nada panjang di atas;
+// rugi = dua nada rendah menurun, lebih lambat. Timbre (triangle) beda dari chime
+// buka (sine) supaya bisa dibedakan tanpa melihat layar.
+export function cashout(pnl = 0) {
+  const c = audio();
+  if (!c) return;
+  const now = c.currentTime;
+  const seq = pnl >= 0
+    ? [[659.25, 0, 0.14], [880, 0.09, 0.14], [1108.7, 0.18, 0.14], [1318.5, 0.27, 0.7]]
+    : [[493.88, 0, 0.32], [369.99, 0.26, 0.75]];
+  for (const [freq, dt, len] of seq) {
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = 'triangle';
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, now + dt);
+    g.gain.exponentialRampToValueAtTime(pnl >= 0 ? 0.2 : 0.16, now + dt + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dt + len);
+    o.connect(g).connect(c.destination);
+    o.start(now + dt);
+    o.stop(now + dt + len + 0.05);
   }
 }
 
@@ -121,7 +148,22 @@ export const canDesktop = () => typeof Notification !== 'undefined' && window.is
 // ---- menampilkan satu kelompok peringatan ----------------------------------
 const who = (it) => it.targetLabel || short(it.target);
 const pairOf = (it) => `${it.symbol0 || short(it.token0)}/${it.symbol1 || short(it.token1)}`;
-const titleOf = (it) => translate(it.adding ? '{who} menambah likuiditas {pair}' : '{who} membuka posisi {pair}', { who: who(it), pair: pairOf(it) });
+const titleOf = (it) => (it.kind === 'close' ? closeTitle(it)
+  : translate(it.adding ? '{who} menambah likuiditas {pair}' : '{who} membuka posisi {pair}', { who: who(it), pair: pairOf(it) }));
+// Judul tutup langsung memuat PnL-nya: "PEPE/USDG ditutup · +$12,34 (+5,6%)".
+const signed = (v) => (v >= 0 ? '+' : '') + usd(v);
+const closeTitle = (it) => translate(it.pnlUsd >= 0 ? '{pair} ditutup · untung {pnl}' : '{pair} ditutup · rugi {pnl}',
+  { pair: pairOf(it), pnl: `${signed(it.pnlUsd)}${it.pnlPct != null ? ` (${pct(it.pnlPct)})` : ''}` });
+const closeDesc = (it) => [
+  translate('hasil {out} · modal {cost}', { out: usd(it.outUsd), cost: usd(it.costUsd) }),
+  it.ageHours != null && translate('dipegang {d}', { d: age(it.ageHours) }),
+  it.mirrored ? translate('ikut target keluar{who}', { who: it.target ? ` (${who(it)})` : '' }) : translate('keluar mandiri / manual'),
+].filter(Boolean).join(' · ');
+
+// Posisi yang ditutup manual dari dasbor sudah diberi toast oleh alur tutupnya
+// sendiri; umpan tidak perlu mengulanginya beberapa detik kemudian.
+const mutedClose = new Set();
+export function muteClose(positionId) { mutedClose.add(Number(positionId)); }
 const verdictOf = (it) => (
   it.verdict === 'copy' ? translate('Disalin bot')
     : it.verdict === 'dry' ? translate('Simulasi — tidak dikirim')
@@ -134,34 +176,61 @@ const descOf = (it) => [
   verdictOf(it),
 ].filter(Boolean).join(' · ');
 
-function announce(items, { sound, desktop, preview = false }) {
+const linkOf = (it) => (it.positionId ? `positions/${it.positionId}` : `targets/${it.target}`);
+
+function announce(all, { sound, desktop, preview = false }) {
+  const items = all.filter((it) => !(it.kind === 'close' && mutedClose.has(Number(it.positionId))));
   if (!items.length) return;
-  if (sound) chime();
+  const opens = items.filter((it) => it.kind !== 'close');
+  const closes = items.filter((it) => it.kind === 'close');
+  if (sound) {
+    // Buka dan tutup dalam satu putaran: bunyikan berurutan, bukan tumpang tindih.
+    if (opens.length) chime();
+    if (closes.length) {
+      const net = closes.reduce((a, it) => a + (it.pnlUsd || 0), 0);
+      if (opens.length) setTimeout(() => cashout(net), 750); else cashout(net);
+    }
+  }
   bumpTitle(items.length);
   // Banjir aksi (mis. satu target membuka banyak posisi sekaligus) jadi satu ringkasan.
-  const shown = items.length > 3 ? [] : items;
-  if (items.length > 3) {
-    toast(translate('{n} posisi baru dari target', { n: items.length }), {
+  if (opens.length > 3) {
+    toast(translate('{n} posisi baru dari target', { n: opens.length }), {
       variant: 'accent', timeout: 10000,
-      description: [...new Set(items.map(who))].slice(0, 4).join(', '),
+      description: [...new Set(opens.map(who))].slice(0, 4).join(', '),
       actionProps: { children: translate('Aktivitas'), onPress: () => { location.hash = 'activity'; } },
     });
   }
+  if (closes.length > 3) {
+    const net = closes.reduce((a, it) => a + (it.pnlUsd || 0), 0);
+    toast(translate('{n} posisi ditutup · total {pnl}', { n: closes.length, pnl: signed(net) }), {
+      variant: net >= 0 ? 'success' : 'danger', timeout: 15000,
+      description: closes.map((it) => `${pairOf(it)} ${signed(it.pnlUsd)}`).slice(0, 4).join(' · '),
+      actionProps: { children: translate('Posisi'), onPress: () => { location.hash = 'positions'; } },
+    });
+  }
+  const shown = [...(opens.length > 3 ? [] : opens), ...(closes.length > 3 ? [] : closes)];
   for (const it of shown) {
-    const go = preview ? null : () => { location.hash = it.positionId ? `positions/${it.positionId}` : `targets/${it.target}`; };
+    const go = preview ? null : () => { location.hash = linkOf(it); };
+    const close = it.kind === 'close';
     let key = null;
     key = toast(titleOf(it), {
-      variant: 'accent', timeout: 10000, description: descOf(it),
+      variant: close ? (it.pnlUsd >= 0 ? 'success' : 'danger') : 'accent',
+      timeout: close ? 15000 : 10000,
+      description: close ? closeDesc(it) : descOf(it),
       actionProps: go ? { children: translate('Lihat'), onPress: () => { go(); if (key) toast.close(key); } } : undefined,
     });
   }
   if (desktop && document.hidden && canDesktop() && Notification.permission === 'granted') {
     const it = items[items.length - 1];
-    const n = new Notification(items.length > 1 ? translate('{n} posisi baru dari target', { n: items.length }) : titleOf(it), {
-      body: items.length > 1 ? items.map(titleOf).slice(0, 4).join('\n') : descOf(it),
-      tag: `quiver-target-${it.id}`,
+    const many = items.length > 1;
+    const title = !many ? titleOf(it)
+      : closes.length && !opens.length ? translate('{n} posisi ditutup · total {pnl}', { n: closes.length, pnl: signed(closes.reduce((a, x) => a + (x.pnlUsd || 0), 0)) })
+        : translate('{n} kejadian baru', { n: items.length });
+    const n = new Notification(title, {
+      body: many ? items.map(titleOf).slice(0, 4).join('\n') : it.kind === 'close' ? closeDesc(it) : descOf(it),
+      tag: `quiver-feed-${it.id}`,
     });
-    n.onclick = () => { window.focus(); location.hash = items.length > 1 ? 'activity' : `targets/${it.target}`; n.close(); };
+    n.onclick = () => { window.focus(); location.hash = many ? (opens.length ? 'activity' : 'positions') : linkOf(it); n.close(); };
   }
 }
 
@@ -171,7 +240,8 @@ function announce(items, { sound, desktop, preview = false }) {
 // diambil ulang supaya aksi selama mati tidak dibunyikan belakangan.
 export function useTargetAlerts() {
   const p = useAlertPrefs();
-  const last = useRef(null);
+  const last = useRef(null);          // id aksi terakhir yang sudah diumumkan
+  const lastClosed = useRef(0);       // waktu tutup terakhir yang sudah diumumkan
   useEffect(() => {
     if (!p.enabled) return undefined;
     last.current = null;
@@ -179,10 +249,11 @@ export function useTargetAlerts() {
     const tick = async () => {
       try {
         const first = last.current == null;
-        const r = await get(first ? '/api/feed' : `/api/feed?after=${last.current}`);
+        const r = await get(first ? '/api/feed' : `/api/feed?after=${last.current}&closedAfter=${lastClosed.current}`);
         if (!alive || r.error) return;
         if (!first && r.items?.length) announce(r.items, prefs);
         last.current = Math.max(last.current ?? 0, r.lastId ?? 0);
+        lastClosed.current = Math.max(lastClosed.current, r.lastClosed ?? 0, ...(r.items || []).map((it) => (it.kind === 'close' ? it.ts : 0)));
       } catch { /* jaringan putus: coba lagi di putaran berikutnya */ }
       finally { if (alive) timer = setTimeout(tick, document.hidden ? 8000 : 4000); }
     };
@@ -207,10 +278,14 @@ export function AlertBell({ placement = 'top', variant = 'outline', iconClass = 
   const desktopHint = perm === 'unsupported' ? 'Butuh dasbor lewat HTTPS atau localhost.'
     : perm === 'denied' ? 'Diblokir browser — izinkan notifikasi dari pengaturan situs.'
       : 'Muncul saat tab ini sedang tidak dibuka.';
-  const sample = () => announce([{
-    id: 0, target: '0x0000000000000000000000000000000000000000', targetLabel: t('Contoh target'),
-    symbol0: 'PEPE', symbol1: 'USDG', venue: 'v4', fee: 10000, valueUsd: 1250, verdict: null,
-  }], { sound: true, desktop: false, preview: true });
+  // Contoh peringatan, per jenis, supaya bunyi dan bentuk toast tiap kejadian bisa
+  // dicoba sendiri-sendiri: buka (chime), tutup untung dan tutup rugi (cashout).
+  const CONTOH = { target: '0x0000000000000000000000000000000000000000', targetLabel: t('Contoh target'), symbol0: 'PEPE', symbol1: 'USDG', venue: 'v4', fee: 10000 };
+  const sample = (jenis) => announce([
+    jenis === 'open' ? { ...CONTOH, kind: 'open', id: 0, valueUsd: 1250, verdict: null }
+      : jenis === 'profit' ? { ...CONTOH, kind: 'close', id: 'c0', mirrored: true, costUsd: 1250, outUsd: 1318.75, pnlUsd: 68.75, pnlPct: 5.5, ageHours: 6.2 }
+        : { ...CONTOH, kind: 'close', id: 'c1', mirrored: false, costUsd: 1250, outUsd: 1102.5, pnlUsd: -147.5, pnlPct: -11.8, ageHours: 0.7 },
+  ], { sound: true, desktop: false, preview: true });
   const Icon = p.enabled ? Bell : BellOff;
   return (
     <Popover>
@@ -221,13 +296,20 @@ export function AlertBell({ placement = 'top', variant = 'outline', iconClass = 
         <Popover.Dialog className="flex flex-col gap-3 p-3">
           <div>
             <Popover.Heading className="text-sm font-medium">{t('Peringatan target')}</Popover.Heading>
-            <p className="mt-0.5 text-xs text-muted">{t('Toast dan bunyi saat wallet target membuka atau menambah posisi LP.')}</p>
+            <p className="mt-0.5 text-xs text-muted">{t('Toast dan bunyi saat wallet target membuka posisi LP, dan saat posisi salinan ditutup — lengkap dengan PnL-nya. Bunyi buka dan tutup berbeda.')}</p>
           </div>
           <Toggle label="Aktif" value={p.enabled} onChange={(v) => setAlertPrefs({ enabled: v })} />
           <Toggle label="Bunyi" value={p.sound} isDisabled={!p.enabled} onChange={(v) => setAlertPrefs({ sound: v })} />
           <Toggle label="Notifikasi desktop" desc={desktopHint} value={p.desktop && perm === 'granted'}
             isDisabled={!p.enabled || perm === 'unsupported' || perm === 'denied'} onChange={setDesktop} />
-          <Button size="sm" variant="outline" onPress={sample}>{t('Coba peringatan')}</Button>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs text-muted">{t('Coba peringatan')}</span>
+            <div className="grid grid-cols-3 gap-1.5">
+              <Button size="sm" variant="outline" onPress={() => sample('open')}>{t('Buka')}</Button>
+              <Button size="sm" variant="outline" className="text-success" onPress={() => sample('profit')}>{t('Tutup untung')}</Button>
+              <Button size="sm" variant="outline" className="text-danger" onPress={() => sample('loss')}>{t('Tutup rugi')}</Button>
+            </div>
+          </div>
         </Popover.Dialog>
       </Popover.Content>
     </Popover>

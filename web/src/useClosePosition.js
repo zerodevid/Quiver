@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { toast } from '@heroui/react';
 import { post } from './api';
 import { ask } from './components/ui';
+import { muteClose } from './components/TargetAlerts';
 import { usd, short } from './fmt';
 import { useI18n } from './i18n';
 
@@ -26,6 +27,7 @@ export function useClosePosition(reload) {
     });
     if (!ok) return;
     setClosing(p.id);
+    muteClose(p.id);   // toast hasilnya dari alur ini; umpan peringatan jangan mengulang
     const wait = toast(t('Menutup posisi {pair}…', { pair }), {
       description: t('Menunggu konfirmasi di chain, bisa sampai 1–2 menit.'), isLoading: true, timeout: 0,
     });

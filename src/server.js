@@ -1059,15 +1059,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         return { error: e.message };
       } finally { manualOpening.delete(lockKey); }
     },
-    // Umpan untuk peringatan "target membuka posisi" di dasbor (toast + suara).
-    // Dipoll tiap beberapa detik, jadi sengaja ringan: panggilan pertama (tanpa
-    // `after`) cuma mengembalikan id terakhir sebagai titik awal, supaya membuka
+    // Umpan untuk peringatan di dasbor (toast + suara): "target membuka posisi"
+    // dan "posisi salinan ditutup" (dengan PnL-nya). Dipoll tiap beberapa detik,
+    // jadi sengaja ringan: panggilan pertama (tanpa `after`) cuma mengembalikan
+    // titik awal — id aksi terakhir dan waktu tutup terakhir — supaya membuka
     // dasbor tidak memutar ulang semua riwayat. Aksi lama yang baru tercatat —
     // backfill setelah mesin mati — disaring lewat umurnya, bukan id-nya.
     'GET /api/feed': (req, url) => {
       const lastId = store.get('SELECT COALESCE(MAX(id),0) AS id FROM actions')?.id || 0;
+      const lastClosed = store.get("SELECT COALESCE(MAX(closed_ts),0) AS ts FROM positions WHERE status='closed'")?.ts || 0;
       const raw = url.searchParams.get('after');
-      if (raw == null || !Number.isFinite(Number(raw))) return { lastId, items: [] };
+      if (raw == null || !Number.isFinite(Number(raw))) return { lastId, lastClosed, items: [] };
       const rows = store.all(`
         SELECT a.id, a.ts, a.target, a.venue, a.token_id, a.token0, a.token1, a.fee, a.tick_lower, a.tick_upper,
                a.value_quote, a.quote_symbol, d.verdict, d.reason, d.position_id,
@@ -1080,14 +1082,42 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const toks = new Map(store.all('SELECT address,symbol FROM tokens').map((t) => [t.address, t.symbol]));
       const labels = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
       const items = rows.map((r) => ({
-        id: r.id, ts: r.ts, target: r.target, targetLabel: labels.get(r.target) || null,
+        kind: 'open', id: r.id, ts: r.ts, target: r.target, targetLabel: labels.get(r.target) || null,
         venue: r.venue, fee: r.fee, adding: !!r.adding,
         token0: r.token0, token1: r.token1, symbol0: toks.get(r.token0) || null, symbol1: toks.get(r.token1) || null,
         valueUsd: r.value_quote == null ? null
           : r.value_quote * (r.quote_symbol === 'ETH' || r.quote_symbol === 'WETH' ? engine.ethUsd : 1),
         verdict: r.verdict || null, reason: r.reason || null, positionId: r.position_id || null,
       }));
-      return { lastId, items };
+      // Posisi salinan yang tertutup penuh sejak `closedAfter` (waktu tutup, ms) —
+      // ikut-keluar target, keluar mandiri, maupun ditutup manual. PnL-nya sudah
+      // final di baris posisi (hasil − modal, sudah termasuk fee yang diklaim).
+      const rawC = url.searchParams.get('closedAfter');
+      if (rawC != null && Number.isFinite(Number(rawC))) {
+        const closed = store.all(`
+          SELECT p.id, p.closed_ts, p.opened_ts, p.venue, p.fee, p.token_id, p.token0, p.token1, p.target, p.mirror_of,
+                 p.cost_quote, p.out_quote, p.quote_symbol, p.tx_close,
+                 EXISTS(SELECT 1 FROM decisions d JOIN actions a ON a.id = d.action_id
+                        WHERE d.position_id = p.id AND d.verdict = 'copy'
+                          AND a.kind IN ('decrease','transfer_out') AND d.ts >= p.closed_ts - 600000) AS mirrored
+          FROM positions p
+          WHERE p.status = 'closed' AND p.closed_ts > ? AND p.closed_ts > ?
+          ORDER BY p.closed_ts LIMIT 20`, Number(rawC), Date.now() - 15 * 60_000);
+        for (const r of closed) {
+          const k = r.quote_symbol === 'ETH' || r.quote_symbol === 'WETH' ? engine.ethUsd : 1;
+          const costUsd = (r.cost_quote || 0) * k, outUsd = (r.out_quote || 0) * k;
+          items.push({
+            kind: 'close', id: `c${r.id}`, ts: r.closed_ts, positionId: r.id, tokenId: r.token_id,
+            target: r.target, targetLabel: r.target ? labels.get(r.target) || null : null, mirrorOf: r.mirror_of,
+            venue: r.venue, fee: r.fee, mirrored: !!r.mirrored, txHash: r.tx_close,
+            token0: r.token0, token1: r.token1, symbol0: toks.get(r.token0) || null, symbol1: toks.get(r.token1) || null,
+            costUsd, outUsd, pnlUsd: outUsd - costUsd,
+            pnlPct: costUsd > 0 ? ((outUsd - costUsd) / costUsd) * 100 : null,
+            ageHours: r.opened_ts ? (r.closed_ts - r.opened_ts) / 3600000 : null,
+          });
+        }
+      }
+      return { lastId, lastClosed, items };
     },
     'GET /api/rules': () => ({ rules: rulesFor(cfg.rules), defaults: DEFAULTS, raw: cfg.rules || {} }),
     'POST /api/rules': async (req) => {
