@@ -618,6 +618,34 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     assert.strictEqual(planEntry(act, { ...base, existingUsd: 200 }).verdict, 'skip', 'posisi sudah penuh');
   });
 
+  await t('policy: posisi satu sisi dipotong batas satu sisi — alasannya menyebut batas itu, bukan "batas per posisi"', async () => {
+    // Kasus nyata lpcopy3: batas per posisi 280, batas satu sisi 200, target buka $500 di atas
+    // harga. Dulu alasannya "batas per posisi ($200)" padahal batas per posisinya 280.
+    const { planEntry, rulesFor } = require('../src/policy');
+    const rules = rulesFor({ sizing: { mode: 'mirror', max_quote_per_position_usd: 280, max_total_exposure_usd: 10_000, daily_budget_usd: 10_000, min_quote_usd: 5 },
+      onesided: { policy: 'copy', max_quote_usd: 200 }, filters: { min_target_quote_usd: 1, allow_hooks: true } });
+    const chain = {
+      quoteSideOf: (t0) => (t0 === USDG ? { side: 0, symbol: 'USDG', decimals: 6, kind: 'usd' } : null),
+      valueInQuote: ({ amount0, amount1, sqrtPriceX96 }) => ({ value: Number(amount0) / 1e6 + Number(amount1) / 1e18 * (1e12 / m.priceFromSqrt(sqrtPriceX96, 0, 0)) / 1e12, symbol: 'USDG', kind: 'usd' }),
+    };
+    const slot0 = { sqrtPriceX96: m.getSqrtRatioAtTick(0), tick: 0 };
+    const base = { chain, rules, slot0, dec0: 6, dec1: 18, ethUsd: 2500, openExposureUsd: 0, spentTodayUsd: 0, openCount: 0 };
+    // rentang seluruhnya di atas harga kini → hanya USDG (token0)
+    const side = { venue: 'v4', token0: USDG, token1: MEME, fee: 3000, tickSpacing: 60, tickLower: 600, tickUpper: 1800, liquidity: String(10n ** 16n), valueQuote: 500, tokenId: '8', target: TARGET };
+    const r = planEntry(side, base);
+    assert.strictEqual(r.verdict, 'copy', r.reason);
+    assert.strictEqual(r.plan.side, 'token0_only');
+    assert.ok(Math.abs(r.plan.valueUsd - 200) < 0.01, `dipotong ke $200, dapat ${r.plan.valueUsd}`);
+    assert.match(r.reason, /batas satu sisi \(\$200\.00\)/);
+    assert.doesNotMatch(r.reason, /batas per posisi/);
+    // dua sisi: batas satu sisi tidak ikut campur, yang kena batas per posisi 280
+    const both = { ...side, tickLower: -600, tickUpper: 600 };
+    const r2 = planEntry(both, base);
+    assert.strictEqual(r2.verdict, 'copy', r2.reason);
+    assert.match(r2.reason, /batas per posisi \(\$280\.00\)/);
+    assert.ok(Math.abs(r2.plan.valueUsd - 280) < 0.01, `dipotong ke $280, dapat ${r2.plan.valueUsd}`);
+  });
+
   await t('adopsi posisi: likuiditas gagal dibaca → jendela pindai TIDAK dimajukan, posisi diadopsi di percobaan berikutnya', async () => {
     const IF_POSM = new ethers.Interface(ABI.posmV4);
     let liqOk = false;

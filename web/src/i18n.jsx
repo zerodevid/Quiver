@@ -1253,6 +1253,7 @@ const EN = {
   '@dan aturannya lewati': 'and the rule says skip',
   '@dipotong oleh': 'capped by',
   '@batas per posisi': 'per-position cap',
+  '@batas satu sisi': 'one-sided cap',
   '@sisa jatah eksposur total': 'remaining total exposure',
   '@sisa anggaran harian': 'remaining daily budget',
   '@habis': 'exhausted',

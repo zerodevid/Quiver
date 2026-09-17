@@ -310,12 +310,19 @@ function planEntry(act, ctx) {
 
   // batas atas: potong L secara proporsional supaya tetap masuk
   const caps = [];
-  let capPer = sideNow !== 'both' ? Math.min(s.max_quote_per_position_usd, rules.onesided.max_quote_usd)
-    : s.max_quote_per_position_usd;
+  // Posisi satu sisi punya batasnya sendiri (onesided.max_quote_usd). Dicatat terpisah
+  // supaya alasannya menyebut batas yang benar-benar mengikat — dulu keduanya digabung
+  // lalu selalu disebut "batas per posisi", padahal yang memotong sering batas satu sisi.
+  let capPer = s.max_quote_per_position_usd;
+  let capSide = sideNow !== 'both' ? rules.onesided.max_quote_usd : Infinity;
   // Tambahan ke posisi yang sudah ada: batas per posisi berlaku untuk TOTALNYA. Dulu yang
   // dibatasi hanya tambahannya, jadi posisi $200 dengan batas $200 bisa tumbuh jadi $400.
-  if (adding) capPer = Math.max(0, capPer - Math.max(0, ctx.existingUsd));
+  if (adding) {
+    capPer = Math.max(0, capPer - Math.max(0, ctx.existingUsd));
+    capSide = Math.max(0, capSide - Math.max(0, ctx.existingUsd));
+  }
   if (usd > capPer) caps.push(['batas per posisi', capPer]);
+  if (usd > capSide) caps.push(['batas satu sisi', capSide]);
   const roomTotal = s.max_total_exposure_usd - ctx.openExposureUsd;
   if (usd > roomTotal) caps.push(['sisa jatah eksposur total', Math.max(0, roomTotal)]);
   const roomDay = s.daily_budget_usd - ctx.spentTodayUsd;
