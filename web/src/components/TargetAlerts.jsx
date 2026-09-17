@@ -304,10 +304,10 @@ export function AlertBell({ placement = 'top', variant = 'outline', iconClass = 
             isDisabled={!p.enabled || perm === 'unsupported' || perm === 'denied'} onChange={setDesktop} />
           <div className="flex flex-col gap-1.5">
             <span className="text-xs text-muted">{t('Coba peringatan')}</span>
-            <div className="grid grid-cols-3 gap-1.5">
-              <Button size="sm" variant="outline" onPress={() => sample('open')}>{t('Buka')}</Button>
-              <Button size="sm" variant="outline" className="text-success" onPress={() => sample('profit')}>{t('Tutup untung')}</Button>
-              <Button size="sm" variant="outline" className="text-danger" onPress={() => sample('loss')}>{t('Tutup rugi')}</Button>
+            <div className="grid grid-cols-2 gap-1.5">
+              <Button size="sm" variant="outline" className="col-span-2 w-full" onPress={() => sample('open')}>{t('Buka posisi')}</Button>
+              <Button size="sm" variant="outline" className="w-full text-success" onPress={() => sample('profit')}>{t('Tutup untung')}</Button>
+              <Button size="sm" variant="outline" className="w-full text-danger" onPress={() => sample('loss')}>{t('Tutup rugi')}</Button>
             </div>
           </div>
         </Popover.Dialog>
