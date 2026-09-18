@@ -25,17 +25,20 @@ function When({ p }) {
 
 // Semua posisi bot (terbuka + tertutup) dengan modal, nilai/hasil, dan PnL.
 // onFocus: tombol "Grafik" per baris untuk menggambar posisi itu di grafik halaman.
-export function BotPositions({ open, closed, onFocus, focusId, loading = false, className = '' }) {
+// onHist: klik baris -> laci riwayat posisi, sama seperti tabel di halaman Posisi.
+export function BotPositions({ open, closed, onFocus, focusId, onHist, loading = false, className = '' }) {
   const { t } = useI18n();
   const rows = [...open.map((p) => ({ ...p, status: 'open' })), ...closed];
   const pnl = sum(rows, (p) => p.pnlUsd);
   return (
     <Panel title={t('Posisi bot ({n})', { n: rows.length })} className={className} bodyClass="p-0"
+      desc={onHist && rows.length > 0 ? 'Klik baris untuk riwayat transaksi dan catatan bot.' : undefined}
       action={<div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
         <Refreshing loading={loading} />
         {rows.length > 0 && <span className="text-xs"><span className="text-muted">PnL</span> <span className={`num font-medium ${tone(pnl)}`}>{usd(pnl)}</span></span>}
       </div>}>
       <DataTable label="Posisi bot" rows={rows} rowKey={(p) => p.id} pageSize={10}
+        onRow={onHist ? (p) => onHist(p.id) : undefined}
         defaultSort={{ column: 'when', direction: 'descending' }}
         empty={<Empty title="Bot belum pernah membuka posisi di sini" />}
         columns={[
@@ -63,15 +66,18 @@ export function BotPositions({ open, closed, onFocus, focusId, loading = false, 
 }
 
 // Posisi wallet yang pernah dipindai (halaman Wallet / Target).
-export function WalletPositions({ rows, loading = false, className = '' }) {
+// onHist(baris): klik baris -> laci kejadian on-chain posisi itu (WalletPositionHistory).
+export function WalletPositions({ rows, onHist, loading = false, className = '' }) {
   const { t } = useI18n();
   if (!rows.length) return null;
   return (
     <Panel title={t('Posisi wallet yang diriset ({n})', { n: rows.length })}
-      desc="Modal dan hasil dari pemindaian wallet; posisi yang masih terbuka dinilai ulang di harga sekarang."
+      desc={onHist
+        ? 'Modal dan hasil dari pemindaian wallet; posisi yang masih terbuka dinilai ulang di harga sekarang. Klik baris untuk kejadian on-chain-nya.'
+        : 'Modal dan hasil dari pemindaian wallet; posisi yang masih terbuka dinilai ulang di harga sekarang.'}
       className={className} bodyClass="p-0" action={<Refreshing loading={loading} />}>
       <DataTable label="Posisi wallet" rows={rows} rowKey={(p) => `${p.wallet}:${p.venue}:${p.token_id}`} searchable pageSize={15}
-        defaultSort={{ column: 'when', direction: 'descending' }}
+        onRow={onHist} defaultSort={{ column: 'when', direction: 'descending' }}
         columns={[
           { key: 'w', label: 'Wallet', sort: (p) => p.walletLabel || p.wallet, search: (p) => `${p.walletLabel || ''} ${p.wallet}`, render: (p) => (
             <a href={(p.isTarget ? '#targets/' : '#wallet/') + p.wallet} className="group block max-w-40" title={p.wallet}>

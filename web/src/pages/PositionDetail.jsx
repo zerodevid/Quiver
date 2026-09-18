@@ -271,13 +271,19 @@ export default function PositionDetail({ id }) {
         </div>
       </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
+      <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-5">
         <Stat label={closed ? 'Hasil' : 'Nilai'} value={usd(closed ? p.outUsd : p.valueUsd)} sub={t('modal {v}', { v: usd(p.costUsd) })} />
         <Stat label={closed ? 'Fee (sudah diklaim)' : 'Fee belum diklaim'} value={closed ? '—' : usd(p.feeUsd)} valueClass={!closed && p.feeUsd > 0.005 ? 'text-success' : ''}
           sub={!closed && p.costUsd > 0 ? t('{p}% dari modal', { p: num((p.feeUsd / p.costUsd) * 100, 2) }) : null} />
         <Stat label="PnL" value={usd(p.pnlUsd)} valueClass={tone(p.pnlUsd)}
           sub={<span>{pct(p.pnlPct, 2)}{p.ilUsd != null && <> · IL <span className={tone(p.ilUsd)}>{usd(p.ilUsd)}</span></>}</span>} />
         <Stat label={closed ? 'Ditahan' : 'Umur'} value={age(p.ageHours)} sub={t('masuk {d}', { d: fmtDate(p.opened_ts) })} />
+        {/* Ongkos jalan: gas + selisih swap. Tidak ikut dihitung di PnL, padahal
+            inilah harga yang dibayar untuk masuk dan keluar posisi ini. */}
+        <Stat label="Ongkos jalan" value={p.cost?.txN ? usd(p.cost.totalUsd) : '—'} valueClass={p.cost?.totalUsd > 0.005 ? 'text-warning' : ''}
+          sub={p.cost?.txN
+            ? t('gas {g} · slippage {s}', { g: usd(p.cost.gasUsd, p.cost.gasUsd < 0.1 ? 3 : 2), s: usd(p.cost.slipUsd) })
+            : t('belum ada transaksi')} />
       </div>
 
       <div className="grid items-start gap-3 lg:grid-cols-3">
@@ -342,6 +348,17 @@ export default function PositionDetail({ id }) {
                   <span>{fmtQty(cost1)} <TokenSym address={p.token1} symbol={p.symbol1} className="font-normal text-muted" /></span>
                 </div>
               </KV>
+              {p.cost?.txN > 0 && (
+                <KV label="Ongkos buka / tutup">
+                  <div className="flex flex-col items-end text-xs">
+                    <span>{t('buka')} <span className="num">{usd(p.cost.open.gasUsd + p.cost.open.slipUsd)}</span>
+                      <span className="ml-1 font-normal text-muted">({t('{n} tx', { n: p.cost.open.txN })})</span></span>
+                    <span>{t('tutup')} <span className="num">{usd(p.cost.close.gasUsd + p.cost.close.slipUsd)}</span>
+                      <span className="ml-1 font-normal text-muted">({t('{n} tx', { n: p.cost.close.txN })})</span></span>
+                    {p.cost.pctOfCost != null && <span className="font-normal text-muted">{pct(p.cost.pctOfCost, 2).replace('+', '')} {t('dari modal')}</span>}
+                  </div>
+                </KV>
+              )}
               <KV label="Dibuka">{fmtDate(p.opened_ts)}<span className="ml-1 font-normal text-muted">({ago(p.opened_ts)})</span></KV>
               {closed && <KV label="Ditutup">{fmtDate(p.closed_ts)}</KV>}
               {p.tx_open && <KV label="Tx buka"><span className="mono" title={p.tx_open}>{short(p.tx_open)}</span></KV>}

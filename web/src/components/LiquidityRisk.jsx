@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { TriangleAlert } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ChevronDown, TriangleAlert } from 'lucide-react';
 import { Panel } from './ui';
 import { usePoll, useTick } from '../hooks';
 import { useI18n } from '../i18n';
@@ -12,10 +12,16 @@ const explanation = {
   target_unknown: 'Posisi atau saldo target belum lengkap.',
   unavailable: 'Data simulasi belum tersedia.',
 };
+const OPEN_KEY = 'lpcopy-depth-open';
 export default function LiquidityRisk({ pool, focus }) {
   const { t } = useI18n();
   const [owner, setOwner] = useState(''), [salePct, setSalePct] = useState(100), [wallet, setWallet] = useState(false), [sellUsd, setSellUsd] = useState(100);
-  const { data, error, loading, reload } = usePoll(`/api/pool-depth?ref=${encodeURIComponent(pool.pool_ref)}`, 60000);
+  // Panelnya panjang dan menuhin layar, jadi default tertutup; pilihan pengguna diingat.
+  const [open, setOpen] = useState(false);
+  useEffect(() => { try { setOpen(localStorage.getItem(OPEN_KEY) === '1'); } catch { /* abaikan */ } }, []);
+  const toggle = () => setOpen((v) => { const next = !v; try { localStorage.setItem(OPEN_KEY, next ? '1' : '0'); } catch { /* abaikan */ } return next; });
+  // Tidak menembak /api/pool-depth selama panel tertutup.
+  const { data, error, loading, reload } = usePoll(open ? `/api/pool-depth?ref=${encodeURIComponent(pool.pool_ref)}` : null, 60000);
   useTick(30000);
   const d = !error && data?.ref === pool.pool_ref && Date.now() - data.fetchedAt < 120000 ? data : null;
   const curve = makeCurve(d);
@@ -27,7 +33,11 @@ export default function LiquidityRisk({ pool, focus }) {
   const required = curve && bep?.price ? buyToPrice(curve, bep.price) : null;
   const received = (r) => r?.error ? <span className="text-xs text-warning">{t(explanation[r.error] || explanation.unavailable)}</span> : r ? usd(r.receivedUsd) : '—';
   const inputClass = 'w-full rounded-md border border-border bg-background px-3 py-2 text-sm';
-  return <Panel title="Kedalaman harga & risiko keluar" className="mb-4" desc="Simulasi satu pool berdasarkan likuiditas per rentang harga">
+  const toggleBtn = <button type="button" onClick={toggle} aria-expanded={open} className="flex items-center gap-1 text-xs text-accent">
+    {t(open ? 'Sembunyikan' : 'Tampilkan')}<ChevronDown aria-hidden="true" className={`size-4 shrink-0 ${open ? 'rotate-180' : ''}`} />
+  </button>;
+  return <Panel title="Kedalaman harga & risiko keluar" className="mb-4" desc="Simulasi satu pool berdasarkan likuiditas per rentang harga" action={toggleBtn} bodyClass={open ? '' : 'p-0'}>
+    {!open ? null : <>
     <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-xs text-muted"><span>{d ? `${t('Blok')} ${num(d.block)} · ${ago(d.fetchedAt)}` : t(loading ? 'Membaca kedalaman pool…' : 'Kedalaman pool belum tersedia.')}</span><button type="button" onClick={reload} disabled={loading} className="text-accent disabled:opacity-50">{t('Perbarui')}</button></div>
     {!curve ? <p className="text-sm text-warning">{t(d?.hook ? 'Pool memakai hook. Dampak harga tidak dapat dihitung andal dengan model swap standar.' : data?.error || 'Kedalaman pool belum tersedia.')}</p> : <>
       <div className="grid gap-4 md:grid-cols-2">
@@ -58,6 +68,7 @@ export default function LiquidityRisk({ pool, focus }) {
       {result.targetSale && !result.targetSale.error && <p className="mt-2 text-xs text-warning">{t('Sesudah jual target, harga model berubah {value}%.', { value: num((result.targetSale.price / curve.price - 1) * 100, 2) })}</p>}
       <div className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-muted"><TriangleAlert size={16} className="mt-0.5 shrink-0 text-warning" /><div><p>{t('* Potongan swap = dampak harga + fee swap terhadap harga sebelum penjualan kita. LP kita ditarik sebelum token dijual. Hasil pokok belum termasuk fee LP yang diklaim dan gas.')}</p><p className="mt-2">{t('Target diasumsikan menarik seluruh posisi yang terpantau lalu menjual persentase token di atas melalui pool ini. Urutan aktual, pajak token, MEV, perubahan fee, dan rute lain dapat mengubah hasil. Ini bukan quote eksekusi atau batas slippage.')}</p></div></div>
       {d.dynamicFee && <p className="mt-2 text-xs text-warning">{t('Fee dinamis: model memakai fee saat snapshot; fee berikutnya dapat berubah.')}</p>}
+    </>}
     </>}
   </Panel>;
 }

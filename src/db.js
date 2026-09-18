@@ -217,6 +217,21 @@ CREATE TABLE IF NOT EXISTS wsales (
 );
 CREATE INDEX IF NOT EXISTS idx_wsales ON wsales(wallet, token, block);
 
+-- Token non-kuotasi yang MASUK ke wallet dari luar posisi yang kita lacak: dibeli di
+-- pasar, dikirim dari wallet lain, atau sisa dari LP di luar jendela pindai. Tanpa ini
+-- antrean FIFO kehabisan stok dan penjualan tumpah ke posisi yang belum ada — satu
+-- penjualan murah bisa tercatat sebagai hasil posisi yang ditutup sehari sesudahnya.
+CREATE TABLE IF NOT EXISTS wflows (
+  wallet   TEXT NOT NULL,
+  token    TEXT NOT NULL,
+  tx_hash  TEXT NOT NULL,
+  block    INTEGER NOT NULL,
+  ts       INTEGER,
+  tok_in   TEXT NOT NULL,             -- token yang masuk ke wallet di tx ini (mentah, bersih)
+  PRIMARY KEY (wallet, token, tx_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_wflows ON wflows(wallet, token, block);
+
 -- harga pool pada suatu blok, dari event Swap terdekat (mahal dicari, murah disimpan)
 CREATE TABLE IF NOT EXISTS wprices (
   pool_ref   TEXT NOT NULL,

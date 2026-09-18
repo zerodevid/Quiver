@@ -37,6 +37,28 @@ function palsu({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5
     assert.strictEqual(r.base.address, '0xa');
   });
 
+  await uji('panggilan gagal (429/502) memakai jawaban baik terakhir, bertanda stale', async () => {
+    let gagalkan = false;
+    const mk = new Market({ fetch: async (url) => {
+      if (gagalkan) return { ok: false, status: 429, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({ data: { attributes: { ohlcv_list: [[1000, 1, 2, 0.5, 1.5, 10]] } } }) };
+    } });
+    const baik = await mk.memo('k', 0, () => mk.candles(POOL, '1h'));
+    assert.ok(!baik.error && !baik.stale, 'panggilan pertama harus bersih');
+    gagalkan = true;
+    const cadangan = await mk.memo('k', 0, async () => ({ error: 'batas panggilan (429) — coba lagi sebentar' }));
+    assert.ok(!cadangan.error, `harus memakai cadangan: ${cadangan.error}`);
+    assert.strictEqual(cadangan.stale, true, 'ditandai stale');
+    assert.ok(cadangan.staleAt > 0, 'umur cadangan dibawa');
+    assert.strictEqual(cadangan.candles.length, 1, 'isinya jawaban baik terakhir');
+  });
+
+  await uji('tanpa jawaban baik sebelumnya, galat tetap galat', async () => {
+    const mk = new Market({ fetch: async () => ({ ok: false, status: 429, json: async () => ({}) }) });
+    const r = await mk.memo('kosong', 0, async () => ({ error: 'batas panggilan (429) — coba lagi sebentar' }));
+    assert.match(r.error, /429/);
+  });
+
   await uji('permintaan yang sama dalam jendela cache cuma satu panggilan ke luar', async () => {
     const { mk, calls } = palsu();
     await Promise.all([mk.candles(POOL, '1h'), mk.candles(POOL, '1h'), mk.pair(POOL), mk.pair(POOL)]);

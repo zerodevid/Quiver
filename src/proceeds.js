@@ -13,10 +13,11 @@
 //     harga pool di blok itu. Yang belum keluar = masih dipegang, dinilai harga
 //     pool sekarang sebagai belum terealisasi.
 //
-// Satu wallet bisa menerima token yang sama dari beberapa posisi, dan mungkin sudah
-// memegangnya sebelum posisi pertama. Penjualan dialokasikan FIFO: saldo yang sudah
-// ada sebelum posisi pertama (dibaca dari balanceOf di blok itu) dihabiskan lebih
-// dulu, lalu posisi demi posisi menurut urutan tutupnya.
+// Satu wallet bisa menerima token yang sama dari beberapa posisi, sudah memegangnya
+// sebelum posisi pertama, dan menambah stok dengan membeli di pasar. Penjualan
+// dialokasikan FIFO atas semua pemasukan itu menurut blok — saldo awal (balanceOf di
+// blok itu), tiap penarikan LP, lalu token yang datang dari luar — dan sebuah
+// penjualan hanya boleh memakan stok yang sudah masuk di blok itu atau sebelumnya.
 const { ethers } = require('ethers');
 const { ADDR, TOPIC, QUOTES } = require('./chain');
 const { getLogsSafe } = require('./scout');
@@ -26,6 +27,10 @@ const IF_POOL3 = new ethers.Interface(['function slot0() view returns (uint160 s
 const asAddr = (t) => ('0x' + t.slice(-40)).toLowerCase();
 const pad32 = (a) => '0x' + a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
 const big = (v) => BigInt(v || 0);
+// Jendela blok yang sudah dipindai untuk token ini, dua arah sekaligus. Kunci ini
+// diganti nama saat arah "masuk" ditambahkan supaya wallet lama memindai ulang sekali
+// dan mengisi wflows — tanpa itu antreannya tetap timpang selamanya.
+const spanKeyOf = (wallet, token) => `wflow_span:${wallet}:${token}`;
 
 class Proceeds {
   constructor({ rpc, store, chain, research, log }) {
@@ -97,11 +102,14 @@ class Proceeds {
     const bn = parseInt(rc.blockNumber, 16);
     // hasil jual ke ETH/WETH dinilai dengan harga ETH pada blok itu, bukan sekarang
     const ethThen = await this.chain.ethUsdAt(bn, ethUsd);
-    let tokOut = 0n, usd = 0;
+    let tokOut = 0n, tokIn = 0n, usd = 0;
     for (const l of rc.logs || []) {
       if (l.topics[0] !== TOPIC.transfer || l.topics.length !== 3) continue;
       const a = l.address.toLowerCase(), from = asAddr(l.topics[1]), to = asAddr(l.topics[2]);
       if (a === token && from === wallet) tokOut += BigInt(l.data);
+      // Router/position manager sering mengembalikan sisa di tx yang sama: yang benar-benar
+      // pergi adalah selisihnya, bukan jumlah kotor yang keluar.
+      if (a === token && to === wallet) tokIn += BigInt(l.data);
       if (to === wallet && QUOTES[a]) {
         const q = QUOTES[a];
         usd += (Number(BigInt(l.data)) / 10 ** q.decimals) * (q.kind === 'eth' ? ethThen : 1);
@@ -130,7 +138,7 @@ class Proceeds {
         }
       }
     }
-    return { tokOut, usd: usd > 0 ? usd : null, block: bn };
+    return { tokOut: tokOut > tokIn ? tokOut - tokIn : 0n, usd: usd > 0 ? usd : null, block: bn };
   }
 
   // Lacak semua posisi tertutup wallet ini. Dipanggil setelah persist menulis baris.
@@ -159,8 +167,10 @@ class Proceeds {
     }
 
     for (const [token, lots] of byTok) {
-      // Cuma token yang masih ada urusannya: posisi baru tutup atau token masih dipegang.
-      if (!lots.some((r) => r.tracked_to == null || big(r.held_tok) > 0n)) continue;
+      // Cuma token yang masih ada urusannya: posisi baru tutup, token masih dipegang,
+      // atau pasokan dari luar belum pernah dipindai (alokasi lama perlu dihitung ulang).
+      const backfill = this.store.getState(spanKeyOf(wallet, token)) == null;
+      if (!backfill && !lots.some((r) => r.tracked_to == null || big(r.held_tok) > 0n)) continue;
       try { await this.trackToken(wallet, token, lots, { head, ethUsd }); }
       catch (e) { this.log(`lacak ${token.slice(0, 10)}…: ${e.message}`); }
     }
@@ -213,7 +223,7 @@ class Proceeds {
     // Transfer keluar: jendela [lot pertama, head], hanya bagian yang belum dibaca.
     // Lot yang baru muncul bisa lebih awal dari jendela lama (pindai ulang yang lebih
     // panjang), jadi jendela yang sudah tercakup disimpan per token.
-    const spanKey = `wsales_span:${wallet}:${token}`;
+    const spanKey = spanKeyOf(wallet, token);
     let span = null;
     try { span = JSON.parse(this.store.getState(spanKey) || 'null'); } catch { span = null; }
     const parts = [];
@@ -224,10 +234,17 @@ class Proceeds {
     }
     const known = this.store.all('SELECT tx_hash, block, tok_out, quote_usd FROM wsales WHERE wallet=? AND token=? ORDER BY block', wallet, token);
     const seenTx = new Set(known.map((k) => k.tx_hash));
+    // Tx penarikan/penambahan LP yang kita lacak: token yang masuk lewat situ SUDAH
+    // jadi lot, jangan dihitung dua kali sebagai pasokan dari luar.
+    const lpTx = new Set(this.store.all(`SELECT DISTINCT e.tx_hash FROM wevents e
+      JOIN wpositions p ON p.wallet = e.wallet AND p.token_id = e.token_id
+      WHERE e.wallet=? AND (p.token0=? OR p.token1=?)`, wallet, token, token).map((x) => x.tx_hash));
     for (const [lo, hi] of parts) {
       if (lo > hi) continue;
       const logs = await getLogsSafe(this.rpc, { address: token, topics: [TOPIC.transfer, pad32(wallet)] }, lo, hi);
-      for (const tx of [...new Set(logs.map((l) => l.transactionHash))]) {
+      const outOf = new Map();
+      for (const l of logs) outOf.set(l.transactionHash, (outOf.get(l.transactionHash) || 0n) + BigInt(l.data));
+      for (const tx of outOf.keys()) {
         if (seenTx.has(tx)) continue;
         seenTx.add(tx);
         const a = await this.analyzeSale(wallet, token, tx, ethUsd);
@@ -236,6 +253,24 @@ class Proceeds {
         this.store.run('INSERT OR REPLACE INTO wsales(wallet,token,tx_hash,block,ts,tok_out,quote_usd,kind) VALUES(?,?,?,?,?,?,?,?)',
           wallet, token, tx, a.block, ts, a.tokOut.toString(), a.usd, a.usd != null ? 'sell' : 'send');
         known.push({ tx_hash: tx, block: a.block, tok_out: a.tokOut.toString(), quote_usd: a.usd });
+      }
+      // Arah sebaliknya: token yang masuk dari luar posisi kita — dibeli di pasar atau
+      // dikirim wallet lain. Tanpa ini antrean kehabisan stok dan penjualan lama
+      // tumpah ke posisi yang belum dibuka saat penjualan itu terjadi.
+      const inLogs = await getLogsSafe(this.rpc, { address: token, topics: [TOPIC.transfer, null, pad32(wallet)] }, lo, hi);
+      const inOf = new Map();
+      for (const l of inLogs) {
+        const cur = inOf.get(l.transactionHash) || { block: parseInt(l.blockNumber, 16), amt: 0n };
+        cur.amt += BigInt(l.data);
+        inOf.set(l.transactionHash, cur);
+      }
+      for (const [tx, v] of inOf) {
+        if (lpTx.has(tx)) continue;
+        const net = v.amt - (outOf.get(tx) || 0n);
+        if (net <= 0n) continue;
+        const ts = await this.chain.blockTs(v.block);
+        this.store.run('INSERT OR REPLACE INTO wflows(wallet,token,tx_hash,block,ts,tok_in) VALUES(?,?,?,?,?,?)',
+          wallet, token, tx, v.block, ts, net.toString());
       }
     }
     this.store.setState(spanKey, JSON.stringify({ from: Math.min(first, span?.from ?? first), to: head }));
@@ -250,17 +285,27 @@ class Proceeds {
       r.closeUnit = r.outN > 0n ? nonQuoteCloseUsd / Number(r.outN) : 0;
     }
 
-    // Alokasi FIFO.
-    const queue = [{ pre: true, left: big(pre) }, ...lots.map((r) => ({ r, left: r.lot, sold: 0n, usd: 0 }))];
+    // Alokasi FIFO atas SEMUA pemasukan token, urut blok: saldo sebelum lot pertama,
+    // tiap penarikan LP (lot), dan token yang datang dari luar.
+    const extra = this.store.all('SELECT block, tok_in FROM wflows WHERE wallet=? AND token=? ORDER BY block', wallet, token);
+    const queue = [
+      { block: first - 1, left: big(pre) },
+      ...lots.map((r) => ({ block: r.closed_block, r, left: r.lot, sold: 0n, usd: 0 })),
+      ...extra.map((e) => ({ block: e.block, left: big(e.tok_in) })),
+    ].sort((a, b) => a.block - b.block);
     for (const k of known) {
       let rem = big(k.tok_out);
       const total = rem;
       for (const q of queue) {
         if (rem === 0n) break;
+        // Token tidak bisa pergi sebelum sampai: penjualan hanya memakan stok yang
+        // sudah masuk pada blok itu. Sisanya berasal dari luar jendela pindai — biarkan
+        // tak teralokasi daripada dibebankan ke posisi yang saat itu belum ada.
+        if (q.block > k.block) break;
         if (q.left === 0n) continue;
         const take = q.left < rem ? q.left : rem;
         q.left -= take; rem -= take;
-        if (q.pre) continue;
+        if (!q.r) continue;
         q.sold += take;
         if (k.quote_usd != null) { q.usd += k.quote_usd * Number(take) / Number(total); continue; }
         const sq = await this.sqrtAt(q.r, k.block);
@@ -271,7 +316,7 @@ class Proceeds {
     // Tulis hasil per posisi.
     const sqrtCache = new Map();
     for (const q of queue) {
-      if (q.pre) continue;
+      if (!q.r) continue;
       const r = q.r;
       // bagian yang tidak pernah sampai ke wallet (zap-out) sudah dinilai di harga tutup
       const closeUsd = r.closeUnit * Number(r.outN - r.lot);

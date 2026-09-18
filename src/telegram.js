@@ -19,6 +19,12 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { writeCfg } = require('./env');
 const { localeContext, tr, locale, localizeSchema, note } = require('./telegram-i18n');
+// Daftar indikator grafik (dan nilai bitnya) dibaca dari penggambarnya supaya
+// tombol di sini dan gambar di sana tidak pernah berbeda arti.
+const { INDICATORS: CHART_IND, DEFAULT_MASK: CHART_MASK } = require('./chart-card');
+const CHART_TFS = ['5m', '15m', '1h', '4h', '1d'];
+// Lebar jendela grafik dalam jam; 0 = otomatis (seumur posisi + konteks sebelum masuk).
+const CHART_SPANS = [[0, 'auto'], [24, '1 hari'], [72, '3 hari'], [168, '7 hari'], [720, '30 hari']];
 
 const API = 'https://api.telegram.org/bot';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -32,6 +38,29 @@ const sgn = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '—' : `$
 // Telegram messages cannot set text colors; keep the sign and a semantic marker.
 const pnlMark = (n) => n == null || !Number.isFinite(Number(n)) || Number(n) === 0 ? '⚪️' : Number(n) < 0 ? '🔴' : '🟢';
 const pnlText = (n) => `${pnlMark(n)} ${sgn(n)}`;
+// Ongkos jalan sebuah posisi: gas yang terbakar + selisih swap (fee rute, dampak
+// harga, geseran saat eksekusi). Angka ini TIDAK ada di dalam PnL — PnL cuma modal
+// vs hasil — padahal di chain ini satu posisi $100 bisa memakai ~1% hanya untuk
+// masuk dan keluar. `fase`: 'open' saat baru dibuka (tutupnya belum terjadi).
+function ongkosTeks(c, fase = 'semua') {
+  if (!c) return null;
+  const sisi = (b, label) => {
+    if (!b || (Math.abs(b.gasUsd) < 0.0005 && Math.abs(b.slipUsd) < 0.005)) return null;
+    const slip = Math.abs(b.slipUsd) >= 0.005 ? tr(" + slippage {0}", [usd(b.slipUsd)]) : '';
+    return tr("{0} gas {1}{2}", [label, usd(b.gasUsd, b.gasUsd < 0.1 ? 3 : 2), slip]);
+  };
+  const bagian = fase === 'open'
+    ? [sisi(c.open, tr("saat buka"))]
+    : [sisi(c.open, tr("saat buka")), sisi(c.close, tr("saat tutup")), sisi(c.lain, tr("biaya lain"))];
+  const isi = bagian.filter(Boolean);
+  if (!isi.length) return null;
+  const total = fase === 'open' ? (c.open?.gasUsd || 0) + (c.open?.slipUsd || 0) : c.totalUsd;
+  if (Math.abs(total) < 0.001) return null;
+  // Porsi terhadap modal ditulis tanpa tanda: ini biaya, bukan untung/rugi.
+  const porsi = fase !== 'open' && c.pctOfCost != null ? tr(" ({0}% dari modal)", [nf(c.pctOfCost, 2)]) : '';
+  return tr("⛽ Ongkos <b>{0}</b>{1} · {2}", [usd(total), porsi, isi.join(' · ')]);
+}
+
 const compact = (s, max = 48) => { const chars = Array.from(String(s ?? '').replace(/\s+/g, ' ').trim()); return chars.length > max ? chars.slice(0, max - 1).join('') + '…' : chars.join(''); };
 const pairText = (p) => `${compact(p.symbol0 || '?', 20)}/${compact(p.symbol1 || '?', 20)}`;
 const sourceText = (p) => p.targetLabel ? compact(p.targetLabel) : p.target ? shortA(p.target) : tr('Manual');
@@ -278,6 +307,8 @@ const RULE_GROUPS = [
       F.usd('fixed_quote_usd', 'Nominal tetap (pool USDG)', { when: (r) => r.sizing.mode === 'fixed_quote' }),
       F.num('fixed_quote_eth', 'Nominal tetap (pool ETH)', { hi: 1000, unit: 'ETH', when: (r) => r.sizing.mode === 'fixed_quote' }),
       F.usd('min_quote_usd', 'Minimum masuk', { help: 'Di bawah ini posisi dilewat — biar tidak habis di gas.' }),
+      F.bool('force_min', 'Paksa masuk kalau di bawah minimum', { help: 'Mati: dilewat. Nyala: dinaikkan ke nominal paksa.' }),
+      F.usd('force_min_usd', 'Nominal paksa', { when: (r) => r.sizing.force_min, help: 'Hitungan $25 dengan minimum $100 → masuk sebesar nominal ini.' }),
       F.usd('max_quote_per_position_usd', 'Batas per posisi', { help: 'Target LP $400 tapi batas $200 → kita masuk $200.' }),
       F.usd('max_total_exposure_usd', 'Batas total semua posisi'),
       F.usd('daily_budget_usd', 'Anggaran per hari'),
@@ -453,9 +484,9 @@ const ALIAS = {
 const PAIR_RE = /^\/(?:start|mulai)(?:@\S+)?\s+(\S+)/i;
 
 class Telegram {
-  constructor({ cfg, cfgPath, store, engine, api, shareCard, log }) {
+  constructor({ cfg, cfgPath, store, engine, api, shareCard, chartCard, log }) {
     this.cfg = cfg; this.cfgPath = cfgPath; this.store = store; this.engine = engine;
-    this.api = api; this.shareCard = shareCard; this.log = log || (() => {});
+    this.api = api; this.shareCard = shareCard; this.chartCard = chartCard; this.log = log || (() => {});
     this.sessions = new Map();          // chatId -> { scope, pending, ... }
     this.pairCode = null;               // { code, exp }
     this.offset = Number(store.getState('tg_offset', '0')) || 0;
@@ -511,17 +542,38 @@ class Telegram {
   // Gambar (kartu bagikan dari dasbor). Multipart, bukan JSON: Telegram hanya
   // menerima berkas lewat form-data. Dikirim sebagai foto supaya tampil langsung
   // di obrolan, bukan sebagai lampiran yang harus diunduh dulu.
-  async sendPhoto(chatId, png, caption) {
+  async sendPhoto(chatId, png, caption, keyboard = null) {
     const tok = this.token();
     if (!tok) throw new Error(tr("bot_token Telegram belum diisi"));
     const fd = new FormData();
     fd.append('chat_id', String(chatId));
     if (caption) fd.append('caption', cut(caption));
+    if (keyboard) fd.append('reply_markup', JSON.stringify(keyboard));
     fd.append('photo', new Blob([png], { type: 'image/png' }), 'quiver.png');
     const r = await fetch(`${API}${tok}/sendPhoto`, { method: 'POST', body: fd, signal: AbortSignal.timeout(40_000) });
     const j = await r.json().catch(() => null);
     if (!j || !j.ok) throw new Error(j?.description || `HTTP ${r.status}`);
     return j.result;
+  }
+
+  // Mengganti gambar pesan yang sudah ada — dipakai tombol grafik (ganti rentang
+  // waktu / indikator) supaya obrolan tidak dipenuhi puluhan foto yang sama. Balasan
+  // false artinya pesan itu bukan foto (mis. tombol ditekan dari layar teks): pemanggil
+  // mengirim foto baru.
+  async editPhoto(chatId, msgId, png, caption, keyboard = null) {
+    const tok = this.token();
+    if (!tok || !msgId) return false;
+    const fd = new FormData();
+    fd.append('chat_id', String(chatId));
+    fd.append('message_id', String(msgId));
+    fd.append('media', JSON.stringify({ type: 'photo', media: 'attach://chart', ...(caption ? { caption: cut(caption) } : {}) }));
+    if (keyboard) fd.append('reply_markup', JSON.stringify(keyboard));
+    fd.append('chart', new Blob([png], { type: 'image/png' }), 'quiver.png');
+    try {
+      const r = await fetch(`${API}${tok}/editMessageMedia`, { method: 'POST', body: fd, signal: AbortSignal.timeout(40_000) });
+      const j = await r.json().catch(() => null);
+      return !!j?.ok;
+    } catch { return false; }
   }
   // Navigasi menu menimpa pesan yang sama supaya obrolan tidak penuh.
   async edit(chatId, msgId, text, keyboard) {
@@ -838,6 +890,24 @@ class Telegram {
         if (card.error) throw new Error(note(card.error));
         await this.sendPhoto(chatId, card.png, card.caption);
         return ack ? ack(tr("Kartu dikirim.")) : null;
+      }
+      // Grafik posisi sebagai gambar: lilin + indikator + pita rentang + garis BEP,
+      // digambar server (src/chart-card.js). Tombolnya mengganti gambar di pesan yang
+      // sama; kalau ditekan dari layar teks (detail posisi), fotonya dikirim baru.
+      case 'pg': {
+        if (!this.chartCard) throw new Error(tr("kartu grafik tidak tersedia"));
+        const id = rest[0];
+        const tf = CHART_TFS.includes(rest[1]) ? rest[1] : '1h';
+        const maskMax = CHART_IND.reduce((a, i) => a | i.bit, 0);
+        const mask = rest[2] == null || rest[2] === '' ? CHART_MASK : Math.max(0, Math.min(maskMax, Number(rest[2]) || 0));
+        const span = CHART_SPANS.some(([h]) => h === Number(rest[3])) ? Number(rest[3]) : 0;
+        if (ack) await ack(tr("Menggambar grafik…"));
+        const card = await this.chartCard({ id, tf, mask, span, lang: locale() });
+        if (card.error) throw new Error(note(card.error));
+        const keyboard = this.grafikKb(id, tf, mask, span);
+        const edited = await this.editPhoto(chatId, msgId, card.png, card.caption, keyboard);
+        if (!edited) await this.sendPhoto(chatId, card.png, card.caption, keyboard);
+        return null;
       }
       case 'ac': return out(...(await this.compoundScreen(rest[0])));
       case 'acT': {
@@ -1291,13 +1361,15 @@ class Telegram {
       ['🎯', this.targetBaris(d, p)],
       ['📝', d.reason ? esc(note(d.reason)) : null],
       ['⚙️', d.steps?.length ? esc(d.steps.map(note).join(' · ')) : null],
+      [null, ongkosTeks(p?.cost, 'open')],
       [null, this.txBaris(d.txHash)],
     ].filter(([, v]) => v).map(([ic, v]) => (ic ? `${ic} ${v}` : v));
     if (jejak.length) { L.push(''); L.push(...jejak); }
     L.push(tr("<i>posisi #{0}{1}</i>", [esc(d.positionId), p?.token_id ? ` · NFT #${esc(p.token_id)}` : '']));
     return [cut(L.filter((x) => x != null).join('\n')), kb([
-      [btn(tr("💼 Lihat posisi"), `p:${d.positionId}`), btn(tr("🔴 Tutup"), `pc:${d.positionId}`)],
-      [btn(tr("💼 Semua posisi"), 'p'), BACK_HOME],
+      [btn(tr("💼 Lihat posisi"), `p:${d.positionId}`), btn(tr("📈 Grafik"), `pg:${d.positionId}`)],
+      [btn(tr("🔴 Tutup"), `pc:${d.positionId}`), btn(tr("💼 Semua posisi"), 'p')],
+      [BACK_HOME],
     ])];
   }
 
@@ -1326,13 +1398,16 @@ class Telegram {
       ['📝', d.reason ? esc(note(d.reason)) : null],
       ['🧹', d.sold ? esc(note(d.sold)) : null],
       ['🎯', this.targetBaris(d, p)],
+      [null, ongkosTeks(p?.cost)],
       [null, this.txBaris(d.txHash)],
     ].filter(([, v]) => v).map(([ic, v]) => (ic ? `${ic} ${v}` : v));
     if (jejak.length) { if (L[L.length - 1] !== '') L.push(''); L.push(...jejak); }
     L.push(tr("<i>posisi #{0}</i>", [esc(d.positionId)]));
+    const grafik = d.positionId != null ? [btn(tr("📈 Grafik"), `pg:${d.positionId}`)] : null;
     const rows = d.full
-      ? [[btn(tr("💼 Posisi"), 'p'), btn(tr("💵 Saldo"), 'b')], [btn(tr("📜 Aktivitas"), 'a:0'), BACK_HOME]]
-      : [[btn(tr("💼 Lihat posisi"), `p:${d.positionId}`), btn(tr("💵 Saldo"), 'b')], [BACK_HOME]];
+      ? [grafik, [btn(tr("💼 Posisi"), 'p'), btn(tr("💵 Saldo"), 'b')], [btn(tr("📜 Aktivitas"), 'a:0'), BACK_HOME]]
+      : [[btn(tr("💼 Lihat posisi"), `p:${d.positionId}`), btn(tr("📈 Grafik"), `pg:${d.positionId}`)],
+        [btn(tr("💵 Saldo"), 'b'), BACK_HOME]];
     return [cut(L.filter((x) => x != null).join('\n')), kb(rows)];
   }
 
@@ -1631,6 +1706,8 @@ class Telegram {
         [tr('fee belum diklaim'), tokenQty(p[`fee${side}`], p[`dec${side}`])],
       ]));
     }
+    const ong = ongkosTeks(p.cost);
+    if (ong) L.push('', ong);
     if (p.inRange === false) L.push(tr('<i>Di luar rentang: tidak menghasilkan fee swap sampai harga kembali ke rentang.</i>'));
     if (p.compound?.enabled) L.push(tr('♻️ Minimum {0} · periksa setiap {1} menit', [usd(p.compound.minUsd), p.compound.intervalMinutes]));
     L.push(tr('<i>Sinkronisasi terakhir: {0}</i>', [esc(d.syncedAt ? ago(d.syncedAt) : '—')]));
@@ -1641,12 +1718,28 @@ class Telegram {
     ]);
     if (jejak) { L.push(''); L.push(jejak); }
     return [L.filter((x) => x != null).join('\n'), kb([
+      [btn(tr("📈 Grafik"), `pg:${p.id}`)],
       p.venue === 'v4' ? [btn(`♻️ Auto-compound · ${p.compound?.enabled ? 'ON' : 'OFF'}`, `ac:${p.id}`)] : null,
       [btn(tr("💰 Claim fee"), `pf:${p.id}`)],
       [btn(tr("🔴 Tutup posisi ini"), `pc:${p.id}`)],
       [btn(tr("🔄 Segarkan"), `p:${p.id}`), btn(tr("📤 Bagikan kartu"), `ps:${p.id}`)],
       [btn(tr("↩︎ Posisi"), 'p'), BACK_HOME],
     ])];
+  }
+
+  // Tombol di bawah gambar grafik: rentang waktu, saklar tiap indikator, segarkan.
+  // Semua keadaan dibawa di dalam callback data (`pg:<id>:<tf>:<mask>`) — bot tidak
+  // menyimpan apa pun, jadi tombol di pesan lama tetap berarti sama setelah restart.
+  grafikKb(id, tf, mask, span = 0) {
+    const go = (t, m, sp) => `pg:${id}:${t}:${m}:${sp}`;
+    const sw = (i) => btn(`${mask & i.bit ? '✅' : '▫️'} ${i.label}`, go(tf, mask ^ i.bit, span));
+    return kb([
+      CHART_TFS.map((x) => btn(x === tf ? `· ${x} ·` : x, go(x, mask, span))),
+      CHART_SPANS.map(([h, label]) => btn(h === span ? `· ${tr(label)} ·` : tr(label), go(tf, mask, h))),
+      CHART_IND.slice(0, 3).map(sw),
+      CHART_IND.slice(3).map(sw),
+      [btn(tr("🔄 Segarkan"), go(tf, mask, span)), btn(tr("💼 Posisi"), `p:${id}`)],
+    ]);
   }
 
   async compoundScreen(id) {

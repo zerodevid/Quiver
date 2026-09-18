@@ -249,6 +249,85 @@ const row = (store, id = '1') => store.get('SELECT * FROM wpositions WHERE token
     assert.strictEqual(r.tracked_to, HEAD);
   });
 
+  await t('penjualan sebelum posisi ditutup tidak dibebankan ke posisi itu', async () => {
+    // Bug nyata di lp3: wallet menjual murah, lalu esoknya membuka & menutup posisi
+    // lain. Antrean yang tidak mengenal waktu menutupi kekurangan stok dengan lot
+    // yang saat itu belum ada, jadi posisi yang sebenarnya untung tampil rugi besar.
+    const SELL = txh(520), CLOSE2 = txh(600);
+    const lot = 800_000n * 10n ** 18n;
+    const d = dunia({
+      receipts: {
+        [CLOSE_TX]: closeReceipt(), [CLOSE2]: closeReceipt(lot, W, CLOSE2),
+        // 1.400.000 keluar padahal lot yang ada baru 800.000 — sisanya dari luar jendela pindai
+        [SELL]: { blockNumber: hexb(520), gasUsed: '0x0', effectiveGasPrice: '0x0', logs: [
+          xfer(MEME, W, ADDR.poolManager, 1_400_000n * 10n ** 18n, 520, SELL),
+          xfer(ADDR.usdg, ADDR.poolManager, W, 140_000_000, 520, SELL)] },
+      },
+      logs: [xfer(MEME, W, ADDR.poolManager, 1_400_000n * 10n ** 18n, 520, SELL)],
+      balances: { 519: 0n, 520: 0n },
+    });
+    posisi(d.store, { id: '1' });
+    posisi(d.store, { id: '2', closeBlock: 600, tx: CLOSE2 });
+    await d.proceeds.track(W, { head: HEAD, ethUsd: ETH });
+    const r2 = row(d.store, '2');
+    assert.strictEqual(r2.sold_tok, '0', 'posisi #2 belum ada saat penjualan itu');
+    assert.strictEqual(r2.held_tok, lot.toString());
+    assert.ok(Math.abs(r2.realized_q - 200) < 1e-6, `r2 realized ${r2.realized_q}`);
+    dekat(r2.unrealized_q, 800, 'r2 unrealized');
+  });
+
+  await t('token yang dibeli di pasar ikut antre: penjualan tidak dibebankan ke lot LP', async () => {
+    // Target memutar modal: tutup posisi -> jual, beli lagi di pasar -> jual lagi.
+    // Pembelian pasar tidak pernah masuk antrean, jadi penjualan kedua menghabiskan
+    // lot posisi berikutnya dan posisi itu tampak menjual murah padahal token-nya
+    // masih utuh di wallet.
+    const SELL1 = txh(520), BUY = txh(550), CLOSE2 = txh(600), SELL2 = txh(620);
+    const lot = 800_000n * 10n ** 18n, beli = 900_000n * 10n ** 18n;
+    const jual = (tok, usdg, block, tx) => ({ blockNumber: hexb(block), gasUsed: '0x0', effectiveGasPrice: '0x0', logs: [
+      xfer(MEME, W, ADDR.poolManager, tok, block, tx), xfer(ADDR.usdg, ADDR.poolManager, W, usdg, block, tx)] });
+    const d = dunia({
+      receipts: {
+        [CLOSE_TX]: closeReceipt(), [CLOSE2]: closeReceipt(lot, W, CLOSE2),
+        [SELL1]: jual(lot, 800_000_000, 520, SELL1), [SELL2]: jual(beli, 90_000_000, 620, SELL2),
+      },
+      logs: [
+        xfer(MEME, W, ADDR.poolManager, lot, 520, SELL1),
+        xfer(MEME, ADDR.poolManager, W, beli, 550, BUY),
+        xfer(MEME, W, ADDR.poolManager, beli, 620, SELL2),
+      ],
+      balances: { 519: 0n, 520: 0n, 619: 0n, 620: 0n },
+    });
+    posisi(d.store, { id: '1' });
+    posisi(d.store, { id: '2', closeBlock: 600, tx: CLOSE2 });
+    await d.proceeds.track(W, { head: HEAD, ethUsd: ETH });
+    assert.strictEqual(d.store.get('SELECT tok_in FROM wflows WHERE tx_hash=?', BUY).tok_in, beli.toString());
+    const r1 = row(d.store, '1'), r2 = row(d.store, '2');
+    assert.strictEqual(r1.sold_tok, lot.toString());
+    assert.ok(Math.abs(r1.realized_q - 1000) < 1e-6, `r1 realized ${r1.realized_q}`);
+    // penjualan murah itu token hasil beli di pasar, bukan lot posisi #2
+    assert.strictEqual(r2.sold_tok, '0', 'posisi #2 tidak ikut terjual');
+    assert.strictEqual(r2.held_tok, lot.toString());
+    assert.ok(Math.abs(r2.realized_q - 200) < 1e-6, `r2 realized ${r2.realized_q}`);
+    dekat(r2.unrealized_q, 800, 'r2 unrealized');
+  });
+
+  await t('sisa yang dikembalikan di tx yang sama tidak dihitung keluar', async () => {
+    const ADD = txh(600);
+    const d = dunia({
+      receipts: { [CLOSE_TX]: closeReceipt(), [ADD]: { blockNumber: hexb(600), gasUsed: '0x0', effectiveGasPrice: '0x0', logs: [
+        xfer(MEME, W, ADDR.poolManager, 800_000n * 10n ** 18n, 600, ADD),
+        xfer(MEME, ADDR.poolManager, W, 100_000n * 10n ** 18n, 600, ADD)] } },
+      logs: [xfer(MEME, W, ADDR.poolManager, 800_000n * 10n ** 18n, 600, ADD)],
+      balances: { 599: 0n, 600: 0n },
+    });
+    posisi(d.store);
+    await d.proceeds.track(W, { head: HEAD, ethUsd: ETH });
+    assert.strictEqual(d.store.get('SELECT tok_out FROM wsales WHERE tx_hash=?', ADD).tok_out, (700_000n * 10n ** 18n).toString());
+    const r = row(d.store);
+    assert.strictEqual(r.held_tok, (100_000n * 10n ** 18n).toString());
+    dekat(r.realized_q, 900, 'realized');
+  });
+
   await t('semua yang kembali USDG: terealisasi penuh tanpa panggilan chain', async () => {
     const d = dunia();
     posisi(d.store, { out0: 1_050_000_000, out1: 0n });

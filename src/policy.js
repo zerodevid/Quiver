@@ -16,6 +16,8 @@ const DEFAULTS = {
     fixed_quote_usd: 50,
     fixed_quote_eth: 0.02,
     min_quote_usd: 10,
+    force_min: false,         // di bawah minimum: lewati (false) atau naikkan ke force_min_usd (true)
+    force_min_usd: 25,
     max_quote_per_position_usd: 250,
     max_total_exposure_usd: 1500,
     daily_budget_usd: 750,
@@ -72,7 +74,8 @@ const RULE_SPEC = {
     mode: ['enum', ['mirror', 'pct', 'multiplier', 'fixed_quote']],
     pct: ['num', 0, 100_000], multiplier: ['num', 0, 1000],
     fixed_quote_usd: ['num', 0, 1e9], fixed_quote_eth: ['num', 0, 1e6],
-    min_quote_usd: ['num', 0, 1e9], max_quote_per_position_usd: ['num', 0, 1e9],
+    min_quote_usd: ['num', 0, 1e9], force_min: ['bool'], force_min_usd: ['num', 0, 1e9],
+    max_quote_per_position_usd: ['num', 0, 1e9],
     max_total_exposure_usd: ['num', 0, 1e9], daily_budget_usd: ['num', 0, 1e9],
   },
   range: {
@@ -308,8 +311,9 @@ function planEntry(act, ctx) {
   if (est.value == null) return skip('tidak bisa menilai posisi');
   let usd = quoteToUsd(est.value, q.kind, ethUsd);
 
-  // batas atas: potong L secara proporsional supaya tetap masuk
-  const caps = [];
+  // batas atas: semua plafon dikumpulkan dulu (bukan cuma yang terlampaui), karena
+  // "paksa minimum" di bawah butuh tahu berapa ruang yang tersisa sebelum menaikkan ukuran.
+  const limits = [];
   // Posisi satu sisi punya batasnya sendiri (onesided.max_quote_usd). Dicatat terpisah
   // supaya alasannya menyebut batas yang benar-benar mengikat — dulu keduanya digabung
   // lalu selalu disebut "batas per posisi", padahal yang memotong sering batas satu sisi.
@@ -321,12 +325,10 @@ function planEntry(act, ctx) {
     capPer = Math.max(0, capPer - Math.max(0, ctx.existingUsd));
     capSide = Math.max(0, capSide - Math.max(0, ctx.existingUsd));
   }
-  if (usd > capPer) caps.push(['batas per posisi', capPer]);
-  if (usd > capSide) caps.push(['batas satu sisi', capSide]);
-  const roomTotal = s.max_total_exposure_usd - ctx.openExposureUsd;
-  if (usd > roomTotal) caps.push(['sisa jatah eksposur total', Math.max(0, roomTotal)]);
-  const roomDay = s.daily_budget_usd - ctx.spentTodayUsd;
-  if (usd > roomDay) caps.push(['sisa anggaran harian', Math.max(0, roomDay)]);
+  limits.push(['batas per posisi', capPer]);
+  if (sideNow !== 'both') limits.push(['batas satu sisi', capSide]);
+  limits.push(['sisa jatah eksposur total', Math.max(0, s.max_total_exposure_usd - ctx.openExposureUsd)]);
+  limits.push(['sisa anggaran harian', Math.max(0, s.daily_budget_usd - ctx.spentTodayUsd)]);
   // Kas nyata ({usdg, eth}; null = tidak dibatasi). Eksekusi menyiapkan 105% nilai
   // posisi di aset kuotasi pool. Kas di aset kuotasi LAIN harus dijembatani dulu, dan
   // jembatan itu memakan ruang slippage plus selisih kurs Kyber terhadap harga ETH kita
@@ -336,20 +338,36 @@ function planEntry(act, ctx) {
     const ethAsUsd = ctx.cash.eth * ethUsd;
     const [same, other] = q.kind === 'eth' ? [ethAsUsd, ctx.cash.usdg] : [ctx.cash.usdg, ethAsUsd];
     const bridge = 1 + (rules.swap.max_slippage_bps + BRIDGE_MARGIN_BPS) / 10000;
-    const roomCash = (same + other / bridge) / 1.05;
-    if (usd > roomCash) caps.push(['kas tersedia', Math.max(0, roomCash)]);
+    limits.push(['kas tersedia', Math.max(0, (same + other / bridge) / 1.05)]);
   }
-  let capNote = null;
-  if (caps.length) {
-    const [why, lim] = caps.sort((a, b) => a[1] - b[1])[0];
-    if (lim <= 0) return skip(`${why} habis`);
-    L = (L * BigInt(Math.round(lim * 1e9))) / BigInt(Math.round(usd * 1e9));
+  const [capWhy, capUsd] = limits.sort((a, b) => a[1] - b[1])[0];
+
+  // Nilai posisi linear terhadap L pada rentang yang sama, jadi menyetel nominal =
+  // menskala L dengan perbandingan dolar.
+  const resize = (wantUsd) => {
+    L = (L * BigInt(Math.round(wantUsd * 1e9))) / BigInt(Math.round(usd * 1e9));
     est = valueOfLiquidity(chain, act, L, range.tickLower, range.tickUpper, slot0, dec0, dec1);
     usd = quoteToUsd(est.value || 0, q.kind, ethUsd);
-    capNote = `dipotong oleh ${why} ($${lim.toFixed(2)})`;
+  };
+
+  let capNote = null;
+  if (usd > capUsd) {
+    if (capUsd <= 0) return skip(`${capWhy} habis`);
+    resize(capUsd);
+    capNote = `dipotong oleh ${capWhy} ($${capUsd.toFixed(2)})`;
   }
+  // Di bawah minimum posisi dilewati — kecuali "paksa minimum" menyala: ukurannya
+  // dinaikkan ke nominal paksa, selama nominal itu masih muat di plafon yang mengikat.
   if (usd < s.min_quote_usd) {
-    return skip(`hasilnya $${usd.toFixed(2)} (< minimum $${s.min_quote_usd})${capNote ? ` — ${capNote}` : ''}`);
+    const small = `hasilnya $${usd.toFixed(2)} (< minimum $${s.min_quote_usd})`;
+    if (!s.force_min || s.force_min_usd <= 0) return skip(`${small}${capNote ? ` — ${capNote}` : ''}`);
+    if (usd <= 0) return skip(`${small} — nilainya nol, tidak bisa dipaksa`);
+    if (s.force_min_usd > capUsd) {
+      return skip(`${small} dan paksa $${s.force_min_usd} tidak muat — ${capWhy} tinggal $${capUsd.toFixed(2)}`);
+    }
+    const before = usd;
+    resize(s.force_min_usd);
+    capNote = `dipaksa ke $${usd.toFixed(2)} (hitungan $${before.toFixed(2)} < minimum $${s.min_quote_usd})`;
   }
 
   const slipBps = BigInt(rules.swap.max_slippage_bps);

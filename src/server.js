@@ -13,13 +13,32 @@ const { Holdings } = require('./holdings');
 const { Icons } = require('./icons');
 const { Market, TF } = require('./market');
 const { Positions } = require('./positions');
+const { Costs, swapCostOf } = require('./costs');
 const { QUOTES, ADDR: { native: ADDR_NATIVE, usdg: ADDR_USDG, weth: ADDR_WETH } } = require('./chain');
 const { writeCfg } = require('./env');
 const shareCard = require('./share-card');
+const chartCard = require('./chart-card');
+const { breakEven } = require('./breakeven.mjs');
 
 // Sisi mana dari pool yang merupakan aset kuotasi (0 atau 1); null kalau tidak dikenal.
 // Menentukan arah harga yang ditampilkan: selalu "harga token spekulatif dalam kuotasi".
 const quoteSideOf = (t0, t1) => (QUOTES[(t0 || '').toLowerCase()] ? 0 : QUOTES[(t1 || '').toLowerCase()] ? 1 : null);
+
+// Harga token spekulatif dalam aset kuotasi — salinan rumus web/src/fmt.js, dipakai
+// kartu grafik (rentang posisi, harga masuk/keluar) supaya angkanya sama dengan dasbor.
+const tickPriceOf = (tick, dec0, dec1, quoteSide) => {
+  if (tick == null) return null;
+  const p1per0 = 1.0001 ** tick * 10 ** ((dec0 ?? 18) - (dec1 ?? 18));
+  if (!Number.isFinite(p1per0) || p1per0 <= 0) return null;
+  return quoteSide === 0 ? 1 / p1per0 : p1per0;
+};
+const sqrtPriceOf = (sqrtX96, dec0, dec1, quoteSide) => {
+  if (!sqrtX96) return null;
+  const r = Number(sqrtX96) / 2 ** 96;
+  const p1per0 = r * r * 10 ** ((dec0 ?? 18) - (dec1 ?? 18));
+  if (!Number.isFinite(p1per0) || p1per0 <= 0) return null;
+  return quoteSide === 0 ? 1 / p1per0 : p1per0;
+};
 
 const crypto = require('node:crypto');
 
@@ -122,6 +141,16 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   // tiap hitungan berarti puluhan eth_call + DexScreener.
   const holdingsCache = new Map();
   const market = new Market({ log });
+  // Ongkos jalan tiap posisi (gas + selisih swap) — dihitung sekali untuk semua
+  // posisi lalu di-cache sampai ada transaksi baru.
+  const costs = new Costs(store);
+  // Ongkos satu posisi dalam bentuk yang dipakai dasbor & Telegram: gas + selisih
+  // swap, dipisah saat membuka dan saat menutup, plus porsinya terhadap modal —
+  // "seberapa besar effort-nya" baru berarti kalau dibandingkan dengan modalnya.
+  const costOf = (id, costUsd = null) => {
+    const { hashes, ...c } = costs.of(id, engine.ethUsd);
+    return { ...c, pctOfCost: costUsd > 0 ? (c.totalUsd / costUsd) * 100 : null };
+  };
 
   // Antrean memecoin sisa yang belum terjual, dengan simbol & desimal supaya dasbor
   // bisa menulis "688 rb DRIPPYPIGEON". Ikut di /api/overview: peringatannya
@@ -169,6 +198,56 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     // base dalam token ini (priceNative) = harga token ini.
     const asQuote = pairs.find((p) => p.priceUsd && p.priceNative && p.quote.address === a);
     return asQuote ? asQuote.priceUsd / asQuote.priceNative : null;
+  };
+
+  // Portofolio satu wallet, dengan cache: token bersaldo + nilai USD-nya. Dipakai
+  // panel "Isi wallet" dan ringkasan saldo di daftar target — keduanya dipoll, dan
+  // tiap hitungan berarti puluhan eth_call + DexScreener.
+  const holdingsOf = async (addr, { refresh = false, maxAge = 60_000 } = {}) => {
+    const hit = holdingsCache.get(addr);
+    if (hit && !refresh && Date.now() - hit.ts < maxAge) return hit.data;
+    const tokens = await holdings.of(addr);
+    await Promise.all(tokens.map(async (x) => {
+      x.priceUsd = x.amount > 0 ? await usdPrice(x.address) : null;
+      x.usd = x.priceUsd != null ? x.amount * x.priceUsd : null;
+    }));
+    const totalUsd = tokens.reduce((a, x) => a + (x.usd || 0), 0);
+    for (const x of tokens) x.sharePct = totalUsd > 0 && x.usd != null ? (x.usd / totalUsd) * 100 : null;
+    // Bernilai dulu (besar ke kecil), lalu yang harganya tidak ditemukan.
+    tokens.sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1) || b.amount - a.amount);
+    const data = { address: addr, tokens, totalUsd, unpricedN: tokens.filter((x) => x.amount > 0 && x.usd == null).length, ts: Date.now() };
+    holdingsCache.set(addr, { ts: data.ts, data });
+    // Totalnya ikut disimpan: daftar target harus bisa menunjukkan kas tiap wallet
+    // segera setelah bot dinyalakan ulang, tanpa menunggu pindai chain lebih dulu.
+    store.setState(`held_usd:${addr}`, JSON.stringify({ usd: totalUsd, ts: data.ts }));
+    return data;
+  };
+
+  // Uang target: kas di wallet + nilai posisi LP yang masih terbuka. Wallet yang
+  // sisanya tinggal beberapa puluh dolar biasanya sudah berhenti nge-LP — daftar
+  // target memakai angka ini untuk menandainya, tanpa perlu membuka satu per satu.
+  const CASH_TTL_MS = 10 * 60_000;
+  let cashBusy = null;
+  const cashOf = (addr) => {
+    const hit = holdingsCache.get(addr);
+    if (hit) return { usd: hit.data.totalUsd, ts: hit.data.ts };
+    try {
+      const s = JSON.parse(store.getState(`held_usd:${addr}`, 'null'));
+      return s && Number.isFinite(s.usd) ? { usd: s.usd, ts: s.ts || null } : null;
+    } catch { return null; }
+  };
+  // Satu wallet per panggilan, yang paling basi lebih dulu: /api/targets dipoll tiap
+  // 15 detik dan satu pindai portofolio memakan puluhan eth_call — menyegarkan semua
+  // target sekaligus akan kena 429 dan menyeret seluruh dasbor.
+  const sweepTargetCash = (addrs) => {
+    if (cashBusy) return;
+    const stale = addrs.map((a) => ({ a, c: cashOf(a) })).filter((x) => Date.now() - (x.c?.ts || 0) > CASH_TTL_MS);
+    if (!stale.length) return;
+    stale.sort((x, y) => (x.c?.ts || 0) - (y.c?.ts || 0));
+    cashBusy = stale[0].a;
+    holdingsOf(cashBusy, { refresh: true })
+      .catch((e) => log(`saldo target ${cashBusy}: ${e.message}`))
+      .finally(() => { cashBusy = null; });
   };
 
   // Satu pintu untuk semua pemindaian wallet: tombol di dasbor, pembaruan otomatis
@@ -373,17 +452,39 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     // tanpa liquidity posisi v3 tak bisa dinilai, dan tanpa returned_q penarikan yang
     // sudah masuk kantong hilang dari PnL-nya.
     const wallets = store.all(`SELECT wallet, venue, token_id, pool_ref, token0, token1, fee, tick_lower, tick_upper, status,
-        opened_ts, closed_ts, liquidity, invested_q, returned_q, live_value_q, live_fee_q, fees_q, pnl_q
+        opened_ts, closed_ts, liquidity, invested_q, returned_q, live_value_q, live_fee_q, fees_q, pnl_q, incomplete
       FROM wpositions WHERE ${cond} ORDER BY COALESCE(closed_ts, opened_ts) DESC LIMIT 300`, ...args)
       .map((r) => ({ ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
-        quoteSide: quoteSideOf(r.token0, r.token1), walletLabel: labels.get(r.wallet) || null, isTarget: targets.has(r.wallet) }));
+        quoteSide: quoteSideOf(r.token0, r.token1), walletLabel: labels.get(r.wallet) || null, isTarget: targets.has(r.wallet),
+        ageHours: r.opened_ts ? ((r.closed_ts || Date.now()) - r.opened_ts) / 3600000 : null }));
+    // Harga pool saat masuk/keluar tiap posisi, dari kejadian yang tersimpan waktu
+    // pindai — dipakai laci riwayat posisi wallet (sama seperti /api/wallet).
+    if (wallets.length) {
+      const want = new Set(wallets.map((r) => `${r.wallet}:${r.token_id}`));
+      const owners = [...new Set(wallets.map((r) => r.wallet))];
+      const firstLast = new Map();
+      for (const e of store.all(`SELECT wallet, token_id, sqrt_price FROM wevents WHERE wallet IN (${owners.map(() => '?').join(',')}) ORDER BY block`, ...owners)) {
+        const k = `${e.wallet}:${e.token_id}`;
+        if (!e.sqrt_price || !want.has(k)) continue;
+        const cur = firstLast.get(k);
+        if (!cur) firstLast.set(k, { entry: e.sqrt_price, exit: e.sqrt_price }); else cur.exit = e.sqrt_price;
+      }
+      for (const r of wallets) {
+        const fl = firstLast.get(`${r.wallet}:${r.token_id}`);
+        r.entrySqrt = fl?.entry || null;
+        r.exitSqrt = r.status === 'closed' ? (fl?.exit || null) : null;
+      }
+    }
     // Posisi wallet yang masih terbuka dinilai ulang di harga sekarang. Angka tersimpan
     // berasal dari pemindaian terakhir wallet itu — tanpa ini, tabel riset dan tabel
     // posisi bot di halaman yang sama bisa menunjukkan arah PnL yang berlawanan untuk
     // pool dan rentang yang sama, hanya karena keduanya diukur di waktu yang berbeda.
     try { await research.refreshOpen(wallets, engine.ethUsd); }
     catch (e) { log(`nilai posisi riset terbuka: ${e.message}`); }
-    for (const r of wallets) r.pnlPct = r.invested_q > 0 ? (r.pnl_q / r.invested_q) * 100 : null;
+    for (const r of wallets) {
+      r.pnlPct = r.invested_q > 0 ? (r.pnl_q / r.invested_q) * 100 : null;
+      r.dprPct = r.invested_q > 0 && r.ageHours > 0 ? (r.pnl_q / r.invested_q) * (24 / r.ageHours) * 100 : null;
+    }
 
     // Gerakan target, dengan keputusan bot atasnya.
     const activity = store.all(`SELECT a.id, a.ts, a.target, a.venue, a.kind, a.token_id, a.pool_ref, a.token0, a.token1, a.fee,
@@ -610,6 +711,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         Object.assign(r, origin(r), {
           costUsd, outUsd, pnlUsd: outUsd - costUsd,
           pnlPct: costUsd > 0 ? ((outUsd - costUsd) / costUsd) * 100 : null,
+          cost: costOf(r.id, costUsd),
         });
       }
       const positions = store.all("SELECT * FROM positions WHERE status='open' ORDER BY opened_ts").map((r) => live.get(r.id) || {
@@ -623,7 +725,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // takeover_ts dibaca dari basis data, bukan hasil sinkron (bisa berumur 30 detik):
       // tombol ambil alih/kembalikan harus langsung berganti.
       const takeover = new Map(store.all("SELECT id, takeover_ts FROM positions WHERE status='open'").map((r) => [r.id, r.takeover_ts]));
-      return { positions: positions.map((p) => ({ ...p, takeover_ts: takeover.get(p.id) ?? null, compound: compound.status(p), ...origin(p) })), closed, syncedAt: engine.positions.lastSync };
+      return {
+        positions: positions.map((p) => ({
+          ...p, takeover_ts: takeover.get(p.id) ?? null, compound: compound.status(p), ...origin(p),
+          cost: costOf(p.id, p.costUsd),
+        })),
+        closed, syncedAt: engine.positions.lastSync,
+      };
     },
     // Tombol "Perbarui" di tabel posisi. Poll biasa cuma mengulang hasil sinkron
     // terakhir — yang berumur sampai 30 detik — jadi tombol yang hanya memuat ulang
@@ -682,6 +790,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       pos.target = row.target; pos.mirror_of = row.mirror_of; pos.takeover_ts = row.takeover_ts ?? null;
       // Token spekulatif = yang bukan aset kuotasi; dasar harga di grafik.
       pos.baseToken = pos.quoteSide === 0 ? row.token1 : pos.quoteSide === 1 ? row.token0 : row.token0;
+      pos.cost = costOf(id, costUsd);
       return { position: pos, ethUsd: engine.ethUsd, syncedAt: engine.positions.lastSync };
     },
     // Riwayat satu posisi bot untuk laci detail: setiap transaksi yang menyentuhnya
@@ -744,6 +853,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const seen = new Set();
       const events = txs.filter((t) => !seen.has(t.hash) && seen.add(t.hash)).map((t) => {
         const d = parse(t.detail);
+        const sw = swapCostOf(d);
         const dec = decByTx.get(t.hash);
         const sale = d.positionSales?.find((s) => s.position === id);
         const ev = {
@@ -751,6 +861,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           swap: d.tokenIn ? { tokenIn: d.tokenIn, tokenOut: d.tokenOut, symbolIn: d.symbolIn, symbolOut: d.symbolOut, amountIn: d.amountIn, amountOut: d.amountOut } : null,
           saleDeltaUsd: sale ? (sale.gotQuote - sale.closeQuote) * k : null,
           dex: d.dex || d.via || null, usdIn: d.usdIn ?? null, usdOut: d.usdOut ?? null,
+          // Ongkos swap baris ini: rugi rute (kutipan masuk → kutipan keluar) plus
+          // geseran harga saat eksekusi (kutipan keluar → yang benar-benar diterima).
+          slipUsd: sw.route + sw.exec || null,
+          slipBps: d.slipBps ?? null,
           amount0: null, amount1: null, valueUsd: null, feesUsd: null,
           reason: dec?.reason || null, verdict: dec?.verdict || null,
           // Nilai aksi target yang ditiru — konteks "kenapa sebesar ini".
@@ -821,6 +935,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           dec0: toks.get(row.token0)?.decimals ?? 18, dec1: toks.get(row.token1)?.decimals ?? 18,
           opened_ts: row.opened_ts, closed_ts: row.closed_ts, target: row.target, mirror_of: row.mirror_of,
           targetLabel: row.target ? (store.get('SELECT label FROM targets WHERE address=?', row.target)?.label || null) : null,
+          cost: costOf(id, costUsd),
           closeUsd: events.find((e) => e.hash === row.tx_close)?.valueUsd ?? null,
           swapDeltaUsd: events.some((e) => e.saleDeltaUsd != null) ? events.reduce((sum, e) => sum + (e.saleDeltaUsd || 0), 0) : null,
           costUsd, outUsd, feesUsd: (row.fees_quote || 0) * k,
@@ -960,7 +1075,21 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         // Ringkasan riset wallet yang sudah tersimpan (dari halaman Wallet) — tanpa memanggil chain.
         const w = store.get('SELECT stats, last_scan_ts, positions_n FROM wallets WHERE address=?', r.address);
         if (w) { try { r.research = { ...JSON.parse(w.stats || '{}'), lastScanTs: w.last_scan_ts, positionsN: w.positions_n }; } catch { r.research = null; } }
+        // Uang DIA sendiri: kas di wallet + nilai posisi LP yang masih terbuka
+        // (termasuk fee yang belum diklaim). Wallet yang tinggal beberapa puluh
+        // dolar praktis sudah berhenti nge-LP — itu yang dibaca kolom "Saldo dia".
+        const lp = store.get("SELECT COUNT(*) n, COALESCE(SUM(live_value_q),0) v, COALESCE(SUM(live_fee_q),0) f FROM wpositions WHERE wallet=? AND status='open'", r.address);
+        const cash = cashOf(r.address);
+        r.balance = {
+          cashUsd: cash?.usd ?? null, cashTs: cash?.ts ?? null,
+          // Belum pernah diriset: LP-nya tidak diketahui (bukan nol) — jangan
+          // sampai wallet yang belum dipindai terbaca seolah modalnya habis.
+          lpUsd: w ? (lp?.v || 0) + (lp?.f || 0) : null, lpOpenN: lp?.n || 0, lpTs: w?.last_scan_ts || null,
+        };
       }
+      // Kas dibaca dari chain di latar, satu wallet tiap panggilan; baris memakai
+      // angka tersimpan sampai gilirannya tiba.
+      sweepTargetCash(rows.map((r) => r.address));
       return { targets: rows, defaults: DEFAULTS, globalRules: rulesFor(cfg.rules) };
     },
     'POST /api/targets': async (req) => {
@@ -1289,20 +1418,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     'GET /api/wallet/holdings': async (req, url) => {
       const addr = String(url.searchParams.get('address') || '').toLowerCase();
       if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
-      const hit = holdingsCache.get(addr);
-      if (hit && url.searchParams.get('refresh') !== '1' && Date.now() - hit.ts < 60_000) return hit.data;
-      const tokens = await holdings.of(addr);
-      await Promise.all(tokens.map(async (x) => {
-        x.priceUsd = x.amount > 0 ? await usdPrice(x.address) : null;
-        x.usd = x.priceUsd != null ? x.amount * x.priceUsd : null;
-      }));
-      const totalUsd = tokens.reduce((a, x) => a + (x.usd || 0), 0);
-      for (const x of tokens) x.sharePct = totalUsd > 0 && x.usd != null ? (x.usd / totalUsd) * 100 : null;
-      // Bernilai dulu (besar ke kecil), lalu yang harganya tidak ditemukan.
-      tokens.sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1) || b.amount - a.amount);
-      const data = { address: addr, tokens, totalUsd, unpricedN: tokens.filter((x) => x.amount > 0 && x.usd == null).length, ts: Date.now() };
-      holdingsCache.set(addr, { ts: data.ts, data });
-      return data;
+      return holdingsOf(addr, { refresh: url.searchParams.get('refresh') === '1' });
     },
 
     // Pencarian global (Cmd/Ctrl+K di dasbor): satu kotak, lompat ke target, token,
@@ -1696,6 +1812,71 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     return { png: shareCard.render(kind, data, opts), caption: shareCard.caption(kind, data, lang) };
   };
 
+  // Grafik satu posisi sebagai gambar: lilin + indikator + pita rentang + garis BEP.
+  // Dipakai tombol "Grafik" di bot Telegram (dan rute PNG di bawah) — isinya sengaja
+  // sama dengan yang digambar dasbor, termasuk rumus BEP (src/breakeven.mjs).
+  // `span` = lebar jendela dalam jam (0 = otomatis: seumur posisi + konteks sebelum
+  // masuk). Jumlah lilin dibatasi 60–400: di bawah itu tidak ada konteks, di atas itu
+  // satu lilin tinggal sepiksel di gambar selebar 1200.
+  const CHART_MIN = 60, CHART_MAX = 400;
+  const chartCardOf = async ({ id, tf = '1h', mask = chartCard.DEFAULT_MASK, span = 0, lang = 'id', tz } = {}) => {
+    const d = await callApi('GET', '/api/position', {}, { id });
+    if (d.error) return { error: d.error };
+    const p = d.position;
+    if (!p.pool_ref) return { error: 'posisi ini tidak punya pool' };
+    const frame = TF[tf] ? tf : '1h';
+    const secs = TF[frame][2];
+    const closed = p.status === 'closed';
+    const end = closed && p.closed_ts ? p.closed_ts : Date.now();
+    let limit;
+    if (Number(span) > 0) limit = Math.round((Number(span) * 3600) / secs);
+    else limit = Math.ceil((p.opened_ts ? (end - p.opened_ts) / 1000 : 0) / secs) + 40;
+    limit = Math.max(CHART_MIN, Math.min(CHART_MAX, limit));
+    // Posisi tertutup dilihat di sekitar masa hidupnya, bukan sampai hari ini.
+    // `patient`: gambar ini diminta lewat tombol, bukan dipoll — lebih baik menunggu
+    // sedikit lebih lama daripada membalas galat yang percobaan keduanya pasti lolos.
+    const oh = await market.candles(p.pool_ref, frame, {
+      limit, currency: 'token', token: /^0x[0-9a-f]{40}$/.test(String(p.baseToken || '')) ? p.baseToken : null,
+      before: closed && p.closed_ts ? p.closed_ts + 6 * 3600_000 : null, patient: true,
+    }).catch((e) => ({ error: e.message }));
+    if (oh?.error) {
+      return { error: /abort|timeout|timed out|fetch failed|HTTP 5\d\d/i.test(String(oh.error))
+        ? 'harga belum terambil dari GeckoTerminal — coba lagi sebentar' : oh.error };
+    }
+    const candles = oh?.candles || [];
+    if (!candles.length) return { error: 'lilin harga belum tersedia untuk pool ini' };
+    const at = (tick) => (tick == null ? null : tickPriceOf(tick, p.dec0, p.dec1, p.quoteSide));
+    const a = at(p.tick_lower), b = at(p.tick_upper);
+    const lo = a != null && b != null ? Math.min(a, b) : null;
+    const hi = a != null && b != null ? Math.max(a, b) : null;
+    const last = candles[candles.length - 1];
+    const now = sqrtPriceOf(p.curSqrt, p.dec0, p.dec1, p.quoteSide) ?? Number(last.c);
+    const first = candles[0];
+    // BEP dihitung untuk posisi terbuka mana pun (bukan hanya yang di luar rentang):
+    // di gambar, garisnya justru berguna SEBELUM harga keluar rentang.
+    const bep = closed ? null : breakEven(p, { all: true });
+    const data = {
+      positionId: p.id, tokenId: p.token_id, venue: String(p.venue || '').toUpperCase(), fee: p.fee,
+      pair: `${p.symbol0 || '?'}/${p.symbol1 || '?'}`,
+      quoteSymbol: p.quoteSide === 0 ? p.symbol0 : p.symbol1,
+      tf: frame, secs: oh.secs, candles, mask: Number(mask) || 0, span: Number(span) || 0,
+      lo, hi, now, entry: sqrtPriceOf(p.entrySqrt, p.dec0, p.dec1, p.quoteSide),
+      exit: closed ? sqrtPriceOf(p.exitSqrt, p.dec0, p.dec1, p.quoteSide) : null,
+      closed, inRange: closed ? null : p.inRange ?? null,
+      // Kapan posisinya dibuka/ditutup — digambar sebagai garis tegak di lilinnya.
+      openedTs: p.opened_ts || null, closedTs: closed ? p.closed_ts || null : null,
+      ageHours: p.ageHours ?? ((closed && p.closed_ts ? p.closed_ts : Date.now()) - (p.opened_ts || Date.now())) / 3600000,
+      change: Number(first.o) > 0 ? ((Number(last.c) - Number(first.o)) / Number(first.o)) * 100 : null,
+      pnlUsd: p.pnlUsd, pnlPct: p.pnlPct, costUsd: p.costUsd, feeUsd: closed ? null : p.feeUsd,
+      bepPrice: bep?.price ?? null, bepNote: bep?.reason || null,
+      cost: p.cost || null, at: Date.now(),
+      // Lilin dari cadangan (GeckoTerminal membatasi panggilan): umurnya ikut dicetak.
+      staleAt: oh.stale ? oh.staleAt || oh.fetchedAt || null : null,
+    };
+    const opts = { lang, timeZone: tz || cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone };
+    return { png: chartCard.render(data, opts), caption: chartCard.caption(data, lang), tf: frame, mask: data.mask, span: data.span, candles: candles.length };
+  };
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     const key = `${req.method} ${url.pathname}`;
@@ -1745,6 +1926,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     if (key === 'GET /api/share/card') {
       const q = Object.fromEntries(url.searchParams);
       const card = await shareCardOf({ ...q, hide: q.hide === '1' }).catch((e) => ({ error: e.message }));
+      if (card.error) return json(res, 400, { error: card.error });
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'private, no-store' });
+      return res.end(card.png);
+    }
+    if (key === 'GET /api/position/chart.png') {
+      const q = Object.fromEntries(url.searchParams);
+      const card = await chartCardOf({ ...q, mask: Number(q.mask ?? chartCard.DEFAULT_MASK), span: Number(q.span) || 0 }).catch((e) => ({ error: e.message }));
       if (card.error) return json(res, 400, { error: card.error });
       res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'private, no-store' });
       return res.end(card.png);
@@ -1820,6 +2008,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   });
   server.api = callApi;
   server.shareCard = shareCardOf;
+  server.chartCard = chartCardOf;
   return server;
 }
 

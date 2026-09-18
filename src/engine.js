@@ -47,6 +47,8 @@ class Engine {
     this.watcher = new Watcher({ rpc, store, chain, log: this.log, cfg });
     this.positions = new Positions({ rpc, store, chain, log: this.log });
     this.exec = new Executor({ rpc, store, chain, cfg, log: this.log });
+    // Gas tiap transaksi dibukukan dalam USD di harga ETH saat itu (lihat waitReceipt).
+    this.exec.ethUsd = () => this.ethUsd;
     this.kyber = new Kyber({ exec: this.exec, rpc, cfg, log: this.log });
     this.ethUsd = cfg.prices?.eth_usd || 2500;
     this.cursor = 0;

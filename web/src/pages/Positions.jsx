@@ -185,6 +185,13 @@ export default function Positions({ param }) {
             { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnlUsd, render: (p) => dash(p, (
               <div className={`whitespace-nowrap ${tone(p.pnlUsd)}`}>{usd(p.pnlUsd)}<div className="text-xs">{pct(p.pnlPct)}</div></div>)) },
             { key: 'il', label: 'IL', align: 'end', sort: (p) => p.ilUsd, render: (p) => <span className={tone(p.ilUsd)}>{p.ilUsd == null ? '—' : usd(p.ilUsd)}</span> },
+            // Ongkos jalan: gas + selisih swap. Di luar PnL, jadi kolomnya sendiri.
+            { key: 'ong', label: 'Ongkos', align: 'end', sort: (p) => p.cost?.totalUsd ?? -1, render: (p) => (
+              !p.cost?.txN ? <span className="text-muted">—</span> : (
+                <div className="whitespace-nowrap" title={t('gas {g} · slippage {s} · {n} tx', { g: usd(p.cost.gasUsd, 3), s: usd(p.cost.slipUsd), n: p.cost.txN })}>
+                  {usd(p.cost.totalUsd)}
+                  {p.cost.pctOfCost != null && <div className="text-xs text-muted">{pct(p.cost.pctOfCost, 2).replace('+', '')}</div>}
+                </div>)) },
             { key: 'age', label: 'Umur', align: 'end', sort: (p) => p.ageHours, render: (p) => <span className="whitespace-nowrap text-muted">{age(p.ageHours)}</span> },
             { key: 'tgt', label: 'Sumber', sort: (p) => p.targetLabel || p.target,
               search: (p) => `${p.targetLabel || ''} ${p.target || ''}`, render: (p) => <Source p={p} /> },
@@ -199,7 +206,10 @@ export default function Positions({ param }) {
       </Panel>
       <Panel title={t('Posisi tertutup ({n})', { n: closed.length })} bodyClass="p-0"
         desc="Kolom Sumber memuat wallet yang disalin beserta hasil posisi aslinya. Modal target jarang sebesar modal kita, jadi yang sebanding persennya, bukan dolarnya."
-        action={closed.length > 0 && <Totals items={[['PnL', usd(closedPnl), tone(closedPnl)]]} />}>
+        action={closed.length > 0 && <Totals items={[
+          ['Ongkos', usd(sum(closed, (c) => c.cost?.totalUsd || 0))],
+          ['PnL', usd(closedPnl), tone(closedPnl)],
+        ]} />}>
         <DataTable label="Posisi tertutup" rows={closed} rowKey={(c) => c.id} searchable pageSize={20} onRow={(c) => setHist(c.id)}
           defaultSort={{ column: 'at', direction: 'descending' }}
           empty={<Empty title="Belum ada posisi tertutup" />}
@@ -218,6 +228,12 @@ export default function Positions({ param }) {
               const v = c.pnlUsd;
               return <div className={`whitespace-nowrap ${tone(v)}`}>{usd(v)}<div className="text-xs">{c.pnlPct != null ? pct(c.pnlPct, 2) : ''}</div></div>;
             } },
+            { key: 'ong', label: 'Ongkos', align: 'end', sort: (c) => c.cost?.totalUsd ?? -1, render: (c) => (
+              !c.cost?.txN ? <span className="text-muted">—</span> : (
+                <div className="whitespace-nowrap" title={t('buka {o} · tutup {x} · {n} tx', { o: usd(c.cost.open.gasUsd + c.cost.open.slipUsd), x: usd(c.cost.close.gasUsd + c.cost.close.slipUsd), n: c.cost.txN })}>
+                  {usd(c.cost.totalUsd)}
+                  {c.cost.pctOfCost != null && <div className="text-xs text-muted">{pct(c.cost.pctOfCost, 2).replace('+', '')}</div>}
+                </div>)) },
             { key: 'dur', label: 'Durasi', align: 'end', sort: (c) => (c.closed_ts || 0) - (c.opened_ts || 0), render: (c) => (
               <span className="whitespace-nowrap text-muted">{c.opened_ts && c.closed_ts ? age((c.closed_ts - c.opened_ts) / 3600000) : '—'}</span>) },
             { key: 'at', label: 'Ditutup', align: 'end', sort: (c) => c.closed_ts, render: (c) => <span className="whitespace-nowrap text-muted">{ago(c.closed_ts)}</span> },

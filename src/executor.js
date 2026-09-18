@@ -280,8 +280,14 @@ class Executor {
       catch (e) { this.log(`receipt ${hash.slice(0, 12)}… belum terbaca (${String(e.message).slice(0, 80)}) — coba lagi`); }
       if (r) {
         const ok = BigInt(r.status) === 1n;
-        this.store.run('UPDATE txs SET status=?, gas_used=?, gas_price=? WHERE hash=?',
-          ok ? 'sukses' : 'gagal', parseInt(r.gasUsed, 16), r.effectiveGasPrice || null, hash);
+        const gasUsed = parseInt(r.gasUsed, 16);
+        const gasPrice = r.effectiveGasPrice || null;
+        // Gas dalam USD dikunci di HARGA ETH SAAT ITU. Menghitungnya belakangan dari
+        // harga hari ini membuat ongkos posisi lama ikut bergerak mengikuti ETH.
+        const eth = typeof this.ethUsd === 'function' ? this.ethUsd() : null;
+        const gasQuote = eth > 0 && gasPrice ? (Number(BigInt(gasUsed) * BigInt(gasPrice)) / 1e18) * eth : null;
+        this.store.run('UPDATE txs SET status=?, gas_used=?, gas_price=?, gas_quote=COALESCE(?,gas_quote) WHERE hash=?',
+          ok ? 'sukses' : 'gagal', gasUsed, gasPrice, gasQuote, hash);
         // Gagal pun membakar gas: saldo ETH berubah, kas yang di-cache ikut basi.
         this.txSeq++;
         this.minedBlock = Math.max(this.minedBlock, parseInt(r.blockNumber, 16) || 0);
@@ -290,6 +296,19 @@ class Executor {
       await new Promise((s) => setTimeout(s, 700));
     }
     return { ok: false, timeout: true };
+  }
+
+  // Tambahan catatan pada tx yang sudah tercatat (detail JSON digabung, bukan
+  // ditimpa). Dipakai swap untuk menuliskan hasil sesungguhnya vs kutipannya —
+  // angka itu baru diketahui sesudah receipt, saat barisnya sudah ada.
+  noteTx(hash, patch) {
+    try {
+      const row = this.store.get('SELECT detail FROM txs WHERE hash=?', hash);
+      if (!row) return;
+      let d = {};
+      try { d = JSON.parse(row.detail || '{}') || {}; } catch { d = {}; }
+      this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify({ ...d, ...patch }), hash);
+    } catch { /* catatan tambahan tidak boleh menggagalkan transaksi */ }
   }
 
   // ---- izin token ---------------------------------------------------------

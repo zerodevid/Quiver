@@ -51,6 +51,39 @@ function Research({ r }) {
 const signed = (v) => (v > 0.005 ? '+' : '') + usd(v);
 const oursTotal = (o) => (o ? o.realized + o.upnl : 0);
 
+// Uang TARGET sendiri: kas di walletnya + nilai posisi LP-nya yang masih terbuka.
+// Wallet yang sisanya tinggal beberapa puluh dolar praktis sudah berhenti nge-LP,
+// jadi angkanya diberi warna — wallet mati terlihat tanpa membuka detailnya satu
+// per satu, dan aksinya (matikan / hapus) bisa langsung diambil dari daftar.
+const DEAD_USD = 50;    // sudah habis: hampir pasti tidak nge-LP lagi
+const LOW_USD = 100;    // tipis: masih mungkin, tapi ukurannya sudah kecil
+const balKnown = (b) => !!b && (b.cashUsd != null || b.lpUsd != null);
+// Sisi yang belum terbaca ditulis "—": "$0" akan terbaca sebagai wallet kosong.
+const money = (v) => (v == null ? '—' : usd(v, 0));
+const balTotal = (b) => (b ? (b.cashUsd || 0) + (b.lpUsd || 0) : 0);
+// Diwarnai hanya kalau KEDUA sisinya sudah terbaca — wallet yang belum diriset
+// LP-nya tidak diketahui, bukan nol, dan tidak boleh tampil seolah modalnya habis.
+const balTone = (b) => {
+  if (!b || b.cashUsd == null || b.lpUsd == null) return '';
+  const v = balTotal(b);
+  return v < DEAD_USD ? 'text-danger' : v < LOW_USD ? 'text-warning' : '';
+};
+
+function Saldo({ b }) {
+  const { t } = useI18n();
+  if (!balKnown(b)) return <span className="text-xs text-muted">{t('Belum terbaca')}</span>;
+  const tip = [
+    b.cashTs ? t('kas dibaca {w}', { w: ago(b.cashTs) }) : t('kas belum terbaca'),
+    b.lpTs ? t('posisi dari riset {w}', { w: ago(b.lpTs) }) : t('wallet ini belum diriset'),
+  ].join(' · ');
+  return (
+    <div className="num" title={tip}>
+      <div className={`font-medium ${balTone(b)}`}>{kUsd(balTotal(b))}</div>
+      <div className="truncate text-xs text-muted">{t('kas {c} · LP {l}', { c: money(b.cashUsd), l: money(b.lpUsd) })}</div>
+    </div>
+  );
+}
+
 // Hasil posisi KITA yang disalin dari wallet ini: terealisasi (sudah ditutup) +
 // berjalan (posisi yang masih terbuka). Diletakkan di samping PnL wallet supaya
 // "dia dapat berapa" dan "kita dapat berapa" terbaca berdampingan.
@@ -123,7 +156,7 @@ function useToggles(targets, reload) {
 
 // Satu baris daftar target. Kolomnya sejajar antarbaris (grid yang sama) supaya
 // PnL, aktivitas, dan posisi bisa dibandingkan menurun seperti tabel.
-const ROW = 'grid items-center gap-x-4 gap-y-2 grid-cols-[auto_minmax(0,1fr)_auto] md:grid-cols-[auto_minmax(0,1.3fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,0.7fr)_minmax(0,0.9fr)_auto]';
+const ROW = 'grid items-center gap-x-4 gap-y-2 grid-cols-[auto_minmax(0,1fr)_auto] md:grid-cols-[auto_minmax(0,1.15fr)_minmax(0,0.85fr)_minmax(0,0.8fr)_minmax(0,0.95fr)_minmax(0,0.65fr)_minmax(0,0.9fr)_auto]';
 
 function TargetRow({ tg, enabled, onToggle, onChanged }) {
   const { t } = useI18n();
@@ -149,9 +182,13 @@ function TargetRow({ tg, enabled, onToggle, onChanged }) {
           <div className="flex items-center gap-2">
             <span className={`truncate font-medium group-hover:underline ${enabled ? '' : 'text-muted'}`}>{tg.label || t('Tanpa label')}</span>
             {tg.rulesOwn && <Chip size="sm" variant="soft" color="accent" className="shrink-0">{t('aturan sendiri')}</Chip>}
+            {balTone(tg.balance) && (
+              <Chip size="sm" variant="soft" color={balTotal(tg.balance) < DEAD_USD ? 'danger' : 'warning'} className="shrink-0">
+                {t(balTotal(tg.balance) < DEAD_USD ? 'dana habis' : 'dana tipis')}</Chip>)}
           </div>
           <div className="mono truncate text-xs text-muted">{short(tg.address)}</div>
         </a>
+        <div className="hidden min-w-0 md:block"><Saldo b={tg.balance} /></div>
         <div className="hidden md:block"><Research r={tg.research} /></div>
         <div className="hidden min-w-0 md:block"><Ours o={tg.ours} /></div>
         <div className="num hidden text-sm md:block">
@@ -171,6 +208,7 @@ function TargetRow({ tg, enabled, onToggle, onChanged }) {
         </div>
         {/* HP: ringkasan dalam satu baris di bawah nama */}
         <div className="col-span-3 flex flex-wrap gap-x-4 gap-y-1 pl-12 text-xs text-muted md:hidden">
+          {balKnown(tg.balance) && <span className={`num font-medium ${balTone(tg.balance)}`}>{t('saldo {v}', { v: kUsd(balTotal(tg.balance)) })}</span>}
           {tg.research && <span className={`num font-medium ${tone(tg.research.totalProfitUsd)}`}>{kUsd(tg.research.totalProfitUsd || 0)} PnL</span>}
           {tg.ours && <span className={`num font-medium ${tone(oursTotal(tg.ours))}`}>{t('kita {v}', { v: signed(oursTotal(tg.ours)) })}</span>}
           <span className="num">{t('{a} aksi · {c} disalin', { a: tg.actions, c: tg.copied })}</span>
@@ -256,7 +294,12 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
       </div>
 
       {/* aktivitas copy untuk target ini */}
-      <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
+      <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-5">
+        {/* Uang dia sendiri — kalau tinggal puluhan dolar, mengikutinya sudah tidak ada gunanya. */}
+        <Stat label="Saldo dia" value={balKnown(tg.balance) ? kUsd(balTotal(tg.balance)) : '—'} valueClass={balTone(tg.balance)}
+          sub={balKnown(tg.balance)
+            ? t('kas {c} · LP {l} ({n} posisi)', { c: money(tg.balance.cashUsd), l: money(tg.balance.lpUsd), n: tg.balance.lpOpenN })
+            : t('Belum terbaca')} />
         <Stat label="Aksi terdeteksi" value={tg.actions} sub={tg.lastActionTs ? t('terakhir {w}', { w: ago(tg.lastActionTs) }) : t('belum ada aksi')} />
         <Stat label="Disalin / simulasi" value={tg.copied} />
         <Stat label="Posisi kita terbuka" value={tg.openPositions} sub={t('modal {v}', { v: usd(tg.openCostQuote) })} />
@@ -326,6 +369,7 @@ export default function Targets({ param }) {
           <div className={`${ROW} hidden border-b border-border bg-default/40 px-4 py-2 text-[0.7188rem] font-medium text-muted md:grid`}>
             <span className="w-9" />
             <span>{t('{on} dari {n} aktif', { on, n: list.length })}</span>
+            <span>{t('Saldo dia')}</span>
             <span>{t('PnL wallet')}</span>
             <span>{t('Hasil kita')}</span>
             <span>{t('Aktivitas')}</span>

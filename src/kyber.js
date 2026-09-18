@@ -241,6 +241,17 @@ class Kyber {
       const after = await outBal();
       amountOut = after > before ? after - before : null;
     }
+    // Yang benar-benar diterima vs yang dikutip — geseran harga saat eksekusi
+    // (slippage murni, di luar fee rute). Dicatat di barisnya sendiri supaya
+    // ongkos tiap posisi bisa menyebut angkanya, bukan cuma menaksir.
+    if (amountOut != null && q.amountOut > 0n) {
+      const slipBps = Number(((q.amountOut - amountOut) * 10_000n) / q.amountOut);
+      this.exec.noteTx(hash, {
+        quotedOut: q.amountOut.toString(), gotOut: amountOut.toString(), slipBps,
+        // Nilai USD geserannya, memakai harga sisi keluar dari kutipan yang sama.
+        execSlipUsd: q.usdOut != null ? (q.usdOut * slipBps) / 10_000 : null,
+      });
+    }
     return { hash, amountOut, quote: q, receipt: rc.receipt };
   }
 }

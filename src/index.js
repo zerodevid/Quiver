@@ -168,6 +168,7 @@ async function main() {
     cfg, cfgPath: CFG_PATH, store, engine, log,
     api: (method, pathname, body, query) => server.api(method, pathname, body, query),
     shareCard: (opts) => server.shareCard(opts),
+    chartCard: (opts) => server.chartCard(opts),
   });
 
   // Server dinyalakan LEBIH DULU: inisialisasi bisa memakan puluhan detik kalau RPC

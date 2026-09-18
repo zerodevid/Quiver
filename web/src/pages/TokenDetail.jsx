@@ -10,6 +10,8 @@ import { usePoll } from '../hooks';
 import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink } from '../components/ui';
 import TokenIcon, { TokenPair, PairName } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves } from '../components/LpTables';
+import PositionHistory from '../components/PositionHistory';
+import WalletPositionHistory from '../components/WalletPositionHistory';
 import { MarketPanel, kUsd } from './PositionDetail';
 import { usd, pct, tone, num, age, short, price, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
@@ -25,6 +27,7 @@ const priceIn = (p, a) => (!p ? null : p.base.address === a ? p.priceUsd
   : p.priceUsd && p.priceNative ? p.priceUsd / p.priceNative : null);
 const venueOf = (p) => (p.labels?.length ? p.labels.join(' ') : p.dexId || '');
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
+const wkey = (p) => `${p.wallet}:${p.venue}:${p.token_id}`;
 const fmtAmt = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleString(fmtLocale(), { maximumSignificantDigits: v >= 1000 ? 7 : 5 }));
 
 function TokenChart({ m, tf, poolRef }) {
@@ -41,6 +44,11 @@ export default function TokenDetail({ param }) {
   const { data: d, loading } = usePoll(`/api/token?a=${encodeURIComponent(a)}`, 30000);
   const [poolPick, setPool] = useState(null);
   const [tf, setTf] = useState('1h');
+  // Klik baris tabel posisi bot -> laci riwayat, sama seperti halaman Posisi.
+  const [hist, setHist] = useState(null);
+  // Klik baris posisi wallet yang diriset -> laci kejadian on-chain-nya. Yang disimpan
+  // kuncinya, supaya angka di laci ikut segar saat tabelnya dipoll ulang.
+  const [whistKey, setWhist] = useState(null);
   const pairs = d?.market?.pairs || [];
   const sel = pairs.find((p) => p.pool === poolPick) || pairs[0] || null;
   // Dibuka dari baris tabel yang sudah digulir jauh: mulai dari atas.
@@ -49,6 +57,7 @@ export default function TokenDetail({ param }) {
 
   if (!d) return <Loading page />;
   if (d.error) return <Empty title="Token tidak ditemukan" sub={d.error} />;
+  const whist = whistKey ? d.wallets.find((p) => wkey(p) === whistKey) || null : null;
 
   const tk = d.token;
   const main = pairs.find((p) => p.base.address === a) || null;   // pool terlikuid tempat token ini jadi dasar
@@ -165,8 +174,10 @@ export default function TokenDetail({ param }) {
         </Panel>
       )}
 
-      <BotPositions open={d.open} closed={d.closed} loading={loading} className="mt-4" />
-      <WalletPositions rows={d.wallets} loading={loading} className="mt-4" />
+      <BotPositions open={d.open} closed={d.closed} onHist={setHist} loading={loading} className="mt-4" />
+      <PositionHistory id={hist} onClose={() => setHist(null)} />
+      <WalletPositions rows={d.wallets} onHist={(p) => setWhist(wkey(p))} loading={loading} className="mt-4" />
+      <WalletPositionHistory p={whist} address={whist?.wallet} onClose={() => setWhist(null)} />
       <TargetMoves rows={d.activity} className="mt-4" />
     </>
   );

@@ -196,10 +196,20 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
     cfg: (cfg.telegram.language = 'id', cfg), cfgPath, store, engine, log: () => {},
     api: (m, p, b, q) => server.api(m, p, b, q),
     shareCard: (o) => server.shareCard(o),
+    chartCard: (o) => server.chartCard(o),
   });
   // Kartu bagikan dikirim sebagai foto lewat multipart, bukan this.tg(): dicatat
   // terpisah supaya tidak menyentuh jaringan.
-  bot.sendPhoto = async (chatId, png, caption) => { sent.push({ method: 'sendPhoto', params: { chat_id: chatId, caption, bytes: png.length } }); return true; };
+  bot.sendPhoto = async (chatId, png, caption, keyboard = null) => {
+    sent.push({ method: 'sendPhoto', params: { chat_id: chatId, caption, bytes: png.length, reply_markup: keyboard } });
+    return true;
+  };
+  // Pesan foto yang disunting (tombol grafik) juga dicatat; false = pesannya bukan foto.
+  bot.editPhoto = async (chatId, msgId, png, caption, keyboard = null) => {
+    sent.push({ method: 'editMessageMedia', params: { chat_id: chatId, message_id: msgId, caption, bytes: png.length, reply_markup: keyboard } });
+    return bot.photoMsgs?.has?.(msgId) || false;
+  };
+  bot.photoMsgs = new Set();
   // API Telegram palsu: mencatat apa yang keluar, membalas seperti aslinya.
   let msgId = 100;
   bot.tg = async (method, params) => {
@@ -214,6 +224,20 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
   // loop lama berhenti saat token diganti.
   bot.polls = [];
   bot.poll = async (gen = bot.gen) => { bot.polls.push(gen); };
+  // Batas luar ketiga: GeckoTerminal/DexScreener (lilin harga untuk tombol Grafik).
+  // Dipasang SEBELUM server dibuat — Market mencatat fetch-nya saat dibangun.
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('geckoterminal')) {
+      const list = [];
+      for (let i = 0; i < 80; i++) {
+        const base = 1 + i / 200;
+        list.push([Math.floor((Date.now() - (80 - i) * 3600_000) / 1000), base, base * 1.01, base * 0.99, base, 1000 + i]);
+      }
+      return { ok: true, status: 200, json: async () => ({ data: { attributes: { ohlcv_list: list.reverse() } } }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ pairs: [] }) };
+  };
   server = createServer({ engine, store, cfg, cfgPath, chain, rpc, log: () => {}, telegram: bot });
   return { bot, store, cfg, cfgPath, sent, engine, chainStub: chain, kueri, api: (m, p, b, q) => server.api(m, p, b, q), last: () => sent[sent.length - 1] };
 }
@@ -407,6 +431,40 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
   });
 
   // ---- penjelajah menu ----------------------------------------------------
+  await t('tombol Grafik: gambar lilin + tombol rentang waktu & indikator; tekan lagi menyunting foto yang sama', async () => {
+    const w = build();
+    const before = w.sent.length;
+    // Ditekan dari layar TEKS detail posisi: fotonya dikirim baru.
+    await w.bot.handle(cbq('pg:1'));
+    const kirim = w.sent.slice(before).filter((x) => x.method === 'sendPhoto');
+    assert.strictEqual(kirim.length, 1, 'satu foto grafik');
+    assert.ok(kirim[0].params.bytes > 20_000, 'PNG sungguhan');
+    assert.match(kirim[0].params.caption, /USDG\/MEME · 1h/);
+    const tombol = kirim[0].params.reply_markup.inline_keyboard;
+    const data = tombol.flat().map((b) => b.callback_data);
+    assert.ok(data.includes('pg:1:5m:10:0') && data.includes('pg:1:1d:10:0'), `rentang waktu harus ada: ${data}`);
+    // Lebar jendela: auto (0) dan pilihan hari — membawa tf & indikator yang sedang aktif.
+    assert.ok(data.includes('pg:1:1h:10:24') && data.includes('pg:1:1h:10:720'), `pilihan lebar jendela harus ada: ${data}`);
+    // Saklar indikator membalik bitnya sendiri (bawaan EMA|VOL = 10).
+    assert.ok(data.includes('pg:1:1h:8:0') && data.includes('pg:1:1h:2:0'), `saklar EMA & VOL harus membalik bit: ${data}`);
+    assert.ok(data.includes('p:1'), 'ada jalan kembali ke posisi');
+    assert.ok(tombol.flat().some((b) => /✅ EMA/.test(b.text)) && tombol.flat().some((b) => /▫️ MACD/.test(b.text)),
+      'indikator yang menyala ditandai centang');
+    // Ditekan dari pesan FOTO: gambarnya disunting, bukan menumpuk foto baru.
+    const b2 = w.sent.length;
+    w.bot.photoMsgs.add(777);
+    const dariFoto = cbq('pg:1:4h:63:72');
+    dariFoto.callback_query.message.message_id = 777;
+    await w.bot.handle(dariFoto);
+    const edit = w.sent.slice(b2).filter((x) => x.method === 'editMessageMedia');
+    assert.strictEqual(edit.length, 1, 'menyunting foto yang sama');
+    assert.ok(!w.sent.slice(b2).some((x) => x.method === 'sendPhoto'), 'tidak mengirim foto kedua');
+    assert.ok(edit[0].params.bytes > 20_000);
+    const teksTombol = edit[0].params.reply_markup.inline_keyboard.flat().map((b) => b.text);
+    assert.ok(teksTombol.some((x) => /· 4h ·/.test(x)), 'rentang waktu aktif ditandai');
+    assert.ok(teksTombol.some((x) => /· 3 hari ·/.test(x)), `lebar jendela aktif ditandai: ${teksTombol}`);
+  });
+
   await t('tombol Bagikan kartu: foto PnL dikirim ke chat itu, layar tidak diganti', async () => {
     const w = build(); w.bot.setLanguage(CHAT, 'en');
     const d = await w.api('GET', '/api/positions');
@@ -721,6 +779,13 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
 
   await t('kabar LP disalin menjadi kartu: pasangan, nilai, rentang, target, tx, tombol', async () => {
     const w = build({ dryRun: false });
+    // Ongkos membuka posisi #1: zap (gas + selisih kutipan) lalu mint. Kartu masuk
+    // harus menyebutnya — gas dan slippage tidak pernah muncul di PnL.
+    const buka = Date.now() - 3600_000;
+    w.store.run("INSERT INTO txs(hash,ts,kind,status,gas_used,gas_price,detail) VALUES('0xzapcc',?,'zap_swap','sukses',100000,'1000000000',?)",
+      buka - 10_000, JSON.stringify({ pool: '0xpool', usdIn: 100, usdOut: 99.4 }));
+    w.store.run("INSERT INTO txs(hash,ts,kind,status,gas_used,gas_price,detail) VALUES('0xcc',?,'mint','sukses',200000,'1000000000',?)",
+      buka, JSON.stringify({ pool: '0xpool', recorded: 1, zapped: { hashes: ['0xzapcc'] } }));
     await w.bot.start();
     w.engine.notify('LP disalin: USDG/MEME $200,00', {
       kind: 'entry', positionId: 1, txHash: '0xmint1234567890', adding: false, pair: 'USDG/MEME', valueUsd: 200,
@@ -740,6 +805,9 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.match(teks, /NFT #777/);
     assert.match(teks, /Target membuka posisi baru/);
     assert.match(teks, /bungkus 0.05000 ETH · zap beli token1 via Kyber/);
+    // gas 0,0003 ETH × $2500 = $0,75 · selisih zap $0,60
+    assert.match(teks, /⛽ Ongkos <b>\$1,35<\/b>/, `ongkos buka harus tercetak: ${teks}`);
+    assert.match(teks, /slippage \$0,60/);
     assert.match(teks, /0xmint1234/);
     assert.ok(!/LP disalin:/.test(teks), 'teks polos lama tidak boleh ikut tercetak');
     const tombol = o.params.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);

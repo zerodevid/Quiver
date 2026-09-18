@@ -23,30 +23,72 @@ class Market {
     this.log = log || (() => {});
     this.fetch = fetchImpl || globalThis.fetch;
     this.cache = new Map();   // key -> { until, value: Promise }
+    this.good = new Map();    // key -> { at, value } — jawaban baik terakhir (cadangan)
   }
 
   // Satu permintaan yang sama dalam jendela `ttl` ms dijawab dari cache — termasuk
   // yang masih berjalan, supaya dua tab yang membuka detail bersamaan berbagi satu
   // panggilan. Jawaban gagal tidak disimpan lama: coba lagi 10 detik kemudian.
-  memo(key, ttl, fn) {
+  //
+  // Kalau panggilannya GAGAL tetapi kita pernah punya jawaban baik yang belum terlalu
+  // tua, jawaban lama itu yang dikembalikan dengan tanda `stale`. GeckoTerminal
+  // membatasi panggilan per IP (429) dan satu VPS ini dipakai beberapa instance
+  // sekaligus: tanpa cadangan ini, grafik yang tadi tampil mendadak berganti pesan
+  // galat hanya karena tetangganya kebetulan menarik data di detik yang sama.
+  memo(key, ttl, fn, { staleMs = 15 * 60_000 } = {}) {
     const now = Date.now();
     const hit = this.cache.get(key);
     if (hit && hit.until > now) return hit.value;
+    const fallback = (err) => {
+      const last = this.good.get(key);
+      if (last && Date.now() - last.at < staleMs) {
+        const v = { ...last.value, stale: true, staleAt: last.at, staleReason: err };
+        this.cache.set(key, { until: Date.now() + 10_000, value: Promise.resolve(v) });
+        return v;
+      }
+      const v = { error: err };
+      this.cache.set(key, { until: Date.now() + 10_000, value: Promise.resolve(v) });
+      return v;
+    };
     const value = fn().then(
-      (v) => { if (v?.error) this.cache.set(key, { until: Date.now() + 10_000, value: Promise.resolve(v) }); return v; },
-      (e) => { this.cache.set(key, { until: Date.now() + 10_000, value: Promise.resolve({ error: e.message }) }); return { error: e.message }; },
+      (v) => {
+        if (v?.error) return fallback(v.error);
+        if (v && typeof v === 'object') this.good.set(key, { at: Date.now(), value: v });
+        return v;
+      },
+      (e) => fallback(e.message),
     );
     this.cache.set(key, { until: now + ttl, value });
     if (this.cache.size > 200) { for (const [k, v] of this.cache) if (v.until <= now) this.cache.delete(k); }
+    if (this.good.size > 200) { for (const [k, v] of this.good) if (Date.now() - v.at > staleMs) this.good.delete(k); }
     return value;
   }
 
-  async json(url) {
-    const r = await this.fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(12_000) });
-    if (r.status === 429) throw new Error('batas panggilan (429) — coba lagi sebentar');
-    if (r.status === 404) return null;
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json();
+  // `tries` > 1 hanya untuk pemanggil yang memang butuh jawabannya sekarang (kartu
+  // grafik Telegram): dari VPS, GeckoTerminal bisa menjawab 10+ detik, dan sekali
+  // kena batas waktu tombolnya berbalas galat padahal percobaan kedua lolos.
+  // Yang dipoll dasbor tetap sekali coba supaya halaman tidak menunggu dua kali.
+  async json(url, { timeoutMs = 12_000, tries = 1 } = {}) {
+    let last = null;
+    for (let i = 0; i < tries; i++) {
+      try {
+        const r = await this.fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(timeoutMs) });
+        if (r.status === 429) throw new Error('batas panggilan (429) — coba lagi sebentar');
+        if (r.status === 404) return null;
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      } catch (e) {
+        last = e;
+        // Yang layak diulang: batas waktu, koneksi putus, dan galat sisi server
+        // (502/503/504 — GeckoTerminal sesekali menjawab itu beberapa detik).
+        // 429 TIDAK diulang: itu justru minta kita berhenti sebentar.
+        const layak = /abort|timeout|timed out|fetch failed|network|ECONN|socket/i.test(String(e.message))
+          || /^HTTP 5\d\d$/.test(String(e.message));
+        if (!layak || i === tries - 1) throw e;
+        await new Promise((r) => setTimeout(r, 700));
+      }
+    }
+    throw last;
   }
 
   // Statistik pool dari DexScreener. pool v4 = poolId (bytes32), v3 = alamat pool.
@@ -102,7 +144,7 @@ class Market {
   //    sejajar dengan rentang tick posisi.
   //  - before: batas akhir (ms) — posisi yang sudah ditutup dilihat di sekitar masa
   //    hidupnya, bukan sampai sekarang. Dibulatkan ke lilin supaya cache-nya kena.
-  candles(ref, tf = '1h', { limit = 300, token = null, currency = 'token', before = null } = {}) {
+  candles(ref, tf = '1h', { limit = 300, token = null, currency = 'token', before = null, patient = false } = {}) {
     const [frame, agg, secs] = TF[tf] || TF['1h'];
     const n = Math.max(10, Math.min(1000, Number(limit) || 300));
     const beforeS = before ? Math.ceil(before / 1000 / secs) * secs : null;
@@ -114,7 +156,7 @@ class Market {
       const q = new URLSearchParams({ aggregate: String(agg), limit: String(n), currency });
       if (token) q.set('token', token);
       if (beforeS) q.set('before_timestamp', String(beforeS));
-      const j = await this.json(`${GT}${ref}/ohlcv/${frame}?${q}`);
+      const j = await this.json(`${GT}${ref}/ohlcv/${frame}?${q}`, patient ? { timeoutMs: 25_000, tries: 2 } : {});
       if (!j) return { error: 'pool ini belum terindeks di GeckoTerminal' };
       const list = j?.data?.attributes?.ohlcv_list || [];
       // Sesekali ada dua lilin berwaktu sama: yang muncul belakangan menang.

@@ -19,6 +19,8 @@ const IF_NPM = new ethers.Interface(ABI.npmV3);
 const asAddr = (topic) => ('0x' + topic.slice(-40)).toLowerCase();
 const i24 = (v) => Number(BigInt.asIntN(24, v));
 const i256 = (v) => BigInt.asIntN(256, v);
+// Router yang hanya menukar token; tx target ke sini bukan aksi LP.
+const SWAP_ROUTERS = new Set([ADDR.dexRouter, ADDR.universalRouter]);
 
 class Watcher {
   constructor({ rpc, store, chain, log, cfg }) {
@@ -27,6 +29,7 @@ class Watcher {
     this.owners = new Map();   // `${venue}:${tokenId}` -> owner
     this.v4Info = new Map();   // tokenId -> {poolKey, poolId, tickLower, tickUpper}
     this.unsupported = new Map(); // sender -> jumlah, untuk transparansi di dashboard
+    this.unsupportedSender = new Map(); // txHash -> sender ModifyLiquidity di rentang ini, untuk pesan peringatan
     this.isContract = new Map();  // alamat -> punya bytecode?
   }
 
@@ -51,19 +54,30 @@ class Watcher {
     return new Set(this.targets().filter((t) => t.enabled).map((t) => t.address.toLowerCase()));
   }
 
-  // Peringatan sekali per target: target memakai router LP yang posisinya bukan NFT,
-  // sehingga tidak bisa dicermin. Tanpa ini, bot terlihat "sehat" padahal buta.
+  // Peringatan sekali per (target, router): target memakai router LP yang posisinya
+  // bukan NFT, sehingga tidak bisa dicermin. Tanpa ini, bot terlihat "sehat" padahal buta.
+  //
+  // Tx ke router SWAP dilewati: agregator bisa merutekan swap lewat pool v4 berhook yang
+  // menyeimbangkan likuiditasnya sendiri, dan ModifyLiquidity milik hook itu ikut
+  // tercatat di tx target. Itu swap biasa, bukan target pindah ke router LP lain —
+  // terjadi pada 0x2debd4c6…4bf7 (target menjual sisa token lewat dagSwapTo).
   async warnIfTargetUnsupported(txHashes, targets) {
     this.warnedUnsupported = this.warnedUnsupported || new Set();
     const ask = txHashes.slice(0, 8);   // cukup sampel; ini jalur langka
     const res = await this.rpc.batch(ask.map((h) => ({ method: 'eth_getTransactionByHash', params: [h] })));
     for (const r of res) {
-      const from = r && !r.error ? String(r.result?.from || '').toLowerCase() : '';
-      if (!targets.has(from) || this.warnedUnsupported.has(from)) continue;
-      this.warnedUnsupported.add(from);
-      const msg = `PERHATIAN: target ${from} membuka/mengubah LP lewat router yang posisinya BUKAN NFT PositionManager — aksi seperti itu tidak bisa dicermin bot ini`;
+      const tx = r && !r.error ? r.result : null;
+      const from = String(tx?.from || '').toLowerCase();
+      if (!targets.has(from)) continue;
+      const to = String(tx?.to || '').toLowerCase();
+      if (SWAP_ROUTERS.has(to)) continue;
+      const senders = [...new Set((this.unsupportedSender.get(tx.hash) || []))];
+      const key = `${from}|${to}`;
+      if (this.warnedUnsupported.has(key)) continue;
+      this.warnedUnsupported.add(key);
+      const msg = `PERHATIAN: target ${from} membuka/mengubah LP lewat router yang posisinya BUKAN NFT PositionManager — aksi seperti itu tidak bisa dicermin bot ini (tx ${tx.hash}, ke ${to}, sender ModifyLiquidity ${senders.join(', ') || '?'})`;
       this.log(msg);
-      this.store.log('warn', msg);
+      this.store.log('warn', msg, { target: from, tx: tx.hash, to, senders });
     }
   }
 
@@ -179,6 +193,7 @@ class Watcher {
     // 2. v4 ModifyLiquidity
     const v4Rows = [];
     const unsupportedTx = new Set();
+    this.unsupportedSender.clear();
     for (const l of modLiq) {
       const sender = asAddr(l.topics[2]);
       if (sender !== ADDR.posmV4) {
@@ -187,6 +202,7 @@ class Watcher {
         // Kalau yang memakainya ternyata TARGET kita, itu harus berbunyi: artinya
         // target pindah ke router jenis lain dan bot berhenti menyalinnya diam-diam.
         unsupportedTx.add(l.transactionHash);
+        this.unsupportedSender.set(l.transactionHash, [...(this.unsupportedSender.get(l.transactionHash) || []), sender]);
         continue;
       }
       const b = ethers.getBytes(l.data);

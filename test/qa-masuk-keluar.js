@@ -646,6 +646,51 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     assert.ok(Math.abs(r2.plan.valueUsd - 280) < 0.01, `dipotong ke $280, dapat ${r2.plan.valueUsd}`);
   });
 
+  await t('policy: paksa minimum — di bawah minimum posisi dinaikkan ke nominal paksa, bukan dilewati', async () => {
+    // Setelan pemilik: 10% dari target, minimum $100, maksimum $400. Target buka $250 →
+    // hitungan $25 → dulu selalu dilewati; dengan paksa $100 posisinya masuk $100.
+    const { planEntry, rulesFor } = require('../src/policy');
+    const chain = {
+      quoteSideOf: (t0) => (t0 === USDG ? { side: 0, symbol: 'USDG', decimals: 6, kind: 'usd' } : null),
+      valueInQuote: ({ amount0, amount1, sqrtPriceX96 }) => ({ value: Number(amount0) / 1e6 + Number(amount1) / 1e18 * (1e12 / m.priceFromSqrt(sqrtPriceX96, 0, 0)) / 1e12, symbol: 'USDG', kind: 'usd' }),
+    };
+    const slot0 = { sqrtPriceX96: m.getSqrtRatioAtTick(0), tick: 0 };
+    // valueQuote hanya dipakai saringan "abaikan target kecil"; nilai nyata dihitung dari liquidity.
+    const act = { venue: 'v4', token0: USDG, token1: MEME, fee: 3000, tickSpacing: 60, tickLower: -600, tickUpper: 600, liquidity: '8460000000', valueQuote: 250, tokenId: '9', target: TARGET };
+    const mk = (sz) => rulesFor({ sizing: { mode: 'pct', pct: 10, min_quote_usd: 100, max_quote_per_position_usd: 400, max_total_exposure_usd: 40_000, daily_budget_usd: 50_000, ...sz },
+      filters: { min_target_quote_usd: 1, allow_hooks: true } });
+    const ctx = (rules, extra) => ({ chain, rules, slot0, dec0: 6, dec1: 18, ethUsd: 2500, openExposureUsd: 0, spentTodayUsd: 0, openCount: 0, ...extra });
+    // nilai penuh posisi target pada rentang ini (tanpa plafon), supaya angka harapannya jelas:
+    // 10% darinya harus di bawah minimum $100 agar kasus ini berarti.
+    const full = planEntry(act, ctx(mk({ mode: 'mirror', max_quote_per_position_usd: 1e9 }), {})).plan.valueUsd;
+    assert.ok(full * 0.1 < 100, `10% dari $${full} harus di bawah minimum`);
+
+    const off = planEntry(act, ctx(mk({}), {}));
+    assert.strictEqual(off.verdict, 'skip', 'paksa mati → tetap dilewati');
+    assert.match(off.reason, /< minimum/);
+
+    const on = planEntry(act, ctx(mk({ force_min: true, force_min_usd: 100 }), {}));
+    assert.strictEqual(on.verdict, 'copy', on.reason);
+    assert.ok(Math.abs(on.plan.valueUsd - 100) < 0.01, `dipaksa ke $100, dapat ${on.plan.valueUsd}`);
+    assert.match(on.reason, /dipaksa ke \$100\.00/);
+
+    // nominal paksa boleh di bawah minimum — itu pilihan pemilik
+    const kecil = planEntry(act, ctx(mk({ force_min: true, force_min_usd: 40 }), {}));
+    assert.ok(Math.abs(kecil.plan.valueUsd - 40) < 0.01, String(kecil.plan.valueUsd));
+
+    // batas tetap menang: sisa jatah eksposur $60 < paksa $100 → dilewati, alasannya menyebut batas
+    const sempit = planEntry(act, ctx(mk({ force_min: true, force_min_usd: 100 }), { openExposureUsd: 39_940 }));
+    assert.strictEqual(sempit.verdict, 'skip');
+    assert.match(sempit.reason, /paksa \$100 tidak muat/);
+    assert.match(sempit.reason, /sisa jatah eksposur total tinggal \$60\.00/);
+
+    // di atas minimum paksa tidak ikut campur, dan batas per posisi tetap memotong
+    const besar = planEntry({ ...act, liquidity: String(10n ** 12n) }, ctx(mk({ force_min: true, force_min_usd: 100 }), {}));
+    assert.strictEqual(besar.verdict, 'copy', besar.reason);
+    assert.ok(Math.abs(besar.plan.valueUsd - 400) < 0.01, String(besar.plan.valueUsd));
+    assert.match(besar.reason, /batas per posisi/);
+  });
+
   await t('adopsi posisi: likuiditas gagal dibaca → jendela pindai TIDAK dimajukan, posisi diadopsi di percobaan berikutnya', async () => {
     const IF_POSM = new ethers.Interface(ABI.posmV4);
     let liqOk = false;

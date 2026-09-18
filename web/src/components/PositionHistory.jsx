@@ -83,6 +83,34 @@ function PnlWhy({ p }) {
   );
 }
 
+// Ongkos jalan posisi: gas yang terbakar + selisih swap, dipisah buka/tutup.
+// Tidak ada di dalam PnL (PnL cuma modal vs hasil), padahal ini yang menjawab
+// "berapa effort-nya" — di chain ini satu posisi $100 bisa memakai ~1% untuk
+// masuk lalu keluar.
+function Ongkos({ c, cost }) {
+  const { t } = useI18n();
+  if (!c || !c.txN) return null;
+  const sisi = (b, label) => (b.txN ? (
+    <div className="flex justify-between gap-3">
+      <span className="text-muted">{label}</span>
+      <span className="num">{usd(b.gasUsd, b.gasUsd < 0.1 ? 3 : 2)} <span className="text-muted">{t('gas')}</span>
+        {Math.abs(b.slipUsd) >= 0.005 && <> · {usd(b.slipUsd)} <span className="text-muted">{t('slippage')}</span></>}
+        <span className="ml-1 text-xs text-muted">({t('{n} tx', { n: b.txN })})</span></span>
+    </div>) : null);
+  return (
+    <div className="mb-4 rounded-lg border border-border p-3 text-sm">
+      <div className="mb-1 flex justify-between gap-3 font-semibold">
+        <span>{t('Ongkos jalan')}</span>
+        <span className="num">{usd(c.totalUsd)}{cost > 0 && <span className="ml-1 text-xs font-normal text-muted">{pct((c.totalUsd / cost) * 100, 2).replace('+', '')} {t('dari modal')}</span>}</span>
+      </div>
+      {sisi(c.open, t('saat membuka'))}
+      {sisi(c.close, t('saat menutup'))}
+      {sisi(c.lain, t('klaim fee / compound'))}
+      <p className="mt-2 text-xs text-muted">{t('Gas semua transaksi yang menyentuh posisi ini (termasuk approve dan yang gagal) plus selisih tiap swap: kutipan masuk dikurangi kutipan keluar, ditambah geseran harga saat eksekusi. Transaksi pembantu tanpa nomor posisi ditaksir dari alurnya.')}</p>
+    </div>
+  );
+}
+
 const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
 // Saldo token yang berpindah di satu kejadian: mint/tambah = masuk ke posisi,
 // kurangi/tutup = keluar dari posisi. Swap ditampilkan sebagai USD masuk → keluar.
@@ -152,6 +180,9 @@ function Events({ d }) {
                 <td className="num py-2.5 pr-3 text-end whitespace-nowrap">
                   {failed ? '—' : ev.valueUsd != null ? usd(ev.valueUsd) : ev.usdOut != null ? usd(ev.usdOut) : '—'}
                   {ev.feesUsd > 0.005 && <div className="text-xs text-success">{t('fee {v}', { v: usd(ev.feesUsd) })}</div>}
+                  {!failed && Math.abs(ev.slipUsd || 0) >= 0.005 && <div className="text-xs text-warning"
+                    title={ev.slipBps != null ? t('meleset {b}% dari kutipan', { b: (ev.slipBps / 100).toFixed(2) }) : undefined}>
+                    {t('slippage {v}', { v: usd(ev.slipUsd) })}</div>}
                   {ev.targetUsd != null && <div className="text-xs text-muted">{t('target {v}', { v: usd(ev.targetUsd) })}</div>}
                 </td>
                 <td className="py-2.5 text-end whitespace-nowrap text-muted" title={fmtDate(ev.ts)}>{ago(ev.ts)}</td>
@@ -246,6 +277,7 @@ export default function PositionHistory({ id, onClose }) {
                     <Stat label="Modal" value={usd(p.costUsd)} sub={closed ? t('hasil {v}', { v: usd(p.outUsd) }) : null} />
                   </div>
                   {!closed && <PnlWhy p={p} />}
+                  <Ongkos c={p.cost} cost={p.costUsd} />
                   <PositionSnapshot key={id} id={id} onUpdate={() => setRevision((v) => v + 1)} />
                   {closed && <div className="mb-4 rounded-lg border border-border p-3 text-sm">
                     <div className="flex justify-between gap-3"><span>{t('Hasil LP saat tutup (taksiran)')}</span><span className="num">{usd(p.closeUsd)}</span></div>

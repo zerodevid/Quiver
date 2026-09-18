@@ -6,6 +6,8 @@
 // dan tabelnya menunjukkan PnL tiap posisi serta totalnya.
 import LiquidityRisk from '../components/LiquidityRisk';
 import PoolHealth from '../components/PoolHealth';
+import PositionHistory from '../components/PositionHistory';
+import WalletPositionHistory from '../components/WalletPositionHistory';
 import { useEffect, useState } from 'react';
 import { usePoll } from '../hooks';
 import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, ExtLink } from '../components/ui';
@@ -16,6 +18,7 @@ import { usd, pct, tone, num, price, sqrtPrice, tickPrice } from '../fmt';
 import { useI18n } from '../i18n';
 
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
+const wkey = (p) => `${p.wallet}:${p.venue}:${p.token_id}`;
 const DYNAMIC_FEE = 0x800000;   // penanda fee dinamis v4 (diatur hook)
 
 export default function PoolDetail({ param }) {
@@ -26,6 +29,11 @@ export default function PoolDetail({ param }) {
   const [focusPick, setFocus] = useState(undefined);
   const [tfPick, setTf] = useState(null);
   const [view, setView] = useState('chart');
+  // Klik baris tabel posisi -> laci riwayat, sama seperti halaman Posisi.
+  const [hist, setHist] = useState(null);
+  // Klik baris posisi wallet yang diriset -> laci kejadian on-chain-nya. Yang disimpan
+  // kuncinya, supaya angka di laci ikut segar saat tabelnya dipoll ulang.
+  const [whistKey, setWhist] = useState(null);
   // Dibuka dari baris tabel yang sudah digulir jauh: mulai dari atas.
   useEffect(() => { window.scrollTo(0, 0); }, []);
 
@@ -40,6 +48,7 @@ export default function PoolDetail({ param }) {
 
   if (!d) return <Loading page />;
   if (d.error) return <Empty title="Pool tidak ditemukan" sub={d.error} />;
+  const whist = whistKey ? d.wallets.find((p) => wkey(p) === whistKey) || null : null;
 
   const quote = pool.quoteSide === 0 ? pool.symbol0 : pool.quoteSide === 1 ? pool.symbol1 : null;
   const base = pool.quoteSide === 0 ? pool.symbol1 : pool.symbol0;
@@ -139,8 +148,11 @@ export default function PoolDetail({ param }) {
 
       <div className="mt-4"><LiquidityRisk key={ref} pool={{ ...pool, pool_ref: ref }} focus={focus} /></div>
 
-      <BotPositions open={d.open} closed={d.closed} onFocus={setFocus} focusId={focus?.id} loading={loading} className="mt-4" />
-      <WalletPositions rows={d.wallets} loading={loading} className="mt-4" />
+      <BotPositions open={d.open} closed={d.closed} onFocus={setFocus} focusId={focus?.id} onHist={setHist}
+        loading={loading} className="mt-4" />
+      <PositionHistory id={hist} onClose={() => setHist(null)} />
+      <WalletPositions rows={d.wallets} onHist={(p) => setWhist(wkey(p))} loading={loading} className="mt-4" />
+      <WalletPositionHistory p={whist} address={whist?.wallet} onClose={() => setWhist(null)} />
       <TargetMoves rows={d.activity} className="mt-4" />
     </>
   );
