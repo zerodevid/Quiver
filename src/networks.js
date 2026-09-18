@@ -88,10 +88,10 @@ const BSC = {
     { key: 'v3', npmV3Slot: 'npmV3', factory: 'uniswapFactoryV3' },
     { key: 'pancakev3', npmV3Slot: 'pancakeNpmV3', factory: 'pancakeFactoryV3' },
   ],
-  // Belum ada pool native/USDT v4 yang pasti dalam di BSC — sampai ada penelusuran
-  // on-chain yang sama seperti Robinhood Chain, harga BNB dipakai dari config
-  // (prices.bnb_usd) alih-alih dicari otomatis lewat pool.
-  nativeUsd: { mode: 'manual' },
+  // Harga BNB dari pool PancakeSwap v3 USDT/WBNB terdalam (0,01% dan 0,05%), dibaca
+  // lewat slot0 + liquidity — diverifikasi 2026-09-19: token0 USDT, token1 WBNB,
+  // keduanya sepakat ±0,01%. Yang terdalam dipakai, kecuali menyimpang dari yang lain.
+  nativeUsd: { mode: 'v3pools', pools: ['0x172fcd41e0913e95784454622d1c3724f546f849', '0x36696169c63e42cd08ce11f5deebbcebae652050'] },
   // BSC: baseFeePerGas selalu 0, jadi tip tx tipe-2 = harga gas efektif (executor.js gasFees).
   legacyGasPricing: true,
   // Alamat dari dokumentasi resmi Uniswap/PancakeSwap/KyberSwap, DIVERIFIKASI
@@ -133,7 +133,7 @@ function build(key) {
   }));
   return {
     network: key, label: p.label, ADDR, QUOTES, CHAIN_ID: p.chainId, venues,
-    nativeSymbol: p.nativeSymbol, kyberPath: p.kyberPath, nativeUsd: p.nativeUsd, verified: p.verified,
+    nativeSymbol: p.nativeSymbol, kyberPath: p.kyberPath, nativeUsd: p.nativeUsd || { mode: 'v4pool' }, verified: p.verified,
     explorerApiV2: p.explorerApiV2, explorerTokenUrl: p.explorerTokenUrl, alchemyHost: p.alchemyHost,
     legacyGasPricing: !!p.legacyGasPricing, blockMs: p.blockMs || 101,
     dexscreener: p.dexscreener, geckoterminal: p.geckoterminal, explorer: p.explorer,

@@ -39,7 +39,7 @@ class Chain {
     this.network = p.network; this.label = p.label;
     this.ADDR = p.ADDR; this.QUOTES = p.QUOTES; this.CHAIN_ID = p.CHAIN_ID;
     this.venues = p.venues; this.nativeSymbol = p.nativeSymbol; this.kyberPath = p.kyberPath;
-    this.nativeUsdMode = p.nativeUsd?.mode || 'v4pool'; this.verified = p.verified;
+    this.nativeUsdMode = p.nativeUsd?.mode || 'v4pool'; this.nativeUsdPools = p.nativeUsd?.pools || []; this.verified = p.verified;
     this.legacyGasPricing = p.legacyGasPricing; this.blockMs = p.blockMs;
     this.dexscreener = p.dexscreener; this.geckoterminal = p.geckoterminal; this.explorer = p.explorer;
     this.explorerApiV2 = p.explorerApiV2; this.explorerTokenUrl = p.explorerTokenUrl; this.alchemyHost = p.alchemyHost;
@@ -250,9 +250,9 @@ Chain.prototype.findEthUsdgPools = async function findEthUsdgPools(headBlock, bl
 Chain.prototype.ethUsd = async function ethUsd(fallback = 2500) {
   const now = Date.now();
   if (this._ethUsd && now - this._ethUsdAt < 60_000) return this._ethUsd;
-  // Chain tanpa pool native/kuotasi yang bisa dipercaya (belum ditelusuri seperti
-  // Robinhood Chain): harga dipegang manual lewat config (prices.*_usd), tidak
-  // ditebak dari pool yang belum diverifikasi dalamnya.
+  // Chain yang harga native-nya dibaca dari pool v3 tertentu (BSC: PancakeSwap v3
+  // USDT/WBNB) — lihat ethUsdFromV3Pools. Mode 'manual': harga dari config saja.
+  if (this.nativeUsdMode === 'v3pools') return this.ethUsdFromV3Pools(fallback, now);
   if (this.nativeUsdMode !== 'v4pool') return this._ethUsd ?? fallback;
   try {
     const head = await this.rpc.blockNumber();
@@ -285,6 +285,42 @@ Chain.prototype.ethUsd = async function ethUsd(fallback = 2500) {
     this._ethUsd = pick.price; this._ethUsdAt = now; this._ethPoolId = pick.poolId;
     return pick.price;
   } catch { return fallback; }
+};
+
+// Harga native dari pool v3 yang ditetapkan di profil (nativeUsd.pools): slot0 +
+// liquidity tiap pool dalam satu batch, dinyatakan sebagai USD per native menurut sisi
+// mana yang stablecoin (slot usdg). Pemilihan & pagar outlier sama dengan jalur v4.
+Chain.prototype.ethUsdFromV3Pools = async function ethUsdFromV3Pools(fallback, now = Date.now()) {
+  const pools = this.nativeUsdPools;
+  if (!pools.length) return this._ethUsd ?? fallback;
+  try {
+    const calls = pools.flatMap((a) => [
+      { to: a, data: IF_POOL3.encodeFunctionData('slot0') }, { to: a, data: IF_POOL3.encodeFunctionData('liquidity') },
+      { to: a, data: IF_POOL3.encodeFunctionData('token0') },
+    ]);
+    const res = await this.rpc.ethCallMany(calls);
+    const usdDec = this.usdgDecimals, natDec = 18;
+    const cands = [];
+    pools.forEach((a, i) => {
+      const w = res[i * 3], wl = res[i * 3 + 1], w0 = res[i * 3 + 2];
+      if (!w || w === '0x' || !wl || wl === '0x' || !w0 || w0 === '0x') return;
+      let s;
+      try { const d = IF_POOL3.decodeFunctionResult('slot0', w); s = { sqrtPriceX96: BigInt(d[0]), tick: Number(d[1]) }; } catch { return; }
+      const L = BigInt(wl);
+      if (!priceUsable(s, L)) return;
+      const t0 = ('0x' + w0.slice(-40)).toLowerCase();
+      const usdIs0 = t0 === this.ADDR.usdg;
+      // priceFromSqrt = token1 per token0. USD per native = token0 per token1 kalau token0 stablecoin.
+      const p1per0 = m.priceFromSqrt(s.sqrtPriceX96, usdIs0 ? usdDec : natDec, usdIs0 ? natDec : usdDec);
+      const price = usdIs0 ? 1 / p1per0 : p1per0;
+      if (Number.isFinite(price) && price > 1 && price < 1_000_000) cands.push({ p: { poolId: a }, s, L, price });
+    });
+    const pick = Chain.pickEthPrice(cands);
+    if (!pick) return this._ethUsd ?? fallback;
+    if (pick.outlier) this.log(`harga ${this.nativeSymbol}: pool terdalam $${pick.outlier.toFixed(2)} menyimpang dari pool lain — dipakai median $${pick.price.toFixed(2)}`);
+    this._ethUsd = pick.price; this._ethUsdAt = now;
+    return pick.price;
+  } catch { return this._ethUsd ?? fallback; }
 };
 
 // Harga ETH dari daftar pool kandidat: pool terdalam, KECUALI harganya menyimpang > 3%

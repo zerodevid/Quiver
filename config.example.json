@@ -1,50 +1,6 @@
 {
-  "chain": {
-    "endpoints": [
-      {
-        "url": "https://robinhood-rpc.publicnode.com",
-        "max_batch": 40,
-        "no_logs": true,
-        "catatan": "tercepat untuk eth_call (~90ms); getLogs ditolak di luar ~10 blok terakhir"
-      },
-      {
-        "url": "https://rpc.mainnet.chain.robinhood.com",
-        "max_batch": 40,
-        "catatan": "resmi: dukungan penuh, ~250ms, membalas 429 kalau dihajar beruntun"
-      },
-      {
-        "url": "https://rpc.ordofi.network",
-        "max_batch": 40,
-        "max_log_blocks": 3000,
-        "archive": true,
-        "catatan": "satu-satunya node arsip; getLogs HANYA rentang kecil (<=3000 blok)"
-      }
-    ],
-    "max_inflight": 4,
-    "dns_over_https": true
-  },
   "wallet": {
     "key_file": "~/.lpcopy/key"
-  },
-  "mode": {
-    "dry_run": true,
-    "paused": false
-  },
-  "loop": {
-    "poll_ms": 1500,
-    "max_block_span": 1500,
-    "sync_seconds": 30,
-    "equity_seconds": 300
-  },
-  "gas": {
-    "price_multiplier": 1.5,
-    "priority_wei": 10000000,
-    "max_gas_limit": 4000000,
-    "native_reserve_wei": 2000000000000000
-  },
-  "prices": {
-    "eth_usd": 2479,
-    "auto_eth_price": true
   },
   "server": {
     "port": 8799,
@@ -53,12 +9,6 @@
   },
   "db": {
     "path": "data/lpcopy.db"
-  },
-  "scout": {
-    "blocks": 900000
-  },
-  "risk": {
-    "max_daily_drawdown_pct": 0
   },
   "notify": {
     "ntfy_topic": null
@@ -75,61 +25,196 @@
     "timezone": null,
     "catatan": "Buat bot lewat @BotFather, tempel tokennya di sini (atau lewat dasbor -> Pengaturan -> Telegram). chat_ids diisi sendiri saat sebuah chat mengirim /start <kode>. timezone (mis. \"Asia/Jakarta\") dipakai untuk tanggal di kartu bagikan yang dikirim dari bot; kosong = zona waktu server."
   },
-  "targets": [],
-  "rules": {
-    "sizing": {
-      "mode": "fixed_quote",
-      "pct": 25,
-      "multiplier": 1,
-      "fixed_quote_usd": 10,
-      "fixed_quote_eth": 0.004,
-      "min_quote_usd": 5,
-      "max_quote_per_position_usd": 15,
-      "max_total_exposure_usd": 45,
-      "daily_budget_usd": 45
-    },
-    "range": {
-      "mode": "exact",
-      "scale": 1,
-      "width_pct": 25,
-      "align": "nearest",
-      "min_width_ticks": 0
-    },
-    "onesided": {
-      "policy": "copy",
-      "max_quote_usd": 15
-    },
-    "swap": {
+  "chains": {
+    "robinhood": {
+      "chain": {
+        "endpoints": [
+          {
+            "url": "https://robinhood-rpc.publicnode.com",
+            "max_batch": 40,
+            "no_logs": true,
+            "catatan": "tercepat untuk eth_call (~90ms); getLogs ditolak di luar ~10 blok terakhir"
+          },
+          {
+            "url": "https://rpc.mainnet.chain.robinhood.com",
+            "max_batch": 40,
+            "catatan": "resmi: dukungan penuh, ~250ms, membalas 429 kalau dihajar beruntun"
+          },
+          {
+            "url": "https://rpc.ordofi.network",
+            "max_batch": 40,
+            "max_log_blocks": 3000,
+            "archive": true,
+            "catatan": "satu-satunya node arsip; getLogs HANYA rentang kecil (<=3000 blok)"
+          }
+        ],
+        "max_inflight": 4,
+        "dns_over_https": true
+      },
+      "targets": [],
+      "rules": {
+        "sizing": {
+          "mode": "fixed_quote",
+          "pct": 25,
+          "multiplier": 1,
+          "fixed_quote_usd": 10,
+          "fixed_quote_eth": 0.004,
+          "min_quote_usd": 5,
+          "max_quote_per_position_usd": 15,
+          "max_total_exposure_usd": 45,
+          "daily_budget_usd": 45
+        },
+        "range": {
+          "mode": "exact",
+          "scale": 1,
+          "width_pct": 25,
+          "align": "nearest",
+          "min_width_ticks": 0
+        },
+        "onesided": {
+          "policy": "copy",
+          "max_quote_usd": 15
+        },
+        "swap": {
+          "enabled": true,
+          "max_slippage_bps": 150,
+          "max_price_impact_bps": 500
+        },
+        "exit": {
+          "follow_target": true,
+          "follow_partial": true,
+          "out_of_range_minutes": 0,
+          "stop_loss_pct": 0,
+          "take_profit_pct": 0,
+          "max_age_hours": 0
+        },
+        "filters": {
+          "allow_hooks": false,
+          "quote_whitelist": [
+            "USDG",
+            "ETH",
+            "WETH"
+          ],
+          "token_blacklist": [],
+          "token_whitelist": [],
+          "min_pool_age_minutes": 0,
+          "min_target_quote_usd": 25,
+          "max_open_positions": 3,
+          "cooldown_seconds": 20,
+          "venues": [
+            "v4",
+            "v3"
+          ],
+          "max_fee_bps": 100000
+        }
+      },
+      "mode": {
+        "dry_run": true,
+        "paused": false
+      },
+      "gas": {
+        "price_multiplier": 1.5,
+        "priority_wei": 10000000,
+        "max_gas_limit": 4000000,
+        "native_reserve_wei": 2000000000000000
+      },
+      "prices": {
+        "eth_usd": 2479,
+        "auto_eth_price": true
+      },
+      "loop": {
+        "poll_ms": 1500,
+        "max_block_span": 1500,
+        "sync_seconds": 30,
+        "equity_seconds": 300
+      },
+      "scout": {
+        "blocks": 900000
+      },
+      "risk": {
+        "max_daily_drawdown_pct": 0
+      },
       "enabled": true,
-      "max_slippage_bps": 150,
-      "max_price_impact_bps": 500
+      "catatan": "Robinhood Chain (4663): chain utama. Wallet (wallet.key_file) dipakai bersama semua chain."
     },
-    "exit": {
-      "follow_target": true,
-      "follow_partial": true,
-      "out_of_range_minutes": 0,
-      "stop_loss_pct": 0,
-      "take_profit_pct": 0,
-      "max_age_hours": 0
-    },
-    "filters": {
-      "allow_hooks": false,
-      "quote_whitelist": [
-        "USDG",
-        "ETH",
-        "WETH"
-      ],
-      "token_blacklist": [],
-      "token_whitelist": [],
-      "min_pool_age_minutes": 0,
-      "min_target_quote_usd": 25,
-      "max_open_positions": 3,
-      "cooldown_seconds": 20,
-      "venues": [
-        "v4",
-        "v3"
-      ],
-      "max_fee_bps": 100000
+    "bsc": {
+      "enabled": true,
+      "chain": {
+        "endpoints": [
+          {
+            "url": "https://bsc.rpc.blxrbdn.com",
+            "max_batch": 20,
+            "max_log_blocks": 5000,
+            "catatan": "bloXroute publik: getLogs maks 5000 blok, riwayat lama terbaca"
+          },
+          {
+            "url": "https://rpc-bsc.48.club",
+            "max_batch": 20,
+            "max_log_blocks": 5000,
+            "catatan": "48Club publik: getLogs maks 5000 blok"
+          },
+          {
+            "url": "https://bsc-rpc.publicnode.com",
+            "max_batch": 20,
+            "no_logs": true,
+            "catatan": "publicnode: eth_call cepat; getLogs ditolak di luar blok terbaru"
+          },
+          {
+            "url": "https://bsc-dataseed.bnbchain.org",
+            "max_batch": 20,
+            "no_logs": true,
+            "catatan": "resmi BNB Chain: eth_call & siaran tx; getLogs selalu limit exceeded"
+          }
+        ],
+        "max_inflight": 3,
+        "dns_over_https": false
+      },
+      "targets": [],
+      "rules": {
+        "filters": {
+          "quote_whitelist": [],
+          "venues": [
+            "v4",
+            "v3",
+            "pancakev3"
+          ]
+        }
+      },
+      "mode": {
+        "dry_run": true,
+        "paused": false
+      },
+      "loop": {
+        "poll_ms": 3000,
+        "max_block_span": 1500,
+        "sync_seconds": 30,
+        "equity_seconds": 300,
+        "stale_action_seconds": 300
+      },
+      "gas": {
+        "price_multiplier": 1.2,
+        "priority_wei": 1000000000,
+        "max_gas_limit": 4000000,
+        "native_reserve_wei": 5000000000000000,
+        "max_fee_gwei": 20,
+        "topup_max_usd": 25
+      },
+      "prices": {
+        "eth_usd": 750,
+        "auto_eth_price": true
+      },
+      "scout": {
+        "blocks": 120000
+      },
+      "risk": {
+        "max_daily_drawdown_pct": 0
+      },
+      "swap": {
+        "enabled": true,
+        "max_slippage_bps": 150,
+        "max_price_impact_bps": 500
+      },
+      "catatan": "Blok BSC dibuat otomatis: mode simulasi, belum ada target. Tambah target lewat dasbor/Telegram (pilih chain BSC), lalu matikan simulasi kalau sudah yakin."
     }
   }
 }

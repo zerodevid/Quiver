@@ -24,18 +24,22 @@ const { NETWORKS } = require('./networks');
 const PER_CHAIN = ['chain', 'targets', 'rules', 'mode', 'gas', 'prices', 'loop', 'scout', 'risk', 'swap'];
 const PRIMARY = 'robinhood';
 
-// Blok BSC bawaan: simulasi, tanpa target, RPC publik. Endpoint publik BSC membatasi
-// eth_getLogs ±5000 blok per permintaan, jadi max_log_blocks & max_block_span
-// disetel di bawah itu. Alamat kontrak BSC di networks.js BELUM diverifikasi on-chain
-// — dry_run jangan dimatikan sebelum skrip verifikasi dijalankan.
+// Blok BSC bawaan: simulasi, tanpa target, RPC publik. Diuji 2026-09-19 dari VPS:
+//   - bsc.rpc.blxrbdn.com (bloXroute) & rpc-bsc.48.club: getLogs maks 5000 blok, batch OK,
+//     riwayat lama terbaca — tulang punggung pemindaian
+//   - bsc-rpc.publicnode.com: eth_call cepat, getLogs hanya beberapa blok terakhir
+//   - bsc-dataseed.bnbchain.org (resmi): eth_call/kirim tx, getLogs selalu "limit exceeded"
+// Alchemy (bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}) bisa ditambah dari halaman
+// Pengaturan setelah jaringan BNB diaktifkan untuk app itu di dasbor Alchemy.
 function bscTemplate() {
   return {
     enabled: true,
     chain: {
       endpoints: [
-        { url: 'https://bsc-dataseed.bnbchain.org', max_batch: 20, max_log_blocks: 5000, catatan: 'resmi BNB Chain; getLogs maks 5000 blok' },
-        { url: 'https://bsc-rpc.publicnode.com', max_batch: 20, max_log_blocks: 5000, catatan: 'publicnode; cepat untuk eth_call' },
-        { url: 'https://bsc-dataseed1.binance.org', max_batch: 20, max_log_blocks: 5000, catatan: 'cadangan' },
+        { url: 'https://bsc.rpc.blxrbdn.com', max_batch: 20, max_log_blocks: 5000, catatan: 'bloXroute publik: getLogs maks 5000 blok, riwayat lama terbaca' },
+        { url: 'https://rpc-bsc.48.club', max_batch: 20, max_log_blocks: 5000, catatan: '48Club publik: getLogs maks 5000 blok' },
+        { url: 'https://bsc-rpc.publicnode.com', max_batch: 20, no_logs: true, catatan: 'publicnode: eth_call cepat; getLogs ditolak di luar blok terbaru' },
+        { url: 'https://bsc-dataseed.bnbchain.org', max_batch: 20, no_logs: true, catatan: 'resmi BNB Chain: eth_call & siaran tx; getLogs selalu limit exceeded' },
       ],
       max_inflight: 3,
       dns_over_https: false,
@@ -50,12 +54,12 @@ function bscTemplate() {
     // Gas BSC ~0,1–1 gwei; cadangan 0,005 BNB. legacyGasPricing (networks.js) membuat
     // tip = harga gas, jadi priority_wei di sini tidak dipakai di BSC.
     gas: { price_multiplier: 1.2, priority_wei: 1_000_000_000, max_gas_limit: 4_000_000, native_reserve_wei: 5_000_000_000_000_000, max_fee_gwei: 20, topup_max_usd: 25 },
-    // Harga BNB manual (belum ada penelusuran pool native/USDT seperti di Robinhood Chain).
-    prices: { eth_usd: 600, auto_eth_price: false },
+    // Harga BNB otomatis dari pool PancakeSwap v3 USDT/WBNB (networks.js); eth_usd = cadangan.
+    prices: { eth_usd: 750, auto_eth_price: true },
     scout: { blocks: 120_000 },
     risk: { max_daily_drawdown_pct: 0 },
     swap: { enabled: true, max_slippage_bps: 150, max_price_impact_bps: 500 },
-    catatan: 'Blok BSC dibuat otomatis: mode simulasi, belum ada target. Isi target & matikan simulasi dari dasbor/Telegram setelah alamat kontrak diverifikasi.',
+    catatan: 'Blok BSC dibuat otomatis: mode simulasi, belum ada target. Tambah target lewat dasbor/Telegram (pilih chain BSC), lalu matikan simulasi kalau sudah yakin.',
   };
 }
 

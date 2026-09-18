@@ -68,7 +68,7 @@ async function verify(key, urls, log = console.log) {
 
 if (require.main === module) {
   const key = process.argv[2] || 'bsc';
-  const urls = process.argv[3] ? [process.argv[3]] : (key === 'bsc' ? bscTemplate().chain.endpoints.map((e) => e.url) : []);
+  const urls = process.argv[3] ? [process.argv[3]] : (key === 'bsc' ? bscTemplate().chain.endpoints.filter((e) => !e.no_logs).map((e) => e.url) : []);
   if (!urls.length) { console.error('pakai: node src/verify-chain.js <chain> <https://rpc-url>'); process.exit(1); }
   verify(key, urls).then((r) => process.exit(r.ok ? 0 : 2)).catch((e) => { console.error('gagal:', e.message); process.exit(1); });
 }

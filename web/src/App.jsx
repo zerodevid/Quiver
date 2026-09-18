@@ -8,6 +8,7 @@ import {
 import { usePoll, useHash, useTheme } from './hooks';
 import { post } from './api';
 import { short, usd } from './fmt';
+import { chainInfo, setChain, CHAIN_ICON } from './chain';
 import { useI18n, LOCALES } from './i18n';
 import { QuiverLogo } from './components/Logo';
 import { AlertBell, useTargetAlerts, setBaseTitle } from './components/TargetAlerts';
@@ -162,16 +163,73 @@ function StatusFoot({ status, reload, theme, toggleTheme }) {
   );
 }
 
-function Brand() {
+// Pemilih chain di bawah logo. Satu dasbor menampilkan satu chain; memilih chain lain
+// menyimpan cookie lpcopy_chain di server lalu memuat ulang halaman supaya semua
+// data yang sedang dipoll ikut berganti. Wallet-nya sama di semua chain.
+function ChainSwitcher({ chain }) {
+  const { t } = useI18n();
+  const { data } = usePoll('/api/chains', 15000);
+  const [open, setOpen] = useState(false);
+  const chains = data?.chains || [];
+  const cur = chainInfo();
+  const pick = async (key) => {
+    setOpen(false);
+    if (key === cur.key) return;
+    const r = await post('/api/chain/select', { chain: key });
+    if (r?.ok) location.reload();
+  };
+  const icon = CHAIN_ICON[cur.key] || CHAIN_ICON.robinhood;
+  // Satu chain saja: tampilkan labelnya tanpa menu.
+  if (chains.length <= 1) {
+    return (
+      <span className="brand-sub flex items-center gap-1.5 text-[0.6875rem] leading-4 text-muted">
+        <img src={icon} alt="" width="14" height="14" className="size-3.5 shrink-0 rounded-full" />{chain?.label || cur.label}
+      </span>
+    );
+  }
+  return (
+    <div className="relative" onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false); }}>
+      <button type="button" onClick={() => setOpen(!open)} aria-haspopup="listbox" aria-expanded={open}
+        title={t('Ganti chain')}
+        className="brand-sub flex items-center gap-1.5 rounded-md border border-border/70 px-1.5 py-0.5 text-[0.6875rem] leading-4 text-muted transition-colors hover:border-border hover:text-foreground">
+        <img src={icon} alt="" width="14" height="14" className="size-3.5 shrink-0 rounded-full" />
+        <span className="font-medium">{chain?.label || cur.label}</span>
+        <svg viewBox="0 0 20 20" className="size-3 opacity-70" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8l4 4 4-4" /></svg>
+      </button>
+      {open && (
+        <ul role="listbox" className="absolute left-0 z-40 mt-1 w-64 overflow-hidden rounded-md border border-border bg-surface p-1 shadow-lg">
+          {chains.map((c) => {
+            const active = c.key === cur.key;
+            const mode = c.paused ? t('Dijeda') : c.dryRun ? t('Simulasi') : 'Live';
+            return (
+              <li key={c.key}>
+                <button type="button" role="option" aria-selected={active} onClick={() => pick(c.key)}
+                  className={`flex w-full items-center gap-2.5 rounded px-2 py-1.5 text-left text-xs transition-colors ${active ? 'bg-default text-foreground' : 'text-muted hover:bg-default/60 hover:text-foreground'}`}>
+                  <img src={CHAIN_ICON[c.key] || CHAIN_ICON.robinhood} alt="" width="16" height="16" className="size-4 shrink-0 rounded-full" />
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate font-medium">{c.label}</span>
+                    <span className="truncate text-[0.6875rem] opacity-80">
+                      {mode} · {c.targets} {t('target')} · {c.nativeSymbol}{c.verified ? '' : ` · ${t('alamat belum diverifikasi')}`}
+                    </span>
+                  </span>
+                  {active && <span className="text-accent">✓</span>}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function Brand({ chain }) {
   return (
     // data-brand/data-brand-logo: tujuan logo layar pembuka saat terbang ke header
-    <a href="#summary" data-brand className="flex shrink-0 flex-col items-start gap-2 text-foreground" aria-label="Quiver">
-      <QuiverLogo className="h-[22px] w-[121px]" data-brand-logo="" />
-      <span className="brand-sub flex items-center gap-1.5 text-[0.6875rem] leading-4 text-muted">
-        <img src="/robinhood-chain.jpg" alt="" width="14" height="14" className="size-3.5 shrink-0 rounded-full" />
-        Robinhood Chain
-      </span>
-    </a>
+    <div data-brand className="flex shrink-0 flex-col items-start gap-2 text-foreground">
+      <a href="#summary" aria-label="Quiver"><QuiverLogo className="h-[22px] w-[121px]" data-brand-logo="" /></a>
+      <ChainSwitcher chain={chain} />
+    </div>
   );
 }
 
@@ -185,6 +243,10 @@ export default function App() {
   const { data: status, error: statusError, reload } = usePoll('/api/overview', 5000);
   // Layar pembuka ditutup begitu status pertama (atau galatnya) tiba.
   useEffect(() => { if (status || statusError) hideSplash(); }, [status, statusError]);
+  // Identitas chain (simbol native, penjelajah, slug DexScreener) dibagikan ke pembantu
+  // non-React lewat chain.js begitu status pertama tiba.
+  useEffect(() => { if (status?.chain?.key) setChain(status.chain); }, [status?.chain?.key]);
+  const chain = status?.chain?.key ? status.chain : chainInfo();
   // Judul tab ikut angka hidup: "Quiver · $1.234,56 · +$56,78" (digulir, lihat setBaseTitle) — total portofolio dan
   // PnL (bersih kalau modal terlacak, kalau tidak PnL posisi), sama dengan kartu di
   // Ringkasan. Dibaca dari sebelah tab lain tanpa membuka dasbornya.
@@ -206,7 +268,7 @@ export default function App() {
       <div className="flex min-h-dvh">
         {/* sidebar desktop */}
         <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col border-r border-border bg-surface lg:flex">
-          <div className="flex h-[76px] items-center border-b border-border px-5"><Brand /></div>
+          <div className="flex h-[76px] items-center border-b border-border px-5"><Brand chain={chain} /></div>
           {/* data-reveal: disembunyikan selama layar pembuka, muncul berurutan setelah logo mendarat */}
           <div className="flex-1 overflow-y-auto px-2 py-4" data-reveal="nav">
             <div className="mb-3 px-0.5"><SearchTrigger /></div>
@@ -218,7 +280,7 @@ export default function App() {
         <div className="flex min-w-0 flex-1 flex-col">
           {/* header mobile */}
           <header className="sticky top-0 z-30 flex h-[72px] items-center justify-between border-b border-border bg-surface/90 px-4 backdrop-blur lg:hidden">
-            <Brand />
+            <Brand chain={chain} />
             <div className="flex items-center gap-1" data-reveal="nav">
               <span className="mr-1 hidden min-[360px]:inline"><ModeBadge m={status?.mode} /></span>
               <SearchTrigger compact />
@@ -243,7 +305,7 @@ export default function App() {
             <Suspense fallback={<Loading page />}><Page key={page + (param || '')} param={param} /></Suspense>
           </main>
           <footer className="mx-auto w-full max-w-[90rem] px-4 pb-5 text-[0.6875rem] text-muted sm:px-6 lg:px-8" data-reveal="foot">
-            {t('Quiver · cermin posisi likuiditas Uniswap v3/v4 · Robinhood Chain (4663)')}
+            {t('Quiver · cermin posisi likuiditas')} {chain.key === 'bsc' ? 'Uniswap v3/v4 + PancakeSwap v3' : 'Uniswap v3/v4'} · {chain.label} ({chain.chainId})
           </footer>
         </div>
       </div>

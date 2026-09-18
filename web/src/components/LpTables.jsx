@@ -1,5 +1,6 @@
 // Tabel yang dipakai bersama halaman detail token dan detail pool: posisi bot,
 // posisi wallet hasil riset, dan gerakan target. Datanya dari lpRows di server.
+import { chainInfo, isEthLike } from '../chain';
 import { Button } from '@heroui/react';
 import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing } from './ui';
 import { TokenPair, PairName } from './TokenIcon';
@@ -141,7 +142,7 @@ export function TargetMoves({ rows, className = '' }) {
             <PairName token0={x.token0} token1={x.token1} symbol0={x.symbol0} symbol1={x.symbol1} pool={x.pool_ref} sep="/" className="font-medium" />) },
           { key: 'val', label: 'Nilai', align: 'end', sort: (x) => x.value_quote, render: (x) => (
             x.value_quote == null ? <span className="text-muted">—</span>
-              : x.quote_symbol === 'ETH' || x.quote_symbol === 'WETH' ? `${x.value_quote.toFixed(4)} Ξ` : usd(x.value_quote)) },
+              : isEthLike(x.quote_symbol) ? `${x.value_quote.toFixed(4)} ${chainInfo().nativeSymbol}` : usd(x.value_quote)) },
           { key: 'dec', label: 'Keputusan', sort: (x) => x.verdict, render: (x) => {
             const k = KEPUTUSAN[x.verdict];
             return (

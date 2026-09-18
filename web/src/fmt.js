@@ -1,3 +1,4 @@
+import { chainInfo } from './chain';
 import { getLocale, translate as t } from './i18n';
 
 // Semua format angka & waktu mengikuti bahasa yang sedang dipakai:
@@ -12,11 +13,12 @@ export const pct = (v, d = 1) => (v == null ? '—'
   : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d }) + '%');
 export const num = (v, d = 0) => (v == null ? '—' : Number(v).toLocaleString(loc(), { maximumFractionDigits: d }));
 export const short = (a) => (a ? a.slice(0, 6) + '…' + a.slice(-4) : '—');
-// Penjelajah blok Robinhood Chain — tautan transaksi di riwayat posisi dan aktivitas.
-export const txHref = (hash) => (hash ? `https://robinhoodchain.blockscout.com/tx/${hash}` : null);
-export const addrHref = (a) => (a ? `https://robinhoodchain.blockscout.com/address/${a}` : null);
+// Penjelajah blok chain yang sedang ditampilkan (Blockscout / BscScan memakai jalur
+// /tx dan /address yang sama) — tautan transaksi di riwayat posisi dan aktivitas.
+export const txHref = (hash) => (hash ? `${chainInfo().explorer}/tx/${hash}` : null);
+export const addrHref = (a) => (a ? `${chainInfo().explorer}/address/${a}` : null);
 // Portofolio LP wallet di LPAgent — pembanding luar untuk angka riset kita.
-export const lpagentHref = (a) => (a ? `https://app.lpagent.io/portfolio?address=${a}&chain=ROBINHOOD` : null);
+export const lpagentHref = (a) => (a ? `https://app.lpagent.io/portfolio?address=${a}&chain=${chainInfo().key === 'bsc' ? 'BSC' : 'ROBINHOOD'}` : null);
 export const tone = (v) => (v > 0.005 ? 'text-success' : v < -0.005 ? 'text-danger' : '');
 export const widthPct = (lo, hi) => (1.0001 ** (hi - lo) - 1) * 100;
 

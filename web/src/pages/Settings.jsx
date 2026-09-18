@@ -1,3 +1,4 @@
+import { chainInfo } from '../chain';
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Chip, Checkbox, Separator, Tabs, toast } from '@heroui/react';
 import { Pencil, Activity as Pulse, Trash2, KeyRound, Unlock, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck, ShieldAlert } from 'lucide-react';
@@ -66,9 +67,9 @@ function WalletTab({ d, reload }) {
             {w.fromEnv
               ? <Chip size="sm" variant="soft" color="success">{t('dari .env')}</Chip>
               : <Chip size="sm" variant="soft" color={w.perms === '600' ? 'success' : 'danger'}>{w.perms === '600' ? t('600 · aman') : t('{p} · terlalu longgar', { p: w.perms || '?' })}</Chip>}</dd></div>
-          <div><dt className="text-xs text-muted">ETH</dt><dd className="num mt-0.5 font-medium">{amt(w.balances?.eth, 6)}</dd></div>
-          <div><dt className="text-xs text-muted">USDG</dt><dd className="num mt-0.5 font-medium">{amt(w.balances?.usdg, 2)}</dd></div>
-          <div><dt className="text-xs text-muted">WETH</dt><dd className="num mt-0.5 font-medium">{amt(w.balances?.weth, 6)}</dd></div>
+          <div><dt className="text-xs text-muted">{w.balances?.symbols?.eth || chainInfo().nativeSymbol}</dt><dd className="num mt-0.5 font-medium">{amt(w.balances?.eth, 6)}</dd></div>
+          <div><dt className="text-xs text-muted">{w.balances?.symbols?.usdg || chainInfo().usdgSymbol}</dt><dd className="num mt-0.5 font-medium">{amt(w.balances?.usdg, 2)}</dd></div>
+          <div><dt className="text-xs text-muted">{w.balances?.symbols?.weth || chainInfo().wethSymbol}</dt><dd className="num mt-0.5 font-medium">{amt(w.balances?.weth, 6)}</dd></div>
         </dl>
       ) : <Notice>{t('Belum ada wallet terpasang. Bot hanya bisa berjalan dalam mode simulasi.')}</Notice>}
 
@@ -615,7 +616,7 @@ export default function Settings() {
                       ['priority_gwei', 'Priority fee (gwei)', 'Biaya prioritas tambahan per unit gas, dalam gwei. Ini bukan total biaya transaksi.'],
                       ['max_gas_limit', 'Batas gas per transaksi', 'Jumlah maksimum unit gas untuk satu transaksi, bukan jumlah ETH. Batas terlalu kecil dapat membuat transaksi gagal.'],
                       ['max_fee_gwei', 'Batas harga gas (gwei)', 'Harga gas per unit tidak pernah melebihi angka ini, walau satu RPC melaporkan harga yang ngawur. Harga normal jaringan ini sekitar 0,1 gwei.'],
-                      ['reserve_eth', 'Cadangan ETH untuk gas', 'ETH sebanyak ini tidak pernah dipakai untuk LP maupun swap.'],
+                      ['reserve_eth', `Cadangan ${chainInfo().nativeSymbol} untuk gas`, `${chainInfo().nativeSymbol} sebanyak ini tidak pernah dipakai untuk LP maupun swap.`],
                     ]} />
                 </Tabs.Panel>
                 <Tabs.Panel id="notify" shouldForceMount className="data-[inert]:hidden">
@@ -631,8 +632,8 @@ export default function Settings() {
                       ['poll_ms', 'Interval pindai (ms)', 'Seberapa sering blok baru diperiksa. 1.500 ms = 1,5 detik. Nilai lebih kecil menambah permintaan RPC.'],
                       ['max_block_span', 'Blok per pindai', 'Maks 3.000 — batas getLogs endpoint arsip.'],
                       ['sync_seconds', 'Sinkron posisi (detik)', 'Jeda pemeriksaan ulang posisi bot terhadap data jaringan. Nilai lebih kecil menambah permintaan RPC.'],
-                      ['eth_usd', 'Harga ETH cadangan (USD)', 'Dipakai hanya kalau harga dari pool ETH/USDG gagal dibaca.'],
-                      ['auto_eth_price', 'Ambil harga ETH dari chain', 'Aktif: gunakan harga dari pool ETH/USDG. Nonaktif: gunakan harga ETH cadangan yang diisi di atas.', 'bool'],
+                      ['eth_usd', `Harga ${chainInfo().nativeSymbol} cadangan (USD)`, `Dipakai kalau harga dari pool ${chainInfo().nativeSymbol}/${chainInfo().usdgSymbol} gagal dibaca (atau pencarian otomatis dimatikan).`],
+                      ['auto_eth_price', `Ambil harga ${chainInfo().nativeSymbol} dari chain`, `Aktif: gunakan harga dari pool ${chainInfo().nativeSymbol}/${chainInfo().usdgSymbol}. Nonaktif: gunakan harga cadangan yang diisi di atas.`, 'bool'],
                     ]} />
                 </Tabs.Panel>
                 <Tabs.Panel id="security"><SecurityTab d={d} /></Tabs.Panel>

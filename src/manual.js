@@ -189,19 +189,25 @@ class Manual {
         [factory, [TOPIC.poolCreatedV3, null, pad(t)], (logs) => serapV3(logs, venue)],
       ]),
     ];
-    const CHUNK = 400_000;
-    const potong = Math.ceil(head / CHUNK);
+    // Endpoint yang membatasi rentang getLogs (BSC publik: 5000 blok) tidak sanggup
+    // memindai sejak genesis — jendela dibatasi ~1 juta blok terakhir, dipotong sesuai
+    // batasnya. Tanpa batas (Robinhood: ordofi/Alchemy): 400 ribu blok per potongan.
+    const limit = this.rpc.maxLogSpan?.() || 0;
+    const CHUNK = limit ? Math.min(400_000, limit) : 400_000;
+    const floor = limit ? Math.max(0, head - 1_000_000) : 0;
+    const potong = Math.ceil((head - floor) / CHUNK);
     const total = potong * kueri.length;
     let langkah = 0;
     for (const [address, topics, serap] of kueri) {
       try {
+        if (limit) throw new Error('rentang dibatasi');   // langsung per potongan
         serap(await this.rpc.getLogs({ address, topics, fromBlock: '0x0', toBlock: hex(head) }));
         langkah += potong;
         onProgress({ done: langkah, total });
         continue;
       } catch { /* endpoint menolak rentang sebesar itu — mundur per potongan */ }
-      for (let hi = head; hi > 0;) {
-        const lo = Math.max(0, hi - CHUNK);
+      for (let hi = head; hi > floor;) {
+        const lo = Math.max(floor, hi - CHUNK);
         try {
           serap(await this.rpc.getLogs({ address, topics, fromBlock: hex(lo), toBlock: hex(hi) }));
         } catch { /* satu potongan gagal: jangan menggagalkan seluruh pemindaian */ }

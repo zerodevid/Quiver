@@ -376,6 +376,13 @@ class RpcPool {
   }
 
   hasArchive() { return this.eps.some((e) => e.archive); }
+  // Rentang blok getLogs terbesar yang diterima salah satu endpoint (0 = ada yang tanpa
+  // batas). Pemindai jendela panjang memotong permintaannya mengikuti angka ini.
+  maxLogSpan() {
+    const eps = this.eps.filter((e) => !e.noLogs);
+    if (!eps.length || eps.some((e) => !e.maxLogBlocks)) return 0;
+    return Math.max(...eps.map((e) => e.maxLogBlocks));
+  }
 
   // eth_call di blok lampau — hanya dikirim ke endpoint arsip.
   async callAt(to, data, block) {

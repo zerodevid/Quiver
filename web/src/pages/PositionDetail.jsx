@@ -6,6 +6,7 @@
 // rentang saya, kapan saya masuk, dan seberapa jauh harga dari tepi" — dan iframe
 // pihak ketiga tidak bisa digambari. Tampilan DexScreener tetap tersedia sebagai
 // pilihan kedua untuk melihat transaksi dan indikator lain.
+import { chainInfo } from '../chain';
 import { useCallback, useMemo, useState } from 'react';
 import { Button, Spinner } from '@heroui/react';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
@@ -126,7 +127,7 @@ export function DexEmbed({ pool }) {
   });
   return (
     <div className="overflow-hidden rounded-md border border-border">
-      <iframe title="DexScreener" src={`https://dexscreener.com/robinhood/${pool}?${q}`}
+      <iframe title="DexScreener" src={`https://dexscreener.com/${chainInfo().dexscreener}/${pool}?${q}`}
         className="block h-[520px] w-full bg-surface" allow="clipboard-write" loading="lazy" />
     </div>
   );
@@ -161,8 +162,8 @@ export function MarketPanel({ pair, pool }) {
         <KV label="Pool dibuat">{pair.pairCreatedAt ? age((Date.now() - pair.pairCreatedAt) / 3600000) + ' ' + t('lalu') : '—'}</KV>
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-border px-4 py-2.5 text-xs">
-        <a href={pair.url || `https://dexscreener.com/robinhood/${pool}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline">DexScreener <ExternalLink className="size-3" /></a>
-        <a href={`https://www.geckoterminal.com/robinhood/pools/${pool}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline">GeckoTerminal <ExternalLink className="size-3" /></a>
+        <a href={pair.url || `https://dexscreener.com/${chainInfo().dexscreener}/${pool}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline">DexScreener <ExternalLink className="size-3" /></a>
+        <a href={`https://www.geckoterminal.com/${chainInfo().geckoterminal}/pools/${pool}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline">GeckoTerminal <ExternalLink className="size-3" /></a>
         {pair.websites?.map((w) => <a key={w} href={w} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:underline">{t('Situs')} <ExternalLink className="size-3" /></a>)}
       </div>
     </>
