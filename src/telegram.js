@@ -1401,11 +1401,20 @@ class Telegram {
       '',
     ];
     if (d.full && p?.empty) {
-      // Hasil bersih ditaruh di luar tabel supaya bisa ditebalkan.
-      L.push(`${pnl >= 0 ? tr("📈 Untung") : tr("📉 Rugi")} <b>${sgn(pnl)}</b>  ${pct(p.pnlPct)}`);
+      // Untung/rugi yang ditebalkan adalah angka BERSIH: hasil − modal − ongkos
+      // (gas + slippage buka & tutup). PnL mentah cuma hasil − modal, dan pada
+      // posisi tipis ongkos itulah yang membedakan untung dan rugi. Ongkos ditaruh
+      // di tabel sebagai baris minus supaya jumlahnya bisa dicek dengan mata.
+      const ongkos = p.cost?.totalUsd || 0;
+      const adaOngkos = Math.abs(ongkos) >= 0.0005;
+      const bersih = adaOngkos && pnl != null ? pnl - ongkos : pnl;
+      const bersihPct = adaOngkos ? (p.costUsd > 0 ? (bersih / p.costUsd) * 100 : null) : p.pnlPct;
+      const label = bersih >= 0 ? (adaOngkos ? tr("📈 Untung bersih") : tr("📈 Untung")) : (adaOngkos ? tr("📉 Rugi bersih") : tr("📉 Rugi"));
+      L.push(`${label} <b>${sgn(bersih)}</b>  ${pct(bersihPct, Math.abs(bersihPct) < 0.1 ? 2 : 1)}`);
       L.push(angka([
         [tr("hasil"), usd(p.outUsd ?? p.valueUsd)],
         [tr("modal"), usd(p.costUsd)],
+        [tr("ongkos"), adaOngkos ? `−${usd(ongkos)}` : null],
       ]));
     } else if (p) {
       // Tutup sebagian: nilai yang tersisa baru akurat setelah sinkron berikutnya.
