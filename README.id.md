@@ -1,4 +1,4 @@
-# Quiver — copy-LP untuk Robinhood Chain
+# Quiver — copy-LP untuk Robinhood Chain & BNB Smart Chain
 
 <p align="center">
   <a href="docs/quiver-demo-en.mp4">
@@ -8,9 +8,34 @@
 </p>
 
 Mencermin posisi likuiditas (LP) Uniswap **v4 dan v3** dari satu atau banyak wallet
-target di Robinhood Chain (chainId 4663), dengan dashboard untuk memantau dan menyetel
-semuanya. Default-nya **mode simulasi** — tidak mengirim transaksi sampai kamu
-menyalakannya sendiri.
+target di Robinhood Chain (chainId 4663) dan BNB Smart Chain (chainId 56 — Uniswap v4/v3
+plus PancakeSwap v3), dengan dashboard untuk memantau dan menyetel semuanya. Default-nya
+**mode simulasi** — tidak mengirim transaksi sampai kamu menyalakannya sendiri.
+
+## Dua chain, satu proses
+
+Satu proses menjalankan semua chain yang aktif sekaligus: satu database, satu wallet
+(kunci yang sama menghasilkan alamat yang sama di semua chain EVM), tapi target, aturan,
+RPC, mode simulasi/live, dan gas **terpisah per chain** di `config.json` →
+`chains.robinhood` dan `chains.bsc`. Config lama (satu chain) dirapikan otomatis saat
+bot dinyalakan; blok `chains.bsc` dibuat sendiri dalam mode simulasi tanpa target.
+
+Ganti chain semudah ini:
+
+- **Dasbor:** klik nama chain di bawah logo → pilih chain. Semua halaman, pengaturan,
+  dan aksi setelahnya berlaku untuk chain itu (ditandai lewat cookie `lpcopy_chain`;
+  `?chain=bsc` di URL juga bisa).
+- **Telegram:** `/chain` (atau tombol *⛓ Ganti chain* di menu). Pilihan disimpan per
+  chat; kabar otomatis diberi label chain-nya.
+- **Terminal:** `./lp add 0xABC… "label" --chain=bsc`, `./lp scout 0xABC… --chain=bsc`.
+
+Alamat kontrak tiap chain ada di `src/networks.js` dan diperiksa langsung ke chain
+dengan `node src/verify-chain.js bsc` (chain id, bytecode, `NPM.factory()`,
+`posmV4.poolManager()`, simbol & desimal aset kuotasi). Di BSC harga BNB dibaca dari
+pool PancakeSwap v3 USDT/WBNB terdalam, dan USDT (18 desimal) mengambil peran USDG.
+RPC bawaan BSC memakai endpoint publik yang sanggup `eth_getLogs` sampai 5000 blok
+(bloXroute, 48Club); endpoint Alchemy BNB bisa ditambah dari halaman Pengaturan setelah
+jaringan BNB diaktifkan untuk app-nya di dasbor Alchemy.
 
 ```
 ./lp                       # jalankan mesin + dashboard (http://127.0.0.1:8799)

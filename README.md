@@ -6,8 +6,8 @@
 </p>
 
 <p align="center">
-  <strong>Liquidity position copying for Robinhood Chain</strong><br />
-  Monitor target wallets, manage Uniswap v3/v4 positions, and track results<br />
+  <strong>Liquidity position copying for Robinhood Chain and BNB Smart Chain</strong><br />
+  Monitor target wallets, manage Uniswap v3/v4 (and PancakeSwap v3) positions, and track results<br />
   through a bilingual dashboard and Telegram bot.
 </p>
 
@@ -92,20 +92,23 @@ The server serves the built React dashboard from `web/dist/`. Without that build
 
 ## Configuration
 
-Use [config.example.json](config.example.json) as the starting point. Supported settings can also be edited from the dashboard; those changes are persisted to the configuration file. Target records are stored in SQLite, with `targets[]` used to seed entries at startup.
+Use [config.example.json](config.example.json) as the starting point. Supported settings can also be edited from the dashboard; those changes are persisted to the configuration file. Target records are stored in SQLite, with `chains.<name>.targets[]` used to seed entries at startup.
 
-| Section | Purpose |
-| --- | --- |
-| `chain` | RPC endpoints, concurrency, archive support, and log-query limits. |
-| `wallet` | Signing-key file location; overridden by `LPCOPY_PRIVATE_KEY` when set. |
-| `mode` | Simulation/live execution and pause state. |
-| `loop` | Polling, synchronisation, and equity snapshot intervals. |
-| `gas` | Gas pricing, gas limit, and native-token reserve. |
-| `prices` | ETH valuation settings. |
-| `server` | Bind address, port, and dashboard authentication. |
-| `db` | SQLite database location. |
-| `rules` | Sizing, ranges, swaps, exits, and filters. |
-| `telegram`, `notify` | Telegram integration and optional ntfy notifications. |
+One process runs every enabled chain at once. Global sections apply to all chains; everything that differs per chain lives under `chains.<name>` (`robinhood`, `bsc`). A legacy single-chain `config.json` is normalised on start-up (its top-level sections move to `chains.robinhood`) and a `chains.bsc` block is seeded in simulation mode with no targets.
+
+| Section | Scope | Purpose |
+| --- | --- | --- |
+| `wallet` | global | Signing-key file location; overridden by `LPCOPY_PRIVATE_KEY` when set. The same key (and address) is used on every chain. |
+| `server`, `db`, `telegram`, `notify` | global | Dashboard binding and authentication, SQLite location, Telegram and ntfy notifications. |
+| `chains.<name>.enabled` | per chain | Start the engine for this chain. |
+| `chains.<name>.chain` | per chain | RPC endpoints, concurrency, archive support, and log-query limits. |
+| `chains.<name>.targets`, `rules` | per chain | Seed targets and copy rules (sizing, ranges, swaps, exits, filters). `filters.venues` may include `pancakev3` on BSC. |
+| `chains.<name>.mode` | per chain | Simulation/live execution and pause state — BSC can stay in simulation while Robinhood is live. |
+| `chains.<name>.loop`, `gas`, `prices`, `scout`, `risk` | per chain | Polling and scan windows, gas pricing and native reserve, native-token valuation, research window, daily drawdown breaker. |
+
+Chain profiles (chain id, contract addresses, quote assets, venues, block time) live in [src/networks.js](src/networks.js). `node src/verify-chain.js bsc` checks a profile against the live chain: chain id, bytecode of every contract, `NonfungiblePositionManager.factory()` for each v3 venue, `PositionManager.poolManager()`, and the quote tokens' symbol and decimals.
+
+On BNB Smart Chain the bot follows Uniswap v4, Uniswap v3, and PancakeSwap v3 (venue `pancakev3`). BNB/USD is read from the deepest PancakeSwap v3 USDT/WBNB pools; USDT (18 decimals) takes the stablecoin role that USDG has on Robinhood Chain. The seeded RPC list uses public endpoints that serve `eth_getLogs` up to 5000 blocks; add an Alchemy BNB endpoint from the Settings page once the network is enabled for your app.
 
 ### Credentials and environment variables
 
@@ -147,6 +150,8 @@ Global rules can be overridden for individual targets.
 Consult `src/policy.js` for rule defaults and evaluation. Hooks are disabled for copied LP entries in the example configuration.
 
 ## Dashboard and Telegram
+
+The dashboard shows one chain at a time; the switcher under the logo (or `?chain=bsc` in the URL) picks it and every page, setting, and action then applies to that chain. The Telegram bot has the same switcher (`/chain`), remembers the choice per chat, and labels notifications with the chain they came from.
 
 The dashboard provides **Overview**, **Positions**, **Activity**, **Targets**, **Rules**, **Manual LP**, **Swap**, **Wallet**, and **Settings** views. Language preferences are stored per browser; Telegram language preferences are stored per chat.
 
@@ -191,9 +196,10 @@ Vite proxies `/api` requests to `http://127.0.0.1:8799`. Use the Vite address pr
 | Command | Purpose |
 | --- | --- |
 | `node --no-warnings src/index.js` | Start the application. |
-| `node --no-warnings src/index.js scout <address> [blocks]` | Research a wallet within a specified block window. |
-| `node --no-warnings src/index.js add <address> "label"` | Register a target. |
-| `node --no-warnings src/index.js list` | List targets. |
+| `node --no-warnings src/index.js scout <address> [blocks] [--chain=bsc]` | Research a wallet within a specified block window. |
+| `node --no-warnings src/index.js add <address> "label" [--chain=bsc]` | Register a target (default chain: robinhood). |
+| `node --no-warnings src/index.js list` | List targets on every chain. |
+| `node --no-warnings src/verify-chain.js bsc [rpc-url]` | Verify a chain profile's contract addresses on-chain. |
 
 With zsh installed, `./lp` accepts the same arguments. Do not run multiple engine instances against the same database.
 
