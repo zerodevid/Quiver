@@ -141,6 +141,45 @@ const rpcStub = { blockNumber: async () => 100, ethCallMany: async (c) => c.map(
     assert.strictEqual(ensureChain(rpcStub).rpc, rpcStub, 'RpcPool lama dibungkus jadi chain');
   });
 
+  await t('Telegram: /chain mengganti chain per chat; API & mesin yang dipakai layar mengikuti pilihannya', async () => {
+    const { Telegram } = require('../src/telegram');
+    const store = new Store(':memory:');
+    const cfg = { telegram: { bot_token: '1:x', chat_ids: ['7'], language: 'id' }, chains: {} };
+    const mkEngine = (key, dry) => ({ network: key, dryRun: () => dry, paused: () => false, watcher: { enabledSet: () => new Set(key === 'bsc' ? ['0xa'] : []) } });
+    const nets = {
+      robinhood: { key: 'robinhood', label: 'Robinhood Chain', engine: mkEngine('robinhood', false) },
+      bsc: { key: 'bsc', label: 'BNB Smart Chain', engine: mkEngine('bsc', true) },
+    };
+    const calls = [];
+    const bot = new Telegram({
+      cfg, cfgPath: null, store, engine: nets.robinhood.engine, nets, primaryKey: 'robinhood', log: () => {},
+      api: async (m, p, b, q, chainKey) => {
+        calls.push([p, chainKey]);
+        return { mode: { dry_run: false, wallet: null, paused: false }, summary: { realizedUsd: 0, unrealizedUsd: 0, openCount: 0, exposureUsd: 0, inRange: 0, feeUsd: 0 },
+          chain: { lag: 0, head: 1, cursor: 1 }, stats: { errors: 0, uptimeSec: 1 }, totals: { actions: 0, copied: 0, would: 0, skipped: 0, errors: 0 }, rpc: [], leftovers: [], targets: [], positions: [], logs: [] };
+      },
+    });
+    const out = [];
+    bot.tg = async (method, params) => { out.push([method, params]); return { message_id: 1 }; };
+    // layar pemilih chain
+    await bot.handle({ callback_query: { id: '1', data: 'ch', message: { chat: { id: 7 }, message_id: 1 } } });
+    const pilih = out.find(([m, p]) => m === 'editMessageText' || m === 'sendMessage')[1];
+    assert.ok(/Pilih chain/.test(pilih.text));
+    assert.ok(JSON.stringify(pilih.reply_markup).includes('chSet:bsc'));
+    // pilih BSC: tersimpan per chat, layar berikutnya memakai chain itu
+    await bot.handle({ callback_query: { id: '2', data: 'chSet:bsc', message: { chat: { id: 7 }, message_id: 1 } } });
+    assert.strictEqual(bot.chatChain('7'), 'bsc');
+    calls.length = 0;
+    await bot.handle({ message: { chat: { id: 7, type: 'private' }, text: '/menu' } });
+    assert.ok(calls.length && calls.every(([, k]) => k === 'bsc'), JSON.stringify(calls));
+    const teks = out[out.length - 1][1].text;
+    assert.ok(teks.includes('BNB Smart Chain'), teks.slice(0, 120));
+    // chat lain tetap di chain utama
+    calls.length = 0;
+    await bot.handle({ message: { chat: { id: 8, type: 'private' }, text: '/menu' } });
+    assert.ok(calls.length === 0 || calls.every(([, k]) => k === 'robinhood'));
+  });
+
   await t('setiap jaringan di NETWORKS bisa dibangun dan alamatnya huruf kecil', () => {
     for (const key of Object.keys(NETWORKS)) {
       const p = build(key);
