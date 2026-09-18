@@ -27,6 +27,14 @@ const TRANSIENT = /network is busy|timeout|429|too many requests|503|502|tempora
 const RATE_LIMIT = /429|too many requests|tumbang/i;
 
 async function getLogsSafe(rpc, filter, lo, hi, depth = 0) {
+  // Semua endpoint membatasi rentang getLogs (BSC publik: 5000 blok): potong di muka
+  // sesuai batasnya, urut — bukan menunggu ditolak lalu membelah dua berulang kali.
+  const limit = depth === 0 && typeof rpc.maxLogSpan === 'function' ? rpc.maxLogSpan() : 0;
+  if (limit > 0 && hi - lo + 1 > limit) {
+    const out = [];
+    for (let a = lo; a <= hi; a += limit) out.push(...await getLogsSafe(rpc, filter, a, Math.min(hi, a + limit - 1), 1));
+    return out;
+  }
   // Dua jenis kegagalan yang butuh penanganan BERBEDA:
   //  - rentang terlalu besar -> pecah dua
   //  - upstream sedang sibuk  -> tunggu lalu ulangi rentang yang SAMA

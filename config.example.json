@@ -189,7 +189,8 @@
         "max_block_span": 1500,
         "sync_seconds": 30,
         "equity_seconds": 300,
-        "stale_action_seconds": 300
+        "stale_action_seconds": 300,
+        "adopt_blocks": 250000
       },
       "gas": {
         "price_multiplier": 1.2,

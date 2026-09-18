@@ -50,7 +50,10 @@ function bscTemplate() {
     },
     mode: { dry_run: true, paused: false },
     // ~0,75 detik per blok: 1500 blok ≈ 19 menit per potongan pengejaran; poll 3 detik
-    loop: { poll_ms: 3000, max_block_span: 1500, sync_seconds: 30, equity_seconds: 300, stale_action_seconds: 300 },
+    // adopt_blocks: jendela pindai posisi wallet saat mulai (~2 hari); pemindaian
+    // lanjutan hanya blok baru. Tanpa batas ini = seluruh riwayat, 24 ribu panggilan
+    // getLogs 5000-blok di BSC.
+    loop: { poll_ms: 3000, max_block_span: 1500, sync_seconds: 30, equity_seconds: 300, stale_action_seconds: 300, adopt_blocks: 250_000 },
     // Gas BSC ~0,1–1 gwei; cadangan 0,005 BNB. legacyGasPricing (networks.js) membuat
     // tip = harga gas, jadi priority_wei di sini tidak dipakai di BSC.
     gas: { price_multiplier: 1.2, priority_wei: 1_000_000_000, max_gas_limit: 4_000_000, native_reserve_wei: 5_000_000_000_000_000, max_fee_gwei: 20, topup_max_usd: 25 },
