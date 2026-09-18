@@ -28,5 +28,6 @@
   "Bot Telegram tidak aktif di proses ini.": "The Telegram bot is not active in this process.",
   "Belum ada chat yang tersambung.": "No Telegram chats are connected.",
   "Tidak bisa dihubungi": "Endpoint unreachable",
-  "harga belum terambil dari GeckoTerminal — coba lagi sebentar": "Price candles could not be fetched from GeckoTerminal. Try again in a moment."
+  "harga belum terambil dari GeckoTerminal — coba lagi sebentar": "Price candles could not be fetched from GeckoTerminal. Try again in a moment.",
+  "belum ada riwayat portofolio — grafik terisi setelah bot membuka posisi (dicatat tiap 5 menit)": "No portfolio history yet. The chart fills in after the bot opens a position (recorded every 5 minutes)."
 }

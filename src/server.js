@@ -18,6 +18,7 @@ const { QUOTES, ADDR: { native: ADDR_NATIVE, usdg: ADDR_USDG, weth: ADDR_WETH } 
 const { writeCfg } = require('./env');
 const shareCard = require('./share-card');
 const chartCard = require('./chart-card');
+const portfolioCard = require('./portfolio-card');
 const { breakEven } = require('./breakeven.mjs');
 
 // Sisi mana dari pool yang merupakan aset kuotasi (0 atau 1); null kalau tidak dikenal.
@@ -1877,6 +1878,19 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     return { png: chartCard.render(data, opts), caption: chartCard.caption(data, lang), tf: frame, mask: data.mask, span: data.span, candles: candles.length };
   };
 
+  // Grafik pertumbuhan portofolio sebagai gambar (src/portfolio-card.js), dari
+  // /api/portfolio yang sama dengan halaman Ringkasan. Dipakai tombol "Grafik
+  // portofolio" di bot Telegram dan rute PNG di bawah.
+  const portfolioCardOf = async ({ range = '7d', view = 'net', lang = 'id', tz } = {}) => {
+    const r = portfolioCard.RANGES.includes(range) ? range : '7d';
+    const pf = await callApi('GET', '/api/portfolio', {}, { range: r });
+    if (pf.error) return { error: pf.error };
+    const data = portfolioCard.prepare(pf, view);
+    if (data.pts.length < 2) return { error: 'belum ada riwayat portofolio — grafik terisi setelah bot membuka posisi (dicatat tiap 5 menit)' };
+    const opts = { lang, timeZone: tz || cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone };
+    return { png: portfolioCard.render(data, opts), caption: portfolioCard.caption(data, lang), range: r, view: data.view, points: data.pts.length };
+  };
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     const key = `${req.method} ${url.pathname}`;
@@ -1922,10 +1936,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       }
     }
     // Logo token: satu-satunya rute /api yang membalas gambar, bukan JSON.
-    // Kartu bagikan: satu-satunya rute /api lain yang membalas gambar.
+  // Kartu bagikan: satu-satunya rute /api lain yang membalas gambar.
     if (key === 'GET /api/share/card') {
       const q = Object.fromEntries(url.searchParams);
       const card = await shareCardOf({ ...q, hide: q.hide === '1' }).catch((e) => ({ error: e.message }));
+      if (card.error) return json(res, 400, { error: card.error });
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'private, no-store' });
+      return res.end(card.png);
+    }
+    if (key === 'GET /api/portfolio/chart.png') {
+      const q = Object.fromEntries(url.searchParams);
+      const card = await portfolioCardOf(q).catch((e) => ({ error: e.message }));
       if (card.error) return json(res, 400, { error: card.error });
       res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'private, no-store' });
       return res.end(card.png);
@@ -2009,6 +2030,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   server.api = callApi;
   server.shareCard = shareCardOf;
   server.chartCard = chartCardOf;
+  server.portfolioCard = portfolioCardOf;
   return server;
 }
 

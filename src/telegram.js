@@ -22,6 +22,7 @@ const { localeContext, tr, locale, localizeSchema, note } = require('./telegram-
 // Daftar indikator grafik (dan nilai bitnya) dibaca dari penggambarnya supaya
 // tombol di sini dan gambar di sana tidak pernah berbeda arti.
 const { INDICATORS: CHART_IND, DEFAULT_MASK: CHART_MASK } = require('./chart-card');
+const { VIEWS: PF_VIEWS, RANGES: PF_RANGES } = require('./portfolio-card');
 const CHART_TFS = ['5m', '15m', '1h', '4h', '1d'];
 // Lebar jendela grafik dalam jam; 0 = otomatis (seumur posisi + konteks sebelum masuk).
 const CHART_SPANS = [[0, 'auto'], [24, '1 hari'], [72, '3 hari'], [168, '7 hari'], [720, '30 hari']];
@@ -457,6 +458,7 @@ const COMMANDS = [
   ['menu', 'Main menu'],
   ['language', 'Choose English or Indonesian'],
   ['summary', 'How the bot is doing right now'],
+  ['chart', 'Portfolio growth chart'],
   ['positions', 'Open positions'],
   ['targets', 'Wallets being copied'],
   ['activity', 'Latest target actions'],
@@ -474,7 +476,7 @@ const COMMANDS = [
   ['help', 'List every command'],
 ];
 const ALIAS = {
-  mulai: 'start', ringkasan: 'summary', status: 'summary', posisi: 'positions',
+  mulai: 'start', ringkasan: 'summary', status: 'summary', grafik: 'chart', posisi: 'positions',
   target: 'targets', aktivitas: 'activity', aturan: 'rules', pengaturan: 'settings',
   saldo: 'balance', sisa: 'leftovers', log: 'logs', riset: 'research',
   jeda: 'pause', lanjut: 'resume', bantuan: 'help', batal: 'cancel',
@@ -484,9 +486,9 @@ const ALIAS = {
 const PAIR_RE = /^\/(?:start|mulai)(?:@\S+)?\s+(\S+)/i;
 
 class Telegram {
-  constructor({ cfg, cfgPath, store, engine, api, shareCard, chartCard, log }) {
+  constructor({ cfg, cfgPath, store, engine, api, shareCard, chartCard, portfolioCard, log }) {
     this.cfg = cfg; this.cfgPath = cfgPath; this.store = store; this.engine = engine;
-    this.api = api; this.shareCard = shareCard; this.chartCard = chartCard; this.log = log || (() => {});
+    this.api = api; this.shareCard = shareCard; this.chartCard = chartCard; this.portfolioCard = portfolioCard; this.log = log || (() => {});
     this.sessions = new Map();          // chatId -> { scope, pending, ... }
     this.pairCode = null;               // { code, exp }
     this.offset = Number(store.getState('tg_offset', '0')) || 0;
@@ -796,6 +798,7 @@ class Telegram {
       case 'cancel': return go('cancelInput');
       case 'start': case 'menu': return go('h');
       case 'summary': return go('o');
+      case 'chart': return go('pfg');
       case 'positions': return go('p');
       case 'targets': return go('t');
       case 'activity': return go('a:0');
@@ -905,6 +908,20 @@ class Telegram {
         const card = await this.chartCard({ id, tf, mask, span, lang: locale() });
         if (card.error) throw new Error(note(card.error));
         const keyboard = this.grafikKb(id, tf, mask, span);
+        const edited = await this.editPhoto(chatId, msgId, card.png, card.caption, keyboard);
+        if (!edited) await this.sendPhoto(chatId, card.png, card.caption, keyboard);
+        return null;
+      }
+      // Grafik pertumbuhan portofolio (src/portfolio-card.js): rentang dan tampilan
+      // dibawa di callback data (`pfg:<rentang>:<tampilan>`), sama seperti grafik posisi.
+      case 'pfg': {
+        if (!this.portfolioCard) throw new Error(tr("kartu grafik tidak tersedia"));
+        const range = PF_RANGES.includes(rest[0]) ? rest[0] : '7d';
+        const view = PF_VIEWS.some(([k]) => k === rest[1]) ? rest[1] : 'net';
+        if (ack) await ack(tr("Menggambar grafik…"));
+        const card = await this.portfolioCard({ range, view, lang: locale() });
+        if (card.error) return out(esc(note(card.error)), kb([[btn(tr("📊 Ringkasan"), 'o'), BACK_HOME]]));
+        const keyboard = this.portoKb(card.range, card.view);
         const edited = await this.editPhoto(chatId, msgId, card.png, card.caption, keyboard);
         if (!edited) await this.sendPhoto(chatId, card.png, card.caption, keyboard);
         return null;
@@ -1509,13 +1526,13 @@ class Telegram {
     ].filter((x) => x != null).join('\n');
     return [text, kb([
       [btn(tr("📊 Ringkasan"), 'o'), btn(tr("💼 Posisi"), 'p')],
-      [btn('🎯 Target', 't'), btn(tr("📜 Aktivitas"), 'a:0')],
+      [btn(tr("📈 Grafik portofolio"), 'pfg'), btn('🎯 Target', 't')],
+      [btn(tr("📜 Aktivitas"), 'a:0'), btn(tr("💵 Saldo"), 'b')],
       [btn(tr("⚙️ Aturan salin"), 'r'), btn(tr("🔧 Pengaturan"), 's')],
       [btn(tr("➕ LP manual"), 'ml'), btn('🔁 Swap', 'sw')],
       [btn(tr("🔎 Riset wallet"), 'w'), btn('🔭 Scout', 'k')],
-      [btn(tr("🧹 Sisa jual"), 'f'), btn(tr("💵 Saldo"), 'b')],
-      [btn(tr("📝 Log"), 'l'), btn(tr("🧾 Transaksi"), 'x')],
-      [btn('🌐 Language / Bahasa', 'lang')],
+      [btn(tr("🧹 Sisa jual"), 'f'), btn(tr("📝 Log"), 'l')],
+      [btn(tr("🧾 Transaksi"), 'x'), btn('🌐 Language / Bahasa', 'lang')],
       [btn(o.mode.paused ? tr("▶️ Lanjutkan") : tr("⏸ Jeda"), 'sp'), btn(tr("🔄 Segarkan"), 'h')],
     ])];
   }
@@ -1608,8 +1625,8 @@ class Telegram {
     return [cut(L.filter((x) => x != null).join('\n')), kb([
       [btn(tr("💼 Posisi"), 'p'), btn('🎯 Target', 't')],
       [btn(tr("📜 Aktivitas"), 'a:0'), btn(tr("💵 Saldo"), 'b')],
-      [btn(tr("🔄 Segarkan"), 'o'), btn(tr("📤 Bagikan total PnL"), 'os')],
-      [BACK_HOME],
+      [btn(tr("📈 Grafik portofolio"), 'pfg'), btn(tr("📤 Bagikan total PnL"), 'os')],
+      [btn(tr("🔄 Segarkan"), 'o'), BACK_HOME],
     ])];
   }
 
@@ -1739,6 +1756,20 @@ class Telegram {
       CHART_IND.slice(0, 3).map(sw),
       CHART_IND.slice(3).map(sw),
       [btn(tr("🔄 Segarkan"), go(tf, mask, span)), btn(tr("💼 Posisi"), `p:${id}`)],
+    ]);
+  }
+
+  // Tombol di bawah grafik portofolio: rentang waktu, tampilan (PnL bersih /
+  // kumulatif / nilai), segarkan. Tampilan "PnL bersih" tetap ditawarkan meski modal
+  // belum terlacak — server menjatuhkannya ke PnL kumulatif, dan tombol yang aktif
+  // menunjukkan tampilan yang benar-benar digambar.
+  portoKb(range, view) {
+    const go = (r, v) => `pfg:${r}:${v}`;
+    const RL = { '24h': '24 jam', '7d': '7 hari', '30d': '30 hari', all: 'Semua' };
+    return kb([
+      PF_RANGES.map((r) => btn(r === range ? `· ${tr(RL[r])} ·` : tr(RL[r]), go(r, view))),
+      PF_VIEWS.map(([k, label]) => btn(k === view ? `· ${tr(label)} ·` : tr(label), go(range, k))),
+      [btn(tr("🔄 Segarkan"), go(range, view)), btn(tr("📊 Ringkasan"), 'o')],
     ]);
   }
 

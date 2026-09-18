@@ -169,6 +169,7 @@ async function main() {
     api: (method, pathname, body, query) => server.api(method, pathname, body, query),
     shareCard: (opts) => server.shareCard(opts),
     chartCard: (opts) => server.chartCard(opts),
+    portfolioCard: (opts) => server.portfolioCard(opts),
   });
 
   // Server dinyalakan LEBIH DULU: inisialisasi bisa memakan puluhan detik kalau RPC

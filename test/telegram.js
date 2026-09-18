@@ -197,6 +197,7 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong = [], tola
     api: (m, p, b, q) => server.api(m, p, b, q),
     shareCard: (o) => server.shareCard(o),
     chartCard: (o) => server.chartCard(o),
+    portfolioCard: (o) => server.portfolioCard(o),
   });
   // Kartu bagikan dikirim sebagai foto lewat multipart, bukan this.tg(): dicatat
   // terpisah supaya tidak menyentuh jaringan.
@@ -463,6 +464,51 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     const teksTombol = edit[0].params.reply_markup.inline_keyboard.flat().map((b) => b.text);
     assert.ok(teksTombol.some((x) => /· 4h ·/.test(x)), 'rentang waktu aktif ditandai');
     assert.ok(teksTombol.some((x) => /· 3 hari ·/.test(x)), `lebar jendela aktif ditandai: ${teksTombol}`);
+  });
+
+  await t('tombol Grafik portofolio: tanpa riwayat menjelaskan, dengan riwayat mengirim gambar + tombol rentang & tampilan', async () => {
+    const w = build();
+    // Tabel equity kosong: bukan galat, tapi penjelasan kapan grafiknya terisi.
+    const b0 = w.sent.length;
+    await w.bot.handle(cbq('pfg'));
+    assert.match(lastOut(w.sent).params.text, /belum ada riwayat/i);
+    assert.ok(!w.sent.slice(b0).some((x) => x.method === 'sendPhoto'), 'tidak ada foto tanpa riwayat');
+    // Riwayat 3 hari, tiap jam: PnL naik dari 0 ke 18 dengan satu lembah di tengah.
+    const now = Date.now();
+    for (let i = 72; i >= 1; i--) {
+      const pnl = (72 - i) * 0.25 - (i > 30 && i < 40 ? 4 : 0);
+      w.store.run('INSERT INTO equity(ts,wallet_quote,positions_quote,total_quote,realized_quote,fees_quote,open_positions,pnl_quote) VALUES(?,?,?,?,?,?,?,?)',
+        now - i * 3600_000, 150, 205, 355 + pnl, 12, 1.5, 1, pnl);
+    }
+    const b1 = w.sent.length;
+    await w.bot.handle(cbq('pfg'));
+    const kirim = w.sent.slice(b1).filter((x) => x.method === 'sendPhoto');
+    assert.strictEqual(kirim.length, 1, 'satu foto grafik');
+    assert.ok(kirim[0].params.bytes > 15_000, `PNG sungguhan: ${kirim[0].params.bytes}`);
+    // Modal tidak terlacak di dunia uji → PnL bersih jatuh ke PnL kumulatif, dan tombol
+    // yang aktif menunjukkan tampilan yang benar-benar digambar.
+    assert.match(kirim[0].params.caption, /Portofolio · PnL kumulatif · 7 hari/);
+    const tombol = kirim[0].params.reply_markup.inline_keyboard;
+    const data = tombol.flat().map((b) => b.callback_data);
+    for (const r of ['24h', '7d', '30d', 'all']) assert.ok(data.includes(`pfg:${r}:pnl`), `rentang ${r} harus ada: ${data}`);
+    for (const v of ['net', 'pnl', 'value']) assert.ok(data.includes(`pfg:7d:${v}`), `tampilan ${v} harus ada: ${data}`);
+    assert.ok(tombol.flat().some((b) => /· 7 hari ·/.test(b.text)) && tombol.flat().some((b) => /· PnL kumulatif ·/.test(b.text)), 'yang aktif ditandai');
+    // Dari pesan foto: gambar disunting, tampilan Nilai & rentang 24 jam.
+    const b2 = w.sent.length;
+    w.bot.photoMsgs.add(778);
+    const dariFoto = cbq('pfg:24h:value');
+    dariFoto.callback_query.message.message_id = 778;
+    await w.bot.handle(dariFoto);
+    const edit = w.sent.slice(b2).filter((x) => x.method === 'editMessageMedia');
+    assert.strictEqual(edit.length, 1, 'menyunting foto yang sama');
+    assert.match(edit[0].params.caption, /Portofolio · Nilai · 24 jam/);
+    assert.ok(edit[0].params.reply_markup.inline_keyboard.flat().some((b) => /· 24 jam ·/.test(b.text)));
+    // Bahasa Inggris ikut ke gambar dan caption.
+    w.bot.setLanguage(CHAT, 'en');
+    const b3 = w.sent.length;
+    await w.bot.handle(cbq('pfg:30d:pnl'));
+    const en = w.sent.slice(b3).find((x) => x.method === 'sendPhoto');
+    assert.match(en.params.caption, /Portfolio · Cumulative PnL · 30 days/);
   });
 
   await t('tombol Bagikan kartu: foto PnL dikirim ke chat itu, layar tidak diganti', async () => {

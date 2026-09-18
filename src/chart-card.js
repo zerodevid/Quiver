@@ -438,4 +438,7 @@ function caption(d, lang = 'id') {
   ].filter(Boolean).join(' · '));
 }
 
-module.exports = { render, caption, chartSvg, INDICATORS, DEFAULT_MASK, has };
+// Primitif gambar, palet, dan format angka dibagi ke kartu lain (grafik portofolio)
+// supaya semua gambar dari bot memakai bahasa visual yang sama.
+const prims = { W, SCALE, PAD, AXIS_W, C, FONTS, esc, txt, line, rect, poly, tag, usd, pct, clock, hhmm, dayShort, setTz: (v) => { tz = v; } };
+module.exports = { render, caption, chartSvg, INDICATORS, DEFAULT_MASK, has, prims };
