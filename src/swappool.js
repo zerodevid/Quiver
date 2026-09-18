@@ -18,7 +18,8 @@
 // priceImpactBps yang sudah dipakai bot). Itu hanya untuk MENGURUTKAN kandidat;
 // kebenaran terakhirnya ada di simulasi, yang memakai amountOutMinimum sungguhan.
 const { ethers } = require('ethers');
-const { ADDR, ABI } = require('./chain');
+const { ABI } = require('./chain');
+const { ensureChain } = require('./networks');
 const m = require('./v3math');
 
 const IF_POOL3 = new ethers.Interface(ABI.poolV3);
@@ -45,10 +46,10 @@ function estimate({ sqrtP, L, feePpm, amountIn, zeroForOne }) {
 // Pool yang memuat PERSIS pasangan ini. Pasangan dicocokkan apa adanya (tanpa
 // menyamakan ETH dengan WETH): membungkus ETH adalah langkah tersendiri, dan swap
 // yang butuh itu bukan lagi "satu transaksi ke satu pool".
-function candidates(store, tokenIn, tokenOut) {
+function candidates(store, chain, tokenIn, tokenOut) {
   const a = lc(tokenIn), b = lc(tokenOut);
   return store.all(`SELECT pool_ref, venue, token0, token1, fee, tick_spacing, hooks, pool_addr FROM pools
-    WHERE (token0=? AND token1=?) OR (token0=? AND token1=?)`, a, b, b, a);
+    WHERE chain=? AND ((token0=? AND token1=?) OR (token0=? AND token1=?))`, chain.network, a, b, b, a);
 }
 
 /**
@@ -63,10 +64,11 @@ function candidates(store, tokenIn, tokenOut) {
 async function pickSwapPool({ store, chain, rpc, exec, log = () => {} }, {
   tokenIn, tokenOut, amountIn, minOut, maxImpactBps = 0, deadlineSec, extra = [], info = {},
 }) {
+  chain = ensureChain(chain);
   // `extra`: pool yang sudah di tangan pemanggil (mis. pool posisi yang sedang dibuka)
   // — ikut dinilai walau belum tercatat di tabel pools.
   const rows = [...extra];
-  for (const r of candidates(store, tokenIn, tokenOut)) {
+  for (const r of candidates(store, chain, tokenIn, tokenOut)) {
     if (!rows.some((x) => lc(x.pool_ref) === lc(r.pool_ref))) rows.push(r);
   }
   info.found = rows.length;
@@ -78,7 +80,7 @@ async function pickSwapPool({ store, chain, rpc, exec, log = () => {} }, {
   const urut = [...rows].sort((x, y) => (polos(y) ? 1 : 0) - (polos(x) ? 1 : 0));
   const list = urut.slice(0, MAX_CANDIDATES);
   const v4 = list.filter((r) => r.venue === 'v4');
-  const v3 = list.filter((r) => r.venue === 'v3' && r.pool_addr);
+  const v3 = list.filter((r) => chain.isV3Venue(r.venue) && r.pool_addr);
 
   // Dua batch untuk v4 (slot0 + likuiditas) dan satu untuk v3 — bukan panggilan
   // beruntun per pool, supaya zap tidak melar saat RPC sedang sibuk.
@@ -131,7 +133,7 @@ async function pickSwapPool({ store, chain, rpc, exec, log = () => {} }, {
   scored.sort((a, b) => (a.out < b.out ? 1 : a.out > b.out ? -1 : 0));
   const coba = scored.slice(0, MAX_SIMULATED).map((c) => ({
     ...c,
-    tx: c.row.venue === 'v3'
+    tx: chain.isV3Venue(c.row.venue)
       ? exec.buildSwapV3(tokenIn, tokenOut, c.row.fee, amountIn, minOut, deadlineSec)
       : exec.buildSwapV4({
         currency0: c.row.token0, currency1: c.row.token1,

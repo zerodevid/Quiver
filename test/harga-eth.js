@@ -32,7 +32,7 @@ const cand = (price, L, id) => ({ p: { poolId: id }, s: {}, L, price });
   await t('ethUsd: pool tanpa likuiditas aktif atau harga di batas tick tidak ikut; gagal baca → nilai terakhir', async () => {
     const store = new Store(':memory:');
     const pools = [{ poolId: '0x' + 'a1'.repeat(32), fee: 500, tickSpacing: 10, hooks: '0x' + '0'.repeat(40) }, { poolId: '0x' + 'b2'.repeat(32), fee: 500, tickSpacing: 10, hooks: '0x' + '0'.repeat(40) }];
-    store.setState('eth_usdg_pools', JSON.stringify(pools));
+    store.setState('eth_usdg_pools:robinhood', JSON.stringify(pools));
     // harga 2500 USDG/ETH: sqrt = sqrt(2500e6/1e18) * 2^96
     const sqrtOf = (price) => BigInt(Math.floor(Math.sqrt(price * 1e6 / 1e18) * 2 ** 96));
     const word = (sqrt, tick) => '0x' + ((BigInt.asUintN(24, BigInt(tick)) << 160n) | sqrt).toString(16).padStart(64, '0');

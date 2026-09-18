@@ -1,4 +1,5 @@
 'use strict';
+const { ensureChain } = require('./networks');
 // Deteksi aksi LP wallet target.
 //
 // Kenapa lewat event, bukan decode transaksi: target contoh (0xe1d7…3e79) memakai
@@ -10,7 +11,7 @@
 // Rantai identifikasi v4: ModifyLiquidity.salt == tokenId PositionManager,
 // lalu tokenId -> pemilik lewat ownerOf/Transfer. Diverifikasi di chain.
 const { ethers } = require('ethers');
-const { ADDR, TOPIC, ABI } = require('./chain');
+const { TOPIC, ABI } = require('./chain');
 const { computePoolId } = require('./pools');
 const m = require('./v3math');
 
@@ -19,13 +20,17 @@ const IF_NPM = new ethers.Interface(ABI.npmV3);
 const asAddr = (topic) => ('0x' + topic.slice(-40)).toLowerCase();
 const i24 = (v) => Number(BigInt.asIntN(24, v));
 const i256 = (v) => BigInt.asIntN(256, v);
-// Router yang hanya menukar token; tx target ke sini bukan aksi LP.
-const SWAP_ROUTERS = new Set([ADDR.dexRouter, ADDR.universalRouter]);
 
 class Watcher {
   constructor({ rpc, store, chain, log, cfg }) {
+    chain = ensureChain(chain);
     this.rpc = rpc; this.store = store; this.chain = chain; this.log = log || console.log;
     this.cfg = cfg;
+    this.network = chain.network;
+    // Router yang hanya menukar token; tx target ke sini bukan aksi LP.
+    this.swapRouters = new Set([chain.ADDR.dexRouter, chain.ADDR.universalRouter].filter(Boolean).map((a) => a.toLowerCase()));
+    // Alamat NPM -> kunci venue v3 ('v3', 'pancakev3', …) — satu chain bisa punya lebih dari satu.
+    this.npmVenue = new Map(chain.venues.map((v) => [String(v.npmV3).toLowerCase(), v.key]));
     this.owners = new Map();   // `${venue}:${tokenId}` -> owner
     this.v4Info = new Map();   // tokenId -> {poolKey, poolId, tickLower, tickUpper}
     this.unsupported = new Map(); // sender -> jumlah, untuk transparansi di dashboard
@@ -48,7 +53,7 @@ class Watcher {
   }
 
   targets() {
-    return this.store.all('SELECT address,label,enabled,rules FROM targets');
+    return this.store.all('SELECT address,label,enabled,rules FROM targets WHERE chain=?', this.network);
   }
   enabledSet() {
     return new Set(this.targets().filter((t) => t.enabled).map((t) => t.address.toLowerCase()));
@@ -70,7 +75,7 @@ class Watcher {
       const from = String(tx?.from || '').toLowerCase();
       if (!targets.has(from)) continue;
       const to = String(tx?.to || '').toLowerCase();
-      if (SWAP_ROUTERS.has(to)) continue;
+      if (this.swapRouters.has(to)) continue;
       const senders = [...new Set((this.unsupportedSender.get(tx.hash) || []))];
       const key = `${from}|${to}`;
       if (this.warnedUnsupported.has(key)) continue;
@@ -102,7 +107,7 @@ class Watcher {
   async resolveOwners(venue, tokenIds) {
     const need = [...new Set(tokenIds.map(String))].filter((id) => !this.owners.has(this.ownerKey(venue, id)));
     if (!need.length) return;
-    const to = venue === 'v4' ? ADDR.posmV4 : ADDR.npmV3;
+    const to = venue === 'v4' ? this.chain.ADDR.posmV4 : this.chain.npmFor(venue);
     const iface = venue === 'v4' ? IF_POSM : IF_NPM;
     // strict: ownerOf yang tidak terbaca (kuota) ≠ revert (NFT dibakar). Tanpa ini aksi
     // likuiditas target tersaring sebagai "bukan milik target" dan hilang selamanya.
@@ -115,7 +120,7 @@ class Watcher {
       // menarik di satu tx lalu membakar di tx berikutnya, sebelum kita sempat membaca),
       // pemilik terakhir yang kita catat dipakai — tanpa ini penarikannya tersaring sebagai
       // "bukan milik target" dan cermin kita baru ditutup belakangan oleh rekonsiliasi.
-      const row = this.store.get('SELECT target FROM actions WHERE venue=? AND token_id=? ORDER BY id DESC LIMIT 1', venue, id);
+      const row = this.store.get('SELECT target FROM actions WHERE chain=? AND venue=? AND token_id=? ORDER BY id DESC LIMIT 1', this.network, venue, id);
       if (row?.target) this.cacheOwner(venue, id, String(row.target).toLowerCase());
     });
   }
@@ -131,8 +136,9 @@ class Watcher {
     //
     // Hanya topik yang kita butuhkan yang diminta. Mengambil SEMUA log NPM ikut
     // menyeret Collect dan Approval (>50% volume) dan itu yang memicu 429 saat mengejar.
+    const { ADDR } = this.chain;
     const logs = await this.rpc.getLogs({
-      address: [ADDR.poolManager, ADDR.posmV4, ADDR.npmV3],
+      address: [ADDR.poolManager, ADDR.posmV4, ...this.npmVenue.keys()],
       topics: [[TOPIC.modifyLiquidity, TOPIC.transfer, TOPIC.increaseLiq, TOPIC.decreaseLiq]],
       ...range,
     }, { priority: true });
@@ -141,7 +147,7 @@ class Watcher {
       const a = String(l.address || '').toLowerCase(), t0 = String(l.topics?.[0] || '').toLowerCase();
       if (a === ADDR.poolManager && t0 === TOPIC.modifyLiquidity) modLiq.push(l);
       else if (a === ADDR.posmV4 && t0 === TOPIC.transfer) xferV4.push(l);
-      else if (a === ADDR.npmV3 && (t0 === TOPIC.transfer || t0 === TOPIC.increaseLiq || t0 === TOPIC.decreaseLiq)) npm.push(l);
+      else if (this.npmVenue.has(a) && (t0 === TOPIC.transfer || t0 === TOPIC.increaseLiq || t0 === TOPIC.decreaseLiq)) { l.venue = this.npmVenue.get(a); npm.push(l); }
     }
     return { modLiq: modLiq || [], xferV4: xferV4 || [], npm: npm || [] };
   }
@@ -177,7 +183,7 @@ class Watcher {
       if (to === '0x0000000000000000000000000000000000000000') this.cacheOwner(venue, tokenId, from);
     };
     for (const l of xferV4) if (l.topics.length === 4) noteTransfer('v4', l);
-    for (const l of npm) if (l.topics[0] === TOPIC.transfer && l.topics.length === 4) noteTransfer('v3', l);
+    for (const l of npm) if (l.topics[0] === TOPIC.transfer && l.topics.length === 4) noteTransfer(l.venue, l);
 
     // Target contoh memakai layanan otomasi yang MENITIP NFT posisi ke routernya lalu
     // mengembalikannya di transaksi yang sama. Kalau perpindahan itu dibaca sebagai
@@ -196,7 +202,7 @@ class Watcher {
     this.unsupportedSender.clear();
     for (const l of modLiq) {
       const sender = asAddr(l.topics[2]);
-      if (sender !== ADDR.posmV4) {
+      if (sender !== this.chain.ADDR.posmV4) {
         this.unsupported.set(sender, (this.unsupported.get(sender) || 0) + 1);
         // Kepemilikannya tidak lewat NFT PositionManager, jadi tidak bisa dicermin.
         // Kalau yang memakainya ternyata TARGET kita, itu harus berbunyi: artinya
@@ -233,8 +239,8 @@ class Watcher {
       for (const r of rcs) {
         const rc = r.result;
         for (const l of rc?.logs || []) {
-          if (l.address.toLowerCase() !== ADDR.poolManager || l.topics[0] !== TOPIC.modifyLiquidity) continue;
-          if (asAddr(l.topics[2]) !== ADDR.posmV4) continue;
+          if (l.address.toLowerCase() !== this.chain.ADDR.poolManager || l.topics[0] !== TOPIC.modifyLiquidity) continue;
+          if (asAddr(l.topics[2]) !== this.chain.ADDR.posmV4) continue;
           const b = ethers.getBytes(l.data);
           const w = (i) => BigInt(ethers.hexlify(b.slice(i * 32, i * 32 + 32)));
           const liqDelta = i256(w(2));
@@ -261,17 +267,21 @@ class Watcher {
       const w = (i) => BigInt(ethers.hexlify(b.slice(i * 32, i * 32 + 32)));
       const liq = w(0), a0 = w(1), a1 = w(2);
       if (liq === 0n) continue;
-      v3Rows.push({ l, tokenId, liq: t0 === TOPIC.increaseLiq ? liq : -liq, a0, a1 });
+      v3Rows.push({ l, venue: l.venue, tokenId, liq: t0 === TOPIC.increaseLiq ? liq : -liq, a0, a1 });
     }
-    await this.resolveOwners('v3', v3Rows.map((r) => r.tokenId));
+    for (const venue of new Set(v3Rows.map((r) => r.venue))) {
+      await this.resolveOwners(venue, v3Rows.filter((r) => r.venue === venue).map((r) => r.tokenId));
+    }
 
     // 4. saring yang milik target lalu lengkapi detailnya
     const mineV4 = v4Rows.filter((r) => targets.has(this.knownOwner('v4', r.tokenId) || ''));
-    const mineV3 = v3Rows.filter((r) => targets.has(this.knownOwner('v3', r.tokenId) || ''));
+    const mineV3 = v3Rows.filter((r) => targets.has(this.knownOwner(r.venue, r.tokenId) || ''));
 
     const out = [];
     if (mineV4.length) out.push(...await this.enrichV4(mineV4));
-    if (mineV3.length) out.push(...await this.enrichV3(mineV3));
+    for (const venue of new Set(mineV3.map((r) => r.venue))) {
+      out.push(...await this.enrichV3(mineV3.filter((r) => r.venue === venue), venue));
+    }
     for (const a of actions) {
       out.push({
         ts: await this.chain.blockTs(parseInt(a.log.blockNumber, 16)),
@@ -292,8 +302,8 @@ class Watcher {
   // target dimatikan -> Set(tokenId posisi target yang masih kita cermin)
   disabledWithMirrors(enabled) {
     const out = new Map();
-    const rows = this.store.all(`SELECT p.target, p.mirror_of FROM positions p JOIN targets t ON t.address = p.target
-      WHERE p.status='open' AND p.mirror_of IS NOT NULL AND t.enabled = 0`);
+    const rows = this.store.all(`SELECT p.target, p.mirror_of FROM positions p JOIN targets t ON t.address = p.target AND t.chain = p.chain
+      WHERE p.chain=? AND p.status='open' AND p.mirror_of IS NOT NULL AND t.enabled = 0`, this.network);
     for (const r of rows) {
       const a = String(r.target).toLowerCase();
       if (enabled.has(a)) continue;
@@ -308,7 +318,7 @@ class Watcher {
     const need = rows.filter((r) => !this.v4Info.has(r.tokenId)).map((r) => r.tokenId);
     if (need.length) {
       const res = await this.rpc.ethCallMany(need.map((id) => ({
-        to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPoolAndPositionInfo', [BigInt(id)]),
+        to: this.chain.ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPoolAndPositionInfo', [BigInt(id)]),
       })), 'latest', { strict: true });
       need.forEach((id, i) => {
         if (!res[i] || res[i] === '0x') return;
@@ -384,10 +394,11 @@ class Watcher {
     return outs;
   }
 
-  async enrichV3(rows) {
+  async enrichV3(rows, venue = 'v3') {
+    const npm = this.chain.npmFor(venue);
     const ids = [...new Set(rows.map((r) => r.tokenId))];
     const res = await this.rpc.ethCallMany(ids.map((id) => ({
-      to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('positions', [BigInt(id)]),
+      to: npm, data: IF_NPM.encodeFunctionData('positions', [BigInt(id)]),
     })), 'latest', { strict: true });
     const posBy = new Map();
     ids.forEach((id, i) => {
@@ -410,7 +421,7 @@ class Watcher {
       const p = posBy.get(r.tokenId);
       let poolAddr = null, s = null, valueQuote = null, quoteSymbol = null;
       if (p) {
-        poolAddr = await this.chain.poolV3Addr(p.token0, p.token1, p.fee);
+        poolAddr = await this.chain.poolV3Addr(p.token0, p.token1, p.fee, npm);
         if (poolAddr) s = await this.chain.slot0V3(poolAddr);
         if (s) {
           const v = this.chain.valueInQuote({
@@ -425,7 +436,7 @@ class Watcher {
         ts: await this.chain.blockTs(parseInt(r.l.blockNumber, 16)),
         block: parseInt(r.l.blockNumber, 16), txHash: r.l.transactionHash,
         logIndex: parseInt(r.l.logIndex, 16),
-        target: this.knownOwner('v3', r.tokenId), venue: 'v3',
+        target: this.knownOwner(venue, r.tokenId), venue,
         kind: r.liq > 0n ? 'increase' : 'decrease',
         tokenId: r.tokenId, poolRef: poolAddr,
         token0: p?.token0, token1: p?.token1, fee: p?.fee, tickSpacing: null, hooks: null,
@@ -443,10 +454,10 @@ class Watcher {
     for (const a of actions) {
       const r = this.store.run(
         `INSERT OR IGNORE INTO actions
-         (ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,
+         (chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,
           tick_lower,tick_upper,liquidity,amount0,amount1,value_quote,quote_symbol)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        a.ts, a.block, a.txHash, a.logIndex, a.target, a.venue, a.kind, a.tokenId ?? null,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        this.network, a.ts, a.block, a.txHash, a.logIndex, a.target, a.venue, a.kind, a.tokenId ?? null,
         a.poolRef ?? null, a.token0 ?? null, a.token1 ?? null, a.fee ?? null, a.tickSpacing ?? null,
         a.hooks ?? null, a.tickLower ?? null, a.tickUpper ?? null, a.liquidity ?? null,
         a.amount0 ?? null, a.amount1 ?? null, a.valueQuote ?? null, a.quoteSymbol ?? null);

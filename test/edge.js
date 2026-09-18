@@ -314,7 +314,7 @@ async function t(name, fn) {
     const { eng, store } = harness({ balances: { ...RICH } });
     eng.kyber.swap = async () => { throw new Error('rute tidak ada'); };
     await assert.rejects(() => eng.sellToken({ posId: 1, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0 }));
-    const q = JSON.parse(store.getState('leftovers', '[]'));
+    const q = JSON.parse(store.getState('leftovers:robinhood', '[]'));
     assert.strictEqual(q.length, 1, 'harus tersimpan untuk dicoba lagi');
     assert.strictEqual(q[0].tries, 1);
     assert.ok(q[0].next > Date.now(), 'harus dijadwalkan ulang');
@@ -324,11 +324,11 @@ async function t(name, fn) {
     const { eng, store } = harness({ balances: { ...RICH } });
     eng.kyber.swap = async () => { throw new Error('rute tidak ada'); };
     for (let i = 0; i < 20; i++) {
-      const q = JSON.parse(store.getState('leftovers', '[]'));
+      const q = JSON.parse(store.getState('leftovers:robinhood', '[]'));
       const item = q[0] || { posId: 1, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0 };
       await eng.sellToken(item).catch(() => {});
     }
-    const q = JSON.parse(store.getState('leftovers', '[]'));
+    const q = JSON.parse(store.getState('leftovers:robinhood', '[]'));
     assert.strictEqual(q.length, 1, 'item harus tetap tersimpan — uangnya masih tersangkut');
     assert.strictEqual(q[0].tries, 20);
     assert.ok(q[0].since > 0, 'waktu mulai tersangkut dicatat');
@@ -344,7 +344,7 @@ async function t(name, fn) {
     await eng.retryLeftovers();
     assert.strictEqual(quotes, 1, 'satu kutipan');
     assert.strictEqual(swaps, 0, 'rugi 60% > 15%: jangan swap');
-    let q = JSON.parse(store.getState('leftovers', '[]'));
+    let q = JSON.parse(store.getState('leftovers:robinhood', '[]'));
     assert.strictEqual(q.length, 1);
     assert.strictEqual(q[0].lastLossBps, 6000, 'kutipan terakhir disimpan untuk dasbor');
     assert.match(q[0].why, /rugi 60\.0%/);
@@ -356,7 +356,7 @@ async function t(name, fn) {
     eng.saveLeftovers(q.map((x) => ({ ...x, next: 0 })));
     await eng.retryLeftovers();
     assert.strictEqual(swaps, 1, 'rugi sudah di bawah batas: swap dikirim');
-    assert.strictEqual(JSON.parse(store.getState('leftovers', '[]')).length, 0, 'terjual: keluar dari antrean');
+    assert.strictEqual(JSON.parse(store.getState('leftovers:robinhood', '[]')).length, 0, 'terjual: keluar dari antrean');
   });
 
   await t('sisa yang ditolak dijual dikabarkan KERAS sekali di awal, lalu diingatkan tiap 6 jam — bukan tiap tick', async () => {

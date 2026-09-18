@@ -11,12 +11,13 @@
 //     Manual.seenTokens untuk wallet bot).
 // Lalu saldonya dibaca sekali dalam satu batch, dan hanya yang bersaldo yang dikembalikan.
 const { ethers } = require('ethers');
-const { ADDR, QUOTES, TOPIC, ABI } = require('./chain');
+const { TOPIC, ABI } = require('./chain');
+const { ensureChain } = require('./networks');
 const { getLogsSafe } = require('./scout');
 
 const IF_ERC20 = new ethers.Interface(ABI.erc20);
 const lc = (t) => String(t || '').toLowerCase();
-const isNative = (t) => lc(t) === ADDR.native;
+const isNative = (t) => /^0x0{40}$/.test(lc(t));
 // Jendela pindai pertama mengikuti bawaan riset wallet: 900 ribu blok (~1 hari).
 const FIRST_WINDOW = 900_000;
 // Pindai log paling cepat tiap 5 menit per wallet — getLogs adalah panggilan RPC
@@ -25,14 +26,14 @@ const RESCAN_MS = 5 * 60_000;
 
 class Holdings {
   constructor({ rpc, store, chain, log }) {
-    this.rpc = rpc; this.store = store; this.chain = chain; this.log = log || (() => {});
+    this.rpc = rpc; this.store = store; this.chain = ensureChain(chain); this.log = log || (() => {});
   }
 
   // Token ERC-20 yang pernah MASUK ke wallet — dari log Transfer. Blok yang sudah
   // dilihat disimpan di state, jadi setelah pindai pertama tiap pemanggilan hanya
   // membaca blok baru. Kalau RPC gagal, daftar lama tetap dipakai.
   async seenTokens(wallet) {
-    const key = `held_seen:${wallet}`;
+    const key = `held_seen:${this.chain.network}:${wallet}`;
     let st = { block: 0, ts: 0, tokens: [] };
     try { st = { ...st, ...JSON.parse(this.store.getState(key, '{}')) }; } catch { /* mulai dari nol */ }
     if (st.block && Date.now() - st.ts < RESCAN_MS) return st.tokens;
@@ -56,7 +57,7 @@ class Holdings {
   async balances(owner, tokens) {
     const out = new Map();
     const erc = tokens.filter((t) => !isNative(t));
-    if (tokens.some(isNative)) out.set(ADDR.native, BigInt(await this.rpc.call('eth_getBalance', [owner, 'latest'])));
+    if (tokens.some(isNative)) out.set(this.chain.ADDR.native, BigInt(await this.rpc.call('eth_getBalance', [owner, 'latest'])));
     if (erc.length) {
       const res = await this.rpc.ethCallMany(erc.map((t) => ({ to: t, data: IF_ERC20.encodeFunctionData('balanceOf', [owner]) })));
       erc.forEach((t, i) => out.set(lc(t), res[i] && res[i] !== '0x' && res[i].length <= 66 ? BigInt(res[i]) : 0n));
@@ -68,13 +69,14 @@ class Holdings {
   // token lain hanya kalau saldonya > 0.
   async of(wallet) {
     const w = lc(wallet);
+    const { ADDR, QUOTES } = this.chain;
     const set = new Set([ADDR.native, ADDR.usdg, ADDR.weth]);
-    for (const r of this.store.all('SELECT DISTINCT token0, token1 FROM wpositions WHERE wallet=?', w)) {
+    for (const r of this.store.all('SELECT DISTINCT token0, token1 FROM wpositions WHERE chain=? AND wallet=?', this.chain.network, w)) {
       if (r.token0) set.add(lc(r.token0));
       if (r.token1) set.add(lc(r.token1));
     }
     for (const a of await this.seenTokens(w)) set.add(a);
-    for (const r of this.store.all('SELECT address FROM tokens')) if (r.address) set.add(lc(r.address));
+    for (const r of this.store.all('SELECT address FROM tokens WHERE chain=?', this.chain.network)) if (r.address) set.add(lc(r.address));
     const list = [...set];
     const bal = await this.balances(w, list);
     const keep = list.filter((a) => isNative(a) || (bal.get(a) || 0n) > 0n);

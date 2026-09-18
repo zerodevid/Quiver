@@ -1,4 +1,5 @@
 'use strict';
+const { ensureChain } = require('./networks');
 // Terealisasi vs belum, untuk posisi yang sudah ditutup.
 //
 // Menutup posisi USDG/MEME mengembalikan dua hal: USDG (langsung uang) dan MEME
@@ -19,7 +20,7 @@
 // blok itu), tiap penarikan LP, lalu token yang datang dari luar — dan sebuah
 // penjualan hanya boleh memakan stok yang sudah masuk di blok itu atau sebelumnya.
 const { ethers } = require('ethers');
-const { ADDR, TOPIC, QUOTES } = require('./chain');
+const { TOPIC } = require('./chain');
 const { getLogsSafe } = require('./scout');
 
 const IF_ERC20 = new ethers.Interface(['function balanceOf(address) view returns (uint256)']);
@@ -30,11 +31,13 @@ const big = (v) => BigInt(v || 0);
 // Jendela blok yang sudah dipindai untuk token ini, dua arah sekaligus. Kunci ini
 // diganti nama saat arah "masuk" ditambahkan supaya wallet lama memindai ulang sekali
 // dan mengisi wflows — tanpa itu antreannya tetap timpang selamanya.
-const spanKeyOf = (wallet, token) => `wflow_span:${wallet}:${token}`;
+const spanKeyOf = (chain, wallet, token) => `wflow_span:${chain}:${wallet}:${token}`;
 
 class Proceeds {
   constructor({ rpc, store, chain, research, log }) {
+    chain = ensureChain(chain);
     this.rpc = rpc; this.store = store; this.chain = chain; this.research = research;
+    this.network = chain.network;
     this.log = log || (() => {});
   }
 
@@ -58,14 +61,14 @@ class Proceeds {
 
   async sqrtNow(r) {
     try {
-      const s = r.venue === 'v3' ? await this.chain.slot0V3(r.pool_ref) : await this.chain.slot0V4(r.pool_ref);
+      const s = this.chain.isV3Venue(r.venue) ? await this.chain.slot0V3(r.pool_ref) : await this.chain.slot0V4(r.pool_ref);
       return s?.sqrtPriceX96 || null;
     } catch { return null; }
   }
 
   async sqrtAt(r, block) {
     try {
-      if (r.venue !== 'v3') return await this.research.priceAt(r.pool_ref, block);
+      if (!this.chain.isV3Venue(r.venue)) return await this.research.priceAt(r.pool_ref, block);
       if (!this.rpc.hasArchive()) return null;
       const w = await this.rpc.callAt(r.pool_ref, IF_POOL3.encodeFunctionData('slot0'), block);
       return BigInt(IF_POOL3.decodeFunctionResult('slot0', w)[0]);
@@ -110,8 +113,8 @@ class Proceeds {
       // Router/position manager sering mengembalikan sisa di tx yang sama: yang benar-benar
       // pergi adalah selisihnya, bukan jumlah kotor yang keluar.
       if (a === token && to === wallet) tokIn += BigInt(l.data);
-      if (to === wallet && QUOTES[a]) {
-        const q = QUOTES[a];
+      if (to === wallet && this.chain.QUOTES[a]) {
+        const q = this.chain.QUOTES[a];
         usd += (Number(BigInt(l.data)) / 10 ** q.decimals) * (q.kind === 'eth' ? ethThen : 1);
       }
     }
@@ -145,7 +148,7 @@ class Proceeds {
   async track(wallet, { head, ethUsd }) {
     const rows = this.store.all(`SELECT wallet, venue, token_id, pool_ref, token0, token1, out0, out1,
       returned_q, invested_q, quote_symbol, closed_block, held_tok, sold_tok, tracked_to
-      FROM wpositions WHERE wallet=? AND status='closed'`, wallet);
+      FROM wpositions WHERE chain=? AND wallet=? AND status='closed'`, this.network, wallet);
     const toks = await this.chain.tokens([...new Set(rows.flatMap((r) => [r.token0, r.token1]).filter(Boolean))]);
     const dec = new Map(toks.filter(Boolean).map((t) => [t.address, t.decimals]));
     for (const r of rows) { r.dec0 = dec.get(r.token0) ?? 18; r.dec1 = dec.get(r.token1) ?? 18; }
@@ -169,7 +172,7 @@ class Proceeds {
     for (const [token, lots] of byTok) {
       // Cuma token yang masih ada urusannya: posisi baru tutup, token masih dipegang,
       // atau pasokan dari luar belum pernah dipindai (alokasi lama perlu dihitung ulang).
-      const backfill = this.store.getState(spanKeyOf(wallet, token)) == null;
+      const backfill = this.store.getState(spanKeyOf(this.network, wallet, token)) == null;
       if (!backfill && !lots.some((r) => r.tracked_to == null || big(r.held_tok) > 0n)) continue;
       try { await this.trackToken(wallet, token, lots, { head, ethUsd }); }
       catch (e) { this.log(`lacak ${token.slice(0, 10)}…: ${e.message}`); }
@@ -185,7 +188,7 @@ class Proceeds {
       // v4: token keluar pada 'decrease'/'collect'; v3: hanya pada 'collect' (baris
       // 'decrease'-nya bernilai nol), jadi kedua jenis dijumlahkan saja.
       const ev = this.store.all(`SELECT tx_hash, ${r.s.side === 0 ? 'amount0' : 'amount1'} AS amt FROM wevents
-        WHERE wallet=? AND token_id=? AND kind IN ('decrease','collect') ORDER BY block`, wallet, r.token_id);
+        WHERE chain=? AND wallet=? AND token_id=? AND kind IN ('decrease','collect') ORDER BY block`, this.network, wallet, r.token_id);
       txOf.set(r, ev);
     }
     const allTx = [...new Set([...txOf.values()].flat().map((e) => e.tx_hash))];
@@ -207,7 +210,7 @@ class Proceeds {
 
     // Saldo yang sudah ada sebelum lot pertama — dihabiskan lebih dulu (FIFO).
     const first = lots[0].closed_block;
-    const preKey = `wpre:${wallet}:${token}:${first}`;
+    const preKey = `wpre:${this.network}:${wallet}:${token}:${first}`;
     let pre = this.store.getState(preKey);
     if (pre == null) {
       pre = '0';
@@ -223,7 +226,7 @@ class Proceeds {
     // Transfer keluar: jendela [lot pertama, head], hanya bagian yang belum dibaca.
     // Lot yang baru muncul bisa lebih awal dari jendela lama (pindai ulang yang lebih
     // panjang), jadi jendela yang sudah tercakup disimpan per token.
-    const spanKey = spanKeyOf(wallet, token);
+    const spanKey = spanKeyOf(this.network, wallet, token);
     let span = null;
     try { span = JSON.parse(this.store.getState(spanKey) || 'null'); } catch { span = null; }
     const parts = [];
@@ -232,13 +235,13 @@ class Proceeds {
       if (first < span.from) parts.push([first, span.from - 1]);
       if (span.to < head) parts.push([span.to + 1, head]);
     }
-    const known = this.store.all('SELECT tx_hash, block, tok_out, quote_usd FROM wsales WHERE wallet=? AND token=? ORDER BY block', wallet, token);
+    const known = this.store.all('SELECT tx_hash, block, tok_out, quote_usd FROM wsales WHERE chain=? AND wallet=? AND token=? ORDER BY block', this.network, wallet, token);
     const seenTx = new Set(known.map((k) => k.tx_hash));
     // Tx penarikan/penambahan LP yang kita lacak: token yang masuk lewat situ SUDAH
     // jadi lot, jangan dihitung dua kali sebagai pasokan dari luar.
     const lpTx = new Set(this.store.all(`SELECT DISTINCT e.tx_hash FROM wevents e
-      JOIN wpositions p ON p.wallet = e.wallet AND p.token_id = e.token_id
-      WHERE e.wallet=? AND (p.token0=? OR p.token1=?)`, wallet, token, token).map((x) => x.tx_hash));
+      JOIN wpositions p ON p.chain = e.chain AND p.wallet = e.wallet AND p.token_id = e.token_id
+      WHERE e.chain=? AND e.wallet=? AND (p.token0=? OR p.token1=?)`, this.network, wallet, token, token).map((x) => x.tx_hash));
     for (const [lo, hi] of parts) {
       if (lo > hi) continue;
       const logs = await getLogsSafe(this.rpc, { address: token, topics: [TOPIC.transfer, pad32(wallet)] }, lo, hi);
@@ -250,8 +253,8 @@ class Proceeds {
         const a = await this.analyzeSale(wallet, token, tx, ethUsd);
         if (!a || a.tokOut === 0n) continue;
         const ts = await this.chain.blockTs(a.block);
-        this.store.run('INSERT OR REPLACE INTO wsales(wallet,token,tx_hash,block,ts,tok_out,quote_usd,kind) VALUES(?,?,?,?,?,?,?,?)',
-          wallet, token, tx, a.block, ts, a.tokOut.toString(), a.usd, a.usd != null ? 'sell' : 'send');
+        this.store.run('INSERT OR REPLACE INTO wsales(chain,wallet,token,tx_hash,block,ts,tok_out,quote_usd,kind) VALUES(?,?,?,?,?,?,?,?,?)',
+          this.network, wallet, token, tx, a.block, ts, a.tokOut.toString(), a.usd, a.usd != null ? 'sell' : 'send');
         known.push({ tx_hash: tx, block: a.block, tok_out: a.tokOut.toString(), quote_usd: a.usd });
       }
       // Arah sebaliknya: token yang masuk dari luar posisi kita — dibeli di pasar atau
@@ -269,8 +272,8 @@ class Proceeds {
         const net = v.amt - (outOf.get(tx) || 0n);
         if (net <= 0n) continue;
         const ts = await this.chain.blockTs(v.block);
-        this.store.run('INSERT OR REPLACE INTO wflows(wallet,token,tx_hash,block,ts,tok_in) VALUES(?,?,?,?,?,?)',
-          wallet, token, tx, v.block, ts, net.toString());
+        this.store.run('INSERT OR REPLACE INTO wflows(chain,wallet,token,tx_hash,block,ts,tok_in) VALUES(?,?,?,?,?,?,?)',
+          this.network, wallet, token, tx, v.block, ts, net.toString());
       }
     }
     this.store.setState(spanKey, JSON.stringify({ from: Math.min(first, span?.from ?? first), to: head }));
@@ -287,7 +290,7 @@ class Proceeds {
 
     // Alokasi FIFO atas SEMUA pemasukan token, urut blok: saldo sebelum lot pertama,
     // tiap penarikan LP (lot), dan token yang datang dari luar.
-    const extra = this.store.all('SELECT block, tok_in FROM wflows WHERE wallet=? AND token=? ORDER BY block', wallet, token);
+    const extra = this.store.all('SELECT block, tok_in FROM wflows WHERE chain=? AND wallet=? AND token=? ORDER BY block', this.network, wallet, token);
     const queue = [
       { block: first - 1, left: big(pre) },
       ...lots.map((r) => ({ block: r.closed_block, r, left: r.lot, sold: 0n, usd: 0 })),
@@ -334,8 +337,8 @@ class Proceeds {
   setRow(r, { held, sold, realized, unrealized, head }) {
     const pnl = realized + unrealized - (r.invested_q || 0);
     this.store.run(`UPDATE wpositions SET held_tok=?, sold_tok=?, realized_q=?, unrealized_q=?, pnl_q=?, tracked_to=?
-      WHERE wallet=? AND venue=? AND token_id=?`,
-    held.toString(), sold.toString(), realized, unrealized, pnl, head, r.wallet, r.venue, r.token_id);
+      WHERE chain=? AND wallet=? AND venue=? AND token_id=?`,
+    held.toString(), sold.toString(), realized, unrealized, pnl, head, this.network, r.wallet, r.venue, r.token_id);
   }
 
   // Nilai "belum terealisasi" yang segar untuk tampilan: harga pool sekarang, tanpa

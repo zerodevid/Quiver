@@ -59,13 +59,13 @@ function swapCostOf(d) {
 }
 
 class Costs {
-  constructor(store) { this.store = store; this.cache = null; }
+  constructor(store, network = 'robinhood') { this.store = store; this.network = network; this.cache = null; }
 
   // Dihitung sekali untuk SEMUA posisi lalu di-cache: tabel posisi dipoll tiap
   // beberapa detik dan menghitung per posisi berarti memindai txs berulang kali.
   // Cache batal begitu ada transaksi baru/berubah (jumlah baris + waktu terakhir).
   map(ethUsd) {
-    const sig = this.store.get('SELECT COUNT(*) n, COALESCE(MAX(ts),0) last, COALESCE(SUM(gas_used),0) gas FROM txs');
+    const sig = this.store.get('SELECT COUNT(*) n, COALESCE(MAX(ts),0) last, COALESCE(SUM(gas_used),0) gas FROM txs WHERE chain=?', this.network);
     // Harga ETH dibulatkan ke dolar penuh: ia hanya dipakai untuk transaksi lama yang
     // belum menyimpan gas dalam USD, jadi tidak perlu menghitung ulang tiap sen.
     const key = `${sig?.n}:${sig?.last}:${sig?.gas}:${Math.round(ethUsd || 0)}`;
@@ -85,7 +85,7 @@ class Costs {
       if (!c) { c = emptyCost(); out.set(id, c); }
       return c;
     };
-    const positions = store.all('SELECT id, token_id, venue, pool_ref, tx_open, tx_close FROM positions');
+    const positions = store.all('SELECT id, token_id, venue, pool_ref, tx_open, tx_close FROM positions WHERE chain=?', this.network);
     if (!positions.length) return out;
     const byOpenTx = new Map(), byCloseTx = new Map(), byToken = new Map();
     for (const p of positions) {
@@ -95,7 +95,7 @@ class Costs {
     }
     const byDecision = new Map(store.all('SELECT tx_hash, position_id FROM decisions WHERE position_id IS NOT NULL AND tx_hash IS NOT NULL')
       .map((d) => [d.tx_hash, d.position_id]));
-    const txs = store.all('SELECT hash, ts, kind, status, gas_used, gas_price, gas_quote, detail FROM txs ORDER BY ts');
+    const txs = store.all('SELECT hash, ts, kind, status, gas_used, gas_price, gas_quote, detail FROM txs WHERE chain=? ORDER BY ts', this.network);
 
     // 1) jangkar: transaksi yang jelas milik posisi tertentu
     const anchor = new Array(txs.length).fill(null);   // {ids:[], phase}

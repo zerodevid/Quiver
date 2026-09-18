@@ -1,4 +1,5 @@
 'use strict';
+const { ensureChain } = require('./networks');
 // API HTTP + penyaji dashboard.
 const http = require('node:http');
 const fs = require('node:fs');
@@ -14,16 +15,12 @@ const { Icons } = require('./icons');
 const { Market, TF } = require('./market');
 const { Positions } = require('./positions');
 const { Costs, swapCostOf } = require('./costs');
-const { QUOTES, ADDR: { native: ADDR_NATIVE, usdg: ADDR_USDG, weth: ADDR_WETH } } = require('./chain');
 const { writeCfg } = require('./env');
 const shareCard = require('./share-card');
 const chartCard = require('./chart-card');
 const portfolioCard = require('./portfolio-card');
 const { breakEven } = require('./breakeven.mjs');
 
-// Sisi mana dari pool yang merupakan aset kuotasi (0 atau 1); null kalau tidak dikenal.
-// Menentukan arah harga yang ditampilkan: selalu "harga token spekulatif dalam kuotasi".
-const quoteSideOf = (t0, t1) => (QUOTES[(t0 || '').toLowerCase()] ? 0 : QUOTES[(t1 || '').toLowerCase()] ? 1 : null);
 
 // Harga token spekulatif dalam aset kuotasi — salinan rumus web/src/fmt.js, dipakai
 // kartu grafik (rentang posisi, harga masuk/keluar) supaya angkanya sama dengan dasbor.
@@ -129,8 +126,21 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 // supaya tidak mematahkan skrip/gaya inline aplikasi & halaman masuk.
 const SEC_HEADERS = { 'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'", 'x-content-type-options': 'nosniff' };
 
-function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }) {
+function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, nets = null }) {
+  chain = ensureChain(chain || engine?.chain);
   const pub = path.join(__dirname, '..', 'public');
+  const { QUOTES } = chain;
+  // Sisi mana dari pool yang merupakan aset kuotasi (0 atau 1); null kalau tidak dikenal.
+  // Menentukan arah harga yang ditampilkan: selalu "harga token spekulatif dalam kuotasi".
+  const quoteSideOf = (t0, t1) => (QUOTES[(t0 || '').toLowerCase()] ? 0 : QUOTES[(t1 || '').toLowerCase()] ? 1 : null);
+  // Semua mesin di proses ini (satu per chain, wallet yang sama) — untuk ganti kunci.
+  const engines = nets ? Object.values(nets).map((n) => n.engine) : [engine];
+  // Daftar chain untuk pemilih di dasbor/Telegram.
+  const chainList = () => (nets ? Object.values(nets) : [{ key: chain.network, label: chain.label, chain, engine }]).map((n) => ({
+    key: n.key || n.chain.network, label: n.label || n.chain.label, chainId: n.chain.CHAIN_ID, nativeSymbol: n.chain.nativeSymbol,
+    dryRun: n.engine.dryRun(), paused: n.engine.paused(), verified: n.chain.verified, head: n.engine.head, cursor: n.engine.cursor,
+    targets: n.engine.watcher.enabledSet().size, current: n.chain.network === chain.network,
+  }));
   const scoutJobs = new Map();
   const poolScanJobs = new Map();
   const walletJobs = new Map();
@@ -141,10 +151,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   // Portofolio per wallet di-cache sebentar: halaman detail target di-poll, dan
   // tiap hitungan berarti puluhan eth_call + DexScreener.
   const holdingsCache = new Map();
-  const market = new Market({ log });
+  const market = new Market({ log, chain });
   // Ongkos jalan tiap posisi (gas + selisih swap) — dihitung sekali untuk semua
   // posisi lalu di-cache sampai ada transaksi baru.
-  const costs = new Costs(store);
+  const costs = new Costs(store, chain.network);
   // Ongkos satu posisi dalam bentuk yang dipakai dasbor & Telegram: gas + selisih
   // swap, dipisah saat membuka dan saat menutup, plus porsinya terhadap modal —
   // "seberapa besar effort-nya" baru berarti kalau dibandingkan dengan modalnya.
@@ -157,7 +167,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   // bisa menulis "688 rb DRIPPYPIGEON". Ikut di /api/overview: peringatannya
   // harus tampil di SEMUA halaman, bukan cuma kalau kebetulan membuka Posisi.
   const leftoverRows = () => {
-    const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
+    const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens WHERE chain=?', chain.network).map((t) => [t.address, t]));
     return engine.leftovers().map((it) => {
       const t = toks.get(String(it.token).toLowerCase());
       return { ...it, symbol: t?.symbol || null, decimals: t?.decimals ?? 18, amountNum: Number(it.amount || 0) / 10 ** (t?.decimals ?? 18) };
@@ -295,7 +305,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   engine.onFreshActions = (acts) => {
     for (const target of new Set(acts.map((a) => a.target))) {
       if (pendingRefresh.has(target)) continue;
-      if (!store.get('SELECT 1 FROM wallets WHERE address=?', target)) continue;
+      if (!store.get('SELECT 1 FROM wallets WHERE chain=? AND address=?', chain.network, target)) continue;
       pendingRefresh.set(target, setTimeout(() => {
         pendingRefresh.delete(target);
         const job = walletJobs.get(target);
@@ -369,7 +379,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   // ditunda sebentar supaya tidak berebut jaringan dengan sinkronisasi awal mesin.
   // Tanpa path database (tes) tidak ada tempat menyimpan, jadi tidak ada pemanasan.
   const dbPath = cfg.db?.path;
-  const icons = new Icons({ store, dir: dbPath ? path.join(path.dirname(dbPath), 'icons') : path.join(require('node:os').tmpdir(), 'lpcopy-icons'), log });
+  const icons = new Icons({ store, chain, dir: dbPath ? path.join(path.dirname(dbPath), 'icons') : path.join(require('node:os').tmpdir(), 'lpcopy-icons'), log });
   if (dbPath) {
     const warmIcons = () => { try { const n = icons.warm(); if (n) log(`logo: mengambil ${n} logo token dari GeckoTerminal`); } catch (e) { log(`logo: ${e.message}`); } };
     setTimeout(warmIcons, 15_000).unref?.();
@@ -386,18 +396,18 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   // dan kartu "per sumber" di Overview supaya angkanya sama persis.
   const pnlByTarget = (closed) => {
     const eth = engine.ethUsd;
-    const k = (q) => (q === 'ETH' || q === 'WETH' ? eth : 1);
-    closed ??= store.all("SELECT target, cost_quote, out_quote, quote_symbol FROM positions WHERE status='closed' AND closed_ts IS NOT NULL")
+    const k = (q) => (chain.isEthLike(q) ? eth : 1);
+    closed ??= store.all("SELECT target, cost_quote, out_quote, quote_symbol FROM positions WHERE chain=? AND status='closed' AND closed_ts IS NOT NULL", chain.network)
       .map((p) => ({ ...p, pnl: ((p.out_quote || 0) - (p.cost_quote || 0)) * k(p.quote_symbol) }));
     const live = new Map(engine.positions.live.map((p) => [p.id, p]));
-    const labels = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
+    const labels = new Map(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label]));
     const by = new Map();
     const grp = (t) => {
       const key = t || '';
       if (!by.has(key)) by.set(key, { target: key || null, label: key ? labels.get(key) || null : null, open: 0, value: 0, upnl: 0, closed: 0, wins: 0, realized: 0 });
       return by.get(key);
     };
-    for (const r of store.all("SELECT id, target, cost_quote, quote_symbol FROM positions WHERE status='open'")) {
+    for (const r of store.all("SELECT id, target, cost_quote, quote_symbol FROM positions WHERE chain=? AND status='open'", chain.network)) {
       const l = live.get(r.id);
       if (l?.empty) continue;
       const g = grp(r.target);
@@ -416,15 +426,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   // syarat SQL (mis. "token0=? OR token1=?" atau "pool_ref=?") — bahan halaman
   // detail token dan detail pool, supaya keduanya menghitung PnL dengan cara sama.
   const lpRows = async (cond, args) => {
-    const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
+    const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens WHERE chain=?', chain.network).map((t) => [t.address, t]));
     const sym = (x) => toks.get(x)?.symbol || QUOTES[x]?.symbol || '?';
     const dec = (x) => toks.get(x)?.decimals ?? QUOTES[x]?.decimals ?? 18;
-    const kOf = (q) => (q === 'ETH' || q === 'WETH' ? engine.ethUsd : 1);
+    const kOf = (q) => (chain.isEthLike(q) ? engine.ethUsd : 1);
 
     // Posisi bot. Yang terbuka dari hasil sinkron terakhir (nilai & PnL kini).
     const live = new Map(engine.positions.live.map((p) => [p.id, p]));
-    const mine = store.all(`SELECT * FROM positions WHERE (${cond}) AND status IN ('open','closed')
-      ORDER BY COALESCE(closed_ts, opened_ts) DESC LIMIT 200`, ...args);
+    const mine = store.all(`SELECT * FROM positions WHERE chain=? AND (${cond}) AND status IN ('open','closed')
+      ORDER BY COALESCE(closed_ts, opened_ts) DESC LIMIT 200`, chain.network, ...args);
     const open = [], closed = [];
     for (const r of mine) {
       if (r.status === 'open') {
@@ -446,15 +456,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     }
 
     // Posisi wallet hasil riset (target maupun wallet lain yang pernah dipindai).
-    const labels = new Map(store.all('SELECT address,label FROM wallets').map((w) => [w.address, w.label]));
-    for (const t of store.all('SELECT address,label FROM targets')) if (t.label) labels.set(t.address, t.label);
-    const targets = new Set(store.all('SELECT address FROM targets').map((t) => t.address));
+    const labels = new Map(store.all('SELECT address,label FROM wallets WHERE chain=?', chain.network).map((w) => [w.address, w.label]));
+    for (const t of store.all('SELECT address,label FROM targets WHERE chain=?', chain.network)) if (t.label) labels.set(t.address, t.label);
+    const targets = new Set(store.all('SELECT address FROM targets WHERE chain=?', chain.network).map((t) => t.address));
     // liquidity & returned_q ikut dibaca karena penilaian ulang di bawah memerlukannya:
     // tanpa liquidity posisi v3 tak bisa dinilai, dan tanpa returned_q penarikan yang
     // sudah masuk kantong hilang dari PnL-nya.
     const wallets = store.all(`SELECT wallet, venue, token_id, pool_ref, token0, token1, fee, tick_lower, tick_upper, status,
         opened_ts, closed_ts, liquidity, invested_q, returned_q, live_value_q, live_fee_q, fees_q, pnl_q, incomplete
-      FROM wpositions WHERE ${cond} ORDER BY COALESCE(closed_ts, opened_ts) DESC LIMIT 300`, ...args)
+      FROM wpositions WHERE chain=? AND (${cond}) ORDER BY COALESCE(closed_ts, opened_ts) DESC LIMIT 300`, chain.network, ...args)
       .map((r) => ({ ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
         quoteSide: quoteSideOf(r.token0, r.token1), walletLabel: labels.get(r.wallet) || null, isTarget: targets.has(r.wallet),
         ageHours: r.opened_ts ? ((r.closed_ts || Date.now()) - r.opened_ts) / 3600000 : null }));
@@ -464,7 +474,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const want = new Set(wallets.map((r) => `${r.wallet}:${r.token_id}`));
       const owners = [...new Set(wallets.map((r) => r.wallet))];
       const firstLast = new Map();
-      for (const e of store.all(`SELECT wallet, token_id, sqrt_price FROM wevents WHERE wallet IN (${owners.map(() => '?').join(',')}) ORDER BY block`, ...owners)) {
+      for (const e of store.all(`SELECT wallet, token_id, sqrt_price FROM wevents WHERE chain=? AND wallet IN (${owners.map(() => '?').join(',')}) ORDER BY block`, chain.network, ...owners)) {
         const k = `${e.wallet}:${e.token_id}`;
         if (!e.sqrt_price || !want.has(k)) continue;
         const cur = firstLast.get(k);
@@ -491,7 +501,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     const activity = store.all(`SELECT a.id, a.ts, a.target, a.venue, a.kind, a.token_id, a.pool_ref, a.token0, a.token1, a.fee,
         a.value_quote, a.quote_symbol, d.verdict, d.reason, d.position_id
       FROM actions a LEFT JOIN decisions d ON d.action_id = a.id
-      WHERE ${cond.replace(/\b(token0|token1|pool_ref)\b/g, 'a.$1')} ORDER BY a.ts DESC, a.id DESC LIMIT 100`, ...args)
+      WHERE a.chain=? AND (${cond.replace(/\b(token0|token1|pool_ref)\b/g, 'a.$1')}) ORDER BY a.ts DESC, a.id DESC LIMIT 100`, chain.network, ...args)
       .map((r) => ({ ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), targetLabel: labels.get(r.target) || null }));
 
     return { open, closed, wallets, activity };
@@ -506,16 +516,16 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // ikut disegarkan di sana terpakai.
       const cash = await engine.freshCash();
       const s = engine.positions.summary(engine.ethUsd);
-      const eq = store.all('SELECT ts,total_quote,realized_quote,fees_quote,open_positions FROM equity ORDER BY ts DESC LIMIT 500').reverse();
-      const dec = store.get("SELECT COUNT(*) n FROM decisions WHERE verdict IN ('copy','dry')")?.n || 0;
+      const eq = store.all('SELECT ts,total_quote,realized_quote,fees_quote,open_positions FROM equity WHERE chain=? ORDER BY ts DESC LIMIT 500', chain.network).reverse();
+      const dec = store.get("SELECT COUNT(*) n FROM decisions d JOIN actions a ON a.id=d.action_id WHERE a.chain=? AND d.verdict IN ('copy','dry')", chain.network)?.n || 0;
       const tot = {
-        actions: store.get('SELECT COUNT(*) n FROM actions')?.n || 0,
-        copied: store.get("SELECT COUNT(*) n FROM decisions WHERE verdict='copy'")?.n || 0,
+        actions: store.get('SELECT COUNT(*) n FROM actions WHERE chain=?', chain.network)?.n || 0,
+        copied: store.get("SELECT COUNT(*) n FROM decisions d JOIN actions a ON a.id=d.action_id WHERE a.chain=? AND d.verdict='copy'", chain.network)?.n || 0,
         would: dec,
-        skipped: store.get("SELECT COUNT(*) n FROM decisions WHERE verdict='skip'")?.n || 0,
-        errors: store.get("SELECT COUNT(*) n FROM decisions WHERE verdict='error'")?.n || 0,
+        skipped: store.get("SELECT COUNT(*) n FROM decisions d JOIN actions a ON a.id=d.action_id WHERE a.chain=? AND d.verdict='skip'", chain.network)?.n || 0,
+        errors: store.get("SELECT COUNT(*) n FROM decisions d JOIN actions a ON a.id=d.action_id WHERE a.chain=? AND d.verdict='error'", chain.network)?.n || 0,
       };
-      const skipTop = store.all("SELECT reason, COUNT(*) n FROM decisions WHERE verdict='skip' GROUP BY reason ORDER BY n DESC LIMIT 6");
+      const skipTop = store.all("SELECT d.reason, COUNT(*) n FROM decisions d JOIN actions a ON a.id=d.action_id WHERE a.chain=? AND d.verdict='skip' GROUP BY d.reason ORDER BY n DESC LIMIT 6", chain.network);
       // Total portofolio & PnL sekarang — angka yang sama dengan /api/portfolio, tapi
       // tanpa kurva/kalender, jadi cukup murah untuk ikut dipoll tiap 5 detik (judul tab).
       const value = (cash?.usd || 0) + s.exposureUsd + (s.leftoverUsd || 0) + s.feeUsd;
@@ -526,7 +536,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         // auth: gerbang token menyala → dasbor menampilkan tombol keluar.
         mode: { dry_run: engine.dryRun(), paused: engine.paused(), wallet: engine.exec.address(), auth: !!tokenNow(), drawdown: engine.drawdownStatus() },
         wallet,
-        chain: { head: engine.head, cursor: engine.cursor, lag: engine.head - engine.cursor, ethUsd: engine.ethUsd, headSpread: engine.headSpread },
+        chain: {
+          head: engine.head, cursor: engine.cursor, lag: engine.head - engine.cursor, ethUsd: engine.ethUsd, headSpread: engine.headSpread,
+          // identitas chain tampilan ini — dasbor memakainya untuk label, simbol, dan tautan penjelajah
+          key: chain.network, label: chain.label, chainId: chain.CHAIN_ID, nativeSymbol: chain.nativeSymbol,
+          usdgSymbol: chain.usdgSymbol, wethSymbol: chain.wethSymbol, verified: chain.verified,
+          explorer: chain.explorer, dexscreener: chain.dexscreener, geckoterminal: chain.geckoterminal,
+          venues: ['v4', ...chain.venues.map((v) => v.key)],
+        },
         stats: { ...engine.stats, uptimeSec: Math.round((Date.now() - engine.stats.startedAt) / 1000), lastError: engine.lastError },
         totals: tot,
         summary: s, equity: eq, decisionsTotal: dec, skipReasons: skipTop,
@@ -545,7 +562,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const now = Date.now();
       const from = SPAN[range] ? now - SPAN[range] : 0;
       const eth = engine.ethUsd;
-      const k = (q) => (q === 'ETH' || q === 'WETH' ? eth : 1);
+      const k = (q) => (chain.isEthLike(q) ? eth : 1);
       const cash = await engine.freshCash();      // sebelum summary, lihat /api/overview
       const s = engine.positions.summary(eth);
       const lo = s.leftoverUsd || 0;
@@ -553,14 +570,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const pnl = s.realizedUsd + s.unrealizedUsd;
 
       const rows = store.all(`SELECT ts, wallet_quote AS cash, positions_quote AS pos, fees_quote AS fee,
-        total_quote AS total, pnl_quote AS pnl, open_positions AS n FROM equity WHERE ts >= ? ORDER BY ts`, from);
+        total_quote AS total, pnl_quote AS pnl, open_positions AS n FROM equity WHERE chain=? AND ts >= ? ORDER BY ts`, chain.network, from);
       // Titik "sekarang" supaya ujung grafik sama dengan angka di kartu, bukan
       // tertinggal sampai 5 menit di belakangnya.
       if (engine.positions.lastSync) {
         rows.push({ ts: now, cash: cash ? cash.usd : null, pos: s.exposureUsd + lo, fee: s.feeUsd, total: value, pnl, n: s.openCount, live: true });
       }
       // Titik terakhir SEBELUM jendela: patokan "berubah berapa dalam rentang ini".
-      const baseline = from ? store.get('SELECT ts, pnl_quote AS pnl, total_quote AS total, wallet_quote AS cash FROM equity WHERE ts < ? ORDER BY ts DESC LIMIT 1', from) || null : null;
+      const baseline = from ? store.get('SELECT ts, pnl_quote AS pnl, total_quote AS total, wallet_quote AS cash FROM equity WHERE chain=? AND ts < ? ORDER BY ts DESC LIMIT 1', chain.network, from) || null : null;
       // PnL bersih wallet = total − modal(t); modal(t) = baseline + setoran − penarikan
       // sampai t (lihat capital.js). Titik ekuitas tanpa kas (NULL) tidak punya total
       // yang sah, jadi bersihnya juga tidak dihitung.
@@ -611,14 +628,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       }
 
       const gasSince = (ts) => {
-        const g = store.all('SELECT gas_used, gas_price FROM txs WHERE ts >= ? AND gas_used IS NOT NULL AND gas_price IS NOT NULL', ts);
+        const g = store.all('SELECT gas_used, gas_price FROM txs WHERE chain=? AND ts >= ? AND gas_used IS NOT NULL AND gas_price IS NOT NULL', chain.network, ts);
         const eth = g.reduce((a, t) => a + (Number(t.gas_used) * Number(BigInt(t.gas_price))) / 1e18, 0);
         return { gasUsd: eth * (engine.ethUsd || 0), gasTxCount: g.length };
       };
 
       // Posisi tertutup: bahan kalender (dikelompokkan per hari di browser, pakai
       // zona waktu pengguna) dan statistik menang/kalah.
-      const closed = store.all("SELECT target, opened_ts, closed_ts, cost_quote, out_quote, quote_symbol FROM positions WHERE status='closed' AND closed_ts IS NOT NULL ORDER BY closed_ts")
+      const closed = store.all("SELECT target, opened_ts, closed_ts, cost_quote, out_quote, quote_symbol FROM positions WHERE chain=? AND status='closed' AND closed_ts IS NOT NULL ORDER BY closed_ts", chain.network)
         .map((p) => ({ ...p, pnl: ((p.out_quote || 0) - (p.cost_quote || 0)) * k(p.quote_symbol) }));
       const pnls = closed.map((p) => p.pnl);
       const wins = pnls.filter((x) => x > 0).length;
@@ -648,7 +665,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           ...gasSince(capital?.baselineTs ?? 0),
         },
         capital: capital ? { ...capital, deposits: engine.capital.rows().map((d) => ({
-          ts: d.ts, kind: d.kind, symbol: d.symbol, amount: Number(d.amount) / (d.symbol === 'USDG' ? 1e6 : 1e18), usd: d.usd, ethUsd: d.eth_usd, txHash: d.tx_hash, counterparty: d.counterparty,
+          ts: d.ts, kind: d.kind, symbol: d.symbol, amount: Number(d.amount) / (d.symbol === chain.usdgSymbol ? 10 ** chain.usdgDecimals : 1e18), usd: d.usd, ethUsd: d.eth_usd, txHash: d.tx_hash, counterparty: d.counterparty,
         })) } : null,
         stats: {
           closedCount: closed.length, wins, losses: closed.length - wins,
@@ -665,15 +682,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     'GET /api/positions': () => {
       // Posisi tertutup cuma menyimpan alamat token; tanpa simbol, tabelnya hanya
       // deretan nomor NFT yang tidak bisa dikenali.
-      const closed = store.all("SELECT * FROM positions WHERE status='closed' ORDER BY closed_ts DESC LIMIT 100");
-      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
+      const closed = store.all("SELECT * FROM positions WHERE chain=? AND status='closed' ORDER BY closed_ts DESC LIMIT 100", chain.network);
+      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens WHERE chain=?', chain.network).map((t) => [t.address, t]));
       // Daftarnya dari basis data, angkanya dari sinkron terakhir. Dulu daftarnya
       // langsung hasil sinkron (tiap 30 detik): sesudah restart tabel kosong sampai
       // sinkron pertama selesai, posisi yang baru dimint baru muncul ~30 detik
       // kemudian, dan yang baru ditutup masih tampil. Posisi yang belum tersinkron
       // tampil dulu dengan angka modal, bertanda `syncing`.
       const live = new Map(engine.positions.live.map((p) => [p.id, p]));
-      const k = (q) => (q === 'ETH' || q === 'WETH' ? engine.ethUsd : 1);
+      const k = (q) => (chain.isEthLike(q) ? engine.ethUsd : 1);
       const sym = (x) => toks.get(x)?.symbol || QUOTES[x]?.symbol || '?';
       const dec = (x) => toks.get(x)?.decimals ?? QUOTES[x]?.decimals ?? 18;
       // Asal tiap baris: wallet target yang disalin, dan — kalau wallet itu pernah
@@ -681,11 +698,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // target dan keluar atas keputusan sendiri, jadi hasilnya hampir tidak pernah
       // sama; menaruh kedua angka berdampingan membuat selisihnya terbaca, bukan
       // ditebak dari dua halaman berbeda.
-      const tLabel = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
+      const tLabel = new Map(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label]));
       const origin = (r) => {
         if (!r.target) return { targetLabel: null, mirror: null };
         const w = r.mirror_of
-          ? store.get('SELECT * FROM wpositions WHERE wallet=? AND venue=? AND token_id=?', r.target, r.venue, r.mirror_of)
+          ? store.get('SELECT * FROM wpositions WHERE chain=? AND wallet=? AND venue=? AND token_id=?', chain.network, r.target, r.venue, r.mirror_of)
           : null;
         // Nilai di wpositions SUDAH dalam USD (lihat WalletResearch.persist) — sisi
         // kuotasi ETH tidak boleh dikalikan harga ETH lagi: dulu target ber-kuotasi WETH
@@ -715,7 +732,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           cost: costOf(r.id, costUsd),
         });
       }
-      const positions = store.all("SELECT * FROM positions WHERE status='open' ORDER BY opened_ts").map((r) => live.get(r.id) || {
+      const positions = store.all("SELECT * FROM positions WHERE chain=? AND status='open' ORDER BY opened_ts", chain.network).map((r) => live.get(r.id) || {
         ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
         quoteSide: quoteSideOf(r.token0, r.token1), entrySqrt: Positions.entrySqrtOf(r), curTick: null, inRange: null,
         costUsd: (r.cost_quote || 0) * k(r.quote_symbol), valueUsd: (r.cost_quote || 0) * k(r.quote_symbol),
@@ -725,7 +742,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       });
       // takeover_ts dibaca dari basis data, bukan hasil sinkron (bisa berumur 30 detik):
       // tombol ambil alih/kembalikan harus langsung berganti.
-      const takeover = new Map(store.all("SELECT id, takeover_ts FROM positions WHERE status='open'").map((r) => [r.id, r.takeover_ts]));
+      const takeover = new Map(store.all("SELECT id, takeover_ts FROM positions WHERE chain=? AND status='open'", chain.network).map((r) => [r.id, r.takeover_ts]));
       return {
         positions: positions.map((p) => ({
           ...p, takeover_ts: takeover.get(p.id) ?? null, compound: compound.status(p), ...origin(p),
@@ -753,13 +770,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     // tersinkron — dari basis data, dihias secukupnya supaya bentuknya sama.
     'GET /api/position': (req, url) => {
       const id = Number(url.searchParams.get('id'));
-      const row = store.get('SELECT * FROM positions WHERE id=?', id);
+      const row = store.get('SELECT * FROM positions WHERE chain=? AND id=?', chain.network, id);
       if (!row) return { error: 'posisi tidak ditemukan' };
       // Baris yang sudah 'closed' di DB adalah kebenaran: hasil sinkron terakhir masih
       // memuat posisi itu (nilai basi) sampai sinkron berikutnya, ~30 detik setelah tutup.
       const live = row.status === 'closed' ? null : engine.positions.live.find((p) => p.id === id);
-      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
-      const k = row.quote_symbol === 'ETH' || row.quote_symbol === 'WETH' ? engine.ethUsd : 1;
+      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens WHERE chain=?', chain.network).map((t) => [t.address, t]));
+      const k = chain.isEthLike(row.quote_symbol) ? engine.ethUsd : 1;
       const costUsd = (row.cost_quote || 0) * k;
       const outUsd = row.status === 'closed' ? (row.out_quote || 0) * k : null;
       const pos = live ? { ...live } : {
@@ -786,8 +803,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       pos.withdrawnUsd = row.status === 'closed' ? 0 : (row.out_quote || 0) * k;
       pos.compound = compound.status(row);
       pos.outUsd = outUsd;
-      pos.quoteKind = row.quote_symbol === 'ETH' || row.quote_symbol === 'WETH' ? 'eth' : 'usd';
-      pos.targetLabel = row.target ? (store.get('SELECT label FROM targets WHERE address=?', row.target)?.label || null) : null;
+      pos.quoteKind = chain.isEthLike(row.quote_symbol) ? 'eth' : 'usd';
+      pos.targetLabel = row.target ? (store.get('SELECT label FROM targets WHERE chain=? AND address=?', chain.network, row.target)?.label || null) : null;
       pos.target = row.target; pos.mirror_of = row.mirror_of; pos.takeover_ts = row.takeover_ts ?? null;
       // Token spekulatif = yang bukan aset kuotasi; dasar harga di grafik.
       pos.baseToken = pos.quoteSide === 0 ? row.token1 : pos.quoteSide === 1 ? row.token0 : row.token0;
@@ -800,10 +817,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     // menyebut posisi ini.
     'GET /api/position/history': (req, url) => {
       const id = Number(url.searchParams.get('id'));
-      const row = store.get('SELECT * FROM positions WHERE id=?', id);
+      const row = store.get('SELECT * FROM positions WHERE chain=? AND id=?', chain.network, id);
       if (!row) return { error: 'posisi tidak ditemukan' };
-      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
-      const isEth = row.quote_symbol === 'ETH' || row.quote_symbol === 'WETH';
+      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens WHERE chain=?', chain.network).map((t) => [t.address, t]));
+      const isEth = chain.isEthLike(row.quote_symbol);
       const k = isEth ? engine.ethUsd : 1;
       const parse = (d) => { try { return JSON.parse(d || '{}') || {}; } catch { return {}; } };
       const gasUsd = (t) => (t.gas_used && t.gas_price ? (Number(t.gas_used) * Number(BigInt(t.gas_price))) / 1e18 * engine.ethUsd : null);
@@ -813,14 +830,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       // nomornya baru ada setelah mint sukses).
       const lo = (row.opened_ts || 0) - 15 * 60_000, hi = (row.closed_ts || Date.now()) + 60_000;
       const txs = store.all(`
-        SELECT * FROM txs WHERE hash IN (?, ?)
+        SELECT * FROM txs WHERE chain = ? AND (hash IN (?, ?)
            OR json_extract(detail, '$.position') = ?
            OR json_extract(detail, '$.recorded') = ?
            OR (kind = 'increase' AND (json_extract(detail, '$.plan.positionId') = ? OR json_extract(detail, '$.plan.tokenId') = ?))
            OR EXISTS (SELECT 1 FROM json_each(txs.detail, '$.positionSales') sale WHERE json_extract(sale.value, '$.position') = ?)
            OR hash IN (SELECT tx_hash FROM decisions WHERE position_id = ? AND tx_hash IS NOT NULL)
-           OR (json_extract(detail, '$.pool') = ? AND ts BETWEEN ? AND ? AND kind IN ('zap_swap', 'mint', 'increase'))
-        ORDER BY ts`, row.tx_open, row.tx_close, id, id, id, row.token_id, id, id, row.pool_ref, lo, hi);
+           OR (json_extract(detail, '$.pool') = ? AND ts BETWEEN ? AND ? AND kind IN ('zap_swap', 'mint', 'increase')))
+        ORDER BY ts`, chain.network, row.tx_open, row.tx_close, id, id, id, row.token_id, id, id, row.pool_ref, lo, hi);
       // Pool yang sama bisa dimasuki dua posisi berurutan (lp2 #6 dan #7 berselang 90
       // detik): mint tetangga dan zap-nya ikut tersaring lewat jendela pool. Mint/tambah
       // hanya milik posisi ini kalau memang tertaut ke nomornya. Zap: mint yang dibukukan
@@ -839,7 +856,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           || (t.kind === 'increase' && (d.plan?.positionId === id || String(d.plan?.tokenId ?? '') === String(row.token_id)));
       };
       const entries = store.all(`SELECT hash, ts, kind, detail FROM txs
-        WHERE json_extract(detail, '$.pool') = ? AND ts >= ? AND kind IN ('mint', 'increase') AND status != 'gagal' ORDER BY ts`, row.pool_ref, lo);
+        WHERE chain=? AND json_extract(detail, '$.pool') = ? AND ts >= ? AND kind IN ('mint', 'increase') AND status != 'gagal' ORDER BY ts`, chain.network, row.pool_ref, lo);
       const zapHashes = new Set(entries.filter(mine).flatMap((e) => parse(e.detail).zapped?.hashes || []));
       const zapMine = (z) => {
         if (zapHashes.has(z.hash)) return true;
@@ -869,7 +886,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           amount0: null, amount1: null, valueUsd: null, feesUsd: null,
           reason: dec?.reason || null, verdict: dec?.verdict || null,
           // Nilai aksi target yang ditiru — konteks "kenapa sebesar ini".
-          targetUsd: dec?.value_quote > 0 ? dec.value_quote * (dec.quote_symbol === 'ETH' || dec.quote_symbol === 'WETH' ? engine.ethUsd : 1) : null,
+          targetUsd: dec?.value_quote > 0 ? dec.value_quote * (chain.isEthLike(dec.quote_symbol) ? engine.ethUsd : 1) : null,
         };
         if (t.hash === row.tx_open) { ev.amount0 = row.cost0; ev.amount1 = row.cost1; ev.valueUsd = (row.cost_quote || 0) * k; ev.kind = ev.kind === 'increase' ? 'increase' : 'mint'; }
         if (t.kind === 'claim_fees') {
@@ -935,7 +952,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
           symbol0: toks.get(row.token0)?.symbol || '?', symbol1: toks.get(row.token1)?.symbol || '?',
           dec0: toks.get(row.token0)?.decimals ?? 18, dec1: toks.get(row.token1)?.decimals ?? 18,
           opened_ts: row.opened_ts, closed_ts: row.closed_ts, target: row.target, mirror_of: row.mirror_of,
-          targetLabel: row.target ? (store.get('SELECT label FROM targets WHERE address=?', row.target)?.label || null) : null,
+          targetLabel: row.target ? (store.get('SELECT label FROM targets WHERE chain=? AND address=?', chain.network, row.target)?.label || null) : null,
           cost: costOf(id, costUsd),
           closeUsd: events.find((e) => e.hash === row.tx_close)?.valueUsd ?? null,
           swapDeltaUsd: events.some((e) => e.saleDeltaUsd != null) ? events.reduce((sum, e) => sum + (e.saleDeltaUsd || 0), 0) : null,
@@ -971,7 +988,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(ref)) return { error: 'pool tidak valid' };
       return market.memo(`depth:${ref}`, 30000, () => require('./pool-depth').poolDepth({ rpc, chain, store, engine }, ref));
     },
-    'GET /api/holders': async (req, url) => require('./holders').alchemyHolders(market, cfg, url.searchParams.get('token')),
+    'GET /api/holders': async (req, url) => require('./holders').alchemyHolders(chain, market, cfg, url.searchParams.get('token')),
     // Harga pool langsung dari chain (slot0) untuk grafik realtime. Lilin GeckoTerminal
     // tertinggal hingga semenit; harga ini yang menggerakkan lilin terakhir di UI.
     // Disimpan 2,5 detik per pool: banyak tab yang membuka pool sama berbagi satu
@@ -991,8 +1008,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const a = String(url.searchParams.get('a') || '').trim().toLowerCase();
       if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat token tidak valid' };
       const market$ = market.token(a).catch((e) => ({ error: e.message }));
-      let meta = QUOTES[a] ? { address: a, symbol: QUOTES[a].symbol, name: a === ADDR_NATIVE ? 'Ether' : null, decimals: QUOTES[a].decimals } : null;
-      meta = store.get('SELECT address,symbol,name,decimals FROM tokens WHERE address=?', a) || meta;
+      let meta = QUOTES[a] ? { address: a, symbol: QUOTES[a].symbol, name: a === chain.ADDR.native ? chain.nativeSymbol : null, decimals: QUOTES[a].decimals } : null;
+      meta = store.get('SELECT address,symbol,name,decimals FROM tokens WHERE chain=? AND address=?', chain.network, a) || meta;
       const mk = await market$;
       // Belum pernah terlihat di chain: baca metadatanya hanya kalau DexScreener
       // mengenalnya sebagai token — alamat wallet tidak boleh masuk tabel tokens.
@@ -1027,10 +1044,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const ref = String(url.searchParams.get('ref') || '').trim().toLowerCase();
       if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(ref)) return { error: 'pool tidak valid' };
       const cols = 'pool_ref, venue, token0, token1, fee, tick_spacing, hooks';
-      let pool = store.get(`SELECT ${cols} FROM pools WHERE pool_ref=?`, ref)
-        || store.get(`SELECT ${cols} FROM positions WHERE pool_ref=? LIMIT 1`, ref)
-        || store.get(`SELECT ${cols} FROM wpositions WHERE pool_ref=? LIMIT 1`, ref)
-        || store.get(`SELECT ${cols} FROM actions WHERE pool_ref=? LIMIT 1`, ref);
+      let pool = store.get(`SELECT ${cols} FROM pools WHERE chain=? AND pool_ref=?`, chain.network, ref)
+        || store.get(`SELECT ${cols} FROM positions WHERE chain=? AND pool_ref=? LIMIT 1`, chain.network, ref)
+        || store.get(`SELECT ${cols} FROM wpositions WHERE chain=? AND pool_ref=? LIMIT 1`, chain.network, ref)
+        || store.get(`SELECT ${cols} FROM actions WHERE chain=? AND pool_ref=? LIMIT 1`, chain.network, ref);
       if (!pool) {
         const pr = await market.pair(ref);
         if (!pr || pr.error) return { error: 'pool tidak dikenal — belum tersentuh bot/riset dan belum terindeks DexScreener' };
@@ -1060,7 +1077,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       };
     },
     'GET /api/targets': () => {
-      const rows = store.all('SELECT * FROM targets ORDER BY added_ts');
+      const rows = store.all('SELECT * FROM targets WHERE chain=? ORDER BY added_ts', chain.network);
       const ours = pnlByTarget();
       for (const r of rows) {
         // hasil posisi kita yang disalin dari wallet ini (USD)
@@ -1068,18 +1085,18 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         r.ours = o ? { open: o.open, value: o.value, upnl: o.upnl, closed: o.closed, wins: o.wins, realized: o.realized } : null;
         r.rulesResolved = rulesFor(cfg.rules, r.rules);
         r.rulesOwn = r.rules ? JSON.parse(r.rules) : null;
-        const st = store.get('SELECT COUNT(*) n, MAX(ts) last FROM actions WHERE target=?', r.address);
+        const st = store.get('SELECT COUNT(*) n, MAX(ts) last FROM actions WHERE chain=? AND target=?', chain.network, r.address);
         r.actions = st?.n || 0; r.lastActionTs = st?.last || null;
-        r.copied = store.get("SELECT COUNT(*) n FROM decisions d JOIN actions a ON a.id=d.action_id WHERE a.target=? AND d.verdict IN ('copy','dry')", r.address)?.n || 0;
-        const p = store.get("SELECT COUNT(*) n, COALESCE(SUM(cost_quote),0) cost FROM positions WHERE target=? AND status='open'", r.address);
+        r.copied = store.get("SELECT COUNT(*) n FROM decisions d JOIN actions a ON a.id=d.action_id WHERE a.chain=? AND a.target=? AND d.verdict IN ('copy','dry')", chain.network, r.address)?.n || 0;
+        const p = store.get("SELECT COUNT(*) n, COALESCE(SUM(cost_quote),0) cost FROM positions WHERE chain=? AND target=? AND status='open'", chain.network, r.address);
         r.openPositions = p?.n || 0; r.openCostQuote = p?.cost || 0;
         // Ringkasan riset wallet yang sudah tersimpan (dari halaman Wallet) — tanpa memanggil chain.
-        const w = store.get('SELECT stats, last_scan_ts, positions_n FROM wallets WHERE address=?', r.address);
+        const w = store.get('SELECT stats, last_scan_ts, positions_n FROM wallets WHERE chain=? AND address=?', chain.network, r.address);
         if (w) { try { r.research = { ...JSON.parse(w.stats || '{}'), lastScanTs: w.last_scan_ts, positionsN: w.positions_n }; } catch { r.research = null; } }
         // Uang DIA sendiri: kas di wallet + nilai posisi LP yang masih terbuka
         // (termasuk fee yang belum diklaim). Wallet yang tinggal beberapa puluh
         // dolar praktis sudah berhenti nge-LP — itu yang dibaca kolom "Saldo dia".
-        const lp = store.get("SELECT COUNT(*) n, COALESCE(SUM(live_value_q),0) v, COALESCE(SUM(live_fee_q),0) f FROM wpositions WHERE wallet=? AND status='open'", r.address);
+        const lp = store.get("SELECT COUNT(*) n, COALESCE(SUM(live_value_q),0) v, COALESCE(SUM(live_fee_q),0) f FROM wpositions WHERE chain=? AND wallet=? AND status='open'", chain.network, r.address);
         const cash = cashOf(r.address);
         r.balance = {
           cashUsd: cash?.usd ?? null, cashTs: cash?.ts ?? null,
@@ -1099,34 +1116,34 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
       const v = validateRules(b.rules || null);
       if (v.error) return { error: v.error };
-      store.run('INSERT OR IGNORE INTO targets(address,label,enabled,added_ts,rules,notes) VALUES(?,?,?,?,?,?)',
-        addr, b.label || null, b.enabled === false ? 0 : 1, Date.now(), v.rules ? JSON.stringify(v.rules) : null, b.notes || null);
+      store.run('INSERT OR IGNORE INTO targets(chain,address,label,enabled,added_ts,rules,notes) VALUES(?,?,?,?,?,?,?)',
+        chain.network, addr, b.label || null, b.enabled === false ? 0 : 1, Date.now(), v.rules ? JSON.stringify(v.rules) : null, b.notes || null);
       return { ok: true };
     },
     'POST /api/targets/toggle': async (req) => {
       const b = await readBody(req);
-      store.run('UPDATE targets SET enabled=? WHERE address=?', b.enabled ? 1 : 0, String(b.address).toLowerCase());
+      store.run('UPDATE targets SET enabled=? WHERE chain=? AND address=?', b.enabled ? 1 : 0, chain.network, String(b.address).toLowerCase());
       return { ok: true };
     },
     'POST /api/targets/rules': async (req) => {
       const b = await readBody(req);
       const v = validateRules(b.rules || null);
       if (v.error) return { error: v.error };
-      store.run('UPDATE targets SET rules=?, label=COALESCE(?,label) WHERE address=?',
-        v.rules ? JSON.stringify(v.rules) : null, b.label ?? null, String(b.address).toLowerCase());
+      store.run('UPDATE targets SET rules=?, label=COALESCE(?,label) WHERE chain=? AND address=?',
+        v.rules ? JSON.stringify(v.rules) : null, b.label ?? null, chain.network, String(b.address).toLowerCase());
       return { ok: true };
     },
     'POST /api/targets/label': async (req) => {
       const b = await readBody(req);
       const addr = String(b.address || '').toLowerCase();
       const label = String(b.label ?? '').trim().slice(0, 60) || null;
-      const r = store.run('UPDATE targets SET label=? WHERE address=?', label, addr);
+      const r = store.run('UPDATE targets SET label=? WHERE chain=? AND address=?', label, chain.network, addr);
       if (!r.changes) return { error: 'target tidak ditemukan' };
       return { ok: true, label };
     },
     'POST /api/targets/delete': async (req) => {
       const b = await readBody(req);
-      store.run('DELETE FROM targets WHERE address=?', String(b.address).toLowerCase());
+      store.run('DELETE FROM targets WHERE chain=? AND address=?', chain.network, String(b.address).toLowerCase());
       return { ok: true };
     },
     // Gambar & indikator grafik lanjutan (garis tren, fibonacci, dst) per pool —
@@ -1150,9 +1167,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const rows = store.all(`
         SELECT a.*, d.verdict, d.reason, d.tx_hash AS decision_tx, d.plan
         FROM actions a LEFT JOIN decisions d ON d.action_id = a.id
-        ORDER BY a.ts DESC, a.id DESC LIMIT ?`, limit);
-      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
-      const labels = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
+        WHERE a.chain=? ORDER BY a.ts DESC, a.id DESC LIMIT ?`, chain.network, limit);
+      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens WHERE chain=?', chain.network).map((t) => [t.address, t]));
+      const labels = new Map(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label]));
       const mirrors = manual.openMirrorKeys();
       for (const r of rows) {
         r.targetLabel = labels.get(r.target) || null;
@@ -1196,8 +1213,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     // dasbor tidak memutar ulang semua riwayat. Aksi lama yang baru tercatat —
     // backfill setelah mesin mati — disaring lewat umurnya, bukan id-nya.
     'GET /api/feed': (req, url) => {
-      const lastId = store.get('SELECT COALESCE(MAX(id),0) AS id FROM actions')?.id || 0;
-      const lastClosed = store.get("SELECT COALESCE(MAX(closed_ts),0) AS ts FROM positions WHERE status='closed'")?.ts || 0;
+      const lastId = store.get('SELECT COALESCE(MAX(id),0) AS id FROM actions WHERE chain=?', chain.network)?.id || 0;
+      const lastClosed = store.get("SELECT COALESCE(MAX(closed_ts),0) AS ts FROM positions WHERE chain=? AND status='closed'", chain.network)?.ts || 0;
       const raw = url.searchParams.get('after');
       if (raw == null || !Number.isFinite(Number(raw))) return { lastId, lastClosed, items: [] };
       const rows = store.all(`
@@ -1206,17 +1223,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
                EXISTS(SELECT 1 FROM actions b WHERE b.target = a.target AND b.token_id = a.token_id
                       AND b.kind = 'increase' AND b.id < a.id) AS adding
         FROM actions a LEFT JOIN decisions d ON d.action_id = a.id
-        WHERE a.id > ? AND a.kind = 'increase' AND a.ts > ?
-          AND a.target IN (SELECT address FROM targets WHERE enabled = 1)
-        ORDER BY a.id LIMIT 20`, Number(raw), Date.now() - 15 * 60_000);
-      const toks = new Map(store.all('SELECT address,symbol FROM tokens').map((t) => [t.address, t.symbol]));
-      const labels = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
+        WHERE a.chain=? AND a.id > ? AND a.kind = 'increase' AND a.ts > ?
+          AND a.target IN (SELECT address FROM targets WHERE chain=? AND enabled = 1)
+        ORDER BY a.id LIMIT 20`, chain.network, Number(raw), Date.now() - 15 * 60_000, chain.network);
+      const toks = new Map(store.all('SELECT address,symbol FROM tokens WHERE chain=?', chain.network).map((t) => [t.address, t.symbol]));
+      const labels = new Map(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label]));
       const items = rows.map((r) => ({
         kind: 'open', id: r.id, ts: r.ts, target: r.target, targetLabel: labels.get(r.target) || null,
         venue: r.venue, fee: r.fee, adding: !!r.adding,
         token0: r.token0, token1: r.token1, symbol0: toks.get(r.token0) || null, symbol1: toks.get(r.token1) || null,
         valueUsd: r.value_quote == null ? null
-          : r.value_quote * (r.quote_symbol === 'ETH' || r.quote_symbol === 'WETH' ? engine.ethUsd : 1),
+          : r.value_quote * (chain.isEthLike(r.quote_symbol) ? engine.ethUsd : 1),
         verdict: r.verdict || null, reason: r.reason || null, positionId: r.position_id || null,
       }));
       // Posisi salinan yang tertutup penuh sejak `closedAfter` (waktu tutup, ms) —
@@ -1231,10 +1248,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
                         WHERE d.position_id = p.id AND d.verdict = 'copy'
                           AND a.kind IN ('decrease','transfer_out') AND d.ts >= p.closed_ts - 600000) AS mirrored
           FROM positions p
-          WHERE p.status = 'closed' AND p.closed_ts > ? AND p.closed_ts > ?
-          ORDER BY p.closed_ts LIMIT 20`, Number(rawC), Date.now() - 15 * 60_000);
+          WHERE p.chain=? AND p.status = 'closed' AND p.closed_ts > ? AND p.closed_ts > ?
+          ORDER BY p.closed_ts LIMIT 20`, chain.network, Number(rawC), Date.now() - 15 * 60_000);
         for (const r of closed) {
-          const k = r.quote_symbol === 'ETH' || r.quote_symbol === 'WETH' ? engine.ethUsd : 1;
+          const k = chain.isEthLike(r.quote_symbol) ? engine.ethUsd : 1;
           const costUsd = (r.cost_quote || 0) * k, outUsd = (r.out_quote || 0) * k;
           items.push({
             kind: 'close', id: `c${r.id}`, ts: r.closed_ts, positionId: r.id, tokenId: r.token_id,
@@ -1267,11 +1284,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         if (b.dry_run === false && String(b.confirm || '') !== 'LIVE') return { error: 'Ketik LIVE untuk konfirmasi.' };
         cfg.mode = cfg.mode || {}; cfg.mode.dry_run = b.dry_run; saveCfg();
       }
-      if (typeof b.paused === 'boolean') store.setState('paused', b.paused ? '1' : '0');
+      if (typeof b.paused === 'boolean') { if (engine.setPaused) engine.setPaused(b.paused); else store.setState('paused', b.paused ? '1' : '0'); }
       return { ok: true, mode: { dry_run: engine.dryRun(), paused: engine.paused() } };
     },
     'GET /api/logs': () => ({ logs: store.all('SELECT * FROM logs ORDER BY ts DESC LIMIT 200') }),
-    'GET /api/txs': () => ({ txs: store.all('SELECT * FROM txs ORDER BY ts DESC LIMIT 100') }),
+    'GET /api/txs': () => ({ txs: store.all('SELECT * FROM txs WHERE chain=? ORDER BY ts DESC LIMIT 100', chain.network) }),
     'POST /api/scout': async (req) => {
       const b = await readBody(req);
       const addr = String(b.address || '').toLowerCase();
@@ -1306,7 +1323,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     'GET /api/wallet': async (req, url) => {
       const addr = String(url.searchParams.get('address') || '').toLowerCase();
       if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
-      const w = store.get('SELECT * FROM wallets WHERE address=?', addr);
+      const w = store.get('SELECT * FROM wallets WHERE chain=? AND address=?', chain.network, addr);
       // Sudah pernah dipindai tapi basi -> perbarui di latar; halaman tetap langsung
       // menampilkan data tersimpan dan melihat progresnya lewat `job`.
       if (w) maybeRefresh(addr, w, 'basi');
@@ -1317,10 +1334,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       } : null;
       if (!w) return { found: false, job: jobOut };
 
-      const rows = store.all('SELECT * FROM wpositions WHERE wallet=? ORDER BY COALESCE(closed_ts, opened_ts) DESC', addr);
+      const rows = store.all('SELECT * FROM wpositions WHERE chain=? AND wallet=? ORDER BY COALESCE(closed_ts, opened_ts) DESC', chain.network, addr);
       // Harga pool saat posisi dibuka dan saat ditutup — sudah tersimpan per kejadian
       // waktu pemindaian (dibaca dari node arsip), jadi tidak perlu panggil chain lagi.
-      const ev = store.all('SELECT token_id, block, sqrt_price FROM wevents WHERE wallet=? ORDER BY token_id, block', addr);
+      const ev = store.all('SELECT token_id, block, sqrt_price FROM wevents WHERE chain=? AND wallet=? ORDER BY token_id, block', chain.network, addr);
       const firstLast = new Map();
       for (const e of ev) {
         if (!e.sqrt_price) continue;
@@ -1328,7 +1345,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         if (!cur) firstLast.set(e.token_id, { entry: e.sqrt_price, exit: e.sqrt_price });
         else cur.exit = e.sqrt_price;
       }
-      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens').map((t) => [t.address, t]));
+      const toks = new Map(store.all('SELECT address,symbol,decimals FROM tokens WHERE chain=?', chain.network).map((t) => [t.address, t]));
       // Token hasil tutup posisi yang masih dipegang dinilai ulang di harga pool
       // SEKARANG tiap kali halaman dibuka — angkanya hidup sampai tokennya dijual.
       for (const r of rows) { r.dec0 = toks.get(r.token0)?.decimals ?? 18; r.dec1 = toks.get(r.token1)?.decimals ?? 18; }
@@ -1403,7 +1420,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         found: true, address: addr, label: w.label,
         scannedFrom: w.first_block, scannedTo: w.scanned_to, lastScanTs: w.last_scan_ts,
         stats, open, closed, daily,
-        isTarget: !!store.get('SELECT 1 FROM targets WHERE address=?', addr),
+        isTarget: !!store.get('SELECT 1 FROM targets WHERE chain=? AND address=?', chain.network, addr),
         job: jobOut,
       };
     },
@@ -1411,7 +1428,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     'GET /api/wallet/events': (req, url) => {
       const addr = String(url.searchParams.get('address') || '').toLowerCase();
       const id = String(url.searchParams.get('token_id') || '');
-      return { events: store.all('SELECT * FROM wevents WHERE wallet=? AND token_id=? ORDER BY block', addr, id) };
+      return { events: store.all('SELECT * FROM wevents WHERE chain=? AND wallet=? AND token_id=? ORDER BY block', chain.network, addr, id) };
     },
 
     // Isi wallet (portofolio) — token yang dipegang + nilai USD-nya. Untuk wallet
@@ -1431,13 +1448,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
       const like = `%${q}%`;
       const results = [];
       for (const r of store.all(
-        "SELECT address,label FROM targets WHERE LOWER(COALESCE(label,'')) LIKE ? OR address LIKE ? ORDER BY added_ts DESC LIMIT 6", like, like))
+        "SELECT address,label FROM targets WHERE chain=? AND (LOWER(COALESCE(label,'')) LIKE ? OR address LIKE ?) ORDER BY added_ts DESC LIMIT 6", chain.network, like, like))
         results.push({ type: 'target', address: r.address, label: r.label });
       for (const r of store.all(
-        "SELECT address,symbol,name FROM tokens WHERE LOWER(COALESCE(symbol,'')) LIKE ? OR LOWER(COALESCE(name,'')) LIKE ? OR address LIKE ? ORDER BY seen_ts DESC LIMIT 6", like, like, like))
+        "SELECT address,symbol,name FROM tokens WHERE chain=? AND (LOWER(COALESCE(symbol,'')) LIKE ? OR LOWER(COALESCE(name,'')) LIKE ? OR address LIKE ?) ORDER BY seen_ts DESC LIMIT 6", chain.network, like, like, like))
         results.push({ type: 'token', address: r.address, symbol: r.symbol, name: r.name });
       for (const r of store.all(
-        "SELECT address,label FROM wallets WHERE LOWER(COALESCE(label,'')) LIKE ? OR address LIKE ? ORDER BY last_scan_ts DESC LIMIT 6", like, like))
+        "SELECT address,label FROM wallets WHERE chain=? AND (LOWER(COALESCE(label,'')) LIKE ? OR address LIKE ?) ORDER BY last_scan_ts DESC LIMIT 6", chain.network, like, like))
         results.push({ type: 'wallet', address: r.address, label: r.label });
       for (const p of await manual.pools({ q, limit: 6 }))
         results.push({ type: 'pool', poolRef: p.poolRef, pair: p.pair, symbol0: p.symbol0, symbol1: p.symbol1 });
@@ -1447,9 +1464,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     // wallet itu sendiri belum diberi label — supaya daftar riset tidak menampilkan
     // alamat telanjang untuk wallet yang sudah kita kenal.
     'GET /api/wallets': () => {
-      const tLabel = new Map(store.all('SELECT address,label FROM targets').map((t) => [t.address, t.label]));
+      const tLabel = new Map(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label]));
       return {
-        wallets: store.all('SELECT address,label,scanned_to,last_scan_ts,positions_n,stats FROM wallets ORDER BY last_scan_ts DESC LIMIT 50')
+        wallets: store.all('SELECT address,label,scanned_to,last_scan_ts,positions_n,stats FROM wallets WHERE chain=? ORDER BY last_scan_ts DESC LIMIT 50', chain.network)
           .map((w) => {
             const label = w.label || tLabel.get(w.address) || null;
             try { return { ...w, label, isTarget: tLabel.has(w.address), stats: JSON.parse(w.stats || '{}') }; } catch { return { ...w, label, isTarget: tLabel.has(w.address), stats: {} }; }
@@ -1591,7 +1608,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     },
     // Riwayat swap manual terakhir, untuk panel di sebelah kartu swap.
     'GET /api/manual/swaps': () => ({
-      swaps: store.all("SELECT hash, ts, status, error, detail, gas_used, gas_price FROM txs WHERE kind='swap_manual' ORDER BY ts DESC LIMIT 8")
+      swaps: store.all("SELECT hash, ts, status, error, detail, gas_used, gas_price FROM txs WHERE chain=? AND kind='swap_manual' ORDER BY ts DESC LIMIT 8", chain.network)
         .map((r) => {
           let d = {}; try { d = JSON.parse(r.detail || '{}') || {}; } catch { /* abaikan */ }
           // Biaya gas dalam USD memakai kurs ETH sekarang — cukup untuk riwayat singkat.
@@ -1611,8 +1628,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     'GET /api/address': async (req, url) => {
       const a = String(url.searchParams.get('a') || '').trim().toLowerCase();
       if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat harus 0x diikuti 40 karakter hex' };
-      const tgt = store.get('SELECT label FROM targets WHERE address=?', a);
-      const riset = store.get('SELECT address FROM wallets WHERE address=?', a);
+      const tgt = store.get('SELECT label FROM targets WHERE chain=? AND address=?', chain.network, a);
+      const riset = store.get('SELECT address FROM wallets WHERE chain=? AND address=?', chain.network, a);
       const base = { address: a, isTarget: !!tgt, targetLabel: tgt?.label || null, researched: !!riset };
       return { ...base, ...(await probeToken(a)) };
     },
@@ -1697,7 +1714,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     },
 
     'GET /api/positions/compound': (req, url) => {
-      const pos = store.get('SELECT * FROM positions WHERE id=?', Number(url.searchParams.get('id')));
+      const pos = store.get('SELECT * FROM positions WHERE chain=? AND id=?', chain.network, Number(url.searchParams.get('id')));
       return pos ? { compound: compound.status(pos) } : { error: 'posisi tidak ditemukan' };
     },
     'POST /api/positions/compound': async (req) => {
@@ -1727,7 +1744,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     },
     'POST /api/positions/close': async (req) => {
       const b = await readBody(req);
-      const pos = store.get("SELECT * FROM positions WHERE id=? AND status='open'", Number(b.id));
+      const pos = store.get("SELECT * FROM positions WHERE chain=? AND id=? AND status='open'", chain.network, Number(b.id));
       if (!pos) return { error: 'posisi tidak ditemukan' };
       if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
       try {
@@ -1735,8 +1752,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         store.log('info', `tutup manual: ${r.note}`);
         // Hasil dibaca dari baris yang baru ditutup, dengan konversi yang sama seperti
         // GET /api/position, supaya angka di notifikasi cocok dengan halaman detail.
-        const row = store.get('SELECT out_quote, cost_quote, quote_symbol FROM positions WHERE id=?', pos.id);
-        const k = row?.quote_symbol === 'ETH' || row?.quote_symbol === 'WETH' ? engine.ethUsd : 1;
+        const row = store.get('SELECT out_quote, cost_quote, quote_symbol FROM positions WHERE chain=? AND id=?', chain.network, pos.id);
+        const k = chain.isEthLike(row?.quote_symbol) ? engine.ethUsd : 1;
         const outUsd = row?.out_quote != null ? row.out_quote * k : null;
         const pnlUsd = outUsd != null && row.cost_quote != null ? outUsd - row.cost_quote * k : null;
         return { ok: true, tx: r.txHash, outUsd, pnlUsd, sold: r.sold || null };
@@ -1747,7 +1764,18 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
     },
   };
 
-  Object.assign(routes, createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody, telegram, sessionCookie }));
+  Object.assign(routes, createSettingsRoutes({ engine, engines, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie }));
+  routes['GET /api/chains'] = () => ({ chains: chainList(), current: chain.network });
+  // Pemilih chain: cookie lpcopy_chain dibaca pintu depan (index.js) untuk memilih
+  // server chain mana yang menjawab permintaan berikutnya. Cookie ini bukan rahasia.
+  routes['POST /api/chain/select'] = async (req, url, res) => {
+    const b = await readBody(req);
+    const want = String(b.chain || '').toLowerCase();
+    const ok = nets ? !!nets[want] : want === chain.network;
+    if (!ok) return { error: 'chain tidak dikenal atau tidak aktif' };
+    res.__setCookie = `lpcopy_chain=${want}; Path=/; SameSite=Lax; Max-Age=31536000${isHttps(req) ? '; Secure' : ''}`;
+    return { ok: true, chain: want };
+  };
 
   // Pintu yang sama untuk pemanggil di dalam proses (bot Telegram). Sengaja lewat
   // tabel rute yang persis dipakai browser: apa pun yang bisa dilakukan dasbor bisa
@@ -1769,14 +1797,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
   };
   const shareCardOf = async ({ kind, id, day, hide = false, lang = 'id', tz } = {}) => {
     const timeZone = tz || cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const opts = { hideAmounts: !!hide, lang, timeZone };
+    const opts = { hideAmounts: !!hide, lang, timeZone, chain: { key: chain.network, label: chain.label } };
     let data;
     if (kind === 'position') {
       const d = await callApi('GET', '/api/position', {}, { id });
       if (d.error) return { error: d.error };
       data = d.position;
       // Logo pasangan: aset kuotasi dari berkas dasbor, sisanya dari cache GeckoTerminal.
-      const local = { [ADDR_USDG]: 'usdg.png', [ADDR_WETH]: 'weth.png' };
+      const local = chain.network === 'robinhood' ? { [chain.ADDR.usdg]: 'usdg.png', [chain.ADDR.weth]: 'weth.png' } : {};
       const iconOf = (a) => {
         const k = String(a || '').toLowerCase();
         // Di VPS hanya web/dist yang ada (Vite menyalin public/tokens ke sana); saat
@@ -1801,7 +1829,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram }
         const daily = {}, counts = {};
         for (const [ts, v] of pf.closed || []) { const k = dayKeyIn(ts, timeZone); daily[k] = (daily[k] || 0) + v; counts[k] = (counts[k] || 0) + 1; }
         if (daily[day] == null) return { error: 'tidak ada posisi yang ditutup pada hari itu' };
-        const kq = (q) => (q === 'ETH' || q === 'WETH' ? engine.ethUsd || 0 : 1);
+        const kq = (q) => (chain.isEthLike(q) ? engine.ethUsd || 0 : 1);
         data = {
           day, total: daily[day], count: counts[day],
           rows: (pos.closed || []).filter((c) => c.closed_ts && dayKeyIn(c.closed_ts, timeZone) === day)

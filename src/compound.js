@@ -1,6 +1,7 @@
 'use strict';
 const { ethers } = require('ethers');
-const { ADDR, ABI } = require('./chain');
+const { ABI } = require('./chain');
+const { ensureChain } = require('./networks');
 const { unclaimedV4 } = require('./fees');
 const { quoteToUsd } = require('./policy');
 const m = require('./v3math');
@@ -10,6 +11,7 @@ class Compound {
   constructor(engine) {
     this.engine = engine;
     this.store = engine.store;
+    this.chain = ensureChain(engine.chain);
     this.running = false;
   }
 
@@ -19,7 +21,7 @@ class Compound {
     return { supported: pos.venue === 'v4', enabled: !!s?.enabled, minUsd: s?.min_usd ?? 5,
       intervalMinutes: s?.interval_minutes ?? 30, lastCheck: s?.last_check || null,
       lastTx: s?.last_tx || null, lastNote: s?.last_note || null,
-      compoundedUsd: q * (['ETH', 'WETH'].includes(pos.quote_symbol) ? this.engine.ethUsd : 1) };
+      compoundedUsd: q * (this.chain.isEthLike(pos.quote_symbol) ? this.engine.ethUsd : 1) };
   }
 
   configure(id, input) {
@@ -48,8 +50,8 @@ class Compound {
     const e = this.engine;
     const slot = await e.chain.slot0V4(pos.pool_ref);
     if (!slot) throw new Error('harga pool belum terbaca');
-    const [fees] = await unclaimedV4(e.rpc, [{ poolId: pos.pool_ref, tickLower: pos.tick_lower,
-      tickUpper: pos.tick_upper, tokenId: pos.token_id }], new Map([[pos.pool_ref, slot.tick]]));
+    const [fees] = await unclaimedV4(this.chain, [{ poolId: pos.pool_ref, tickLower: pos.tick_lower,
+      tickUpper: pos.tick_upper, tokenId: pos.token_id }], new Map([[pos.pool_ref, slot.tick]]), e.rpc);
     const rules = e.rulesFrom(pos.target);
     if (pos.hooks && !/^0x0+$/i.test(pos.hooks) && !rules.filters.allow_hooks) return { skip: 'pool ber-hook belum diizinkan' };
     const slip = Number(rules.swap.max_slippage_bps);
@@ -154,7 +156,7 @@ class Compound {
             this.store.run('UPDATE compound_settings SET last_note=? WHERE position_id=?', plan.skip, pos.id);
             continue;
           }
-          const [ownerData] = await e.rpc.ethCallMany([{ to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('ownerOf', [pos.token_id]) }]);
+          const [ownerData] = await e.rpc.ethCallMany([{ to: this.chain.ADDR.posmV4, data: IF_POSM.encodeFunctionData('ownerOf', [pos.token_id]) }]);
           const owner = IF_POSM.decodeFunctionResult('ownerOf', ownerData)[0].toLowerCase();
           if (owner !== e.exec.address().toLowerCase()) throw new Error('NFT posisi bukan milik wallet bot');
           const tx = e.exec.buildV4Compound(plan, e.exec.deadline());

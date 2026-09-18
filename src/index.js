@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const http = require('node:http');
 const { RpcPool } = require('./rpc');
 const { Store } = require('./db');
 const { Chain } = require('./pools');
@@ -8,7 +9,9 @@ const { Engine } = require('./engine');
 const { createServer } = require('./server');
 const { scoutWallet } = require('./scout');
 const { Telegram } = require('./telegram');
-const { loadDotEnv, applyEnv, defaultEnvPath } = require('./env');
+const { loadDotEnv, applyEnv, defaultEnvPath, writeCfg } = require('./env');
+const { normalizeCfg, chainView, enabledChains, PRIMARY } = require('./multichain');
+const { NETWORKS } = require('./networks');
 
 const ROOT = path.join(__dirname, '..');
 // .env dimuat PALING AWAL: ia juga boleh berisi LPCOPY_CONFIG.
@@ -23,9 +26,16 @@ function loadCfg() {
   return cfg;
 }
 const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+// Label singkat chain di depan baris log, supaya log dua mesin di satu proses terbaca.
+const TAG = { robinhood: 'RH', bsc: 'BSC' };
+const tagOf = (key) => TAG[key] || key.toUpperCase().slice(0, 4);
 
 async function main() {
   const cfg = loadCfg();
+  // Bentuk multi-chain (chains.<nama>.*). Config lama dinormalkan di memori; ditulis
+  // balik ke disk supaya bentuk barunya terlihat & bisa disunting (writeCfg menjaga
+  // rahasia dari .env tidak ikut tertulis).
+  const normNotes = normalizeCfg(cfg);
   const envMeta = applyEnv(cfg);
   const cmd = process.argv[2] || 'run';
   const store = new Store(cfg.db.path);
@@ -48,6 +58,7 @@ async function main() {
       logBytes += Buffer.byteLength(line) + 1;
     } catch { /* abaikan */ }
   };
+  const logFor = (key) => (msg) => log(`[${tagOf(key)}] ${msg}`);
   // Hanya NAMA variabel yang dicatat — nilainya tidak pernah masuk log.
   if (DOTENV.file) {
     const ext = DOTENV.external.length ? ` · ${DOTENV.external.join(', ')} memakai nilai dari luar .env` : '';
@@ -55,31 +66,53 @@ async function main() {
     if (DOTENV.loose) log(`peringatan: izin ${DOTENV.file} terlalu longgar — jalankan: chmod 600 ${DOTENV.file}`);
   }
   if (envMeta.missing.length) log(`peringatan: RPC merujuk variabel yang tidak ada: ${[...new Set(envMeta.missing)].join(', ')}`);
-  const rpc = new RpcPool(cfg.chain.endpoints, log, {
-    max_inflight: cfg.chain.max_inflight || 3,
-    dns_over_https: cfg.chain.dns_over_https !== false,
-  });
-  const chain = new Chain(rpc, store, log);
-
-  // seed target dari config (hanya kalau belum ada)
-  for (const t of cfg.targets || []) {
-    store.run('INSERT OR IGNORE INTO targets(address,label,enabled,added_ts,rules) VALUES(?,?,?,?,?)',
-      String(t.address).toLowerCase(), t.label || null, t.enabled === false ? 0 : 1, Date.now(),
-      t.rules ? JSON.stringify(t.rules) : null);
+  if (normNotes.length) {
+    for (const n of normNotes) log(`config: ${n}`);
+    try { writeCfg(CFG_PATH, cfg); log('config: bentuk multi-chain disimpan ke config.json'); }
+    catch (e) { log(`config: gagal menyimpan bentuk baru (${e.message}) — dipakai di memori saja`); }
   }
 
+  // Satu set {rpc, chain, engine} per chain yang aktif. Semua berbagi Store (satu
+  // database, kolom chain memisahkan datanya) dan kunci wallet yang sama.
+  const keys = enabledChains(cfg);
+  if (!keys.length) { console.error('tidak ada chain yang aktif di config (chains.<nama>.enabled)'); process.exit(1); }
+  const primaryKey = keys.includes(PRIMARY) ? PRIMARY : keys[0];
+  const nets = {};
+  for (const key of keys) {
+    const view = chainView(cfg, key);
+    const clog = logFor(key);
+    if (!view.chain.endpoints.length) { clog('tidak ada endpoint RPC di config — chain ini dilewati'); continue; }
+    const rpc = new RpcPool(view.chain.endpoints, clog, {
+      max_inflight: view.chain.max_inflight || 3,
+      dns_over_https: view.chain.dns_over_https !== false,
+    });
+    const chain = new Chain(rpc, store, clog, key);
+    nets[key] = { key, label: chain.label, cfg: view, rpc, chain, log: clog };
+    // seed target dari config (hanya kalau belum ada)
+    for (const t of view.targets || []) {
+      store.run('INSERT OR IGNORE INTO targets(chain,address,label,enabled,added_ts,rules) VALUES(?,?,?,?,?,?)',
+        key, String(t.address).toLowerCase(), t.label || null, t.enabled === false ? 0 : 1, Date.now(),
+        t.rules ? JSON.stringify(t.rules) : null);
+    }
+  }
+  if (!nets[primaryKey]) { console.error(`chain utama ${primaryKey} tidak bisa dinyalakan (tidak ada RPC?)`); process.exit(1); }
+
+  // ---- perintah CLI (memakai chain lewat --chain=<nama>, bawaan chain utama) ----
+  const cliChain = (process.argv.find((a) => a.startsWith('--chain=')) || '').slice(8) || primaryKey;
+  const argv = process.argv.filter((a) => !a.startsWith('--chain='));
   if (cmd === 'scout') {
-    const addr = (process.argv[3] || '').toLowerCase();
-    if (!/^0x[0-9a-f]{40}$/.test(addr)) { console.error('pakai: lp scout <alamat>'); process.exit(1); }
-    const blocks = Number(process.argv[4] || cfg.scout?.blocks || 900_000);
-    const ethUsd = await chain.ethUsd(cfg.prices?.eth_usd || 2500);
+    const net = nets[cliChain]; if (!net) { console.error(`chain ${cliChain} tidak aktif`); process.exit(1); }
+    const addr = (argv[3] || '').toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(addr)) { console.error('pakai: lp scout <alamat> [blok] [--chain=bsc]'); process.exit(1); }
+    const blocks = Number(argv[4] || net.cfg.scout?.blocks || 900_000);
+    const ethUsd = await net.chain.ethUsd(net.cfg.prices?.eth_usd || 2500);
     process.stderr.write('memindai…');
-    const r = await scoutWallet(rpc, chain, addr, {
+    const r = await scoutWallet(net.rpc, net.chain, addr, {
       blocks, ethUsd, onProgress: (p) => process.stderr.write(`\rmemindai ${Math.round(p.scanned / p.total * 100)}%   `),
     });
     process.stderr.write('\r                       \r');
-    console.log(`\nRAPOR WALLET ${addr}`);
-    console.log(`  jendela pindai   : ${blocks.toLocaleString('id')} blok (~${(blocks * 0.101 / 3600).toFixed(1)} jam)`);
+    console.log(`\nRAPOR WALLET ${addr} (${net.label})`);
+    console.log(`  jendela pindai   : ${blocks.toLocaleString('id')} blok (~${(blocks * net.chain.blockMs / 1000 / 3600).toFixed(1)} jam)`);
     console.log(`  posisi hidup     : ${r.positionsAlive} (pernah dilepas: ${r.positionsClosed})`);
     console.log(`  nilai posisi     : $${r.totalValueUsd.toFixed(2)}`);
     console.log(`  fee belum klaim  : $${r.totalUnclaimedFeeUsd.toFixed(2)}  (${r.feeRatioPct.toFixed(2)}% dari nilai)`);
@@ -95,15 +128,16 @@ async function main() {
   }
 
   if (cmd === 'add') {
-    const addr = (process.argv[3] || '').toLowerCase();
-    if (!/^0x[0-9a-f]{40}$/.test(addr)) { console.error('pakai: lp add <alamat> [label]'); process.exit(1); }
-    store.run('INSERT OR IGNORE INTO targets(address,label,enabled,added_ts) VALUES(?,?,1,?)', addr, process.argv[4] || null, Date.now());
-    console.log('ditambahkan:', addr);
+    const addr = (argv[3] || '').toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(addr)) { console.error('pakai: lp add <alamat> [label] [--chain=bsc]'); process.exit(1); }
+    if (!NETWORKS[cliChain]) { console.error(`chain ${cliChain} tidak dikenal`); process.exit(1); }
+    store.run('INSERT OR IGNORE INTO targets(chain,address,label,enabled,added_ts) VALUES(?,?,?,1,?)', cliChain, addr, argv[4] || null, Date.now());
+    console.log(`ditambahkan (${cliChain}):`, addr);
     return process.exit(0);
   }
   if (cmd === 'list') {
-    for (const t of store.all('SELECT * FROM targets')) {
-      console.log(`${t.enabled ? '[ON ]' : '[off]'} ${t.address} ${t.label || ''}`);
+    for (const t of store.all('SELECT * FROM targets ORDER BY chain, added_ts')) {
+      console.log(`${t.enabled ? '[ON ]' : '[off]'} ${t.chain.padEnd(9)} ${t.address} ${t.label || ''}`);
     }
     return process.exit(0);
   }
@@ -121,7 +155,10 @@ async function main() {
   const cleanup = () => { try { fs.unlinkSync(pidFile); } catch { /* sudah hilang */ } };
   process.on('exit', cleanup);
 
-  const engine = new Engine({ rpc, store, chain, cfg, log });
+  for (const net of Object.values(nets)) {
+    net.engine = new Engine({ rpc: net.rpc, store, chain: net.chain, cfg: net.cfg, log: net.log });
+  }
+  const engines = Object.values(nets).map((n) => n.engine);
 
   // Berhenti dengan tertib. pm2 restart (setiap deploy) mengirim SIGINT; dulu proses
   // langsung keluar — entry yang sudah zap tapi belum mint meninggalkan token telanjang,
@@ -135,9 +172,9 @@ async function main() {
     if (stopping) { log(`${sig} kedua — keluar paksa`); cleanup(); process.exit(1); }
     stopping = true;
     for (const t of timers) clearInterval(t);
-    const busy = !engine.idle();
+    const busy = engines.some((e) => !e.idle());
     if (busy) log(`berhenti (${sig}) — menunggu transaksi yang sedang berjalan selesai…`);
-    const clean = await engine.drain(100_000);
+    const clean = (await Promise.all(engines.map((e) => e.drain(100_000)))).every(Boolean);
     log(clean ? 'berhenti' : 'berhenti — batas tunggu habis, sebagian pekerjaan dilanjutkan saat hidup lagi');
     try { telegram?.stop(); } catch { /* abaikan */ }
     cleanup();
@@ -160,54 +197,84 @@ async function main() {
     shutdown('uncaughtException');
   });
 
-  // Bot Telegram memakai pintu API yang sama dengan dasbor (server.api). Ia dibuat
-  // lebih dulu supaya halaman Pengaturan bisa menampilkan status & kode sambungnya,
-  // tetapi baru menyentuh server saat sebuah tombol ditekan — saat itu server sudah ada.
-  let server;
+  // Satu server API per chain (tidak listen sendiri) + satu pintu depan yang memilih
+  // chain dari ?chain= / cookie lpcopy_chain, bawaan chain utama. Bot Telegram memakai
+  // pintu API yang sama lewat servers[<chain>].api.
+  const servers = {};
+  const serverFor = (key) => servers[key] || servers[primaryKey];
   const telegram = new Telegram({
-    cfg, cfgPath: CFG_PATH, store, engine, log,
-    api: (method, pathname, body, query) => server.api(method, pathname, body, query),
-    shareCard: (opts) => server.shareCard(opts),
-    chartCard: (opts) => server.chartCard(opts),
-    portfolioCard: (opts) => server.portfolioCard(opts),
+    cfg, cfgPath: CFG_PATH, store, engine: nets[primaryKey].engine, log, nets, primaryKey,
+    api: (method, pathname, body, query, chainKey) => serverFor(chainKey).api(method, pathname, body, query),
+    shareCard: (opts, chainKey) => serverFor(chainKey).shareCard(opts),
+    chartCard: (opts, chainKey) => serverFor(chainKey).chartCard(opts),
+    portfolioCard: (opts, chainKey) => serverFor(chainKey).portfolioCard(opts),
   });
 
   // Server dinyalakan LEBIH DULU: inisialisasi bisa memakan puluhan detik kalau RPC
   // sedang lambat, dan dashboard harus tetap bisa dibuka selama pemanasan.
-  server = createServer({ engine, store, cfg, cfgPath: CFG_PATH, chain, rpc, log, telegram });
-  server.on('error', (e) => {
+  for (const net of Object.values(nets)) {
+    servers[net.key] = createServer({ engine: net.engine, store, cfg: net.cfg, cfgPath: CFG_PATH, chain: net.chain, rpc: net.rpc, log: net.log, telegram, nets });
+  }
+  const pickChain = (req, url) => {
+    const q = url.searchParams.get('chain');
+    if (q && servers[q]) return q;
+    const m = /(?:^|;\s*)lpcopy_chain=([a-z0-9_-]+)/i.exec(req.headers.cookie || '');
+    return m && servers[m[1]] ? m[1] : primaryKey;
+  };
+  const front = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://x');
+    servers[pickChain(req, url)].emit('request', req, res);
+  });
+  front.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
       log(`port ${cfg.server.port} sudah dipakai — kemungkinan Quiver lain masih jalan.`);
       log(`  cek: lsof -ti tcp:${cfg.server.port}   |   hentikan: lsof -ti tcp:${cfg.server.port} | xargs kill`);
     } else log(`server: ${e.message}`);
     process.exit(1);
   });
-  server.listen(cfg.server.port, cfg.server.host, () => {
-    log(`dashboard: http://${cfg.server.host}:${cfg.server.port}`);
+  front.listen(cfg.server.port, cfg.server.host, () => {
+    log(`dashboard: http://${cfg.server.host}:${cfg.server.port} — chain: ${Object.keys(nets).join(', ')} (utama ${primaryKey})`);
   });
 
   telegram.start().catch((e) => log(`telegram: ${e.message}`));
 
-  log('menyiapkan mesin…');
-  await engine.init();
-  await engine.syncPositions();
-  try { const n = engine.backfillEquityPnl(); if (n) log(`ekuitas: PnL kumulatif direkonstruksi untuk ${n} titik lama`); } catch (e) { log(`ekuitas: ${e.message}`); }
-
-  const pollMs = cfg.loop?.poll_ms || 1500;
-  const syncMs = (cfg.loop?.sync_seconds || 30) * 1000;
-  const eqMs = (cfg.loop?.equity_seconds || 300) * 1000;
-  log(`mode: ${engine.dryRun() ? 'SIMULASI (tidak mengirim transaksi)' : 'LIVE'} | target aktif: ${engine.watcher.enabledSet().size}`);
-
-  timers.push(
-    setInterval(() => engine.tick().catch((e) => log(`tick: ${e.message}`)), pollMs),
-    setInterval(() => engine.syncPositions().catch((e) => log(`sync: ${e.message}`)), syncMs),
-    setInterval(() => engine.snapshotEquity().catch((e) => log(`equity: ${e.message}`)), eqMs),
-    // Memecoin sisa yang ditolak dijual diburu terus: tiap detik dilihat apakah
-    // jadwalnya (aturan `leftover_retry_sec`) sudah tiba; kalau ya, dikutip ulang.
-    setInterval(() => engine.retryLeftovers().catch((e) => log(`jual sisa: ${e.message}`)), 1000),
-    setInterval(() => store.prune(30), 3600_000),
-  );
-
+  // Mesin dinyalakan bersamaan — tiap chain punya kolam RPC sendiri, dan pemanasan
+  // chain yang RPC-nya lambat tidak boleh menahan chain lain. Masing-masing gagal
+  // sendiri-sendiri tanpa menjatuhkan yang lain.
+  await Promise.all(Object.values(nets).map(async (net) => {
+    const { engine, cfg: view, log: clog } = net;
+    clog('menyiapkan mesin…');
+    // init() gagal (RPC chain itu sedang tumbang) tidak boleh menjatuhkan chain lain,
+    // dan tick TIDAK boleh jalan sebelum kursor terbaca — kursor 0 berarti memindai
+    // dari genesis. Dicoba lagi tiap menit sampai berhasil.
+    net.ready = false;
+    const boot = async () => {
+      try {
+        await engine.init();
+        await engine.syncPositions();
+        try { const n = engine.backfillEquityPnl(); if (n) clog(`ekuitas: PnL kumulatif direkonstruksi untuk ${n} titik lama`); } catch (e) { clog(`ekuitas: ${e.message}`); }
+        net.ready = true;
+        clog(`mode: ${engine.dryRun() ? 'SIMULASI (tidak mengirim transaksi)' : 'LIVE'} | target aktif: ${engine.watcher.enabledSet().size}${net.chain.verified ? '' : ' | alamat kontrak BELUM diverifikasi on-chain'}`);
+      } catch (e) {
+        clog(`mesin gagal dinyalakan: ${e.message} — dicoba lagi 60 detik lagi`);
+        if (!stopping) setTimeout(boot, 60_000).unref?.();
+      }
+    };
+    await boot();
+    const pollMs = view.loop?.poll_ms || 1500;
+    const syncMs = (view.loop?.sync_seconds || 30) * 1000;
+    const eqMs = (view.loop?.equity_seconds || 300) * 1000;
+    const when = (fn, what) => () => { if (net.ready) fn().catch((e) => clog(`${what}: ${e.message}`)); };
+    timers.push(
+      setInterval(when(() => engine.tick(), 'tick'), pollMs),
+      setInterval(when(() => engine.syncPositions(), 'sync'), syncMs),
+      setInterval(when(() => engine.snapshotEquity(), 'equity'), eqMs),
+      // Memecoin sisa yang ditolak dijual diburu terus: tiap detik dilihat apakah
+      // jadwalnya (aturan `leftover_retry_sec`) sudah tiba; kalau ya, dikutip ulang.
+      setInterval(when(() => engine.retryLeftovers(), 'jual sisa'), 1000),
+    );
+  }));
+  timers.push(setInterval(() => store.prune(30), 3600_000));
 }
 
 main().catch((e) => { console.error('fatal:', e); process.exit(1); });

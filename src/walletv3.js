@@ -1,4 +1,5 @@
 'use strict';
+const { ensureChain } = require('./networks');
 // Riset wallet untuk Uniswap v3.
 //
 // wallet.js merekonstruksi riwayat v4: di sana jumlah token harus digali dari receipt
@@ -15,7 +16,7 @@
 // tidak dari event Swap terdekat) — sama seperti jalur v4. Memakai harga sekarang
 // untuk modal yang disetor seminggu lalu akan menghasilkan PnL yang menyesatkan.
 const { ethers } = require('ethers');
-const { ADDR, TOPIC, ABI } = require('./chain');
+const { TOPIC, ABI } = require('./chain');
 const { getLogsSafe } = require('./scout');
 const { unclaimedV3 } = require('./fees');
 const m = require('./v3math');
@@ -29,8 +30,12 @@ const idTopic = (id) => '0x' + BigInt(id).toString(16).padStart(64, '0');
 const w32 = (b, i) => BigInt(ethers.hexlify(b.slice(i * 32, i * 32 + 32)));
 
 class WalletV3 {
-  constructor({ rpc, store, chain, log }) {
+  // venue: kunci venue v3 di chain ini ('v3' Uniswap, 'pancakev3' PancakeSwap di BSC) —
+  // satu instance per venue, masing-masing memindai NPM-nya sendiri.
+  constructor({ rpc, store, chain, log, venue = 'v3' }) {
+    chain = ensureChain(chain);
     this.rpc = rpc; this.store = store; this.chain = chain; this.log = log || (() => {});
+    this.venue = venue; this.npm = chain.npmFor(venue); this.network = chain.network;
     this.priceCache = new Map();
   }
 
@@ -53,14 +58,14 @@ class WalletV3 {
   async priceAt(poolAddr, block) {
     const key = `${poolAddr}:${block}`;
     if (this.priceCache.has(key)) return this.priceCache.get(key);
-    const row = this.store.get('SELECT sqrt_price, src_block FROM wprices WHERE pool_ref=? AND block=?', poolAddr, block);
+    const row = this.store.get('SELECT sqrt_price, src_block FROM wprices WHERE chain=? AND pool_ref=? AND block=?', this.network, poolAddr, block);
     if (row) {
       const v = { sqrt: BigInt(row.sqrt_price), jarak: Math.abs((row.src_block ?? block) - block) };
       this.priceCache.set(key, v); return v;
     }
     const simpan = (sqrt, src) => {
-      this.store.run('INSERT OR REPLACE INTO wprices(pool_ref,block,sqrt_price,src_block) VALUES(?,?,?,?)',
-        poolAddr, block, sqrt.toString(), src);
+      this.store.run('INSERT OR REPLACE INTO wprices(chain,pool_ref,block,sqrt_price,src_block) VALUES(?,?,?,?,?)',
+        this.network, poolAddr, block, sqrt.toString(), src);
       const v = { sqrt, jarak: Math.abs(src - block) };
       this.priceCache.set(key, v);
       return v;
@@ -104,8 +109,8 @@ class WalletV3 {
   async enumerate(wallet, fromBlock, toBlock) {
     const p = pad32(wallet);
     const [masuk, keluar] = await Promise.all([
-      getLogsSafe(this.rpc, { address: ADDR.npmV3, topics: [TOPIC.transfer, null, p] }, fromBlock, toBlock),
-      getLogsSafe(this.rpc, { address: ADDR.npmV3, topics: [TOPIC.transfer, p] }, fromBlock, toBlock),
+      getLogsSafe(this.rpc, { address: this.npm, topics: [TOPIC.transfer, null, p] }, fromBlock, toBlock),
+      getLogsSafe(this.rpc, { address: this.npm, topics: [TOPIC.transfer, p] }, fromBlock, toBlock),
     ]);
     const held = new Map();
     for (const l of [...masuk, ...keluar]) {
@@ -135,7 +140,7 @@ class WalletV3 {
     for (let i = 0; i < ids.length; i += 40) {
       const bagian = ids.slice(i, i + 40);
       const res = await this.rpc.ethCallMany(bagian.map((id) => ({
-        to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('positions', [BigInt(id)]),
+        to: this.npm, data: IF_NPM.encodeFunctionData('positions', [BigInt(id)]),
       })));
       bagian.forEach((id, k) => {
         const w = res[k];
@@ -163,7 +168,7 @@ class WalletV3 {
       let logs = [];
       try {
         logs = await getLogsSafe(this.rpc, {
-          address: ADDR.npmV3,
+          address: this.npm,
           topics: [[TOPIC.increaseLiq, TOPIC.decreaseLiq, TOPIC.collectV3], bagian.map(idTopic)],
         }, span.lo, span.hi);
       } catch (e) { this.log(`kejadian v3: ${e.message}`); }
@@ -194,7 +199,7 @@ class WalletV3 {
       try {
         const rc = await this.rpc.call('eth_getTransactionReceipt', [buka.tx]);
         const l = (rc?.logs || []).find((x) => x.topics?.[0] === TOPIC.mintV3Pool
-          && asAddr(x.topics[1] || '') === ADDR.npmV3);
+          && asAddr(x.topics[1] || '') === this.npm);
         if (!l) continue;
         const pool = String(l.address).toLowerCase();
         const [t0, t1, fee] = await this.rpc.ethCallMany([
@@ -219,7 +224,7 @@ class WalletV3 {
     for (const inf of info.values()) {
       if (inf.poolAddr) continue;                 // sudah diketahui dari log Mint
       const key = `${inf.token0}|${inf.token1}|${inf.fee}`;
-      if (!poolOf.has(key)) poolOf.set(key, await this.chain.poolV3Addr(inf.token0, inf.token1, inf.fee).catch(() => null));
+      if (!poolOf.has(key)) poolOf.set(key, await this.chain.poolV3Addr(inf.token0, inf.token1, inf.fee, this.npm).catch(() => null));
       inf.poolAddr = poolOf.get(key);
     }
     const alamat = [...new Set([...info.values()].map((i) => i.poolAddr).filter(Boolean))];
@@ -229,7 +234,7 @@ class WalletV3 {
     // 4. fee yang belum diklaim untuk posisi yang masih dipegang & berlikuiditas
     const owedIds = hidup.filter((id) => held.get(id).heldNow && info.get(id).liquidity > 0n);
     let owed = [];
-    try { owed = owedIds.length ? await unclaimedV3(this.rpc, owedIds.map((x) => BigInt(x)), wallet) : []; }
+    try { owed = owedIds.length ? await unclaimedV3(this.chain, owedIds.map((x) => BigInt(x)), wallet, this.npm, this.rpc) : []; }
     catch { owed = []; }
     const owedBy = new Map(owedIds.map((id, i) => [id, owed[i] || { fee0: 0n, fee1: 0n }]));
 
@@ -330,7 +335,7 @@ class WalletV3 {
     const pnlQ = closed ? (returnedQ - investedQ) : (liveValueQ + liveFeeQ + returnedQ - investedQ);
 
     return {
-      wallet, venue: 'v3', tokenId: id, poolId: inf.poolAddr,
+      wallet, venue: this.venue, tokenId: id, poolId: inf.poolAddr,
       // persist() membaca pasangan token dari poolKey; v3 tidak punya struktur itu,
       // jadi dibuatkan yang setara supaya jalur penyimpanannya tidak bercabang.
       poolKey: { currency0: inf.token0, currency1: inf.token1, fee: inf.fee, tickSpacing: null, hooks: null },

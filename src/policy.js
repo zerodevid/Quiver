@@ -2,7 +2,12 @@
 // Mesin aturan: mengubah satu aksi target menjadi rencana posisi kita.
 // Semua yang bisa disetel user ada di sini — ukuran, rentang, sisi tunggal, filter.
 const m = require('./v3math');
-const { QUOTES } = require('./chain');
+const { NETWORKS } = require('./networks');
+
+// Kunci venue yang sah = gabungan venue semua chain yang dikenal (v3, v4, pancakev3, …).
+// Aturan disimpan lepas dari chain tertentu, jadi validasinya tidak boleh menolak venue
+// yang sah di salah satu chain hanya karena tidak dipakai di chain yang lain.
+const KNOWN_VENUES = ['v4', ...new Set(Object.values(NETWORKS).flatMap((n) => n.venues.map((v) => v.key)))];
 
 // Ruang untuk selisih kurs jembatan USDG<->ETH terhadap harga ETH yang kita pakai
 // (diperbarui tiap 30 detik). Terukur ~0,05% di kondisi normal; 1% untuk pasar bergerak.
@@ -51,7 +56,10 @@ const DEFAULTS = {
   },
   filters: {
     allow_hooks: false,
-    quote_whitelist: ['USDG', 'ETH', 'WETH'],
+    // Kosong = semua aset kuotasi yang dikenal chain itu (chain.QUOTES: stablecoin +
+    // native + wrapped-native). Daftar simbol tetap seperti ['USDG','ETH','WETH'] tidak
+    // dijadikan bawaan lagi karena simbolnya beda per chain (BSC: USDT/BNB/WBNB).
+    quote_whitelist: [],
     token_blacklist: [],
     token_whitelist: [],
     min_pool_age_minutes: 0,
@@ -138,7 +146,7 @@ function validateRules(input) {
       if (r.error) return { error: `${g}.${k} ${r.error}` };
       out[g][k] = r.value;
     }
-    if (out[g].venues && out[g].venues.some((x) => !['v3', 'v4'].includes(x))) return { error: 'filters.venues hanya boleh v3 dan/atau v4' };
+    if (out[g].venues && out[g].venues.some((x) => !KNOWN_VENUES.includes(x))) return { error: `filters.venues hanya boleh salah satu dari ${KNOWN_VENUES.join(', ')}` };
   }
   return { rules: out };
 }
@@ -242,8 +250,8 @@ function quoteToUsd(q, quoteKind, ethUsd) {
 // Kurs USD per satu satuan aset kuotasi yang tercatat di baris posisi (kolom quote_symbol).
 // WETH sama dengan ETH — dulu banyak tempat hanya mengecek 'ETH', sehingga posisi berkuotasi
 // WETH senilai 0,08 WETH (~$200) terhitung $0,08 untuk anggaran harian, eksposur, dan PnL.
-function usdPerQuote(symbol, ethUsd) {
-  return symbol === 'ETH' || symbol === 'WETH' ? ethUsd : 1;
+function usdPerQuote(symbol, ethUsd, chain = null) {
+  return (chain ? chain.isEthLike(symbol) : symbol === 'ETH' || symbol === 'WETH') ? ethUsd : 1;
 }
 
 /**
@@ -262,7 +270,7 @@ function planEntry(act, ctx) {
   if (act.fee != null && act.fee > rules.filters.max_fee_bps) return skip(`fee tier ${act.fee} di atas batas`);
 
   const q = chain.quoteSideOf(act.token0, act.token1);
-  if (!q) return skip('pool tanpa aset kuotasi yang dikenal (USDG/ETH)');
+  if (!q) return skip(`pool tanpa aset kuotasi yang dikenal (${Object.values(chain.QUOTES).map((x) => x.symbol).join('/')})`);
   if (rules.filters.quote_whitelist.length && !rules.filters.quote_whitelist.includes(q.symbol)) {
     return skip(`kuotasi ${q.symbol} tidak diizinkan`);
   }

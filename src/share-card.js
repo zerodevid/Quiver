@@ -30,6 +30,14 @@ const FONTS = ['Regular', 'Medium', 'SemiBold', 'Bold'].map((w) => path.join(FON
 const MARK = fs.readFileSync(path.join(__dirname, '..', 'public', 'logo-white.svg'), 'utf8')
   .replace(/<!--[\s\S]*?-->/g, '').replace(/<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
 const CHAIN_ICON = fs.readFileSync(path.join(__dirname, '..', 'public', 'robinhood-chain.jpg')).toString('base64');
+// Ikon & nama chain di pojok kartu. Robinhood memakai foto jpg; chain lain memakai
+// lencana SVG sederhana (tanpa logo pihak ketiga). Diset per render lewat opts.chain.
+const CHAIN_BADGE = {
+  robinhood: { label: 'Robinhood Chain', icon: `<image x="938" y="572" width="20" height="20" clip-path="url(#chain-icon)" href="data:image/jpeg;base64,${CHAIN_ICON}"/>` },
+  bsc: { label: 'BNB Smart Chain', icon: '<circle cx="948" cy="582" r="10" fill="#F0B90B"/><path d="M948 575l3 3-3 3-3-3zM942 581l3 3-3 3-3-3zM954 581l3 3-3 3-3-3zM948 587l3 3-3 3-3-3z" fill="#1E1E1E"/>' },
+};
+let chainNow = CHAIN_BADGE.robinhood;
+const chainName = () => chainNow.label;
 // Maskot rubah di kolom kanan, ekspresinya mengikuti PnL (public/mascots/*.png, PNG
 // transparan, tinggi 900 px — dirender ±620 px pada skala 2×). Dimuat sekali per proses.
 const MASCOT = Object.fromEntries(['flex', 'profit', 'loss', 'neutral'].map((m) => {
@@ -116,7 +124,7 @@ function fitted(s, x, y, width, options = {}) {
   return txt(fit(s, width, size, weight), x, y, { ...options, size, weight });
 }
 function frame(tint, right, body, mascot) {
-  const context = right.replace(' · Robinhood Chain', '');
+  const context = right.replace(` · ${chainName()}`, '');
   // Maskot mengisi ruang antara garis kepala (y=100) dan kotak statistik (y=421), rata kanan.
   const m = MASCOT[mascot], mh = 312, mw = Math.round((m.w / m.h) * mh);
   const mx = W - PAD + 8 - mw, my = 104;
@@ -131,8 +139,8 @@ function frame(tint, right, body, mascot) {
 <svg x="${PAD}" y="45" width="154" height="28" viewBox="0 0 264 48">${MARK}</svg>
 ${txt(context, W - PAD, 61, { size: 17, weight: 500, color: C.muted, anchor: 'end', base: 'middle' })}
 <line x1="${PAD}" y1="100" x2="${W - PAD}" y2="100" stroke="${C.line}"/>
-<image x="938" y="572" width="20" height="20" clip-path="url(#chain-icon)" href="data:image/jpeg;base64,${CHAIN_ICON}"/>
-${txt('Robinhood Chain', 970, 583, { size: 17, weight: 500, color: C.muted, base: 'middle' })}
+${chainNow.icon}
+${txt(chainName(), 970, 583, { size: 17, weight: 500, color: C.muted, base: 'middle' })}
 <image x="${mx}" y="${my}" width="${mw}" height="${mh}" href="${m.href}"/>
 ${body}
 </svg>`;
@@ -234,7 +242,7 @@ function positionSvg(p, { hideAmounts = false, icons = {} } = {}) {
     [tr('Fee diperoleh'), hideAmounts ? HIDDEN : usd(feeUsd), { color: C.up }],
     [tr(closed ? 'Ditahan' : 'Umur'), age(p.ageHours)],
   ], closed ? `${fmtDate(p.opened_ts)} › ${fmtDate(p.closed_ts)}` : tr('masuk {0}', [fmtDate(p.opened_ts)]));
-  return frame(sign(p.pnlUsd), `Uniswap ${String(p.venue || '').toUpperCase()} · Robinhood Chain`, body, mood(p.pnlUsd, p.pnlPct));
+  return frame(sign(p.pnlUsd), `${venueName(p.venue)} · ${chainName()}`, body, mood(p.pnlUsd, p.pnlPct));
 }
 
 // ---- kartu total portofolio -------------------------------------------------------
@@ -260,7 +268,7 @@ function totalSvg({ now, stats, since }, { hideAmounts = false } = {}) {
     [tr('Fee terkumpul'), hideAmounts ? HIDDEN : usd(now.feeUsd), { color: C.up }],
     [tr('Posisi terbaik'), stats?.best == null ? '—' : hideAmounts ? HIDDEN : usd(stats.best), { color: sign(stats?.best) }],
   ], since ? tr('sejak {0} · {1}', [fmtDayOnly(since), fmtDate(Date.now())]) : fmtDate(Date.now()));
-  return frame(sign(now.pnl), tr('Seluruh portofolio') + ' · Robinhood Chain', body, mood(now.pnl, pnlPct));
+  return frame(sign(now.pnl), tr('Seluruh portofolio') + ` · ${chainName()}`, body, mood(now.pnl, pnlPct));
 }
 
 // ---- kartu PnL harian ---------------------------------------------------------------
@@ -288,21 +296,24 @@ function dailySvg({ day, rows, total: totalIn, count, monthTotal }, { hideAmount
     [tr('Win rate'), rows.length ? `${num((wins / rows.length) * 100, 0)}%` : '—', { color: !rows.length ? C.text : wins / rows.length >= 0.5 ? C.up : C.down }],
     [tr('Bulan ini'), hideAmounts ? HIDDEN : usd(monthTotal), { color: sign(monthTotal) }],
   ], tr('PnL terealisasi dari posisi yang ditutup pada {0}', [fmtDayOnly(ts)]));
-  return frame(sign(total), tr('PnL harian') + ' · Robinhood Chain', body, mood(total, dayPct));
+  return frame(sign(total), tr('PnL harian') + ` · ${chainName()}`, body, mood(total, dayPct));
 }
 
 // Pilih kartu dan gambar. lang 'id'|'en'; timeZone nama IANA (mis. 'Asia/Jakarta').
 function svgOf(kind, data, opts = {}) {
   return localeContext.run(opts.lang === 'en' ? 'en' : 'id', () => {
     tz = opts.timeZone || null;
+    chainNow = CHAIN_BADGE[opts.chain?.key] || { label: opts.chain?.label || CHAIN_BADGE.robinhood.label, icon: CHAIN_BADGE.bsc.icon };
     try {
       if (kind === 'position') return positionSvg(data, opts);
       if (kind === 'total') return totalSvg(data, opts);
       if (kind === 'daily') return dailySvg(data, opts);
       throw new Error(`jenis kartu tidak dikenal: ${kind}`);
-    } finally { tz = null; }
+    } finally { tz = null; chainNow = CHAIN_BADGE.robinhood; }
   });
 }
+// Nama venue untuk kartu: v4/v3 = Uniswap, pancakev3 = PancakeSwap.
+const venueName = (v) => (v === 'pancakev3' ? 'PancakeSwap V3' : `Uniswap ${String(v || '').toUpperCase()}`);
 function renderPng(svg) {
   const r = new Resvg(svg, {
     fitTo: { mode: 'width', value: W * SCALE },

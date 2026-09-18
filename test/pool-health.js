@@ -29,9 +29,9 @@ const token = '0x' + 'ab'.repeat(20), owner = '0x' + 'cd'.repeat(20), poolAddr =
   assert.equal(infrastructure.status, 'healthy');
   assert.equal(poolHealth({ ...input, holders: { ...holders, items: [], hasMore: true } }).status, 'unknown');
   const supply = 10n ** 30n;
-  const normalized = normalizeHolders({ total_supply: String(supply), holders_count: '2', decimals: 18 }, { items: [{ address_hash: { hash: owner }, value: String(supply / 4n) }] }, token, now);
+  const normalized = normalizeHolders(null, { total_supply: String(supply), holders_count: '2', decimals: 18 }, { items: [{ address_hash: { hash: owner }, value: String(supply / 4n) }] }, token, now);
   assert.equal(normalized.items[0].percent, 25);
-  assert.equal(normalizeHolders({ total_supply: '0' }, { items: [] }, token).error, 'invalid_data');
+  assert.equal(normalizeHolders(null, { total_supply: '0' }, { items: [] }, token).error, 'invalid_data');
   let calls = [];
   const fakeFetch = async (_, options) => {
     const body = JSON.parse(options.body), batch = Array.isArray(body) ? body : [body];
@@ -50,14 +50,14 @@ const token = '0x' + 'ab'.repeat(20), owner = '0x' + 'cd'.repeat(20), poolAddr =
     return { ok: true, json: async () => Array.isArray(body) ? result.reverse() : result[0] };
   };
   const history = {};
-  const scanned = await scanAlchemy(fakeFetch, { url: 'https://example.invalid' }, token, () => {}, history);
+  const scanned = await scanAlchemy(null, fakeFetch, { url: 'https://example.invalid' }, token, () => {}, history);
   assert.equal(scanned.holderCount, 2);
   assert.equal(scanned.top10Pct, 100);
   assert.equal(scanned.items[0].percent, 60);
   assert.equal(scanned.items[1].isContract, true);
   assert.equal(scanned.block, 0x123);
   assert.ok(calls.filter(([m]) => m === 'eth_call').every(([, p]) => p[1] === '0x123'));
-  assert.equal((await alchemyHolders({}, {}, 'invalid')).error, 'invalid_token');
+  assert.equal((await alchemyHolders(null, {}, {}, 'invalid')).error, 'invalid_token');
   assert.equal(history.block, '0x123');
   assert.equal(history.ledger.get(owner), 60n);
   const incompleteFetch = async (url, options) => {
@@ -69,7 +69,7 @@ const token = '0x' + 'ab'.repeat(20), owner = '0x' + 'cd'.repeat(20), poolAddr =
     }
     return { ok: true, json: async () => json };
   };
-  assert.equal((await scanAlchemy(incompleteFetch, { url: 'unused' }, token)).error, 'incomplete');
+  assert.equal((await scanAlchemy(null, incompleteFetch, { url: 'unused' }, token)).error, 'incomplete');
   assert.equal(poolHealth({ ...input, pair: { ...pair, base: { address: owner } } }).status, 'unknown');
   assert.equal(poolHealth({ ...input, pool: { ...input.pool, fee: null } }).status, 'unknown');
   assert.equal(poolHealth({ ...input, holders: { ...holders, holderCount: 90 } }).status, 'warn');
@@ -79,12 +79,12 @@ const token = '0x' + 'ab'.repeat(20), owner = '0x' + 'cd'.repeat(20), poolAddr =
   const waiting = new Promise((resolve) => { released = resolve; });
   const background = { fetch: async (...args) => { await waiting; return fakeFetch(...args); } };
   const cfg = { chain: { endpoints: [{ url: 'https://robinhood-mainnet.g.alchemy.com/v2/private-key' }] } };
-  assert.equal((await alchemyHolders(background, cfg, token)).error, 'scanning');
-  assert.equal((await alchemyHolders(background, cfg, token)).error, 'scanning');
-  assert.equal((await alchemyHolders(background, cfg, owner)).queued, true);
+  assert.equal((await alchemyHolders(null, background, cfg, token)).error, 'scanning');
+  assert.equal((await alchemyHolders(null, background, cfg, token)).error, 'scanning');
+  assert.equal((await alchemyHolders(null, background, cfg, owner)).queued, true);
   released();
   await new Promise((resolve) => setTimeout(resolve, 25));
-  const ready = await alchemyHolders(background, cfg, token);
+  const ready = await alchemyHolders(null, background, cfg, token);
   assert.equal(ready.holderCount, 2);
   assert.ok(!JSON.stringify(ready).includes('private-key'));
   const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
@@ -92,14 +92,14 @@ const token = '0x' + 'ab'.repeat(20), owner = '0x' + 'cd'.repeat(20), poolAddr =
   try {
     const persistedCfg = { ...cfg, db: { path: path.join(dir, 'test.db') } };
     const first = { fetch: fakeFetch };
-    await alchemyHolders(first, persistedCfg, token);
+    await alchemyHolders(null, first, persistedCfg, token);
     await new Promise((resolve) => setTimeout(resolve, 25));
     const second = { fetch: async () => { throw new Error('cache should prevent RPC'); } };
-    assert.equal((await alchemyHolders(second, persistedCfg, token)).holderCount, 2);
-    assert.ok(!fs.readFileSync(path.join(dir, 'holders', token + '.json'), 'utf8').includes('private-key'));
+    assert.equal((await alchemyHolders(null, second, persistedCfg, token)).holderCount, 2);
+    assert.ok(!fs.readFileSync(path.join(dir, 'holders', 'robinhood', token + '.json'), 'utf8').includes('private-key'));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   let fallbackUsed = false;
-  const failover = await scanAlchemy(async (url, options) => {
+  const failover = await scanAlchemy(null, async (url, options) => {
     if (url === 'first') return { ok: false, status: 429 };
     fallbackUsed = true;
     return fakeFetch(url, options);

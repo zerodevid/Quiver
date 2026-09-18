@@ -712,11 +712,11 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     eng.chain.valueInQuote = () => ({ value: 10, kind: 'usd', symbol: 'USDG' });
     eng.chain.poolLiquidityMany = async (ids) => ids.map(() => 1n);
     await eng.adoptOwnPositions(ME);
-    assert.strictEqual(store.getState('adopt_scanned_to', null), null, 'jendela tidak dimajukan');
+    assert.strictEqual(store.getState('adopt_scanned_to:robinhood', null), null, 'jendela tidak dimajukan');
     assert.strictEqual(store.all('SELECT id FROM positions').length, 0);
     liqOk = true;
     await eng.adoptOwnPositions(ME);
-    assert.strictEqual(Number(store.getState('adopt_scanned_to')), 5000, store.all("SELECT msg FROM logs ORDER BY id DESC LIMIT 2").map((r) => r.msg).join(' | '));
+    assert.strictEqual(Number(store.getState('adopt_scanned_to:robinhood')), 5000, store.all("SELECT msg FROM logs ORDER BY id DESC LIMIT 2").map((r) => r.msg).join(' | '));
     assert.strictEqual(store.all("SELECT token_id FROM positions").map((r) => r.token_id).join(), '42');
   });
 

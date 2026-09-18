@@ -1,8 +1,9 @@
 'use strict';
+const { ensureChain } = require('./networks');
 // Sinkronisasi posisi milik kita: nilai sekarang, fee terkumpul, PnL, dan
 // pemicu keluar mandiri (di luar rentang, stop loss, take profit, umur).
 const { ethers } = require('ethers');
-const { ADDR, ABI } = require('./chain');
+const { ABI } = require('./chain');
 const { computePoolId, priceUsable } = require('./pools');
 const { unclaimedV4, unclaimedV3 } = require('./fees');
 const m = require('./v3math');
@@ -14,6 +15,7 @@ const IF_POOL3 = new ethers.Interface(ABI.poolV3);
 
 class Positions {
   constructor({ rpc, store, chain, log }) {
+    chain = ensureChain(chain);
     this.rpc = rpc; this.store = store; this.chain = chain; this.log = log || console.log;
     this.live = [];      // hasil sinkron terakhir, dipakai dashboard
     this.lastSync = 0;
@@ -22,7 +24,7 @@ class Positions {
   }
 
   open() {
-    return this.store.all("SELECT * FROM positions WHERE status='open'");
+    return this.store.all("SELECT * FROM positions WHERE chain=? AND status='open'", this.chain.network);
   }
 
   // Catat posisi baru hasil mint kita
@@ -30,10 +32,10 @@ class Positions {
   record(plan, { tokenId, txHash, target, cost0, cost1, costQuote, openedTs, entrySqrt }) {
     const r = this.store.run(
       `INSERT INTO positions
-       (venue,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,tick_lower,tick_upper,liquidity,
+       (chain,venue,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,tick_lower,tick_upper,liquidity,
         target,mirror_of,status,opened_ts,cost0,cost1,cost_quote,quote_symbol,tx_open,entry_sqrt,last_sync)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      plan.venue, tokenId ?? null, plan.poolRef, plan.token0, plan.token1, plan.fee ?? null,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      this.chain.network, plan.venue, tokenId ?? null, plan.poolRef, plan.token0, plan.token1, plan.fee ?? null,
       plan.tickSpacing ?? null, plan.poolKey?.hooks ?? null, plan.tickLower, plan.tickUpper,
       plan.liquidity, target ?? null, plan.mirrorOf ?? null, 'open', openedTs ?? Date.now(),
       String(cost0 ?? plan.amount0), String(cost1 ?? plan.amount1), costQuote ?? plan.valueQuote,
@@ -89,8 +91,8 @@ class Positions {
   leftoverRows(token = null) {
     return this.store.all(`SELECT id, token0, token1, pool_ref, venue, quote_symbol, left_token, left_amount, left_quote, out_quote,
         entry_sqrt, exit_sqrt, liquidity, cost0, cost1, tick_lower, tick_upper
-      FROM positions WHERE left_token IS NOT NULL AND left_amount != '0'${token ? ' AND left_token=?' : ''} ORDER BY closed_ts, id`,
-    ...(token ? [String(token).toLowerCase()] : []));
+      FROM positions WHERE chain=? AND left_token IS NOT NULL AND left_amount != '0'${token ? ' AND left_token=?' : ''} ORDER BY closed_ts, id`,
+    this.chain.network, ...(token ? [String(token).toLowerCase()] : []));
   }
 
   // Dipanggil setelah token sisa terjual (otomatis maupun dari halaman Swap): hasil
@@ -118,7 +120,7 @@ class Positions {
       rem -= take;
       const frac = Number(take) / Number(left);
       const share = gotUsd * (Number(take) / Number(sold));
-      const k = usdPerQuote(r.quote_symbol, ethUsd);
+      const k = usdPerQuote(r.quote_symbol, ethUsd, this.chain);
       const gotQuote = share / k;
       const closeQuote = (r.left_quote || 0) * frac;
       this.store.run('UPDATE positions SET out_quote = out_quote - ? + ?, left_quote = left_quote - ?, left_amount=? WHERE id=?',
@@ -165,19 +167,19 @@ class Positions {
       if (changed) rows = this.leftoverRows();
     }
     if (rows.length) {
-      const v4 = [...new Set(rows.filter((r) => r.venue !== 'v3').map((r) => r.pool_ref))];
+      const v4 = [...new Set(rows.filter((r) => !this.chain.isV3Venue(r.venue)).map((r) => r.pool_ref))];
       const slots = new Map(), liqs = new Map();
       if (v4.length) {
         const [ss, ls] = await Promise.all([this.chain.slot0V4Many(v4), this.chain.poolLiquidityMany(v4).catch(() => [])]);
         v4.forEach((id, i) => { slots.set(id, ss[i]); liqs.set(id, ls[i] ?? 0n); });
       }
-      for (const a of new Set(rows.filter((r) => r.venue === 'v3').map((r) => r.pool_ref))) {
+      for (const a of new Set(rows.filter((r) => this.chain.isV3Venue(r.venue)).map((r) => r.pool_ref))) {
         try { slots.set(a, await this.chain.slot0V3(a)); liqs.set(a, await this.poolLiquidityOf('v3', a)); } catch { /* dinilai harga tutup */ }
       }
       const toks = await this.chain.tokens([...new Set(rows.flatMap((r) => [r.token0, r.token1]))]);
       const dec = new Map(toks.filter(Boolean).map((t) => [t.address, t.decimals]));
       for (const r of rows) {
-        const k = usdPerQuote(r.quote_symbol, ethUsd);
+        const k = usdPerQuote(r.quote_symbol, ethUsd, this.chain);
         // token sisa dinilai dengan harga penilai, bukan harga pool yang mungkin sudah kosong
         const mk = await this.markFor(r, slots.get(r.pool_ref), liqs.get(r.pool_ref));
         const v = this.leftoverQuote(r, BigInt(r.left_amount), mk ? { sqrtPriceX96: mk.sqrt } : null, dec);
@@ -245,7 +247,7 @@ class Positions {
   // Baca harga pool posisi r lalu pilih harga penilainya; bentuknya slot0 supaya bisa
   // langsung dioper ke valueInQuote. null kalau harga pool tidak terbaca sama sekali.
   async markSlotFor(r) {
-    const s = r.venue === 'v3' ? await this.chain.slot0V3(r.pool_ref) : await this.chain.slot0V4(r.pool_ref);
+    const s = this.chain.isV3Venue(r.venue) ? await this.chain.slot0V3(r.pool_ref) : await this.chain.slot0V4(r.pool_ref);
     const mk = await this.markFor(r, s, await this.poolLiquidityOf(r.venue, r.pool_ref));
     return mk ? { sqrtPriceX96: mk.sqrt, tick: s.tick, ref: mk.ref, poolSqrt: s.sqrtPriceX96 } : null;
   }
@@ -253,7 +255,7 @@ class Positions {
   // Likuiditas aktif pool (v3 lewat kontrak pool, v4 lewat PoolManager); 0n kalau tak terbaca.
   async poolLiquidityOf(venue, poolRef) {
     try {
-      if (venue === 'v3') {
+      if (this.chain.isV3Venue(venue)) {
         const [wl] = await this.rpc.ethCallMany([{ to: poolRef, data: IF_POOL3.encodeFunctionData('liquidity') }]);
         return wl && wl !== '0x' ? BigInt(wl) : 0n;
       }
@@ -276,12 +278,12 @@ class Positions {
   async valueLeftover(rows, amt, ethUsd) {
     const r = rows[0];
     let s = null;
-    try { s = r.venue === 'v3' ? await this.chain.slot0V3(r.pool_ref) : await this.chain.slot0V4(r.pool_ref); } catch { s = null; }
+    try { s = this.chain.isV3Venue(r.venue) ? await this.chain.slot0V3(r.pool_ref) : await this.chain.slot0V4(r.pool_ref); } catch { s = null; }
     const mk = await this.markFor(r, s, await this.poolLiquidityOf(r.venue, r.pool_ref));
     const toks = await this.chain.tokens([r.token0, r.token1]);
     const dec = new Map(toks.filter(Boolean).map((t) => [t.address, t.decimals]));
     const v = this.leftoverQuote(r, amt, mk ? { sqrtPriceX96: mk.sqrt } : null, dec);
-    const k = usdPerQuote(r.quote_symbol, ethUsd);
+    const k = usdPerQuote(r.quote_symbol, ethUsd, this.chain);
     if (v != null) return v * k;
     // harga tidak terbaca: proporsional dari nilai tutup
     const total = rows.reduce((a, x) => a + BigInt(x.left_amount), 0n);
@@ -326,10 +328,10 @@ class Positions {
 
     // 1. likuiditas terkini
     const v4 = rows.filter((r) => r.venue === 'v4' && r.token_id);
-    const v3 = rows.filter((r) => r.venue === 'v3' && r.token_id);
+    const v3 = rows.filter((r) => this.chain.isV3Venue(r.venue) && r.token_id);
     const liqCalls = [
-      ...v4.map((r) => ({ to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(r.token_id)]) })),
-      ...v3.map((r) => ({ to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('positions', [BigInt(r.token_id)]) })),
+      ...v4.map((r) => ({ to: this.chain.ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(r.token_id)]) })),
+      ...v3.map((r) => ({ to: this.chain.npmFor(r.venue), data: IF_NPM.encodeFunctionData('positions', [BigInt(r.token_id)]) })),
     ];
     // Panggilan yang GAGAL (RPC error, balasan kosong) TIDAK boleh dibaca sebagai nol:
     // nol berarti "likuiditas habis" dan engine menutup posisinya di database tanpa
@@ -360,7 +362,7 @@ class Positions {
       ? await Promise.all([this.chain.slot0V4Many(poolIds), this.chain.poolLiquidityMany(poolIds).catch(() => [])]) : [[], []];
     const slotBy = new Map(poolIds.map((id, i) => [id, slots[i]]));
     const poolLiqBy = new Map(poolIds.map((id, i) => [id, poolLiq[i] ?? 0n]));
-    for (const r of rows.filter((x) => x.venue === 'v3')) {
+    for (const r of rows.filter((x) => this.chain.isV3Venue(x.venue))) {
       if (slotBy.has(r.pool_ref) || !r.pool_ref) continue;
       slotBy.set(r.pool_ref, await this.chain.slot0V3(r.pool_ref));
       poolLiqBy.set(r.pool_ref, await this.poolLiquidityOf('v3', r.pool_ref));
@@ -375,12 +377,19 @@ class Positions {
     // 3. fee belum diklaim
     const curTick = new Map([...slotBy.entries()].filter(([, s]) => s).map(([k, s]) => [k, s.tick]));
     const feeItems = v4.map((r) => ({ poolId: r.pool_ref, tickLower: r.tick_lower, tickUpper: r.tick_upper, tokenId: r.token_id }));
-    const feesV4 = feeItems.length ? await unclaimedV4(this.rpc, feeItems, curTick) : [];
+    const feesV4 = feeItems.length ? await unclaimedV4(this.chain, feeItems, curTick, this.rpc) : [];
     const owner = this.store.getState('wallet_address');
-    const feesV3 = (v3.length && owner) ? await unclaimedV3(this.rpc, v3.map((r) => BigInt(r.token_id)), owner) : [];
     const feeBy = new Map();
     v4.forEach((r, i) => feeBy.set(r.id, feesV4[i] || { fee0: 0n, fee1: 0n }));
-    v3.forEach((r, i) => feeBy.set(r.id, feesV3[i] || { fee0: 0n, fee1: 0n }));
+    // v3 dikelompokkan per venue: tiap venue punya NPM sendiri (Uniswap v3 vs PancakeSwap v3).
+    if (owner) {
+      for (const venue of new Set(v3.map((r) => r.venue))) {
+        const group = v3.filter((r) => r.venue === venue);
+        const fees = await unclaimedV3(this.chain, group.map((r) => BigInt(r.token_id)), owner, this.chain.npmFor(venue), this.rpc);
+        group.forEach((r, i) => feeBy.set(r.id, fees[i] || { fee0: 0n, fee1: 0n }));
+      }
+    }
+    for (const r of v3) if (!feeBy.has(r.id)) feeBy.set(r.id, { fee0: 0n, fee1: 0n });
 
     // 4. metadata token
     const toks = new Set();
@@ -495,8 +504,8 @@ class Positions {
   async confirmEmpty(pos) {
     try {
       const call = pos.venue === 'v4'
-        ? { to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(pos.token_id)]) }
-        : { to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('positions', [BigInt(pos.token_id)]) };
+        ? { to: this.chain.ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(pos.token_id)]) }
+        : { to: this.chain.npmFor(pos.venue), data: IF_NPM.encodeFunctionData('positions', [BigInt(pos.token_id)]) };
       if (Date.now() - (pos.opened_ts || 0) < 15 * 60_000) {
         if (!pos.tx_open || !this.rpc.batch) return false;
         const [cr, rr] = await this.rpc.batch([
@@ -558,11 +567,11 @@ class Positions {
   // persis batas yang dipasang untuk membatasi kerugian.
   summary(ethUsd) {
     const liveById = new Map(this.live.map((p) => [p.id, p]));
-    const rows = this.store.all("SELECT id, cost_quote, out_quote, quote_symbol, claimed_quote FROM positions WHERE status='open'")
+    const rows = this.store.all("SELECT id, cost_quote, out_quote, quote_symbol, claimed_quote FROM positions WHERE chain=? AND status='open'", this.chain.network)
       .filter((r) => !liveById.get(r.id)?.empty);
     let val = 0, fee = 0, cost = 0, withdrawn = 0;
     for (const r of rows) {
-      const k = usdPerQuote(r.quote_symbol, ethUsd);
+      const k = usdPerQuote(r.quote_symbol, ethUsd, this.chain);
       const c = (r.cost_quote || 0) * k;
       cost += c;
       // hasil tarik sebagian sudah di wallet (ikut kas), tapi modalnya masih utuh di
@@ -573,10 +582,10 @@ class Positions {
       else val += Math.max(0, c - (r.out_quote || 0) * k);   // belum tersinkron: sisa modal sebagai taksiran nilai
     }
     const open = rows.map((r) => liveById.get(r.id)).filter(Boolean).filter((p) => !p.empty);
-    const closed = this.store.all("SELECT cost_quote, out_quote, quote_symbol FROM positions WHERE status='closed'");
-    let realized = rows.reduce((sum, r) => sum + (r.claimed_quote || 0) * (['ETH', 'WETH'].includes(r.quote_symbol) ? ethUsd : 1), 0);
+    const closed = this.store.all("SELECT cost_quote, out_quote, quote_symbol FROM positions WHERE chain=? AND status='closed'", this.chain.network);
+    let realized = rows.reduce((sum, r) => sum + (r.claimed_quote || 0) * usdPerQuote(r.quote_symbol, ethUsd, this.chain), 0);
     for (const c of closed) {
-      const k = usdPerQuote(c.quote_symbol, ethUsd);
+      const k = usdPerQuote(c.quote_symbol, ethUsd, this.chain);
       realized += ((c.out_quote || 0) - (c.cost_quote || 0)) * k;
     }
     // Memecoin sisa yang belum dijual: out_quote posisinya masih memakai harga tutup,

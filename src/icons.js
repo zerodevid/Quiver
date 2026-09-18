@@ -15,10 +15,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const API = 'https://api.geckoterminal.com/api/v2/networks/robinhood/tokens/multi/';
+const apiFor = (slug) => `https://api.geckoterminal.com/api/v2/networks/${slug}/tokens/multi/`;
 // Cadangan: DexScreener menyimpan logo yang diunggah pembuat token lewat profilnya —
 // menutup sebagian token yang di GeckoTerminal masih "missing.png".
-const DS_API = 'https://api.dexscreener.com/tokens/v1/robinhood/';
+const dsApiFor = (slug) => `https://api.dexscreener.com/tokens/v1/${slug}/`;
 const BATCH = 30;                    // batas alamat per panggilan /tokens/multi
 const GAP_MS = 2500;                 // ~24 panggilan/menit, di bawah batas 30
 const MAX_BYTES = 1_000_000;
@@ -37,8 +37,11 @@ function sniff(b) {
 const isAddr = (a) => /^0x[0-9a-f]{40}$/.test(a);
 
 class Icons {
-  constructor({ store, dir, log = () => {}, fetchImpl = globalThis.fetch, gapMs = GAP_MS, collectMs = 150, now = Date.now }) {
+  constructor({ store, dir, chain = null, log = () => {}, fetchImpl = globalThis.fetch, gapMs = GAP_MS, collectMs = 150, now = Date.now }) {
     this.store = store; this.dir = dir; this.log = log; this.fetch = fetchImpl;
+    this.network = chain?.network || 'robinhood';
+    this.API = apiFor(chain?.geckoterminal || 'robinhood');
+    this.DS_API = dsApiFor(chain?.dexscreener || 'robinhood');
     this.gapMs = gapMs; this.collectMs = collectMs; this.now = now;
     this.want = new Set();
     this.waiters = new Map();          // alamat -> [resolve]
@@ -48,11 +51,11 @@ class Icons {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  row(a) { return this.store.get('SELECT * FROM icons WHERE address=?', a); }
+  row(a) { return this.store.get('SELECT * FROM icons WHERE chain=? AND address=?', this.network, a); }
   save(a, status, file = null, ctype = null, src = null) {
-    this.store.run(`INSERT INTO icons(address,status,file,ctype,src,checked_ts) VALUES(?,?,?,?,?,?)
-      ON CONFLICT(address) DO UPDATE SET status=excluded.status, file=excluded.file, ctype=excluded.ctype,
-      src=excluded.src, checked_ts=excluded.checked_ts`, a, status, file, ctype, src, this.now());
+    this.store.run(`INSERT INTO icons(chain,address,status,file,ctype,src,checked_ts) VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(chain,address) DO UPDATE SET status=excluded.status, file=excluded.file, ctype=excluded.ctype,
+      src=excluded.src, checked_ts=excluded.checked_ts`, this.network, a, status, file, ctype, src, this.now());
   }
 
   // Masih perlu ditanyakan ke GeckoTerminal?
@@ -95,8 +98,8 @@ class Icons {
   // Pemanasan: semua token yang dikenal database, supaya halaman pertama kali
   // dibuka sudah langsung berlogo.
   warm() {
-    const rows = this.store.all(`SELECT address a FROM tokens
-      UNION SELECT token0 FROM wpositions UNION SELECT token1 FROM wpositions`);
+    const rows = this.store.all(`SELECT address a FROM tokens WHERE chain=?
+      UNION SELECT token0 FROM wpositions WHERE chain=? UNION SELECT token1 FROM wpositions WHERE chain=?`, this.network, this.network, this.network);
     this.enqueue(rows.map((r) => r.a));
     return this.want.size;
   }
@@ -129,7 +132,7 @@ class Icons {
     this.stats.calls++;
     let data;
     try {
-      const r = await this.fetch(API + batch.join(','), { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+      const r = await this.fetch(this.API + batch.join(','), { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
       if (r.status === 429) throw new Error('GeckoTerminal 429 (batas panggilan)');
       if (!r.ok) throw new Error(`GeckoTerminal HTTP ${r.status}`);
       data = (await r.json())?.data || [];
@@ -148,7 +151,7 @@ class Icons {
     const kurang = batch.filter((a) => !url.has(a));
     if (kurang.length) {
       try {
-        const r = await this.fetch(DS_API + kurang.join(','), { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+        const r = await this.fetch(this.DS_API + kurang.join(','), { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
         const pairs = r.ok ? await r.json() : [];
         for (const p of Array.isArray(pairs) ? pairs : []) {
           const a = String(p.baseToken?.address || '').toLowerCase();
@@ -169,7 +172,7 @@ class Icons {
         if (buf.length > MAX_BYTES) throw new Error(`terlalu besar (${buf.length} byte)`);
         const kind = sniff(buf);
         if (!kind) { this.save(a, 'none', null, null, u); this.stats.none++; continue; }
-        const file = `${a}.${kind[0]}`;
+        const file = this.network === 'robinhood' ? `${a}.${kind[0]}` : `${this.network}-${a}.${kind[0]}`;
         fs.writeFileSync(path.join(this.dir, file), buf);
         this.save(a, 'ok', file, kind[1], u);
         this.stats.ok++;

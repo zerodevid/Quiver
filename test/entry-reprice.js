@@ -156,7 +156,7 @@ test('mint failing after a zap queues the bought token for sale instead of stran
   f.e.exec.send = async (tx) => { if (tx.simulatedMint) throw new Error('MINT_BOOM'); return send(tx); };
   await assert.rejects(f.e.executeEntry(f.plan, {}), /MINT_BOOM/);
   assert.equal(f.stats().swaps, 1);
-  const q = JSON.parse(state.get('leftovers'));
+  const q = JSON.parse(state.get('leftovers:robinhood'));
   assert.equal(q.length, 1);
   assert.equal(q[0].token, TOKEN); assert.equal(q[0].quote, ADDR.usdg); assert.equal(q[0].source, 'zap');
   assert.equal(BigInt(q[0].amount), f.balances.get(TOKEN));   // persis yang terbeli (saldo awal 0)

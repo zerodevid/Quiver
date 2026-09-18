@@ -17,7 +17,12 @@
 //    lewat konfirmasi.
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const { writeCfg } = require('./env');
+// Chain yang sedang dipakai sebuah percakapan. Sama polanya dengan localeContext: tiap
+// update Telegram dijalankan di dalam run(<chain>), dan this.api/this.engine/kartu
+// otomatis mengarah ke chain itu — tidak ada tombol yang perlu tahu soal chain.
+const chainContext = new AsyncLocalStorage();
 const { localeContext, tr, locale, localizeSchema, note } = require('./telegram-i18n');
 // Daftar indikator grafik (dan nilai bitnya) dibaca dari penggambarnya supaya
 // tombol di sini dan gambar di sana tidak pernah berbeda arti.
@@ -457,6 +462,7 @@ const askHint = (spec) => {
 const COMMANDS = [
   ['menu', 'Main menu'],
   ['language', 'Choose English or Indonesian'],
+  ['chain', 'Switch chain (Robinhood / BSC)'],
   ['summary', 'How the bot is doing right now'],
   ['chart', 'Portfolio growth chart'],
   ['positions', 'Open positions'],
@@ -479,16 +485,25 @@ const ALIAS = {
   mulai: 'start', ringkasan: 'summary', status: 'summary', grafik: 'chart', posisi: 'positions',
   target: 'targets', aktivitas: 'activity', aturan: 'rules', pengaturan: 'settings',
   saldo: 'balance', sisa: 'leftovers', log: 'logs', riset: 'research',
-  jeda: 'pause', lanjut: 'resume', bantuan: 'help', batal: 'cancel',
+  jeda: 'pause', lanjut: 'resume', bantuan: 'help', batal: 'cancel', rantai: 'chain',
 };
 
 // Perintah penyambungan: /start <kode>. Dipakai juga oleh tautan dalam t.me.
 const PAIR_RE = /^\/(?:start|mulai)(?:@\S+)?\s+(\S+)/i;
 
 class Telegram {
-  constructor({ cfg, cfgPath, store, engine, api, shareCard, chartCard, portfolioCard, log }) {
-    this.cfg = cfg; this.cfgPath = cfgPath; this.store = store; this.engine = engine;
-    this.api = api; this.shareCard = shareCard; this.chartCard = chartCard; this.portfolioCard = portfolioCard; this.log = log || (() => {});
+  constructor({ cfg, cfgPath, store, engine, api, shareCard, chartCard, portfolioCard, log, nets = null, primaryKey = null }) {
+    this.cfg = cfg; this.cfgPath = cfgPath; this.store = store;
+    // Multi-chain: nets = { <key>: { key, label, engine, chain } }. Semua panggilan API
+    // dan pembacaan mesin diarahkan ke chain percakapan yang sedang aktif (chainContext).
+    this.nets = nets || { [engine.network || 'robinhood']: { key: engine.network || 'robinhood', label: engine.label || 'Robinhood Chain', engine, chain: engine.chain } };
+    this.primaryKey = primaryKey || Object.keys(this.nets)[0];
+    this._api = api; this._shareCard = shareCard; this._chartCard = chartCard; this._portfolioCard = portfolioCard;
+    this.api = (method, pathname, body, query) => this._api(method, pathname, body, query, this.chainKey());
+    this.shareCard = shareCard ? (opts) => this._shareCard(opts, this.chainKey()) : null;
+    this.chartCard = chartCard ? (opts) => this._chartCard(opts, this.chainKey()) : null;
+    this.portfolioCard = portfolioCard ? (opts) => this._portfolioCard(opts, this.chainKey()) : null;
+    this.log = log || (() => {});
     this.sessions = new Map();          // chatId -> { scope, pending, ... }
     this.pairCode = null;               // { code, exp }
     this.offset = Number(store.getState('tg_offset', '0')) || 0;
@@ -499,6 +514,24 @@ class Telegram {
     // yang sedang menggantung kembali (atau dibatalkan lewat `ac`).
     this.gen = 0; this.ac = null; this.wired = false; this.startError = null;
   }
+
+  // ---- chain ---------------------------------------------------------------
+  chainKey() { const k = chainContext.getStore(); return k && this.nets[k] ? k : this.primaryKey; }
+  get engine() { return this.nets[this.chainKey()].engine; }
+  net() { return this.nets[this.chainKey()]; }
+  chainLabel(key = this.chainKey()) { return this.nets[key]?.label || key; }
+  // Chain pilihan sebuah chat: disimpan di state supaya bertahan restart.
+  chatChain(chatId) {
+    const k = this.store.getState('tg_chain:' + chatId, this.primaryKey);
+    return this.nets[k] ? k : this.primaryKey;
+  }
+  setChatChain(chatId, key) {
+    if (!this.nets[key]) throw new Error('chain tidak dikenal');
+    this.store.setState('tg_chain:' + chatId, key);
+  }
+  multi() { return Object.keys(this.nets).length > 1; }
+  // Baris judul chain di layar: "⛓ BNB Smart Chain" — hanya kalau ada lebih dari satu.
+  chainLine() { return this.multi() ? `⛓ <b>${esc(this.chainLabel())}</b>` : null; }
 
   // ---- dasar ---------------------------------------------------------------
   language(chatId) { return this.store.getState('tg_language:' + chatId, this.cfg.telegram?.language || 'en') === 'id' ? 'id' : 'en'; }
@@ -673,22 +706,28 @@ class Telegram {
   wire() {
     if (this.wired) return;
     this.wired = true;
-    const prevNotify = this.engine.onNotify;
-    this.engine.onNotify = (msg, detail) => {
-      if (prevNotify) prevNotify(msg, detail);
-      // engine.notify() juga menulis baris log 'info' dengan teks yang sama. Kalau
-      // pengiriman baris info sedang dinyalakan, kabar yang sama akan datang dua
-      // kali — yang ini dicatat supaya penyaring log di bawah melewatinya.
-      this.lastNotify = msg;
-      if (!this.notifCfg().penting) return;
-      if (!detail?.kind) return this.push(`🔔 <b>${esc(note(msg))}</b>`, null, () => [`🔔 <b>${esc(note(msg))}</b>`, null]);
-      // Kabar berdetail disusun jadi kartu (butuh baca API, jadi asinkron). Kalau
-      // penyusunannya gagal, teks polosnya tetap terkirim — kabar tidak boleh hilang.
-      this.push(async () => {
-        try { return await this.kartu(msg, detail); }
-        catch (e) { this.log(`telegram kartu: ${e.message}`); return [`🔔 <b>${esc(note(msg))}</b>`, null]; }
-      });
-    };
+    // Tiap mesin (chain) dikaitkan; kabarnya diberi label chain supaya feed campuran
+    // tetap jelas asalnya, dan kartunya disusun di dalam chainContext chain itu.
+    for (const net of Object.values(this.nets)) {
+      const eng = net.engine;
+      const prevNotify = eng.onNotify;
+      const tag = this.multi() ? `⛓ ${esc(net.label)} · ` : '';
+      eng.onNotify = (msg, detail) => {
+        if (prevNotify) prevNotify(msg, detail);
+        // engine.notify() juga menulis baris log 'info' dengan teks yang sama. Kalau
+        // pengiriman baris info sedang dinyalakan, kabar yang sama akan datang dua
+        // kali — yang ini dicatat supaya penyaring log di bawah melewatinya.
+        this.lastNotify = msg;
+        if (!this.notifCfg().penting) return;
+        if (!detail?.kind) return this.push(`🔔 ${tag}<b>${esc(note(msg))}</b>`, null, () => [`🔔 ${tag}<b>${esc(note(msg))}</b>`, null]);
+        // Kabar berdetail disusun jadi kartu (butuh baca API, jadi asinkron). Kalau
+        // penyusunannya gagal, teks polosnya tetap terkirim — kabar tidak boleh hilang.
+        this.push(async () => chainContext.run(net.key, async () => {
+          try { const [t, k] = await this.kartu(msg, detail); return [tag ? `${tag}\n${t}` : t, k]; }
+          catch (e) { this.log(`telegram kartu: ${e.message}`); return [`🔔 ${tag}<b>${esc(note(msg))}</b>`, null]; }
+        }));
+      };
+    }
     const prevLog = this.store.onLog;
     this.store.onLog = (level, msg, meta) => {
       if (prevLog) prevLog(level, msg, meta);
@@ -737,7 +776,8 @@ class Telegram {
   async handle(u) {
     const chat = u.message?.chat || u.callback_query?.message?.chat;
     if (!chat) return;
-    return localeContext.run(this.language(String(chat.id)), () => this.handleLocalized(u));
+    const chatId = String(chat.id);
+    return localeContext.run(this.language(chatId), () => chainContext.run(this.chatChain(chatId), () => this.handleLocalized(u)));
   }
 
   async handleLocalized(u) {
@@ -805,6 +845,7 @@ class Telegram {
       case 'rules': return go('r');
       case 'settings': return go('s');
       case 'language': case 'bahasa': return go('lang');
+      case 'chain': case 'rantai': return go('ch');
       case 'balance': return go('b');
       case 'leftovers': return go('f');
       case 'logs': return go('l');
@@ -878,6 +919,21 @@ class Telegram {
       case 'langSet': {
         this.setLanguage(chatId, rest[0]);
         return localeContext.run(rest[0], () => this.screen(chatId, msgId, 's'));
+      }
+      // Pemilih chain: semua layar berikutnya (posisi, target, aturan, pengaturan RPC,
+      // saldo) membaca chain ini. Wallet-nya sama di semua chain.
+      case 'ch': {
+        const cur = this.chainKey();
+        const rows = Object.values(this.nets).map((n) => {
+          const e = n.engine;
+          const st = `${e.dryRun() ? tr("🧪 SIMULASI") : '🟢 LIVE'} · ${e.watcher?.enabledSet?.().size ?? 0} target`;
+          return [btn(`${n.key === cur ? '✓ ' : ''}${n.label} · ${st}`, `chSet:${n.key}`)];
+        });
+        return out(tr("<b>Pilih chain</b>\nWallet yang sama dipakai di semua chain; target, aturan, dan RPC diatur per chain.\n\nSekarang: <b>{0}</b>", [esc(this.chainLabel())]), kb([...rows, [BACK_HOME]]));
+      }
+      case 'chSet': {
+        this.setChatChain(chatId, rest[0]);
+        return chainContext.run(rest[0], () => this.screen(chatId, msgId, 'h', tr("⛓ Chain: <b>{0}</b>\n\n", [esc(this.chainLabel(rest[0]))])));
       }
       case 'h': return out(...(await this.home()));
       case 'o': return out(...(await this.overview()));
@@ -1523,6 +1579,7 @@ class Telegram {
     const pnl = s.realizedUsd + s.unrealizedUsd;
     const text = [
       `<b>Quiver</b> · ${mode}`,
+      this.chainLine(),
       `<code>${esc(shortA(o.mode.wallet))}</code>`,
       this.kesehatan(o),
       o.mode.dry_run ? tr("Mode simulasi: transaksi salin tidak dikirim ke chain.") : tr("Mode LIVE: transaksi menggunakan dana wallet."),
@@ -1543,6 +1600,7 @@ class Telegram {
       [btn(tr("🧹 Sisa jual"), 'f'), btn(tr("📝 Log"), 'l')],
       [btn(tr("🧾 Transaksi"), 'x'), btn('🌐 Language / Bahasa', 'lang')],
       [btn(o.mode.paused ? tr("▶️ Lanjutkan") : tr("⏸ Jeda"), 'sp'), btn(tr("🔄 Segarkan"), 'h')],
+      this.multi() ? [btn(tr("⛓ Ganti chain ({0})", [this.chainLabel()]), 'ch')] : null,
     ])];
   }
 
@@ -1558,6 +1616,7 @@ class Telegram {
     const pnlPct = cap > 0 ? (pnl / cap) * 100 : null;
     const L = [
       tr("📊 <b>Ringkasan</b> · {0}", [o.mode.dry_run ? tr("🧪 SIMULASI") : '🟢 LIVE']),
+      this.chainLine(),
       tr("<code>{0}</code> · sinkron {1}", [esc(shortA(o.mode.wallet)), esc(ago(o.lastSync))]),
       this.kesehatan(o),
       '',
@@ -1648,7 +1707,7 @@ class Telegram {
       `<code>${esc(st.wallet.address || tr('(belum ada wallet)'))}</code>`,
       '',
       tr("<b>Di wallet</b>"),
-      b ? angka([['ETH', tok(b.eth)], ['USDG', tok(b.usdg, 2)], ['WETH', tok(b.weth)]])
+      b ? angka([[b.symbols?.eth || 'ETH', tok(b.eth)], [b.symbols?.usdg || 'USDG', tok(b.usdg, 2)], [b.symbols?.weth || 'WETH', tok(b.weth)]])
         : tr("Saldo tidak terbaca sekarang (RPC sedang sibuk)."),
       tr("<b>Di dalam posisi</b>"),
       tabel([
@@ -1824,7 +1883,7 @@ class Telegram {
 
   async targets() {
     const d = await this.api('GET', '/api/targets');
-    const L = [tr("<b>🎯 Target ({0})</b>", [d.targets.length])];
+    const L = [tr("<b>🎯 Target ({0})</b>", [d.targets.length]), this.chainLine()];
     for (const t of d.targets) {
       L.push('');
       L.push(`${t.enabled ? '🟢' : '⚪️'} <b>${esc(t.label || shortA(t.address))}</b>`);
@@ -1985,13 +2044,14 @@ class Telegram {
     const st = await this.api('GET', '/api/settings');
     const L = [
       tr("<b>🔧 Pengaturan</b>"),
+      this.chainLine(),
       '',
       `Mode: <b>${st.mode.dry_run ? tr("🧪 SIMULASI") : '🟢 LIVE'}</b>${st.mode.paused ? tr(" · ⏸ dijeda") : ''}`,
       `Wallet: <code>${esc(st.wallet.address || tr('(belum ada)'))}</code>`,
       tabel([
         ['RPC', `${st.rpc.length} endpoint`],
         [tr('Pengali gas'), nf(st.gas.price_multiplier, 2)],
-        [tr('Cadangan ETH'), nf(st.gas.reserve_eth, 4)],
+        [tr('Cadangan {0}', [st.chain?.nativeSymbol || 'ETH']), nf(st.gas.reserve_eth, 4)],
         [tr('Interval pindai'), `${num(st.loop.poll_ms)} ms`],
         [tr('Sinkronisasi'), `${num(st.loop.sync_seconds)} s`],
         ['ntfy', st.notify.ntfy_topic || tr('mati')],
@@ -2030,9 +2090,9 @@ class Telegram {
         [tr("berkas kunci"), w.keyFile],
         [tr("izin berkas"), w.hasKey ? `${w.perms || '?'}${w.perms === '600' ? tr(" · aman") : tr(" · terlalu longgar")}` : tr("belum ada")],
         [tr("cadangan kunci"), tr("{0} berkas", [w.backups])],
-        ['ETH', b ? tok(b.eth) : null],
-        ['USDG', b ? tok(b.usdg, 2) : null],
-        ['WETH', b ? tok(b.weth) : null],
+        [b?.symbols?.eth || 'ETH', b ? tok(b.eth) : null],
+        [b?.symbols?.usdg || 'USDG', b ? tok(b.usdg, 2) : null],
+        [b?.symbols?.weth || 'WETH', b ? tok(b.weth) : null],
       ]),
       tr("<i>Impor kunci privat lewat Telegram sengaja tidak disediakan — riwayat chat tersimpan di server Telegram. Pakai dasbor untuk itu.</i>"),
     ];

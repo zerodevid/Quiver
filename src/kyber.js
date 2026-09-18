@@ -1,4 +1,5 @@
 'use strict';
+const { ensureChain } = require('./networks');
 // Swap lewat agregator KyberSwap.
 //
 // Kenapa tidak langsung ke pool: diuji 2026-09-11 dengan simulasi eth_call dari wallet
@@ -16,10 +17,10 @@
 //   3. amountIn hasil build == amountIn yang diminta (tidak bisa belanja lebih).
 //   4. amountOut hasil build >= kutipan − slippage (tidak bergeser saat di-encode).
 const { ethers } = require('ethers');
-const { ADDR } = require('./chain');
 
 const DEFAULT_ROUTER = '0x6131B5fae19EA4f9D964eAc0408E4408b66337b5'; // MetaAggregationRouterV2 (terverifikasi di chain 4663)
-const DEFAULT_API = 'https://aggregator-api.kyberswap.com/robinhood/api/v1';
+const API_BASE = 'https://aggregator-api.kyberswap.com';          // + /<chain>/api/v1, chain = profil.kyberPath
+const ZERO = '0x0000000000000000000000000000000000000000';       // native = currency 0x0 (sama di semua chain)
 const NATIVE = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';        // sentinel Kyber untuk ETH native
 const HEADERS = { 'x-client-id': 'quiver' };
 const IF_ERC20 = new ethers.Interface([
@@ -27,7 +28,7 @@ const IF_ERC20 = new ethers.Interface([
   'function allowance(address,address) view returns (uint256)',
 ]);
 
-const kTok = (t) => (String(t).toLowerCase() === ADDR.native ? NATIVE : t);
+const kTok = (t) => (String(t).toLowerCase() === ZERO ? NATIVE : t);
 // MetaAggregationRouterV2: dua pintu masuk, keduanya membawa SwapDescriptionV2 —
 // diverifikasi dari calldata build sungguhan (2026-09-13: selector 0xe21fd0e9).
 const DESC = 'tuple(address srcToken,address dstToken,address[] srcReceivers,uint256[] srcAmounts,address[] feeReceivers,uint256[] feeAmounts,address dstReceiver,uint256 amount,uint256 minReturnAmount,uint256 flags,bytes permit)';
@@ -38,11 +39,11 @@ const IF_ROUTER = new ethers.Interface([
 const sameTok = (a, b) => String(a).toLowerCase() === String(kTok(b)).toLowerCase();
 
 class Kyber {
-  constructor({ exec, rpc, cfg, log }) {
-    this.exec = exec; this.rpc = rpc; this.cfg = cfg; this.log = log || (() => {});
+  constructor({ exec, rpc, cfg, chain, log }) {
+    this.exec = exec; this.rpc = rpc; this.cfg = cfg; this.chain = ensureChain(chain); this.log = log || (() => {});
   }
   router() { return ethers.getAddress(this.cfg.swap?.kyber_router || DEFAULT_ROUTER); }
-  api() { return this.cfg.swap?.kyber_api || DEFAULT_API; }
+  api() { return this.cfg.swap?.kyber_api || `${API_BASE}/${this.chain?.kyberPath || 'robinhood'}/api/v1`; }
   enabled() { return this.cfg.swap?.kyber !== false; }
 
   // Kutipan rute terbaik. null kalau tidak ada rute (pemanggil boleh memakai cadangan).
@@ -125,7 +126,7 @@ class Kyber {
   async swap(tokenIn, tokenOut, amountIn, { slippageBps = 150, maxLossBps = null, kind = 'kyber_swap', detail = null, ref = null, requireLoss = false } = {}) {
     if (!this.enabled() || amountIn <= 0n) return null;
     const me = this.exec.address();
-    const nativeIn = String(tokenIn).toLowerCase() === ADDR.native;
+    const nativeIn = String(tokenIn).toLowerCase() === ZERO;
     // Kutipan Kyber cepat basi pada memecoin yang bergerak kencang: minOut sudah
     // terkunci di dalam calldata, jadi harga yang bergeser lebih dari slippage membuat
     // tx ditolak "Return amount is not enough". Ambil kutipan baru dan ulangi.
@@ -227,7 +228,7 @@ class Kyber {
     // dan 0 itu lalu tercatat sebagai "sisa terjual $0". Tidak terbaca = null, pemanggil
     // memakai kutipan Kyber sebagai taksiran, bukan nol.
     let amountOut = null;
-    if (String(tokenOut).toLowerCase() !== ADDR.native) {
+    if (String(tokenOut).toLowerCase() !== ZERO) {
       const TOPIC_XFER = ethers.id('Transfer(address,address,uint256)');
       let v = 0n;
       for (const l of rc.receipt?.logs || []) {

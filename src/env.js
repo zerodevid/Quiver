@@ -71,6 +71,15 @@ function setAt(o, p, v) {
 }
 const TPL = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
+// Semua daftar endpoint RPC di config: per chain (cfg.chains.<nama>.chain.endpoints)
+// dan bentuk lama satu-chain (cfg.chain.endpoints) selama belum dinormalkan.
+function allEndpoints(cfg) {
+  const out = [];
+  if (Array.isArray(cfg?.chain?.endpoints)) out.push(...cfg.chain.endpoints);
+  for (const c of Object.values(cfg?.chains || {})) if (Array.isArray(c?.chain?.endpoints)) out.push(...c.chain.endpoints);
+  return out;
+}
+
 // Terapkan variabel lingkungan ke cfg (di tempat). Catatan tentang apa yang diambil
 // alih disimpan di properti simbol — tidak ikut JSON.stringify.
 function applyEnv(cfg, env = process.env) {
@@ -92,7 +101,7 @@ function applyEnv(cfg, env = process.env) {
     if (r !== s) meta.templates.set(r, s);
     return r;
   };
-  for (const e of cfg.chain?.endpoints || []) {
+  for (const e of allEndpoints(cfg)) {
     e.url = sub(e.url);
     if (e.headers && typeof e.headers === 'object') for (const k of Object.keys(e.headers)) e.headers[k] = sub(e.headers[k]);
   }
@@ -119,7 +128,7 @@ function cfgForDisk(cfg) {
     if (getAt(out, f.path) === f.value) setAt(out, f.path, f.fileValue);
   }
   const back = (s) => (typeof s === 'string' && meta.templates.has(s) ? meta.templates.get(s) : s);
-  for (const e of out.chain?.endpoints || []) {
+  for (const e of allEndpoints(out)) {
     e.url = back(e.url);
     if (e.headers && typeof e.headers === 'object') for (const k of Object.keys(e.headers)) e.headers[k] = back(e.headers[k]);
   }
@@ -135,4 +144,4 @@ function writeCfg(cfgPath, cfg) {
 
 const defaultEnvPath = (root) => process.env.LPCOPY_ENV || path.join(root, '.env');
 
-module.exports = { parseEnv, loadDotEnv, applyEnv, cfgForDisk, writeCfg, envName, privateKeyFromEnv, defaultEnvPath, FIELDS };
+module.exports = { parseEnv, loadDotEnv, applyEnv, cfgForDisk, writeCfg, envName, privateKeyFromEnv, defaultEnvPath, allEndpoints, FIELDS };

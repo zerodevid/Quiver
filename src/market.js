@@ -7,10 +7,12 @@
 // Keduanya membatasi panggilan per IP (GeckoTerminal ~30/menit), jadi jawabannya
 // disimpan sebentar di memori: dasbor yang dibuka di dua tab, atau poll berkala
 // halaman detail, tidak boleh menggandakan panggilan ke luar.
-const DS = 'https://api.dexscreener.com/latest/dex/pairs/robinhood/';
+// Slug chain di tiap layanan diambil dari profil chain (networks.js: dexscreener,
+// geckoterminal) — satu instance Market per chain.
+const dsBase = (slug) => `https://api.dexscreener.com/latest/dex/pairs/${slug}/`;
 // Semua pool yang memuat token (maks. 30) — /tokens/v1 hanya memberi satu per token.
-const DS_TOKEN = 'https://api.dexscreener.com/token-pairs/v1/robinhood/';
-const GT = 'https://api.geckoterminal.com/api/v2/networks/robinhood/pools/';
+const dsTokenBase = (slug) => `https://api.dexscreener.com/token-pairs/v1/${slug}/`;
+const gtBase = (slug) => `https://api.geckoterminal.com/api/v2/networks/${slug}/pools/`;
 
 // Rentang waktu lilin yang ditawarkan UI -> (timeframe, aggregate) GeckoTerminal.
 const TF = {
@@ -19,9 +21,13 @@ const TF = {
 };
 
 class Market {
-  constructor({ log, fetch: fetchImpl } = {}) {
+  constructor({ log, fetch: fetchImpl, chain = null } = {}) {
     this.log = log || (() => {});
     this.fetch = fetchImpl || globalThis.fetch;
+    this.network = chain?.network || 'robinhood';
+    this.DS = dsBase(chain?.dexscreener || 'robinhood');
+    this.DS_TOKEN = dsTokenBase(chain?.dexscreener || 'robinhood');
+    this.GT = gtBase(chain?.geckoterminal || 'robinhood');
     this.cache = new Map();   // key -> { until, value: Promise }
     this.good = new Map();    // key -> { at, value } — jawaban baik terakhir (cadangan)
   }
@@ -95,7 +101,7 @@ class Market {
   pair(ref) {
     const key = `ds:${String(ref).toLowerCase()}`;
     return this.memo(key, 30_000, async () => {
-      const j = await this.json(DS + ref);
+      const j = await this.json(this.DS + ref);
       const p = j?.pairs?.[0] || j?.pair;
       if (!p) return { error: 'pool ini belum terindeks di DexScreener' };
       const lc = (a) => String(a || '').toLowerCase();
@@ -119,7 +125,7 @@ class Market {
   token(address) {
     const a = String(address).toLowerCase();
     return this.memo(`dst:${a}`, 30_000, async () => {
-      const j = await this.json(DS_TOKEN + a);
+      const j = await this.json(this.DS_TOKEN + a);
       const list = Array.isArray(j) ? j : j?.pairs || [];
       const lc = (x) => String(x || '').toLowerCase();
       const pairs = list.filter((p) => p?.pairAddress).map((p) => ({
@@ -156,7 +162,7 @@ class Market {
       const q = new URLSearchParams({ aggregate: String(agg), limit: String(n), currency });
       if (token) q.set('token', token);
       if (beforeS) q.set('before_timestamp', String(beforeS));
-      const j = await this.json(`${GT}${ref}/ohlcv/${frame}?${q}`, patient ? { timeoutMs: 25_000, tries: 2 } : {});
+      const j = await this.json(`${this.GT}${ref}/ohlcv/${frame}?${q}`, patient ? { timeoutMs: 25_000, tries: 2 } : {});
       if (!j) return { error: 'pool ini belum terindeks di GeckoTerminal' };
       const list = j?.data?.attributes?.ohlcv_list || [];
       // Sesekali ada dua lilin berwaktu sama: yang muncul belakangan menang.

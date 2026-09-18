@@ -1,4 +1,5 @@
 'use strict';
+const { ensureChain } = require('./networks');
 // Hitung fee yang belum diklaim untuk posisi Uniswap v4, langsung dari storage
 // PoolManager lewat extsload. Layout diverifikasi di Robinhood Chain: L hasil baca
 // storage identik dengan getPositionLiquidity(tokenId).
@@ -7,7 +8,7 @@
 //   +0 slot0 | +1 feeGrowthGlobal0 | +2 feeGrowthGlobal1 | +3 liquidity
 //   +4 ticks | +5 tickBitmap | +6 positions
 const { ethers } = require('ethers');
-const { ADDR, ABI } = require('./chain');
+const { ABI } = require('./chain');
 
 const coder = ethers.AbiCoder.defaultAbiCoder();
 const IF_EXT = new ethers.Interface(['function extsload(bytes32 slot) view returns (bytes32)']);
@@ -31,8 +32,11 @@ function positionSlot(base, owner, tickLower, tickUpper, salt) {
  * curTickByPool: Map poolId -> tick sekarang
  * Balikan sejajar: [{fee0, fee1, liquidity}]
  */
-async function unclaimedV4(rpc, items, curTickByPool) {
+async function unclaimedV4(chain, items, curTickByPool, rpc = null) {
   if (!items.length) return [];
+  chain = ensureChain(chain);
+  const { ADDR } = chain;
+  rpc = rpc || chain.rpc;
   const calls = [];
   const idx = [];
   for (const it of items) {
@@ -80,11 +84,15 @@ async function unclaimedV4(rpc, items, curTickByPool) {
 }
 
 /** v3: tokensOwed hanya diperbarui saat "poke", jadi kita simulasikan collect lewat eth_call. */
-async function unclaimedV3(rpc, tokenIds, owner) {
+// npmAddr: NPM venue yang dimaksud (default venue 'v3' utama; BSC juga punya 'pancakev3').
+async function unclaimedV3(chain, tokenIds, owner, npmAddr = null, rpc = null) {
   if (!tokenIds.length) return [];
+  chain = ensureChain(chain);
+  npmAddr = npmAddr || chain.ADDR.npmV3;
+  rpc = rpc || chain.rpc;
   const MAXU128 = (1n << 128n) - 1n;
   const calls = tokenIds.map((id) => ({
-    to: ADDR.npmV3,
+    to: npmAddr,
     data: IF_NPM.encodeFunctionData('collect', [[id, owner, MAXU128, MAXU128]]),
   }));
   const res = await rpc.batch(calls.map((c) => ({ method: 'eth_call', params: [{ from: owner, to: c.to, data: c.data }, 'latest'] })));
@@ -114,7 +122,10 @@ module.exports = { unclaimedV4, unclaimedV3, poolBase, positionSlot, tickSlot };
  *
  * Balikan: { fee0, fee1, sqrtPriceX96, tick, liquidity } atau null.
  */
-async function feesAtBlock(rpc, { poolId, tickLower, tickUpper, tokenId, block }) {
+async function feesAtBlock(chain, { poolId, tickLower, tickUpper, tokenId, block }, rpc = null) {
+  chain = ensureChain(chain);
+  const { ADDR } = chain;
+  rpc = rpc || chain.rpc;
   const base = poolBase(poolId);
   const ps = positionSlot(base, ADDR.posmV4, tickLower, tickUpper, slotHex(BigInt(tokenId)));
   const tl = tickSlot(base, tickLower), tu = tickSlot(base, tickUpper);

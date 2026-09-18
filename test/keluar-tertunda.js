@@ -203,7 +203,7 @@ const txRow = (d, kind, hash, detail) => d.store.run('INSERT INTO txs(hash,ts,ki
       JSON.stringify({ pool: POOL, target: null, venue: 'v4', plan: { action: 'mint', liquidity: '1' }, zapped: { token: MEME, quote: ADDR.usdg, before: '100' } }));
     await d.e.bookPendingMints();
     assert.strictEqual(d.store.get('SELECT status FROM txs WHERE hash=?', TX).status, 'gagal');
-    const q = JSON.parse(d.store.getState('leftovers'));
+    const q = JSON.parse(d.store.getState('leftovers:robinhood'));
     assert.strictEqual(q.length, 1);
     assert.strictEqual(q[0].amount, '600');           // hanya yang terbeli (700 − 100)
     assert.strictEqual(q[0].source, 'zap');

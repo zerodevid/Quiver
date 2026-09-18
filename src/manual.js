@@ -1,4 +1,5 @@
 'use strict';
+const { ensureChain } = require('./networks');
 // LP manual dan swap manual.
 //
 // Keduanya memakai jalur eksekusi yang SAMA dengan penyalinan otomatis:
@@ -13,10 +14,10 @@
 // berlaku kalau disetel — itu memang aturan atas posisi kita sendiri.
 const { ethers } = require('ethers');
 const m = require('./v3math');
-const { ADDR, QUOTES, TOPIC } = require('./chain');
+const { TOPIC } = require('./chain');
 const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd } = require('./policy');
 
-const isNative = (t) => String(t).toLowerCase() === ADDR.native;
+const isNative = (t) => /^0x0{40}$/.test(String(t).toLowerCase());
 const lc = (t) => String(t || '').toLowerCase();
 
 // Uniswap v4 memakai bit tertinggi uint24 sebagai penanda FEE DINAMIS, bukan angka
@@ -55,9 +56,12 @@ const feePctOf = (f) => (f == null || feeDinamis(f) ? null : Number(f) / 10000);
 
 class Manual {
   constructor({ engine, store, chain, rpc, log }) {
+    chain = ensureChain(chain);
     this.engine = engine; this.store = store; this.chain = chain; this.rpc = rpc;
+    this.network = chain.network;
     this.log = log || (() => {});
   }
+  sk(name) { return `${name}:${this.network}`; }
 
   // ---- daftar pool yang dikenal -------------------------------------------
   // Sumbernya pool yang sudah pernah terlihat saat memantau target, jadi user tidak
@@ -65,11 +69,12 @@ class Manual {
   async pools({ q = '', limit = 40, withPrice = false } = {}) {
     const rows = this.store.all(`
       SELECT p.*, t0.symbol s0, t0.decimals d0, t1.symbol s1, t1.decimals d1,
-             (SELECT MAX(ts) FROM actions a WHERE a.pool_ref = p.pool_ref) last_ts
+             (SELECT MAX(ts) FROM actions a WHERE a.chain = p.chain AND a.pool_ref = p.pool_ref) last_ts
       FROM pools p
-      LEFT JOIN tokens t0 ON t0.address = p.token0
-      LEFT JOIN tokens t1 ON t1.address = p.token1
-      ORDER BY COALESCE(last_ts, 0) DESC, p.first_block DESC`);
+      LEFT JOIN tokens t0 ON t0.chain = p.chain AND t0.address = p.token0
+      LEFT JOIN tokens t1 ON t1.chain = p.chain AND t1.address = p.token1
+      WHERE p.chain=?
+      ORDER BY COALESCE(last_ts, 0) DESC, p.first_block DESC`, this.network);
     const cari = String(q).trim().toLowerCase();
     const out = [];
     for (const r of rows) {
@@ -102,7 +107,7 @@ class Manual {
   }
 
   async poolByRef(poolRef) {
-    const r = this.store.get('SELECT * FROM pools WHERE pool_ref=?', poolRef);
+    const r = this.store.get('SELECT * FROM pools WHERE chain=? AND pool_ref=?', this.network, poolRef);
     if (!r) return null;
     const [t0, t1] = await this.chain.tokens([r.token0, r.token1]);
     const qs = this.chain.quoteSideOf(r.token0, r.token1);
@@ -155,11 +160,11 @@ class Manual {
     // uint24 indexed fee, int24 tickSpacing, address pool) di kontrak factory.
     // Pool v3 dirujuk lewat ALAMAT kontraknya (poolRef = pool), sama seperti di
     // jalur penyalinan.
-    const serapV3 = (logs) => {
+    const serapV3 = (logs, venue = 'v3') => {
       for (const l of logs) {
         const pool = ('0x' + word(l, 1).toString(16).padStart(40, '0')).toLowerCase();
         found.set(pool, {
-          poolRef: pool, poolAddr: pool, venue: 'v3',
+          poolRef: pool, poolAddr: pool, venue,
           token0: addrT(l.topics[1]), token1: addrT(l.topics[2]),
           fee: Number(BigInt(l.topics[3])),
           tickSpacing: Number(BigInt.asIntN(24, word(l, 0))),
@@ -171,15 +176,18 @@ class Manual {
 
     // Token bisa di sisi mana pun (urutan ditentukan nilai alamat), jadi tiap
     // venue ditanya dua kali. v4 mengindeks kedua currency di topik 2 & 3; v3 di 1 & 2.
-    let factory = null;
-    try { factory = await this.chain.factoryV3(); } catch { /* v3 dilewati, v4 tetap jalan */ }
+    // Tiap venue v3 (Uniswap v3, dan PancakeSwap v3 di BSC) punya factory sendiri.
+    const factories = [];
+    for (const v of this.chain.venues) {
+      try { factories.push([v.key, await this.chain.factoryV3(v.npmV3)]); } catch { /* venue ini dilewati, v4 tetap jalan */ }
+    }
     const kueri = [
-      [ADDR.poolManager, [TOPIC.initializeV4, null, pad(t), null], serapV4],
-      [ADDR.poolManager, [TOPIC.initializeV4, null, null, pad(t)], serapV4],
-      ...(factory ? [
-        [factory, [TOPIC.poolCreatedV3, pad(t), null], serapV3],
-        [factory, [TOPIC.poolCreatedV3, null, pad(t)], serapV3],
-      ] : []),
+      [this.chain.ADDR.poolManager, [TOPIC.initializeV4, null, pad(t), null], serapV4],
+      [this.chain.ADDR.poolManager, [TOPIC.initializeV4, null, null, pad(t)], serapV4],
+      ...factories.flatMap(([venue, factory]) => [
+        [factory, [TOPIC.poolCreatedV3, pad(t), null], (logs) => serapV3(logs, venue)],
+        [factory, [TOPIC.poolCreatedV3, null, pad(t)], (logs) => serapV3(logs, venue)],
+      ]),
     ];
     const CHUNK = 400_000;
     const potong = Math.ceil(head / CHUNK);
@@ -211,14 +219,14 @@ class Manual {
     // metadata tokennya (nama dipakai di mana-mana).
     for (const p of list) {
       this.store.run(
-        `INSERT INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks,pool_addr,first_block)
-         VALUES(?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(pool_ref) DO UPDATE SET
+        `INSERT INTO pools(chain,pool_ref,venue,token0,token1,fee,tick_spacing,hooks,pool_addr,first_block)
+         VALUES(?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(chain,pool_ref) DO UPDATE SET
            token0=excluded.token0, token1=excluded.token1, fee=excluded.fee,
            tick_spacing=excluded.tick_spacing, hooks=excluded.hooks,
            pool_addr=COALESCE(excluded.pool_addr, pools.pool_addr),
            first_block=COALESCE(pools.first_block, excluded.first_block)`,
-        p.poolRef, p.venue, p.token0, p.token1, p.fee, p.tickSpacing, p.hooks, p.poolAddr || null, p.firstBlock);
+        this.network, p.poolRef, p.venue, p.token0, p.token1, p.fee, p.tickSpacing, p.hooks, p.poolAddr || null, p.firstBlock);
     }
     const metas = await this.chain.tokens([...new Set(list.flatMap((p) => [p.token0, p.token1]))]);
     const byAddr = new Map(metas.map((m) => [lc(m.address), m]));
@@ -227,7 +235,7 @@ class Manual {
     // lalu ditinggalkan tidak jarang, dan masuk ke sana sama saja membuang gas.
     let liq = [];
     try {
-      liq = await Promise.all(list.map((p) => (p.venue === 'v3'
+      liq = await Promise.all(list.map((p) => (this.chain.isV3Venue(p.venue)
         ? this.rpc.ethCallMany([{ to: p.poolRef, data: '0x1a686502' }])   // liquidity()
           .then(([w]) => (w && w !== '0x' ? BigInt(w) : null)).catch(() => null)
         : this.chain.poolLiquidity(p.poolRef).catch(() => null))));
@@ -300,7 +308,7 @@ class Manual {
     const nominal = Number(usd);
     if (!Number.isFinite(nominal) || nominal <= 0) return { error: 'nominal harus angka lebih dari nol' };
 
-    const slot0 = p.venue === 'v3'
+    const slot0 = this.chain.isV3Venue(p.venue)
       ? await this.chain.slot0V3(p.poolAddr || p.poolRef)
       : await this.chain.slot0V4(p.poolRef);
     if (!slot0) return { error: 'harga pool tidak terbaca sekarang' };
@@ -441,13 +449,13 @@ class Manual {
   gasReserve() { return this.engine.exec?.gasReserveCached ? this.engine.exec.gasReserveCached() : BigInt(this.engine.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000); }
 
   daftarSaldo(p) {
-    return [...new Set([ADDR.native, ADDR.usdg, ADDR.weth, ...(p ? [lc(p.token0), lc(p.token1)] : [])])];
+    return [...new Set([this.chain.ADDR.native, this.chain.ADDR.usdg, this.chain.ADDR.weth, ...(p ? [lc(p.token0), lc(p.token1)] : [])])];
   }
 
   // Dolar per SATU token (sudah disesuaikan desimal). Aset kuotasi dari harga ETH;
   // token pasangan pool dari harga pool terhadap aset kuotasinya. Selain itu: null.
   usdPer(tok, p, slot0) {
-    const t = lc(tok), q = QUOTES[t];
+    const t = lc(tok), q = this.chain.QUOTES[t];
     if (q) return q.kind === 'eth' ? this.engine.ethUsd : 1;
     if (!p || !slot0 || p.quoteSide == null) return null;
     const px = m.priceFromSqrt(slot0.sqrtPriceX96, p.dec0, p.dec1);   // token1 per token0
@@ -460,8 +468,8 @@ class Manual {
   // Satu baris token: jumlah manusiawi + nilai dolarnya.
   kaki(tok, raw, p, slot0) {
     const t = lc(tok);
-    const dec = QUOTES[t]?.decimals ?? (p && t === lc(p.token0) ? p.dec0 : p && t === lc(p.token1) ? p.dec1 : 18);
-    const symbol = QUOTES[t]?.symbol ?? (p && t === lc(p.token0) ? p.symbol0 : p && t === lc(p.token1) ? p.symbol1 : '?');
+    const dec = this.chain.QUOTES[t]?.decimals ?? (p && t === lc(p.token0) ? p.dec0 : p && t === lc(p.token1) ? p.dec1 : 18);
+    const symbol = this.chain.QUOTES[t]?.symbol ?? (p && t === lc(p.token0) ? p.symbol0 : p && t === lc(p.token1) ? p.symbol1 : '?');
     const amount = Number(raw) / 10 ** dec;
     const u = this.usdPer(t, p, slot0);
     return { token: t, symbol, amount, usd: u != null ? amount * u : null };
@@ -475,7 +483,7 @@ class Manual {
    */
   saldoDari(bal, p, slot0, sesudah = null) {
     const tokens = this.daftarSaldo(p).map((t) => {
-      const row = { ...this.kaki(t, bal.get(t) || 0n, p, slot0), isQuote: !!QUOTES[t], native: isNative(t) };
+      const row = { ...this.kaki(t, bal.get(t) || 0n, p, slot0), isQuote: !!this.chain.QUOTES[t], native: isNative(t) };
       if (sesudah) {
         const s = this.kaki(t, sesudah.get(t) ?? bal.get(t) ?? 0n, p, slot0);
         row.sesudah = s.amount; row.sesudahUsd = s.usd;
@@ -491,7 +499,7 @@ class Manual {
     const p = poolRef ? await this.poolByRef(poolRef) : null;
     let slot0 = null;
     if (p) {
-      slot0 = await (p.venue === 'v3' ? this.chain.slot0V3(p.poolAddr || p.poolRef) : this.chain.slot0V4(p.poolRef))
+      slot0 = await (this.chain.isV3Venue(p.venue) ? this.chain.slot0V3(p.poolAddr || p.poolRef) : this.chain.slot0V4(p.poolRef))
         .catch(() => null);
     }
     const bal = await eng.exec.balances(this.daftarSaldo(p));
@@ -523,45 +531,46 @@ class Manual {
     const fmt = (t, raw) => { const k = this.kaki(t, raw, p, slot0); return `${k.amount.toPrecision(4)} ${k.symbol}`; };
 
     // 0a. isi gas dari WETH kalau ETH native di bawah cadangan (engine.topUpGas)
-    if (get(ADDR.native) < reserve && get(ADDR.weth) > 0n) {
-      const kurang = reserve - get(ADDR.native), ada = get(ADDR.weth);
+    if (get(this.chain.ADDR.native) < reserve && get(this.chain.ADDR.weth) > 0n) {
+      const kurang = reserve - get(this.chain.ADDR.native), ada = get(this.chain.ADDR.weth);
       const amt = ada < kurang ? ada : kurang;
-      if (amt * 10n >= reserve) catat('buka_bungkus', ADDR.weth, amt, ADDR.native, amt, { gas: true });
+      if (amt * 10n >= reserve) catat('buka_bungkus', this.chain.ADDR.weth, amt, this.chain.ADDR.native, amt, { gas: true });
     }
 
     // 0. kas ke aset kuotasi pool ini (engine.ensureQuoteAsset)
     const qTok = lc(plan.quoteSide === 0 ? plan.token0 : plan.token1);
-    const qDec = QUOTES[qTok]?.decimals ?? 18;
+    const qDec = this.chain.QUOTES[qTok]?.decimals ?? 18;
     const needQ = BigInt(Math.ceil((plan.valueQuote || 0) * 1.05 * 10 ** qDec));
     const funded = avail(plan.token0) >= BigInt(plan.amount0Max) && avail(plan.token1) >= BigInt(plan.amount1Max);
     if (!funded && needQ > 0n && avail(qTok) < needQ) {
-      if (qTok === ADDR.weth || qTok === ADDR.native) {
-        const lain = qTok === ADDR.weth ? ADDR.native : ADDR.weth;
+      if (qTok === this.chain.ADDR.weth || qTok === this.chain.ADDR.native) {
+        const lain = qTok === this.chain.ADDR.weth ? this.chain.ADDR.native : this.chain.ADDR.weth;
         const want = needQ - avail(qTok), ada = avail(lain);
-        if (ada > 0n) catat(qTok === ADDR.weth ? 'bungkus' : 'buka_bungkus', lain, ada < want ? ada : want, qTok, ada < want ? ada : want);
+        if (ada > 0n) catat(qTok === this.chain.ADDR.weth ? 'bungkus' : 'buka_bungkus', lain, ada < want ? ada : want, qTok, ada < want ? ada : want);
       }
       if (avail(qTok) < needQ) {
-        const wantEth = qTok === ADDR.native || qTok === ADDR.weth;
-        const payTok = wantEth ? ADDR.usdg : ADDR.native, outTok = wantEth ? ADDR.native : ADDR.usdg;
+        const wantEth = qTok === this.chain.ADDR.native || qTok === this.chain.ADDR.weth;
+        const payTok = wantEth ? this.chain.ADDR.usdg : this.chain.ADDR.native, outTok = wantEth ? this.chain.ADDR.native : this.chain.ADDR.usdg;
         const short = needQ - avail(qTok);
         const k = 1 + slip / 10000;
+        const uDec = this.chain.usdgDecimals;
         const pay = wantEth
-          ? BigInt(Math.ceil((Number(short) / 1e18) * eng.ethUsd * 1e6 * k))
-          : BigInt(Math.ceil((Number(short) / 1e6 / eng.ethUsd) * 1e18 * k));
+          ? BigInt(Math.ceil((Number(short) / 1e18) * eng.ethUsd * 10 ** uDec * k))
+          : BigInt(Math.ceil((Number(short) / 10 ** uDec / eng.ethUsd) * 1e18 * k));
         // Kas ETH untuk jembatan = ETH native di atas cadangan + WETH (dibuka seperlunya).
-        const bisa = wantEth ? avail(payTok) : avail(ADDR.native) + get(ADDR.weth);
+        const bisa = wantEth ? avail(payTok) : avail(this.chain.ADDR.native) + get(this.chain.ADDR.weth);
         if (!rules.swap.enabled) masalah.push('kas ada di aset kuotasi lain dan auto-swap dimatikan — pembukaan akan berhenti');
         else if (bisa < pay) masalah.push(`kas kurang untuk jembatan: butuh ~${fmt(payTok, pay)}, bisa dipakai ${fmt(payTok, bisa)}${wantEth ? '' : ' (ETH+WETH)'}`);
-        if (!wantEth && rules.swap.enabled && avail(ADDR.native) < pay && get(ADDR.weth) > 0n) {
-          const kurang = pay - avail(ADDR.native), ada = get(ADDR.weth);
+        if (!wantEth && rules.swap.enabled && avail(this.chain.ADDR.native) < pay && get(this.chain.ADDR.weth) > 0n) {
+          const kurang = pay - avail(this.chain.ADDR.native), ada = get(this.chain.ADDR.weth);
           const amt = ada < kurang ? ada : kurang;
-          catat('buka_bungkus', ADDR.weth, amt, ADDR.native, amt);
+          catat('buka_bungkus', this.chain.ADDR.weth, amt, this.chain.ADDR.native, amt);
         }
         catat('jembatan', payTok, pay, outTok, short, { maxLossBps: rules.swap.max_price_impact_bps, taksiran: true });
-        if (qTok === ADDR.weth) {
-          const want = needQ - avail(qTok), ada = avail(ADDR.native);
+        if (qTok === this.chain.ADDR.weth) {
+          const want = needQ - avail(qTok), ada = avail(this.chain.ADDR.native);
           const amt = ada < want ? ada : want;
-          if (amt > 0n) catat('bungkus', ADDR.native, amt, qTok, amt);
+          if (amt > 0n) catat('bungkus', this.chain.ADDR.native, amt, qTok, amt);
         }
       }
     }
@@ -606,7 +615,7 @@ class Manual {
     const qs = this.chain.quoteSideOf(a.token0, a.token1);
     return {
       poolRef: a.pool_ref, venue: a.venue, token0: a.token0, token1: a.token1,
-      fee: a.fee, tickSpacing: a.tick_spacing, hooks: a.hooks, poolAddr: a.venue === 'v3' ? a.pool_ref : null,
+      fee: a.fee, tickSpacing: a.tick_spacing, hooks: a.hooks, poolAddr: this.chain.isV3Venue(a.venue) ? a.pool_ref : null,
       symbol0: toks[0].symbol, symbol1: toks[1].symbol, dec0: toks[0].decimals, dec1: toks[1].decimals,
       pair: `${toks[0].symbol}/${toks[1].symbol}`, feePct: feePctOf(a.fee), dynamicFee: feeDinamis(a.fee),
       hasHooks: !!(a.hooks && !/^0x0+$/i.test(a.hooks)),
@@ -616,14 +625,14 @@ class Manual {
 
   // Syarat aksi yang boleh diikuti, tanpa RPC — dipakai juga daftar Aktivitas.
   static followable(a, openMirrors) {
-    return (a.kind === 'increase' || a.kind === 'mint') && (a.venue === 'v4' || a.venue === 'v3')
+    return (a.kind === 'increase' || a.kind === 'mint') && (a.venue === 'v4' || String(a.venue).endsWith('v3'))
       && (a.verdict === 'skip' || a.verdict === 'error') && !!a.token_id && !!a.pool_ref
       && a.tick_lower != null && a.tick_upper != null
       && !openMirrors.has(`${a.target}|${a.token_id}`);
   }
 
   openMirrorKeys() {
-    return new Set(this.store.all("SELECT target, mirror_of FROM positions WHERE status='open' AND target IS NOT NULL AND mirror_of IS NOT NULL")
+    return new Set(this.store.all("SELECT target, mirror_of FROM positions WHERE chain=? AND status='open' AND target IS NOT NULL AND mirror_of IS NOT NULL", this.network)
       .map((r) => `${r.target}|${r.mirror_of}`));
   }
 
@@ -633,7 +642,7 @@ class Manual {
     if (!a) return { error: 'aksi tidak ditemukan' };
     if (!a.verdict) return { error: 'aksi ini masih diproses bot — tunggu keputusannya' };
     if (a.verdict === 'copy' || a.verdict === 'dry') return { error: 'aksi ini sudah disalin bot' };
-    const mirror = this.store.get("SELECT id FROM positions WHERE status='open' AND target=? AND mirror_of=?", a.target, a.token_id ?? '');
+    const mirror = this.store.get("SELECT id FROM positions WHERE chain=? AND status='open' AND target=? AND mirror_of=?", this.network, a.target, a.token_id ?? '');
     if (mirror) return { error: `posisi target ini sudah diikuti oleh posisi #${mirror.id}` };
     if (!Manual.followable(a, new Set())) return { error: 'hanya aksi buka/tambah posisi yang gagal atau dilewati yang bisa diikuti' };
     // Target yang sudah keluar penuh: posisi kita tidak punya pasangan untuk diikuti keluar.
@@ -644,8 +653,8 @@ class Manual {
     const rules = this.engine.rulesFrom(a.target);
     let botPlan = null;
     try { botPlan = a.plan ? JSON.parse(a.plan) : null; } catch { /* rencana lama */ }
-    const t = this.store.get('SELECT label FROM targets WHERE address=?', a.target);
-    const k = a.quote_symbol === 'ETH' || a.quote_symbol === 'WETH' ? this.engine.ethUsd : 1;
+    const t = this.store.get('SELECT label FROM targets WHERE chain=? AND address=?', this.network, a.target);
+    const k = this.chain.isEthLike(a.quote_symbol) ? this.engine.ethUsd : 1;
     const targetUsd = a.value_quote != null ? a.value_quote * k : null;
     // Nominal usulan: ukuran yang tadinya direncanakan bot (sudah melewati batas-batas),
     // kalau tidak ada — batas per posisi, tidak lebih besar dari posisi target.
@@ -693,7 +702,7 @@ class Manual {
     const d = await this.planFollow({ actionId, usd });
     if (d.error) throw new Error(d.error);
     const { plan, follow: f } = d;
-    const slot0 = plan.venue === 'v3' ? await this.chain.slot0V3(plan.poolRef) : await this.chain.slot0V4(plan.poolRef);
+    const slot0 = this.chain.isV3Venue(plan.venue) ? await this.chain.slot0V3(plan.poolRef) : await this.chain.slot0V4(plan.poolRef);
     const r = await eng.executeEntry(plan, { target: f.target, tokenId: f.tokenId, slot0 });
     const late = lamanya(Date.now() - f.ts);
     const prev = this.store.get('SELECT id, verdict, reason FROM decisions WHERE action_id=? ORDER BY id DESC LIMIT 1', f.actionId);
@@ -774,7 +783,7 @@ class Manual {
     const eng = this.engine;
     if (!eng.exec.address()) throw new Error('belum ada wallet');
     if (eng.dryRun()) throw new Error('mode simulasi: tidak mengirim transaksi');
-    const slot0 = plan.venue === 'v3'
+    const slot0 = this.chain.isV3Venue(plan.venue)
       ? await this.chain.slot0V3(plan.poolRef)
       : await this.chain.slot0V4(plan.poolRef);
     const r = await eng.executeEntry(plan, { target: null, slot0 });
@@ -788,16 +797,16 @@ class Manual {
   // Pemanggil wajib memastikan alamatnya memang token: daftar ini tidak memeriksa.
   customTokens() {
     try {
-      const v = JSON.parse(this.store.getState('swap_tokens', '[]'));
+      const v = JSON.parse(this.store.getState(this.sk('swap_tokens'), '[]'));
       return Array.isArray(v) ? v.map(lc).filter((a) => /^0x[0-9a-f]{40}$/.test(a)) : [];
     } catch { return []; }
   }
   addCustomToken(a) {
     const list = this.customTokens().filter((x) => x !== lc(a));
-    this.store.setState('swap_tokens', JSON.stringify([lc(a), ...list].slice(0, 50)));
+    this.store.setState(this.sk('swap_tokens'), JSON.stringify([lc(a), ...list].slice(0, 50)));
   }
   removeCustomToken(a) {
-    this.store.setState('swap_tokens', JSON.stringify(this.customTokens().filter((x) => x !== lc(a))));
+    this.store.setState(this.sk('swap_tokens'), JSON.stringify(this.customTokens().filter((x) => x !== lc(a))));
   }
 
   // Token ERC-20 apa saja yang pernah MASUK ke wallet bot — dari log Transfer yang
@@ -812,7 +821,7 @@ class Manual {
     const me = this.engine.exec.address();
     if (!me) return [];
     let st = { wallet: null, block: 0, tokens: [] };
-    try { st = { ...st, ...JSON.parse(this.store.getState('swap_seen', '{}')) }; } catch { /* mulai dari nol */ }
+    try { st = { ...st, ...JSON.parse(this.store.getState(this.sk('swap_seen'), '{}')) }; } catch { /* mulai dari nol */ }
     if (st.wallet !== me) st = { wallet: me, block: 0, tokens: [] };
     // Pindai ulang paling cepat tiap 60 detik: halaman Swap dan bot Telegram
     // memanggil held() berulang, dan getLogs adalah panggilan RPC yang paling berat.
@@ -828,7 +837,7 @@ class Manual {
         // ERC-20 memakai data untuk jumlahnya.
         for (const l of logs) if (l.topics.length === 3 && l.address) set.add(lc(l.address));
         st = { wallet: me, block: head, ts: Date.now(), tokens: [...set].slice(-300) };
-        this.store.setState('swap_seen', JSON.stringify(st));
+        this.store.setState(this.sk('swap_seen'), JSON.stringify(st));
       }
     } catch (e) { this.log(`pindai token wallet gagal: ${e.message}`); }
     return st.tokens;
@@ -840,9 +849,9 @@ class Manual {
   // Saldo dibaca sekali, satu batch.
   async held() {
     const eng = this.engine;
-    const set = new Set([ADDR.native, ADDR.usdg, ADDR.weth]);
+    const set = new Set([this.chain.ADDR.native, this.chain.ADDR.usdg, this.chain.ADDR.weth]);
     const custom = new Set(this.customTokens());
-    for (const r of this.store.all("SELECT token0, token1 FROM positions WHERE status='open'")) {
+    for (const r of this.store.all("SELECT token0, token1 FROM positions WHERE chain=? AND status='open'", this.network)) {
       if (r.token0) set.add(lc(r.token0));
       if (r.token1) set.add(lc(r.token1));
     }
@@ -853,7 +862,7 @@ class Manual {
     // yang sudah habis dijual tidak perlu memenuhi pemilih.
     const extra = new Set();
     for (const a of await this.seenTokens()) if (!set.has(a)) extra.add(a);
-    for (const r of this.store.all('SELECT address FROM tokens')) if (r.address && !set.has(lc(r.address))) extra.add(lc(r.address));
+    for (const r of this.store.all('SELECT address FROM tokens WHERE chain=?', this.network)) if (r.address && !set.has(lc(r.address))) extra.add(lc(r.address));
     const list = [...set, ...extra];
     const bal = await eng.exec.balances(list);
     const keep = list.filter((a) => set.has(a) || (bal.get(a) || 0n) > 0n);
@@ -863,11 +872,11 @@ class Manual {
     return keep.map((a) => {
       const meta = byAddr.get(a) || {};
       const raw = bal.get(a) || 0n;
-      const dec = meta.decimals ?? (QUOTES[a]?.decimals ?? 18);
+      const dec = meta.decimals ?? (this.chain.QUOTES[a]?.decimals ?? 18);
       return {
-        address: a, symbol: meta.symbol || QUOTES[a]?.symbol || a.slice(0, 8), decimals: dec,
+        address: a, symbol: meta.symbol || this.chain.QUOTES[a]?.symbol || a.slice(0, 8), decimals: dec,
         raw: raw.toString(), amount: Number(raw) / 10 ** dec,
-        isQuote: !!QUOTES[a], native: isNative(a), custom: custom.has(a) && !QUOTES[a],
+        isQuote: !!this.chain.QUOTES[a], native: isNative(a), custom: custom.has(a) && !this.chain.QUOTES[a],
       };
     }).sort((x, y) => (y.isQuote ? 1 : 0) - (x.isQuote ? 1 : 0) || y.amount - x.amount);
   }
@@ -905,7 +914,7 @@ class Manual {
     const { Kyber } = require('./kyber');
     // Sisi keluar dinilai sendiri kalau itu aset kuotasi: tanpa ini "biaya rute" kosong
     // persis pada token tipis yang paling perlu dilihat angkanya sebelum menekan tukar.
-    const qo = QUOTES[lc(tokenOut)] || null;
+    const qo = this.chain.QUOTES[lc(tokenOut)] || null;
     const loss = Kyber.lossBps(q, qo && { usdPerOut: qo.kind === 'eth' ? eng.ethUsd : 1, outDecimals: qo.decimals });
     const rules = eng.rulesFrom(null);
     return {

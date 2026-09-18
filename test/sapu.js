@@ -175,7 +175,7 @@ const antre = (e) => e.leftovers().map((x) => x.token);
   await t('token yang ditambahkan manual di halaman Swap ikut tersapu', async () => {
     const LUAR = '0x' + 'b9'.repeat(20);   // tidak ada di tabel tokens, tidak pernah dipindai
     const d = dunia({ saldo: { [LUAR]: 100n * E18 }, harga: { [LUAR]: 6.9 } });
-    d.store.setState('swap_tokens', JSON.stringify([LUAR]));
+    d.store.setState('swap_tokens:robinhood', JSON.stringify([LUAR]));
     await d.e.sweepWallet();
     assert.deepEqual(antre(d.e), [LUAR], 'token manual tidak terpindai');
   });
@@ -183,7 +183,7 @@ const antre = (e) => e.leftovers().map((x) => x.token);
   await t('token yang pernah masuk wallet (swap_seen) ikut tersapu', async () => {
     const LUAR = '0x' + 'b8'.repeat(20);
     const d = dunia({ saldo: { [LUAR]: 100n * E18 }, harga: { [LUAR]: 6.9 } });
-    d.store.setState('swap_seen', JSON.stringify({ wallet: ME, block: 1, tokens: [LUAR] }));
+    d.store.setState('swap_seen:robinhood', JSON.stringify({ wallet: ME, block: 1, tokens: [LUAR] }));
     await d.e.sweepWallet();
     assert.deepEqual(antre(d.e), [LUAR]);
   });
@@ -191,7 +191,7 @@ const antre = (e) => e.leftovers().map((x) => x.token);
   await t('swap_seen milik wallet LAIN diabaikan', async () => {
     const LUAR = '0x' + 'b7'.repeat(20);
     const d = dunia({ saldo: { [LUAR]: 100n * E18 }, harga: { [LUAR]: 6.9 } });
-    d.store.setState('swap_seen', JSON.stringify({ wallet: '0x' + '99'.repeat(20), block: 1, tokens: [LUAR] }));
+    d.store.setState('swap_seen:robinhood', JSON.stringify({ wallet: '0x' + '99'.repeat(20), block: 1, tokens: [LUAR] }));
     await d.e.sweepWallet();
     assert.deepEqual(antre(d.e), [], 'daftar token wallet lain ikut dipakai');
   });

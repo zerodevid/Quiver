@@ -1,7 +1,8 @@
 'use strict';
 // Pembaca state pool + cache metadata token, untuk v4 (PoolManager.extsload) dan v3 (slot0).
 const { ethers } = require('ethers');
-const { ADDR, ABI, QUOTES } = require('./chain');
+const { ABI } = require('./chain');
+const { build } = require('./networks');
 const m = require('./v3math');
 
 const coder = ethers.AbiCoder.defaultAbiCoder();
@@ -32,11 +33,25 @@ function unpackSlot0(word) {
 }
 
 class Chain {
-  constructor(rpc, store, log = console.log) {
+  constructor(rpc, store, log = console.log, network = 'robinhood') {
     this.rpc = rpc; this.store = store; this.log = log;
+    const p = build(network);
+    this.network = p.network; this.label = p.label;
+    this.ADDR = p.ADDR; this.QUOTES = p.QUOTES; this.CHAIN_ID = p.CHAIN_ID;
+    this.venues = p.venues; this.nativeSymbol = p.nativeSymbol; this.kyberPath = p.kyberPath;
+    this.nativeUsdMode = p.nativeUsd?.mode || 'v4pool'; this.verified = p.verified;
+    this.legacyGasPricing = p.legacyGasPricing; this.blockMs = p.blockMs;
+    this.dexscreener = p.dexscreener; this.geckoterminal = p.geckoterminal; this.explorer = p.explorer;
+    this.explorerApiV2 = p.explorerApiV2; this.explorerTokenUrl = p.explorerTokenUrl; this.alchemyHost = p.alchemyHost;
+    // Slot generik "stablecoin kuotasi" (usdg) dan "wrapped native" (weth): simbol dan
+    // desimalnya beda per chain (USDG 6 desimal vs USDT BSC 18 desimal).
+    this.usdgSymbol = this.QUOTES[this.ADDR.usdg]?.symbol || 'USDG';
+    this.usdgDecimals = this.QUOTES[this.ADDR.usdg]?.decimals ?? 6;
+    this.wethSymbol = this.QUOTES[this.ADDR.weth]?.symbol || 'WETH';
     this.tokenCache = new Map();
     this.poolCache = new Map();
     this.v3Factory = null;
+    this.v3FactoryByNpm = new Map(); // npmV3 addr -> factory addr (venue lain, mis. pancakev3)
     this.blockTimeCache = { block: 0, ts: 0 };
   }
 
@@ -46,8 +61,8 @@ class Chain {
     const miss = [];
     for (const a of want) {
       if (this.tokenCache.has(a)) continue;
-      if (a === ADDR.native) { this.tokenCache.set(a, { address: a, symbol: 'ETH', name: 'Ether', decimals: 18 }); continue; }
-      const row = this.store.get('SELECT * FROM tokens WHERE address=?', a);
+      if (a === this.ADDR.native) { this.tokenCache.set(a, { address: a, symbol: this.nativeSymbol, name: this.nativeSymbol, decimals: 18 }); continue; }
+      const row = this.store.get('SELECT * FROM tokens WHERE chain=? AND address=?', this.network, a);
       if (row) { this.tokenCache.set(a, row); continue; }
       miss.push(a);
     }
@@ -78,8 +93,8 @@ class Chain {
         // belum mengenal kontraknya) — dipakai sekali, tidak disimpan, dibaca ulang nanti.
         if (d == null && t.symbol === '?') return this.tokenCache.set(a, { ...t, unverified: true });
         this.tokenCache.set(a, t);
-        this.store.run('INSERT OR REPLACE INTO tokens(address,symbol,name,decimals,seen_ts) VALUES(?,?,?,?,?)',
-          t.address, t.symbol, t.name, t.decimals, Date.now());
+        this.store.run('INSERT OR REPLACE INTO tokens(chain,address,symbol,name,decimals,seen_ts) VALUES(?,?,?,?,?,?)',
+          this.network, t.address, t.symbol, t.name, t.decimals, Date.now());
       });
     }
     const out = want.map((a) => this.tokenCache.get(a));
@@ -91,14 +106,14 @@ class Chain {
   // ---- state pool v4 ------------------------------------------------------
   async slot0V4(poolId) {
     const slot = ethers.keccak256(coder.encode(['bytes32', 'uint256'], [poolId, POOLS_SLOT]));
-    const [w] = await this.rpc.ethCallMany([{ to: ADDR.poolManager, data: IF_EXT.encodeFunctionData('extsload', [slot]) }]);
+    const [w] = await this.rpc.ethCallMany([{ to: this.ADDR.poolManager, data: IF_EXT.encodeFunctionData('extsload', [slot]) }]);
     if (!w || /^0x0*$/.test(w)) return null;
     const s = unpackSlot0(w);
     return s.sqrtPriceX96 > 0n ? s : null;
   }
   async slot0V4Many(poolIds) {
     const calls = poolIds.map((id) => ({
-      to: ADDR.poolManager,
+      to: this.ADDR.poolManager,
       data: IF_EXT.encodeFunctionData('extsload', [ethers.keccak256(coder.encode(['bytes32', 'uint256'], [id, POOLS_SLOT]))]),
     }));
     const res = await this.rpc.ethCallMany(calls);
@@ -115,21 +130,28 @@ class Chain {
     } catch { return null; }
   }
 
-  async factoryV3() {
-    if (this.v3Factory) return this.v3Factory;
-    const cached = this.store.getState('v3_factory');
-    if (cached) { this.v3Factory = cached; return cached; }
+  // npmAddr: alamat NonfungiblePositionManager venue yang dimaksud (default: venue
+  // 'v3' utama). Dipakai untuk venue v3 kedua di chain yang punya lebih dari satu
+  // deployment v3 (mis. BSC: Uniswap v3 dan PancakeSwap v3).
+  async factoryV3(npmAddr = this.ADDR.npmV3) {
+    if (npmAddr === this.ADDR.npmV3 && this.v3Factory) return this.v3Factory;
+    if (this.v3FactoryByNpm.has(npmAddr)) return this.v3FactoryByNpm.get(npmAddr);
+    const stateKey = `v3_factory:${this.network}:${npmAddr}`;
+    const cached = this.store.getState(stateKey);
+    if (cached) { this.v3FactoryByNpm.set(npmAddr, cached); if (npmAddr === this.ADDR.npmV3) this.v3Factory = cached; return cached; }
     const IF = new ethers.Interface(ABI.npmV3);
-    const [w] = await this.rpc.ethCallMany([{ to: ADDR.npmV3, data: IF.encodeFunctionData('factory') }]);
-    this.v3Factory = ethers.getAddress('0x' + w.slice(-40)).toLowerCase();
-    this.store.setState('v3_factory', this.v3Factory);
-    return this.v3Factory;
+    const [w] = await this.rpc.ethCallMany([{ to: npmAddr, data: IF.encodeFunctionData('factory') }]);
+    const factory = ethers.getAddress('0x' + w.slice(-40)).toLowerCase();
+    this.v3FactoryByNpm.set(npmAddr, factory);
+    if (npmAddr === this.ADDR.npmV3) this.v3Factory = factory;
+    this.store.setState(stateKey, factory);
+    return factory;
   }
 
-  async poolV3Addr(token0, token1, fee) {
-    const key = `${token0}|${token1}|${fee}`.toLowerCase();
+  async poolV3Addr(token0, token1, fee, npmAddr = this.ADDR.npmV3) {
+    const key = `${npmAddr}|${token0}|${token1}|${fee}`.toLowerCase();
     if (this.poolCache.has(key)) return this.poolCache.get(key);
-    const f = await this.factoryV3();
+    const f = await this.factoryV3(npmAddr);
     const [w] = await this.rpc.ethCallMany([{ to: f, data: IF_FACT.encodeFunctionData('getPool', [token0, token1, fee]) }]);
     const addr = w && w !== '0x' ? ethers.getAddress('0x' + w.slice(-40)).toLowerCase() : null;
     this.poolCache.set(key, addr);
@@ -139,9 +161,23 @@ class Chain {
   // ---- penilaian ----------------------------------------------------------
   // Nilai posisi dalam aset kuotasi pool. Kalau tidak ada sisi kuotasi yang dikenal,
   // nilai ditaksir lewat sisi kuotasi saja (token spekulatif dihargai dari harga pool).
+  // Simbol yang dikonversi lewat harga native chain (chain.ethUsd()) — native coin-nya
+  // sendiri dan bentuk wrapped-nya. Nama field/metode ini dipertahankan "eth" karena
+  // konsepnya sama persis di semua chain EVM (BNB/WBNB di BSC, dst).
+  isEthLike(symbol) {
+    return symbol === this.nativeSymbol || symbol === this.QUOTES[this.ADDR.weth]?.symbol;
+  }
+
+  // Venue v3 (posisi NFT lewat NonfungiblePositionManager): 'v3' di semua chain, plus
+  // deployment v3 lain di chain yang punya lebih dari satu (BSC: 'pancakev3'). Semua
+  // berjalan lewat jalur kode v3 yang sama, cuma alamat NPM/factory-nya berbeda.
+  isV3Venue(venue) { return this.venues.some((v) => v.key === venue); }
+  venueOf(venue) { return this.venues.find((v) => v.key === venue) || null; }
+  npmFor(venue) { return this.venueOf(venue)?.npmV3 || this.ADDR.npmV3; }
+
   quoteSideOf(token0, token1) {
-    const q0 = QUOTES[(token0 || '').toLowerCase()];
-    const q1 = QUOTES[(token1 || '').toLowerCase()];
+    const q0 = this.QUOTES[(token0 || '').toLowerCase()];
+    const q1 = this.QUOTES[(token1 || '').toLowerCase()];
     if (q0) return { side: 0, ...q0 };
     if (q1) return { side: 1, ...q1 };
     return null;
@@ -167,7 +203,7 @@ class Chain {
       this.blockTimeCache = { block: parseInt(b.number, 16), ts: parseInt(b.timestamp, 16) * 1000, at: now };
     }
     const c = this.blockTimeCache;
-    return Math.round(c.ts + (block - c.block) * 101);
+    return Math.round(c.ts + (block - c.block) * this.blockMs);
   }
 }
 
@@ -179,7 +215,8 @@ module.exports = { Chain, computePoolId, unpackSlot0, POOLS_SLOT };
 const { TOPIC } = require('./chain');
 
 Chain.prototype.findEthUsdgPools = async function findEthUsdgPools(headBlock, blocks = 4_000_000) {
-  const cached = this.store.getState('eth_usdg_pools');
+  const stateKey = `eth_usdg_pools:${this.network}`;
+  const cached = this.store.getState(stateKey);
   if (cached) { try { return JSON.parse(cached); } catch { /* lanjut pindai */ } }
   const pad = (a) => '0x' + a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
   const found = [];
@@ -189,8 +226,8 @@ Chain.prototype.findEthUsdgPools = async function findEthUsdgPools(headBlock, bl
     let logs = [];
     try {
       logs = await this.rpc.getLogs({
-        address: ADDR.poolManager,
-        topics: [TOPIC.initializeV4, null, pad(ADDR.native), pad(ADDR.usdg)],
+        address: this.ADDR.poolManager,
+        topics: [TOPIC.initializeV4, null, pad(this.ADDR.native), pad(this.ADDR.usdg)],
         fromBlock: '0x' + lo.toString(16), toBlock: '0x' + hi.toString(16),
       });
     } catch { /* rentang terlalu besar: lewati potongan ini */ }
@@ -206,13 +243,17 @@ Chain.prototype.findEthUsdgPools = async function findEthUsdgPools(headBlock, bl
     if (lo === 0) break;
     hi = lo - 1;
   }
-  if (found.length) this.store.setState('eth_usdg_pools', JSON.stringify(found));
+  if (found.length) this.store.setState(stateKey, JSON.stringify(found));
   return found;
 };
 
 Chain.prototype.ethUsd = async function ethUsd(fallback = 2500) {
   const now = Date.now();
   if (this._ethUsd && now - this._ethUsdAt < 60_000) return this._ethUsd;
+  // Chain tanpa pool native/kuotasi yang bisa dipercaya (belum ditelusuri seperti
+  // Robinhood Chain): harga dipegang manual lewat config (prices.*_usd), tidak
+  // ditebak dari pool yang belum diverifikasi dalamnya.
+  if (this.nativeUsdMode !== 'v4pool') return this._ethUsd ?? fallback;
   try {
     const head = await this.rpc.blockNumber();
     const pools = await this.findEthUsdgPools(head);
@@ -222,7 +263,7 @@ Chain.prototype.ethUsd = async function ethUsd(fallback = 2500) {
     const slots = await this.slot0V4Many(list.map((p) => p.poolId));
     // pilih pool dengan likuiditas terbesar
     const liqCalls = list.map((p) => ({
-      to: ADDR.poolManager,
+      to: this.ADDR.poolManager,
       data: IF_EXT.encodeFunctionData('extsload', [
         '0x' + (BigInt(ethers.keccak256(coder.encode(['bytes32', 'uint256'], [p.poolId, POOLS_SLOT]))) + 3n).toString(16).padStart(64, '0'),
       ]),
@@ -266,12 +307,12 @@ Chain.pickEthPrice = function pickEthPrice(cands) {
 Chain.prototype.ethUsdAt = async function ethUsdAt(block, fallback = 2500) {
   const now = await this.ethUsd(fallback);
   if (!this._ethPoolId || !this.rpc.hasArchive()) return now;
-  const key = `ethusd:${block}`;
+  const key = `ethusd:${this.network}:${block}`;
   const cached = this.store.getState(key);
   if (cached) return Number(cached);
   try {
     const slot = ethers.keccak256(coder.encode(['bytes32', 'uint256'], [this._ethPoolId, POOLS_SLOT]));
-    const w = await this.rpc.callAt(ADDR.poolManager, IF_EXT.encodeFunctionData('extsload', [slot]), block);
+    const w = await this.rpc.callAt(this.ADDR.poolManager, IF_EXT.encodeFunctionData('extsload', [slot]), block);
     const s = unpackSlot0(w);
     const price = m.priceFromSqrt(s.sqrtPriceX96, 18, 6);
     if (price > 100 && price < 100_000) { this.store.setState(key, String(price)); return price; }
@@ -286,7 +327,7 @@ Chain.prototype.ethUsdAt = async function ethUsdAt(block, fallback = 2500) {
 // Event Initialize mengindeks poolId, jadi pencarian mundurnya murah, dan hasilnya
 // disimpan supaya cukup sekali per pool.
 Chain.prototype.poolKeyOfId = async function poolKeyOfId(poolId, hintBlock = null, hintTx = null) {
-  const row = this.store.get('SELECT token0,token1,fee,tick_spacing,hooks FROM pools WHERE pool_ref=?', poolId);
+  const row = this.store.get('SELECT token0,token1,fee,tick_spacing,hooks FROM pools WHERE chain=? AND pool_ref=?', this.network, poolId);
   if (row && row.token0) {
     return { currency0: row.token0, currency1: row.token1, fee: row.fee, tickSpacing: row.tick_spacing, hooks: row.hooks };
   }
@@ -310,7 +351,7 @@ Chain.prototype.poolKeyOfId = async function poolKeyOfId(poolId, hintBlock = nul
     let logs = [];
     try {
       logs = await this.rpc.getLogs({
-        address: ADDR.poolManager, topics: [TOPIC.initializeV4, poolId],
+        address: this.ADDR.poolManager, topics: [TOPIC.initializeV4, poolId],
         fromBlock: '0x' + lo.toString(16), toBlock: '0x' + Math.min(head, anchor + 10).toString(16),
       });
     } catch { continue; }
@@ -326,8 +367,8 @@ Chain.prototype.poolKeyOfId = async function poolKeyOfId(poolId, hintBlock = nul
       hooks: '0x' + ethers.hexlify(b.slice(2 * 32 + 12, 3 * 32)).slice(2),
     };
     this.store.run(
-      'INSERT OR REPLACE INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block) VALUES(?,?,?,?,?,?,?,?)',
-      poolId, 'v4', pk.currency0, pk.currency1, pk.fee, pk.tickSpacing, pk.hooks, parseInt(l.blockNumber, 16));
+      'INSERT OR REPLACE INTO pools(chain,pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block) VALUES(?,?,?,?,?,?,?,?,?)',
+      this.network, poolId, 'v4', pk.currency0, pk.currency1, pk.fee, pk.tickSpacing, pk.hooks, parseInt(l.blockNumber, 16));
     return pk;
   }
   return null;
@@ -355,8 +396,8 @@ Chain.prototype.poolKeyFromCalldata = async function poolKeyFromCalldata(poolId,
     };
     if (computePoolId(pk) !== poolId) continue;
     this.store.run(
-      'INSERT OR REPLACE INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks) VALUES(?,?,?,?,?,?,?)',
-      poolId, 'v4', pk.currency0, pk.currency1, pk.fee, pk.tickSpacing, pk.hooks);
+      'INSERT OR REPLACE INTO pools(chain,pool_ref,venue,token0,token1,fee,tick_spacing,hooks) VALUES(?,?,?,?,?,?,?,?)',
+      this.network, poolId, 'v4', pk.currency0, pk.currency1, pk.fee, pk.tickSpacing, pk.hooks);
     return pk;
   }
   return null;
@@ -366,26 +407,26 @@ Chain.prototype.poolKeyFromCalldata = async function poolKeyFromCalldata(poolId,
 // Event Initialize mengindeks poolId, jadi pencarian per-pool murah. Kalau tidak
 // ketemu di jendela pindai, pool itu lebih tua dari jendela (dan itu aman).
 Chain.prototype.poolAgeMinutes = async function poolAgeMinutes(poolId, windowBlocks = 900_000) {
-  const row = this.store.get('SELECT first_block, first_ts FROM pools WHERE pool_ref=?', poolId);
+  const row = this.store.get('SELECT first_block, first_ts FROM pools WHERE chain=? AND pool_ref=?', this.network, poolId);
   if (row && row.first_ts) return (Date.now() - row.first_ts) / 60000;
   const head = await this.rpc.blockNumber();
   const from = Math.max(0, head - windowBlocks);
   let logs = [];
   try {
     logs = await this.rpc.getLogs({
-      address: ADDR.poolManager, topics: [TOPIC.initializeV4, poolId],
+      address: this.ADDR.poolManager, topics: [TOPIC.initializeV4, poolId],
       fromBlock: '0x' + from.toString(16), toBlock: '0x' + head.toString(16),
     });
   } catch { return Infinity; }
   if (!logs.length) {
     // lebih tua dari jendela: catat sebagai "sangat tua" supaya tidak dipindai ulang
-    this.store.run('INSERT OR REPLACE INTO pools(pool_ref,venue,first_block,first_ts) VALUES(?,?,?,?)',
-      poolId, 'v4', from, Date.now() - windowBlocks * 101);
-    return (windowBlocks * 101) / 60000;
+    this.store.run('INSERT OR REPLACE INTO pools(chain,pool_ref,venue,first_block,first_ts) VALUES(?,?,?,?,?)',
+      this.network, poolId, 'v4', from, Date.now() - windowBlocks * this.blockMs);
+    return (windowBlocks * this.blockMs) / 60000;
   }
   const b = parseInt(logs[0].blockNumber, 16);
   const ts = await this.blockTs(b);
-  this.store.run('INSERT OR REPLACE INTO pools(pool_ref,venue,first_block,first_ts) VALUES(?,?,?,?)', poolId, 'v4', b, ts);
+  this.store.run('INSERT OR REPLACE INTO pools(chain,pool_ref,venue,first_block,first_ts) VALUES(?,?,?,?,?)', this.network, poolId, 'v4', b, ts);
   return (Date.now() - ts) / 60000;
 };
 
@@ -394,7 +435,7 @@ Chain.prototype.poolLiquidityMany = async function poolLiquidityMany(poolIds) {
   if (!poolIds.length) return [];
   const words = await this.rpc.ethCallMany(poolIds.map((id) => {
     const slot = BigInt(ethers.keccak256(coder.encode(['bytes32', 'uint256'], [id, POOLS_SLOT]))) + 3n;
-    return { to: ADDR.poolManager, data: IF_EXT.encodeFunctionData('extsload', ['0x' + slot.toString(16).padStart(64, '0')]) };
+    return { to: this.ADDR.poolManager, data: IF_EXT.encodeFunctionData('extsload', ['0x' + slot.toString(16).padStart(64, '0')]) };
   }));
   return words.map((w) => (w && w !== '0x' ? BigInt(w) & ((1n << 128n) - 1n) : 0n));
 };
@@ -447,9 +488,9 @@ Chain.prototype.markSqrtForPair = async function markSqrtForPair(token0, token1,
   let val = null;
   try {
     const rows = this.store.all(`SELECT pool_ref, venue, token0, token1, pool_addr FROM pools
-      WHERE ((token0=? AND token1=?) OR (token0=? AND token1=?)) AND pool_ref<>?`, a, b, b, a, String(skipRef || '').toLowerCase());
+      WHERE chain=? AND ((token0=? AND token1=?) OR (token0=? AND token1=?)) AND pool_ref<>?`, this.network, a, b, b, a, String(skipRef || '').toLowerCase());
     const v4 = rows.filter((r) => r.venue === 'v4');
-    const v3 = rows.filter((r) => r.venue === 'v3' && r.pool_addr);
+    const v3 = rows.filter((r) => this.isV3Venue(r.venue) && r.pool_addr);
     const [slots4, liq4, res3] = await Promise.all([
       v4.length ? this.slot0V4Many(v4.map((r) => r.pool_ref)) : [],
       v4.length ? this.poolLiquidityMany(v4.map((r) => r.pool_ref)) : [],
@@ -505,7 +546,7 @@ Chain.prototype.bestEthUsdgPool = async function bestEthUsdgPool() {
   // Satu batch untuk semua likuiditas — versi sebelumnya menembak 8 kali berurutan
   // dan itu yang bikin timeout saat indexer sedang sibuk.
   const liqWords = await this.rpc.ethCallMany(list.map((p) => ({
-    to: ADDR.poolManager,
+    to: this.ADDR.poolManager,
     data: IF_EXT.encodeFunctionData('extsload', [
       '0x' + (BigInt(ethers.keccak256(coder.encode(['bytes32', 'uint256'], [p.poolId, POOLS_SLOT]))) + 3n)
         .toString(16).padStart(64, '0'),
@@ -520,7 +561,7 @@ Chain.prototype.bestEthUsdgPool = async function bestEthUsdgPool() {
       best = {
         poolId: list[i].poolId,
         poolKey: {
-          currency0: ADDR.native, currency1: ADDR.usdg,
+          currency0: this.ADDR.native, currency1: this.ADDR.usdg,
           fee: list[i].fee, tickSpacing: list[i].tickSpacing, hooks: list[i].hooks,
         },
         slot0: s, liquidity: L,

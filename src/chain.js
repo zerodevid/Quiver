@@ -1,29 +1,10 @@
 'use strict';
-// Alamat kontrak dan konstanta Robinhood Chain (chainId 4663).
-// Semua diverifikasi langsung dari chain + Blockscout pada 2026-09-10.
-
-const ADDR = {
-  // Uniswap v4
-  poolManager:     '0x8366a39cc670b4001a1121b8f6a443a643e40951',
-  posmV4:          '0x58daec3116aae6d93017baaea7749052e8a04fa7', // "Uniswap v4 Positions NFT" / UNI-V4-POSM
-  // Uniswap v3
-  npmV3:           '0x73991a25c818bf1f1128deaab1492d45638de0d3', // NonfungiblePositionManager
-  // Router
-  universalRouter: '0x8876789976decbfcbbbe364623c63652db8c0904', // mendukung V4_POSITION_MANAGER_CALL (0x14)
-  dexRouter:       '0x6e2a35a7ad683cf634d91492d73bb7ff774c6919', // agregator (dagSwapTo)
-  permit2:         '0x000000000022d473030f116ddee9f6b43ac78ba3',
-  // Aset kuotasi yang dikenal
-  usdg:            '0x5fc5360d0400a0fd4f2af552add042d716f1d168', // USDG, 6 desimal
-  weth:            '0x0bd7d308f8e1639fab988df18a8011f41eacad73', // WETH9 (dipakai pool v3)
-  native:          '0x0000000000000000000000000000000000000000', // ETH native = currency 0x0 di v4
-};
-
-// Aset yang kita anggap "uang" — dipakai untuk menilai posisi dan sebagai kas zap.
-const QUOTES = {
-  [ADDR.native]: { symbol: 'ETH',  decimals: 18, kind: 'eth' },
-  [ADDR.usdg]:   { symbol: 'USDG', decimals: 6,  kind: 'usd' },
-  [ADDR.weth]:   { symbol: 'WETH', decimals: 18, kind: 'eth' },
-};
+// Konstanta level-protokol yang SAMA di semua chain: hash signature event,
+// opcode UniversalRouter/Actions v4, dan bentuk ABI. Ini berlaku di deployment
+// Uniswap v3/v4 standar mana pun dan fork verbatim seperti PancakeSwap v3.
+//
+// Alamat kontrak dan hal yang beda per chain (ADDR, QUOTES, CHAIN_ID, daftar
+// venue v3) pindah ke networks.js — lihat `build(network)` di sana.
 
 const TOPIC = {
   // v4 PoolManager
@@ -131,4 +112,9 @@ const ABI = {
   ],
 };
 
-module.exports = { ADDR, QUOTES, TOPIC, ACT, CMD, SENTINEL, ABI, CHAIN_ID: 4663 };
+// ADDR/QUOTES/CHAIN_ID Robinhood Chain tetap diekspor untuk uji & skrip lama. Kode
+// produksi TIDAK memakainya lagi — alamat dibaca dari instance Chain (chain.ADDR),
+// yang bisa Robinhood maupun BSC.
+const { build } = require('./networks');
+const LEGACY = build('robinhood');
+module.exports = { TOPIC, ACT, CMD, SENTINEL, ABI, ADDR: LEGACY.ADDR, QUOTES: LEGACY.QUOTES, CHAIN_ID: LEGACY.CHAIN_ID };

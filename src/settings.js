@@ -1,4 +1,5 @@
 'use strict';
+const { ensureChain } = require('./networks');
 // Rute halaman Pengaturan: wallet bot, endpoint RPC (termasuk yang memakai API key),
 // gas, notifikasi, mesin, dan token akses dasbor.
 //
@@ -19,7 +20,7 @@ const net = require('node:net');
 const dns = require('node:dns').promises;
 const { ethers } = require('ethers');
 const { RpcPool } = require('./rpc');
-const { ADDR, TOPIC, CHAIN_ID } = require('./chain');
+const { TOPIC } = require('./chain');
 const { writeCfg, envName, privateKeyFromEnv } = require('./env');
 
 const MASK = '••••';
@@ -72,8 +73,11 @@ function maskHeaders(h) {
   return out;
 }
 
-// Menguji sebuah endpoint dan menyarankan bendera yang cocok untuknya.
-async function probeRpc({ url, headers }) {
+// Menguji sebuah endpoint dan menyarankan bendera yang cocok untuknya. `chain` =
+// profil chain yang diharapkan (pools.js Chain): chain id, alamat kontrak untuk uji.
+async function probeRpc({ url, headers }, chain) {
+  chain = ensureChain(chain);
+  const { ADDR, CHAIN_ID } = chain;
   try { await assertSafeRpcUrl(url); } catch (e) { return { url: maskUrl(url), usable: false, summary: e.message }; }
   const pool = new RpcPool([{ url, headers, max_batch: 10 }], () => {}, { max_inflight: 1 });
   const hex = (n) => '0x' + n.toString(16);
@@ -109,9 +113,13 @@ async function probeRpc({ url, headers }) {
   return { ...out, usable: out.call.ok, suggest, summary: parts.join(' · ') };
 }
 
-function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody, telegram, sessionCookie }) {
+// `engines`: semua mesin di proses ini (wallet yang sama dipakai semua chain — ganti
+// kunci harus me-reset dompet tiap mesin). `chain` = profil chain tampilan ini.
+function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie }) {
+  chain = ensureChain(chain || engine?.chain);
   // Lewat writeCfg: nilai dari .env tidak boleh ikut tertulis ke config.json.
   const saveCfg = () => writeCfg(cfgPath, cfg);
+  const resetWallets = () => { for (const e of engines) e.exec.resetWallet(); };
   // Kolom yang diatur .env akan ditimpa lagi saat restart — mengubahnya dari dasbor
   // cuma menipu, jadi ditolak dengan petunjuk di mana mengubahnya.
   const lockedByEnv = (dotted) => {
@@ -132,7 +140,7 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
     const bak = backupKey(p);
     fs.writeFileSync(p, pk, { mode: 0o600 });
     fs.chmodSync(p, 0o600);
-    exec.resetWallet();
+    resetWallets();
     const addr = exec.address();
     if (addr) store.setState('wallet_address', addr);
     log(`kunci wallet diganti -> ${addr}${bak ? ` (kunci lama dicadangkan: ${path.basename(bak)})` : ''}`);
@@ -204,19 +212,23 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
       let perms = null;
       try { perms = (fs.statSync(p).mode & 0o777).toString(8); } catch { perms = null; }
       let balances = null;
+      const { ADDR } = chain;
       if (addr) {
         try {
           const b = await exec.balances([ADDR.native, ADDR.usdg, ADDR.weth]);
           balances = {
             eth: Number(b.get(ADDR.native) || 0n) / 1e18,
-            usdg: Number(b.get(ADDR.usdg) || 0n) / 1e6,
+            usdg: Number(b.get(ADDR.usdg) || 0n) / 10 ** chain.usdgDecimals,
             weth: Number(b.get(ADDR.weth) || 0n) / 1e18,
+            symbols: { eth: chain.nativeSymbol, usdg: chain.usdgSymbol, weth: chain.wethSymbol },
           };
         } catch { balances = null; }
       }
       const backups = fs.existsSync(path.dirname(p))
         ? fs.readdirSync(path.dirname(p)).filter((f) => f.startsWith(path.basename(p) + '.bak-')).length : 0;
       return {
+        chain: { key: chain.network, label: chain.label, chainId: chain.CHAIN_ID, nativeSymbol: chain.nativeSymbol, verified: chain.verified,
+          venues: ['v4', ...chain.venues.map((v) => v.key)] },
         wallet: {
           address: addr, keyFile: cfg.wallet?.key_file || '~/.lpcopy/key',
           hasKey: privateKeyFromEnv() || fs.existsSync(p), perms, balances, backups,
@@ -275,7 +287,7 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
       if (!addr) return { error: 'Tidak ada wallet terpasang.' };
       if (String(b.confirm || '').toLowerCase() !== addr) return { error: 'Ketik alamat wallet persis untuk konfirmasi.' };
       const bak = backupKey(exec.keyPath());
-      exec.resetWallet();
+      resetWallets();
       store.setState('wallet_address', '');
       log(`kunci wallet dilepas (dicadangkan: ${bak ? path.basename(bak) : '-'})`);
       return { ok: true, backup: bak ? path.basename(bak) : null };
@@ -339,7 +351,7 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
         url = e.url; headers = e.headers || null;
       }
       if (!/^https:\/\/.+/i.test(String(url || ''))) return { error: 'URL harus diawali https://' };
-      return probeRpc({ url, headers });
+      return probeRpc({ url, headers }, chain);
     },
     'POST /api/settings/rpc': async (req) => {
       const b = await readBody(req);
@@ -364,14 +376,16 @@ function createSettingsRoutes({ engine, store, cfg, cfgPath, rpc, log, readBody,
         if (base?.catatan && !e.url) out.catatan = base.catatan;
         next.push(out);
       }
-      if (!next.some((e) => !e.no_logs && !e.max_log_blocks)) {
-        return { error: 'Harus ada setidaknya satu endpoint yang sanggup getLogs rentang besar (tanpa batas blok) — riset wallet membutuhkannya.' };
-      }
+      // Riset wallet butuh getLogs rentang besar. Di chain yang endpoint publiknya
+      // semua membatasi rentang (BSC), ini peringatan — pemindaian tetap jalan per
+      // potongan, hanya lebih lambat.
+      const warning = next.some((e) => !e.no_logs && !e.max_log_blocks) ? null
+        : 'Tidak ada endpoint yang sanggup getLogs rentang besar (tanpa batas blok) — riset wallet akan berjalan per potongan dan lebih lambat.';
       cfg.chain.endpoints = next;
       saveCfg();
       rpc.reconfigure(next);
-      log(`daftar RPC diperbarui (${next.length} endpoint)`);
-      return { ok: true, rpc: rpcView() };
+      log(`daftar RPC ${chain.label} diperbarui (${next.length} endpoint)`);
+      return { ok: true, rpc: rpcView(), warning };
     },
 
     // ---- gas / notifikasi / mesin ----

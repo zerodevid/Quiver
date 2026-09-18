@@ -1,4 +1,5 @@
 'use strict';
+const { ensureChain } = require('./networks');
 // Pembangun & pengirim transaksi. Menandatangani sendiri lalu kirim lewat RpcPool
 // (tidak memakai JsonRpcProvider ethers karena transport kita perlu penyematan IP
 // hasil DoH untuk menembus pembajakan DNS ISP).
@@ -7,7 +8,7 @@
 // (tx 0x1283eeab… : actions 0x0111 = DECREASE_LIQUIDITY + TAKE_PAIR), bukan tebakan.
 const { ethers } = require('ethers');
 const fs = require('node:fs');
-const { ADDR, ABI, ACT, CMD, SENTINEL, CHAIN_ID } = require('./chain');
+const { ABI, ACT, CMD, SENTINEL } = require('./chain');
 const m = require('./v3math');
 
 const coder = ethers.AbiCoder.defaultAbiCoder();
@@ -29,6 +30,7 @@ function actionsHex(list) {
 
 class Executor {
   constructor({ rpc, store, chain, cfg, log }) {
+    chain = ensureChain(chain);
     this.rpc = rpc; this.store = store; this.chain = chain; this.cfg = cfg;
     this.log = log || console.log;
     this.wallet = null;
@@ -82,6 +84,10 @@ class Executor {
     let maxFeePerGas = (gp * mult) / 100n;
     const base = blk?.result?.baseFeePerGas ? BigInt(blk.result.baseFeePerGas) : 0n;
     if (base * 2n + prio > maxFeePerGas) maxFeePerGas = base * 2n + prio;
+    // Chain dengan base fee selalu 0 (BSC): harga gas efektif tx tipe-2 = tip-nya saja,
+    // jadi tip harus setinggi harga gas yang diminta jaringan — tip 0,01 gwei tidak
+    // akan pernah dimasukkan validator BSC (minimum ~0,1 gwei).
+    const legacy = !!this.chain?.legacyGasPricing;
     // Batas atas (gas.max_fee_gwei, bawaan 10 gwei ≈ 100× harga normal chain ini). Tanpa
     // ini satu endpoint yang melaporkan eth_gasPrice/baseFee ngawur membuat maxFee ×
     // batas gas melampaui saldo: SEMUA tx ditolak "insufficient funds" — termasuk tx
@@ -93,8 +99,9 @@ class Executor {
       if (base + prio > cap) throw new Error(`harga gas ${Executor.gwei(base)} gwei di atas batas gas.max_fee_gwei (${Executor.gwei(cap)}) — naikkan batasnya kalau memang sedang mahal`);
       maxFeePerGas = cap;
     }
-    this.lastFees = { maxFeePerGas, maxPriorityFeePerGas: prio, ts: Date.now() };
-    return { maxFeePerGas, maxPriorityFeePerGas: prio };
+    const tip = legacy ? maxFeePerGas : prio;
+    this.lastFees = { maxFeePerGas, maxPriorityFeePerGas: tip, ts: Date.now() };
+    return { maxFeePerGas, maxPriorityFeePerGas: tip };
   }
   static maxFeeCap(cfg) {
     const g = Number(cfg?.gas?.max_fee_gwei);
@@ -195,7 +202,7 @@ class Executor {
       this.nonce = this.nonce == null ? pending : Math.max(this.nonce, pending);
       const fees = await this.gasFees();
       const req = {
-        chainId: CHAIN_ID, type: 2, to: tx.to, data: tx.data,
+        chainId: this.chain.CHAIN_ID, type: 2, to: tx.to, data: tx.data,
         value: tx.value ? BigInt(tx.value) : 0n,
         nonce: this.nonce, gasLimit, ...fees,
       };
@@ -242,8 +249,8 @@ class Executor {
         hash = hash0;
       }
       this.nonce = req.nonce + 1;
-      this.store.run('INSERT OR REPLACE INTO txs(hash,ts,kind,status,detail) VALUES(?,?,?,?,?)',
-        hash, Date.now(), kind, 'pending', detail ? JSON.stringify(detail) : null);
+      this.store.run('INSERT OR REPLACE INTO txs(chain,hash,ts,kind,status,detail) VALUES(?,?,?,?,?,?)',
+        this.chain.network, hash, Date.now(), kind, 'pending', detail ? JSON.stringify(detail) : null);
       return hash;
     }
   }
@@ -314,18 +321,19 @@ class Executor {
   // ---- izin token ---------------------------------------------------------
   // v4 PositionManager menarik token lewat Permit2: perlu ERC20.approve(permit2)
   // sekali, lalu permit2.approve(token, posm). v3 NPM menarik langsung.
-  async ensureAllowance(token, { forV4 }) {
+  async ensureAllowance(token, { forV4, venue = 'v3' }) {
     if (isNative(token)) return [];
     const owner = this.address();
-    const key = `${token}|${forV4 ? 'v4' : 'v3'}`;
+    const npm = this.chain.npmFor(venue);
+    const key = `${token}|${forV4 ? 'v4' : venue}`;
     if (this.approved.has(key)) return [];
     const txs = [];
     if (forV4) {
-      const [a1] = await this.rpc.ethCallMany([{ to: token, data: IF_ERC20.encodeFunctionData('allowance', [owner, ADDR.permit2]) }]);
+      const [a1] = await this.rpc.ethCallMany([{ to: token, data: IF_ERC20.encodeFunctionData('allowance', [owner, this.chain.ADDR.permit2]) }]);
       if (!a1 || BigInt(a1) < MAX_UINT256 / 2n) {
-        txs.push({ to: token, data: IF_ERC20.encodeFunctionData('approve', [ADDR.permit2, MAX_UINT256]), kind: 'approve_erc20' });
+        txs.push({ to: token, data: IF_ERC20.encodeFunctionData('approve', [this.chain.ADDR.permit2, MAX_UINT256]), kind: 'approve_erc20' });
       }
-      const [a2] = await this.rpc.ethCallMany([{ to: ADDR.permit2, data: IF_PERMIT2.encodeFunctionData('allowance', [owner, token, ADDR.posmV4]) }]);
+      const [a2] = await this.rpc.ethCallMany([{ to: this.chain.ADDR.permit2, data: IF_PERMIT2.encodeFunctionData('allowance', [owner, token, this.chain.ADDR.posmV4]) }]);
       let need = true;
       if (a2 && a2 !== '0x') {
         try {
@@ -334,12 +342,12 @@ class Executor {
         } catch { need = true; }
       }
       if (need) {
-        txs.push({ to: ADDR.permit2, data: IF_PERMIT2.encodeFunctionData('approve', [token, ADDR.posmV4, MAX_UINT160, MAX_UINT48]), kind: 'approve_permit2' });
+        txs.push({ to: this.chain.ADDR.permit2, data: IF_PERMIT2.encodeFunctionData('approve', [token, this.chain.ADDR.posmV4, MAX_UINT160, MAX_UINT48]), kind: 'approve_permit2' });
       }
     } else {
-      const [a1] = await this.rpc.ethCallMany([{ to: token, data: IF_ERC20.encodeFunctionData('allowance', [owner, ADDR.npmV3]) }]);
+      const [a1] = await this.rpc.ethCallMany([{ to: token, data: IF_ERC20.encodeFunctionData('allowance', [owner, npm]) }]);
       if (!a1 || BigInt(a1) < MAX_UINT256 / 2n) {
-        txs.push({ to: token, data: IF_ERC20.encodeFunctionData('approve', [ADDR.npmV3, MAX_UINT256]), kind: 'approve_erc20' });
+        txs.push({ to: token, data: IF_ERC20.encodeFunctionData('approve', [npm, MAX_UINT256]), kind: 'approve_erc20' });
       }
     }
     if (!txs.length) this.approved.add(key);
@@ -353,11 +361,11 @@ class Executor {
     const key = `${token}|ur`;
     if (this.approved.has(key)) return [];
     const txs = [];
-    const [a1] = await this.rpc.ethCallMany([{ to: token, data: IF_ERC20.encodeFunctionData('allowance', [owner, ADDR.permit2]) }]);
+    const [a1] = await this.rpc.ethCallMany([{ to: token, data: IF_ERC20.encodeFunctionData('allowance', [owner, this.chain.ADDR.permit2]) }]);
     if (!a1 || BigInt(a1) < MAX_UINT256 / 2n) {
-      txs.push({ to: token, data: IF_ERC20.encodeFunctionData('approve', [ADDR.permit2, MAX_UINT256]), kind: 'approve_erc20' });
+      txs.push({ to: token, data: IF_ERC20.encodeFunctionData('approve', [this.chain.ADDR.permit2, MAX_UINT256]), kind: 'approve_erc20' });
     }
-    const [a2] = await this.rpc.ethCallMany([{ to: ADDR.permit2, data: IF_PERMIT2.encodeFunctionData('allowance', [owner, token, ADDR.universalRouter]) }]);
+    const [a2] = await this.rpc.ethCallMany([{ to: this.chain.ADDR.permit2, data: IF_PERMIT2.encodeFunctionData('allowance', [owner, token, this.chain.ADDR.universalRouter]) }]);
     let need = true;
     if (a2 && a2 !== '0x') {
       try {
@@ -365,7 +373,7 @@ class Executor {
         need = BigInt(d[0]) < MAX_UINT160 / 2n || BigInt(d[1]) < BigInt(Math.floor(Date.now() / 1000) + 86400);
       } catch { need = true; }
     }
-    if (need) txs.push({ to: ADDR.permit2, data: IF_PERMIT2.encodeFunctionData('approve', [token, ADDR.universalRouter, MAX_UINT160, MAX_UINT48]), kind: 'approve_permit2' });
+    if (need) txs.push({ to: this.chain.ADDR.permit2, data: IF_PERMIT2.encodeFunctionData('approve', [token, this.chain.ADDR.universalRouter, MAX_UINT160, MAX_UINT48]), kind: 'approve_permit2' });
     if (!txs.length) this.approved.add(key);
     return txs;
   }
@@ -377,7 +385,7 @@ class Executor {
     const out = new Map();
     const erc = tokens.filter((t) => !isNative(t));
     if (tokens.some(isNative)) {
-      out.set(ADDR.native, BigInt(await this.rpc.call('eth_getBalance', [owner, block])));
+      out.set(this.chain.ADDR.native, BigInt(await this.rpc.call('eth_getBalance', [owner, block])));
     }
     if (erc.length) {
       const res = await this.rpc.ethCallMany(erc.map((t) => ({ to: t, data: IF_ERC20.encodeFunctionData('balanceOf', [owner]) })), block);
@@ -410,7 +418,7 @@ class Executor {
     }
     const unlockData = coder.encode(['bytes', 'bytes[]'], [actionsHex(acts), params]);
     return {
-      to: ADDR.posmV4,
+      to: this.chain.ADDR.posmV4,
       data: IF_POSM.encodeFunctionData('modifyLiquidities', [unlockData, deadlineSec]),
       value: value.toString(),
     };
@@ -442,12 +450,12 @@ class Executor {
       params.push(coder.encode(['address', 'address'], [pk.currency0, owner]));
     }
     const unlockData = coder.encode(['bytes', 'bytes[]'], [actionsHex(acts), params]);
-    return { to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('modifyLiquidities', [unlockData, deadlineSec]), value: value.toString() };
+    return { to: this.chain.ADDR.posmV4, data: IF_POSM.encodeFunctionData('modifyLiquidities', [unlockData, deadlineSec]), value: value.toString() };
   }
 
   buildV3Increase(plan, deadlineSec) {
     return {
-      to: ADDR.npmV3,
+      to: this.chain.npmFor(plan.venue),
       data: IF_NPM.encodeFunctionData('increaseLiquidity', [[
         plan.tokenId, plan.amount0Max, plan.amount1Max, plan.amount0Min || 0, plan.amount1Min || 0, deadlineSec,
       ]]),
@@ -470,7 +478,7 @@ class Executor {
     }
     params.push(coder.encode(['address', 'address', 'address'], [pk.currency0, pk.currency1, owner]));
     const unlockData = coder.encode(['bytes', 'bytes[]'], [actionsHex(acts), params]);
-    return { to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('modifyLiquidities', [unlockData, deadlineSec]), value: '0' };
+    return { to: this.chain.ADDR.posmV4, data: IF_POSM.encodeFunctionData('modifyLiquidities', [unlockData, deadlineSec]), value: '0' };
   }
 
   buildV4Collect(plan, deadlineSec) {
@@ -487,11 +495,11 @@ class Executor {
       coder.encode(['address', 'address', 'address'], [pk.currency0, pk.currency1, this.address()]),
     ];
     const unlock = coder.encode(['bytes', 'bytes[]'], [actionsHex([ACT.INCREASE_LIQUIDITY, ACT.TAKE_PAIR]), params]);
-    return { to: ADDR.posmV4, value: '0', data: IF_POSM.encodeFunctionData('modifyLiquidities', [unlock, deadlineSec]) };
+    return { to: this.chain.ADDR.posmV4, value: '0', data: IF_POSM.encodeFunctionData('modifyLiquidities', [unlock, deadlineSec]) };
   }
 
   buildV3Collect(plan) {
-    return { to: ADDR.npmV3, value: '0', data: IF_NPM.encodeFunctionData('collect',
+    return { to: this.chain.npmFor(plan.venue), value: '0', data: IF_NPM.encodeFunctionData('collect',
       [[plan.tokenId, this.address(), (1n << 128n) - 1n, (1n << 128n) - 1n]]) };
   }
 
@@ -499,7 +507,7 @@ class Executor {
   buildV3Mint(plan, deadlineSec) {
     const owner = this.address();
     return {
-      to: ADDR.npmV3,
+      to: this.chain.npmFor(plan.venue),
       data: IF_NPM.encodeFunctionData('mint', [[
         plan.token0, plan.token1, plan.fee, plan.tickLower, plan.tickUpper,
         plan.amount0Max, plan.amount1Max, plan.amount0Min || 0, plan.amount1Min || 0,
@@ -515,7 +523,7 @@ class Executor {
       IF_NPM.encodeFunctionData('collect', [[plan.tokenId, owner, MAX_UINT160 >> 32n, MAX_UINT160 >> 32n]]),
     ];
     if (plan.full) calls.push(IF_NPM.encodeFunctionData('burn', [plan.tokenId]));
-    return { to: ADDR.npmV3, data: IF_NPM.encodeFunctionData('multicall', [calls]), value: '0' };
+    return { to: this.chain.npmFor(plan.venue), data: IF_NPM.encodeFunctionData('multicall', [calls]), value: '0' };
   }
 
   // ---- swap lewat UniversalRouter ----------------------------------------
@@ -533,7 +541,7 @@ class Executor {
     const input = coder.encode(['bytes', 'bytes[]'], [acts, params]);
     const commands = '0x' + CMD.V4_SWAP.toString(16).padStart(2, '0');
     return {
-      to: ADDR.universalRouter,
+      to: this.chain.ADDR.universalRouter,
       data: IF_UR.encodeFunctionData('execute', [commands, [input], deadlineSec]),
       value: isNative(inCur) ? String(amountIn) : '0',
     };
@@ -547,7 +555,7 @@ class Executor {
       [owner, amountIn, amountOutMin, path, true]);
     const commands = '0x' + CMD.V3_SWAP_EXACT_IN.toString(16).padStart(2, '0');
     return {
-      to: ADDR.universalRouter,
+      to: this.chain.ADDR.universalRouter,
       data: IF_UR.encodeFunctionData('execute', [commands, [input], deadlineSec]),
       value: '0',
     };
@@ -558,11 +566,11 @@ class Executor {
   // slippage — kurs selalu 1:1. Lebih murah dan lebih pasti daripada lewat router.
   buildWrapEth(amountWei) {
     const IF = new ethers.Interface(['function deposit() payable']);
-    return { to: ADDR.weth, data: IF.encodeFunctionData('deposit'), value: String(amountWei) };
+    return { to: this.chain.ADDR.weth, data: IF.encodeFunctionData('deposit'), value: String(amountWei) };
   }
   buildUnwrapWeth(amountWei) {
     const IF = new ethers.Interface(['function withdraw(uint256 wad)']);
-    return { to: ADDR.weth, data: IF.encodeFunctionData('withdraw', [amountWei]), value: '0' };
+    return { to: this.chain.ADDR.weth, data: IF.encodeFunctionData('withdraw', [amountWei]), value: '0' };
   }
 
   deadline(sec = 300) { return Math.floor(Date.now() / 1000) + sec; }

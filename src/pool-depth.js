@@ -1,7 +1,8 @@
 'use strict';
+const { ensureChain } = require('./networks');
 // Read a bounded initialized-tick curve and watched LPs at one block.
 const { Interface, AbiCoder, keccak256 } = require('ethers');
-const { ADDR, ABI, QUOTES } = require('./chain');
+const { ABI } = require('./chain');
 const { poolBase, tickSlot } = require('./fees');
 const { unpackSlot0, computePoolId } = require('./pools');
 const coder = AbiCoder.defaultAbiCoder();
@@ -11,11 +12,12 @@ const pos3 = new Interface(ABI.npmV3), pos4 = new Interface(ABI.posmV4);
 const multi = new Interface(['function aggregate3((address target,bool allowFailure,bytes callData)[]) payable returns((bool success,bytes returnData)[])']);
 const hex = (n) => '0x' + n.toString(16).padStart(64, '0');
 async function poolDepth({ rpc, chain, store, engine }, ref) {
+  chain = ensureChain(chain);
   const pool = store.get('SELECT * FROM pools WHERE pool_ref=?', ref) || store.get('SELECT * FROM positions WHERE pool_ref=? LIMIT 1', ref);
   if (!pool) return { error: 'Pool belum memiliki metadata kedalaman.' };
   const metas = await chain.tokens([pool.token0, pool.token1]);
-  const meta = (a) => QUOTES[a] || metas.find((m) => m.address === a);
-  const q = QUOTES[pool.token0] ? 0 : QUOTES[pool.token1] ? 1 : null;
+  const meta = (a) => chain.QUOTES[a] || metas.find((m) => m.address === a);
+  const q = chain.QUOTES[pool.token0] ? 0 : chain.QUOTES[pool.token1] ? 1 : null;
   if (q == null) return { error: 'Aset kuotasi pool belum didukung.' };
   const block = await rpc.blockNumber(), tag = '0x' + block.toString(16);
   const read = async (calls, optional = false) => {
@@ -31,7 +33,7 @@ async function poolDepth({ rpc, chain, store, engine }, ref) {
     return results;
   };
   const is4 = ref.length === 66, base = is4 ? poolBase(ref) : null;
-  const storage = (slot) => [ADDR.poolManager, ext.encodeFunctionData('extsload', [hex(slot)])];
+  const storage = (slot) => [chain.ADDR.poolManager, ext.encodeFunctionData('extsload', [hex(slot)])];
   let slot, L, spacing, fee;
   if (is4) {
     const r = await read([storage(base), storage(base + 3n)]);
@@ -64,7 +66,8 @@ async function poolDepth({ rpc, chain, store, engine }, ref) {
   for (const r of watched) add(r, r.wallet, 'target');
   for (const r of own) if (r.target && r.mirror_of) add(r, r.target, 'target', r.mirror_of);
   const limited = [...requests.values()].slice(0, 40), positions = [], unknown = requests.size > 40;
-  const intf = is4 ? pos4 : pos3, manager = is4 ? ADDR.posmV4 : ADDR.npmV3;
+  const intf = is4 ? pos4 : pos3;
+  const manager = is4 ? chain.ADDR.posmV4 : (chain.venues.find((v) => v.key === pool.venue)?.npmV3 || chain.ADDR.npmV3);
   let missingPositions = unknown;
   for (const r of limited) {
     try {
@@ -96,7 +99,7 @@ async function poolDepth({ rpc, chain, store, engine }, ref) {
   const protocol = slot.protocolFee || 0;
   const combined = (zeroForOne) => { const p = zeroForOne ? protocol & 4095 : protocol >> 12; return (p + fee - p * fee / 1e6) / 1e6; };
   return { ref, block, fetchedAt: Date.now(), tick: slot.tick, sqrt: String(slot.sqrtPriceX96), liquidity: String(L), ticks, start, end,
-    dec0: meta(pool.token0)?.decimals, dec1: meta(pool.token1)?.decimals, quoteSide: q, quoteUsd: QUOTES[q === 0 ? pool.token0 : pool.token1].kind === 'eth' ? engine.ethUsd : 1,
+    dec0: meta(pool.token0)?.decimals, dec1: meta(pool.token1)?.decimals, quoteSide: q, quoteUsd: chain.QUOTES[q === 0 ? pool.token0 : pool.token1].kind === 'eth' ? engine.ethUsd : 1,
     buyFee: combined(q === 0), sellFee: combined(q !== 0), hook: is4 && !!pool.hooks && !/^0x0{40}$/i.test(pool.hooks),
     positions, missingPositions, walletBalances, missingWallets, targetScope: 'watched_positions', dynamicFee: Number(pool.fee) >= 0x800000 };
 }

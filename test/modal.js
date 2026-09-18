@@ -109,7 +109,7 @@ const tr = ({ dir, asset = 'eth', value, block = 1500, hash, cp = EOA }) => ({
   await t('sync ulang tidak menggandakan; modal pada waktu t hanya memuat setoran sampai t', async () => {
     const d = dunia({ transfers: [tr({ dir: 'in', value: 1n * 10n ** 17n, hash: '0xa', block: 1200 }), tr({ dir: 'in', value: 1n * 10n ** 17n, hash: '0xb', block: 1800 })] });
     await d.cap.sync(W);
-    d.store.setState('deposits_scanned_to', '1000');  // paksa pindai ulang rentang yang sama
+    d.store.setState('deposits_scanned_to:robinhood', '1000');  // paksa pindai ulang rentang yang sama
     await d.cap.sync(W);
     assert.strictEqual(d.cap.rows().length, 2);
     const base = d.cap.summary().baselineUsd;

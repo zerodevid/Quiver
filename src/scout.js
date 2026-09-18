@@ -1,4 +1,5 @@
 'use strict';
+const { ensureChain } = require('./networks');
 // "Scout": nilai sebuah wallet SEBELUM dicopy.
 //
 // Yang bisa dihitung persis tanpa node arsip: posisi yang masih hidup — pasangan,
@@ -6,7 +7,7 @@
 // Rasio fee/nilai per jam adalah sinyal terkuat yang tersedia, dan angkanya eksak
 // karena dibaca dari storage pool, bukan ditaksir.
 const { ethers } = require('ethers');
-const { ADDR, TOPIC, ABI } = require('./chain');
+const { TOPIC, ABI } = require('./chain');
 const { computePoolId } = require('./pools');
 const { unclaimedV4 } = require('./fees');
 const m = require('./v3math');
@@ -63,7 +64,10 @@ async function getLogsSafe(rpc, filter, lo, hi, depth = 0) {
 }
 
 /** Kumpulkan tokenId v4 milik `owner` dari log Transfer, mundur `blocks` blok. */
-async function enumerateV4(rpc, owner, headBlock, blocks, chunk = 60_000, onProgress) {
+async function enumerateV4(chain, owner, headBlock, blocks, chunk = 60_000, onProgress, rpc = null) {
+  chain = ensureChain(chain);
+  const { ADDR } = chain;
+  rpc = rpc || chain.rpc;
   const pad = '0x' + owner.replace(/^0x/, '').toLowerCase().padStart(64, '0');
   const from = Math.max(0, headBlock - blocks);
   const events = [];
@@ -95,6 +99,8 @@ async function enumerateV4(rpc, owner, headBlock, blocks, chunk = 60_000, onProg
 /** Rincian posisi v4 yang masih hidup (dipakai scout maupun pantau target). */
 async function livePositions(rpc, chain, tokenIds) {
   if (!tokenIds.length) return [];
+  chain = ensureChain(chain);
+  const { ADDR } = chain;
   const info = await rpc.ethCallMany(tokenIds.map((id) => ({
     to: ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPoolAndPositionInfo', [BigInt(id)]),
   })));
@@ -124,8 +130,8 @@ async function livePositions(rpc, chain, tokenIds) {
   const slots = await chain.slot0V4Many(poolIds);
   const slotBy = new Map(poolIds.map((id, i) => [id, slots[i]]));
   const curTick = new Map([...slotBy.entries()].filter(([, s]) => s).map(([k, s]) => [k, s.tick]));
-  const fees = await unclaimedV4(rpc, rows.filter((r) => r.liquidity > 0n)
-    .map((r) => ({ poolId: r.poolId, tickLower: r.tickLower, tickUpper: r.tickUpper, tokenId: r.tokenId })), curTick);
+  const fees = await unclaimedV4(chain, rows.filter((r) => r.liquidity > 0n)
+    .map((r) => ({ poolId: r.poolId, tickLower: r.tickLower, tickUpper: r.tickUpper, tokenId: r.tokenId })), curTick, rpc);
   let fi = 0;
   const toks = new Set();
   for (const r of rows) { toks.add(r.poolKey.currency0); toks.add(r.poolKey.currency1); }
@@ -161,7 +167,7 @@ async function livePositions(rpc, chain, tokenIds) {
 /** Rapor lengkap satu wallet. */
 async function scoutWallet(rpc, chain, owner, { blocks = 2_600_000, ethUsd = 2500, onProgress } = {}) {
   const head = await rpc.blockNumber();
-  const { held, events } = await enumerateV4(rpc, owner, head, blocks, 150_000, onProgress);
+  const { held, events } = await enumerateV4(chain, owner, head, blocks, 150_000, onProgress);
   const ids = [...held.keys()];
   const rows = await livePositions(rpc, chain, ids);
   const usd = (q, kind) => (kind === 'eth' ? q * ethUsd : q);
@@ -169,7 +175,7 @@ async function scoutWallet(rpc, chain, owner, { blocks = 2_600_000, ethUsd = 250
   for (const r of rows) {
     const h = held.get(r.tokenId);
     r.sinceBlock = h?.sinceBlock ?? null;
-    r.ageHours = h ? ((head - h.sinceBlock) * 0.101) / 3600 : null;
+    r.ageHours = h ? ((head - h.sinceBlock) * chain.blockMs / 1000) / 3600 : null;
     r.valueUsd = usd(r.valueQuote || 0, r.quoteKind);
     r.feeUsd = usd(r.feeQuote || 0, r.quoteKind);
     r.feePerHourUsd = r.ageHours > 0 ? r.feeUsd / r.ageHours : 0;
