@@ -90,12 +90,15 @@ const CHAIN_BADGE = {
 let chainNow = CHAIN_BADGE.robinhood;
 const chainName = () => chainNow.label;
 // Maskot rubah, ekspresinya mengikuti PnL (public/mascots/*.png, PNG transparan,
-// tinggi 900 px). Dimuat sekali per proses.
-const MASCOT = Object.fromEntries(['flex', 'profit', 'loss', 'neutral'].map((m) => {
-  const png = fs.readFileSync(path.join(__dirname, '..', 'public', 'mascots', `${m}.png`));
+// tinggi 900 px). Tema piksel memakai sprite 72 px di public/mascots/pixel/ (dibuat
+// dari PNG yang sama: diperkecil, 24 warna, alpha keras) yang dibesarkan tanpa
+// penghalusan. Dimuat sekali per proses.
+const loadMascots = (dir) => Object.fromEntries(['flex', 'profit', 'loss', 'neutral'].map((m) => {
+  const png = fs.readFileSync(path.join(__dirname, '..', 'public', 'mascots', ...dir, `${m}.png`));
   const w = png.readUInt32BE(16), h = png.readUInt32BE(20);
   return [m, { href: `data:image/png;base64,${png.toString('base64')}`, w, h }];
 }));
+const MASCOT = loadMascots([]), MASCOT_PIXEL = loadMascots(['pixel']);
 // flex: untung besar (≥ FLEX_PCT% dari modal); profit/loss: arah PnL; neutral: nol / belum ada data.
 const FLEX_PCT = 20;
 const mood = (pnl, pnlPct) => (pnl > 0.005 ? (pnlPct >= FLEX_PCT ? 'flex' : 'profit') : pnl < -0.005 ? 'loss' : 'neutral');
@@ -310,7 +313,7 @@ function chartSvg(c, tint) {
 function frame(tint, right, body, mascotKey, stampText, chart) {
   const { W, H, k } = G;
   const context = right.replace(` · ${chainName()}`, '');
-  const m = MASCOT[mascotKey], mh = G.mascot.h, mw = Math.round((m.w / m.h) * mh);
+  const m = (T.sq ? MASCOT_PIXEL : MASCOT)[mascotKey], mh = G.mascot.h, mw = Math.round((m.w / m.h) * mh);
   const mx = G.mascot.cx != null ? Math.round(G.mascot.cx - mw / 2) : G.mascot.right - mw, my = G.mascot.y;
   const gcx = mx + mw / 2, gcy = my + mh / 2;
   const stops = T.bg.map((c, i) => `<stop offset="${(i / (T.bg.length - 1)).toFixed(2)}" stop-color="${c}"/>`).join('');
@@ -330,7 +333,7 @@ function frame(tint, right, body, mascotKey, stampText, chart) {
 ${txt(context, W - PAD, G.ctxY, { size: 17 * k, weight: 500, color: T.muted, anchor: 'end', base: 'middle' })}
 <line x1="${PAD}" y1="${G.ruleY}" x2="${W - PAD}" y2="${G.ruleY}" stroke="${T.line}"${T.sq ? ' stroke-width="2"' : ''}/>
 ${badge}
-<image x="${mx}" y="${my}" width="${mw}" height="${mh}" href="${m.href}"/>
+<image x="${mx}" y="${my}" width="${mw}" height="${mh}"${T.sq ? ' image-rendering="optimizeSpeed"' : ''} href="${m.href}"/>
 ${stampText ? stamp(stampText, mx + mw * 0.24, my + mh * 0.8, tint) : ''}
 ${chartSvg(chart, tint)}
 ${body}
