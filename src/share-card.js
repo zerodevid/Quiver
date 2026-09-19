@@ -13,15 +13,17 @@
 //
 // Digambar di server sebagai SVG lalu dirasterkan resvg — bukan di browser — supaya
 // dasbor dan bot Telegram mengirim gambar yang persis sama dari satu sumber desain.
-// Huruf Inter dibawa sendiri (public/fonts/*.ttf, empat bobot statis dari berkas
-// variabel yang dipakai dasbor) karena VPS tidak punya font sistem; lebar teks untuk
-// chip dan judul dihitung dari tabel advance glyph (src/inter-advances.json) —
+// Huruf dibawa sendiri (public/fonts/*.ttf: Sora untuk kartu, Pixelify Sans untuk tema
+// piksel — empat bobot statis yang dibuat dari berkas variabel Google Fonts dengan
+// fontTools) karena VPS tidak punya font sistem; lebar teks untuk chip dan judul
+// dihitung dari tabel advance glyph (src/*-advances.json, dibuat dari font yang sama) —
 // resvg tidak punya API pengukur teks, dan SVG tidak punya tata letak mengalir.
 const fs = require('node:fs');
 const path = require('node:path');
 const { Resvg } = require('@resvg/resvg-js');
-const ADV = require('./inter-advances.json');
-// Tabel lebar glyph Pixelify Sans (tema piksel), dibuat dari berkas font yang sama.
+// Huruf dasar kartu dan tabel lebar glyph-nya (dibuat dari berkas font yang sama,
+// lihat catatan di atas measure()). Tema boleh mengganti lewat font/adv (piksel).
+const BASE_FONT = { family: 'Sora', adv: require('./sora-advances.json') };
 const ADV_PIXEL = require('./pixelify-advances.json');
 const { tr, localeContext } = require('./telegram-i18n');
 
@@ -78,7 +80,8 @@ const THEMES = {
 };
 const HIDDEN = '••••';
 const FONT_DIR = path.join(__dirname, '..', 'public', 'fonts');
-const FONTS = ['Regular', 'Medium', 'SemiBold', 'Bold'].flatMap((w) => [path.join(FONT_DIR, `Inter-${w}.ttf`), path.join(FONT_DIR, `PixelifySans-${w}.ttf`)]);
+// Semua .ttf di public/fonts dimuat; resvg memilih keluarga & bobot dari nama di dalam berkas.
+const FONTS = fs.readdirSync(FONT_DIR).filter((f) => f.endsWith('.ttf')).map((f) => path.join(FONT_DIR, f));
 const MARK = fs.readFileSync(path.join(__dirname, '..', 'public', 'logo-white.svg'), 'utf8')
   .replace(/<!--[\s\S]*?-->/g, '').replace(/<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
 // Ikon & nama chain di kaki kartu (logo resmi tiap chain di public/). Diset per render
@@ -171,7 +174,7 @@ function tickPrice(tick, dec0, dec1, quoteSide) {
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 // Lebar teks dari tabel advance font tema (bobot 500 & 600 tersedia; bobot lain memakai 600).
 function measure(s, size, weight = 500) {
-  const adv = T.adv || ADV;
+  const adv = T.adv || BASE_FONT.adv;
   const tab = adv[String(weight)] || adv['600'];
   let w = 0;
   for (const ch of String(s)) w += tab[ch] ?? 0.6;
@@ -318,7 +321,7 @@ function frame(tint, right, body, mascotKey, stampText, chart) {
   const badgeSize = 17 * k, badgeW = measure(chainName(), badgeSize, 500), iconR = 10 * k;
   const badge = (chainNow.href ? `<image x="${W - PAD - badgeW - 12 * k - iconR * 2}" y="${G.footY - 6 * k - iconR}" width="${iconR * 2}" height="${iconR * 2}" clip-path="url(#chain-icon)" href="${chainNow.href}"/>` : '')
     + txt(chainName(), W - PAD, G.footY - 5 * k, { size: badgeSize, weight: 500, color: T.muted, anchor: 'end', base: 'middle' });
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${T.font || 'Inter'}">
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${T.font || BASE_FONT.family}">
 <defs>
   <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">${stops}</linearGradient>
   <radialGradient id="glow" cx="${gcx}" cy="${gcy}" r="${mh * 0.95}" gradientUnits="userSpaceOnUse"><stop stop-color="${tint}" stop-opacity="${T.glow}"/><stop offset="1" stop-color="${tint}" stop-opacity="0"/></radialGradient>
@@ -531,7 +534,7 @@ const venueName = (v) => (v === 'pancakev3' ? 'PancakeSwap V3' : `Uniswap ${Stri
 function renderPng(svg, size) {
   const r = new Resvg(svg, {
     fitTo: { mode: 'width', value: SIZES[sizeKey(size)].W * SCALE },
-    font: { fontFiles: FONTS, loadSystemFonts: false, defaultFontFamily: 'Inter' },
+    font: { fontFiles: FONTS, loadSystemFonts: false, defaultFontFamily: BASE_FONT.family },
   });
   return Buffer.from(r.render().asPng());
 }
