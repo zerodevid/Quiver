@@ -10,9 +10,10 @@ import { ask } from './ui';
 import { useI18n } from '../i18n';
 import { palette, withAlpha } from './CandleChart';
 
-// Pita rentang posisi LP: dua titik ({value: hi}, {value: lo}) menandai batas harga
-// dan digambar selebar pane, bukan cuma antara dua titik itu — pola yang sama dipakai
-// bawaan KLineChart sendiri untuk horizontalStraightLine (spanning penuh dari satu titik).
+// Pita rentang posisi LP: titik 1 = (saat masuk, hi), titik 2 = (saat keluar, lo).
+// Sumbu waktu dipotong ke masa posisi hidup: mulai di lilin masuk (atau tepi kiri kalau
+// masuknya sebelum lilin pertama) dan berhenti di lilin keluar; posisi yang masih
+// terbuka (extendData.open) memanjang sampai tepi kanan pane.
 registerOverlay({
   name: 'lpRange', totalStep: 2,
   needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
@@ -20,11 +21,14 @@ registerOverlay({
     const [c1, c2] = coordinates;
     if (!c1 || !c2) return [];
     const y1 = Math.min(c1.y, c2.y), y2 = Math.max(c1.y, c2.y);
-    const { fill, line } = overlay.extendData || {};
+    const { fill, line, open } = overlay.extendData || {};
+    const x1 = Math.max(0, Math.min(c1.x, c2.x));
+    const x2 = open ? bounding.width : Math.min(bounding.width, Math.max(c1.x, c2.x));
+    if (x2 <= x1) return [];
     return [
-      { type: 'rect', ignoreEvent: true, attrs: { x: 0, y: y1, width: bounding.width, height: Math.max(1, y2 - y1) }, styles: { style: 'fill', color: fill } },
-      { type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: 0, y: y1 }, { x: bounding.width, y: y1 }] }, styles: { style: 'dashed', color: line, size: 1 } },
-      { type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: 0, y: y2 }, { x: bounding.width, y: y2 }] }, styles: { style: 'dashed', color: line, size: 1 } },
+      { type: 'rect', ignoreEvent: true, attrs: { x: x1, y: y1, width: x2 - x1, height: Math.max(1, y2 - y1) }, styles: { style: 'fill', color: fill } },
+      { type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: x1, y: y1 }, { x: x2, y: y1 }] }, styles: { style: 'dashed', color: line, size: 1 } },
+      { type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: x1, y: y2 }, { x: x2, y: y2 }] }, styles: { style: 'dashed', color: line, size: 1 } },
     ];
   },
 });
@@ -205,10 +209,14 @@ export default function AdvancedChart({ candles, tf, quote, poolRef, height = 42
     const anchor = data[data.length - 1].timestamp;
     const specs = [];
     if (range?.lo > 0 && range?.hi > 0) {
+      // Tanpa waktu masuk, pita mulai dari lilin pertama; tanpa waktu keluar, pita
+      // dianggap masih terbuka dan memanjang ke tepi kanan.
+      const from = entry?.t > 0 ? entry.t : data[0].timestamp;
+      const to = exit?.t > 0 ? exit.t : anchor;
       specs.push({
         name: 'lpRange', groupId: LP_GROUP, lock: true,
-        points: [{ timestamp: anchor, value: range.hi }, { timestamp: anchor, value: range.lo }],
-        extendData: { fill: withAlpha(pal.accent, pal.dark ? 0.13 : 0.1), line: withAlpha(pal.accent, 0.45) },
+        points: [{ timestamp: from, value: range.hi }, { timestamp: to, value: range.lo }],
+        extendData: { fill: withAlpha(pal.accent, pal.dark ? 0.13 : 0.1), line: withAlpha(pal.accent, 0.45), open: !(exit?.t > 0) },
       });
     }
     const priceLine = (p, color, ts) => specs.push({
@@ -222,7 +230,7 @@ export default function AdvancedChart({ candles, tf, quote, poolRef, height = 42
     if (now > 0) priceLine(now, withAlpha(pal.fg, 0.55));
     if (specs.length) r.chart.createOverlay(specs);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, data.length, range?.lo, range?.hi, entry?.p, entry?.t, exit?.p, now, bep, pal]);
+  }, [ready, data.length, range?.lo, range?.hi, entry?.p, entry?.t, exit?.p, exit?.t, now, bep, pal]);
 
   const draw = (name) => chartRef.current?.chart.createOverlay(withHooks({ name }));
   const clearAll = async () => {
