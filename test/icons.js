@@ -144,6 +144,8 @@ test('429 saat mencoba ulang logo WebP tidak menghapus logo yang ada', async () 
   assert.strictEqual(kept?.ctype, 'image/webp', 'logo lama tetap dipakai');
   assert.strictEqual(icons.row(A).status, 'ok');
   assert.ok(!icons.stale(icons.row(A)), 'tidak langsung dicoba lagi');
+  now += 11 * 60e3;
+  assert.ok(icons.stale(icons.row(A)), 'dicoba lagi setelah jeda kegagalan (10 menit), bukan 12 jam');
 });
 
 test('alamat tidak sah dan ETH native tidak memanggil apa pun', async () => {

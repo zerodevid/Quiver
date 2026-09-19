@@ -61,15 +61,18 @@ class Icons {
 
   // Catat kegagalan/ketiadaan — tapi logo yang sudah tersimpan (mis. WebP yang sedang
   // dicoba ganti ke PNG) jangan hilang cuma karena percobaan ulangnya gagal.
+  // Logo WebP yang gagal diperbarui dicoba lagi selang RETRY_ERR_MS, bukan menunggu
+  // RETRY_NONE_MS penuh seperti WebP yang baru saja diunduh.
   keep(a, status, src = null) {
     const prev = this.row(a);
-    if (prev?.status === 'ok' && prev.file && fs.existsSync(path.join(this.dir, prev.file))) this.save(a, 'ok', prev.file, prev.ctype, prev.src);
-    else this.save(a, status, null, null, src);
+    if (prev?.status === 'ok' && prev.file && fs.existsSync(path.join(this.dir, prev.file))) {
+      this.save(a, 'ok', prev.file, prev.ctype, prev.src, this.now() - RETRY_NONE_MS + RETRY_ERR_MS);
+    } else this.save(a, status, null, null, src);
   }
-  save(a, status, file = null, ctype = null, src = null) {
+  save(a, status, file = null, ctype = null, src = null, ts = this.now()) {
     this.store.run(`INSERT INTO icons(chain,address,status,file,ctype,src,checked_ts) VALUES(?,?,?,?,?,?,?)
       ON CONFLICT(chain,address) DO UPDATE SET status=excluded.status, file=excluded.file, ctype=excluded.ctype,
-      src=excluded.src, checked_ts=excluded.checked_ts`, this.network, a, status, file, ctype, src, this.now());
+      src=excluded.src, checked_ts=excluded.checked_ts`, this.network, a, status, file, ctype, src, ts);
   }
 
   // Masih perlu ditanyakan ke GeckoTerminal?
