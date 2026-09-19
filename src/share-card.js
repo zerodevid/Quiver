@@ -13,7 +13,7 @@
 //
 // Digambar di server sebagai SVG lalu dirasterkan resvg — bukan di browser — supaya
 // dasbor dan bot Telegram mengirim gambar yang persis sama dari satu sumber desain.
-// Huruf dibawa sendiri (public/fonts/*.ttf: Sora untuk kartu, Pixelify Sans untuk tema
+// Huruf dibawa sendiri (public/fonts/*.ttf: Urbanist untuk kartu, Pixelify Sans untuk tema
 // piksel — empat bobot statis yang dibuat dari berkas variabel Google Fonts dengan
 // fontTools) karena VPS tidak punya font sistem; lebar teks untuk chip dan judul
 // dihitung dari tabel advance glyph (src/*-advances.json, dibuat dari font yang sama) —
@@ -23,7 +23,7 @@ const path = require('node:path');
 const { Resvg } = require('@resvg/resvg-js');
 // Huruf dasar kartu dan tabel lebar glyph-nya (dibuat dari berkas font yang sama,
 // lihat catatan di atas measure()). Tema boleh mengganti lewat font/adv (piksel).
-const BASE_FONT = { family: 'Sora', adv: require('./sora-advances.json') };
+const BASE_FONT = { family: 'Urbanist', adv: require('./urbanist-advances.json') };
 const ADV_PIXEL = require('./pixelify-advances.json');
 const { tr, localeContext } = require('./telegram-i18n');
 
