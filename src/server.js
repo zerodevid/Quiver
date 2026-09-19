@@ -136,10 +136,18 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // Semua mesin di proses ini (satu per chain, wallet yang sama) — untuk ganti kunci.
   const engines = nets ? Object.values(nets).map((n) => n.engine) : [engine];
   // Daftar chain untuk pemilih di dasbor/Telegram.
-  const chainList = () => (nets ? Object.values(nets) : [{ key: chain.network, label: chain.label, chain, engine }]).map((n) => ({
-    key: n.key || n.chain.network, label: n.label || n.chain.label, chainId: n.chain.CHAIN_ID, nativeSymbol: n.chain.nativeSymbol,
-    dryRun: n.engine.dryRun(), paused: n.engine.paused(), verified: n.chain.verified, head: n.engine.head, cursor: n.engine.cursor,
-    targets: n.engine.watcher.enabledSet().size, current: n.chain.network === chain.network,
+  // Kas per chain ikut dilaporkan (USDG/USDT + native + wrapped, dalam USD) — dibaca
+  // dari cache mesin tiap chain; freshCash hanya membaca ulang kalau ada tx yang baru masuk.
+  const chainList = async () => Promise.all((nets ? Object.values(nets) : [{ key: chain.network, label: chain.label, chain, engine }]).map(async (n) => {
+    let cash = null;
+    try { cash = n.engine.freshCash ? await n.engine.freshCash() : n.engine.cash; } catch { cash = n.engine.cash || null; }
+    return {
+      key: n.key || n.chain.network, label: n.label || n.chain.label, chainId: n.chain.CHAIN_ID, nativeSymbol: n.chain.nativeSymbol,
+      stableSymbol: n.chain.usdgSymbol,
+      dryRun: n.engine.dryRun(), paused: n.engine.paused(), verified: n.chain.verified, head: n.engine.head, cursor: n.engine.cursor,
+      targets: n.engine.watcher.enabledSet().size, current: n.chain.network === chain.network,
+      cash: cash ? { usd: cash.usd, native: (cash.eth || 0) + (cash.weth || 0), stable: cash.usdg || 0, ts: cash.ts } : null,
+    };
   }));
   const scoutJobs = new Map();
   const poolScanJobs = new Map();
@@ -1765,7 +1773,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   };
 
   Object.assign(routes, createSettingsRoutes({ engine, engines, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie }));
-  routes['GET /api/chains'] = () => ({ chains: chainList(), current: chain.network });
+  routes['GET /api/chains'] = async () => ({ chains: await chainList(), current: chain.network });
   // Pemilih chain: cookie lpcopy_chain dibaca pintu depan (index.js) untuk memilih
   // server chain mana yang menjawab permintaan berikutnya. Cookie ini bukan rahasia.
   routes['POST /api/chain/select'] = async (req, url, res) => {

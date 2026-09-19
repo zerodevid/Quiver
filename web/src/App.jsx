@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { usePoll, useHash, useTheme } from './hooks';
 import { post } from './api';
-import { short, usd } from './fmt';
+import { short, usd, num } from './fmt';
 import { chainInfo, setChain, CHAIN_ICON } from './chain';
 import { useI18n, LOCALES } from './i18n';
 import { QuiverLogo } from './components/Logo';
@@ -209,7 +209,11 @@ function ChainSwitcher({ chain }) {
                   <span className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate font-medium">{c.label}</span>
                     <span className="truncate text-[0.6875rem] opacity-80">
-                      {mode} · {c.targets} {t('target')} · {c.nativeSymbol}{c.verified ? '' : ` · ${t('alamat belum diverifikasi')}`}
+                      {mode} · {c.targets} {t('target')}{c.verified ? '' : ` · ${t('alamat belum diverifikasi')}`}
+                    </span>
+                    {/* Saldo wallet di chain ini: kas dalam USD + native. Belum terbaca (mesin baru hidup / tanpa wallet) = strip. */}
+                    <span className="truncate text-[0.6875rem] opacity-80" title={c.cash ? `${num(c.cash.stable, 2)} ${c.stableSymbol} · ${num(c.cash.native, 4)} ${c.nativeSymbol}` : undefined}>
+                      {c.cash ? `${usd(c.cash.usd)} · ${num(c.cash.native, 4)} ${c.nativeSymbol}` : `— ${c.nativeSymbol}`}
                     </span>
                   </span>
                   {active && <span className="text-accent">✓</span>}
