@@ -7,8 +7,8 @@
 //
 // Tiap kartu bisa digambar dalam tiga ukuran (opts.size) dan tujuh tema warna
 // (opts.theme), lihat SIZES dan THEMES. Tata letaknya satu: kepala (logo + konteks),
-// judul + chip, angka besar di atas grafik pudar (opts.chart: harga posisi / kurva PnL /
-// batang harian), maskot, kisi statistik, kaki (tanggal + chain) — cuma
+// judul + chip, angka besar, strip grafik (opts.chart: harga posisi / kurva PnL / batang
+// harian), maskot, kisi statistik, kaki (tanggal + chain) — cuma
 // koordinatnya yang berbeda per ukuran (geometry()).
 //
 // Digambar di server sebagai SVG lalu dirasterkan resvg — bukan di browser — supaya
@@ -113,22 +113,22 @@ const rgba = (hex, a) => `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.s
 // Koordinat tiap ukuran. k = skala teks; hero.right = batas kanan teks angka besar
 // (kolom maskot mulai di sana); mascot.right / mascot.cx = rata kanan atau di tengah;
 // stats.perRow = jumlah ubin statistik per baris; footY = garis kaki (tanggal + chain);
-// chart = pita grafik di latar angka besar (dari PAD sampai hero.right).
+// chart = strip grafik di bawah angka besar (dari PAD sampai hero.right).
 function geometry(size) {
   const { W, H } = SIZES[size] || SIZES.wide;
   if (size === 'story') {
     return { W, H, k: 1.25, logo: { y: 196, w: 200, h: 36 }, ctxY: 216, ruleY: 262, titleY: 352, iconR: 32,
-      hero: { labelY: 456, bigY: 616, subY: 676, right: W - PAD, maxBig: 150 }, chart: { y0: 472, y1: 700 },
-      mascot: { h: 500, y: 730, cx: W / 2 }, stats: { y: 1290, h: 160, perRow: 2 }, footY: 1700 };
+      hero: { labelY: 456, bigY: 616, subY: 676, right: W - PAD, maxBig: 150 }, chart: { y0: 704, y1: 790 },
+      mascot: { h: 450, y: 812, cx: W / 2 }, stats: { y: 1290, h: 160, perRow: 2 }, footY: 1700 };
   }
   if (size === 'square') {
     return { W, H, k: 1, logo: { y: 52, w: 154, h: 28 }, ctxY: 68, ruleY: 108, titleY: 172, iconR: 26,
-      hero: { labelY: 262, bigY: 400, subY: 452, right: 660, maxBig: 120 }, chart: { y0: 276, y1: 536 },
+      hero: { labelY: 262, bigY: 400, subY: 452, right: 660, maxBig: 120 }, chart: { y0: 474, y1: 538 },
       mascot: { h: 370, y: 122, right: W - PAD + 8 }, stats: { y: 556, h: 170, perRow: 2 }, footY: 990 };
   }
   return { W, H, k: 1, logo: { y: 45, w: 154, h: 28 }, ctxY: 61, ruleY: 100, titleY: 154, iconR: 26,
-    hero: { labelY: 226, bigY: 336, subY: 383, right: 850, maxBig: 108 }, chart: { y0: 238, y1: 406 },
-    mascot: { h: 312, y: 104, right: W - PAD + 8 }, stats: { y: 421, h: 124, perRow: 4 }, footY: 588 };
+    hero: { labelY: 212, bigY: 310, subY: 350, right: 850, maxBig: 96 }, chart: { y0: 370, y1: 432 },
+    mascot: { h: 312, y: 104, right: W - PAD + 8 }, stats: { y: 448, h: 108, perRow: 4 }, footY: 588 };
 }
 
 // ---- format angka, sama persis dengan web/src/fmt.js ----------------------------
@@ -242,8 +242,8 @@ function stamp(s, cx, cy, color) {
     + txt(s, 0, 0, { size, weight: 700, color, anchor: 'middle', base: 'middle' }) + '</g>';
 }
 
-// Grafik di latar angka besar: garis harga / kurva PnL (kind 'line') atau batang PnL
-// harian sebulan (kind 'bars'). Digambar pudar supaya angkanya tetap terbaca.
+// Strip grafik di bawah angka besar: garis harga / kurva PnL (kind 'line') atau batang
+// PnL harian sebulan (kind 'bars').
 //   line: pts [[t, v]], band [lo, hi] (rentang LP), marks [{t, v}] (masuk/keluar), zero (garis nol)
 //   bars: bars [{ v, on }] — `on` = hari yang dibagikan
 function chartSvg(c, tint) {
@@ -288,7 +288,7 @@ function chartSvg(c, tint) {
     d += i === 0 ? `M${x} ${y}` : px ? ` H${x} V${y}` : ` L${x} ${y}`;
   });
   const xl = xOf(pts[pts.length - 1][0]).toFixed(1), xf = xOf(pts[0][0]).toFixed(1);
-  let out = `<defs><linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1"><stop stop-color="${tint}" stop-opacity="0.26"/><stop offset="1" stop-color="${tint}" stop-opacity="0.02"/></linearGradient></defs>`;
+  let out = `<defs><linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1"><stop stop-color="${tint}" stop-opacity="0.32"/><stop offset="1" stop-color="${tint}" stop-opacity="0.02"/></linearGradient></defs>`;
   if (c.band) {
     const [lo, hi] = c.band, yLo = Math.min(y1, yOf(lo)), yHi = Math.max(y0, yOf(hi));
     // Isian pita hanya kalau rentangnya tidak memenuhi hampir seluruh pita (kalau ya, cukup garisnya).
@@ -297,7 +297,7 @@ function chartSvg(c, tint) {
   }
   if (c.zero && 0 >= vMin && 0 <= vMax) out += `<line x1="${x0}" y1="${yOf(0).toFixed(1)}" x2="${x1}" y2="${yOf(0).toFixed(1)}" stroke="${T.muted}" stroke-opacity="0.3" stroke-dasharray="6 6"/>`;
   out += `<path d="${d} V${y1} H${xf} Z" fill="url(#chartFill)"/>`
-    + `<path d="${d}" fill="none" stroke="${tint}" stroke-opacity="${px ? 0.55 : 0.65}" stroke-width="${px ? 4 : 2.5}" stroke-linejoin="${px ? 'miter' : 'round'}" stroke-linecap="${px ? 'square' : 'round'}"/>`;
+    + `<path d="${d}" fill="none" stroke="${tint}" stroke-opacity="0.95" stroke-width="${px ? 4 : 2.5}" stroke-linejoin="${px ? 'miter' : 'round'}" stroke-linecap="${px ? 'square' : 'round'}"/>`;
   for (const m of marks) {
     out += `<line x1="${xOf(m.t).toFixed(1)}" y1="${y0}" x2="${xOf(m.t).toFixed(1)}" y2="${y1}" stroke="${T.muted}" stroke-opacity="0.35" stroke-dasharray="4 5"/>`
       + `<${px ? 'rect' : 'circle'} ${px ? `x="${(xOf(m.t) - 5).toFixed(1)}" y="${(yOf(m.v) - 5).toFixed(1)}" width="10" height="10"` : `cx="${xOf(m.t).toFixed(1)}" cy="${yOf(m.v).toFixed(1)}" r="5"`} fill="${T.text}" stroke="${T.bg[T.bg.length - 1]}" stroke-width="2"/>`;
@@ -375,10 +375,10 @@ function statsRow(cols, footer) {
     const x = PAD + (i % perRow) * (cw + gap), ty = y + Math.floor(i / perRow) * (h + gap);
     out += `<rect x="${x.toFixed(1)}" y="${ty}" width="${cw.toFixed(1)}" height="${h}" rx="${rx(14)}" fill="${T.panel}" stroke="${T.line}"${T.sq ? ' stroke-width="3"' : ''}/>`;
     const cx = x + 18, width = cw - 36;
-    out += fitted(label, cx, ty + 32 * k, width, { size: (tall ? 16 : 15) * k, color: T.muted });
+    out += fitted(label, cx, ty + 30 * k, width, { size: (tall ? 16 : 15) * k, color: T.muted });
     const size = Math.min((tall ? 36 : 29) * k, width / Math.max(measure(value, 1, 600), 1));
-    out += txt(value, cx, ty + (tall ? 88 : 70) * k, { size, weight: 600, color: o.color || T.text });
-    if (o.extra) out += fitted(o.extra[0], cx, ty + (tall ? 124 : 100) * k, width, { size: 15 * k, color: o.extra[1] });
+    out += txt(value, cx, ty + (tall ? 88 : 66) * k, { size, weight: 600, color: o.color || T.text });
+    if (o.extra) out += fitted(o.extra[0], cx, ty + (tall ? 124 : 92) * k, width, { size: 15 * k, color: o.extra[1] });
   });
   if (footer) out += fitted(footer, PAD, G.footY, W - PAD * 2 - measure(chainName(), 17 * k, 500) - 60 * k, { size: 15 * k, color: T.faint });
   return out;
