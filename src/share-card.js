@@ -30,11 +30,12 @@ const FONTS = ['Regular', 'Medium', 'SemiBold', 'Bold'].map((w) => path.join(FON
 const MARK = fs.readFileSync(path.join(__dirname, '..', 'public', 'logo-white.svg'), 'utf8')
   .replace(/<!--[\s\S]*?-->/g, '').replace(/<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
 const CHAIN_ICON = fs.readFileSync(path.join(__dirname, '..', 'public', 'robinhood-chain.jpg')).toString('base64');
-// Ikon & nama chain di pojok kartu. Robinhood memakai foto jpg; chain lain memakai
-// lencana SVG sederhana (tanpa logo pihak ketiga). Diset per render lewat opts.chain.
+// Ikon & nama chain di pojok kartu (logo resmi tiap chain di public/). Diset per render
+// lewat opts.chain.
+const BNB_ICON = fs.readFileSync(path.join(__dirname, '..', 'public', 'bnb-chain.png')).toString('base64');
 const CHAIN_BADGE = {
   robinhood: { label: 'Robinhood Chain', icon: `<image x="938" y="572" width="20" height="20" clip-path="url(#chain-icon)" href="data:image/jpeg;base64,${CHAIN_ICON}"/>` },
-  bsc: { label: 'BNB Smart Chain', icon: '<circle cx="948" cy="582" r="10" fill="#F0B90B"/><path d="M948 575l3 3-3 3-3-3zM942 581l3 3-3 3-3-3zM954 581l3 3-3 3-3-3zM948 587l3 3-3 3-3-3z" fill="#1E1E1E"/>' },
+  bsc: { label: 'BNB Smart Chain', icon: `<image x="938" y="572" width="20" height="20" clip-path="url(#chain-icon)" href="data:image/png;base64,${BNB_ICON}"/>` },
 };
 let chainNow = CHAIN_BADGE.robinhood;
 const chainName = () => chainNow.label;
@@ -303,7 +304,7 @@ function dailySvg({ day, rows, total: totalIn, count, monthTotal }, { hideAmount
 function svgOf(kind, data, opts = {}) {
   return localeContext.run(opts.lang === 'en' ? 'en' : 'id', () => {
     tz = opts.timeZone || null;
-    chainNow = CHAIN_BADGE[opts.chain?.key] || { label: opts.chain?.label || CHAIN_BADGE.robinhood.label, icon: CHAIN_BADGE.bsc.icon };
+    chainNow = CHAIN_BADGE[opts.chain?.key] || { label: opts.chain?.label || CHAIN_BADGE.robinhood.label, icon: '' };
     try {
       if (kind === 'position') return positionSvg(data, opts);
       if (kind === 'total') return totalSvg(data, opts);
