@@ -31,7 +31,7 @@ export const positionCard = (p) => ({
   name: `${p.symbol0}-${p.symbol1}-${(p.pnlPct ?? 0).toFixed(1)}pct`,
   text: `${p.symbol0 || '?'} / ${p.symbol1 || '?'} ${p.pnlPct == null ? '' : pct(p.pnlPct, 2)} · Quiver`,
 });
-export const totalCard = ({ pnl }) => ({ kind: 'total', name: 'total-pnl', text: `Total PnL ${usd(pnl)} · Quiver` });
+export const totalCard = ({ pnl, net }) => ({ kind: 'total', name: 'total-pnl', text: `${net ? 'Net PnL' : 'Total PnL'} ${usd(pnl)} · Quiver` });
 export const dailyCard = ({ day, pnl }) => ({ kind: 'daily', day, name: `pnl-${day}`, text: `PnL ${day}: ${usd(pnl)} · Quiver` });
 
 // Dialog bagikan. `card` null = tertutup.

@@ -298,7 +298,7 @@ export default function Overview() {
   return (
     <>
       <PageHeader group="Pemantauan" title="Ringkasan">
-        <ShareButton label="Bagikan total PnL" isDisabled={!now} card={now ? totalCard({ pnl: now.pnl }) : null} />
+        <ShareButton label="Bagikan total PnL" isDisabled={!now} card={now ? totalCard({ pnl: now.netPnl ?? now.pnl, net: now.netPnl != null }) : null} />
       </PageHeader>
       {/* Kartu PnL harian: hari yang diklik di kalender. Server merakit datanya sendiri. */}
       <ShareDialog card={shareDay && cal ? dailyCard({ day: shareDay, pnl: cal.daily[shareDay] }) : null} onClose={() => setShareDay(null)} />

@@ -114,6 +114,17 @@ const denganServer = async (telegram, fn) => {
     assert.strictEqual(shareCard.caption('position', p, 'en'), 'USDG / MEME +17.50% · Quiver');
   });
 
+  await t('kartu total: PnL bersih (nilai − modal nyata) kalau modal terlacak, PnL posisi kalau tidak', () => {
+    const now = { pnl: 129.36, value: 1198.29, capital: 1068.93, realizedUsd: 118.29, unrealizedUsd: 11.07, feeUsd: 28.06, openCount: 2 };
+    const stats = { closedCount: 99, wins: 37, losses: 62, winRatePct: 37, best: 29.62 };
+    const bersih = shareCard.svgOf('total', { now: { ...now, netPnl: 98.29, capitalNet: 1100 }, stats }, { lang: 'en' });
+    assert.ok(bersih.includes('Net PnL') && bersih.includes('$98.29') && bersih.includes('+8.94%'), 'angka & persen dari PnL bersih terhadap modal nyata');
+    assert.ok(bersih.includes('capital $1,100.00 · position PnL $129.36'), 'sub-teks: modal nyata + PnL posisi');
+    assert.strictEqual(shareCard.caption('total', { now: { ...now, netPnl: 98.29, capitalNet: 1100 } }, 'en'), 'Net PnL $98.29 · Quiver');
+    const posisi = shareCard.svgOf('total', { now, stats }, { lang: 'en' });
+    assert.ok(posisi.includes('Total PnL') && posisi.includes('$129.36') && posisi.includes('realized $118.29'), 'tanpa modal terlacak: PnL posisi');
+  });
+
   await t('penggambar: ukuran persegi/story dan tiap tema jadi PNG; ukuran/tema asing jatuh ke bawaan', () => {
     const p = { id: 1, venue: 'v4', fee: 3000, token0: ADDR.usdg, token1: MEME, symbol0: 'USDG', symbol1: 'MEME', dec0: 6, dec1: 18, quoteSide: 0,
       entrySqrt: String(2n ** 96n), curTick: 10, costUsd: 200, valueUsd: 280, feeUsd: 5, claimedUsd: 0, pnlUsd: 85, pnlPct: 42.5, ageHours: 3, opened_ts: Date.now(), inRange: true, status: 'open' };

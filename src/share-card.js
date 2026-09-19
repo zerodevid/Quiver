@@ -448,19 +448,25 @@ function positionSvg(p, { hideAmounts = false, icons = {}, chart = null } = {}) 
 
 // ---- kartu total portofolio -------------------------------------------------------
 // now/stats: bentuk yang sama dengan /api/portfolio; since: posisi pertama dibuka.
+// Angka utamanya sama dengan kartu "PnL bersih" di dasbor: nilai wallet dikurangi modal
+// nyata (memuat gas, zap, swap) kalau modal terlacak; kalau tidak, jumlah PnL per posisi.
+const totalPnl = (now) => (now.netPnl != null && now.capitalNet != null
+  ? { net: true, pnl: now.netPnl, cap: now.capitalNet }
+  : { net: false, pnl: now.pnl, cap: now.capital });
 function totalSvg({ now, stats, since }, { hideAmounts = false, chart = null } = {}) {
-  // modal nyata kalau terlacak; "nilai − PnL" melingkar (PnL besar → pembagi kecil)
-  const cap = now.capitalNet ?? now.capital;
-  const pnlPct = cap > 0 ? (now.pnl / cap) * 100 : null;
+  const { net, pnl, cap } = totalPnl(now);
+  const pnlPct = cap > 0 ? (pnl / cap) * 100 : null;
   const wr = stats?.winRatePct;
-  const body = title(tr('Total PnL'), [
+  const body = title(tr(net ? 'PnL bersih' : 'Total PnL'), [
     [tr('{0} posisi terbuka', [now.openCount || 0])],
     [stats?.closedCount ? tr('{0} ditutup', [stats.closedCount]) : null],
   ]) + hero({
-    label: 'PnL', bigColor: sign(now.pnl),
-    big: hideAmounts ? (pnlPct == null ? HIDDEN : pct(pnlPct, 2)) : usd(now.pnl),
+    label: 'PnL', bigColor: sign(pnl),
+    big: hideAmounts ? (pnlPct == null ? HIDDEN : pct(pnlPct, 2)) : usd(pnl),
     side: hideAmounts || pnlPct == null ? null : pct(pnlPct, 2),
-    sub: hideAmounts ? tr('Nominal disembunyikan') : tr('terealisasi {0} · berjalan {1}', [usd(now.realizedUsd), usd(now.unrealizedUsd)]),
+    sub: hideAmounts ? tr('Nominal disembunyikan')
+      : net ? tr('modal {0} · PnL posisi {1}', [usd(cap), usd(now.pnl)])
+        : tr('terealisasi {0} · berjalan {1}', [usd(now.realizedUsd), usd(now.unrealizedUsd)]),
     subColor: hideAmounts ? T.faint : T.muted,
   }) + statsRow([
     [tr('Total portofolio'), hideAmounts ? HIDDEN : usd(now.value)],
@@ -469,8 +475,8 @@ function totalSvg({ now, stats, since }, { hideAmounts = false, chart = null } =
     [tr('Fee terkumpul'), hideAmounts ? HIDDEN : usd(now.feeUsd), { color: T.up }],
     [tr('Posisi terbaik'), stats?.best == null ? '—' : hideAmounts ? HIDDEN : usd(stats.best), { color: sign(stats?.best) }],
   ], since ? tr('sejak {0} · {1}', [fmtDayOnly(since), fmtDate(Date.now())]) : fmtDate(Date.now()));
-  const m = mood(now.pnl, pnlPct);
-  return frame(sign(now.pnl), tr('Seluruh portofolio') + ` · ${chainName()}`, body, m, stampFor(m), chart);
+  const m = mood(pnl, pnlPct);
+  return frame(sign(pnl), tr('Seluruh portofolio') + ` · ${chainName()}`, body, m, stampFor(m), chart);
 }
 
 // ---- kartu PnL harian ---------------------------------------------------------------
@@ -535,7 +541,7 @@ const render = (kind, data, opts = {}) => renderPng(svgOf(kind, data, opts), opt
 function caption(kind, data, lang) {
   return localeContext.run(lang === 'en' ? 'en' : 'id', () => {
     if (kind === 'position') return `${data.symbol0 || '?'} / ${data.symbol1 || '?'} ${data.pnlPct == null ? '' : pct(data.pnlPct, 2)} · Quiver`;
-    if (kind === 'total') return `${tr('Total PnL')} ${usd(data.now.pnl)} · Quiver`;
+    if (kind === 'total') { const { net, pnl } = totalPnl(data.now); return `${tr(net ? 'PnL bersih' : 'Total PnL')} ${usd(pnl)} · Quiver`; }
     return `PnL ${data.day}: ${usd(data.total ?? data.rows.reduce((a, r) => a + r.pnl, 0))} · Quiver`;
   });
 }
