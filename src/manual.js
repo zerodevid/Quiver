@@ -678,7 +678,7 @@ class Manual {
         exit: {
           followTarget: !!e.follow_target, followPartial: !!e.follow_partial,
           stopLossPct: e.stop_loss_pct, takeProfitPct: e.take_profit_pct,
-          maxAgeHours: e.max_age_hours, outOfRangeMinutes: e.out_of_range_minutes, sellLeftover: !!e.sell_leftover,
+          maxAgeHours: e.max_age_hours, outOfRangeMinutes: e.out_of_range_minutes, outOfRangePct: e.out_of_range_pct, reenterWithinPct: e.reenter_within_pct, sellLeftover: !!e.sell_leftover,
         },
       },
     };
@@ -766,7 +766,7 @@ class Manual {
       exit: {
         followTarget: !!e.follow_target, followPartial: !!e.follow_partial,
         stopLossPct: e.stop_loss_pct, takeProfitPct: e.take_profit_pct,
-        maxAgeHours: e.max_age_hours, outOfRangeMinutes: e.out_of_range_minutes,
+        maxAgeHours: e.max_age_hours, outOfRangeMinutes: e.out_of_range_minutes, outOfRangePct: e.out_of_range_pct, reenterWithinPct: e.reenter_within_pct,
       },
     };
   }

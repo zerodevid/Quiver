@@ -311,7 +311,11 @@ mengunci modal. Karena itu saringan "tolak hook" berlaku untuk LP, sengaja tidak
 jembatan.
 
 **Keluar** — ikut keluar saat target keluar (penuh atau proporsional), plus pemicu
-mandiri: di luar rentang selama N menit, stop loss, take profit, umur maksimum.
+mandiri: di luar rentang selama N menit, harga lebih dari X% di luar rentang, stop loss,
+take profit, umur maksimum. Ambang jarak (X%) juga berlaku saat masuk: entry target yang
+rentangnya sejauh itu ditunda, bukan disalin. Dengan "buka lagi ≤ Y%", cermin yang
+ditunda/ditutup karena jauh dibuka lagi begitu harga kembali mendekat — selama posisi
+target masih terbuka — supaya modal tidak menganggur di posisi yang jauh dari harga.
 
 **Saringan** — tolak pool v4 ber-hook (hook bisa memblokir penarikan), umur pool minimum,
 nilai minimum posisi target, batas jumlah posisi, jeda antar salinan di pool yang sama,

@@ -62,6 +62,8 @@ export default function TakeoverButton({ p, reload, disabled = false, size = 'sm
       e.takeProfitPct > 0 && t('take profit di +{n}%;', { n: e.takeProfitPct }),
       e.maxAgeHours > 0 && t('ditutup setelah berumur {n} jam;', { n: e.maxAgeHours }),
       e.outOfRangeMinutes > 0 && t('ditutup setelah {n} menit di luar rentang;', { n: e.outOfRangeMinutes }),
+      e.outOfRangePct > 0 && t('ditutup kalau harga lebih dari {n}% di luar rentang;', { n: e.outOfRangePct }),
+      e.outOfRangePct > 0 && e.reenterWithinPct > 0 && t('dibuka lagi kalau harga kembali ≤ {n}% dari rentang dan target masih di dalam;', { n: e.reenterWithinPct }),
     ].filter(Boolean);
     const ok = await ask({
       title: t('Kembalikan {pair} ke otomatis?', { pair }),

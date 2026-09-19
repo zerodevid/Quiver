@@ -125,6 +125,15 @@ function sideOfRange(tick, tickLower, tickUpper) {
   return 'both';
 }
 
+// Jarak harga ke rentang, dalam persen: berapa persen harga harus bergerak sebelum
+// posisi kembali menghasilkan fee. 0 = di dalam rentang. Dihitung di ruang tick, jadi
+// sama untuk kedua arah kuotasi (1/p menukar sisi, bukan besarnya) dan sama dengan angka
+// "di luar · N% di atas/bawah" di dasbor.
+function distanceFromRangePct(tick, tickLower, tickUpper) {
+  const d = tick < tickLower ? tickLower - tick : tick >= tickUpper ? tick - tickUpper + 1 : 0;
+  return d > 0 ? (Math.pow(1.0001, d) - 1) * 100 : 0;
+}
+
 // Taksiran harga setelah swap di satu rentang likuiditas (L dianggap tetap).
 // Dipakai untuk menolak zap yang dampaknya terlalu besar.
 function sqrtAfterSwap(sqrtP, L, amountIn, zeroForOne) {
@@ -151,5 +160,5 @@ module.exports = {
   getSqrtRatioAtTick, getTickAtSqrtRatio,
   amount0ForLiquidity, amount1ForLiquidity, amountsForLiquidity,
   liquidityForAmount0, liquidityForAmount1, liquidityForAmounts,
-  priceFromSqrt, tickToPrice, priceToTick, alignTick, sideOfRange,
+  priceFromSqrt, tickToPrice, priceToTick, alignTick, sideOfRange, distanceFromRangePct,
 };

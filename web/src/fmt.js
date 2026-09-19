@@ -80,6 +80,7 @@ export const AKSI = {
   custody_out: ['Titip ke otomasi', 'default'], custody_in: ['Kembali dari otomasi', 'default'],
   transfer_in: ['Terima posisi', 'default'], transfer_out: ['Kirim posisi', 'warning'],
   mint: ['Buka posisi', 'accent'], collect: ['Klaim fee', 'success'],
+  reentry: ['Buka lagi (harga mendekat)', 'accent'],
 };
 export const KEPUTUSAN = {
   copy: ['Disalin', 'success'], dry: ['Simulasi', 'accent'], skip: ['Dilewati', 'default'], error: ['Gagal', 'danger'],

@@ -9,8 +9,8 @@ import { useI18n, reason } from '../i18n';
 import FollowDialog from '../components/FollowDialog';
 
 // Ikon per jenis aksi: arah gerakan terbaca tanpa membaca labelnya.
-const IKON = { increase: Plus, mint: Plus, decrease: Minus, collect: CircleDollarSign };
-const WARNA = { increase: 'text-accent', mint: 'text-accent', decrease: 'text-warning', collect: 'text-success' };
+const IKON = { increase: Plus, mint: Plus, reentry: Plus, decrease: Minus, collect: CircleDollarSign };
+const WARNA = { increase: 'text-accent', mint: 'text-accent', reentry: 'text-accent', decrease: 'text-warning', collect: 'text-success' };
 
 // Ukuran posisi kita dalam USD dari rencana keputusan (hanya rencana masuk yang punya).
 function ukuranKita(a) {
@@ -31,7 +31,7 @@ export default function Activity() {
   const [target, setTarget] = useState('all');
   if (!d) return <Loading page />;
   const all = d.activity;
-  const byKind = (a) => kind === 'all' || (kind === 'mint' ? (a.kind === 'mint' || a.kind === 'increase') : a.kind === kind);
+  const byKind = (a) => kind === 'all' || (kind === 'mint' ? (a.kind === 'mint' || a.kind === 'increase' || a.kind === 'reentry') : a.kind === kind);
   const byTarget = (a) => target === 'all' || a.target === target;
   const byVerdict = (a) => filter === 'all' || a.verdict === filter;
   const rows = all.filter((a) => byVerdict(a) && byKind(a) && byTarget(a));
@@ -42,7 +42,7 @@ export default function Activity() {
   // mint dan increase sama-sama "masuk" — di pemantauan v4 mint tercatat sebagai
   // increase pertama, jadi keduanya dijadikan satu tombol.
   const baseK = all.filter((a) => byVerdict(a) && byTarget(a));
-  const nk = (k) => baseK.filter((a) => (k === 'mint' ? (a.kind === 'mint' || a.kind === 'increase') : a.kind === k)).length;
+  const nk = (k) => baseK.filter((a) => (k === 'mint' ? (a.kind === 'mint' || a.kind === 'increase' || a.kind === 'reentry') : a.kind === k)).length;
   const kinds = [['all', 'Semua aksi', baseK.length], ['mint', 'Tambah / buka', nk('mint')], ['decrease', 'Kurangi', nk('decrease')],
     ['collect', 'Klaim fee', nk('collect')]].filter(([id, , c]) => id === 'all' || c > 0 || id === kind);
   const targets = [...new Map(all.map((a) => [a.target, a.targetLabel])).entries()]

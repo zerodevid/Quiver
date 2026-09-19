@@ -350,6 +350,8 @@ const RULE_GROUPS = [
       F.bool('follow_target', 'Ikut keluar saat target keluar'),
       F.bool('follow_partial', 'Ikut menarik sebagian', { when: (r) => r.exit.follow_target }),
       F.int('out_of_range_minutes', 'Tutup kalau di luar rentang selama (menit)', { help: '0 = mati.' }),
+      F.pct('out_of_range_pct', 'Tutup kalau harga lebih dari (%) di luar rentang', { help: 'Jarak ke tepi rentang terdekat, seperti "di luar · 61% di atas" di dasbor. Entry target yang sejauh ini ditunda, bukan disalin. 0 = mati.' }),
+      F.pct('reenter_within_pct', 'Buka lagi kalau harga kembali ≤ (%) dari rentang', { help: 'Hanya kalau posisi target masih terbuka. Harus lebih kecil dari ambang tutup. 0 = mati.' }),
       F.pct('stop_loss_pct', 'Tutup kalau rugi (%)', { hi: 100, help: '0 = mati.' }),
       F.pct('take_profit_pct', 'Tutup kalau untung (%)', { help: '0 = mati.' }),
       F.num('max_age_hours', 'Tutup setelah (jam)', { hi: 100000, help: '0 = mati.' }),

@@ -47,6 +47,15 @@ const DEFAULTS = {
     follow_target: true,      // ikut keluar kalau target keluar
     follow_partial: true,     // decrease proporsional
     out_of_range_minutes: 0,  // 0 = mati
+    // Tutup kalau harga sudah lebih dari X% di luar rentang (jarak ke tepi terdekat, angka
+    // yang sama dengan "di luar · N% di atas" di dasbor). Modal tidak menganggur di posisi
+    // yang jauh dari harga. Berlaku juga saat MASUK: rentang target yang sejauh itu tidak
+    // disalin dulu (ditunda). 0 = mati.
+    out_of_range_pct: 0,
+    // Buka lagi cermin yang ditunda/ditutup karena jauh: begitu harga kembali ≤ X% dari
+    // rentang DAN posisi target masih terbuka. Wajib lebih kecil dari out_of_range_pct
+    // supaya tidak buka-tutup di ambang. 0 = mati.
+    reenter_within_pct: 0,
     stop_loss_pct: 0,
     take_profit_pct: 0,
     max_age_hours: 0,
@@ -95,7 +104,8 @@ const RULE_SPEC = {
   swap: { enabled: ['bool'], max_slippage_bps: ['int', 0, 5000], max_price_impact_bps: ['int', 0, 10_000] },
   exit: {
     follow_target: ['bool'], follow_partial: ['bool'],
-    out_of_range_minutes: ['num', 0, 1e7], stop_loss_pct: ['num', 0, 100], take_profit_pct: ['num', 0, 1e6],
+    out_of_range_minutes: ['num', 0, 1e7], out_of_range_pct: ['num', 0, 1e6], reenter_within_pct: ['num', 0, 1e6],
+    stop_loss_pct: ['num', 0, 100], take_profit_pct: ['num', 0, 1e6],
     max_age_hours: ['num', 0, 1e6], sell_leftover: ['bool'], sell_max_loss_bps: ['int', 0, 10_000],
     leftover_retry_sec: ['int', 1, 86_400],
   },
@@ -147,6 +157,11 @@ function validateRules(input) {
       out[g][k] = r.value;
     }
     if (out[g].venues && out[g].venues.some((x) => !KNOWN_VENUES.includes(x))) return { error: `filters.venues hanya boleh salah satu dari ${KNOWN_VENUES.join(', ')}` };
+  }
+  // Ambang buka-lagi di atas ambang tutup = cermin buka-tutup terus di satu harga.
+  const ex = out.exit;
+  if (ex && 'out_of_range_pct' in ex && 'reenter_within_pct' in ex && ex.out_of_range_pct > 0 && ex.reenter_within_pct >= ex.out_of_range_pct) {
+    return { error: 'exit.reenter_within_pct harus lebih kecil dari exit.out_of_range_pct' };
   }
   return { rules: out };
 }

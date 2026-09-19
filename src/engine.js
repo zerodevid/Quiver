@@ -26,6 +26,9 @@ const fmtUnits = (raw, dec) => {
 // disapu dari wallet (posId null) — bukan cuma yang keluar dari posisi.
 const asalSisa = (item) => (item.posId == null ? 'sisa di wallet' : `posisi #${item.posId}`);
 
+// Persen jarak untuk kabar/alasan, dibulatkan seperti di dasbor ("999+" untuk yang ekstrem).
+const fmtPct = (x) => (x >= 1000 ? '999+' : x.toFixed(0));
+
 // Durasi singkat untuk kabar: "45 dtk", "3 mnt", "1 jam 20 mnt".
 function lamanya(ms) {
   const s = Math.round(ms / 1000);
@@ -102,6 +105,23 @@ class Engine {
     await this.backfillDecisions();
   }
 
+  // Baris tabel actions -> objek aksi seperti yang dihasilkan pemindai.
+  actFromRow(r) {
+    return {
+      id: r.id, ts: r.ts, block: r.block, txHash: r.tx_hash, logIndex: r.log_index,
+      target: r.target, venue: r.venue, kind: r.kind, tokenId: r.token_id, poolRef: r.pool_ref,
+      token0: r.token0, token1: r.token1, fee: r.fee, tickSpacing: r.tick_spacing, hooks: r.hooks,
+      tickLower: r.tick_lower, tickUpper: r.tick_upper, liquidity: r.liquidity,
+      amount0: r.amount0, amount1: r.amount1, valueQuote: r.value_quote, quoteSymbol: r.quote_symbol,
+      // poolKey tidak disimpan di tabel actions, tapi semua bagiannya ada. Tanpa ini setiap
+      // entry v4 yang dinilai ulang (proses mati / berhenti di tengah daftar aksi) dilewati
+      // "data pool posisi target tidak terbaca".
+      poolKey: r.venue === 'v4' && r.token0 && r.token1 && r.fee != null && r.tick_spacing != null
+        ? { currency0: r.token0, currency1: r.token1, fee: r.fee, tickSpacing: r.tick_spacing, hooks: r.hooks || this.chain.ADDR.native }
+        : null,
+    };
+  }
+
   // Aksi yang sempat tercatat tapi belum diputuskan (mis. proses mati di tengah jalan).
   // Aturannya: di mode LIVE aksi lampau TIDAK BOLEH dieksekusi — sinyal LP yang sudah
   // basah beberapa jam bukan lagi sinyal. Di mode simulasi tetap dievaluasi supaya
@@ -120,19 +140,7 @@ class Engine {
         this.decide(r.id, 'skip', 'aksi lampau — mesin sedang mati saat itu');
         continue;
       }
-      const act = {
-        id: r.id, ts: r.ts, block: r.block, txHash: r.tx_hash, logIndex: r.log_index,
-        target: r.target, venue: r.venue, kind: r.kind, tokenId: r.token_id, poolRef: r.pool_ref,
-        token0: r.token0, token1: r.token1, fee: r.fee, tickSpacing: r.tick_spacing, hooks: r.hooks,
-        tickLower: r.tick_lower, tickUpper: r.tick_upper, liquidity: r.liquidity,
-        amount0: r.amount0, amount1: r.amount1, valueQuote: r.value_quote, quoteSymbol: r.quote_symbol,
-        // poolKey tidak disimpan di tabel actions, tapi semua bagiannya ada. Tanpa ini setiap
-        // entry v4 yang dinilai ulang (proses mati / berhenti di tengah daftar aksi) dilewati
-        // "data pool posisi target tidak terbaca".
-        poolKey: r.venue === 'v4' && r.token0 && r.token1 && r.fee != null && r.tick_spacing != null
-          ? { currency0: r.token0, currency1: r.token1, fee: r.fee, tickSpacing: r.tick_spacing, hooks: r.hooks || this.chain.ADDR.native }
-          : null,
-      };
+      const act = this.actFromRow(r);
       try {
         if (act.venue === 'v4' && act.poolRef) act.slot0 = await this.chain.slot0V4(act.poolRef);
         else if (act.poolRef) act.slot0 = await this.chain.slot0V3(act.poolRef);
@@ -435,7 +443,7 @@ class Engine {
     if (!exit && this.drawdownTripped()) return this.decide(act.id, 'skip', `drawdown harian menyentuh batas ${this.maxDailyDrawdownPct()}% — entry baru dijeda sampai besok`);
     const rules = this.rulesFrom(act.target);
 
-    if (act.kind === 'increase') return this.handleEntry(act, rules);
+    if (act.kind === 'increase' || act.kind === 'reentry') return this.handleEntry(act, rules);
     if (act.kind === 'decrease' || act.kind === 'transfer_out') return this.handleExit(act, rules);
     if (act.kind === 'custody_out') return this.decide(act.id, 'skip', 'posisi dititipkan ke kontrak otomasi — bukan sinyal keluar');
     if (act.kind === 'custody_in') return this.decide(act.id, 'skip', 'posisi dikembalikan dari kontrak otomasi');
@@ -524,6 +532,16 @@ class Engine {
     }
     if (d.verdict !== 'copy') return this.decide(act.id, 'skip', d.reason);
 
+    // Rentang yang terlalu jauh dari harga tidak disalin sekarang: modalnya cuma menganggur
+    // (aturan keluar yang sama akan menutupnya lagi dalam semenit). Kalau buka-lagi menyala,
+    // posisi target dipantau dan cermin dibuka begitu harga mendekat.
+    const far = rules.exit.out_of_range_pct > 0 ? m.distanceFromRangePct(act.slot0.tick, d.plan.tickLower, d.plan.tickUpper) : 0;
+    if (far > rules.exit.out_of_range_pct) {
+      const watch = this.watchReentry(act, rules, { why: 'ditunda', actionId: act.id });
+      return this.decide(act.id, 'skip', `rentang ${fmtPct(far)}% dari harga (batas ${rules.exit.out_of_range_pct}%) — ${
+        watch ? `ditunda; dibuka begitu harga ≤ ${watch.nearPct}% dari rentang dan target masih di dalam` : 'tidak disalin'}`);
+    }
+
     const existing = mirror && mirror.tick_lower === d.plan.tickLower && mirror.tick_upper === d.plan.tickUpper ? mirror : null;
     if (existing && existing.token_id) {
       d.plan.action = 'increase';
@@ -541,8 +559,8 @@ class Engine {
       const r = await this.executeEntry(d.plan, act);
       this.lastCopyAt.set(act.poolRef, Date.now());
       this.decide(act.id, 'copy', `${d.reason} — ${r.note}`, d.plan, r.txHash, r.positionId);
-      this.notify(`LP disalin: ${r.note}`, {
-        kind: 'entry', positionId: r.positionId, txHash: r.txHash, adding: !!r.adding,
+      this.notify(`${act.kind === 'reentry' ? 'LP dibuka lagi (harga mendekati rentang, target masih di dalam)' : 'LP disalin'}: ${r.note}`, {
+        kind: 'entry', positionId: r.positionId, txHash: r.txHash, adding: !!r.adding, reentry: act.kind === 'reentry',
         pair: r.pair, valueUsd: r.valueUsd, curTick: r.curTick, steps: r.steps,
         target: act.target, mirrorOf: act.tokenId, reason: d.reason,
       });
@@ -2458,6 +2476,11 @@ class Engine {
           target: t.pos.target, mirrorOf: t.pos.mirror_of, reason: t.reason,
         });
         this.cleared(`keluar:${t.pos.id}`, null);                   // kartu penutupan = kabarnya
+        // Ditutup karena di luar rentang, bukan karena target keluar: kalau target masih
+        // di dalam dan harga kembali mendekat, cerminnya dibuka lagi.
+        if (t.kind === 'oor' && t.pos.mirror_of && t.pos.target) {
+          this.watchReentry({ target: t.pos.target, venue: t.pos.venue, tokenId: t.pos.mirror_of }, this.rulesFrom(t.pos.target), { why: 'ditutup', posId: t.pos.id });
+        }
       } catch (e) {
         // Pemicunya masih berlaku, jadi diulang di sinkron berikutnya. Dua kali gagal
         // (~1 menit) sudah dikabarkan: dana sedang tidak terlindungi stop-loss.
@@ -2465,6 +2488,102 @@ class Engine {
       }
     }
     if (!this.stopping) await this.compound.tick(Date.now(), new Set(triggers.map((t) => t.pos.id)));
+    if (!this.stopping) await sekali('masuk-lagi', 'buka lagi posisi yang ditunda', this.reentryTick());
+  }
+
+  // ---- buka lagi posisi yang ditunda/ditutup karena jauh dari rentang -----------
+  // Satu pantauan per posisi target (target + venue + tokenId), disimpan di tabel state
+  // supaya selamat dari restart. Dibuat saat (a) entry target dilewati karena rentangnya
+  // > out_of_range_pct dari harga, atau (b) cermin ditutup oleh aturan di-luar-rentang.
+  // Dilepas begitu cermin terbuka lagi, target keluar, atau aturannya dimatikan.
+  reentryKey(target, venue, tokenId) { return this.sk(`reentry:${target}:${venue}:${tokenId}`); }
+
+  watchReentry({ target, venue, tokenId }, rules, extra = {}) {
+    const near = this.reentryNearPct(rules);
+    if (!near || !target || !tokenId) return null;
+    const key = this.reentryKey(target, venue, tokenId);
+    let prev = null;
+    try { prev = JSON.parse(this.store.getState(key) || 'null'); } catch { prev = null; }
+    const w = { ts: Date.now(), target, venue, tokenId: String(tokenId), tries: 0, ...extra, nearPct: near };
+    // Pantauan lama untuk posisi yang sama diperbarui, bukan digandakan.
+    if (prev && prev.actionId != null && w.actionId == null) w.actionId = prev.actionId;
+    this.store.setState(key, JSON.stringify(w));
+    this.store.log('info', `pantau #${tokenId} target ${target.slice(0, 10)}… (${w.why || 'jauh dari rentang'}): buka lagi kalau harga ≤ ${near}% dari rentang`, { quiet: true });
+    return w;
+  }
+
+  // Ambang "dekat" yang berlaku: reenter_within_pct, dipaksa di bawah out_of_range_pct
+  // supaya cermin tidak buka-tutup di satu ambang. 0/null = buka-lagi mati.
+  reentryNearPct(rules) {
+    const e = rules.exit;
+    let near = Number(e.reenter_within_pct) || 0;
+    if (near <= 0) return 0;
+    if (e.out_of_range_pct > 0 && near >= e.out_of_range_pct) near = e.out_of_range_pct / 2;
+    return near;
+  }
+
+  reentryWatches() {
+    const out = [];
+    for (const r of this.store.all("SELECT k, v FROM state WHERE k LIKE 'reentry:%' AND k LIKE ?", `%:${this.network}`)) {
+      try { const w = JSON.parse(r.v); if (w && w.target && w.tokenId) out.push({ key: r.k, ...w }); } catch { /* baris rusak: diabaikan */ }
+    }
+    return out;
+  }
+
+  async reentryTick() {
+    const watches = this.reentryWatches();
+    if (!watches.length) return;
+    const drop = (w, why) => { this.store.run('DELETE FROM state WHERE k=?', w.key); if (why) this.store.log('info', `berhenti memantau #${w.tokenId} target ${w.target.slice(0, 10)}…: ${why}`, { quiet: true }); };
+    for (const w of watches) {
+      if (this.stopping) return;
+      const t = this.store.get('SELECT enabled FROM targets WHERE chain=? AND address=?', this.network, w.target);
+      if (!t) { drop(w, 'target dihapus'); continue; }
+      const rules = this.rulesFrom(w.target);
+      const near = this.reentryNearPct(rules);
+      if (!near) { drop(w, 'aturan buka-lagi dimatikan'); continue; }
+      if (this.store.get("SELECT 1 FROM positions WHERE chain=? AND status='open' AND mirror_of=? AND target=?", this.network, w.tokenId, w.target)) { drop(w, 'cermin sudah terbuka'); continue; }
+      // Jeda/target mati/drawdown: sama seperti entry biasa, ditunggu — bukan dilepas.
+      if (!t.enabled || this.paused() || this.drawdownTripped()) continue;
+      if (w.retryAfter && Date.now() < w.retryAfter) continue;
+      // Posisi target harus masih berisi. Tak terbaca = tunggu sinkron berikutnya.
+      let liq = null;
+      try { liq = (await this.targetLiquidity(w.venue, w.tokenId))?.liquidity ?? null; } catch { liq = null; }
+      if (liq == null) continue;
+      if (liq <= 0n) { drop(w, 'target sudah keluar dari posisinya'); continue; }
+      // Rentang & pool posisi target: dari aksi masuk terakhirnya (cadangan: baris cermin
+      // kita yang ditutup — rentang persis sama hanya di mode exact, tapi cukup untuk jarak).
+      const src = this.store.get(
+        "SELECT * FROM actions WHERE chain=? AND target=? AND venue=? AND token_id=? AND kind IN ('mint','increase','reentry') AND tick_lower IS NOT NULL AND pool_ref IS NOT NULL ORDER BY id DESC LIMIT 1",
+        this.network, w.target, w.venue, w.tokenId)
+        || (w.posId != null ? this.store.get('SELECT * FROM positions WHERE id=?', w.posId) : null);
+      if (!src || src.tick_lower == null || src.tick_upper == null || !src.pool_ref) { drop(w, 'rentang posisi target tidak diketahui'); continue; }
+      let slot0 = null;
+      try { slot0 = this.chain.isV3Venue(w.venue) ? await this.chain.slot0V3(src.pool_ref) : await this.chain.slot0V4(src.pool_ref); } catch { slot0 = null; }
+      if (!slot0) continue;
+      const dist = m.distanceFromRangePct(slot0.tick, src.tick_lower, src.tick_upper);
+      if (dist > near) continue;                                    // masih jauh: tunggu
+      // Dekat & target masih di dalam: dinilai seperti sinyal masuk baru, dengan likuiditas
+      // target SEKARANG (ukuran mengikuti apa yang benar-benar ia pegang). Aksi sintetis
+      // 'reentry' dicatat supaya keputusannya tampak di riwayat seperti sinyal lainnya.
+      const id = Number(this.store.run(
+        `INSERT INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,tick_lower,tick_upper,liquidity,quote_symbol)
+         VALUES(?,?,?,?,?,?,?,'reentry',?,?,?,?,?,?,?,?,?,?,?)`,
+        this.network, Date.now(), this.head || 0, `reentry:${w.tokenId}:${Date.now()}`, 0, w.target, w.venue, w.tokenId, src.pool_ref,
+        src.token0, src.token1, src.fee, src.tick_spacing, src.hooks, src.tick_lower, src.tick_upper, liq.toString(), src.quote_symbol ?? null).lastInsertRowid);
+      const act = this.actFromRow(this.store.get('SELECT * FROM actions WHERE id=?', id));
+      act.slot0 = slot0;
+      drop(w, null);
+      try { await this.handleEntry(act, rules); }
+      catch (e) { this.decide(id, 'error', String(e.message).slice(0, 300)); this.store.log('error', `buka lagi #${w.tokenId}: ${e.message}`); }
+      const d = this.store.get('SELECT verdict, reason FROM decisions WHERE action_id=? ORDER BY id DESC LIMIT 1', id);
+      if (d && d.verdict !== 'copy' && d.verdict !== 'dry' && !/dari harga \(batas/.test(d.reason || '')) {
+        // Belum bisa (kas, anggaran, jeda pool, …): dicoba lagi tiap 15 menit, paling
+        // banyak 8 kali, selama harga masih dekat dan target masih di dalam.
+        const tries = (w.tries || 0) + 1;
+        if (tries < 8) this.store.setState(w.key, JSON.stringify({ ...w, key: undefined, tries, retryAfter: Date.now() + 15 * 60_000 }));
+        else this.store.log('warn', `buka lagi #${w.tokenId} target ${w.target.slice(0, 10)}… menyerah setelah ${tries} percobaan: ${d.reason}`);
+      }
+    }
   }
 
   // Cadangan ETH native untuk gas: tetap dari config, atau biaya satu transaksi terberat

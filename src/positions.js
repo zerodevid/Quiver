@@ -18,6 +18,7 @@ class Positions {
     chain = ensureChain(chain);
     this.rpc = rpc; this.store = store; this.chain = chain; this.log = log || console.log;
     this.live = [];      // hasil sinkron terakhir, dipakai dashboard
+    this.farStreak = new Map();   // id posisi -> berapa sinkron berturut-turut harganya terlalu jauh dari rentang
     this.lastSync = 0;
     this.syncing = null; // sinkron yang sedang berjalan, dipakai bersama
     this.markWarned = new Set();   // posisi yang harga pool-nya sudah dilaporkan gila
@@ -545,11 +546,25 @@ class Positions {
       if (e.max_age_hours > 0 && p.ageHours >= e.max_age_hours) {
         outs.push({ pos: p, reason: `umur ${p.ageHours.toFixed(1)} jam` }); continue;
       }
+      // Terlalu jauh dari rentang: modalnya menganggur (tidak menghasilkan fee) dan
+      // harganya belum tentu kembali. Dua sinkron berturut-turut (~1 menit) supaya sumbu
+      // sesaat tidak menutup posisi; kalau target masih di dalam, mesin membukanya lagi
+      // begitu harga mendekat (reenter_within_pct).
+      const far = e.out_of_range_pct > 0 && p.inRange === false && p.curTick != null
+        ? m.distanceFromRangePct(p.curTick, p.tick_lower, p.tick_upper) : 0;
+      if (far > e.out_of_range_pct) {
+        const n = (this.farStreak.get(p.id) || 0) + 1;
+        this.farStreak.set(p.id, n);
+        if (n >= 2) {
+          outs.push({ pos: p, kind: 'oor', reason: `di luar rentang ${far >= 1000 ? '999+' : far.toFixed(0)}% dari harga (batas ${e.out_of_range_pct}%)` });
+          continue;
+        }
+      } else this.farStreak.delete(p.id);
       if (e.out_of_range_minutes > 0 && p.inRange === false) {
         const since = Number(this.store.getState(`oor:${p.id}`, 0)) || 0;
         if (!since) this.store.setState(`oor:${p.id}`, now);
         else if (now - since >= e.out_of_range_minutes * 60000) {
-          outs.push({ pos: p, reason: `di luar rentang ${Math.round((now - since) / 60000)} menit` });
+          outs.push({ pos: p, kind: 'oor', reason: `di luar rentang ${Math.round((now - since) / 60000)} menit` });
         }
       } else if (p.inRange) {
         this.store.setState(`oor:${p.id}`, 0);

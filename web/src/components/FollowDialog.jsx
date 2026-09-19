@@ -64,6 +64,8 @@ export default function FollowDialog({ action, onClose, onDone }) {
     e.takeProfitPct > 0 && t('Take profit di +{n}%.', { n: e.takeProfitPct }),
     e.maxAgeHours > 0 && t('Ditutup setelah berumur {n} jam.', { n: e.maxAgeHours }),
     e.outOfRangeMinutes > 0 && t('Ditutup setelah {n} menit di luar rentang.', { n: e.outOfRangeMinutes }),
+    e.outOfRangePct > 0 && t('Ditutup kalau harga lebih dari {n}% di luar rentang.', { n: e.outOfRangePct }),
+    e.outOfRangePct > 0 && e.reenterWithinPct > 0 && t('Dibuka lagi kalau harga kembali ≤ {n}% dari rentang dan target masih di dalam.', { n: e.reenterWithinPct }),
   ].filter(Boolean);
   const k = f ? KEPUTUSAN[f.verdict] : null;
   const canOpen = !!plan?.plan && !plan.error && !loading && !sending && nominalOk;
