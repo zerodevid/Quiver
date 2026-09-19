@@ -193,6 +193,11 @@ export default function WalletPositionHistory({ p, address, onClose }) {
                       {t('Sebagian kejadiannya terjadi sebelum jendela pindai, jadi modal dan PnL-nya tidak ikut dihitung di ringkasan wallet. Perluas jendela lalu pindai ulang untuk melengkapinya.')}
                     </Notice></div>
                   )}
+                  {p.incomplete === 2 && (
+                    <div className="mb-4"><Notice status="warning" title="Harga saat kejadian belum terbaca">
+                      {t('RPC sedang sibuk ketika posisi ini dipindai, jadi salah satu kejadiannya belum bisa dinilai dan modal/PnL-nya tidak ikut ringkasan wallet. Akan dibaca ulang otomatis pada pembaruan berikutnya.')}
+                    </Notice></div>
+                  )}
 
                   {err && <Notice status="danger" title="Riwayat tidak terbaca">{err}</Notice>}
                   {!events && !err && <Loading text="Memuat riwayat…" />}

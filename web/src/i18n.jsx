@@ -1041,6 +1041,9 @@ const EN = {
   'nilai kini {v}': 'now worth {v}',
   'DPR {v}': 'DPR {v}',
   'Riwayat posisi ini terpotong': "This position's history is cut off",
+  'Harga saat kejadian belum terbaca': 'Price at the event could not be read',
+  'RPC sedang sibuk ketika posisi ini dipindai, jadi salah satu kejadiannya belum bisa dinilai dan modal/PnL-nya tidak ikut ringkasan wallet. Akan dibaca ulang otomatis pada pembaruan berikutnya.':
+    'The RPC was busy when this position was scanned, so one of its events could not be valued and its capital/PnL is left out of the wallet summary. It will be re-read automatically on the next refresh.',
   'Sebagian kejadiannya terjadi sebelum jendela pindai, jadi modal dan PnL-nya tidak ikut dihitung di ringkasan wallet. Perluas jendela lalu pindai ulang untuk melengkapinya.':
     'Some of its events happened before the scan window, so its capital and PnL are left out of the wallet summary. Widen the window and rescan to complete it.',
   'Pokok dan fee dipisahkan lewat matematika likuiditas pada state pool di blok tiap kejadian, bukan ditaksir dari transfer token.':

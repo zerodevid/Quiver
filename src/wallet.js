@@ -104,7 +104,10 @@ class WalletResearch {
       }
       if (best) break;
     }
-    if (!best) { this.priceCache.set(key, null); return null; }
+    // Kegagalan TIDAK di-cache: biasanya RPC sedang 429, bukan pool tanpa Swap.
+    // Dulu null-nya diingat seumur proses, sehingga pembaruan berikutnya untuk
+    // pool:blok yang sama ikut gagal walau RPC sudah pulih.
+    if (!best) return null;
     this.store.run('INSERT OR REPLACE INTO wprices(chain,pool_ref,block,sqrt_price,src_block) VALUES(?,?,?,?,?)',
       this.network, poolId, block, best.sqrt.toString(), best.bn);
     this.priceCache.set(key, best.sqrt);
@@ -228,6 +231,17 @@ class WalletResearch {
       const rc = byTx.get(ev.tx);
       ev.moved = { in0: 0n, in1: 0n, out0: 0n, out1: 0n };
       if (!rc) continue;
+      // Satu tx yang membuka/menutup BEBERAPA posisi (target yang menyebar modal ke
+      // 3 rentang sekaligus) hanya punya satu arus Transfer untuk semuanya. Kalau
+      // tetap dipakai, tiap posisi tampak bermodal seluruh tx — posisi 1.120 USDG
+      // tercatat 5.600 dan "rugi" 4.480 saat kembali utuh. Untuk tx seperti itu
+      // Transfer tidak bisa dipilah, jadi dibiarkan kosong dan jalur cadangan
+      // memakai pokok dari L & harga (fee yang ikut ditarik tak terbaca di sana;
+      // jalur arsip tidak terpengaruh karena tidak bergantung pada Transfer).
+      const nLiq = (rc.logs || []).filter((l) => l.address.toLowerCase() === this.chain.ADDR.poolManager
+        && l.topics[0] === TOPIC.modifyLiquidity && BigInt.asIntN(256, w32(ethers.getBytes(l.data), 2)) !== 0n).length;
+      ev.shared = nLiq > 1;
+      if (ev.shared) continue;
       const c0 = info.poolKey?.currency0, c1 = info.poolKey?.currency1;
       for (const l of rc.logs || []) {
         if (l.topics[0] !== TOPIC.transfer || l.topics.length !== 3) continue;
@@ -272,6 +286,7 @@ class WalletResearch {
     let investedQ = 0, returnedQ = 0, feesQ = 0;
     const rows = [];
     let liq = 0n;
+    let tanpaHarga = false;   // ada kejadian yang harganya tidak terbaca (lihat jalur cadangan)
 
     for (const ev of events.sort((a, b) => a.block - b.block || a.logIndex - b.logIndex)) {
       const abs = ev.delta < 0n ? -ev.delta : ev.delta;
@@ -333,6 +348,11 @@ class WalletResearch {
 
       // ---- jalur cadangan: harga dari Swap terdekat + jumlah dari Transfer ----
       let sqrt = sqrtClampedToRange(await this.priceAt(info.poolId, ev.block), sa, sb);
+      // Tanpa harga, kejadian ini tidak bisa dinilai sama sekali. Dulu dicatat nol,
+      // sehingga mint yang kebetulan dibaca saat RPC 429 tampak bermodal $0 dan
+      // penarikannya jadi "untung" sebesar seluruh pokok. Ditandai supaya tidak
+      // ikut ringkasan dan dibaca ulang pada pembaruan berikutnya.
+      if (!sqrt) tanpaHarga = true;
       let princ = { amount0: 0n, amount1: 0n };
       if (sqrt) {
         princ = m.amountsForLiquidity(sqrt, sa, sb, abs);
@@ -448,18 +468,35 @@ class WalletResearch {
       symbol0: toks?.[0]?.symbol || '?', symbol1: toks?.[1]?.symbol || '?',
       dec0: d0, dec1: d1,
       // Riwayat bisa terpotong kalau posisi sudah ada sebelum jendela pindai:
-      // kejadian pertama yang terlihat bukan mint -> modal awalnya tidak diketahui.
-      incomplete: first.kind !== 'mint',
+      // kejadian pertama yang terlihat bukan mint -> modal awalnya tidak diketahui (1).
+      // Atau harga salah satu kejadiannya tidak terbaca saat dipindai (2) — yang ini
+      // sembuh sendiri: refresh() membacanya ulang.
+      incomplete: first.kind !== 'mint' ? 1 : tanpaHarga ? 2 : 0,
     };
   }
 
   // ---- pemindaian penuh ---------------------------------------------------
-  async scan(wallet, { blocks = 900_000, ethUsd = 2500, onProgress } = {}) {
+  // Posisi yang sudah TERTUTUP dan lengkap (NFT-nya sudah tidak dipegang, semua
+  // kejadiannya ternilai) tidak akan berubah lagi — membacanya ulang dari chain
+  // hanya menghasilkan angka yang sama dengan biaya ratusan panggilan RPC. Pindai
+  // penuh memakai baris tersimpannya; `force` memaksa semuanya dibangun ulang
+  // (dipakai setelah perbaikan rumus, lewat API).
+  async scan(wallet, { blocks = 900_000, ethUsd = 2500, onProgress, force = false } = {}) {
     wallet = wallet.toLowerCase();
     const head = await this.rpc.blockNumber();
     const from = Math.max(0, head - blocks);
     const held = await this.enumerate(wallet, from, head, onProgress);
-    const ids = [...held.keys()];
+    const reuse = new Set();
+    if (!force) {
+      for (const r of this.store.all(
+        `SELECT token_id FROM wpositions WHERE chain=? AND wallet=? AND venue='v4' AND status='closed'
+           AND incomplete=0 AND token0 IS NOT NULL AND events_n > 0`, this.network, wallet)) {
+        const span = held.get(r.token_id);
+        if (span && !span.heldNow) reuse.add(r.token_id);
+      }
+      if (reuse.size) this.log(`riset ${wallet.slice(0, 10)}…: ${reuse.size} posisi tertutup dipakai dari simpanan`);
+    }
+    const ids = [...held.keys()].filter((id) => !reuse.has(id));
     const out = [];
     // Tidak ada posisi v4 BUKAN berarti wallet ini tidak ber-LP: banyak yang hanya
     // main di v3. Dulu di sini ada return lebih awal, sehingga jalur v3 tidak pernah
@@ -483,8 +520,8 @@ class WalletResearch {
       } catch (e) { this.log(`posisi ${id} gagal: ${e.message}`); }
     }
     out.push(...await this.scanV3(wallet, { from, head, ethUsd, onProgress }));
-    await this.persist(wallet, out, { from, head, ethUsd });
-    return { wallet, positions: out, head, from };
+    await this.persist(wallet, out, { from, head, ethUsd, keep: reuse });
+    return { wallet, positions: out, head, from, reused: reuse.size };
   }
 
   // Kegagalan di jalur v3 tidak boleh menjatuhkan hasil v4 yang sudah terkumpul.
@@ -513,11 +550,19 @@ class WalletResearch {
     const held = await this.enumerate(wallet, from, head, onProgress);
 
     const known = new Map(this.store.all(
-      'SELECT token_id, opened_block, status, pool_ref, token0, token1, fee, tick_spacing, hooks, tick_lower, tick_upper FROM wpositions WHERE chain=? AND wallet=?',
+      'SELECT token_id, opened_block, closed_block, status, incomplete, pool_ref, token0, token1, fee, tick_spacing, hooks, tick_lower, tick_upper FROM wpositions WHERE chain=? AND wallet=?',
       this.network, wallet).map((r) => [r.token_id, r]));
     for (const [id, r] of known) {
       if (r.status === 'open' && !held.has(id)) {
         held.set(id, { first: r.opened_block ?? from, last: head, mintTx: null, acquiredByMint: false, heldNow: true });
+      }
+      // Posisi yang harganya tidak terbaca saat dipindai (RPC 429) dibaca ulang
+      // sampai nilainya terisi — kalau tidak, modal $0-nya tinggal selamanya.
+      if (r.incomplete === 2 && !held.has(id) && r.opened_block != null) {
+        held.set(id, {
+          first: r.opened_block, last: r.closed_block != null ? Math.min(head, r.closed_block + 5) : head,
+          mintTx: null, acquiredByMint: true, heldNow: r.status === 'open',
+        });
       }
     }
     // Posisi lama yang tersentuh lagi dibaca sejak pembukaannya, bukan sejak jendela
@@ -709,13 +754,14 @@ class WalletResearch {
   }
 
   // ---- simpan -------------------------------------------------------------
-  async persist(wallet, positions, { from, head, ethUsd, partial = false }) {
+  async persist(wallet, positions, { from, head, ethUsd, partial = false, keep: reuse = null }) {
     const usd = (v, kind) => (kind === 'eth' ? v * ethUsd : v);
     // Buang sisa pindai lama di dalam jendela ini yang tidak muncul lagi (mis. hasil
     // pindai yang gagal di tengah jalan: posisi tanpa pasangan token dan serba nol).
     // Posisi di luar jendela ini dibiarkan — pindai yang lebih pendek tidak boleh
-    // menghapus hasil pindai yang lebih panjang.
-    const keep = new Set(positions.map((p) => p.tokenId));
+    // menghapus hasil pindai yang lebih panjang. `keep` = posisi tertutup yang
+    // sengaja tidak dibaca ulang (scan) — barisnya tetap.
+    const keep = new Set([...positions.map((p) => p.tokenId), ...(reuse || [])]);
     // Pembaruan lanjutan hanya membaca sebagian posisi — "tidak muncul lagi" di situ
     // bukan berarti basi.
     const stale = partial ? [] : this.store.all(
@@ -749,7 +795,7 @@ class WalletResearch {
         p.agg.in0.toString(), p.agg.in1.toString(), p.agg.out0.toString(), p.agg.out1.toString(),
         p.agg.fee0.toString(), p.agg.fee1.toString(),
         usd(p.investedQ, p.quoteKind), usd(p.returnedQ, p.quoteKind), usd(p.feesQ, p.quoteKind), usd(p.pnlQ, p.quoteKind),
-        p.quoteSymbol, p.openedBlock, openedTs, p.closedBlock, closedTs, p.status, p.events.length, p.incomplete ? 1 : 0,
+        p.quoteSymbol, p.openedBlock, openedTs, p.closedBlock, closedTs, p.status, p.events.length, Number(p.incomplete) || 0,
         usd(p.liveValueQ || 0, p.quoteKind), usd(p.liveFeeQ || 0, p.quoteKind),
         p.inRange == null ? null : (p.inRange ? 1 : 0));
       p.openedTs = openedTs; p.closedTs = closedTs;

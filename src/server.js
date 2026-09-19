@@ -274,7 +274,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // hanya boleh punya satu pekerjaan berjalan.
   //   mode 'full'    — bangun ulang semua posisi di jendela `blocks`
   //   mode 'refresh' — hanya blok sejak pindai terakhir + posisi yang masih terbuka
-  const startWalletJob = (addr, { mode = 'full', blocks = 900_000, reason = null } = {}) => {
+  const startWalletJob = (addr, { mode = 'full', blocks = 900_000, reason = null, force = false } = {}) => {
     if (walletJobs.get(addr)?.status === 'jalan') return walletJobs.get(addr);
     const job = { status: 'jalan', mode, reason, phase: 'mulai', progress: 0, done: 0, total: 0, startedAt: Date.now(), error: null };
     walletJobs.set(addr, job);
@@ -284,7 +284,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     };
     const run = mode === 'refresh'
       ? research.refresh(addr, { ethUsd: engine.ethUsd, onProgress })
-      : research.scan(addr, { blocks, ethUsd: engine.ethUsd, onProgress });
+      : research.scan(addr, { blocks, ethUsd: engine.ethUsd, onProgress, force });
     if (reason !== 'manual') log(`riset ${addr}: pembaruan ${mode} dimulai (${reason})`);
     run.then((r) => {
       job.status = 'selesai'; job.finishedAt = Date.now();
@@ -1324,7 +1324,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const addr = String(b.address || '').toLowerCase().trim();
       if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
       const mode = b.mode === 'refresh' ? 'refresh' : 'full';
-      const job = startWalletJob(addr, { mode, blocks: Number(b.blocks || 900_000), reason: 'manual' });
+      // force: bangun ulang juga posisi tertutup yang sudah tersimpan (setelah perbaikan rumus)
+      const job = startWalletJob(addr, { mode, blocks: Number(b.blocks || 900_000), reason: 'manual', force: b.force === true });
       return { ok: true, status: job.status };
     },
 
