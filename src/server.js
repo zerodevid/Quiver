@@ -1859,19 +1859,22 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     } else return { error: `jenis kartu tidak dikenal: ${kind}` };
     return { png: shareCard.render(kind, data, opts), caption: shareCard.caption(kind, data, lang) };
   };
-  // Lilin untuk grafik latar kartu posisi. Rentang waktu dipilih supaya jendela
-  // (umur posisi × 1,25, minimal 1 jam) muat dalam ≤ 120 lilin.
+  // Lilin untuk grafik latar kartu posisi. Jendelanya menutupi umur posisi (minimal
+  // 10 menit) + 30% konteks sebelum masuk, dalam ≤ 120 lilin; posisi tertutup hanya
+  // diberi beberapa lilin setelah keluar — bukan 6 jam seperti kartu grafik, supaya
+  // penanda masuk/keluarnya tidak terdesak ke tepi kiri.
   const positionSpark = async (p) => {
     if (!p.pool_ref) return null;
     const closed = p.status === 'closed';
     const end = closed && p.closed_ts ? p.closed_ts : Date.now();
-    const spanS = Math.max(3600, (end - (p.opened_ts || end)) / 1000) * 1.25;
+    const spanS = Math.max(600, (end - (p.opened_ts || end)) / 1000) * 1.3;
     const frames = Object.entries(TF).sort((a, b) => a[1][2] - b[1][2]);
     const [tf, [, , secs]] = frames.find(([, f]) => spanS / f[2] <= 120) || frames[frames.length - 1];
-    const limit = Math.max(30, Math.min(140, Math.ceil(spanS / secs) + 4));
+    const after = closed ? 3 : 0;
+    const limit = Math.max(30, Math.min(140, Math.ceil(spanS / secs) + after + 2));
     const oh = await market.candles(p.pool_ref, tf, {
       limit, currency: 'token', token: /^0x[0-9a-f]{40}$/.test(String(p.baseToken || '')) ? p.baseToken : null,
-      before: closed && p.closed_ts ? p.closed_ts + 6 * 3600_000 : null,
+      before: closed && p.closed_ts ? p.closed_ts + after * secs * 1000 : null,
     });
     const candles = oh?.candles || [];
     if (oh?.error || candles.length < 2) return null;
