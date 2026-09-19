@@ -113,7 +113,7 @@ const rgba = (hex, a) => `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.s
 // Koordinat tiap ukuran. k = skala teks; hero.right = batas kanan teks angka besar
 // (kolom maskot mulai di sana); mascot.right / mascot.cx = rata kanan atau di tengah;
 // stats.perRow = jumlah ubin statistik per baris; footY = garis kaki (tanggal + chain);
-// chart = strip grafik di bawah angka besar (dari PAD sampai hero.right).
+// chart = strip grafik di bawah angka besar (dari PAD sampai chart.x1, bawaan hero.right).
 function geometry(size) {
   const { W, H } = SIZES[size] || SIZES.wide;
   if (size === 'story') {
@@ -123,8 +123,8 @@ function geometry(size) {
   }
   if (size === 'square') {
     return { W, H, k: 1, logo: { y: 52, w: 154, h: 28 }, ctxY: 68, ruleY: 108, titleY: 172, iconR: 26,
-      hero: { labelY: 262, bigY: 400, subY: 452, right: 660, maxBig: 120 }, chart: { y0: 474, y1: 538 },
-      mascot: { h: 370, y: 122, right: W - PAD + 8 }, stats: { y: 556, h: 170, perRow: 2 }, footY: 990 };
+      hero: { labelY: 262, bigY: 396, subY: 450, right: 660, maxBig: 132 }, chart: { y0: 504, y1: 660, x1: W - PAD },
+      mascot: { h: 370, y: 122, right: W - PAD + 8 }, stats: { y: 690, h: 140, perRow: 2 }, footY: 1022 };
   }
   return { W, H, k: 1, logo: { y: 45, w: 154, h: 28 }, ctxY: 61, ruleY: 100, titleY: 154, iconR: 26,
     hero: { labelY: 212, bigY: 310, subY: 350, right: 850, maxBig: 96 }, chart: { y0: 370, y1: 432 },
@@ -248,7 +248,7 @@ function stamp(s, cx, cy, color) {
 //   bars: bars [{ v, on }] — `on` = hari yang dibagikan
 function chartSvg(c, tint) {
   if (!c) return '';
-  const x0 = PAD, x1 = G.hero.right, { y0, y1 } = G.chart, w = x1 - x0, h = y1 - y0;
+  const x0 = PAD, { y0, y1 } = G.chart, x1 = G.chart.x1 ?? G.hero.right, w = x1 - x0, h = y1 - y0;
   const px = T.sq;
   if (c.kind === 'bars') {
     const bars = c.bars || [];
@@ -369,7 +369,7 @@ function hero({ label, big, bigColor, side, sub, subColor = T.muted }) {
 function statsRow(cols, footer) {
   const { W, k } = G, { y, h, perRow } = G.stats, gap = 12;
   const cw = (W - PAD * 2 - gap * (perRow - 1)) / perRow;
-  const tall = h >= 150;
+  const tall = h >= 140;
   let out = '';
   cols.forEach(([label, value, o = {}], i) => {
     const x = PAD + (i % perRow) * (cw + gap), ty = y + Math.floor(i / perRow) * (h + gap);
@@ -377,8 +377,8 @@ function statsRow(cols, footer) {
     const cx = x + 18, width = cw - 36;
     out += fitted(label, cx, ty + 30 * k, width, { size: (tall ? 16 : 15) * k, color: T.muted });
     const size = Math.min((tall ? 36 : 29) * k, width / Math.max(measure(value, 1, 600), 1));
-    out += txt(value, cx, ty + (tall ? 88 : 66) * k, { size, weight: 600, color: o.color || T.text });
-    if (o.extra) out += fitted(o.extra[0], cx, ty + (tall ? 124 : 92) * k, width, { size: 15 * k, color: o.extra[1] });
+    out += txt(value, cx, ty + (h * 0.55 + 6) * k, { size, weight: 600, color: o.color || T.text });
+    if (o.extra) out += fitted(o.extra[0], cx, ty + (h * 0.8 + 6) * k, width, { size: 15 * k, color: o.extra[1] });
   });
   if (footer) out += fitted(footer, PAD, G.footY, W - PAD * 2 - measure(chainName(), 17 * k, 500) - 60 * k, { size: 15 * k, color: T.faint });
   return out;
