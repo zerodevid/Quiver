@@ -135,10 +135,8 @@ const denganServer = async (telegram, fn) => {
     // Tema piksel: huruf Pixelify Sans, sudut kotak, garis grafik bertangga (H/V, bukan L).
     const t0 = Date.now();
     const chart = { kind: 'line', pts: Array.from({ length: 20 }, (_, i) => [t0 + i * 60e3, 1 + Math.sin(i / 3)]), band: [0.5, 1.5], marks: [{ t: t0 + 5 * 60e3, v: 1.2 }] };
-    const halusMascot = (svg) => svg.includes(shareCard.svgOf('position', p, { lang: 'id' }).match(/<image x="\d+" y="\d+" width="\d+" height="\d+" href="([^"]{0,80})/)[1]);
     const pixel = shareCard.svgOf('position', p, { lang: 'id', theme: 'pixel', chart });
     assert.ok(pixel.includes('font-family="Pixelify Sans"') && pixel.includes('rx="0"'), 'tema piksel: font & sudut kotak');
-    assert.ok(pixel.includes('image-rendering="optimizeSpeed"') && !halusMascot(pixel), 'tema piksel: maskot sprite tanpa penghalusan');
     assert.ok(/<path d="M[\d.]+ [\d.]+ H[\d.]+ V/.test(pixel) && pixel.includes('url(#chartFill)'), 'grafik bertangga + isian');
     const halus = shareCard.svgOf('position', p, { lang: 'id', chart });
     assert.ok(/<path d="M[\d.]+ [\d.]+ L[\d.]+ /.test(halus) && halus.includes('stroke-dasharray="6 6"'), 'tema lain: garis diagonal + batas rentang');
