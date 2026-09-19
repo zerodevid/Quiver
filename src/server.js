@@ -1804,9 +1804,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const dayKeyIn = (ts, timeZone) => {
     try { return new Date(ts).toLocaleDateString('en-CA', { timeZone }); } catch { return new Date(ts).toLocaleDateString('en-CA'); }
   };
-  const shareCardOf = async ({ kind, id, day, hide = false, lang = 'id', tz } = {}) => {
+  const shareCardOf = async ({ kind, id, day, hide = false, lang = 'id', tz, size, theme } = {}) => {
     const timeZone = tz || cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const opts = { hideAmounts: !!hide, lang, timeZone, chain: { key: chain.network, label: chain.label } };
+    const opts = { hideAmounts: !!hide, lang, timeZone, size: shareCard.sizeKey(size), theme: shareCard.themeKey(theme), chain: { key: chain.network, label: chain.label } };
     let data;
     if (kind === 'position') {
       const d = await callApi('GET', '/api/position', {}, { id });
@@ -1827,12 +1827,19 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         return icons.read(k);
       };
       opts.icons = { token0: iconOf(data.token0), token1: iconOf(data.token1) };
+      // Grafik harga di latar angka: lilin seumur posisi (+ sedikit konteks sebelum
+      // masuk), rentang LP, dan titik masuk/keluar. Sumbernya sama dengan kartu grafik.
+      // Gagal atau lambat (GeckoTerminal) → kartu tetap jadi, tanpa grafik.
+      opts.chart = await positionSpark(data).catch(() => null);
     } else if (kind === 'total' || kind === 'daily') {
       const [pf, pos] = await Promise.all([callApi('GET', '/api/portfolio', {}, { range: 'all' }), callApi('GET', '/api/positions')]);
       const all = [...(pos.positions || []), ...(pos.closed || [])];
       if (kind === 'total') {
         if (!pf.now) return { error: 'portofolio belum terbaca' };
         data = { now: pf.now, stats: pf.stats, since: all.reduce((a, x) => (x.opened_ts && (!a || x.opened_ts < a) ? x.opened_ts : a), null) };
+        // Kurva PnL bersih sepanjang riwayat (tampilan yang sama dengan grafik portofolio).
+        const pts = portfolioCard.prepare(pf, 'net').pts;
+        if (pts.length >= 2) opts.chart = { kind: 'line', pts: pts.map((x) => [x.t, x.v]), zero: true };
       } else {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day || ''))) return { error: 'tanggal tidak valid' };
         const daily = {}, counts = {};
@@ -1845,9 +1852,37 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
             .map((c) => ({ symbol0: c.symbol0, symbol1: c.symbol1, cost: (c.cost_quote || 0) * kq(c.quote_symbol), pnl: ((c.out_quote || 0) - (c.cost_quote || 0)) * kq(c.quote_symbol) })),
           monthTotal: Object.entries(daily).filter(([k]) => k.startsWith(day.slice(0, 7))).reduce((a, [, v]) => a + v, 0),
         };
+        // Batang PnL tiap hari di bulan itu; hari yang dibagikan ditonjolkan.
+        const [y, m] = day.split('-').map(Number), dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        opts.chart = { kind: 'bars', bars: Array.from({ length: dim }, (_, i) => { const k = `${day.slice(0, 7)}-${String(i + 1).padStart(2, '0')}`; return { v: daily[k] || 0, on: k === day }; }) };
       }
     } else return { error: `jenis kartu tidak dikenal: ${kind}` };
     return { png: shareCard.render(kind, data, opts), caption: shareCard.caption(kind, data, lang) };
+  };
+  // Lilin untuk grafik latar kartu posisi. Rentang waktu dipilih supaya jendela
+  // (umur posisi × 1,25, minimal 1 jam) muat dalam ≤ 120 lilin.
+  const positionSpark = async (p) => {
+    if (!p.pool_ref) return null;
+    const closed = p.status === 'closed';
+    const end = closed && p.closed_ts ? p.closed_ts : Date.now();
+    const spanS = Math.max(3600, (end - (p.opened_ts || end)) / 1000) * 1.25;
+    const frames = Object.entries(TF).sort((a, b) => a[1][2] - b[1][2]);
+    const [tf, [, , secs]] = frames.find(([, f]) => spanS / f[2] <= 120) || frames[frames.length - 1];
+    const limit = Math.max(30, Math.min(140, Math.ceil(spanS / secs) + 4));
+    const oh = await market.candles(p.pool_ref, tf, {
+      limit, currency: 'token', token: /^0x[0-9a-f]{40}$/.test(String(p.baseToken || '')) ? p.baseToken : null,
+      before: closed && p.closed_ts ? p.closed_ts + 6 * 3600_000 : null,
+    });
+    const candles = oh?.candles || [];
+    if (oh?.error || candles.length < 2) return null;
+    const at = (tick) => (tick == null ? null : tickPriceOf(tick, p.dec0, p.dec1, p.quoteSide));
+    const a = at(p.tick_lower), b = at(p.tick_upper);
+    const marks = [];
+    const entry = sqrtPriceOf(p.entrySqrt, p.dec0, p.dec1, p.quoteSide);
+    if (p.opened_ts && entry != null) marks.push({ t: p.opened_ts, v: entry });
+    const exit = closed ? sqrtPriceOf(p.exitSqrt, p.dec0, p.dec1, p.quoteSide) : null;
+    if (closed && p.closed_ts && exit != null) marks.push({ t: p.closed_ts, v: exit });
+    return { kind: 'line', pts: candles.map((c) => [c.t, Number(c.c)]), band: a != null && b != null ? [Math.min(a, b), Math.max(a, b)] : null, marks };
   };
 
   // Grafik satu posisi sebagai gambar: lilin + indikator + pita rentang + garis BEP.

@@ -12,13 +12,19 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Modal, toast } from '@heroui/react';
 import { Share2, Copy, Download, Send } from 'lucide-react';
-import { Toggle } from './ui';
+import { Toggle, Segmented } from './ui';
 import { get, post } from '../api';
 import { useI18n } from '../i18n';
 import { usd, pct } from '../fmt';
 
-const W = 1200, H = 630;
+// Ukuran & tema: kuncinya sama dengan SIZES/THEMES di src/share-card.js (server yang
+// menggambar; yang tidak dikenal jatuh ke bawaan).
+const SIZES = [['wide', 'Lebar', 1200 / 630], ['square', 'Persegi', 1], ['story', 'Story', 1080 / 1920]];
+const THEMES = [['dark', 'Grafit'], ['midnight', 'Malam'], ['sunset', 'Senja'], ['neon', 'Neon'], ['gold', 'Emas'], ['light', 'Terang'], ['pixel', 'Piksel']];
 const tzName = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ''; } };
+// Pilihan terakhir diingat di browser ini.
+const remember = (key, fallback, valid) => { try { const v = localStorage.getItem(key); return valid.includes(v) ? v : fallback; } catch { return fallback; } };
+const keep = (key, v) => { try { localStorage.setItem(key, v); } catch { /* abaikan */ } };
 
 export const positionCard = (p) => ({
   kind: 'position', id: p.id,
@@ -33,7 +39,10 @@ export function ShareDialog({ card, onClose }) {
   const { t, locale: lang } = useI18n();
   const open = !!card;
   const [hide, setHide] = useState(false);
+  const [size, setSize] = useState(() => remember('quiver-share-size', 'wide', SIZES.map(([k]) => k)));
+  const [theme, setTheme] = useState(() => remember('quiver-share-theme', 'dark', THEMES.map(([k]) => k)));
   const [blob, setBlob] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [url, setUrl] = useState(null);
   const [busy, setBusy] = useState(null);
   const [tg, setTg] = useState(null);           // { ready, chats } — bot Telegram siap?
@@ -45,20 +54,25 @@ export function ShareDialog({ card, onClose }) {
   useEffect(() => { try { setHide(localStorage.getItem('quiver-share-hide') === '1'); } catch { /* abaikan */ } }, []);
   const toggleHide = (v) => { setHide(v); try { localStorage.setItem('quiver-share-hide', v ? '1' : '0'); } catch { /* abaikan */ } };
 
-  // Gambar diminta ulang saat kartu berganti, bahasa berganti, atau nominal disembunyikan.
+  const pickSize = (v) => { setSize(v); keep('quiver-share-size', v); };
+  const pickTheme = (v) => { setTheme(v); keep('quiver-share-theme', v); };
+
+  // Gambar diminta ulang saat kartu, bahasa, ukuran, tema berganti, atau nominal disembunyikan.
   useEffect(() => {
     if (!card) { setBlob(null); return; }
     let alive = true;
-    const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), hide: hide ? '1' : '0', lang, tz: tzName() });
+    setLoading(true);
+    const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme });
     fetch(`/api/share/card?${q}`, { credentials: 'same-origin' })
       .then(async (r) => {
         if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `HTTP ${r.status}`); }
         return r.blob();
       })
       .then((b) => { if (alive) setBlob(b); })
-      .catch((e) => { if (alive) toast.danger(t('Kartu gagal digambar'), { description: String(e?.message || e) }); });
+      .catch((e) => { if (alive) toast.danger(t('Kartu gagal digambar'), { description: String(e?.message || e) }); })
+      .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [card, hide, lang, t]);
+  }, [card, hide, lang, size, theme, t]);
 
   useEffect(() => {
     if (!blob) { setUrl(null); return; }
@@ -73,7 +87,8 @@ export function ShareDialog({ card, onClose }) {
   }, [open, tg]);
 
   const canShare = typeof navigator !== 'undefined' && !!navigator.share && !!navigator.canShare;
-  const name = c ? `quiver-${c.name}.png`.replace(/[^A-Za-z0-9.+-]+/g, '-').replace(/-+/g, '-') : 'quiver.png';
+  const name = c ? `quiver-${c.name}-${size}-${theme}.png`.replace(/[^A-Za-z0-9.+-]+/g, '-').replace(/-+/g, '-') : 'quiver.png';
+  const ratio = SIZES.find(([k]) => k === size)?.[2] || 1200 / 630;
 
   const run = async (kind) => {
     if (!blob || !c) return;
@@ -89,7 +104,7 @@ export function ShareDialog({ card, onClose }) {
         setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
       } else if (kind === 'telegram') {
         // Server menggambar ulang dari data yang sama, lalu mengirimnya ke tiap chat.
-        const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, hide, lang, tz: tzName() });
+        const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, hide, lang, tz: tzName(), size, theme });
         if (j.error) throw new Error(j.error);
         toast.success(t('Terkirim ke Telegram'), { description: j.failed ? t('{n} chat gagal: {e}', { n: j.failed, e: j.lastErr }) : t('{n} chat', { n: j.sent }) });
       } else if (kind === 'share') {
@@ -121,10 +136,17 @@ export function ShareDialog({ card, onClose }) {
               <Modal.Heading>{t('Bagikan')}</Modal.Heading>
             </Modal.Header>
             <Modal.Body>
-              <div className="overflow-hidden rounded-lg border border-border bg-[#0E1015]" style={{ aspectRatio: `${W} / ${H}` }}>
-                {url
-                  ? <img src={url} alt={c?.text || ''} className="block h-full w-full" />
-                  : <div className="flex h-full items-center justify-center text-xs text-muted">{t('Menggambar kartu…')}</div>}
+              {/* Pratinjau mengikuti rasio ukuran yang dipilih; story dibatasi tingginya supaya dialog tidak menjulang. */}
+              <div className="flex justify-center overflow-hidden rounded-lg border border-border bg-[#0E1015]">
+                <div className={`relative w-full transition-opacity ${loading ? 'opacity-60' : ''}`} style={{ aspectRatio: ratio, maxHeight: '60vh' }}>
+                  {url
+                    ? <img src={url} alt={c?.text || ''} className="block h-full w-full object-contain" />
+                    : <div className="flex h-full items-center justify-center text-xs text-muted">{t('Menggambar kartu…')}</div>}
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Segmented size="sm" aria="Ukuran kartu" value={size} onChange={pickSize} options={SIZES.map(([k, label]) => [k, label])} />
+                <Segmented size="sm" aria="Tema kartu" value={theme} onChange={pickTheme} options={THEMES.map(([k, label]) => [k, label])} />
               </div>
               <div className="mt-3">
                 <Toggle label="Sembunyikan nominal dolar" desc="Hanya persentase yang tampil; harga token tetap ditampilkan." value={hide} onChange={toggleHide} />

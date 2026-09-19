@@ -31,6 +31,8 @@ const { VIEWS: PF_VIEWS, RANGES: PF_RANGES } = require('./portfolio-card');
 const CHART_TFS = ['5m', '15m', '1h', '4h', '1d'];
 // Lebar jendela grafik dalam jam; 0 = otomatis (seumur posisi + konteks sebelum masuk).
 const CHART_SPANS = [[0, 'auto'], [24, '1 hari'], [72, '3 hari'], [168, '7 hari'], [720, '30 hari']];
+// Ukuran & tema kartu bagikan: daftar dan labelnya dari penggambarnya sendiri.
+const { SIZES: CARD_SIZES, THEMES: CARD_THEMES } = require('./share-card');
 
 const API = 'https://api.telegram.org/bot';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -945,12 +947,19 @@ class Telegram {
       case 'pc': return out(...(await this.tutupKonfirm(rest[0])));
       // Kartu bagikan: gambar PnL (src/share-card.js) dikirim sebagai foto ke chat ini;
       // layar yang sedang tampil tidak diubah, cukup notifikasi kecil di tombolnya.
+      // Tema, ukuran, dan sakelar nominal dibawa di callback data (`ps:<id>:<tema>:
+      // <ukuran>:<sembunyi>`); tombol di bawah foto mengganti gambar di pesan yang sama.
       case 'ps': case 'os': {
         if (!this.shareCard) throw new Error('kartu bagikan tidak tersedia');
-        const card = await this.shareCard({ kind: head === 'ps' ? 'position' : 'total', id: rest[0], lang: locale() });
+        const kind = head === 'ps' ? 'position' : 'total', id = rest[0] || undefined;
+        const theme = CARD_THEMES[rest[1]] ? rest[1] : 'dark', size = CARD_SIZES[rest[2]] ? rest[2] : 'wide', hide = rest[3] === '1';
+        if (ack && rest[1]) await ack(tr("Menggambar kartu…"));
+        const card = await this.shareCard({ kind, id, lang: locale(), theme, size, hide });
         if (card.error) throw new Error(note(card.error));
-        await this.sendPhoto(chatId, card.png, card.caption);
-        return ack ? ack(tr("Kartu dikirim.")) : null;
+        const keyboard = this.kartuKb(head, id, theme, size, hide);
+        const edited = rest[1] ? await this.editPhoto(chatId, msgId, card.png, card.caption, keyboard) : false;
+        if (!edited) await this.sendPhoto(chatId, card.png, card.caption, keyboard);
+        return ack && !rest[1] ? ack(tr("Kartu dikirim.")) : null;
       }
       // Grafik posisi sebagai gambar: lilin + indikator + pita rentang + garis BEP,
       // digambar server (src/chart-card.js). Tombolnya mengganti gambar di pesan yang
@@ -1826,6 +1835,19 @@ class Telegram {
       CHART_IND.slice(0, 3).map(sw),
       CHART_IND.slice(3).map(sw),
       [btn(tr("🔄 Segarkan"), go(tf, mask, span)), btn(tr("💼 Posisi"), `p:${id}`)],
+    ]);
+  }
+
+  // Tombol di bawah kartu bagikan: tema warna, ukuran, sembunyikan nominal, dan
+  // jalan kembali. `head` 'ps' (posisi, id) atau 'os' (total portofolio, id kosong).
+  kartuKb(head, id, theme, size, hide) {
+    const go = (t, s, h) => `${head}:${id || ''}:${t}:${s}:${h ? 1 : 0}`;
+    const themes = Object.entries(CARD_THEMES).map(([k, v]) => btn(k === theme ? `· ${tr(v.label)} ·` : tr(v.label), go(k, size, hide)));
+    return kb([
+      themes.slice(0, 4), themes.slice(4),
+      Object.entries(CARD_SIZES).map(([k, v]) => btn(k === size ? `· ${tr(v.label)} ·` : tr(v.label), go(theme, k, hide))),
+      [btn(`${hide ? '✅' : '▫️'} ${tr("Sembunyikan nominal")}`, go(theme, size, !hide)),
+        head === 'ps' ? btn(tr("💼 Posisi"), `p:${id}`) : btn(tr("📊 Ringkasan"), 'o')],
     ]);
   }
 

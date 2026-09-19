@@ -531,6 +531,22 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     await w.bot.handle(cbq('os'));
     const total = w.sent.slice(b2).find((x) => x.method === 'sendPhoto');
     assert.match(total?.params.caption || '', /^Total PnL .*· Quiver$/);
+    // Di bawah foto ada tombol tema & ukuran; ditekan dari pesan foto → gambarnya
+    // disunting di tempat dengan tema/ukuran/sembunyi yang dipilih ditandai.
+    const tombol = foto[0].params.reply_markup.inline_keyboard.flat();
+    assert.ok(tombol.some((b) => b.text === '· Graphite ·') && tombol.some((b) => b.text === '· Wide ·'), `bawaan ditandai: ${tombol.map((b) => b.text)}`);
+    const neonStory = tombol.find((b) => b.text === 'Neon');
+    assert.strictEqual(neonStory?.callback_data, `ps:${p.id}:neon:wide:0`);
+    const b3 = w.sent.length;
+    w.bot.photoMsgs.add(778);
+    const dariFoto = cbq(`ps:${p.id}:neon:story:1`);
+    dariFoto.callback_query.message.message_id = 778;
+    await w.bot.handle(dariFoto);
+    const edit = w.sent.slice(b3).filter((x) => x.method === 'editMessageMedia');
+    assert.strictEqual(edit.length, 1, 'menyunting foto yang sama');
+    assert.ok(!w.sent.slice(b3).some((x) => x.method === 'sendPhoto'), 'tidak mengirim foto kedua');
+    const teks = edit[0].params.reply_markup.inline_keyboard.flat().map((b) => b.text);
+    assert.ok(teks.includes('· Neon ·') && teks.includes('· Story ·') && teks.some((x) => /^✅ Hide amounts/.test(x)), `pilihan aktif ditandai: ${teks}`);
     w.bot.stop();
   });
 
