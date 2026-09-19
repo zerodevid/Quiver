@@ -187,7 +187,8 @@ function statsRow(cols, footer) {
   if (footer) out += fitted(footer, PAD, 588, 850, { size: 15, color: C.faint });
   return out;
 }
-// Lambang token: logo bulat (PNG/JPEG/GIF yang tersimpan di server), atau lingkaran
+// Lambang token: logo bulat (PNG/JPEG/GIF yang tersimpan di server — resvg tidak bisa
+// WebP, lihat ACCEPT di src/icons.js), atau lingkaran
 // berwarna dengan inisial — rona dari alamat, sama dengan TokenIcon di dasbor.
 function hue(addr = '') {
   let h = 0;

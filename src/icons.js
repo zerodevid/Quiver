@@ -24,6 +24,12 @@ const GAP_MS = 2500;                 // ~24 panggilan/menit, di bawah batas 30
 const MAX_BYTES = 1_000_000;
 const RETRY_NONE_MS = 12 * 3600e3;   // token baru sering baru diberi logo belakangan
 const RETRY_ERR_MS = 10 * 60e3;
+// Format yang diminta ke CDN. WebP sengaja tidak disebut: resvg (kartu bagikan,
+// src/share-card.js) tidak bisa membacanya, jadi logo WebP tampil di dasbor tapi jadi
+// inisial di kartu. GeckoTerminal & DexScreener mengirim PNG/JPEG kalau WebP tidak
+// diminta; CDN yang tetap mengirim WebP (CoinGecko) disimpan apa adanya dan dicoba
+// lagi tiap RETRY_NONE_MS siapa tahu sudah berubah.
+const ACCEPT = 'image/png,image/jpeg,image/gif';
 const ZERO = '0x0000000000000000000000000000000000000000';
 
 // Tanda tangan berkas gambar yang diterima.
@@ -61,7 +67,10 @@ class Icons {
   // Masih perlu ditanyakan ke GeckoTerminal?
   stale(r) {
     if (!r) return true;
-    if (r.status === 'ok') return !r.file || !fs.existsSync(path.join(this.dir, r.file));
+    if (r.status === 'ok') {
+      if (!r.file || !fs.existsSync(path.join(this.dir, r.file))) return true;
+      return r.ctype === 'image/webp' && this.now() - (r.checked_ts || 0) > RETRY_NONE_MS;
+    }
     return this.now() - (r.checked_ts || 0) > (r.status === 'none' ? RETRY_NONE_MS : RETRY_ERR_MS);
   }
 
@@ -161,24 +170,32 @@ class Icons {
       } catch { /* cadangan saja — GeckoTerminal sudah menjawab */ }
     }
     for (const a of batch) {
+      // Logo yang sudah tersimpan (mis. WebP yang sedang dicoba ganti ke PNG) jangan
+      // hilang cuma karena percobaan ulangnya gagal atau sumbernya sudah tak ada.
+      const prev = this.row(a);
+      const keep = (status, src) => {
+        if (prev?.status === 'ok' && prev.file && fs.existsSync(path.join(this.dir, prev.file))) this.save(a, 'ok', prev.file, prev.ctype, prev.src);
+        else this.save(a, status, null, null, src);
+      };
       const u = url.get(a);
-      if (!u) { this.save(a, 'none'); this.stats.none++; continue; }
+      if (!u) { keep('none', null); this.stats.none++; continue; }
       try {
         // Minta format yang bisa dikenali sniff(); CDN yang "format=auto" bisa
         // mengirim AVIF ke klien yang tidak menyebut pilihannya.
-        const g = await this.fetch(u, { headers: { accept: 'image/webp,image/png,image/jpeg,image/gif;q=0.9' }, signal: AbortSignal.timeout(15_000) });
+        const g = await this.fetch(u, { headers: { accept: ACCEPT }, signal: AbortSignal.timeout(15_000) });
         if (!g.ok) throw new Error(`HTTP ${g.status}`);
         const buf = Buffer.from(await g.arrayBuffer());
         if (buf.length > MAX_BYTES) throw new Error(`terlalu besar (${buf.length} byte)`);
         const kind = sniff(buf);
-        if (!kind) { this.save(a, 'none', null, null, u); this.stats.none++; continue; }
+        if (!kind) { keep('none', u); this.stats.none++; continue; }
         const file = this.network === 'robinhood' ? `${a}.${kind[0]}` : `${this.network}-${a}.${kind[0]}`;
         fs.writeFileSync(path.join(this.dir, file), buf);
+        if (prev?.file && prev.file !== file) fs.rmSync(path.join(this.dir, prev.file), { force: true });
         this.save(a, 'ok', file, kind[1], u);
         this.stats.ok++;
       } catch {
         this.stats.errors++;
-        this.save(a, 'err', null, null, u);
+        keep('err', u);
       }
     }
   }

@@ -11,6 +11,7 @@ const { Icons, sniff } = require('../src/icons');
 const A = '0x' + 'a1'.repeat(20), B = '0x' + 'b2'.repeat(20), C = '0x' + 'c3'.repeat(20), D = '0x' + 'd4'.repeat(20);
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(40)]);
 const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+const WEBP = Buffer.concat([Buffer.from('RIFF\0\0\0\0WEBPVP8 '), Buffer.alloc(40)]);
 
 function setup(images, { status = 200, ds = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lpicons-'));
@@ -94,6 +95,41 @@ test('429 dari GeckoTerminal tidak dicatat sebagai "tidak punya logo"', async ()
   assert.strictEqual(await icons.get(A, { wait: 2000 }), null);
   assert.strictEqual(icons.row(A).status, 'err');
   assert.ok(icons.stale(icons.row(A)) === false, 'dicoba lagi nanti, bukan langsung');
+});
+
+test('CDN diminta PNG/JPEG/GIF, bukan WebP — resvg kartu bagikan tidak bisa WebP', async () => {
+  const { icons } = setup({ [A]: { url: 'https://x/a.png', body: PNG } });
+  const accept = [];
+  icons.fetch = (orig => (url, opt) => { if (url === 'https://x/a.png') accept.push(opt.headers.accept); return orig(url, opt); })(icons.fetch);
+  await icons.get(A, { wait: 2000 });
+  assert.deepStrictEqual(accept, ['image/png,image/jpeg,image/gif']);
+});
+
+test('logo WebP lama diambil ulang jadi PNG; kalau gagal, WebP-nya tetap dipakai', async () => {
+  const images = { [A]: { url: 'https://x/a', body: WEBP } };
+  const { icons, calls, dir } = setup(images);
+  let now = 1_000_000;
+  icons.now = () => now;
+  const first = await icons.get(A, { wait: 2000 });
+  assert.strictEqual(first.ctype, 'image/webp', 'WebP tetap disimpan untuk dasbor');
+  assert.ok(!icons.stale(icons.row(A)), 'baru diambil, belum perlu dicoba lagi');
+  now += 13 * 3600e3;
+  assert.ok(icons.stale(icons.row(A)), 'setelah 12 jam dicoba lagi');
+  // Sumber gagal: logo lama tidak hilang.
+  images[A].url = 'https://x/hilang';
+  const n = calls.length;
+  const kept = await icons.get(A, { wait: 2000 });
+  assert.ok(calls.length > n, 'dicoba lagi');
+  assert.strictEqual(kept?.ctype, 'image/webp', 'logo lama tetap dipakai');
+  assert.strictEqual(icons.row(A).status, 'ok');
+  // Sumber kini mengirim PNG: berkas WebP diganti.
+  now += 13 * 3600e3;
+  images[A] = { url: 'https://x/a.png', body: PNG };
+  const png = await icons.get(A, { wait: 2000 });
+  assert.strictEqual(png.ctype, 'image/png');
+  assert.ok(fs.existsSync(path.join(dir, 'icons', A + '.png')));
+  assert.ok(!fs.existsSync(path.join(dir, 'icons', A + '.webp')), 'berkas WebP lama dihapus');
+  assert.ok(!icons.stale(icons.row(A)), 'PNG tidak perlu dicoba lagi');
 });
 
 test('alamat tidak sah dan ETH native tidak memanggil apa pun', async () => {
