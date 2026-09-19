@@ -375,10 +375,10 @@ function statsRow(cols, footer) {
     const x = PAD + (i % perRow) * (cw + gap), ty = y + Math.floor(i / perRow) * (h + gap);
     out += `<rect x="${x.toFixed(1)}" y="${ty}" width="${cw.toFixed(1)}" height="${h}" rx="${rx(14)}" fill="${T.panel}" stroke="${T.line}"${T.sq ? ' stroke-width="3"' : ''}/>`;
     const cx = x + 18, width = cw - 36;
-    out += fitted(label, cx, ty + 30 * k, width, { size: (tall ? 16 : 15) * k, color: T.muted });
-    const size = Math.min((tall ? 36 : 29) * k, width / Math.max(measure(value, 1, 600), 1));
-    out += txt(value, cx, ty + (h * 0.55 + 6) * k, { size, weight: 600, color: o.color || T.text });
-    if (o.extra) out += fitted(o.extra[0], cx, ty + (h * 0.8 + 6) * k, width, { size: 15 * k, color: o.extra[1] });
+    out += fitted(label, cx, ty + (tall ? 34 : 30) * k, width, { size: (tall ? 17 : 15) * k, color: T.muted });
+    const size = Math.min((tall ? 50 : 32) * k, width / Math.max(measure(value, 1, 600), 1));
+    out += txt(value, cx, ty + (h * 0.55 + (tall ? 12 : 6)) * k, { size, weight: 600, color: o.color || T.text });
+    if (o.extra) out += fitted(o.extra[0], cx, ty + (h * 0.8 + 8) * k, width, { size: (tall ? 16 : 15) * k, color: o.extra[1] });
   });
   if (footer) out += fitted(footer, PAD, G.footY, W - PAD * 2 - measure(chainName(), 17 * k, 500) - 60 * k, { size: 15 * k, color: T.faint });
   return out;
