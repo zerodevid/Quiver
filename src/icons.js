@@ -58,6 +58,14 @@ class Icons {
   }
 
   row(a) { return this.store.get('SELECT * FROM icons WHERE chain=? AND address=?', this.network, a); }
+
+  // Catat kegagalan/ketiadaan — tapi logo yang sudah tersimpan (mis. WebP yang sedang
+  // dicoba ganti ke PNG) jangan hilang cuma karena percobaan ulangnya gagal.
+  keep(a, status, src = null) {
+    const prev = this.row(a);
+    if (prev?.status === 'ok' && prev.file && fs.existsSync(path.join(this.dir, prev.file))) this.save(a, 'ok', prev.file, prev.ctype, prev.src);
+    else this.save(a, status, null, null, src);
+  }
   save(a, status, file = null, ctype = null, src = null) {
     this.store.run(`INSERT INTO icons(chain,address,status,file,ctype,src,checked_ts) VALUES(?,?,?,?,?,?,?)
       ON CONFLICT(chain,address) DO UPDATE SET status=excluded.status, file=excluded.file, ctype=excluded.ctype,
@@ -148,7 +156,7 @@ class Icons {
     } catch (e) {
       this.stats.errors++;
       this.log(`logo: ${e.message} — ${batch.length} token dicoba lagi nanti`);
-      for (const a of batch) this.save(a, 'err');
+      for (const a of batch) this.keep(a, 'err');
       return;
     }
     const url = new Map();
@@ -170,15 +178,9 @@ class Icons {
       } catch { /* cadangan saja — GeckoTerminal sudah menjawab */ }
     }
     for (const a of batch) {
-      // Logo yang sudah tersimpan (mis. WebP yang sedang dicoba ganti ke PNG) jangan
-      // hilang cuma karena percobaan ulangnya gagal atau sumbernya sudah tak ada.
       const prev = this.row(a);
-      const keep = (status, src) => {
-        if (prev?.status === 'ok' && prev.file && fs.existsSync(path.join(this.dir, prev.file))) this.save(a, 'ok', prev.file, prev.ctype, prev.src);
-        else this.save(a, status, null, null, src);
-      };
       const u = url.get(a);
-      if (!u) { keep('none', null); this.stats.none++; continue; }
+      if (!u) { this.keep(a, 'none'); this.stats.none++; continue; }
       try {
         // Minta format yang bisa dikenali sniff(); CDN yang "format=auto" bisa
         // mengirim AVIF ke klien yang tidak menyebut pilihannya.
@@ -187,7 +189,7 @@ class Icons {
         const buf = Buffer.from(await g.arrayBuffer());
         if (buf.length > MAX_BYTES) throw new Error(`terlalu besar (${buf.length} byte)`);
         const kind = sniff(buf);
-        if (!kind) { keep('none', u); this.stats.none++; continue; }
+        if (!kind) { this.keep(a, 'none', u); this.stats.none++; continue; }
         const file = this.network === 'robinhood' ? `${a}.${kind[0]}` : `${this.network}-${a}.${kind[0]}`;
         fs.writeFileSync(path.join(this.dir, file), buf);
         if (prev?.file && prev.file !== file) fs.rmSync(path.join(this.dir, prev.file), { force: true });
@@ -195,7 +197,7 @@ class Icons {
         this.stats.ok++;
       } catch {
         this.stats.errors++;
-        keep('err', u);
+        this.keep(a, 'err', u);
       }
     }
   }

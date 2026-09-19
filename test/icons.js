@@ -132,6 +132,20 @@ test('logo WebP lama diambil ulang jadi PNG; kalau gagal, WebP-nya tetap dipakai
   assert.ok(!icons.stale(icons.row(A)), 'PNG tidak perlu dicoba lagi');
 });
 
+test('429 saat mencoba ulang logo WebP tidak menghapus logo yang ada', async () => {
+  const { icons, calls } = setup({ [A]: { url: 'https://x/a', body: WEBP } });
+  let now = 1_000_000;
+  icons.now = () => now;
+  await icons.get(A, { wait: 2000 });
+  now += 13 * 3600e3;
+  icons.fetch = async () => ({ ok: false, status: 429, json: async () => ({}) });
+  const n = calls.length;
+  const kept = await icons.get(A, { wait: 2000 });
+  assert.strictEqual(kept?.ctype, 'image/webp', 'logo lama tetap dipakai');
+  assert.strictEqual(icons.row(A).status, 'ok');
+  assert.ok(!icons.stale(icons.row(A)), 'tidak langsung dicoba lagi');
+});
+
 test('alamat tidak sah dan ETH native tidak memanggil apa pun', async () => {
   const { icons, calls } = setup({});
   assert.strictEqual(await icons.get('bukan-alamat', { wait: 100 }), null);
