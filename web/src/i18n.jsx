@@ -133,7 +133,7 @@ const EN = {
   "Buka posisi": "Open position",
   "Buka {app}": "Open {app}",
   "Trade": "Trade",
-  "Data": "Data",
+  "Chart": "Chart",
   "Klik untuk membaca seluruhnya": "Click to read the whole note",
   "Membuka posisi {pair}…": "Opening {pair} position…",
   "Jembatan kas, zap, lalu mint — bisa sampai satu menit.": "Cash bridge, zap, then mint — this can take up to a minute.",

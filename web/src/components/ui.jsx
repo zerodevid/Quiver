@@ -726,5 +726,5 @@ export function DataLinks({ pool = null, token = null, dexUrl = null, className 
     { key: 'geckoterminal', label: 'GeckoTerminal', icon: '/geckoterminal.jpg', brand: '#8b5cf6',
       href: `https://www.geckoterminal.com/${c.geckoterminal || c.key}/${pool ? 'pools' : 'tokens'}/${ref}` },
   ];
-  return <LinkBar tag="Data" links={links} className={className} />;
+  return <LinkBar tag="Chart" links={links} className={className} />;
 }
