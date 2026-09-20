@@ -152,8 +152,13 @@ const titleOf = (it) => (it.kind === 'close' ? closeTitle(it)
   : translate(it.adding ? '{who} menambah likuiditas {pair}' : '{who} membuka posisi {pair}', { who: who(it), pair: pairOf(it) }));
 // Judul tutup langsung memuat PnL-nya: "PEPE/USDG ditutup · +$12,34 (+5,6%)".
 const signed = (v) => (v >= 0 ? '+' : '') + usd(v);
-const closeTitle = (it) => translate(it.pnlUsd >= 0 ? '{pair} ditutup · untung {pnl}' : '{pair} ditutup · rugi {pnl}',
-  { pair: pairOf(it), pnl: `${signed(it.pnlUsd)}${it.pnlPct != null ? ` (${pct(it.pnlPct)})` : ''}` });
+// Hasil = modal setelah slippage (selisihnya cuma gas) bukan untung maupun rugi;
+// minus karena slippage tetap rugi.
+const hasilBersih = (it) => (it.pnlUsd || 0) - (it.slipUsd || 0);
+const breakEven = (it) => Math.abs(hasilBersih(it)) < 0.01;
+const closeTitle = (it) => (breakEven(it) ? translate('{pair} ditutup · impas', { pair: pairOf(it) })
+  : translate(hasilBersih(it) >= 0 ? '{pair} ditutup · untung {pnl}' : '{pair} ditutup · rugi {pnl}',
+    { pair: pairOf(it), pnl: `${signed(it.pnlUsd)}${it.pnlPct != null ? ` (${pct(it.pnlPct)})` : ''}` }));
 const closeDesc = (it) => [
   translate('hasil {out} · modal {cost}', { out: usd(it.outUsd), cost: usd(it.costUsd) }),
   it.ageHours != null && translate('dipegang {d}', { d: age(it.ageHours) }),
@@ -214,7 +219,7 @@ function announce(all, { sound, desktop, preview = false }) {
     const close = it.kind === 'close';
     let key = null;
     key = toast(titleOf(it), {
-      variant: close ? (it.pnlUsd >= 0 ? 'success' : 'danger') : 'accent',
+      variant: close ? (breakEven(it) ? 'default' : hasilBersih(it) >= 0 ? 'success' : 'danger') : 'accent',
       timeout: close ? 15000 : 10000,
       description: close ? closeDesc(it) : descOf(it),
       actionProps: go ? { children: translate('Lihat'), onPress: () => { go(); if (key) toast.close(key); } } : undefined,

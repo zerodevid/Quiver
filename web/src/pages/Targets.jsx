@@ -107,7 +107,7 @@ function Recap({ list }) {
   const rows = list.filter((x) => x.ours);
   const sum = (f) => rows.reduce((a, x) => a + f(x.ours), 0);
   const realized = sum((o) => o.realized), upnl = sum((o) => o.upnl);
-  const closed = sum((o) => o.closed), wins = sum((o) => o.wins);
+  const closed = sum((o) => o.closed), wins = sum((o) => o.wins), losses = sum((o) => o.losses || 0);
   const open = sum((o) => o.open), value = sum((o) => o.value);
   const best = rows.length ? rows.reduce((a, b) => (oursTotal(b.ours) > oursTotal(a.ours) ? b : a)) : null;
   return (
@@ -115,7 +115,7 @@ function Recap({ list }) {
       <Stat label="Hasil dari semua target" value={signed(realized + upnl)} valueClass={tone(realized + upnl)}
         sub={t('terealisasi {r} · berjalan {u}', { r: usd(realized), u: usd(upnl) })} />
       <Stat label="Posisi ditutup" value={closed}
-        sub={closed ? t('{w} menang · {l} kalah', { w: wins, l: closed - wins }) : t('belum ada')} />
+        sub={closed ? t(closed - wins - losses ? '{w} menang · {l} kalah · {f} impas' : '{w} menang · {l} kalah', { w: wins, l: losses, f: closed - wins - losses }) : t('belum ada')} />
       <Stat label="Posisi berjalan" value={open} sub={t('nilai {v}', { v: usd(value) })} />
       <Stat label="Wallet paling cuan" value={best ? <a href={'#targets/' + best.address} className="hover:underline">{best.label || short(best.address)}</a> : '—'}
         sub={best ? <span className={`num ${tone(oursTotal(best.ours))}`}>{signed(oursTotal(best.ours))}</span> : t('belum ada')} />

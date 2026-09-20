@@ -398,6 +398,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // berlikuiditas, dan fee-nya bisa dinilai di muka.
   const bisaDimasuki = (p) => p.quoteSide != null && p.kosong !== true && !p.dynamicFee;
 
+  // Menang/kalah dinilai dari hasil − modal − selisih swap (slippage buka & tutup):
+  // slippage adalah harga yang benar-benar hilang di posisi itu, jadi minus karena
+  // slippage tetap kalah. Gas TIDAK ikut — posisi yang hasilnya = modal dan cuma
+  // membayar gas bukan kalah, melainkan impas. Di bawah satu sen dianggap impas.
+  const FLAT = 0.01;
+  const hasilBersih = (p) => p.pnl - (costs.of(p.id, engine.ethUsd).slipUsd || 0);
+
   // Hasil posisi KITA per sumber: target yang disalin, atau '' untuk posisi manual /
   // di luar bot. Terealisasi = posisi tertutup (out − modal); berjalan = PnL live
   // posisi terbuka (sudah termasuk fee yang pernah diklaim). Dipakai halaman Target
@@ -412,7 +419,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     const by = new Map();
     const grp = (t) => {
       const key = t || '';
-      if (!by.has(key)) by.set(key, { target: key || null, label: key ? labels.get(key) || null : null, open: 0, value: 0, upnl: 0, closed: 0, wins: 0, realized: 0 });
+      if (!by.has(key)) by.set(key, { target: key || null, label: key ? labels.get(key) || null : null, open: 0, value: 0, upnl: 0, closed: 0, wins: 0, losses: 0, realized: 0 });
       return by.get(key);
     };
     for (const r of store.all("SELECT id, target, cost_quote, quote_symbol FROM positions WHERE chain=? AND status='open'", chain.network)) {
@@ -425,7 +432,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     }
     for (const p of closed) {
       const g = grp(p.target);
-      g.closed++; g.realized += p.pnl; if (p.pnl > 0) g.wins++;
+      const h = hasilBersih(p);
+      g.closed++; g.realized += p.pnl; if (h > FLAT) g.wins++; else if (h < -FLAT) g.losses++;
     }
     return by;
   };
@@ -643,10 +651,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
 
       // Posisi tertutup: bahan kalender (dikelompokkan per hari di browser, pakai
       // zona waktu pengguna) dan statistik menang/kalah.
-      const closed = store.all("SELECT target, opened_ts, closed_ts, cost_quote, out_quote, quote_symbol FROM positions WHERE chain=? AND status='closed' AND closed_ts IS NOT NULL ORDER BY closed_ts", chain.network)
+      const closed = store.all("SELECT id, target, opened_ts, closed_ts, cost_quote, out_quote, quote_symbol FROM positions WHERE chain=? AND status='closed' AND closed_ts IS NOT NULL ORDER BY closed_ts", chain.network)
         .map((p) => ({ ...p, pnl: ((p.out_quote || 0) - (p.cost_quote || 0)) * k(p.quote_symbol) }));
       const pnls = closed.map((p) => p.pnl);
-      const wins = pnls.filter((x) => x > 0).length;
+      // Impas (hasil = modal setelah slippage, selisihnya cuma gas) bukan kalah:
+      // kalau ikut dihitung sebagai kalah, win rate jatuh padahal posisi yang
+      // benar-benar rugi cuma segelintir. Win rate = menang / (menang + kalah).
+      const hasil = closed.map(hasilBersih);
+      const wins = hasil.filter((x) => x > FLAT).length;
+      const losses = hasil.filter((x) => x < -FLAT).length;
       const holds = closed.filter((p) => p.opened_ts).map((p) => (p.closed_ts - p.opened_ts) / 3600000);
 
       // Per sumber: target yang disalin, atau '' untuk posisi manual / di luar bot.
@@ -676,8 +689,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           ts: d.ts, kind: d.kind, symbol: d.symbol, amount: Number(d.amount) / (d.symbol === chain.usdgSymbol ? 10 ** chain.usdgDecimals : 1e18), usd: d.usd, ethUsd: d.eth_usd, txHash: d.tx_hash, counterparty: d.counterparty,
         })) } : null,
         stats: {
-          closedCount: closed.length, wins, losses: closed.length - wins,
-          winRatePct: closed.length ? (wins / closed.length) * 100 : null,
+          closedCount: closed.length, wins, losses, flat: closed.length - wins - losses,
+          winRatePct: wins + losses ? (wins / (wins + losses)) * 100 : null,
           avgPnl: closed.length ? pnls.reduce((a, b) => a + b, 0) / closed.length : null,
           best: closed.length ? Math.max(...pnls) : null,
           worst: closed.length ? Math.min(...pnls) : null,
@@ -1090,7 +1103,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       for (const r of rows) {
         // hasil posisi kita yang disalin dari wallet ini (USD)
         const o = ours.get(r.address);
-        r.ours = o ? { open: o.open, value: o.value, upnl: o.upnl, closed: o.closed, wins: o.wins, realized: o.realized } : null;
+        r.ours = o ? { open: o.open, value: o.value, upnl: o.upnl, closed: o.closed, wins: o.wins, losses: o.losses, realized: o.realized } : null;
         r.rulesResolved = rulesFor(cfg.rules, r.rules);
         r.rulesOwn = r.rules ? JSON.parse(r.rules) : null;
         const st = store.get('SELECT COUNT(*) n, MAX(ts) last FROM actions WHERE chain=? AND target=?', chain.network, r.address);
@@ -1268,6 +1281,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
             token0: r.token0, token1: r.token1, symbol0: toks.get(r.token0) || null, symbol1: toks.get(r.token1) || null,
             costUsd, outUsd, pnlUsd: outUsd - costUsd,
             pnlPct: costUsd > 0 ? ((outUsd - costUsd) / costUsd) * 100 : null,
+            slipUsd: costs.of(r.id, engine.ethUsd).slipUsd || 0,
             ageHours: r.opened_ts ? (r.closed_ts - r.opened_ts) / 3600000 : null,
           });
         }

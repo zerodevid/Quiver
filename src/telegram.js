@@ -1476,7 +1476,12 @@ class Telegram {
       const adaOngkos = Math.abs(ongkos) >= 0.0005;
       const bersih = adaOngkos && pnl != null ? pnl - ongkos : pnl;
       const bersihPct = adaOngkos ? (p.costUsd > 0 ? (bersih / p.costUsd) * 100 : null) : p.pnlPct;
-      const label = bersih >= 0 ? (adaOngkos ? tr("📈 Untung bersih") : tr("📈 Untung")) : (adaOngkos ? tr("📉 Rugi bersih") : tr("📉 Rugi"));
+      // Posisinya sendiri tidak rugi (hasil − modal − slippage ≥ 0) tapi bersihnya
+      // tidak untung: minusnya cuma gas. Itu bukan "rugi" dan bukan "untung" —
+      // jangan dilabeli salah satunya. Minus karena slippage tetap rugi.
+      const cumaGas = (pnl ?? 0) - (p.cost?.slipUsd || 0) >= -0.005 && bersih < 0.005;
+      const label = cumaGas ? (adaOngkos ? tr("⚖️ Cuma gas") : tr("⚖️ Impas"))
+        : bersih >= 0 ? (adaOngkos ? tr("📈 Untung bersih") : tr("📈 Untung")) : (adaOngkos ? tr("📉 Rugi bersih") : tr("📉 Rugi"));
       L.push(`${label} <b>${sgn(bersih)}</b>  ${pct(bersihPct, Math.abs(bersihPct) < 0.1 ? 2 : 1)}`);
       L.push(angka([
         [tr("hasil"), usd(p.outUsd ?? p.valueUsd)],
@@ -1661,6 +1666,7 @@ class Telegram {
       L.push(tr("<b>🏆 Rekam jejak · {0} ditutup</b>", [num(st.closedCount)]));
       L.push(angka([
         [tr("menang / kalah"), `${st.wins} / ${st.losses}`],
+        [tr("impas"), st.flat ? String(st.flat) : null],
         [tr("win rate"), pct(st.winRatePct, 0).replace('+', '')],
         ['rata-rata', sgn(st.avgPnl)],
         [tr("terbaik"), sgn(st.best)],

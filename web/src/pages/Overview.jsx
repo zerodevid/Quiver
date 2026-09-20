@@ -322,7 +322,7 @@ export default function Overview() {
         <Stat label="Win rate" value={st?.winRatePct != null ? `${num(st.winRatePct, 0)}%` : '—'}
           valueClass={st?.winRatePct == null ? '' : st.winRatePct >= 50 ? 'text-success' : 'text-danger'}
           sub={!st ? null : st.closedCount
-            ? t('{w} menang · {l} kalah · rata-rata {v}', { w: st.wins, l: st.losses, v: usd(st.avgPnl) })
+            ? t(st.flat ? '{w} menang · {l} kalah · {f} impas · rata-rata {v}' : '{w} menang · {l} kalah · rata-rata {v}', { w: st.wins, l: st.losses, f: st.flat, v: usd(st.avgPnl) })
             : t('belum ada posisi ditutup')} />
       </div>
 
