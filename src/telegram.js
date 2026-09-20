@@ -289,6 +289,27 @@ function logBaris(level, msg) {
 const btn = (text, data) => ({ text, callback_data: data });
 const kb = (rows) => ({ inline_keyboard: rows.filter(Boolean) });
 const BACK_HOME = btn('🏠 Menu', 'h');
+// Satu baris tombol lompat ke terminal trading untuk token spekulatif posisi: GMGN,
+// Based Bot, fomo, Uniswap — padanan tombol yang sama di dasbor (web/src/components/ui.jsx).
+// Ditaruh di kartu masuk/keluar, sisa macet, dan layar posisi supaya dari Telegram
+// pun tokennya sekali sentuh untuk dibeli/dijual. Based Bot membaca chain dari
+// alamatnya; GMGN & fomo pakai slug chain (networks.js: gmgn), Uniswap slug-nya sendiri.
+// Dua baris dua tombol supaya labelnya tetap terbaca di layar ponsel.
+// Uniswap menunjuk halaman pool-nya kalau pool diketahui (grafik, likuiditas, swap &
+// tambah LP di satu layar); tanpa pool, layar swap dengan token itu.
+const tradeRows = (chain, token, pool = null) => {
+  if (!/^0x[0-9a-f]{40}$/i.test(String(token || ''))) return [];
+  const slug = chain?.gmgn || chain?.network || 'robinhood';
+  const uni = chain?.uniswap || slug;
+  const uniUrl = /^0x[0-9a-f]{40}([0-9a-f]{24})?$/i.test(String(pool || ''))
+    ? `https://app.uniswap.org/explore/pools/${uni}/${pool}` : `https://app.uniswap.org/swap?chain=${uni}&outputCurrency=${token}`;
+  return [
+    [{ text: '🐸 GMGN', url: `https://gmgn.ai/${slug}/token/${token}` },
+      { text: '🤖 Based', url: `https://t.me/based_eth_bot?start=b_${token}` }],
+    [{ text: '⚡ fomo', url: `https://fomo.family/tokens/${slug}/${token}` },
+      { text: '🦄 Uniswap', url: uniUrl }],
+  ];
+};
 
 // ---- skema kolom yang bisa disetel ----------------------------------------
 // Satu deskripsi dipakai untuk tiga hal: menampilkan nilai, membuat tombol, dan
@@ -1452,6 +1473,7 @@ class Telegram {
     L.push(tr("<i>posisi #{0}{1}</i>", [esc(d.positionId), p?.token_id ? ` · NFT #${esc(p.token_id)}` : '']));
     return [cut(L.filter((x) => x != null).join('\n')), kb([
       [btn(tr("💼 Lihat posisi"), `p:${d.positionId}`), btn(tr("📈 Grafik"), `pg:${d.positionId}`)],
+      ...tradeRows(this.net().chain, p?.baseToken, p?.pool_ref),
       [btn(tr("🔴 Tutup"), `pc:${d.positionId}`), btn(tr("💼 Semua posisi"), 'p')],
       [BACK_HOME],
     ])];
@@ -1502,10 +1524,11 @@ class Telegram {
     if (jejak.length) { if (L[L.length - 1] !== '') L.push(''); L.push(...jejak); }
     L.push(tr("<i>posisi #{0}</i>", [esc(d.positionId)]));
     const grafik = d.positionId != null ? [btn(tr("📈 Grafik"), `pg:${d.positionId}`)] : null;
+    const trade = tradeRows(this.net().chain, p?.baseToken, p?.pool_ref);
     const rows = d.full
-      ? [grafik, [btn(tr("💼 Posisi"), 'p'), btn(tr("💵 Saldo"), 'b')], [btn(tr("📜 Aktivitas"), 'a:0'), BACK_HOME]]
+      ? [grafik, ...trade, [btn(tr("💼 Posisi"), 'p'), btn(tr("💵 Saldo"), 'b')], [btn(tr("📜 Aktivitas"), 'a:0'), BACK_HOME]]
       : [[btn(tr("💼 Lihat posisi"), `p:${d.positionId}`), btn(tr("📈 Grafik"), `pg:${d.positionId}`)],
-        [btn(tr("💵 Saldo"), 'b'), BACK_HOME]];
+        ...trade, [btn(tr("💵 Saldo"), 'b'), BACK_HOME]];
     return [cut(L.filter((x) => x != null).join('\n')), kb(rows)];
   }
 
@@ -1556,6 +1579,7 @@ class Telegram {
     ];
     return [cut(L.filter((x) => x != null).join('\n')), kb([
       [btn(tr("🔁 Coba jual sekarang"), 'fr'), btn(tr("🔁 Swap manual"), 'sw')],
+      ...tradeRows(this.net().chain, d.token),
       [btn(tr("🧹 Antrean sisa"), 'f'), btn(tr("⚙️ Aturan"), 'r')],
       [BACK_HOME],
     ])];
@@ -1821,6 +1845,7 @@ class Telegram {
     if (jejak) { L.push(''); L.push(jejak); }
     return [L.filter((x) => x != null).join('\n'), kb([
       [btn(tr("📈 Grafik"), `pg:${p.id}`)],
+      ...tradeRows(this.net().chain, p.quoteSide === 0 ? p.token1 : p.quoteSide === 1 ? p.token0 : null, p.pool_ref),
       p.venue === 'v4' ? [btn(`♻️ Auto-compound · ${p.compound?.enabled ? 'ON' : 'OFF'}`, `ac:${p.id}`)] : null,
       [btn(tr("💰 Claim fee"), `pf:${p.id}`)],
       [btn(tr("🔴 Tutup posisi ini"), `pc:${p.id}`)],

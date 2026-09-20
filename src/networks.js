@@ -50,6 +50,8 @@ const ROBINHOOD = {
   explorer: 'https://robinhoodchain.blockscout.com',
   dexscreener: 'robinhood',   // slug chain di DexScreener
   geckoterminal: 'robinhood', // slug network di GeckoTerminal
+  gmgn: 'robinhood',          // slug chain di GMGN (gmgn.ai/<slug>/token/<alamat>) & fomo
+  uniswap: 'robinhood',       // slug chain di app.uniswap.org (?chain=<slug>)
 };
 
 const BSC = {
@@ -107,6 +109,8 @@ const BSC = {
   explorer: 'https://bscscan.com',
   dexscreener: 'bsc',
   geckoterminal: 'bsc',
+  gmgn: 'bsc',
+  uniswap: 'bnb',
 };
 
 const NETWORKS = { robinhood: ROBINHOOD, bsc: BSC };
@@ -136,7 +140,7 @@ function build(key) {
     nativeSymbol: p.nativeSymbol, kyberPath: p.kyberPath, nativeUsd: p.nativeUsd || { mode: 'v4pool' }, verified: p.verified,
     explorerApiV2: p.explorerApiV2, explorerTokenUrl: p.explorerTokenUrl, alchemyHost: p.alchemyHost,
     legacyGasPricing: !!p.legacyGasPricing, blockMs: p.blockMs || 101,
-    dexscreener: p.dexscreener, geckoterminal: p.geckoterminal, explorer: p.explorer,
+    dexscreener: p.dexscreener, geckoterminal: p.geckoterminal, gmgn: p.gmgn, uniswap: p.uniswap, explorer: p.explorer,
   };
 }
 

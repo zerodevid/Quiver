@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@heroui/react';
 import { RefreshCw } from 'lucide-react';
 import { get } from '../api';
-import { Panel, DataTable, Empty, Loading, Notice } from './ui';
+import { Panel, DataTable, Empty, Loading, Notice, TradeLinks } from './ui';
 import TokenIcon, { TokenSym } from './TokenIcon';
 import { usd, kUsd, price, ago } from '../fmt';
 import { useI18n, translate as tt } from '../i18n';
@@ -21,7 +21,7 @@ const cols = [
     <div className="flex items-center gap-2.5">
       <TokenIcon address={x.address} symbol={x.symbol} size={22} link />
       <div className="min-w-0">
-        <TokenSym address={x.address} symbol={x.symbol} className="block font-medium" />
+        <span className="flex items-center gap-2"><TokenSym address={x.address} symbol={x.symbol} className="font-medium" />{!x.native && <TradeLinks token={x.address} compact />}</span>
         <div className="mono truncate text-xs text-muted">{x.native ? tt('ETH native') : x.name || `${x.address.slice(0, 6)}…${x.address.slice(-4)}`}</div>
       </div>
     </div>) },

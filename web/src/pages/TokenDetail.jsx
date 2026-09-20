@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@heroui/react';
 import AdvancedChart from '../components/AdvancedChart';
 import { usePoll } from '../hooks';
-import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink } from '../components/ui';
+import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink, TradeLinks } from '../components/ui';
 import TokenIcon, { TokenPair, PairName } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves } from '../components/LpTables';
 import PositionHistory from '../components/PositionHistory';
@@ -91,7 +91,8 @@ export default function TokenDetail({ param }) {
               </div>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+            <TradeLinks token={tk.address} />
             <ExtLink href={`https://dexscreener.com/robinhood/${tk.address}`}>DexScreener</ExtLink>
             <ExtLink href={`https://www.geckoterminal.com/robinhood/tokens/${tk.address}`}>GeckoTerminal</ExtLink>
             {info?.websites?.map((w) => <ExtLink key={w} href={w} muted>{t('Situs')}</ExtLink>)}

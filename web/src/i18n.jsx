@@ -131,6 +131,8 @@ const EN = {
   "Aturan target ini tidak menutup posisi otomatis — tutup sendiri dari halaman Posisi.": "This target's rules never close positions automatically — close it yourself from the Positions page.",
   "Ya, buka posisi {v}": "Yes, open {v} position",
   "Buka posisi": "Open position",
+  "Buka {app}": "Open {app}",
+  "Trade": "Trade",
   "Membuka posisi {pair}…": "Opening {pair} position…",
   "Jembatan kas, zap, lalu mint — bisa sampai satu menit.": "Cash bridge, zap, then mint — this can take up to a minute.",
   "Gagal membuka {pair}": "Failed to open {pair}",

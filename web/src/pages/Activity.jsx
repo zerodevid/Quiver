@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Plus, Minus, ArrowLeftRight, CircleDollarSign, UserPlus } from 'lucide-react';
 import { Button } from '@heroui/react';
 import { usePoll } from '../hooks';
-import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Pick, Dot } from '../components/ui';
+import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Pick, Dot, TradeLinks, baseTokenOf } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
 import { usd, ago, short, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
 import { useI18n, reason } from '../i18n';
@@ -85,7 +85,10 @@ export default function Activity() {
             { key: 'pair', label: 'Pasangan', search: (a) => `${a.symbol0 || ''}/${a.symbol1 || ''} ${a.token0 || ''} ${a.token1 || ''}`, sort: (a) => (a.symbol0 ? `${a.symbol0}/${a.symbol1}` : null), render: (a) => (a.symbol0
               ? <div className="flex items-center gap-2 whitespace-nowrap">
                   <TokenPair token0={a.token0} token1={a.token1} symbol0={a.symbol0} symbol1={a.symbol1} size={24} />
-                  <PairName token0={a.token0} token1={a.token1} symbol0={a.symbol0} symbol1={a.symbol1} pool={a.pool_ref} sep=" / " className="font-medium" />
+                  <div>
+                    <PairName token0={a.token0} token1={a.token1} symbol0={a.symbol0} symbol1={a.symbol1} pool={a.pool_ref} sep=" / " className="block font-medium" />
+                    <TradeLinks token={baseTokenOf(a)} pool={a.pool_ref} compact className="mt-1" />
+                  </div>
                 </div> : <span className="text-muted">—</span>) },
             { key: 'range', label: 'Rentang harga', className: 'min-w-44', sortable: false, render: (a) => (a.tick_lower != null
               ? <PriceRange lo={a.tick_lower} hi={a.tick_upper} dec0={a.dec0} dec1={a.dec1}

@@ -12,7 +12,7 @@ import { post } from '../api';
 import { useStatus } from '../App';
 import { useI18n } from '../i18n';
 import { num, short, ago } from '../fmt';
-import { ask } from './ui';
+import { ask, TradeLinks } from './ui';
 import { useAlertPrefs, alarm, bumpTitle, canDesktop } from './TargetAlerts';
 
 const KEY = 'quiver.stuck-seen';
@@ -132,6 +132,7 @@ export default function StuckAlert() {
                 </Button>
                 <Button size="sm" variant="outline" onPress={() => { location.hash = 'swap'; }}>{t('Jual manual')}</Button>
                 <Button size="sm" variant="outline" onPress={() => { location.hash = 'rules'; }}>{t('Ubah batas rugi')}</Button>
+                <TradeLinks token={it.token} />
                 <Button size="sm" variant="ghost" isIconOnly aria-label={t('Keluarkan dari antrean')} onPress={() => buang(it)} className="text-muted">
                   <X className="size-4" />
                 </Button>

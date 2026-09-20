@@ -248,7 +248,8 @@ const KONTRAK = '0x' + 'c0'.repeat(20);
 const cbq = (data, chat = CHAT) => ({ callback_query: { id: 'q1', data, message: { chat: { id: Number(chat) }, message_id: 100 } } });
 const outs = (sent) => sent.filter((x) => x.method === 'sendMessage' || x.method === 'editMessageText');
 const lastOut = (sent) => outs(sent).slice(-1)[0];
-const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().map((b) => b.callback_data);
+// Tombol URL (GMGN/Based/fomo/Uniswap) tidak punya callback_data — bukan layar yang bisa dijelajahi.
+const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().map((b) => b.callback_data).filter(Boolean);
 
 (async () => {
   console.log('bot Telegram\n');
@@ -874,6 +875,13 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.ok(!/LP disalin:/.test(teks), 'teks polos lama tidak boleh ikut tercetak');
     const tombol = o.params.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);
     assert.ok(tombol.includes('p:1') && tombol.includes('pc:1'), `tombol posisi/tutup harus ada: ${tombol}`);
+    // Tombol URL ke terminal trading menunjuk token spekulatif (MEME), bukan USDG.
+    const url = o.params.reply_markup.inline_keyboard.flat().filter((b) => b.url).map((b) => b.url);
+    assert.strictEqual(url.length, 4, `empat tombol trading: ${url}`);
+    assert.ok(url.every((u) => u.toLowerCase().includes(MEME.toLowerCase())), `semua menunjuk MEME: ${url}`);
+    assert.ok(url.some((u) => u.startsWith('https://gmgn.ai/')) && url.some((u) => u.startsWith('https://t.me/based_eth_bot')) && url.some((u) => u.startsWith('https://fomo.family/')) && url.some((u) => u.startsWith('https://app.uniswap.org/')));
+    // pool_ref fixture ('0xpool') bukan alamat/id sungguhan, jadi Uniswap jatuh ke layar swap token.
+    assert.ok(url.some((u) => u.includes('/swap?chain=robinhood&outputCurrency=')), `tanpa pool valid, Uniswap = swap token: ${url}`);
     w.bot.stop();
   });
 

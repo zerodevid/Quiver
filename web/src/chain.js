@@ -6,7 +6,7 @@
 const DEFAULT = {
   key: 'robinhood', label: 'Robinhood Chain', chainId: 4663, nativeSymbol: 'ETH',
   usdgSymbol: 'USDG', wethSymbol: 'WETH', explorer: 'https://robinhoodchain.blockscout.com',
-  dexscreener: 'robinhood', geckoterminal: 'robinhood', venues: ['v4', 'v3'], verified: true,
+  dexscreener: 'robinhood', geckoterminal: 'robinhood', gmgn: 'robinhood', uniswap: 'robinhood', venues: ['v4', 'v3'], verified: true,
 };
 let current = { ...DEFAULT };
 

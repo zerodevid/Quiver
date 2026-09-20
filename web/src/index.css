@@ -216,3 +216,76 @@ html.app-enter [data-reveal="foot"] { animation: q-fade .4s ease .35s both; }
   html.app-enter [data-reveal], html.app-enter [data-reveal] > *,
   [data-brand].brand-arrive .q-arrow, [data-brand].brand-arrive .q-chev, [data-brand].brand-arrive .brand-sub { animation: none !important; }
 }
+
+/* --- tombol terminal trading (GMGN / Based / fomo / Uniswap) ------------------
+   Satu bilah bersegmen, bukan empat tombol lepas: logo jadi identitas, label kecil
+   di sampingnya. Warna merek hanya muncul saat disorot (latar tipis + logo sedikit
+   membesar + panah keluar), jadi dalam keadaan diam tetap sekalem sisa dasbor.
+   Varian ringkas untuk baris tabel: logo bertumpuk seperti avatar, merekah saat
+   barisnya disorot. Keduanya menghormati prefers-reduced-motion. */
+.trade-bar {
+  display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+  max-width: 100%; border: 1px solid var(--border); border-radius: 0.5rem;
+  background: color-mix(in oklab, var(--surface) 60%, transparent);
+}
+.trade-bar__tag {
+  padding: 0 0.4rem 0 0.5rem; font-size: 0.625rem; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--foreground); opacity: 0.45; user-select: none;
+}
+.trade-link {
+  --brand: var(--accent);
+  position: relative; display: inline-flex; align-items: center; gap: 0.375rem;
+  padding: 0.25rem 0.5rem; border-radius: 0.375rem; font-size: 0.75rem; font-weight: 500;
+  color: var(--foreground); text-decoration: none; line-height: 1;
+  transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+.trade-link img {
+  width: 1rem; height: 1rem; border-radius: 0.25rem; display: block;
+  transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.trade-link svg {
+  width: 0; height: 0.75rem; opacity: 0; margin-left: -0.375rem;
+  transition: width 0.18s ease, opacity 0.18s ease, margin 0.18s ease, transform 0.18s ease;
+}
+.trade-link:hover, .trade-link:focus-visible {
+  background: color-mix(in oklab, var(--brand) 16%, transparent);
+  color: color-mix(in oklab, var(--brand) 70%, var(--foreground));
+  outline: none; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--brand) 35%, transparent);
+}
+.trade-link:hover img, .trade-link:focus-visible img { transform: scale(1.18) rotate(-6deg); }
+.trade-link:hover svg, .trade-link:focus-visible svg { width: 0.75rem; opacity: 0.8; margin-left: 0; transform: translate(1px, -1px); }
+.trade-link:active img { transform: scale(0.96); }
+
+/* Ringkas: tumpukan logo. Setiap logo diberi cincin sewarna permukaan supaya
+   tumpang-tindihnya terbaca; saat bilahnya disorot, tumpukan merekah. */
+.trade-stack { display: inline-flex; align-items: center; padding-left: 0.25rem; }
+.trade-stack .trade-link {
+  padding: 0; margin-left: -0.375rem; border-radius: 9999px;
+  background: var(--surface); box-shadow: 0 0 0 2px var(--surface);
+  transition: margin 0.22s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.18s ease, transform 0.18s ease;
+}
+.trade-stack .trade-link img { width: 1.125rem; height: 1.125rem; border-radius: 9999px; }
+.trade-stack .trade-link svg { display: none; }
+.trade-stack:hover .trade-link, .trade-stack:focus-within .trade-link { margin-left: 0.125rem; }
+.trade-stack .trade-link:hover, .trade-stack .trade-link:focus-visible {
+  background: var(--surface); transform: translateY(-1px);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--brand);
+}
+.trade-stack .trade-link:hover img { transform: scale(1.1); }
+@media (prefers-reduced-motion: reduce) {
+  .trade-link, .trade-link img, .trade-link svg, .trade-stack .trade-link { transition: none; }
+  .trade-link:hover img, .trade-stack .trade-link:hover img { transform: none; }
+}
+/* Layar sentuh tidak punya hover: tumpukan langsung merekah dengan jarak antar-logo
+   dan bantalan sentuh ±30px (logo tetap 18px), sedangkan bilah penuh boleh melipat
+   ke baris berikutnya di layar sempit. Warna merek tetap muncul saat ditekan. */
+@media (hover: none) {
+  .trade-stack { padding-left: 0; margin-left: -0.375rem; }
+  .trade-stack .trade-link { margin-left: 0; padding: 0.375rem; box-shadow: none; background: transparent; }
+  .trade-stack .trade-link img { box-shadow: 0 0 0 1px var(--border); }
+  .trade-stack .trade-link:active { transform: none; background: color-mix(in oklab, var(--brand) 18%, transparent); box-shadow: none; }
+  .trade-bar { flex-wrap: wrap; }
+  .trade-link { padding: 0.4rem 0.6rem; }
+  .trade-link:active { background: color-mix(in oklab, var(--brand) 16%, transparent); }
+  .trade-link svg { display: none; }
+}

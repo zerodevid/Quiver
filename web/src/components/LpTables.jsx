@@ -2,7 +2,7 @@
 // posisi wallet hasil riset, dan gerakan target. Datanya dari lpRows di server.
 import { chainInfo, isEthLike } from '../chain';
 import { Button } from '@heroui/react';
-import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing } from './ui';
+import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing, TradeLinks, baseTokenOf } from './ui';
 import { TokenPair, PairName } from './TokenIcon';
 import { Pair } from '../pages/Positions';
 import { usd, pct, tone, ago, short, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
@@ -92,6 +92,7 @@ export function WalletPositions({ rows, onHist, loading = false, className = '' 
                 <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} className="block font-medium" />
                 <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
                   <span className="uppercase">{p.venue}</span><span>·</span><span className="mono">#{p.token_id}</span>
+                  <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} compact className="ml-1" />
                 </div>
               </div>
             </div>) },
@@ -139,7 +140,10 @@ export function TargetMoves({ rows, className = '' }) {
           { key: 'kind', label: 'Aksi', sort: (x) => x.kind, render: (x) => (
             <span className="whitespace-nowrap">{t(AKSI[x.kind]?.[0] || x.kind)} <span className="text-[0.6875rem] text-muted uppercase">{x.venue}</span></span>) },
           { key: 'pair', label: 'Pasangan', sort: (x) => `${x.symbol0}/${x.symbol1}`, render: (x) => (
-            <PairName token0={x.token0} token1={x.token1} symbol0={x.symbol0} symbol1={x.symbol1} pool={x.pool_ref} sep="/" className="font-medium" />) },
+            <div>
+              <PairName token0={x.token0} token1={x.token1} symbol0={x.symbol0} symbol1={x.symbol1} pool={x.pool_ref} sep="/" className="block font-medium" />
+              <TradeLinks token={baseTokenOf(x)} pool={x.pool_ref} compact className="mt-1" />
+            </div>) },
           { key: 'val', label: 'Nilai', align: 'end', sort: (x) => x.value_quote, render: (x) => (
             x.value_quote == null ? <span className="text-muted">—</span>
               : isEthLike(x.quote_symbol) ? `${x.value_quote.toFixed(4)} ${chainInfo().nativeSymbol}` : usd(x.value_quote)) },

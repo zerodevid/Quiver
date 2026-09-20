@@ -10,7 +10,7 @@ import PositionHistory from '../components/PositionHistory';
 import WalletPositionHistory from '../components/WalletPositionHistory';
 import { useEffect, useState } from 'react';
 import { usePoll } from '../hooks';
-import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, ExtLink } from '../components/ui';
+import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, ExtLink, TradeLinks } from '../components/ui';
 import { TokenPair, TokenSym } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves } from '../components/LpTables';
 import { PriceChart, DexEmbed, MarketPanel, TFS, VIEWS, SECS, tfFor, kUsd } from './PositionDetail';
@@ -92,9 +92,10 @@ export default function PoolDetail({ param }) {
               </div>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
             <ExtLink href={pair?.url || `https://dexscreener.com/robinhood/${ref}`}>DexScreener</ExtLink>
             <ExtLink href={`https://www.geckoterminal.com/robinhood/pools/${ref}`}>GeckoTerminal</ExtLink>
+            <TradeLinks token={pool.baseToken} pool={ref} />
           </div>
         </div>
       </div>

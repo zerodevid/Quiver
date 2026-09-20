@@ -5,11 +5,12 @@ import {
   Card, Chip, EmptyState, Label, Description, TextField, Input, Select, ListBox,
   Switch, Table, Spinner, Alert, Pagination, AlertDialog, Button,
 } from '@heroui/react';
-import { Inbox, Search, ArrowLeft, Copy, Check, ExternalLink, RefreshCw } from 'lucide-react';
+import { Inbox, Search, ArrowLeft, ArrowUpRight, Copy, Check, ExternalLink, RefreshCw } from 'lucide-react';
 import { price, tickPrice, sqrtPrice, widthPct, pct, short, txHref, ago } from '../fmt';
 import { breakEven } from '../breakeven';
 import { useTick } from '../hooks';
 import { translate as t } from '../i18n';
+import { chainInfo } from '../chain';
 
 export function PageHeader({ group, title, desc, children }) {
   return (
@@ -649,5 +650,51 @@ export function ExtLink({ href, muted, children }) {
   return (
     <a href={href} target="_blank" rel="noreferrer"
       className={`inline-flex items-center gap-1 hover:underline ${muted ? 'text-muted' : 'text-accent'}`}>{children} <ExternalLink className="size-3" /></a>
+  );
+}
+
+// Tombol lompat ke terminal trading untuk satu token: GMGN, fomo, Uniswap (web) dan
+// Based Bot (Telegram). Dipasang di mana pun token itu tampil — header pool/token, panel
+// pasar, baris posisi, token di wallet, sisa yang macet — supaya dari mana pun
+// dilihat, tokennya sekali klik untuk dibeli/dijual. Logonya jadi penanda, bukan
+// teks, karena ketiganya sudah akrab bagi pengguna. Based Bot membaca chain dari
+// alamatnya; GMGN, fomo, dan Uniswap perlu slug chain (chain.js).
+export const TRADE_APPS = [
+  { key: 'gmgn', label: 'GMGN', icon: '/gmgn.png', brand: '#5ec26a', href: (a) => `https://gmgn.ai/${chainInfo().gmgn || chainInfo().key}/token/${a}` },
+  { key: 'basedbot', label: 'Based', icon: '/basedbot.jpg', brand: '#3b82f6', href: (a) => `https://t.me/based_eth_bot?start=b_${a}` },
+  { key: 'fomo', label: 'fomo', icon: '/fomo.png', brand: '#8b7cf6', href: (a) => `https://fomo.family/tokens/${chainInfo().gmgn || chainInfo().key}/${a}` },
+  // Uniswap: halaman pool-nya sendiri kalau pool diketahui (grafik, likuiditas, tombol
+  // swap & tambah LP di sana); kalau cuma tokennya, layar swap dengan token itu.
+  { key: 'uniswap', label: 'Uniswap', icon: '/uniswap.png', brand: '#ff007a',
+    href: (a) => `https://app.uniswap.org/swap?chain=${chainInfo().uniswap || chainInfo().key}&outputCurrency=${a}`,
+    poolHref: (pool) => `https://app.uniswap.org/explore/pools/${chainInfo().uniswap || chainInfo().key}/${pool}` },
+];
+// Token spekulatif dari satu baris posisi/pool: yang bukan aset kuotasi. Baris yang
+// tidak membawa quoteSide (mis. riwayat posisi) ditebak dari simbol kuotasi chain.
+const isQuoteSym = (sym) => { const c = chainInfo(); return sym === c.usdgSymbol || sym === c.wethSymbol || sym === c.nativeSymbol; };
+export const baseTokenOf = (p) => {
+  if (!p) return null;
+  if (p.baseToken) return p.baseToken;
+  if (p.quoteSide === 0) return p.token1;
+  if (p.quoteSide === 1) return p.token0;
+  if (isQuoteSym(p.symbol0) && !isQuoteSym(p.symbol1)) return p.token1;
+  if (isQuoteSym(p.symbol1) && !isQuoteSym(p.symbol0)) return p.token0;
+  return null;
+};
+// Gaya di index.css (.trade-bar / .trade-stack). compact: tumpukan logo untuk baris
+// tabel; klik tidak merambat ke baris yang bisa diklik.
+export function TradeLinks({ token, pool = null, compact = false, className = '' }) {
+  if (!token) return null;
+  const hrefOf = (app) => (pool && app.poolHref ? app.poolHref(pool) : app.href(token));
+  return (
+    <span className={`${compact ? 'trade-stack' : 'trade-bar'} ${className}`} onClick={(e) => e.stopPropagation()}>
+      {!compact && <span className="trade-bar__tag">{t('Trade')}</span>}
+      {TRADE_APPS.map((app) => (
+        <a key={app.key} href={hrefOf(app)} target="_blank" rel="noreferrer" className="trade-link"
+          style={{ '--brand': app.brand }} title={t('Buka {app}', { app: app.label })} aria-label={t('Buka {app}', { app: app.label })}>
+          <img src={app.icon} alt="" />{!compact && <span>{app.label}</span>}<ArrowUpRight />
+        </a>
+      ))}
+    </span>
   );
 }

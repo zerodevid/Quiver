@@ -557,7 +557,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           // identitas chain tampilan ini — dasbor memakainya untuk label, simbol, dan tautan penjelajah
           key: chain.network, label: chain.label, chainId: chain.CHAIN_ID, nativeSymbol: chain.nativeSymbol,
           usdgSymbol: chain.usdgSymbol, wethSymbol: chain.wethSymbol, verified: chain.verified,
-          explorer: chain.explorer, dexscreener: chain.dexscreener, geckoterminal: chain.geckoterminal,
+          explorer: chain.explorer, dexscreener: chain.dexscreener, geckoterminal: chain.geckoterminal, gmgn: chain.gmgn, uniswap: chain.uniswap,
           venues: ['v4', ...chain.venues.map((v) => v.key)],
         },
         stats: { ...engine.stats, uptimeSec: Math.round((Date.now() - engine.stats.startedAt) / 1000), lastError: engine.lastError },

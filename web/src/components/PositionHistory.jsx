@@ -8,7 +8,7 @@ import PositionSnapshot from './PositionSnapshot';
 import { Button, Chip, Drawer } from '@heroui/react';
 import { X, ChartCandlestick } from 'lucide-react';
 import { get } from '../api';
-import { Stat, Empty, Loading, Notice, TxHash } from './ui';
+import { Stat, Empty, Loading, Notice, TxHash, TradeLinks, baseTokenOf } from './ui';
 import TokenIcon, { TokenPair } from './TokenIcon';
 import { usd, pct, tone, age, ago, short, qty, fmtQty, sqrtPrice, locale as fmtLocale } from '../fmt';
 import { useI18n, reason } from '../i18n';
@@ -258,6 +258,7 @@ export default function PositionHistory({ id, onClose }) {
                       <span className="uppercase">{p.venue}</span><span>·</span><span className="mono">#{p.token_id || p.id}</span>
                       {p.target && <><span>·</span><a href={'#targets/' + p.target} className="hover:underline">{t('meniru {t}', { t: p.targetLabel || short(p.target) })}</a></>}
                     </div>
+                    <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} className="mt-1.5 flex-wrap" />
                   </div>
                 </div>
               ) : <Drawer.Heading className="text-base font-semibold">{t('Riwayat posisi')}</Drawer.Heading>}
