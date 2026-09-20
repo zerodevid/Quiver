@@ -148,11 +148,14 @@ function routes(cfg, dir) {
 test('pengaturan: kolom dari .env dikunci, dasbor diberi tahu dari mana', async () => {
   const dir = tmp();
   const cfg = baseCfg();
-  applyEnv(cfg, { LPCOPY_AUTH_TOKEN: 'token-dari-env', LPCOPY_TELEGRAM_BOT_TOKEN: TG, LPCOPY_NTFY_TOPIC: 'topik-rahasia' });
+  applyEnv(cfg, { LPCOPY_AUTH_TOKEN: 'token-dari-env', LPCOPY_TELEGRAM_BOT_TOKEN: TG, LPCOPY_NTFY_TOPIC: 'topik-rahasia', LPCOPY_GMGN_API_KEY: 'gmgnKeyRahasia123' });
   const { call, cfgPath } = routes(cfg, dir);
   const g = await call('GET /api/settings');
   assert.strictEqual(g.telegram.fromEnv, 'LPCOPY_TELEGRAM_BOT_TOKEN');
   assert.strictEqual(g.notify.fromEnv, 'LPCOPY_NTFY_TOPIC');
+  assert.strictEqual(g.gmgn.fromEnv, 'LPCOPY_GMGN_API_KEY');
+  assert.ok(g.gmgn.hasKey && !JSON.stringify(g).includes('gmgnKeyRahasia123'), 'API key GMGN tidak boleh sampai ke browser');
+  assert.match((await call('POST /api/settings/gmgn', { api_key: 'lain12345' })).error, /LPCOPY_GMGN_API_KEY/);
   assert.strictEqual(g.authFromEnv, 'LPCOPY_AUTH_TOKEN');
   assert.ok(!JSON.stringify(g).includes(TG), 'token bot tidak boleh sampai ke browser');
   assert.match((await call('POST /api/settings/telegram', { bot_token: '987654321:AAHtokenLainYangPanjangSekaliAbc' })).error, /LPCOPY_TELEGRAM_BOT_TOKEN/);
@@ -163,8 +166,22 @@ test('pengaturan: kolom dari .env dikunci, dasbor diberi tahu dari mana', async 
   const r = await call('POST /api/settings/telegram', { notify: { info: true } });
   assert.ok(r.ok, JSON.stringify(r));
   const disk = fs.readFileSync(cfgPath, 'utf8');
-  for (const rahasia of ['token-dari-env', TG, 'topik-rahasia']) assert.ok(!disk.includes(rahasia), `${rahasia} bocor ke config.json`);
+  for (const rahasia of ['token-dari-env', TG, 'topik-rahasia', 'gmgnKeyRahasia123']) assert.ok(!disk.includes(rahasia), `${rahasia} bocor ke config.json`);
   assert.strictEqual(JSON.parse(disk).telegram.notify.info, true);
+});
+
+test('pengaturan: API key GMGN disimpan ke config.json, ditampilkan tersamar, bisa dilepas', async () => {
+  const dir = tmp();
+  const cfg = baseCfg();
+  const { call, cfgPath } = routes(cfg, dir);
+  assert.match((await call('POST /api/settings/gmgn', { api_key: 'x y' })).error, /tidak dikenali/);
+  const r = await call('POST /api/settings/gmgn', { api_key: '  gmgn_abcdef123456  ' });
+  assert.ok(r.ok && r.gmgn.hasKey && r.gmgn.key.startsWith('gmgn_a') && !r.gmgn.key.includes('123456'), JSON.stringify(r));
+  assert.strictEqual(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).gmgn.api_key, 'gmgn_abcdef123456');
+  assert.match((await call('POST /api/settings/gmgn/test')).error, /pasar/i, 'tanpa modul pasar dijelaskan');
+  const rm = await call('POST /api/settings/gmgn', { api_key: '' });
+  assert.ok(rm.ok && !rm.gmgn.hasKey);
+  assert.strictEqual(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).gmgn.api_key, null);
 });
 
 test('pengaturan: kunci privat dari .env menonaktifkan ganti/lepas wallet', async () => {

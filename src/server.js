@@ -159,7 +159,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // Portofolio per wallet di-cache sebentar: halaman detail target di-poll, dan
   // tiap hitungan berarti puluhan eth_call + DexScreener.
   const holdingsCache = new Map();
-  const market = new Market({ log, chain });
+  const market = new Market({ log, chain, gmgnKey: () => cfg.gmgn?.api_key || null });
   // Ongkos jalan tiap posisi (gas + selisih swap) — dihitung sekali untuk semua
   // posisi lalu di-cache sampai ada transaksi baru.
   const costs = new Costs(store, chain.network);
@@ -998,12 +998,40 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // Halaman token memakai harga USD; halaman posisi memakai harga dalam aset
       // kuotasi pool supaya sejajar dengan rentang tick.
       const currency = url.searchParams.get('currency') === 'usd' ? 'usd' : 'token';
+      // src=gmgn: lilin dari OpenAPI GMGN (butuh API key + alamat token); kalau
+      // GMGN gagal (key kosong/ditolak/limit tanpa cadangan), jatuh ke GeckoTerminal
+      // dan UI diberi tahu lewat ohlcv.fallback supaya tidak diam-diam.
+      const wantGmgn = url.searchParams.get('src') === 'gmgn' && /^0x[0-9a-f]{40}$/.test(token);
+      const gt = () => market.candles(pool, tf, { limit, token: /^0x[0-9a-f]{40}$/.test(token) ? token : null, before, currency });
       const [pair, ohlcv] = await Promise.all([
         url.searchParams.get('pair') === '0' ? null : market.pair(pool),
-        market.candles(pool, tf, { limit, token: /^0x[0-9a-f]{40}$/.test(token) ? token : null, before, currency }),
+        wantGmgn
+          ? market.candlesGmgn(token, tf, { limit, before }).then(async (r) => (r?.error ? { ...(await gt()), fallback: r.error } : r))
+          : gt(),
       ]);
-      return { pair, ohlcv, tfs: Object.keys(TF) };
+      return { pair, ohlcv, tfs: Object.keys(TF), gmgn: market.gmgnEnabled() };
     },
+    // Transaksi swap terakhir di pool (GeckoTerminal) — pita "running trade" di
+    // bawah grafik. Wallet yang dikenal diberi nama: target yang disalin, atau bot.
+    'GET /api/trades': async (req, url) => {
+      const pool = String(url.searchParams.get('pool') || '').toLowerCase();
+      if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(pool)) return { error: 'pool tidak valid' };
+      const token = String(url.searchParams.get('token') || '').toLowerCase();
+      const r = await market.trades(pool, { token: /^0x[0-9a-f]{40}$/.test(token) ? token : null, limit: Number(url.searchParams.get('limit') || 80) });
+      if (!r?.trades) return r;
+      const labels = new Map(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label || null]));
+      const me = String(engine.exec.address() || '').toLowerCase();
+      return {
+        ...r,
+        trades: r.trades.map((x) => ({ ...x, target: labels.has(x.wallet), label: labels.get(x.wallet) || null, mine: !!me && x.wallet === me })),
+      };
+    },
+    // Nama wallet untuk pita transaksi yang diambil browser langsung dari
+    // GeckoTerminal: wallet target yang disalin dan wallet bot sendiri.
+    'GET /api/trade-labels': () => ({
+      me: String(engine.exec.address() || '').toLowerCase() || null,
+      targets: Object.fromEntries(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label || null])),
+    }),
     'GET /api/pool-depth': async (req, url) => {
       const ref = String(url.searchParams.get('ref') || '').toLowerCase();
       if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(ref)) return { error: 'pool tidak valid' };
@@ -1787,7 +1815,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     },
   };
 
-  Object.assign(routes, createSettingsRoutes({ engine, engines, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie }));
+  Object.assign(routes, createSettingsRoutes({ engine, engines, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market }));
   routes['GET /api/chains'] = async () => ({ chains: await chainList(), current: chain.network });
   // Pemilih chain: cookie lpcopy_chain dibaca pintu depan (index.js) untuk memilih
   // server chain mana yang menjawab permintaan berikutnya. Cookie ini bukan rahasia.

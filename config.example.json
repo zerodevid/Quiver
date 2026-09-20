@@ -13,6 +13,10 @@
   "notify": {
     "ntfy_topic": null
   },
+  "gmgn": {
+    "api_key": null,
+    "catatan": "API key OpenAPI GMGN (buat di https://gmgn.ai/ai) untuk lilin harga versi GMGN di tab Chart; isi lewat dasbor -> Pengaturan -> GMGN atau LPCOPY_GMGN_API_KEY di .env. Kosong = GeckoTerminal saja."
+  },
   "telegram": {
     "bot_token": null,
     "chat_ids": [],

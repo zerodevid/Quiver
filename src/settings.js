@@ -115,7 +115,7 @@ async function probeRpc({ url, headers }, chain) {
 
 // `engines`: semua mesin di proses ini (wallet yang sama dipakai semua chain — ganti
 // kunci harus me-reset dompet tiap mesin). `chain` = profil chain tampilan ini.
-function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie }) {
+function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market = null }) {
   chain = ensureChain(chain || engine?.chain);
   // Lewat writeCfg: nilai dari .env tidak boleh ikut tertulis ke config.json.
   const saveCfg = () => writeCfg(cfgPath, cfg);
@@ -191,6 +191,13 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
     };
   };
 
+  // API key GMGN = akses OpenAPI atas nama akun itu; seperti token Telegram, tidak
+  // pernah dikirim utuh ke peramban.
+  const gmgnView = () => {
+    const k = cfg.gmgn?.api_key || '';
+    return { hasKey: !!k, fromEnv: envName(cfg, 'gmgn.api_key'), key: k ? `${String(k).slice(0, 6)}${MASK}` : '' };
+  };
+
   const num = (v, lo, hi, name) => {
     const n = Number(v);
     if (!Number.isFinite(n) || n < lo || n > hi) throw new Error(`${name} harus di antara ${lo} dan ${hi}`);
@@ -251,6 +258,7 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
         notify: { ntfy_topic: cfg.notify?.ntfy_topic || '', fromEnv: envName(cfg, 'notify.ntfy_topic') },
         authFromEnv: envName(cfg, 'server.auth_token'),
         telegram: tgView(),
+        gmgn: gmgnView(),
         loop: {
           poll_ms: cfg.loop?.poll_ms ?? 1500, max_block_span: cfg.loop?.max_block_span ?? 1500,
           sync_seconds: cfg.loop?.sync_seconds ?? 30,
@@ -418,6 +426,29 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       const r = await fetch(`https://ntfy.sh/${cfg.notify.ntfy_topic}`, { method: 'POST', body: 'Quiver: uji notifikasi dari halaman Pengaturan' })
         .then((x) => x.status).catch((e) => e.message);
       return r === 200 ? { ok: true } : { error: `ntfy membalas ${r}` };
+    },
+    // ---- OpenAPI GMGN ----
+    'POST /api/settings/gmgn': async (req) => {
+      const b = await readBody(req);
+      const locked = lockedByEnv('gmgn.api_key'); if (locked) return locked;
+      const v = String(b.api_key || '').trim();
+      if (v && !/^[A-Za-z0-9_\-.:]{8,256}$/.test(v)) return { error: 'API key GMGN tidak dikenali bentuknya.' };
+      cfg.gmgn = { ...(cfg.gmgn || {}), api_key: v || null };
+      saveCfg();
+      return { ok: true, gmgn: gmgnView() };
+    },
+    // Uji key: minta lilin 1 jam token native chain ini. Sukses = key diterima dan
+    // chain ini didukung; galat dikembalikan apa adanya supaya jelas sebabnya.
+    'POST /api/settings/gmgn/test': async () => {
+      if (!cfg.gmgn?.api_key) return { error: 'Isi API key dulu.' };
+      if (!market) return { error: 'Modul pasar belum siap.' };
+      try {
+        const to = Math.floor(Date.now() / 1000);
+        const r = await market.gmgn('/v1/market/token_kline', { address: String(chain.ADDR.weth).toLowerCase(), resolution: '1h', from: (to - 6 * 3600) * 1000, to: to * 1000 });
+        if (r?.error) return { error: r.error };
+        const n = (r?.list || []).length;
+        return { ok: true, candles: n, summary: n ? `API key diterima — ${n} lilin ${chain.wethSymbol} diterima dari GMGN` : 'API key diterima, tetapi GMGN tidak mengembalikan lilin untuk chain ini' };
+      } catch (e) { return { error: e.message }; }
     },
     'POST /api/settings/loop': async (req) => {
       const b = await readBody(req);

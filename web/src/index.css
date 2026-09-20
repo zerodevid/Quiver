@@ -229,6 +229,12 @@ html.app-enter [data-reveal="foot"] { animation: q-fade .4s ease .35s both; }
 @keyframes q-pulse { 0%, 50%, 100% { opacity: 1; } 66% { opacity: .4; } }
 @keyframes q-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes q-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+/* Baris transaksi yang baru datang di pita "Transaksi terakhir": disorot sewarna
+   arahnya lalu memudar — sekali saja saat baris muncul. */
+@keyframes q-trade-buy { from { background: color-mix(in oklab, var(--success) 22%, transparent); } to { background: transparent; } }
+@keyframes q-trade-sell { from { background: color-mix(in oklab, var(--danger) 22%, transparent); } to { background: transparent; } }
+.trade-new-buy { animation: q-trade-buy 2.4s ease-out both; }
+.trade-new-sell { animation: q-trade-sell 2.4s ease-out both; }
 @media (prefers-reduced-motion: reduce) {
   html.app-enter [data-reveal], html.app-enter [data-reveal] > *,
   [data-brand].brand-arrive .q-arrow, [data-brand].brand-arrive .q-chev, [data-brand].brand-arrive .brand-sub { animation: none !important; }

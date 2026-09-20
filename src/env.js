@@ -12,6 +12,7 @@
 //   LPCOPY_AUTH_TOKEN           token masuk dasbor           -> server.auth_token
 //   LPCOPY_TELEGRAM_BOT_TOKEN   token bot dari @BotFather    -> telegram.bot_token
 //   LPCOPY_NTFY_TOPIC           topik ntfy.sh                -> notify.ntfy_topic
+//   LPCOPY_GMGN_API_KEY         API key OpenAPI GMGN         -> gmgn.api_key
 //   variabel apa pun            dirujuk dari URL/header RPC sebagai ${NAMA}, mis.
 //                               "https://…alchemy.com/v2/${ALCHEMY_KEY}"
 const fs = require('node:fs');
@@ -22,6 +23,7 @@ const FIELDS = [
   ['LPCOPY_AUTH_TOKEN', ['server', 'auth_token']],
   ['LPCOPY_TELEGRAM_BOT_TOKEN', ['telegram', 'bot_token']],
   ['LPCOPY_NTFY_TOPIC', ['notify', 'ntfy_topic']],
+  ['LPCOPY_GMGN_API_KEY', ['gmgn', 'api_key']],
 ];
 const META = Symbol('lpcopy.env');
 

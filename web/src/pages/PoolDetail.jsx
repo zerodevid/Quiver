@@ -13,7 +13,7 @@ import { usePoll } from '../hooks';
 import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, TradeLinks, DataLinks } from '../components/ui';
 import { TokenPair, TokenSym } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves } from '../components/LpTables';
-import { PriceChart, DexEmbed, MarketPanel, TFS, VIEWS, SECS, tfFor, kUsd } from './PositionDetail';
+import { PriceChart, DexEmbed, GmgnEmbed, TradesTape, MarketPanel, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc } from './PositionDetail';
 import { usd, pct, tone, num, price, sqrtPrice, tickPrice } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -29,6 +29,8 @@ export default function PoolDetail({ param }) {
   const [focusPick, setFocus] = useState(undefined);
   const [tfPick, setTf] = useState(null);
   const [view, setView] = useState('chart');
+  const [src, setSrcState] = useState(readSrc);
+  const setSrc = (v) => { setSrcState(v); writeSrc(v); };
   // Klik baris tabel posisi -> laci riwayat, sama seperti halaman Posisi.
   const [hist, setHist] = useState(null);
   // Klik baris posisi wallet yang diriset -> laci kejadian on-chain-nya. Yang disimpan
@@ -44,7 +46,7 @@ export default function PoolDetail({ param }) {
   // Cukup lilin supaya titik masuk posisi yang digambar masih terlihat.
   const sinceOpen = focus?.opened_ts ? (Date.now() - focus.opened_ts) / 1000 : 0;
   const limit = focus ? Math.min(1000, Math.max(120, Math.ceil(sinceOpen / SECS[tf]) + 40)) : 240;
-  const { data: m } = usePoll(pool ? `/api/market?pool=${ref}&tf=${tf}&limit=${limit}&token=${pool.baseToken || ''}` : null, 30000);
+  const { data: m } = usePoll(pool ? `/api/market?pool=${ref}&tf=${tf}&limit=${limit}&token=${pool.baseToken || ''}${src === 'gmgn' ? '&src=gmgn' : ''}` : null, 30000);
 
   if (!d) return <Loading page />;
   if (d.error) return <Empty title="Pool tidak ditemukan" sub={d.error} />;
@@ -117,9 +119,11 @@ export default function PoolDetail({ param }) {
             : null}
           action={<div className="flex flex-wrap gap-2">
             <Segmented size="sm" aria="Tampilan grafik" value={view} onChange={setView} options={VIEWS} />
-            {view === 'chart' && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}
+            {view === 'chart' && (m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
+            {view !== 'dex' && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}
           </div>}>
-          {view === 'dex' ? <DexEmbed pool={ref} /> : !m ? <Loading /> : <PriceChart p={chartP} m={m} tf={tf} />}
+          {view === 'dex' ? <DexEmbed pool={ref} /> : view === 'gmgn' ? <GmgnEmbed token={pool.baseToken} tf={tf} p={chartP} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={chartP} m={m} tf={tf} />}
+          <TradesTape pool={ref} token={pool.baseToken} base={base} quote={quote} />
         </Panel>
 
         <div className="grid gap-3">

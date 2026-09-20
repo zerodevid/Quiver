@@ -1,4 +1,5 @@
 'use strict';
+const crypto = require('node:crypto');
 // Data pasar pihak ketiga untuk halaman detail posisi: statistik pool dari
 // DexScreener dan lilin OHLCV dari GeckoTerminal. Dua sumber karena masing-masing
 // unggul di satu hal — DexScreener punya volume/transaksi/likuiditas terkini yang
@@ -13,6 +14,12 @@ const dsBase = (slug) => `https://api.dexscreener.com/latest/dex/pairs/${slug}/`
 // Semua pool yang memuat token (maks. 30) — /tokens/v1 hanya memberi satu per token.
 const dsTokenBase = (slug) => `https://api.dexscreener.com/token-pairs/v1/${slug}/`;
 const gtBase = (slug) => `https://api.geckoterminal.com/api/v2/networks/${slug}/pools/`;
+const { gtTradesUrl, normalizeTrades } = require('./trades.mjs');
+// OpenAPI resmi GMGN (butuh API key dari gmgn.ai/ai): lilin harga versi GMGN — data
+// yang sama dengan chart di gmgn.ai, tapi digambar di chart kita sendiri supaya
+// rentang posisi bisa ditumpangkan. Baca-saja cukup header X-APIKEY; paket gratis
+// ~1 permintaan/detik per key.
+const GMGN_API = 'https://openapi.gmgn.ai';
 
 // Rentang waktu lilin yang ditawarkan UI -> (timeframe, aggregate) GeckoTerminal.
 const TF = {
@@ -21,15 +28,22 @@ const TF = {
 };
 
 class Market {
-  constructor({ log, fetch: fetchImpl, chain = null } = {}) {
+  // gmgnKey: fungsi yang mengembalikan API key GMGN saat ini (bisa berubah dari
+  // halaman Pengaturan tanpa restart), atau null kalau belum diisi.
+  constructor({ log, fetch: fetchImpl, chain = null, gmgnKey = null } = {}) {
     this.log = log || (() => {});
     this.fetch = fetchImpl || globalThis.fetch;
+    this.gmgnKey = typeof gmgnKey === 'function' ? gmgnKey : () => gmgnKey;
+    this.gmgnSlug = chain?.gmgn || chain?.network || 'robinhood';
+    this.gmgnCooldown = 0;    // ms — OpenAPI GMGN tidak dipanggil sebelum ini (habis kena limit)
     this.network = chain?.network || 'robinhood';
     this.DS = dsBase(chain?.dexscreener || 'robinhood');
     this.DS_TOKEN = dsTokenBase(chain?.dexscreener || 'robinhood');
-    this.GT = gtBase(chain?.geckoterminal || 'robinhood');
+    this.gtSlug = chain?.geckoterminal || 'robinhood';
+    this.GT = gtBase(this.gtSlug);
     this.cache = new Map();   // key -> { until, value: Promise }
     this.good = new Map();    // key -> { at, value } — jawaban baik terakhir (cadangan)
+    this.gtCooldown = 0;      // ms — GeckoTerminal tidak dipanggil sebelum ini (habis kena 429)
   }
 
   // Satu permintaan yang sama dalam jendela `ttl` ms dijawab dari cache — termasuk
@@ -74,12 +88,21 @@ class Market {
   // grafik Telegram): dari VPS, GeckoTerminal bisa menjawab 10+ detik, dan sekali
   // kena batas waktu tombolnya berbalas galat padahal percobaan kedua lolos.
   // Yang dipoll dasbor tetap sekali coba supaya halaman tidak menunggu dua kali.
+  //
+  // Sekali GeckoTerminal menjawab 429, SEMUA panggilan ke sana ditahan 20 detik
+  // (memo lalu menyajikan cadangan/stale): terus menembak saat jatah habis hanya
+  // memperpanjang blokirnya untuk ketiga instance di IP ini.
   async json(url, { timeoutMs = 12_000, tries = 1 } = {}) {
+    const gt = url.startsWith('https://api.geckoterminal.com/');
+    if (gt && this.gtCooldown > Date.now()) throw new Error('batas panggilan (429) — coba lagi sebentar');
     let last = null;
     for (let i = 0; i < tries; i++) {
       try {
         const r = await this.fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(timeoutMs) });
-        if (r.status === 429) throw new Error('batas panggilan (429) — coba lagi sebentar');
+        if (r.status === 429) {
+          if (gt) this.gtCooldown = Date.now() + 20_000;
+          throw new Error('batas panggilan (429) — coba lagi sebentar');
+        }
         if (r.status === 404) return null;
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -174,6 +197,69 @@ class Market {
         quote: j?.meta?.quote ? { address: String(j.meta.quote.address || '').toLowerCase(), symbol: j.meta.quote.symbol } : null,
         fetchedAt: Date.now(),
       };
+    });
+  }
+
+  // Lilin OHLCV dari OpenAPI GMGN untuk satu token (harga USD, bukan aset kuotasi
+  // pool — GMGN menghargai token, bukan pool). Bentuk jawabannya disamakan dengan
+  // candles() supaya UI memakai jalur yang sama; `source: 'gmgn'` dan
+  // `currency: 'usd'` memberi tahu UI bahwa rentang posisi perlu dikonversi ke USD.
+  // Tanpa key: { error } supaya UI kembali ke GeckoTerminal.
+  gmgnEnabled() { return !!this.gmgnKey(); }
+  candlesGmgn(token, tf = '1h', { limit = 300, before = null } = {}) {
+    const key = this.gmgnKey();
+    if (!key) return Promise.resolve({ error: 'API key GMGN belum diisi (Pengaturan → GMGN)' });
+    const [, , secs] = TF[tf] || TF['1h'];
+    const n = Math.max(10, Math.min(1000, Number(limit) || 300));
+    const beforeS = before ? Math.ceil(before / 1000 / secs) * secs : null;
+    const ck = `gmgn:${String(token).toLowerCase()}:${tf}:${n}:${beforeS || ''}`;
+    return this.memo(ck, beforeS ? 10 * 60_000 : Math.min(60_000, Math.max(15_000, (secs * 1000) / 2)), async () => {
+      const to = beforeS ? beforeS : Math.floor(Date.now() / 1000);
+      const j = await this.gmgn('/v1/market/token_kline', { address: String(token).toLowerCase(), resolution: tf, from: (to - n * secs) * 1000, to: to * 1000 });
+      if (j?.error) return j;
+      const byT = new Map();
+      for (const c of j?.list || []) {
+        const t = Number(c.time), o = Number(c.open), h = Number(c.high), l = Number(c.low), cl = Number(c.close);
+        if (!(t > 0) || !(o > 0) || !(h > 0) || !(l > 0) || !(cl > 0)) continue;
+        // volume = jumlah token, amount = nilai USD — UI memakai nilai USD sebagai volume.
+        byT.set(t, { t: t * 1000, o, h, l, c: cl, v: Number(c.amount) || 0 });
+      }
+      const candles = [...byT.values()].sort((a, b) => a.t - b.t);
+      return { tf, secs, candles, source: 'gmgn', currency: 'usd', base: { address: String(token).toLowerCase() }, quote: null, fetchedAt: Date.now() };
+    });
+  }
+
+  // Satu panggilan baca ke OpenAPI GMGN. Jawaban dibungkus { code, data, error,
+  // message }: code 0 = sukses. Limit (RATE_LIMIT_*) menahan semua panggilan 10
+  // detik supaya memo menyajikan cadangan, bukan menembak terus.
+  async gmgn(subPath, params = {}, { timeoutMs = 12_000 } = {}) {
+    const key = this.gmgnKey();
+    if (!key) return { error: 'API key GMGN belum diisi' };
+    if (this.gmgnCooldown > Date.now()) throw new Error('batas panggilan GMGN — coba lagi sebentar');
+    const q = new URLSearchParams({ chain: this.gmgnSlug, ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
+      timestamp: String(Math.floor(Date.now() / 1000)), client_id: crypto.randomUUID() });
+    const r = await this.fetch(`${GMGN_API}${subPath}?${q}`, { headers: { accept: 'application/json', 'X-APIKEY': key }, signal: AbortSignal.timeout(timeoutMs) });
+    const j = await r.json().catch(() => null);
+    if (r.status === 429 || /RATE_LIMIT/.test(String(j?.error || ''))) {
+      this.gmgnCooldown = Date.now() + 10_000;
+      throw new Error(`batas panggilan GMGN (${j?.error || 429})${j?.message ? ` — ${j.message}` : ''}`);
+    }
+    if (r.status === 401 || r.status === 403) return { error: `GMGN menolak API key (HTTP ${r.status}${j?.message ? `: ${j.message}` : ''})` };
+    if (!r.ok) throw new Error(`GMGN HTTP ${r.status}`);
+    if (!j || j.code !== 0) return { error: `GMGN: ${j?.message || j?.error || 'jawaban tidak dikenal'}` };
+    return j.data ?? {};
+  }
+
+  // Transaksi swap terakhir di satu pool dari GeckoTerminal (maks. 300 dalam 24 jam
+  // terakhir), terbaru di depan — cadangan pita "running trade" kalau browser tidak
+  // bisa memanggil GeckoTerminal sendiri (lihat trades.mjs). Cache 15 detik: IP VPS
+  // ini dipakai tiga instance sekaligus dan jatahnya ~30 panggilan/menit.
+  trades(ref, { token = null, limit = 80 } = {}) {
+    const t = String(token || '').toLowerCase();
+    return this.memo(`gtt:${String(ref).toLowerCase()}:${t}:${limit}`, 15_000, async () => {
+      const j = await this.json(gtTradesUrl(this.gtSlug, ref));
+      if (!j) return { error: 'pool ini belum terindeks di GeckoTerminal' };
+      return { trades: normalizeTrades(j, { token: t || null, limit }), fetchedAt: Date.now() };
     });
   }
 }

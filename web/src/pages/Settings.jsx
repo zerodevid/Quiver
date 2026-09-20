@@ -1,7 +1,7 @@
 import { chainInfo } from '../chain';
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Chip, Checkbox, Separator, Tabs, toast } from '@heroui/react';
-import { Pencil, Activity as Pulse, Trash2, KeyRound, Unlock, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { Pencil, Activity as Pulse, Trash2, KeyRound, Unlock, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck, ShieldAlert, ChartCandlestick } from 'lucide-react';
 import { Wallet as EthersWallet } from 'ethers';
 import SettingInfo from '../components/SettingInfo';
 import { get, post } from '../api';
@@ -19,6 +19,7 @@ const SETTINGS_NAV = [
   ['gas', 'Gas', 'Biaya dan cadangan transaksi', Fuel],
   ['notify', 'Notifikasi', 'Kabar ke ponsel lewat ntfy', Bell],
   ['telegram', 'Telegram', 'Hubungkan bot dan chat', MessageCircle],
+  ['gmgn', 'GMGN', 'API key untuk lilin harga GMGN', ChartCandlestick],
   ['loop', 'Mesin', 'Pemindaian dan harga ETH', Settings2],
   ['security', 'Keamanan', 'Akses masuk dasbor', ShieldCheck],
 ];
@@ -447,6 +448,63 @@ function EnvNotice({ name, what }) {
   );
 }
 
+// ---------------- OpenAPI GMGN ----------------
+// Key dipakai server untuk menarik lilin harga versi GMGN (tab Chart, sumber "GMGN")
+// — data yang sama dengan chart gmgn.ai, digambar di chart kita supaya rentang
+// posisi bot ikut tergambar. Tidak dikirim utuh ke peramban.
+function GmgnTab({ d, reload }) {
+  const { t } = useI18n();
+  const g = d.gmgn || {};
+  const [key, setKey] = useState('');
+  const [busy, setBusy] = useState('');
+  const [test, setTest] = useState(null);
+  const save = async (k, body, ok) => {
+    setBusy(k);
+    const r = await post('/api/settings/gmgn', body);
+    setBusy('');
+    say(r, ok);
+    if (!r.error) { setKey(''); setTest(null); reload(); }
+    return r;
+  };
+  const probe = async () => {
+    setBusy('test'); setTest(null);
+    const r = await post('/api/settings/gmgn/test', {});
+    setBusy('');
+    setTest(r.error ? { ok: false, text: r.error } : { ok: true, text: r.summary });
+  };
+  return (
+    <Section title="OpenAPI GMGN" desc="Lilin harga versi GMGN untuk tab Chart di halaman posisi dan pool — data yang sama dengan chart gmgn.ai, tetapi digambar di sini supaya rentang posisi, harga masuk, dan BEP ikut tergambar otomatis. Pita transaksi tetap dari GeckoTerminal (GMGN tidak menyediakannya).">
+      <div className="flex flex-wrap items-center gap-3">
+        <Chip size="sm" variant="soft" color={g.hasKey ? 'success' : 'default'}>{g.hasKey ? t('key terpasang') : t('belum diisi')}</Chip>
+        {g.hasKey && <span className="mono text-sm text-muted">{g.key}</span>}
+      </div>
+
+      <Separator />
+      {g.fromEnv ? <EnvNotice name={g.fromEnv} what="API key GMGN" /> : <div className="grid gap-5 md:grid-cols-2">
+        <Text label="API key GMGN" type="password" mono value={key} onChange={setKey}
+          placeholder={g.key || 'gmgn_…'}
+          hint={t('Buat di gmgn.ai/ai (menu API Key). Formulirnya meminta public key Ed25519 — itu hanya untuk endpoint trading; untuk membaca lilin tidak dipakai. Paket gratis ±1 permintaan/detik; server menyimpan jawabannya supaya semua tab berbagi satu tarikan.')} />
+        <div className="flex flex-wrap items-end gap-2">
+          <Button onPress={() => save('key', { api_key: key }, 'API key tersimpan — sumber GMGN tersedia di tab Chart')} isPending={busy === 'key'} isDisabled={!key}>{t('Simpan key')}</Button>
+          {g.hasKey && <Button variant="outline" onPress={probe} isPending={busy === 'test'}>{t('Uji key')}</Button>}
+          {g.hasKey && <Button variant="outline" onPress={async () => { if (await ask({ title: t('Lepas API key GMGN? Tab Chart kembali ke GeckoTerminal.'), confirm: t('Lepas'), danger: true })) save('rm', { api_key: '' }, 'API key dilepas'); }}>{t('Lepas')}</Button>}
+        </div>
+      </div>}
+      {test && <Notice status={test.ok ? 'success' : 'danger'}>{test.text}</Notice>}
+
+      <Separator />
+      <div className="text-sm text-muted">
+        <div className="mb-1 font-medium text-foreground">{t('Cara membuat key')}</div>
+        <ol className="list-decimal space-y-1 pl-5">
+          <li>{t('Masuk ke')} <a href="https://gmgn.ai/ai" target="_blank" rel="noreferrer" className="text-accent hover:underline">gmgn.ai/ai</a> {t('dengan akun GMGN, buka bagian API Key.')}</li>
+          <li>{t('Formulir meminta public key Ed25519. Buat pasangan kunci di komputer sendiri:')} <span className="mono">openssl genpkey -algorithm ed25519 -out gmgn.pem && openssl pkey -in gmgn.pem -pubout</span></li>
+          <li>{t('Tempel public key-nya, simpan, lalu salin API key yang diberikan ke kolom di atas. Private key (gmgn.pem) tidak perlu dipasang di bot — hanya dibutuhkan untuk trading lewat API.')}</li>
+        </ol>
+      </div>
+    </Section>
+  );
+}
+
 // ---------------- bot Telegram ----------------
 function TelegramTab({ d, reload }) {
   const { t } = useI18n();
@@ -626,6 +684,7 @@ export default function Settings() {
                     extra={<Button variant="outline" onPress={async () => say(await post('/api/settings/notify/test', {}), 'Notifikasi uji terkirim')}>{t('Kirim uji')}</Button>} />
                 </Tabs.Panel>
                 <Tabs.Panel id="telegram"><TelegramTab d={d} reload={load} /></Tabs.Panel>
+                <Tabs.Panel id="gmgn"><GmgnTab d={d} reload={load} /></Tabs.Panel>
                 <Tabs.Panel id="loop" shouldForceMount className="data-[inert]:hidden">
                   <SimpleForm title="Mesin" desc="Berlaku setelah bot di-restart (pm2 restart lpcopy)." url="/api/settings/loop" okText="Tersimpan — restart bot supaya berlaku"
                     initial={{ ...d.loop, ...d.prices }} fields={[

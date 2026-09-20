@@ -53,6 +53,37 @@ function palsu({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5
     assert.strictEqual(cadangan.candles.length, 1, 'isinya jawaban baik terakhir');
   });
 
+  await uji('transaksi pool: arah beli/jual terhadap token spekulatif, harga dari jumlah swap, terbaru di depan', async () => {
+    const X = '0x' + 'a'.repeat(40), USDG = '0x' + 'b'.repeat(40);
+    const row = (id, ts, from, to, fromAmt, toAmt, kind) => ({ id, attributes: {
+      block_timestamp: ts, tx_hash: `0x${id}`, tx_from_address: '0x' + 'c'.repeat(40), kind,
+      from_token_address: from, to_token_address: to, from_token_amount: String(fromAmt), to_token_amount: String(toAmt),
+      price_from_in_usd: '1', price_to_in_usd: '0.5', volume_in_usd: '10',
+    } });
+    const calls = [];
+    const mk = new Market({ fetch: async (url) => {
+      calls.push(url);
+      return { ok: true, status: 200, json: async () => ({ data: [
+        // GeckoTerminal memberi label "sell" (base versinya USDG), tapi terhadap X ini beli.
+        row('1', '2026-09-20T15:00:00Z', USDG, X, 10, 20, 'sell'),
+        row('2', '2026-09-20T15:01:00Z', X, USDG, 40, 20, 'buy'),
+      ] }) };
+    } });
+    const r = await mk.trades(POOL, { token: X });
+    assert.match(calls[0], /\/pools\/0xab.*\/trades\?/);
+    assert.deepStrictEqual(r.trades.map((x) => x.side), ['sell', 'buy'], 'terbaru di depan, arah terhadap X');
+    assert.deepStrictEqual(r.trades.map((x) => x.base), [40, 20], 'jumlah token spekulatif');
+    assert.deepStrictEqual(r.trades.map((x) => x.priceQuote), [0.5, 0.5], 'harga = kuotasi / spekulatif');
+    assert.strictEqual(r.trades[1].priceUsd, 0.5, 'harga USD sisi token spekulatif');
+    assert.strictEqual(r.trades[1].ts, Date.parse('2026-09-20T15:00:00Z'));
+    // Tanpa alamat token, ikut label GeckoTerminal.
+    const r2 = await new Market({ fetch: async () => ({ ok: true, status: 200, json: async () => ({ data: [row('3', '2026-09-20T15:00:00Z', USDG, X, 10, 20, 'sell')] }) }) }).trades(POOL);
+    assert.strictEqual(r2.trades[0].side, 'sell');
+    // Cache: poll kedua dalam 10 detik tidak memanggil GeckoTerminal lagi.
+    await mk.trades(POOL, { token: X });
+    assert.strictEqual(calls.length, 1);
+  });
+
   await uji('tanpa jawaban baik sebelumnya, galat tetap galat', async () => {
     const mk = new Market({ fetch: async () => ({ ok: false, status: 429, json: async () => ({}) }) });
     const r = await mk.memo('kosong', 0, async () => ({ error: 'batas panggilan (429) — coba lagi sebentar' }));
@@ -92,6 +123,66 @@ function palsu({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5
     assert.match(r.error, /429/);
     await mk.pair(POOL);
     assert.strictEqual(calls.length, 1, 'galat disimpan sebentar');
+  });
+
+  await uji('429 dari GeckoTerminal menahan semua panggilan ke sana 20 detik; DexScreener tidak ikut', async () => {
+    const calls = [];
+    const mk = new Market({ fetch: async (url) => {
+      calls.push(url);
+      if (url.startsWith('https://api.geckoterminal.com/')) return { ok: false, status: 429, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({ pairs: [{ baseToken: {}, quoteToken: {} }] }) };
+    } });
+    assert.match((await mk.candles(POOL, '1h')).error, /429/);
+    assert.match((await mk.trades(POOL)).error, /429/, 'pool lain/endpoint lain ikut ditahan');
+    assert.strictEqual(calls.filter((u) => u.includes('geckoterminal')).length, 1, 'hanya satu tembakan yang lolos');
+    assert.ok(!(await mk.pair(POOL)).error, 'DexScreener tetap dipanggil');
+    mk.gtCooldown = 0;
+    await mk.trades('0x' + 'cd'.repeat(32));
+    assert.strictEqual(calls.filter((u) => u.includes('geckoterminal')).length, 2, 'setelah jeda dicoba lagi');
+  });
+
+  await uji('lilin GMGN: X-APIKEY + chain + rentang ms, harga USD, amount jadi volume; tanpa key -> galat', async () => {
+    const calls = [];
+    const fetchImpl = async (url, opts) => {
+      calls.push({ url, headers: opts.headers });
+      return { ok: true, status: 200, json: async () => ({ code: 0, data: { list: [
+        { time: 2000, open: '2', high: '3', low: '1', close: '2.5', volume: '999', amount: '42' },
+        { time: 1000, open: '1', high: '2', low: '0.5', close: '1.5', volume: '999', amount: '10' },
+      ] } }) };
+    };
+    const mk = new Market({ fetch: fetchImpl, chain: { geckoterminal: 'robinhood', gmgn: 'robinhood' }, gmgnKey: () => 'kunci123' });
+    const r = await mk.candlesGmgn('0xABC', '5m', { limit: 100 });
+    assert.strictEqual(r.source, 'gmgn'); assert.strictEqual(r.currency, 'usd');
+    assert.deepStrictEqual(r.candles.map((c) => [c.t, c.c, c.v]), [[1000000, 1.5, 10], [2000000, 2.5, 42]]);
+    const u = new URL(calls[0].url);
+    assert.strictEqual(u.origin + u.pathname, 'https://openapi.gmgn.ai/v1/market/token_kline');
+    assert.strictEqual(u.searchParams.get('chain'), 'robinhood');
+    assert.strictEqual(u.searchParams.get('address'), '0xabc');
+    assert.strictEqual(u.searchParams.get('resolution'), '5m');
+    assert.strictEqual(Number(u.searchParams.get('to')) - Number(u.searchParams.get('from')), 100 * 300 * 1000, 'rentang = limit lilin, dalam ms');
+    assert.strictEqual(calls[0].headers['X-APIKEY'], 'kunci123');
+    assert.ok(!mk.gmgnEnabled.call(new Market({ fetch: fetchImpl })), 'tanpa key = nonaktif');
+    assert.match((await new Market({ fetch: fetchImpl }).candlesGmgn('0xabc', '5m')).error, /API key/);
+  });
+
+  await uji('limit GMGN (RATE_LIMIT_*) menahan panggilan 10 detik dan memakai cadangan; key ditolak dijelaskan', async () => {
+    let mode = 'ok';
+    const calls = [];
+    const mk = new Market({ fetch: async (url) => {
+      calls.push(url);
+      if (mode === 'limit') return { ok: false, status: 200, json: async () => ({ code: 40001, error: 'RATE_LIMIT_EXCEEDED', message: 'slow down' }) };
+      if (mode === 'auth') return { ok: false, status: 401, json: async () => ({ code: 401, message: 'invalid key' }) };
+      return { ok: true, status: 200, json: async () => ({ code: 0, data: { list: [{ time: 1000, open: '1', high: '2', low: '0.5', close: '1.5', amount: '1' }] } }) };
+    }, gmgnKey: () => 'k' });
+    assert.strictEqual((await mk.memo('a', 0, () => mk.candlesGmgn('0xabc', '1h'))).candles.length, 1);
+    mode = 'limit';
+    const cad = await mk.memo('a', 0, () => mk.candlesGmgn('0xabc', '1h', { limit: 11 }));
+    assert.ok(cad.stale && cad.candles.length === 1, 'cadangan dipakai saat limit');
+    const n = calls.length;
+    await mk.memo('b', 0, () => mk.candlesGmgn('0xdef', '1h'));
+    assert.strictEqual(calls.length, n, 'selama jeda tidak ada panggilan keluar');
+    mk.gmgnCooldown = 0; mode = 'auth';
+    assert.match((await mk.candlesGmgn('0x999', '1h')).error, /menolak API key/);
   });
 
   await uji('pool yang belum terindeks (404) dijelaskan', async () => {
