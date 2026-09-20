@@ -381,8 +381,19 @@ export function DataTable({
   // daftarnya cukup panjang untuk benar-benar perlu disaring.
   const bisaCari = searchable && rows.length >= 8;
   const head = rows.length > 0 && (bisaCari || (pageSize > 0 && rows.length > pageSize));
+  // Kolom pertama (nama pasangan/wallet) menempel saat tabel digulir mendatar — di
+  // ponsel, tabel lebar cuma memperlihatkan satu-dua kolom; tanpa ini angka yang
+  // digulir kehilangan barisnya. Bayangan di tepi kolom hanya saat sudah bergeser.
+  const root = useRef(null);
+  useEffect(() => {
+    const sc = root.current?.querySelector('.table__scroll-container');
+    if (!sc) return;
+    const on = () => root.current?.classList.toggle('is-scrolled', sc.scrollLeft > 2);
+    on(); sc.addEventListener('scroll', on, { passive: true });
+    return () => sc.removeEventListener('scroll', on);
+  }, [rows.length]);
   return (
-    <div>
+    <div ref={root} className="table-sticky">
       {head && (
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2.5">
           {bisaCari ? (

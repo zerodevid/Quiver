@@ -107,6 +107,23 @@ td .mono { white-space: nowrap; }
   background-color: color-mix(in oklab, var(--accent) 5%, var(--surface));
 }
 
+/* Kolom pertama menempel saat digulir mendatar (lihat DataTable). Latar sel harus
+   pekat — versi pekat dari warna baris/hover di atas, dicampur ke permukaan. */
+.table-sticky .table__column:first-child, .table-sticky .table__cell:first-child { position: sticky; left: 0; z-index: 20; }
+.table-sticky .table__cell:first-child { background-color: var(--surface); }
+.table-sticky .table__body .table__row:hover .table__cell:first-child { background-color: color-mix(in oklab, var(--foreground) 2.5%, var(--surface)); }
+.activity-table .table-sticky .table__body .table__row:nth-child(even) .table__cell:first-child { background-color: color-mix(in oklab, var(--foreground) 1.5%, var(--surface)); }
+.activity-table .table-sticky .table__body .table__row:hover .table__cell:first-child,
+.activity-table .table-sticky .table__body .table__row:focus-within .table__cell:first-child { background-color: color-mix(in oklab, var(--accent) 5%, var(--surface)); }
+.table-sticky .table__column:first-child::before, .table-sticky .table__cell:first-child::before {
+  content: ''; position: absolute; top: 0; bottom: 0; right: -1px; width: 1px;
+  background: var(--border); opacity: 0; transition: opacity 0.15s;
+}
+.table-sticky.is-scrolled .table__column:first-child, .table-sticky.is-scrolled .table__cell:first-child {
+  box-shadow: 10px 0 14px -10px rgb(0 0 0 / 0.45);
+}
+.table-sticky.is-scrolled .table__column:first-child::before, .table-sticky.is-scrolled .table__cell:first-child::before { opacity: 1; }
+
 /* Batang gulir tipis; bawaan macOS sudah begitu, Windows/Linux belum. */
 * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 

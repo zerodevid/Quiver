@@ -62,6 +62,16 @@ function buildStyles(pal) {
         upBorderColor: pal.up, downBorderColor: pal.down, noChangeBorderColor: pal.muted,
         upWickColor: pal.up, downWickColor: pal.down, noChangeWickColor: pal.muted,
       },
+      // Legenda OHLC bawaan menempel di pojok kiri atas dan bertabrakan dengan
+      // penanda harga tertinggi kalau lilin tertingginya ada di sana. Dijadikan
+      // kotak yang mengikuti kursor — muncul saat dibaca, hilang saat tidak.
+      tooltip: {
+        showRule: 'follow_cross', showType: 'rect',
+        rect: { position: 'pointer', color: withAlpha(pal.dark ? '#000000' : '#ffffff', 0.85), borderColor: pal.border, borderRadius: 6, paddingLeft: 10, paddingRight: 10, paddingTop: 8, paddingBottom: 8 },
+        title: { color: pal.text },
+        legend: { color: pal.text },
+      },
+      priceMark: { high: { color: pal.text }, low: { color: pal.text } },
     },
     xAxis: { axisLine: { color: pal.border }, tickText: { color: pal.text } },
     yAxis: { axisLine: { color: pal.border }, tickText: { color: pal.text } },

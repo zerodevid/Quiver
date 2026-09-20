@@ -18,6 +18,22 @@ function ukuranKita(a) {
   try { const v = JSON.parse(a.plan).valueUsd; return Number.isFinite(v) ? v : null; } catch { return null; }
 }
 
+// Alasan keputusan bisa panjang (tiga-empat kalimat); tampil dua baris supaya
+// tabelnya tetap padat, klik untuk membuka seluruhnya. Tombol, bukan div, supaya
+// bisa diraih keyboard — dan klik-nya tidak merambat ke baris.
+function Reason({ text }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const long = text.length > 90;
+  return (
+    <button type="button" disabled={!long} title={long && !open ? t('Klik untuk membaca seluruhnya') : undefined}
+      onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+      className={`mt-1.5 w-full whitespace-normal break-words text-start text-xs leading-relaxed text-muted ${long ? 'cursor-pointer hover:text-foreground' : ''} ${open ? '' : 'line-clamp-2'}`}>
+      {text}
+    </button>
+  );
+}
+
 export default function Activity() {
   const { t } = useI18n();
   const { data: d, reload } = usePoll('/api/activity?limit=200', 8000);
@@ -108,12 +124,12 @@ export default function Activity() {
             { key: 'dec', label: 'Keputusan', sort: (a) => a.verdict, search: (a) => `${a.verdict || ''} ${a.reason || ''}`, render: (a) => {
               const k = KEPUTUSAN[a.verdict];
               return (
-                <div className="min-w-40 max-w-56">
+                <div className="min-w-48 max-w-80">
                   <div className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium ${k?.[1] === 'danger' ? 'bg-danger/10' : k?.[1] === 'success' ? 'bg-success/10' : 'bg-default'}`}>
                     <Dot tone={k?.[1] || 'default'} />
                     <span className={k?.[1] === 'danger' ? 'text-danger' : k?.[1] === 'success' ? 'text-success' : ''}>{k ? t(k[0]) : (a.verdict || '—')}</span>
                   </div>
-                  {a.reason && <div className="mt-1.5 whitespace-normal break-words text-xs leading-relaxed text-muted" title={reason(a.reason)}>{reason(a.reason)}</div>}
+                  {a.reason && <Reason text={reason(a.reason)} />}
                   {a.followable && (
                     <Button size="sm" variant="secondary" className="mt-2" onPress={() => setFollow(a)}>
                       <UserPlus className="size-3.5" />{t('Ikuti manual')}
