@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@heroui/react';
 import AdvancedChart from '../components/AdvancedChart';
 import { usePoll } from '../hooks';
-import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink, TradeLinks } from '../components/ui';
+import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink, TradeLinks, DataLinks } from '../components/ui';
 import TokenIcon, { TokenPair, PairName } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves } from '../components/LpTables';
 import PositionHistory from '../components/PositionHistory';
@@ -92,9 +92,8 @@ export default function TokenDetail({ param }) {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+            <DataLinks token={tk.address} />
             <TradeLinks token={tk.address} />
-            <ExtLink href={`https://dexscreener.com/robinhood/${tk.address}`}>DexScreener</ExtLink>
-            <ExtLink href={`https://www.geckoterminal.com/robinhood/tokens/${tk.address}`}>GeckoTerminal</ExtLink>
             {info?.websites?.map((w) => <ExtLink key={w} href={w} muted>{t('Situs')}</ExtLink>)}
             {info?.socials?.map((x) => <ExtLink key={x.url} href={x.url} muted>{x.type || t('Sosial')}</ExtLink>)}
           </div>

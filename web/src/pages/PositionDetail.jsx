@@ -19,7 +19,7 @@ import { useClaimFees } from '../useClaimFees';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
 import ShareButton, { positionCard } from '../components/ShareCard';
-import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask, TradeLinks } from '../components/ui';
+import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask, TradeLinks, DataLinks } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice, widthPct, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
@@ -161,10 +161,9 @@ export function MarketPanel({ pair, pool }) {
         <KV label="FDV">{kUsd(pair.fdv)}</KV>
         <KV label="Pool dibuat">{pair.pairCreatedAt ? age((Date.now() - pair.pairCreatedAt) / 3600000) + ' ' + t('lalu') : '—'}</KV>
       </div>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border px-4 py-2.5 text-xs">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border px-4 py-2.5 text-xs">
+        <DataLinks pool={pool} dexUrl={pair.url} />
         <TradeLinks token={pair.base?.address} pool={pool} />
-        <a href={pair.url || `https://dexscreener.com/${chainInfo().dexscreener}/${pool}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline">DexScreener <ExternalLink className="size-3" /></a>
-        <a href={`https://www.geckoterminal.com/${chainInfo().geckoterminal}/pools/${pool}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline">GeckoTerminal <ExternalLink className="size-3" /></a>
         {pair.websites?.map((w) => <a key={w} href={w} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:underline">{t('Situs')} <ExternalLink className="size-3" /></a>)}
       </div>
     </>

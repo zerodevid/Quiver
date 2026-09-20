@@ -692,20 +692,39 @@ export const baseTokenOf = (p) => {
   if (isQuoteSym(p.symbol1) && !isQuoteSym(p.symbol0)) return p.token0;
   return null;
 };
-// Gaya di index.css (.trade-bar / .trade-stack). compact: tumpukan logo untuk baris
-// tabel; klik tidak merambat ke baris yang bisa diklik.
-export function TradeLinks({ token, pool = null, compact = false, className = '' }) {
-  if (!token) return null;
-  const hrefOf = (app) => (pool && app.poolHref ? app.poolHref(pool) : app.href(token));
+// Bilah tautan berlogo (gaya di index.css: .trade-bar / .trade-stack). links:
+// [{ key, label, icon, brand, href }]. compact: tumpukan logo untuk baris tabel;
+// klik tidak merambat ke baris yang bisa diklik.
+function LinkBar({ tag, links, compact = false, className = '' }) {
   return (
     <span className={`${compact ? 'trade-stack' : 'trade-bar'} ${className}`} onClick={(e) => e.stopPropagation()}>
-      {!compact && <span className="trade-bar__tag">{t('Trade')}</span>}
-      {TRADE_APPS.map((app) => (
-        <a key={app.key} href={hrefOf(app)} target="_blank" rel="noreferrer" className="trade-link"
+      {!compact && tag && <span className="trade-bar__tag">{t(tag)}</span>}
+      {links.map((app) => (
+        <a key={app.key} href={app.href} target="_blank" rel="noreferrer" className="trade-link"
           style={{ '--brand': app.brand }} title={t('Buka {app}', { app: app.label })} aria-label={t('Buka {app}', { app: app.label })}>
           <img src={app.icon} alt="" />{!compact && <span>{app.label}</span>}<ArrowUpRight />
         </a>
       ))}
     </span>
   );
+}
+export function TradeLinks({ token, pool = null, compact = false, className = '' }) {
+  if (!token) return null;
+  const links = TRADE_APPS.map((app) => ({ ...app, href: pool && app.poolHref ? app.poolHref(pool) : app.href(token) }));
+  return <LinkBar tag="Trade" links={links} compact={compact} className={className} />;
+}
+// Data pasar pihak ketiga (DexScreener, GeckoTerminal) — halaman pool kalau pool
+// diketahui, halaman token kalau cuma tokennya. dexUrl: URL DexScreener yang sudah
+// diberikan API pasangan, lebih tepat daripada menebak dari alamat.
+export function DataLinks({ pool = null, token = null, dexUrl = null, className = '' }) {
+  const ref = pool || token;
+  if (!ref) return null;
+  const c = chainInfo();
+  const links = [
+    { key: 'dexscreener', label: 'DexScreener', icon: '/dexscreener.png', brand: '#9aa4b2',
+      href: dexUrl || `https://dexscreener.com/${c.dexscreener || c.key}/${ref}` },
+    { key: 'geckoterminal', label: 'GeckoTerminal', icon: '/geckoterminal.jpg', brand: '#8b5cf6',
+      href: `https://www.geckoterminal.com/${c.geckoterminal || c.key}/${pool ? 'pools' : 'tokens'}/${ref}` },
+  ];
+  return <LinkBar tag="Data" links={links} className={className} />;
 }
