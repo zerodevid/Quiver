@@ -12,7 +12,7 @@ import { useI18n, reason } from '../i18n';
 
 const RANGES = [['24h', '24 jam'], ['7d', '7 hari'], ['30d', '30 hari'], ['all', 'Semua']];
 const VIEWS = [['pnl', 'PnL kumulatif'], ['value', 'Nilai']];
-// PnL bersih hanya ada kalau modal wallet terlacak (setoran/penarikan via Alchemy).
+// PnL bersih hanya ada kalau modal wallet terlacak (setoran/penarikan dari RPC).
 const VIEWS_NET = [['net', 'PnL bersih'], ...VIEWS];
 const sum = (rows, f) => rows.reduce((a, r) => a + (f(r) || 0), 0);
 

@@ -2435,9 +2435,10 @@ class Engine {
       this.lastAdopt = Date.now();
       await this.adoptOwnPositions(addr);
     }
-    // Setoran/penarikan eksternal → modal wallet (PnL bersih). Tiap 5 menit; galat
-    // beruntun (Alchemy/arsip) ditangani seperti langkah lain, tidak menghentikan tick.
-    if (addr && this.capital.available() && Date.now() - (this.capital.lastSync || 0) > 5 * 60_000) {
+    // Setoran/penarikan eksternal → modal wallet (PnL bersih). Tiap 5 menit — tiap
+    // menit selama jendela yang menumpuk masih dicicil (node arsip publik dibatasi per
+    // menit); galat beruntun ditangani seperti langkah lain, tidak menghentikan tick.
+    if (addr && this.capital.available() && Date.now() - (this.capital.lastSync || 0) > (this.capital.backlog ? 60_000 : 5 * 60_000)) {
       await this.capital.sync(addr).then(() => this.cleared('modal', 'pelacakan setoran: berhasil lagi'))
         .catch((e) => this.trouble('modal', `pelacakan setoran: ${e.message}`, { after: 3, afterMs: 30 * 60_000 }));
     }
