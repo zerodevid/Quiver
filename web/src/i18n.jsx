@@ -1498,6 +1498,8 @@ const EN = {
   'pool tidak dikenal — belum tersentuh bot/riset dan belum terindeks DexScreener': 'unknown pool — not touched by the bot or research, and not indexed on DexScreener',
   '1 hari': '1 day', '1 jam': '1 hr', '15 mnt': '15 min', '4 jam': '4 hr', '5 mnt': '5 min',
   'Grafik': 'Chart',
+  'Posisi asli': 'Source position',
+  'Ke posisi asli #{id} di tabel wallet yang diriset': 'Go to source position #{id} in the researched wallet positions table',
   'Rentang lilin': 'Candle interval',
   'Semua posisi': 'All positions',
   'Posisi tidak ditemukan': 'Position not found',

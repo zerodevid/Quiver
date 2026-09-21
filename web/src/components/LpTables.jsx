@@ -13,6 +13,8 @@ const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
 
 // Posisi yang masih terbuka selalu ditampilkan di atas yang sudah ditutup.
 const isOpen = (p) => p.status === 'open';
+// Kunci baris posisi wallet — dipakai tabel riset dan tombol lompat dari tabel bot.
+export const wkey = (p) => `${p.wallet}:${p.venue}:${p.token_id}`;
 
 function Status({ open }) {
   const { t } = useI18n();
@@ -56,12 +58,20 @@ function CopiedFrom({ p }) {
 // onHist: klik baris -> laci riwayat posisi, sama seperti tabel di halaman Posisi.
 // reload: dipanggil setelah posisi ditutup dari tabel ini; tanpa itu tombol tutup
 // tidak ditampilkan (halaman yang datanya tidak bisa dimuat ulang).
-export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, loading = false, className = '' }) {
+// wallets + onSource: tombol "Posisi asli" per baris yang disalin dari target —
+// melompat ke baris posisi targetnya di tabel riset (WalletPositions) di halaman
+// yang sama, supaya jelas posisi mana yang ditiru bot. Hanya tampil kalau posisi
+// aslinya memang ada di tabel itu.
+export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, wallets, onSource, loading = false, className = '' }) {
   const { t } = useI18n();
   const { close, closeAll, closing } = useClosePosition(reload);
   const rows = [...open.map((p) => ({ ...p, status: 'open' })), ...closed];
   const pnl = sum(rows, (p) => p.pnlUsd);
   const canClose = !!reload;
+  const sourceOf = (p) => (onSource && p.target && p.mirror_of
+    ? wallets?.find((w) => w.wallet?.toLowerCase() === p.target.toLowerCase() && w.venue === p.venue && String(w.token_id) === String(p.mirror_of))
+    : null);
+  const canSource = !!onSource && rows.some(sourceOf);
   return (
     <Panel title={t('Posisi bot ({n})', { n: rows.length })} className={className} bodyClass="p-0"
       desc={onHist && rows.length > 0 ? 'Klik baris untuk riwayat transaksi dan catatan bot.' : undefined}
@@ -93,8 +103,13 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, l
           { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnlUsd, render: (p) => (
             <div className={tone(p.pnlUsd)}>{usd(p.pnlUsd)}<div className="text-xs">{p.pnlPct == null ? '' : pct(p.pnlPct, 2)}</div></div>) },
           { key: 'when', label: 'Waktu', align: 'end', sort: (p) => p.closed_ts || p.opened_ts, render: (p) => <When p={p} /> },
-          ...(onFocus || canClose ? [{ key: 'act', label: '', sortable: false, className: 'text-end', render: (p) => (
+          ...(onFocus || canClose || canSource ? [{ key: 'act', label: '', sortable: false, className: 'text-end', render: (p) => (
             <div className="flex flex-wrap items-center justify-end gap-2">
+              {sourceOf(p) && (
+                <Button size="sm" variant="outline" onPress={() => onSource(sourceOf(p))}
+                  aria-label={t('Ke posisi asli #{id} di tabel wallet yang diriset', { id: p.mirror_of })}>
+                  {t('Posisi asli')}
+                </Button>)}
               {onFocus && (p.id === focusId
                 ? <span className="text-xs text-muted">{t('di grafik')}</span>
                 : <Button size="sm" variant="outline" onPress={() => onFocus(p.id)}>{t('Grafik')}</Button>)}
@@ -108,7 +123,9 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, l
 
 // Posisi wallet yang pernah dipindai (halaman Wallet / Target).
 // onHist(baris): klik baris -> laci kejadian on-chain posisi itu (WalletPositionHistory).
-export function WalletPositions({ rows, onHist, loading = false, className = '' }) {
+// jumpTo: {key, n} — baris yang diminta ditunjukkan (dari tombol "Posisi asli" di
+// tabel posisi bot); kuncinya sama dengan rowKey di bawah.
+export function WalletPositions({ rows, onHist, jumpTo, loading = false, className = '' }) {
   const { t } = useI18n();
   if (!rows.length) return null;
   return (
@@ -117,7 +134,7 @@ export function WalletPositions({ rows, onHist, loading = false, className = '' 
         ? 'Modal dan hasil dari pemindaian wallet; posisi yang masih terbuka dinilai ulang di harga sekarang. Klik baris untuk kejadian on-chain-nya.'
         : 'Modal dan hasil dari pemindaian wallet; posisi yang masih terbuka dinilai ulang di harga sekarang.'}
       className={className} bodyClass="p-0" action={<Refreshing loading={loading} />}>
-      <DataTable label="Posisi wallet" rows={rows} rowKey={(p) => `${p.wallet}:${p.venue}:${p.token_id}`} searchable pageSize={15}
+      <DataTable label="Posisi wallet" rows={rows} rowKey={wkey} searchable pageSize={15} jumpTo={jumpTo}
         onRow={onHist} defaultSort={{ column: 'when', direction: 'descending' }} pinTop={isOpen}
         columns={[
           { key: 'w', label: 'Wallet', sort: (p) => p.walletLabel || p.wallet, search: (p) => `${p.walletLabel || ''} ${p.wallet}`, render: (p) => (

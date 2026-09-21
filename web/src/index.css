@@ -235,7 +235,12 @@ html.app-enter [data-reveal="foot"] { animation: q-fade .4s ease .35s both; }
 @keyframes q-trade-sell { from { background: color-mix(in oklab, var(--danger) 22%, transparent); } to { background: transparent; } }
 .trade-new-buy { animation: q-trade-buy 2.4s ease-out both; }
 .trade-new-sell { animation: q-trade-sell 2.4s ease-out both; }
+/* Baris tabel yang dituju tombol "lompat" (mis. posisi asli yang disalin bot):
+   disorot sewarna aksen lalu memudar, supaya mata menemukannya setelah digulir. */
+@keyframes q-row-flash { 0%, 40% { background: color-mix(in oklab, var(--accent) 22%, transparent); } to { background: transparent; } }
+.row-flash > td { animation: q-row-flash 3s ease-out both; }
 @media (prefers-reduced-motion: reduce) {
+  .row-flash > td { animation: none; background: color-mix(in oklab, var(--accent) 22%, transparent); }
   html.app-enter [data-reveal], html.app-enter [data-reveal] > *,
   [data-brand].brand-arrive .q-arrow, [data-brand].brand-arrive .q-chev, [data-brand].brand-arrive .brand-sub { animation: none !important; }
 }

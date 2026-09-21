@@ -346,7 +346,7 @@ const valOf = (c, r) => (c.sort ? c.sort(r) : r[c.key]);
 
 export function DataTable({
   label, columns, rows, rowKey, empty, dense, footer,
-  searchable, pageSize = 0, defaultSort, onRow, pinTop,
+  searchable, pageSize = 0, defaultSort, onRow, pinTop, jumpTo,
 }) {
   const [sort, setSort] = useState(defaultSort || null);
   const [q, setQ] = useState('');
@@ -388,6 +388,30 @@ export function DataTable({
   // Menyaring atau menyortir mengubah isi halaman — kembali ke halaman pertama.
   useEffect(() => { setPage(1); }, [q, sort?.column, sort?.direction, rows.length]);
 
+  // jumpTo {key, n}: pemanggil minta satu baris ditunjukkan (mis. posisi asli yang
+  // disalin bot). Saringan dikosongkan, halaman yang memuat baris itu dibuka, lalu
+  // barisnya digulir ke tengah layar dan disorot sebentar. n naik tiap permintaan
+  // supaya menekan tombol yang sama dua kali tetap menggulir lagi.
+  const root = useRef(null);
+  const [pending, setPending] = useState(null);
+  const [flash, setFlash] = useState(null);
+  useEffect(() => { if (jumpTo?.key) setPending(jumpTo); }, [jumpTo?.key, jumpTo?.n]);
+  useEffect(() => {
+    if (!pending) return;
+    const key = String(pending.key);
+    const idx = sorted.findIndex((r, i) => String(rowKey ? rowKey(r, i) : i) === key);
+    if (idx < 0) { if (q) setQ(''); else setPending(null); return; }
+    setPage(size ? Math.floor(idx / size) + 1 : 1);
+    setFlash(key);
+    setPending(null);
+  }, [pending, sorted]);
+  useEffect(() => {
+    if (!flash) return;
+    root.current?.querySelector('tr.row-flash')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const timer = setTimeout(() => setFlash(null), 3200);
+    return () => clearTimeout(timer);
+  }, [flash]);
+
   // Kotak cari di atas tabel berisi 2 baris cuma perabot kosong; muncul setelah
   // daftarnya cukup panjang untuk benar-benar perlu disaring.
   const bisaCari = searchable && rows.length >= 8;
@@ -395,7 +419,6 @@ export function DataTable({
   // Kolom pertama (nama pasangan/wallet) menempel saat tabel digulir mendatar — di
   // ponsel, tabel lebar cuma memperlihatkan satu-dua kolom; tanpa ini angka yang
   // digulir kehilangan barisnya. Bayangan di tepi kolom hanya saat sudah bergeser.
-  const root = useRef(null);
   useEffect(() => {
     const sc = root.current?.querySelector('.table__scroll-container');
     if (!sc) return;
@@ -448,7 +471,8 @@ export function DataTable({
             </Table.Header>
             <Table.Body renderEmptyState={() => (q ? <Empty title="Tidak ada yang cocok" sub="Coba kata kunci lain." /> : empty || <Empty title="Belum ada data" />)}>
               {view.map((r, i) => (
-                <Table.Row key={rowKey ? rowKey(r, i) : i} id={rowKey ? rowKey(r, i) : i} className={onRow ? 'cursor-pointer' : ''}>
+                <Table.Row key={rowKey ? rowKey(r, i) : i} id={rowKey ? rowKey(r, i) : i}
+                  className={`${onRow ? 'cursor-pointer' : ''} ${flash != null && String(rowKey ? rowKey(r, i) : i) === flash ? 'row-flash' : ''}`}>
                   {columns.map((c) => (
                     <Table.Cell key={c.key} className={`${c.align === 'end' ? 'text-end num' : ''} ${dense ? 'py-2' : ''} ${c.className || ''}`}>
                       {c.render ? c.render(r) : r[c.key]}

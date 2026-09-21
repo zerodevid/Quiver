@@ -10,7 +10,7 @@ import { usePoll } from '../hooks';
 import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink, TradeLinks, DataLinks } from '../components/ui';
 import TokenIcon, { TokenPair, PairName } from '../components/TokenIcon';
 import { GmgnTokenPanel, GmgnWallets } from '../components/Gmgn';
-import { BotPositions, WalletPositions, TargetMoves } from '../components/LpTables';
+import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
 import PositionHistory from '../components/PositionHistory';
 import WalletPositionHistory from '../components/WalletPositionHistory';
 import { MarketPanel, kUsd } from './PositionDetail';
@@ -28,7 +28,6 @@ const priceIn = (p, a) => (!p ? null : p.base.address === a ? p.priceUsd
   : p.priceUsd && p.priceNative ? p.priceUsd / p.priceNative : null);
 const venueOf = (p) => (p.labels?.length ? p.labels.join(' ') : p.dexId || '');
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
-const wkey = (p) => `${p.wallet}:${p.venue}:${p.token_id}`;
 const fmtAmt = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleString(fmtLocale(), { maximumSignificantDigits: v >= 1000 ? 7 : 5 }));
 
 function TokenChart({ m, tf, poolRef }) {
@@ -50,6 +49,9 @@ export default function TokenDetail({ param }) {
   // Klik baris posisi wallet yang diriset -> laci kejadian on-chain-nya. Yang disimpan
   // kuncinya, supaya angka di laci ikut segar saat tabelnya dipoll ulang.
   const [whistKey, setWhist] = useState(null);
+  // Tombol "Posisi asli" di tabel bot: baris tabel riset yang diminta ditunjukkan.
+  const [jump, setJump] = useState(null);
+  const jumpToSource = (w) => setJump((j) => ({ key: wkey(w), n: (j?.n || 0) + 1 }));
   const pairs = d?.market?.pairs || [];
   const sel = pairs.find((p) => p.pool === poolPick) || pairs[0] || null;
   // Dibuka dari baris tabel yang sudah digulir jauh: mulai dari atas.
@@ -178,9 +180,10 @@ export default function TokenDetail({ param }) {
         </Panel>
       )}
 
-      <BotPositions open={d.open} closed={d.closed} onHist={setHist} reload={reload} loading={loading} className="mt-4" />
+      <BotPositions open={d.open} closed={d.closed} onHist={setHist} reload={reload}
+        wallets={d.wallets} onSource={jumpToSource} loading={loading} className="mt-4" />
       <PositionHistory id={hist} onClose={() => setHist(null)} />
-      <WalletPositions rows={d.wallets} onHist={(p) => setWhist(wkey(p))} loading={loading} className="mt-4" />
+      <WalletPositions rows={d.wallets} onHist={(p) => setWhist(wkey(p))} jumpTo={jump} loading={loading} className="mt-4" />
       <WalletPositionHistory p={whist} address={whist?.wallet} onClose={() => setWhist(null)} />
       <TargetMoves rows={d.activity} className="mt-4" />
     </>

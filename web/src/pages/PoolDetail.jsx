@@ -12,14 +12,13 @@ import { useEffect, useState } from 'react';
 import { usePoll } from '../hooks';
 import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, TradeLinks, DataLinks } from '../components/ui';
 import { TokenPair, TokenSym } from '../components/TokenIcon';
-import { BotPositions, WalletPositions, TargetMoves } from '../components/LpTables';
+import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
 import { PriceChart, DexEmbed, GmgnEmbed, TradesTape, MarketPanel, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc } from './PositionDetail';
 import { GmgnWallets } from '../components/Gmgn';
 import { usd, pct, tone, num, price, sqrtPrice, tickPrice } from '../fmt';
 import { useI18n } from '../i18n';
 
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
-const wkey = (p) => `${p.wallet}:${p.venue}:${p.token_id}`;
 const DYNAMIC_FEE = 0x800000;   // penanda fee dinamis v4 (diatur hook)
 
 export default function PoolDetail({ param }) {
@@ -37,6 +36,9 @@ export default function PoolDetail({ param }) {
   // Klik baris posisi wallet yang diriset -> laci kejadian on-chain-nya. Yang disimpan
   // kuncinya, supaya angka di laci ikut segar saat tabelnya dipoll ulang.
   const [whistKey, setWhist] = useState(null);
+  // Tombol "Posisi asli" di tabel bot: baris tabel riset yang diminta ditunjukkan.
+  const [jump, setJump] = useState(null);
+  const jumpToSource = (w) => setJump((j) => ({ key: wkey(w), n: (j?.n || 0) + 1 }));
   // Dibuka dari baris tabel yang sudah digulir jauh: mulai dari atas.
   useEffect(() => { window.scrollTo(0, 0); }, []);
 
@@ -155,9 +157,9 @@ export default function PoolDetail({ param }) {
       <GmgnWallets address={pool.baseToken} kind="traders" symbol={base} className="mt-4" />
 
       <BotPositions open={d.open} closed={d.closed} onFocus={setFocus} focusId={focus?.id} onHist={setHist}
-        reload={reload} loading={loading} className="mt-4" />
+        reload={reload} wallets={d.wallets} onSource={jumpToSource} loading={loading} className="mt-4" />
       <PositionHistory id={hist} onClose={() => setHist(null)} />
-      <WalletPositions rows={d.wallets} onHist={(p) => setWhist(wkey(p))} loading={loading} className="mt-4" />
+      <WalletPositions rows={d.wallets} onHist={(p) => setWhist(wkey(p))} jumpTo={jump} loading={loading} className="mt-4" />
       <WalletPositionHistory p={whist} address={whist?.wallet} onClose={() => setWhist(null)} />
       <TargetMoves rows={d.activity} className="mt-4" />
     </>
