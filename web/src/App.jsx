@@ -3,7 +3,7 @@ import { Button, Chip, Toast } from '@heroui/react';
 import {
   LayoutDashboard, Layers, ListChecks, Users, SlidersHorizontal, Wallet as WalletIcon,
   Settings as SettingsIcon, Moon, Sun, Pause, Play, Menu, X, LogOut,
-  PlusCircle, ArrowDownUp, BookOpen,
+  PlusCircle, ArrowDownUp, BookOpen, MonitorDot,
 } from 'lucide-react';
 import { usePoll, useHash, useTheme } from './hooks';
 import { post } from './api';
@@ -20,6 +20,7 @@ import { hideSplash } from './splash';
 
 // Tiap halaman dimuat saat dibuka — pustaka grafik cuma diunduh untuk Ringkasan.
 const Overview = lazy(() => import('./pages/Overview'));
+const Monitor = lazy(() => import('./pages/Monitor'));
 const Positions = lazy(() => import('./pages/Positions'));
 const Activity = lazy(() => import('./pages/Activity'));
 const Targets = lazy(() => import('./pages/Targets'));
@@ -40,6 +41,7 @@ export const useStatus = () => useContext(StatusCtx);
 const NAV = [
   ['Pemantauan', [
     ['summary', 'Ringkasan', LayoutDashboard, Overview],
+    ['monitor', 'Monitor', MonitorDot, Monitor],
     ['positions', 'Posisi', Layers, Positions],
     ['activity', 'Aktivitas', ListChecks, Activity],
   ]],

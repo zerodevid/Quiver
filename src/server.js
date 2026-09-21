@@ -1084,6 +1084,60 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         return { pool: ref, tick: slot.tick ?? null, sqrt: slot.sqrtPriceX96.toString(), ts: Date.now() };
       });
     },
+    // Harga banyak pool sekaligus untuk halaman Monitor: satu batch eth_call untuk
+    // semua pool yang sedang dipantau, bukan satu /api/price per kartu tiap 3 detik
+    // (10 posisi = 200 eth_call/menit ke RPC yang juga dipakai bot). Memo per
+    // himpunan pool; pool yang gagal terbaca dijawab null, bukan menggagalkan semua.
+    'GET /api/prices': async (req, url) => {
+      const pools = [...new Set(String(url.searchParams.get('pools') || '').toLowerCase().split(',').filter((p) => /^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(p)))].sort().slice(0, 40);
+      if (!pools.length) return { prices: {}, ts: Date.now() };
+      return market.memo(`slot0many:${pools.join(',')}`, 2500, async () => {
+        const v4 = pools.filter((p) => p.length === 66), v3 = pools.filter((p) => p.length === 42);
+        const [s4, s3] = await Promise.all([
+          v4.length ? chain.slot0V4Many(v4).catch(() => v4.map(() => null)) : [],
+          Promise.all(v3.map((p) => chain.slot0V3(p).catch(() => null))),
+        ]);
+        const ts = Date.now();
+        const prices = {};
+        v4.forEach((p, i) => { const s = s4[i]; prices[p] = s?.sqrtPriceX96 > 0n ? { tick: s.tick ?? null, sqrt: s.sqrtPriceX96.toString() } : null; });
+        v3.forEach((p, i) => { const s = s3[i]; prices[p] = s?.sqrtPriceX96 > 0n ? { tick: s.tick ?? null, sqrt: s.sqrtPriceX96.toString() } : null; });
+        return { prices, ts };
+      });
+    },
+    // Bahan panel "pemicu keluar otomatis" di halaman Monitor: aturan keluar yang
+    // BENAR-BENAR berlaku untuk tiap posisi terbuka (aturan per-target menimpa yang
+    // global — persis fungsi yang dipakai mesin di exitTriggers) dan pencatat "sejak
+    // kapan di luar rentang" milik mesin. Dihitung di sini, bukan ditebak ulang di
+    // browser, supaya bar kemajuan ke ambang memakai angka yang sama dengan yang akan
+    // menutup posisinya.
+    'GET /api/monitor': () => {
+      const rows = engine.positions.live.map((p) => {
+        const e = engine.rulesFrom(p.target).exit || {};
+        const oorSince = p.inRange === false ? Number(store.getState(`oor:${p.id}`, 0)) || null : null;
+        const far = p.inRange === false && p.curTick != null && p.tick_lower != null
+          ? require('./v3math').distanceFromRangePct(p.curTick, p.tick_lower, p.tick_upper) : 0;
+        return {
+          id: p.id,
+          exit: {
+            stop_loss_pct: Math.abs(Number(e.stop_loss_pct) || 0), take_profit_pct: Number(e.take_profit_pct) || 0,
+            max_age_hours: Number(e.max_age_hours) || 0, out_of_range_minutes: Number(e.out_of_range_minutes) || 0,
+            out_of_range_pct: Number(e.out_of_range_pct) || 0, follow_target: !!e.follow_target,
+          },
+          oorSince, farPct: far, farStreak: engine.positions.farStreak?.get(p.id) || 0,
+          // aturan mandiri tidak dinilai dari angka basi (lihat exitTriggers)
+          stale: !!(p.valueStale || p.liqStale),
+        };
+      });
+      return { positions: Object.fromEntries(rows.map((r) => [r.id, r])), syncedAt: engine.positions.lastSync, paused: engine.paused(), dryRun: engine.dryRun() };
+    },
+    // Statistik DexScreener untuk semua pool yang dipantau sekaligus (chip Δ harga,
+    // volume, likuiditas di kartu Monitor). market.pair() sudah di-memo per pool,
+    // jadi ini sekadar menggabungkan; pool yang gagal dijawab null.
+    'GET /api/monitor/market': async (req, url) => {
+      const pools = [...new Set(String(url.searchParams.get('pools') || '').toLowerCase().split(',').filter((p) => /^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(p)))].slice(0, 40);
+      const rs = await Promise.all(pools.map((p) => market.pair(p).catch(() => null)));
+      return { pairs: Object.fromEntries(pools.map((p, i) => [p, rs[i] && !rs[i].error ? rs[i] : null])), ts: Date.now() };
+    },
     // Detail satu token: metadata, semua pool-nya (DexScreener), posisi bot yang
     // memakainya, posisi wallet yang pernah diriset, dan gerakan target di token itu.
     'GET /api/token': async (req, url) => {
