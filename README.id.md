@@ -2,9 +2,9 @@
 
 <p align="center">
   <a href="docs/quiver-demo-en.mp4">
-    <img src="docs/demo-poster.jpg" alt="Video demo Quiver — 3:50, 1080p" width="800" />
+    <img src="docs/demo-poster.jpg" alt="Video demo Quiver — 3:09, 1080p" width="800" />
   </a><br />
-  <sub>Tur dasbor bernarasi (3:50, narasi Inggris). Alamat wallet dan nama target disensor. <a href="docs/quiver-demo-en.srt">Subtitle</a></sub>
+  <sub>Tur dasbor bernarasi (3:09, narasi Inggris). Alamat wallet dan nama target disensor, begitu juga besar modal dan posisi. <a href="docs/quiver-demo-en.srt">Subtitle</a></sub>
 </p>
 
 Mencermin posisi likuiditas (LP) Uniswap **v4 dan v3** dari satu atau banyak wallet

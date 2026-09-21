@@ -135,7 +135,8 @@ const director = (TOK) => {
 // ───────────────────────── helper sutradara ─────────────────────────
 let page, t0;
 let mx = W * 0.62, my = H * 0.58, bendSign = 1, zoomed = false, spotOn = false;
-const tl = { clicks: [], whoosh: [], pops: [], captions: [], vo: [] };
+const tl = { clicks: [], whoosh: [], pops: [], captions: [], vo: [], marks: [] };
+const mark = (l) => tl.marks.push([Number(at().toFixed(1)), l]);
 const at = () => Date.now() / 1000 - t0;
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 const qd = (fn, ...a) => page.evaluate(([fn, a]) => window.qd?.[fn](...a), [fn, a]).catch((e) => console.warn('  qd', fn, String(e.message).split('\n')[0]));
@@ -187,6 +188,15 @@ async function rect(target) {
   try { await l.waitFor({ state: 'visible', timeout: 5000 }); } catch { return null; }
   return l.boundingBox();
 }
+// Versi tanpa menunggu: untuk gerakan "membaca" — target yang tidak ada dilewati, bukan ditunggu.
+async function rectQuick(target) {
+  try {
+    if (target && typeof target === 'object' && ('text' in target || 'sel' in target)) return await rect(target);
+    const l = typeof target === 'string' ? page.locator(target).first() : target;
+    if (!(await l.count())) return null;
+    return await l.boundingBox();
+  } catch { return null; }
+}
 async function find(target) {
   let r = await rect(target);
   if (!r) { console.warn('  ⚠ tidak ketemu:', typeof target === 'string' ? target : JSON.stringify(target) || String(target)); return null; }
@@ -230,14 +240,14 @@ async function spot(target, pad = 8) {
   const r = await find(target); if (!r) return null;
   await qd('spot', { x: r.x - pad, y: r.y - pad, w: r.width + pad * 2, h: r.height + pad * 2 });
   if (!spotOn) tl.pops.push(at());
-  spotOn = true; await sleep(650); return r;
+  spotOn = true; await sleep(454); return r;
 }
 async function unspot() { if (!spotOn) return; await qd('spot', null); spotOn = false; await sleep(420); }
 
 // Subtitle + narasi. `until()` menahan adegan sampai narasinya selesai (+ jeda napas).
 let capOpen = null, voEnd = 0;
 async function say(key) {
-  const [k, t] = C[key];
+  const [k, t] = C[key]; mark('say ' + key);
   if (capOpen) capOpen.b = at();
   await qd('caption', k, t);
   const a = at() + (capOpen ? 0.36 : 0);
@@ -245,24 +255,46 @@ async function say(key) {
   if (VO[key]) { tl.vo.push({ key, at: a + 0.15 }); voEnd = a + 0.15 + VO[key]; }
   await sleep(450);
 }
-async function until(extra = 0.7) { const w = voEnd + extra - at(); if (w > 0) await sleep(w * 1000); }
+// Menunggu narasi selesai TANPA layar diam: kursor "membaca" — meluncur pelan ke
+// titik-titik menarik di sekitar (baris tabel, kartu), sesekali scroll halus. Kalau
+// diberi daftar target, ia bergiliran menyorotnya; kalau tidak, hanyut di sekitar posisi.
+async function until(extra = 0.3, targets = []) {
+  let i = 0; mark('until');
+  const deadline = () => voEnd + extra - at();
+  while (deadline() > 0) {
+    const left = deadline();
+    if (left < 0.45) { await sleep(left * 1000); break; }
+    if (targets.length) {
+      const tg = targets[i++ % targets.length];
+      const r = await rectQuick(tg);
+      if (r && r.y > 40 && r.y + r.height < H - 60) { await glide(r.x + r.width * (0.35 + Math.random() * 0.3), r.y + r.height / 2, Math.min(900, left * 1000 - 100)); }
+      else await glide(mx + (Math.random() - 0.5) * 160, my + (Math.random() - 0.5) * 90, 600);
+    } else {
+      // hanyut kecil: seperti orang menggerakkan mouse sambil membaca
+      const nx = Math.min(W - 60, Math.max(300, mx + (Math.random() - 0.5) * 220));
+      const ny = Math.min(H - 80, Math.max(90, my + (Math.random() - 0.5) * 120));
+      await glide(nx, ny, Math.min(800, left * 1000 - 100));
+    }
+    if (deadline() > 0.9) await sleep(250 + Math.random() * 300);
+  }
+}
 async function hush() { if (!capOpen) return; capOpen.b = at(); capOpen = null; await qd('caption', null); await sleep(400); }
 
-async function waitLoaded(timeout = 7000) {
+async function waitLoaded(timeout = 2500) {
   await page.waitForFunction(() => !/(^|\n)\s*(Loading…|Memuat…)\s*(\n|$)/.test(document.getElementById('root')?.innerText || ''), null, { timeout }).catch(() => {});
 }
 async function chapter(key, hash) {
-  const [n, h, s] = C[key];
+  const [n, h, s] = C[key]; mark('chapter ' + key);
   await until(0.5); await hush(); await unspot(); await zoomOut();
   await qd('cursor', false);
   tl.whoosh.push(at());
   await qd('chapter', n, h, s);
-  await sleep(650);
+  await sleep(454);
   await page.evaluate((hh) => { location.hash = hh; }, hash);
   await sleep(200);
   await page.evaluate(() => scrollTo(0, 0));
   await waitLoaded();
-  await sleep(1250);
+  await sleep(875);
   await qd('chapter', null);
   await sleep(250);
   await qd('cursor', true);
@@ -271,27 +303,27 @@ async function chapter(key, hash) {
 async function navSidebar(hash) {
   await until(0.4);
   await click(`aside a[href="#${hash}"]`);
-  await sleep(250); await waitLoaded(); await sleep(600);
+  await sleep(250); await waitLoaded(); await sleep(420);
 }
 const row = (i, tbody = 0) => page.locator('tbody').nth(tbody).locator('tr').nth(i);
 
 // ───────────────────────── naskah ─────────────────────────
 async function scenario() {
-  await sleep(1100);
+  await sleep(250);
   releaseOverview();
   await waitLoaded();
-  await sleep(2200);
+  await sleep(700);
   await page.mouse.move(mx, my); await qd('cursor', true);
 
   // 01 — Ringkasan
   await say('overview');
   await zoomIn({ text: T('Total portofolio', 'Total portfolio'), minW: 1000, minH: 80 }, 1.5);
-  await hover({ text: T('Total portofolio', 'Total portfolio') }, 700); await sleep(600);
-  await hover({ text: T('PnL bersih', 'Net PnL') }, 600); await sleep(600);
-  await hover({ text: T('Fee didapat', 'Fees earned') }, 600); await sleep(600);
-  await hover({ text: 'Win rate' }, 600); await sleep(900);
+  await hover({ text: T('Total portofolio', 'Total portfolio') }, 700); await sleep(420);
+  await hover({ text: T('PnL bersih', 'Net PnL') }, 600); await sleep(420);
+  await hover({ text: T('Fee didapat', 'Fees earned') }, 600); await sleep(420);
+  await hover({ text: 'Win rate' }, 600); await sleep(630);
   await zoomOut();
-  await until();
+  await until(0.3, [{ text: T('Komposisi portofolio', 'Portfolio composition'), minW: 300 }, { text: 'USDG' }, { text: T('Modal bersih', 'Net capital') }]);
 
   await say('growth');
   await spot({ text: T('Pertumbuhan portofolio', 'Portfolio growth'), minW: 700, minH: 380 });
@@ -302,11 +334,11 @@ async function scenario() {
     await glide(chart.x + chart.width * 0.93, chart.y + chart.height * 0.4, 900);
   }
   const seg = (label) => `button:has-text("${label}"), [role=radio]:has-text("${label}")`;
-  await click(seg(T('30 hari', '30d'))); await sleep(1100);
-  await click(seg(T('PnL kumulatif', 'Cumulative PnL'))); await sleep(1400);
-  await click(seg(T('PnL bersih', 'Net PnL'))); await sleep(600);
+  await click(seg(T('30 hari', '30d'))); await sleep(770);
+  await click(seg(T('PnL kumulatif', 'Cumulative PnL'))); await sleep(979);
+  await click(seg(T('PnL bersih', 'Net PnL'))); await sleep(420);
+  await until(0.3, ['.recharts-wrapper', { text: T('Kenapa PnL kumulatif dan PnL bersih berbeda?', 'Why do cumulative PnL and net PnL differ?') }, '.recharts-wrapper']);
   await unspot();
-  await until();
 
   await say('source');
   // Kalender dulu (sorotan mengikuti urutan narasi), baru kinerja per sumber.
@@ -314,13 +346,12 @@ async function scenario() {
   await find(cal); await spot(cal);
   const calBox = await rect(cal);
   if (calBox) { await glide(calBox.x + calBox.width * 0.3, calBox.y + calBox.height * 0.45, 700); await glide(calBox.x + calBox.width * 0.7, calBox.y + calBox.height * 0.6, 1100); }
-  await sleep(1400);
+  await sleep(979);
   const src = { text: T('Kinerja per sumber', 'Performance by source'), minW: 400, minH: 250 };
   await spot(src);
   await hover(src, 800);
-  await sleep(1800);
+  await until(0.3, [src, cal, src]);
   await unspot();
-  await until();
 
   await say('drill');
   await scrollTop(1200);
@@ -331,40 +362,40 @@ async function scenario() {
   if (await click(row(0))) {
     tl.pops.push(at());
     await page.waitForFunction(() => { const d = document.querySelector('[role=dialog]'); return d && !/Loading…|Memuat…/.test(d.innerText); }, null, { timeout: 9000 }).catch(() => {});
-    await sleep(1600);
+    await sleep(1120);
     const dlg = await rect('[role=dialog]');
-    if (dlg) { await glide(dlg.x + dlg.width * 0.5, dlg.y + dlg.height * 0.35, 900); await sleep(1200); }
+    if (dlg) { await glide(dlg.x + dlg.width * 0.5, dlg.y + dlg.height * 0.35, 900); await sleep(840); }
     drilled = await click(`[role=dialog] button:has-text("${T('Halaman detail & grafik', 'Detail page & chart')}")`);
     if (!drilled) await page.keyboard.press('Escape');
   }
   if (drilled) {
     await page.locator('canvas').first().waitFor({ state: 'visible', timeout: 12000 }).catch(() => {});
-    await sleep(900);
+    await sleep(630);
     const cv = await zoomIn('canvas', 1.3);
     if (cv) { await glide(cv.x + cv.width * 0.2, cv.y + cv.height * 0.5, 700); await glide(cv.x + cv.width * 0.75, cv.y + cv.height * 0.4, 1600); await sleep(400); }
     await zoomOut();
-    await scrollBy(430); await sleep(1200);
+    await scrollBy(430); await sleep(840);
   }
-  await until();
+  await until(0.3, ['canvas', { text: T('Posisi ini', 'This position'), minW: 200 }]);
 
   // 02 — Posisi
   await chapter('ch2', 'positions');
   await say('positions');
-  await hover(row(0), 800); await sleep(600);
-  await hover(row(1), 500); await sleep(700);
+  await hover(row(0), 800); await sleep(420);
+  await hover(row(1), 500); await sleep(489);
   await find({ text: T('Posisi tertutup', 'Closed positions'), prefix: true }); await sleep(500);
-  await until();
+  await until(0.3, [row(1, 1), row(2, 1), row(3, 1)]);
   await say('history');
   const target = (await page.locator('tbody').count()) > 1 ? row(1, 1) : row(3);
   if (await click(target)) {
     tl.pops.push(at());
     await page.waitForFunction(() => { const d = document.querySelector('[role=dialog]'); return d && !/Loading…|Memuat…/.test(d.innerText); }, null, { timeout: 9000 }).catch(() => {});
-    await sleep(700);
+    await sleep(489);
     const dlg = await rect('[role=dialog]');
-    if (dlg) { await glide(dlg.x + dlg.width * 0.45, dlg.y + dlg.height * 0.45, 800); await sleep(900); await glide(dlg.x + dlg.width * 0.55, dlg.y + dlg.height * 0.7, 900); }
+    if (dlg) { await glide(dlg.x + dlg.width * 0.45, dlg.y + dlg.height * 0.45, 800); await sleep(630); await glide(dlg.x + dlg.width * 0.55, dlg.y + dlg.height * 0.7, 900); }
     await until(0.3);
     await page.keyboard.press('Escape');
-    await sleep(600);
+    await sleep(420);
   }
 
   // 03 — Aktivitas
@@ -372,58 +403,60 @@ async function scenario() {
   await say('activity');
   const firstRow = await rect('tbody tr');
   if (firstRow) {
-    await qd('zoom', firstRow.x + firstRow.width * 0.55, firstRow.y + 110, 1.4, 1100); zoomed = true; await sleep(1150);
-    for (const i of [0, 1, 2]) { await hover(row(i), 650); await sleep(700); }
+    await qd('zoom', firstRow.x + firstRow.width * 0.55, firstRow.y + 110, 1.4, 1100); zoomed = true; await sleep(805);
+    for (const i of [0, 1, 2]) { await hover(row(i), 650); await sleep(489); }
     await zoomOut();
   }
-  await scrollBy(360); await sleep(1000);
-  await until();
+  await scrollBy(360); await sleep(700);
+  await until(0.3, [row(3), row(4), row(5), row(6)]);
 
   // 04 — Mesin copy
   await chapter('ch4', 'targets');
   await say('targets');
   await spot({ sel: 'a[href^="#targets/"]', minW: 900, minH: 300 }, 6);
   for (const i of [0, 2, 4]) { await hover({ sel: 'a[href^="#targets/"]', nth: i * 2, minW: 900, minH: 40 }, 650); await sleep(550); }
-  await hover('[role=switch], input[type=checkbox]', 700); await sleep(900);
+  await hover('[role=switch], input[type=checkbox]', 700); await sleep(630);
+  await until(0.3, [6, 8, 10].map((n) => ({ sel: 'a[href^="#targets/"]', nth: n, minW: 900, minH: 40 })));
   await unspot();
   await navSidebar('rules');
   await say('rules');
-  await hover('input', 800); await sleep(600);
-  await scrollBy(420); await sleep(800);
-  await hover(page.locator('input').nth(3), 700); await sleep(800);
-  await scrollBy(420); await sleep(900);
-  await until();
+  await hover('input', 800); await sleep(420);
+  await scrollBy(420); await sleep(560);
+  await hover(page.locator('input').nth(3), 700); await sleep(560);
+  await scrollBy(420); await sleep(630);
+  await until(0.3, [page.locator('input').nth(5), page.locator('input').nth(6), page.locator('input').nth(7)]);
 
   // 05 — Riset
   await chapter('ch5', 'wallet');
   await say('research');
-  await hover('input', 800); await sleep(600);
+  await hover('input', 800); await sleep(420);
   await spot('table', 6);
   for (const i of [0, 1, 2]) { await hover(row(i), 600); await sleep(550); }
+  await until(0.3, [row(3), row(4), row(5)]);
   await unspot();
-  await until();
 
   // 06 — Harian
   await chapter('ch6', 'manual-lp');
   await say('manual');
   await hover({ text: T('Pilih pool', 'Pick a pool') }, 800); await sleep(500);
   for (const i of [0, 1, 2]) { await hover(row(i), 550); await sleep(450); }
+  await until(0.3, [row(3), row(4), row(5), row(6)]);
   await navSidebar('summary');
   await say('polish');
   const foot = await rect('aside > div:last-child');
   if (foot) { await qd('spot', { x: foot.x + 4, y: foot.y + 4, w: foot.width - 8, h: foot.height - 8 }); spotOn = true; tl.pops.push(at()); }
   await sleep(500);
   await qd('themeAnim', true);
-  await click(`aside button[aria-label="${T('Ganti tema', 'Toggle theme')}"]`); await sleep(1600);
-  await click(`aside button[aria-pressed="false"]:text-is("${LANG === 'en' ? 'id' : 'en'}")`); await sleep(1600);
+  await click(`aside button[aria-label="${T('Ganti tema', 'Toggle theme')}"]`); await sleep(1120);
+  await click(`aside button[aria-pressed="false"]:text-is("${LANG === 'en' ? 'id' : 'en'}")`); await sleep(1120);
   await click(`aside button[aria-pressed="false"]:text-is("${LANG}")`); await sleep(500);
-  await click(`aside button[aria-label="${T('Ganti tema', 'Toggle theme')}"]`); await sleep(1000);
+  await click(`aside button[aria-label="${T('Ganti tema', 'Toggle theme')}"]`); await sleep(700);
   await qd('themeAnim', false);
   await unspot();
   await until(0.4);
   await hush();
   await glide(W * 0.66, H * 0.52, 900);
-  await sleep(700);
+  await sleep(489);
 }
 
 // ───────────────────────── rekam ─────────────────────────

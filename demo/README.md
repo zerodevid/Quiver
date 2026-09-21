@@ -5,7 +5,9 @@ ffmpeg, Kokoro TTS). Hasil: `out/quiver-demo-<lang>.mp4` (1080p60) + `.srt`.
 
 **Privasi.** Alamat wallet (target, riset, wallet bot) dan label target diganti nilai
 palsu *sebelum* respons API sampai ke browser (`privacy.mjs`), lalu diblur, lalu diaudit
-tiap 0,6 detik selama rekaman. Kalau ada yang lolos, video tidak dirakit. Semua request
+tiap 0,6 detik selama rekaman. Angka modal (total portofolio, kas, komposisi, nilai/modal
+posisi, saldo token) diblur di browser berdasarkan labelnya; PnL, fee, dan persen tetap
+terlihat. Kalau ada yang lolos, video tidak dirakit. Semua request
 non-GET ke `/api` diblokir, jadi rekaman tidak bisa menyentuh bot produksi.
 
 ## Prasyarat
@@ -18,7 +20,8 @@ non-GET ke `/api` diblokir, jadi rekaman tidak bisa menyentuh bot produksi.
 
 ```sh
 cd demo && npm install
-./tunnel.sh &                                   # terowongan SSH ke dasbor VPS (menyambung ulang sendiri)
+./tunnel.sh 20180 &                             # terowongan SSH ke dasbor VPS (port instance; lpcopy3 = 20180)
+export QBASE=http://127.0.0.1:20180
 export QTOKEN="$(ssh singapore 'grep ^LPCOPY_AUTH_TOKEN= ~/lpcopy/.env | cut -d= -f2-')"
 
 QLANG=en npm run voice                          # narasi -> out/vo/en/*.wav
@@ -38,6 +41,7 @@ QLANG=en npm run compose                        # final -> out/quiver-demo-en.mp
 | `voice.mjs` | Narasi: Kokoro (en) atau suara sistem macOS (id) |
 | `compose.mjs` | Bingkai, transisi, campuran VO + efek suara, SRT |
 | `capture.mjs` | Screencast CDP → MP4 kecepatan tetap |
+| `shots.mjs` | Cuplikan halaman dengan sensor aktif, untuk memeriksa hasil sensor (`node shots.mjs summary,drawer,detail`) |
 
 ## Catatan
 

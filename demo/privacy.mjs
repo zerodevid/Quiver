@@ -161,11 +161,112 @@ export const censorScript = (pseudonyms) => `(() => {
       el.classList.add('q-censor');
     }
   };
+  // ── Sensor modal: angka uang yang menyingkap besar dana (bukan PnL/fee/persen) ──
+  // 1) potongan teks "capital $X", "cash $X", "in positions $X", "value $X"
+  // 2) nilai uang/angka yang labelnya (baris KV, kartu Stat) berbau modal/kas/nilai/saldo
+  // 3) sel tabel di kolom "Value"/"Nilai"
+  const MONEY = /[−-]?\\$\\s?[\\d.,]+k?/g;
+  const FRAG = /\\b(capital|modal|cash|kas|in positions|di posisi|proceeds|hasil|value|nilai|balance|saldo|lp|deposits?|setoran|withdrawals?|penarikan|idle in cash|menganggur di kas)\\s*[−-]?\\$\\s?[\\d.,]+k?|[−-]?\\$\\s?[\\d.,]+k?\\s+(now|sekarang)\\b|\\b(positions?|posisi)\\s*·\\s*[−-]?\\$\\s?[\\d.,]+k?/gi;
+  const LABEL = /^(total portfolio|total portofolio|capital|modal|net capital|modal bersih|capital in positions|modal di posisi|liquidity value|nilai likuiditas|proceeds|hasil|value|nilai|holdings now|saldo|balance|cash|kas|in positions|di posisi|idle in cash|menganggur di kas|capital deposited|modal disetor|usdg|usdt|weth|eth|bnb|wbnb|lp positions|posisi lp|live positions|posisi terbuka|room left|sisa ruang|their balance|saldo mereka|deposits|setoran|withdrawals|penarikan|equity|ekuitas|wallet value|nilai wallet)/i;
+  const NOT = /pnl|fee|win|realis|gas|price|harga|rate|drawdown|high|puncak|\\bvs\\b/i;
+  // Veil: kotak blur di atas potongan teks (koordinat Range), tanpa memecah text node
+  // milik React — memecahnya membuat React gagal saat re-render tabel yang dipoll.
+  const veils = new Map();   // text node -> [ [start,end], ... ]
+  let veilBox;
+  const veilLayer = () => {
+    if (!veilBox) { veilBox = document.createElement('div'); veilBox.id = 'q-veils'; veilBox.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483645'; document.documentElement.appendChild(veilBox); }
+    return veilBox;
+  };
+  const drawVeils = () => {
+    const layer = veilLayer(); const rects = [];
+    for (const [node, spans] of veils) {
+      if (!node.isConnected) { veils.delete(node); continue; }
+      for (const [a, b] of spans) {
+        const r = document.createRange();
+        try { r.setStart(node, a); r.setEnd(node, b); } catch { continue; }
+        for (const q of r.getClientRects()) {
+          if (!(q.width > 0 && q.height > 0)) continue;
+          // teks yang tertutup laci/modal tidak perlu diveil (veil-nya akan melayang di atas laci)
+          const top = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2);
+          const host = node.parentElement;
+          if (!top || !(host.contains(top) || top.contains(host))) continue;
+          rects.push(q);
+        }
+      }
+    }
+    while (layer.children.length < rects.length) { const d = document.createElement('div'); d.style.cssText = 'position:absolute;border-radius:3px;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);background:color-mix(in oklab,currentColor 10%,transparent)'; layer.appendChild(d); }
+    [...layer.children].forEach((d, i) => {
+      const q = rects[i]; if (!q) { d.style.display = 'none'; return; }
+      d.style.display = ''; d.style.left = (q.left - 2) + 'px'; d.style.top = (q.top - 1) + 'px'; d.style.width = (q.width + 4) + 'px'; d.style.height = (q.height + 2) + 'px';
+    });
+  };
+  const veilLoop = () => { drawVeils(); requestAnimationFrame(veilLoop); };
+  requestAnimationFrame(veilLoop);
+  const addVeils = (node, re) => {
+    const s = node.nodeValue; let m; re.lastIndex = 0; const spans = [];
+    while ((m = re.exec(s))) { const off = m[0].search(/[−-]?\\$/); spans.push([m.index + (off > 0 ? off : 0), m.index + m[0].length]); }
+    if (spans.length) veils.set(node, spans);
+  };
+  const labelOf = (el) => {
+    // label langsung: saudara sebelumnya dari elemen ini atau leluhurnya (≤4 tingkat) —
+    // "Value" di samping "$1,095.84", judul kartu Stat, kolom kiri baris KV.
+    const txt = (n) => (n.innerText ?? n.textContent ?? '').trim();
+    const cands = [];
+    let anc = el;
+    for (let i = 0; i < 4 && anc && anc.id !== 'root'; i++, anc = anc.parentElement) {
+      if (anc.previousElementSibling) cands.push(txt(anc.previousElementSibling));
+      else if (anc.previousSibling && anc.previousSibling.nodeType === 3) cands.push(anc.previousSibling.textContent.trim());
+      if (cands.length) break;
+    }
+    const kv = el.closest('.kv-row'); if (kv && kv.firstElementChild) cands.push(txt(kv.firstElementChild));
+    const own = (el.textContent || '').trim();
+    const box = el.parentElement?.closest('div, li, td, th, section, a') || el.parentElement;
+    const fallback = box ? ((box.innerText || '').split('\\n').map((x) => x.trim()).filter((x) => x && x !== own)[0] || '') : '';
+    const direct = cands.filter((c) => c && c.split(/\\s+/).length <= 4);
+    return direct[0] || fallback;
+  };
+  const markMoney = (root) => {
+    if (!root || root.nodeType !== 1) return;
+    // 3) kolom Value/Nilai
+    for (const table of root.querySelectorAll('table')) {
+      const heads = [...table.querySelectorAll('thead th')].map((h) => (h.innerText || '').trim().toLowerCase());
+      heads.forEach((h, i) => {
+        if (!/^(value|nilai|capital|modal|proceeds|hasil|our positions|posisi kami|their balance|saldo mereka)$/.test(h)) return;
+        for (const tr of table.querySelectorAll('tbody tr')) {
+          const td = tr.children[i]; if (!td) continue;
+          const w = document.createTreeWalker(td, NodeFilter.SHOW_TEXT);
+          while (w.nextNode()) { const n = w.currentNode; if (MONEY.test(n.nodeValue)) { MONEY.lastIndex = 0; if (!veils.has(n)) addVeils(n, MONEY); } MONEY.lastIndex = 0; }
+        }
+      });
+    }
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const n of nodes) {
+      const el = n.parentElement; if (!el || el.closest('.q-censor,#qd,#q-overlay,script,style,input,textarea')) continue;
+      const s = n.nodeValue; if (!s || !/[\\d]/.test(s)) continue;
+      if (FRAG.test(s)) { FRAG.lastIndex = 0; addVeils(n, FRAG); continue; }
+      FRAG.lastIndex = 0;
+      const own = s.trim();
+      // uang, angka polos, atau angka + simbol token (110 USDG, 0.00125 ETH)
+      const isMoney = /^[−-]?\\$\\s?[\\d.,]+k?$/.test(own) || /^[\\d.,]+(\\s+\\S{1,12})?$/.test(own);
+      if (!isMoney) continue;
+      const lab = labelOf(el);
+      if (!LABEL.test(lab) || NOT.test(lab)) continue;
+      // teks "110 " di samping <a>USDG</a>: elemennya punya anak, jadi angkanya diveil, bukan diblur utuh
+      if (el.children.length === 0) el.classList.add('q-censor');
+      else if (!veils.has(n)) addVeils(n, /[−-]?\\$?\\s?[\\d.,]+k?/g);
+    }
+  };
   const start = () => {
     document.head.appendChild(css);
-    mark(document.body);
-    new MutationObserver((ms) => { for (const m of ms) for (const x of m.addedNodes) mark(x.nodeType === 3 ? x.parentNode || document.body : x); if (ms.some((m) => m.type === 'characterData')) mark(document.body); })
-      .observe(document.body, { childList: true, subtree: true, characterData: true });
+    mark(document.body); markMoney(document.body);
+    let pending = false;
+    new MutationObserver((ms) => {
+      for (const m of ms) for (const x of m.addedNodes) mark(x.nodeType === 3 ? x.parentNode || document.body : x);
+      if (ms.some((m) => m.type === 'characterData')) mark(document.body);
+      // sensor modal dijalankan sekali per frame (bukan per mutasi): mengubah DOM di dalam observer memicu observer lagi
+      if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; markMoney(document.body); }); }
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
   };
   if (document.body) start(); else document.addEventListener('DOMContentLoaded', start);
 })();`;
