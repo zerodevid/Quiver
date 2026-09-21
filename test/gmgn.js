@@ -74,6 +74,31 @@ const INFO = {
     assert.strictEqual(normalizeWalletStats({ realized_profit: '1' }).tags.length, 0, 'tanpa common tidak meledak');
   });
 
+  await uji('status dev: hold/sell (token/info) dan creator_hold/creator_close (security) disamakan', () => {
+    for (const [raw, want] of [['hold', 'hold'], ['sell', 'sell'], ['creator_hold', 'hold'], ['creator_close', 'sell'], ['', null], [undefined, null]]) {
+      assert.strictEqual(normalizeTokenInfo({ dev: { creator_token_status: raw } }).dev.status, want, String(raw));
+    }
+  });
+
+  await uji('Market.gmgn: kena limit dicoba ulang sekali setelah jeda; panggilan diberi jarak sesuai bobot', async () => {
+    let n = 0; const at = [];
+    const mk = new Market({ chain: { gmgn: 'robinhood' }, gmgnKey: () => 'k', fetch: async () => {
+      n++; at.push(Date.now());
+      if (n === 1) return { ok: false, status: 200, json: async () => ({ code: 1, error: 'RATE_LIMIT_EXCEEDED', message: 'IP rate limit exceeded' }) };
+      return { ok: true, status: 200, json: async () => ({ code: 0, data: { list: [{ address: '0xAA', amount_percentage: '0.1' }] } }) };
+    } });
+    const t0 = Date.now();
+    const r = await mk.gmgnWallets('0xabc', { kind: 'traders' });
+    assert.strictEqual(r.rows.length, 1, 'percobaan kedua lolos');
+    assert.strictEqual(n, 2);
+    assert.ok(Date.now() - t0 >= 1400, 'ada jeda sebelum percobaan ulang');
+    assert.strictEqual(mk.gmgnCooldown, 0, 'lolos = tidak ada penahanan');
+    // Bobot 5 baru saja dipakai: panggilan berikutnya (bobot 1) menunggu ~1 detik.
+    const t1 = Date.now();
+    await mk.gmgn('/v1/token/info', { address: '0xabc' });
+    assert.ok(Date.now() - t1 >= 900, `jarak antar panggilan ${Date.now() - t1} ms`);
+  });
+
   await uji('Market: tanpa key semua endpoint GMGN menjawab enabled:false tanpa panggilan keluar', async () => {
     const calls = [];
     const mk = new Market({ fetch: async (u) => { calls.push(u); throw new Error('tidak boleh dipanggil'); } });

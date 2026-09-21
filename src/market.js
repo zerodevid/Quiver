@@ -20,6 +20,12 @@ const { gtTradesUrl, normalizeTrades } = require('./trades.mjs');
 // rentang posisi bisa ditumpangkan. Baca-saja cukup header X-APIKEY; paket gratis
 // ~1 permintaan/detik per key.
 const GMGN_API = 'https://openapi.gmgn.ai';
+// Bobot tiap rute pada bucket jatah GMGN (docs: gmgn-skills, "Rate Limit Handling").
+const GMGN_WEIGHT = {
+  '/v1/token/info': 1, '/v1/token/security': 1, '/v1/token/pool_info': 1,
+  '/v1/market/token_top_holders': 5, '/v1/market/token_top_traders': 5,
+  '/v1/market/token_kline': 2, '/v1/user/wallet_stats': 3,
+};
 const gmgnNorm = require('./gmgn');
 
 // Rentang waktu lilin yang ditawarkan UI -> (timeframe, aggregate) GeckoTerminal.
@@ -37,6 +43,8 @@ class Market {
     this.gmgnKey = typeof gmgnKey === 'function' ? gmgnKey : () => gmgnKey;
     this.gmgnSlug = chain?.gmgn || chain?.network || 'robinhood';
     this.gmgnCooldown = 0;    // ms — OpenAPI GMGN tidak dipanggil sebelum ini (habis kena limit)
+    this.gmgnNext = 0;        // ms — panggilan GMGN berikutnya paling cepat (jarak antar panggilan)
+    this.gmgnQueue = null;    // rantai promise antrean GMGN
     this.network = chain?.network || 'robinhood';
     this.DS = dsBase(chain?.dexscreener || 'robinhood');
     this.DS_TOKEN = dsTokenBase(chain?.dexscreener || 'robinhood');
@@ -201,6 +209,21 @@ class Market {
     });
   }
 
+  // Antrean panggilan GMGN: satu per satu, dengan jeda sebesar bobot/5 detik
+  // setelah tiap panggilan (bucket 5 poin/detik) supaya proses ini sendiri tidak
+  // pernah melampaui jatah — instance lain di IP yang sama tetap di luar kendali.
+  gmgnSlot(weight, fn) {
+    const run = async () => {
+      const wait = this.gmgnNext - Date.now();
+      if (wait > 0) await new Promise((ok) => setTimeout(ok, wait));
+      try { return await fn(); }
+      finally { this.gmgnNext = Date.now() + Math.ceil((weight / 5) * 1000); }
+    };
+    const p = (this.gmgnQueue || Promise.resolve()).then(run, run);
+    this.gmgnQueue = p.catch(() => {});
+    return p;
+  }
+
   // Lilin OHLCV dari OpenAPI GMGN untuk satu token (harga USD, bukan aset kuotasi
   // pool — GMGN menghargai token, bukan pool). Bentuk jawabannya disamakan dengan
   // candles() supaya UI memakai jalur yang sama; `source: 'gmgn'` dan
@@ -278,17 +301,32 @@ class Market {
   }
 
   // Satu panggilan baca ke OpenAPI GMGN. Jawaban dibungkus { code, data, error,
-  // message }: code 0 = sukses. Limit (RATE_LIMIT_*) menahan semua panggilan 10
-  // detik supaya memo menyajikan cadangan, bukan menembak terus.
-  async gmgn(subPath, params = {}, { timeoutMs = 12_000 } = {}) {
+  // message }: code 0 = sukses.
+  //
+  // Jatah paket gratis adalah leaky bucket 5 poin / 5 poin per detik PER IP — dan
+  // satu IP VPS dipakai tiga instance bot. Panggilan berbobot 5 (holders/traders)
+  // hampir pasti bertabrakan dengan panggilan lain, jadi: (1) panggilan diantrekan
+  // dan diberi jarak sesuai bobotnya, (2) kena limit dicoba ulang sekali setelah
+  // 1,5 detik, (3) masih limit -> semua panggilan ditahan 10 detik supaya memo
+  // menyajikan cadangan, bukan menembak terus.
+  async gmgn(subPath, params = {}, { timeoutMs = 12_000, weight = GMGN_WEIGHT[subPath] || 1 } = {}) {
     const key = this.gmgnKey();
     if (!key) return { error: 'API key GMGN belum diisi' };
     if (this.gmgnCooldown > Date.now()) throw new Error('batas panggilan GMGN — coba lagi sebentar');
     const q = new URLSearchParams({ chain: this.gmgnSlug, ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
       timestamp: String(Math.floor(Date.now() / 1000)), client_id: crypto.randomUUID() });
-    const r = await this.fetch(`${GMGN_API}${subPath}?${q}`, { headers: { accept: 'application/json', 'X-APIKEY': key }, signal: AbortSignal.timeout(timeoutMs) });
-    const j = await r.json().catch(() => null);
-    if (r.status === 429 || /RATE_LIMIT/.test(String(j?.error || ''))) {
+    const call = async () => {
+      const r = await this.fetch(`${GMGN_API}${subPath}?${q}`, { headers: { accept: 'application/json', 'X-APIKEY': key }, signal: AbortSignal.timeout(timeoutMs) });
+      return { r, j: await r.json().catch(() => null) };
+    };
+    const limited = ({ r, j }) => r.status === 429 || /RATE_LIMIT/.test(String(j?.error || ''));
+    let res = await this.gmgnSlot(weight, call);
+    if (limited(res)) {
+      await new Promise((ok) => setTimeout(ok, 1500));
+      res = await this.gmgnSlot(weight, call);
+    }
+    const { r, j } = res;
+    if (limited(res)) {
       this.gmgnCooldown = Date.now() + 10_000;
       throw new Error(`batas panggilan GMGN (${j?.error || 429})${j?.message ? ` — ${j.message}` : ''}`);
     }

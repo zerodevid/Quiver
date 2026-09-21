@@ -46,7 +46,10 @@ function normalizeTokenInfo(d) {
       botDegenPct: pctOf(st.bot_degen_rate), freshWalletPct: pctOf(st.fresh_wallet_rate), vaultPct: pctOf(st.private_vault_hold_rate),
     },
     dev: {
-      creator: lc(dv.creator_address), status: dv.creator_token_status || null, balance: num(dv.creator_token_balance),
+      // GMGN memakai dua kosakata untuk status dev (hold/sell di token/info,
+      // creator_hold/creator_close di token/security) — disamakan jadi hold/sell.
+      creator: lc(dv.creator_address), status: /sell|close/.test(String(dv.creator_token_status || '')) ? 'sell' : /hold/.test(String(dv.creator_token_status || '')) ? 'hold' : null,
+      balance: num(dv.creator_token_balance),
       openCount: num(dv.creator_open_count), cto: yes(dv.cto_flag), fundFrom: lc(dv.fund_from), fundFromAt: ms(dv.fund_from_ts),
       dexscrAd: yes(dv.dexscr_ad), dexscrBoost: yes(dv.dexscr_boost_fee), dexscrTrending: yes(dv.dexscr_trending_bar),
       athToken: dv.ath_token_info?.ath_token ? { address: lc(dv.ath_token_info.ath_token), symbol: dv.ath_token_info.symbol || null, mcapUsd: num(dv.ath_token_info.ath_mc) } : null,
