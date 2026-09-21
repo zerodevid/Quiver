@@ -7,8 +7,8 @@
 //  - GmgnSecurity     : ringkasan keamanan kontrak — kartu kesehatan pool.
 //  - GmgnWallets      : pemegang / trader teratas dengan PnL per wallet —
 //                       halaman token (holders) dan pool (traders).
-//  - GmgnWalletCard   : reputasi satu wallet (winrate, PnL, tag, umur) —
-//                       halaman wallet / target.
+//  - GmgnWalletCard   : identitas satu wallet (tag, X, umur, sumber dana) —
+//                       halaman wallet / target. Tanpa PnL: lihat catatannya.
 import { useState } from 'react';
 import { Chip } from '@heroui/react';
 import { ExternalLink } from 'lucide-react';
@@ -229,59 +229,33 @@ export function GmgnWallets({ address, kind = 'holders', symbol, className = '' 
   );
 }
 
-// Sebaran hasil per token (jumlah token per keranjang): rugi besar ... untung besar.
-function PnlDist({ dist }) {
-  const { t } = useI18n();
-  const total = dist.reduce((a, b) => a + b, 0) || 1;
-  const buckets = [['< −50%', 'bg-danger'], ['−50%…0', 'bg-danger/50'], ['0…2×', 'bg-success/50'], ['2×…5×', 'bg-success'], ['> 5×', 'bg-accent']];
-  return (
-    <div className="min-w-56">
-      <div className="text-xs text-muted">{t('Sebaran hasil per token')}</div>
-      <div className="mt-1.5 flex h-2 w-full overflow-hidden rounded-full bg-default">
-        {dist.map((v, i) => v > 0 && <span key={i} className={buckets[i][1]} style={{ width: `${(v / total) * 100}%` }} title={`${buckets[i][0]}: ${num(v)}`} />)}
-      </div>
-      <div className="mt-1 flex flex-wrap gap-x-3 text-[0.6875rem] text-muted">
-        {dist.map((v, i) => v > 0 && <span key={i}><span className="num font-medium text-foreground">{num(v)}</span> {buckets[i][0]}</span>)}
-      </div>
-    </div>
-  );
-}
-
-// ---------------- reputasi satu wallet ----------------
+// ---------------- identitas satu wallet ----------------
+// Sengaja TANPA angka PnL/winrate GMGN: wallet target hidup di LP, sedangkan GMGN
+// menghitung swap saja (beli token untuk di-LP, jual sisa saat keluar) — hasil LP
+// (fee, penarikan likuiditas) tidak terlihat olehnya, sehingga wallet yang untung
+// bisa tampak rugi. Angka kinerja LP ada di kartu di bawahnya (hitungan kita).
+// Yang dipakai hanya identitas: tag GMGN, akun X, umur wallet, sumber dana awal.
 export function GmgnWalletCard({ address }) {
   const { t } = useI18n();
-  const [period, setPeriod] = useState('7d');
-  const { data: g } = usePoll(okAddr(address) ? `/api/gmgn/wallet?address=${address}&period=${period}` : null, 300000);
-  if (!g || g.enabled === false) return null;
+  const { data: g } = usePoll(okAddr(address) ? `/api/gmgn/wallet?address=${address}&period=30d` : null, 300000);
+  if (!g || g.enabled === false || g.error) return null;
   const idTags = g.tags?.length ? g.tags : g.tag ? [g.tag] : [];
+  const bits = [];
+  if (g.createdAt) bits.push(t('wallet berumur {a}', { a: age((Date.now() - g.createdAt) / 3600000) }));
+  if (g.followCount > 0) bits.push(t('{n} pengikut di GMGN', { n: num(g.followCount) }));
+  if (g.createdTokens > 0) bits.push(t('{n} token dibuat', { n: g.createdTokens }));
+  if (g.tokens > 0) bits.push(t('{n} token disentuh (swap) 30 hari', { n: num(g.tokens) }));
+  const hasId = g.name || g.ens || g.twitter || idTags.length || g.fundFrom || g.fundFromAddress || bits.length;
+  if (!hasId) return null;
   return (
-    <Panel title="Menurut GMGN" desc={<Src at={g.fetchedAt} />} className="mb-4" bodyClass="px-4 py-3"
-      action={<Segmented size="sm" aria="Periode" value={period} onChange={setPeriod} options={[['7d', '7 hari'], ['30d', '30 hari']]} />}>
-      {g.error ? <p className="text-sm text-muted">{t(g.error)}</p> : (
-        <div className="flex flex-wrap items-start gap-x-8 gap-y-3">
-          {[
-            ['Winrate', g.winratePct != null ? `${num(g.winratePct, 1)}%` : '—', g.winratePct == null ? '' : g.winratePct >= 50 ? 'text-success' : 'text-danger'],
-            ['Profit terealisasi', g.realized != null ? kUsd(g.realized) : '—', tone(g.realized)],
-            ['Belum terealisasi', g.unrealized != null ? kUsd(g.unrealized) : '—', tone(g.unrealized)],
-            ['Modal dipakai', g.cost != null ? kUsd(g.cost) : '—', ''],
-            ['Beli / jual', g.buys != null || g.sells != null ? `${num(g.buys || 0)} / ${num(g.sells || 0)}` : '—', ''],
-            ['PnL', g.pnlPct != null ? pct(g.pnlPct, 1) : '—', tone(g.pnlPct)],
-            ...(g.tokens != null ? [['Token diperdagangkan', num(g.tokens), '']] : []),
-            ...(g.avgHoldSec != null ? [['Rata-rata pegang', age(g.avgHoldSec / 3600), '']] : []),
-          ].map(([label, value, cls]) => <div key={label}><div className="text-xs text-muted">{t(label)}</div><div className={`num mt-0.5 text-lg font-semibold ${cls}`}>{value}</div></div>)}
-          {g.dist && g.dist.some((v) => v > 0) && <PnlDist dist={g.dist} />}
-          <div className="flex min-w-48 flex-col gap-1 text-xs">
-            {(g.name || g.ens || g.twitter) && <div className="text-sm font-medium">{g.name || g.ens}{g.twitter && <a href={`https://x.com/${g.twitter}`} target="_blank" rel="noreferrer" className="ml-1.5 font-normal text-muted hover:underline">@{g.twitter}{g.followers != null && ` · ${num(g.followers)} ${t('pengikut')}`}</a>}</div>}
-            {idTags.length > 0 && <Tags tags={idTags} max={4} />}
-            <div className="text-muted">
-              {g.createdAt && <span>{t('wallet berumur {a}', { a: age((Date.now() - g.createdAt) / 3600000) })}</span>}
-              {g.followCount != null && g.followCount > 0 && <span> · {t('{n} pengikut di GMGN', { n: num(g.followCount) })}</span>}
-              {g.createdTokens > 0 && <span> · {t('{n} token dibuat', { n: g.createdTokens })}</span>}
-            </div>
-            {(g.fundFrom || g.fundFromAddress) && <div className="text-muted">{t('dana awal dari')} {g.fundFrom || short(g.fundFromAddress)}{g.fundFromAddress && <a href={addrHref(g.fundFromAddress)} target="_blank" rel="noreferrer" className="mono ml-1 hover:underline">{g.fundFrom ? short(g.fundFromAddress) : ''}</a>}</div>}
-          </div>
-        </div>
-      )}
-    </Panel>
+    <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border border-border bg-surface px-4 py-2.5 text-xs">
+      <span className="font-medium text-foreground">{t('Identitas GMGN')}</span>
+      {(g.name || g.ens) && <span className="font-medium">{g.name || g.ens}</span>}
+      {g.twitter && <a href={`https://x.com/${g.twitter}`} target="_blank" rel="noreferrer" className="text-muted hover:underline">@{g.twitter}{g.followers > 0 && ` · ${num(g.followers)} ${t('pengikut')}`}</a>}
+      {idTags.length > 0 && <Tags tags={idTags} max={4} />}
+      {bits.map((b) => <span key={b} className="text-muted">{b}</span>)}
+      {(g.fundFrom || g.fundFromAddress) && <span className="text-muted">{t('dana awal dari')} {g.fundFrom || ''}{g.fundFromAddress && <a href={addrHref(g.fundFromAddress)} target="_blank" rel="noreferrer" className="mono ml-1 hover:underline">{short(g.fundFromAddress)}</a>}</span>}
+      <span className="ml-auto text-muted" title={t('Angka PnL/winrate GMGN sengaja tidak ditampilkan: GMGN menghitung swap, bukan posisi LP, sehingga wallet LP yang untung bisa tampak rugi.')}>GMGN · {ago(g.fetchedAt)}</span>
+    </div>
   );
 }
