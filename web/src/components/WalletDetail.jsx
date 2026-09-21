@@ -139,7 +139,7 @@ const posCols = (open) => [
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
           <span className="uppercase">{String(p.venue || 'v4')}</span><span>·</span>
           <span className="mono">#{p.token_id}</span>
-          {p.incomplete ? <span className="text-xs text-warning" title={tt('Sebagian riwayat di luar jendela pindai')}>{tt('parsial')}</span> : null}
+          {p.incomplete ? <span className="text-xs text-warning" title={tt(p.incomplete === 2 ? 'Harga saat kejadian belum terbaca' : 'Sebagian riwayat di luar jendela pindai')}>{tt('parsial')}</span> : null}
         </div>
       </div>
     </div>) },

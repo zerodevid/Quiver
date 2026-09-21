@@ -403,9 +403,43 @@ Chain.prototype.poolKeyOfId = async function poolKeyOfId(poolId, hintBlock = nul
       hooks: '0x' + ethers.hexlify(b.slice(2 * 32 + 12, 3 * 32)).slice(2),
     };
     this.store.run(
-      'INSERT OR REPLACE INTO pools(chain,pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block) VALUES(?,?,?,?,?,?,?,?,?)',
-      this.network, poolId, 'v4', pk.currency0, pk.currency1, pk.fee, pk.tickSpacing, pk.hooks, parseInt(l.blockNumber, 16));
+      'INSERT OR REPLACE INTO pools(chain,pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block,init_block,init_sqrt) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+      this.network, poolId, 'v4', pk.currency0, pk.currency1, pk.fee, pk.tickSpacing, pk.hooks, parseInt(l.blockNumber, 16),
+      parseInt(l.blockNumber, 16), w(3).toString());
     return pk;
+  }
+  return null;
+};
+
+// Harga lahir pool v4: blok dan sqrtPriceX96 dari event Initialize-nya. Selama belum
+// ada Swap, harga pool = harga ini — dan pool yang dibuat lalu langsung di-mint dalam
+// satu tx (kebiasaan wallet yang meluncurkan tokennya sendiri) belum punya state di
+// blok sebelumnya maupun Swap untuk ditumpangi, jadi inilah satu-satunya sumber harga
+// mint-nya. Dicari mundur dari blok petunjuk (pool selalu lahir sebelum kejadiannya)
+// dan disimpan supaya cukup sekali per pool. null = tidak ketemu (atau RPC gagal).
+Chain.prototype.poolInitOf = async function poolInitOf(poolId, hintBlock = null) {
+  const row = this.store.get('SELECT init_block, init_sqrt FROM pools WHERE chain=? AND pool_ref=?', this.network, poolId);
+  if (row && row.init_sqrt) return { block: row.init_block, sqrt: BigInt(row.init_sqrt) };
+  const head = await this.rpc.blockNumber();
+  const anchor = hintBlock || head;
+  for (const span of [50_000, 500_000, 3_000_000, 12_000_000]) {
+    const lo = Math.max(0, anchor - span);
+    let logs = [];
+    try {
+      logs = await this.rpc.getLogs({
+        address: this.ADDR.poolManager, topics: [TOPIC.initializeV4, poolId],
+        fromBlock: '0x' + lo.toString(16), toBlock: '0x' + Math.min(head, anchor + 10).toString(16),
+      });
+    } catch { return null; }
+    if (!logs.length) { if (lo === 0) return null; continue; }
+    const l = logs[0];
+    const b = ethers.getBytes(l.data);
+    const init = { block: parseInt(l.blockNumber, 16), sqrt: BigInt(ethers.hexlify(b.slice(3 * 32, 4 * 32))) };
+    this.store.run(
+      `INSERT INTO pools(chain,pool_ref,venue,init_block,init_sqrt) VALUES(?,?,?,?,?)
+       ON CONFLICT(chain,pool_ref) DO UPDATE SET init_block=excluded.init_block, init_sqrt=excluded.init_sqrt`,
+      this.network, poolId, 'v4', init.block, init.sqrt.toString());
+    return init;
   }
   return null;
 };

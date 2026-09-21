@@ -1532,7 +1532,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           ? (r.pnl_q / r.invested_q) * (24 / hours(r.opened_ts, r.closed_ts || Date.now())) * 100 : null,
         pnlPct: r.invested_q > 0 ? (r.pnl_q / r.invested_q) * 100 : null,
         // Posisi tertutup: bagian PnL yang sudah jadi uang vs token yang masih dipegang.
-        realizedPnl: r.status === 'closed' && r.realized_q != null ? r.realized_q - (r.invested_q || 0) : null,
+        realizedPnl: r.status === 'closed' && r.realized_q != null && r.invested_q != null ? r.realized_q - r.invested_q : null,
         heldUnrealized: r.status === 'closed' && r.held_tok && r.held_tok !== '0' ? (r.unrealized_q || 0) : 0,
         heldTok: r.status === 'closed' && r.held_tok && r.held_tok !== '0'
           ? Number(BigInt(r.held_tok)) / 10 ** (quoteSideOf(r.token0, r.token1) === 0 ? (toks.get(r.token1)?.decimals ?? 18) : (toks.get(r.token0)?.decimals ?? 18)) : 0,

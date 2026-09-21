@@ -109,6 +109,10 @@ CREATE TABLE IF NOT EXISTS pools (
   pool_addr    TEXT,
   first_block  INTEGER,
   first_ts     INTEGER,
+  -- harga lahir pool v4 dari event Initialize (blok + sqrtPriceX96): harga di blok
+  -- kejadian yang belum pernah didahului Swap. Lihat Chain.poolInitOf.
+  init_block   INTEGER,
+  init_sqrt    TEXT,
   PRIMARY KEY (chain, pool_ref)
 );
 
@@ -360,6 +364,16 @@ function open(dbPath) {
   // Kendali manual ("ambil alih"): waktu posisi cermin dilepas dari target. NULL =
   // otomatis. Lihat Manual.takeover.
   if (!posCols.has('takeover_ts')) db.exec('ALTER TABLE positions ADD COLUMN takeover_ts INTEGER');
+  const poolCols = new Set(db.prepare('PRAGMA table_info(pools)').all().map((c) => c.name));
+  if (!poolCols.has('init_sqrt')) {
+    db.exec('ALTER TABLE pools ADD COLUMN init_block INTEGER');
+    db.exec('ALTER TABLE pools ADD COLUMN init_sqrt TEXT');
+    // Sebelum ini, posisi riset yang riwayatnya tidak lengkap tetap menyimpan modal
+    // parsial (mint tanpa harga: $0) dan PnL dari modal itu — tampil "+$1.000" untuk
+    // posisi yang cuma kembali utuh. Sekarang keduanya NULL = tidak diketahui; yang
+    // harganya belum terbaca (incomplete=2) dibaca ulang pada pembaruan berikutnya.
+    db.exec('UPDATE wpositions SET invested_q=NULL, pnl_q=NULL WHERE incomplete<>0');
+  }
   const wpCols = new Set(db.prepare('PRAGMA table_info(wpositions)').all().map((c) => c.name));
   if (!wpCols.has('held_tok')) {
     db.exec(`ALTER TABLE wpositions ADD COLUMN held_tok TEXT DEFAULT '0'`);

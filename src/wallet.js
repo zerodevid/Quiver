@@ -87,23 +87,40 @@ class WalletResearch {
       } catch (e) { this.log(`harga arsip ${poolId.slice(0, 10)} @${block} gagal: ${e.message}`); }
     }
 
-    let best = null;
+    // Harga pool hanya berubah oleh Swap, jadi Swap TERAKHIR sebelum blok kejadian
+    // memberi harga yang tepat; Swap sesudahnya cuma taksiran, dipakai kalau tidak
+    // ada yang sebelumnya di dalam jendela. Dulu yang dipilih Swap terdekat ke arah
+    // mana pun.
+    let before = null, after = null, init;
     for (const win of [400, 4000, 40000, 400000]) {
-      let logs = [];
+      const lo = Math.max(0, block - win);
+      let logs = null;
       try {
         logs = await this.rpc.getLogs({
           address: this.chain.ADDR.poolManager, topics: [TOPIC.swapV4, poolId],
-          fromBlock: hex(Math.max(0, block - win)), toBlock: hex(block + win),
+          fromBlock: hex(lo), toBlock: hex(block + win),
         });
-      } catch { /* rentang terlalu besar: coba jendela berikutnya */ }
+      } catch { continue; /* rentang terlalu besar / RPC sibuk: coba jendela berikutnya */ }
       for (const l of logs) {
         const bn = parseInt(l.blockNumber, 16);
-        if (!best || Math.abs(bn - block) < Math.abs(best.bn - block)) {
-          best = { bn, sqrt: w32(ethers.getBytes(l.data), 2) };
-        }
+        const sqrt = w32(ethers.getBytes(l.data), 2);
+        if (bn <= block) { if (!before || bn > before.bn) before = { bn, sqrt }; }
+        else if (!after || bn < after.bn) after = { bn, sqrt };
       }
-      if (best) break;
+      if (before) break;
+      // Tidak ada Swap sebelum kejadian di jendela ini. Kalau pool-nya LAHIR di dalam
+      // jendela yang sama, berarti memang belum pernah di-swap sampai blok kejadian —
+      // harganya persis harga Initialize. Kasus nyata: 5 posisi target di pool yang
+      // ia buat sendiri (Initialize + mint satu blok, tanpa Swap sama sekali) tercatat
+      // bermodal $0 dan "untung" sebesar seluruh pokoknya, dan tidak pernah sembuh
+      // karena memang tidak ada Swap yang bisa ditemukan.
+      if (init === undefined) init = await this.chain.poolInitOf(poolId, block);
+      if (init && init.block >= lo && init.block <= block) {
+        before = { bn: init.block, sqrt: init.sqrt };
+        break;
+      }
     }
+    const best = before || after;
     // Kegagalan TIDAK di-cache: biasanya RPC sedang 429, bukan pool tanpa Swap.
     // Dulu null-nya diingat seumur proses, sehingga pembaruan berikutnya untuk
     // pool:blok yang sama ikut gagal walau RPC sudah pulih.
@@ -406,7 +423,7 @@ class WalletResearch {
       rows.push({
         block: ev.block, tx: ev.tx, logIndex: ev.logIndex, kind, delta: ev.delta,
         moved: ev.moved, princ, fee0: f0, fee1: f1, sqrt,
-        valueQ: val(ev.delta > 0n ? (ev.moved.in0 || princ.amount0) : (ev.moved.out0 || princ.amount0),
+        valueQ: !sqrt ? null : val(ev.delta > 0n ? (ev.moved.in0 || princ.amount0) : (ev.moved.out0 || princ.amount0),
           ev.delta > 0n ? (ev.moved.in1 || princ.amount1) : (ev.moved.out1 || princ.amount1)),
       });
     }
@@ -453,13 +470,23 @@ class WalletResearch {
     // sudah masuk kantong dan harus ikut dihitung — kalau tidak, keuntungan yang sudah
     // diklaim jadi tak terlihat selama posisinya masih berjalan.
     const pnlQ = closed ? (returnedQ - investedQ) : (liveValueQ + liveFeeQ + returnedQ - investedQ);
+    // Riwayat bisa terpotong kalau posisi sudah ada sebelum jendela pindai:
+    // kejadian pertama yang terlihat bukan mint -> modal awalnya tidak diketahui (1).
+    // Atau harga salah satu kejadiannya tidak terbaca saat dipindai (2) — yang ini
+    // sembuh sendiri: refresh() membacanya ulang.
+    const incomplete = first.kind !== 'mint' ? 1 : tanpaHarga ? 2 : 0;
+    // Modal yang tidak diketahui bukan nol. Dulu tetap dihitung apa adanya: mint tanpa
+    // harga tercatat bermodal $0 dan penutupannya tampil "untung" sebesar seluruh
+    // pokok ($1.000 masuk, $1.000 keluar, PnL +$1.000). Sekarang modal & PnL-nya
+    // kosong (NULL, tampil "—") sampai riwayatnya lengkap; ringkasan wallet sudah
+    // mengabaikannya sejak dulu lewat `incomplete`.
 
     return {
       wallet, venue: 'v4', tokenId: id, poolId: info.poolId, poolKey: info.poolKey,
       tickLower: info.tickLower ?? first.tickLower ?? null,
       tickUpper: info.tickUpper ?? first.tickUpper ?? null,
       liquidity: liq, agg,
-      investedQ, returnedQ, feesQ, pnlQ,
+      investedQ: incomplete ? null : investedQ, returnedQ, feesQ, pnlQ: incomplete ? null : pnlQ,
       liveValueQ, liveFeeQ, inRange, curTick,
       quoteSymbol: q?.symbol || null, quoteKind: q?.kind || 'usd',
       openedBlock: first.block, closedBlock: closed ? last.block : null,
@@ -467,11 +494,7 @@ class WalletResearch {
       events: rows,
       symbol0: toks?.[0]?.symbol || '?', symbol1: toks?.[1]?.symbol || '?',
       dec0: d0, dec1: d1,
-      // Riwayat bisa terpotong kalau posisi sudah ada sebelum jendela pindai:
-      // kejadian pertama yang terlihat bukan mint -> modal awalnya tidak diketahui (1).
-      // Atau harga salah satu kejadiannya tidak terbaca saat dipindai (2) — yang ini
-      // sembuh sendiri: refresh() membacanya ulang.
-      incomplete: first.kind !== 'mint' ? 1 : tanpaHarga ? 2 : 0,
+      incomplete,
     };
   }
 
@@ -719,7 +742,7 @@ class WalletResearch {
       this.liveCache.set(rowKey(r), { ts: now, value, fee, tick: s.tick, inRange });
       this.store.run(
         'UPDATE wpositions SET live_value_q=?, live_fee_q=?, pnl_q=?, in_range=? WHERE chain=? AND wallet=? AND venue=? AND token_id=?',
-        value, fee, value + fee + (r.returned_q || 0) - (r.invested_q || 0), inRange ? 1 : 0,
+        value, fee, livePnl(r, value, fee), inRange ? 1 : 0,
         this.network, r.wallet, r.venue, r.token_id);
     }
 
@@ -732,7 +755,7 @@ class WalletResearch {
       r.live_fee_q = c.fee;
       r.in_range = c.inRange ? 1 : 0;
       r.curTick = c.tick;
-      r.pnl_q = c.value + c.fee + (r.returned_q || 0) - (r.invested_q || 0);
+      r.pnl_q = livePnl(r, c.value, c.fee);
       r.liveTs = c.ts;
     }
   }
@@ -755,7 +778,8 @@ class WalletResearch {
 
   // ---- simpan -------------------------------------------------------------
   async persist(wallet, positions, { from, head, ethUsd, partial = false, keep: reuse = null }) {
-    const usd = (v, kind) => (kind === 'eth' ? v * ethUsd : v);
+    // NULL = tidak diketahui (modal posisi yang riwayatnya tidak lengkap) — bukan 0.
+    const usd = (v, kind) => (v == null ? null : kind === 'eth' ? v * ethUsd : v);
     // Buang sisa pindai lama di dalam jendela ini yang tidak muncul lagi (mis. hasil
     // pindai yang gagal di tengah jalan: posisi tanpa pasangan token dan serba nol).
     // Posisi di luar jendela ini dibiarkan — pindai yang lebih pendek tidak boleh
@@ -828,6 +852,10 @@ class WalletResearch {
     return stats;
   }
 }
+
+// PnL berjalan posisi terbuka. Modal NULL = tidak diketahui (riwayat tidak lengkap),
+// dan PnL-nya ikut tidak diketahui — bukan "nilai sekarang dikurangi nol".
+const livePnl = (r, value, fee) => (r.invested_q == null ? null : value + fee + (r.returned_q || 0) - r.invested_q);
 
 // ---- ringkasan ------------------------------------------------------------
 function summarize(positions, ethUsd = 2500) {

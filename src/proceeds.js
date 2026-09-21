@@ -335,7 +335,8 @@ class Proceeds {
   }
 
   setRow(r, { held, sold, realized, unrealized, head }) {
-    const pnl = realized + unrealized - (r.invested_q || 0);
+    // Modal NULL = riwayat tidak lengkap; PnL-nya ikut tidak diketahui, bukan hasil dikurangi nol.
+    const pnl = r.invested_q == null ? null : realized + unrealized - r.invested_q;
     this.store.run(`UPDATE wpositions SET held_tok=?, sold_tok=?, realized_q=?, unrealized_q=?, pnl_q=?, tracked_to=?
       WHERE chain=? AND wallet=? AND venue=? AND token_id=?`,
     held.toString(), sold.toString(), realized, unrealized, pnl, head, this.network, r.wallet, r.venue, r.token_id);
@@ -351,7 +352,7 @@ class Proceeds {
       if (!bySqrt.has(r.pool_ref)) bySqrt.set(r.pool_ref, await this.sqrtNow(r));
       const u = this.usdOf(r, bySqrt.get(r.pool_ref), big(r.held_tok), ethUsd);
       r.unrealized_q = u;
-      r.pnl_q = r.realized_q + u - (r.invested_q || 0);
+      r.pnl_q = r.invested_q == null ? null : r.realized_q + u - r.invested_q;
     }
   }
 }
