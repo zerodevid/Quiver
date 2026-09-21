@@ -220,6 +220,7 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
   const sum = (f) => g.items.reduce((a, x) => a + (f(x.p) || 0), 0);
   const gPnl = sum((x) => x.pnlUsd), gCost = sum((x) => x.costUsd), gFee = sum((x) => x.feeUsd);
   const gIn = g.items.filter((x) => (x.edge ? x.edge.ok : x.p.inRange) === true).length;
+  const h = g.hist;   // riwayat posisi tertutup di pool ini (null sampai /api/monitor tiba)
   const pairName = `${p0.symbol0}/${p0.symbol1}`;
 
   return (
@@ -256,18 +257,32 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
           per satu. Tampil juga untuk pool berposisi tunggal supaya semua kartu punya
           angka besar di tempat yang sama. */}
       <div className="mx-4 mb-2 flex flex-wrap items-center justify-between gap-x-5 gap-y-1.5 rounded-md bg-default/50 px-3 py-2">
-          <div>
-            <div className="text-[0.6875rem] text-muted">{t('PnL seluruh pool')} · {t('{n} posisi', { n: g.items.length })}</div>
-            <div className={`num text-xl leading-tight font-semibold tracking-tight ${tone(gPnl)}`}>
-              {usd(gPnl)}{gCost > 0 && <span className="ml-1.5 text-sm font-medium">({pct((gPnl / gCost) * 100, 2)})</span>}
-            </div>
+        <div>
+          <div className="text-[0.6875rem] text-muted">{t('PnL seluruh pool')} · {t('{n} posisi', { n: g.items.length })}</div>
+          <div className={`num text-xl leading-tight font-semibold tracking-tight ${tone(gPnl)}`}>
+            {usd(gPnl)}{gCost > 0 && <span className="ml-1.5 text-sm font-medium">({pct((gPnl / gCost) * 100, 2)})</span>}
           </div>
-          <dl className="grid grid-cols-3 gap-x-4 text-xs">
-            <div><dt className="text-[0.6875rem] text-muted">{t('Nilai')}</dt><dd className="num font-medium">{usd(sum((x) => x.valueUsd))}</dd></div>
-            <div><dt className="text-[0.6875rem] text-muted">{t('Modal')}</dt><dd className="num font-medium">{usd(gCost)}</dd></div>
-            <div><dt className="text-[0.6875rem] text-muted">{t('Fee belum diklaim')}</dt><dd className={`num font-medium ${gFee > 0.005 ? 'text-success' : ''}`}>{usd(gFee)}</dd></div>
-          </dl>
+          {/* Sejak awal: posisi terbuka + semua yang pernah ditutup di pool ini. Pool
+              yang tampak untung sekarang bisa saja sudah beberapa kali merugikan. */}
+          {h && h.closedCount > 0 && (
+            <div className="num mt-0.5 text-[0.6875rem] text-muted">
+              {t('sejak awal')} <span className={`font-semibold ${tone(gPnl + h.realizedUsd)}`}>{usd(gPnl + h.realizedUsd)}</span>
+              <span className="mx-1">·</span>
+              {t('{n} ditutup', { n: h.closedCount })} <span className={`font-medium ${tone(h.realizedUsd)}`}>{usd(h.realizedUsd)}</span>
+              {(h.wins > 0 || h.losses > 0) && <span className="ml-1">(<span className="text-success">{h.wins}</span>/<span className="text-danger">{h.losses}</span>)</span>}
+            </div>
+          )}
         </div>
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
+          <div><dt className="text-[0.6875rem] text-muted">{t('Nilai')}</dt><dd className="num font-medium">{usd(sum((x) => x.valueUsd))}</dd></div>
+          <div><dt className="text-[0.6875rem] text-muted">{t('Modal')}</dt><dd className="num font-medium">{usd(gCost)}</dd></div>
+          <div><dt className="text-[0.6875rem] text-muted">{t('Fee belum diklaim')}</dt><dd className={`num font-medium ${gFee > 0.005 ? 'text-success' : ''}`}>{usd(gFee)}</dd></div>
+          <div title={h?.closedCount ? t('PnL {n} posisi yang sudah ditutup di pool ini', { n: h.closedCount }) : undefined}>
+            <dt className="text-[0.6875rem] text-muted">{t('Realisasi')}</dt>
+            <dd className={`num font-medium ${h?.closedCount ? tone(h.realizedUsd) : 'text-muted'}`}>{!h ? '…' : h.closedCount ? usd(h.realizedUsd) : '—'}</dd>
+          </div>
+        </dl>
+      </div>
       {/* legenda posisi (hanya kalau lebih dari satu) */}
       {many && <div className="px-4 pb-2"><PositionChips items={g.items} selId={p.id} onPick={setPick} /></div>}
 
@@ -438,11 +453,11 @@ export default function Monitor() {
       const worst = sorted[0];
       const risk = { level: worst.risk.level, score: worst.risk.score };
       for (const x of list) if (LEVEL_RANK[x.risk.level] > LEVEL_RANK[risk.level]) risk.level = x.risk.level;
-      return { ref, p0: list[0].p, items: sorted, live: list[0].live, risk, pair: mk?.pairs?.[ref] || null,
+      return { ref, p0: list[0].p, items: sorted, live: list[0].live, risk, pair: mk?.pairs?.[ref] || null, hist: mon?.pools?.[ref] || null,
         pnlPct: (() => { const c = list.reduce((a, x) => a + (x.p.costUsd || 0), 0); return c > 0 ? list.reduce((a, x) => a + (x.p.pnlUsd || 0), 0) / c * 100 : 0; })(),
         valueUsd: list.reduce((a, x) => a + (x.p.valueUsd || 0), 0), ageHours: Math.max(...list.map((x) => x.p.ageHours || 0)) };
     });
-  }, [items, mk]);
+  }, [items, mk, mon]);
 
   const sorted = useMemo(() => {
     const s = [...groups];

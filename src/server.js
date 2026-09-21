@@ -1128,7 +1128,28 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           stale: !!(p.valueStale || p.liqStale),
         };
       });
-      return { positions: Object.fromEntries(rows.map((r) => [r.id, r])), syncedAt: engine.positions.lastSync, paused: engine.paused(), dryRun: engine.dryRun() };
+      // Riwayat tiap pool yang sedang dipantau: semua posisi yang PERNAH ada di pool
+      // itu dan sudah ditutup — jumlah, PnL terealisasi, menang/kalah (aturan impas
+      // yang sama dengan halaman Ringkasan). Kartu Monitor menjumlahkannya dengan PnL
+      // posisi terbuka jadi "sejak awal": pool yang kelihatan untung sekarang bisa
+      // saja sudah tiga kali merugikan sebelumnya.
+      const refs = [...new Set(engine.positions.live.map((p) => String(p.pool_ref || '').toLowerCase()).filter(Boolean))];
+      const k = (q) => (chain.isEthLike(q) ? engine.ethUsd : 1);
+      const pools = {};
+      for (const ref of refs) {
+        const cl = store.all("SELECT id, opened_ts, closed_ts, cost_quote, out_quote, quote_symbol FROM positions WHERE chain=? AND status='closed' AND lower(pool_ref)=?", chain.network, ref)
+          .map((p) => ({ ...p, pnl: ((p.out_quote || 0) - (p.cost_quote || 0)) * k(p.quote_symbol) }));
+        const hasil = cl.map(hasilBersih);
+        pools[ref] = {
+          closedCount: cl.length,
+          realizedUsd: cl.reduce((a, p) => a + p.pnl, 0),
+          costUsd: cl.reduce((a, p) => a + (p.cost_quote || 0) * k(p.quote_symbol), 0),
+          wins: hasil.filter((x) => x > FLAT).length, losses: hasil.filter((x) => x < -FLAT).length,
+          firstTs: cl.length ? Math.min(...cl.map((p) => p.opened_ts || p.closed_ts)) : null,
+          lastClosedTs: cl.length ? Math.max(...cl.map((p) => p.closed_ts || 0)) : null,
+        };
+      }
+      return { positions: Object.fromEntries(rows.map((r) => [r.id, r])), pools, syncedAt: engine.positions.lastSync, paused: engine.paused(), dryRun: engine.dryRun() };
     },
     // Statistik DexScreener untuk semua pool yang dipantau sekaligus (chip Δ harga,
     // volume, likuiditas di kartu Monitor). market.pair() sudah di-memo per pool,
