@@ -31,10 +31,15 @@ const TAG = {
   fresh_wallet: ['wallet baru', 'default'], sniper: ['sniper', 'warning'], rat_trader: ['rat trader', 'danger'], bundler: ['bundler', 'danger'],
   dev: ['dev', 'warning'], transfer_in: ['transfer masuk', 'default'], dex_bot: ['bot DEX', 'default'], bluechip_owner: ['pemilik bluechip', 'success'],
   whale: ['whale', 'accent'], top_holder: ['top holder', 'default'], paper_hands: ['paper hands', 'default'], diamond_hands: ['diamond hands', 'success'],
+  sandwich_bot: ['bot sandwich', 'danger'], gmgn: ['GMGN', 'default'], fomo: ['fomo', 'default'], axiom: ['Axiom', 'default'], photon: ['Photon', 'default'],
 };
+// Urutan tampil: yang berarti untuk risiko dulu; "transfer masuk" hampir semua
+// wallet punya, jadi paling belakang.
+const TAG_RANK = ['sandwich_bot', 'bundler', 'rat_trader', 'smart_degen', 'smart_money', 'renowned', 'kol', 'whale', 'sniper', 'dev', 'fresh_wallet', 'paper_hands', 'diamond_hands', 'top_holder', 'bluechip_owner', 'dex_bot', 'gmgn', 'fomo', 'axiom', 'photon', 'transfer_in'];
+const rank = (k) => { const i = TAG_RANK.indexOf(k); return i < 0 ? TAG_RANK.length - 1 : i; };
 function Tags({ tags = [], max = 3 }) {
   const { t } = useI18n();
-  const items = tags.slice(0, max);
+  const items = [...new Set(tags)].sort((a, b) => rank(a) - rank(b)).slice(0, max);
   if (!items.length) return null;
   return (
     <span className="inline-flex flex-wrap gap-1">
@@ -50,6 +55,7 @@ function WalletName({ r }) {
   if (r.mine) return <span className="rounded-sm bg-accent/15 px-1.5 py-0.5 text-[0.6875rem] font-medium text-accent">{t('bot')}</span>;
   if (r.target) return <a href={href} className="rounded-sm bg-warning/15 px-1.5 py-0.5 text-[0.6875rem] font-medium text-warning hover:underline" title={r.address}>{r.label || short(r.address)}</a>;
   if (r.isPool) return <span className="text-muted" title={r.address}>{t('Likuiditas pool')}{r.exchange ? ` · ${r.exchange}` : ''}</span>;
+  if (/^0x0{40}$|^0x0+dead$/i.test(r.address)) return <span className="text-muted" title={r.address}>{t('Burn')} · <span className="mono">{short(r.address)}</span></span>;
   return (
     <a href={href} className="hover:underline" title={r.address}>
       {r.name ? <span className="font-medium">{r.name}</span> : <span className="mono">{short(r.address)}</span>}
@@ -148,7 +154,11 @@ export function GmgnSecurity({ g }) {
   if (!g || g.enabled === false || g.error) return null;
   const s = g.security;
   if (!s) return <p className="text-xs text-muted">{t('Keamanan kontrak menurut GMGN belum tersedia.')}{g.securityError ? ` (${t(g.securityError)})` : ''}</p>;
-  const chip = (label, value, level) => (
+  // Status dev: dari security kalau ada, kalau tidak dari token/info.
+  const devSold = s.creatorSold ?? (g.dev?.status === 'sell' ? true : g.dev?.status === 'hold' ? false : null);
+  // Kolom yang GMGN tidak isi untuk chain ini disembunyikan — kecuali honeypot,
+  // pajak, dan verifikasi kode, yang "tidak diketahui"-nya justru perlu terlihat.
+  const chip = (label, value, level, keep = false) => (level === 'na' && !keep ? null :
     <span key={label} className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs ${level === 'ok' ? 'border-success/30 bg-success/10 text-success' : level === 'bad' ? 'border-danger/30 bg-danger/10 text-danger' : level === 'warn' ? 'border-warning/30 bg-warning/10 text-warning' : 'border-border text-muted'}`}>
       <span>{t(label)}</span><span className="num font-medium">{value}</span>
     </span>
@@ -156,19 +166,19 @@ export function GmgnSecurity({ g }) {
   const yn = (v, good) => (v == null ? '?' : t(v ? 'ya' : 'tidak'));
   const lv = (v, goodWhen) => (v == null ? 'na' : v === goodWhen ? 'ok' : 'bad');
   const items = [
-    chip('Honeypot', yn(s.honeypot), lv(s.honeypot, false)),
-    chip('Pajak beli', s.buyTaxPct == null ? '?' : `${num(s.buyTaxPct, 1)}%`, s.buyTaxPct == null ? 'na' : s.buyTaxPct >= 10 ? 'bad' : s.buyTaxPct >= 3 ? 'warn' : 'ok'),
-    chip('Pajak jual', s.sellTaxPct == null ? '?' : `${num(s.sellTaxPct, 1)}%`, s.sellTaxPct == null ? 'na' : s.sellTaxPct >= 10 ? 'bad' : s.sellTaxPct >= 3 ? 'warn' : 'ok'),
+    chip('Honeypot', yn(s.honeypot), lv(s.honeypot, false), true),
+    chip('Pajak beli', s.buyTaxPct == null ? '?' : `${num(s.buyTaxPct, 1)}%`, s.buyTaxPct == null ? 'na' : s.buyTaxPct >= 10 ? 'bad' : s.buyTaxPct >= 3 ? 'warn' : 'ok', true),
+    chip('Pajak jual', s.sellTaxPct == null ? '?' : `${num(s.sellTaxPct, 1)}%`, s.sellTaxPct == null ? 'na' : s.sellTaxPct >= 10 ? 'bad' : s.sellTaxPct >= 3 ? 'warn' : 'ok', true),
     chip('Risiko rug', s.rugPct == null ? '?' : `${num(s.rugPct, 0)}%`, s.rugPct == null ? 'na' : s.rugPct >= 50 ? 'bad' : s.rugPct >= 20 ? 'warn' : 'ok'),
-    chip('Kode terverifikasi', yn(s.openSource), lv(s.openSource, true)),
+    chip('Kode terverifikasi', yn(s.openSource), lv(s.openSource, true), true),
     chip('Owner dilepas', yn(s.ownerRenounced), lv(s.ownerRenounced, true)),
-    chip('Dev', s.creatorSold == null ? '?' : t(s.creatorSold ? 'sudah jual' : 'masih pegang'), s.creatorSold == null ? 'na' : s.creatorSold ? 'warn' : 'ok'),
+    chip('Dev', devSold == null ? '?' : t(devSold ? 'sudah jual' : 'masih pegang'), devSold == null ? 'na' : devSold ? 'warn' : 'ok'),
     chip('Wash trading', yn(s.washTrading), lv(s.washTrading, false)),
     ...(s.top10Pct != null ? [chip('Top 10', `${num(s.top10Pct, 1)}%`, s.top10Pct >= 60 ? 'bad' : s.top10Pct >= 40 ? 'warn' : 'ok')] : []),
     ...(s.insiderPct != null ? [chip('Orang dalam', `${num(s.insiderPct, 1)}%`, s.insiderPct >= 40 ? 'bad' : s.insiderPct >= 20 ? 'warn' : 'ok')] : []),
     ...(s.sniperCount != null ? [chip('Sniper', num(s.sniperCount), s.sniperCount >= 20 ? 'warn' : 'na')] : []),
-    ...(s.lpBurned != null ? [chip('LP dibakar', yn(s.lpBurned), s.lpBurned ? 'ok' : 'na')] : []),
-  ];
+    ...(s.lpBurned ? [chip('LP dibakar', yn(s.lpBurned), 'ok')] : []),
+  ].filter(Boolean);
   return (
     <div>
       <div className="flex flex-wrap gap-1.5">{items}</div>
@@ -219,6 +229,24 @@ export function GmgnWallets({ address, kind = 'holders', symbol, className = '' 
   );
 }
 
+// Sebaran hasil per token (jumlah token per keranjang): rugi besar ... untung besar.
+function PnlDist({ dist }) {
+  const { t } = useI18n();
+  const total = dist.reduce((a, b) => a + b, 0) || 1;
+  const buckets = [['< −50%', 'bg-danger'], ['−50%…0', 'bg-danger/50'], ['0…2×', 'bg-success/50'], ['2×…5×', 'bg-success'], ['> 5×', 'bg-accent']];
+  return (
+    <div className="min-w-56">
+      <div className="text-xs text-muted">{t('Sebaran hasil per token')}</div>
+      <div className="mt-1.5 flex h-2 w-full overflow-hidden rounded-full bg-default">
+        {dist.map((v, i) => v > 0 && <span key={i} className={buckets[i][1]} style={{ width: `${(v / total) * 100}%` }} title={`${buckets[i][0]}: ${num(v)}`} />)}
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-3 text-[0.6875rem] text-muted">
+        {dist.map((v, i) => v > 0 && <span key={i}><span className="num font-medium text-foreground">{num(v)}</span> {buckets[i][0]}</span>)}
+      </div>
+    </div>
+  );
+}
+
 // ---------------- reputasi satu wallet ----------------
 export function GmgnWalletCard({ address }) {
   const { t } = useI18n();
@@ -238,7 +266,10 @@ export function GmgnWalletCard({ address }) {
             ['Modal dipakai', g.cost != null ? kUsd(g.cost) : '—', ''],
             ['Beli / jual', g.buys != null || g.sells != null ? `${num(g.buys || 0)} / ${num(g.sells || 0)}` : '—', ''],
             ['PnL', g.pnlPct != null ? pct(g.pnlPct, 1) : '—', tone(g.pnlPct)],
+            ...(g.tokens != null ? [['Token diperdagangkan', num(g.tokens), '']] : []),
+            ...(g.avgHoldSec != null ? [['Rata-rata pegang', age(g.avgHoldSec / 3600), '']] : []),
           ].map(([label, value, cls]) => <div key={label}><div className="text-xs text-muted">{t(label)}</div><div className={`num mt-0.5 text-lg font-semibold ${cls}`}>{value}</div></div>)}
+          {g.dist && g.dist.some((v) => v > 0) && <PnlDist dist={g.dist} />}
           <div className="flex min-w-48 flex-col gap-1 text-xs">
             {(g.name || g.ens || g.twitter) && <div className="text-sm font-medium">{g.name || g.ens}{g.twitter && <a href={`https://x.com/${g.twitter}`} target="_blank" rel="noreferrer" className="ml-1.5 font-normal text-muted hover:underline">@{g.twitter}{g.followers != null && ` · ${num(g.followers)} ${t('pengikut')}`}</a>}</div>}
             {idTags.length > 0 && <Tags tags={idTags} max={4} />}

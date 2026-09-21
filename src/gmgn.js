@@ -94,13 +94,20 @@ function normalizeWallets(d) {
   }));
 }
 
+// Nama kolom nyata berbeda dari dokumentasinya (buy/sell, realized_profit_pnl,
+// pnl_stat.winrate) — keduanya diterima.
 function normalizeWalletStats(d, period = '7d') {
   const x = Array.isArray(d) ? d[0] : d?.list?.[0] || d || {};
-  const c = x.common || {};
+  const c = x.common || {}, ps = x.pnl_stat || {};
+  const dist = ['pnl_lt_nd5_num', 'pnl_nd5_0x_num', 'pnl_0x_2x_num', 'pnl_2x_5x_num', 'pnl_gt_5x_num'].map((k) => num(ps[k]));
   return {
     period,
-    realized: num(x.realized_profit), unrealized: num(x.unrealized_profit), winratePct: pctOf(x.winrate),
-    cost: num(x.total_cost), buys: num(x.buy_count), sells: num(x.sell_count), pnlPct: pctOf(x.pnl),
+    realized: num(x.realized_profit), unrealized: num(x.unrealized_profit), winratePct: pctOf(x.winrate ?? ps.winrate),
+    cost: num(x.total_cost), buys: num(x.buy_count ?? x.buy), sells: num(x.sell_count ?? x.sell), pnlPct: pctOf(x.pnl ?? x.realized_profit_pnl),
+    tokens: num(ps.token_num), avgHoldSec: num(ps.avg_holding_period),
+    // Sebaran hasil per token: < -50%, -50%..0, 0..2×, 2×..5×, > 5× (jumlah token).
+    dist: dist.some((v) => v != null) ? dist.map((v) => v ?? 0) : null,
+    soldIncome: num(x.sold_income), boughtCost: num(x.bought_cost), lastActive: ms(x.last_timestamp),
     name: c.name || null, ens: c.ens || null, tag: c.tag || null, tags: Array.isArray(c.tags) ? c.tags : [],
     twitter: c.twitter_username || null, followers: num(c.followers_count), followCount: num(c.follow_count),
     createdTokens: num(c.created_token_count), createdAt: ms(c.created_at),

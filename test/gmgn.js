@@ -72,6 +72,12 @@ const INFO = {
     assert.strictEqual(w.name, 'whale1'); assert.deepStrictEqual(w.tags, ['smart_money']); assert.strictEqual(w.followers, 1500); assert.strictEqual(w.createdAt, 1600000000000);
     assert.strictEqual(normalizeWalletStats([raw]).buys, 12, 'batch = array');
     assert.strictEqual(normalizeWalletStats({ realized_profit: '1' }).tags.length, 0, 'tanpa common tidak meledak');
+    // Bentuk nyata jawaban server (beda dari dokumentasi): buy/sell, realized_profit_pnl, pnl_stat.*
+    const real = normalizeWalletStats({ realized_profit: '-407.99', realized_profit_pnl: '-0.0293', buy: 26, sell: 156, total_cost: '14106', last_timestamp: 1789961619,
+      pnl_stat: { token_num: 100, winrate: 0.194, pnl_lt_nd5_num: 5, pnl_nd5_0x_num: 49, pnl_0x_2x_num: 46, pnl_2x_5x_num: 0, pnl_gt_5x_num: 0, avg_holding_period: 231843 }, common: { name: '', tags: [], fund_from_address: '0x22D9' } });
+    assert.strictEqual(real.buys, 26); assert.strictEqual(real.sells, 156); assert.ok(Math.abs(real.pnlPct + 2.93) < 1e-9); assert.ok(Math.abs(real.winratePct - 19.4) < 1e-9);
+    assert.strictEqual(real.tokens, 100); assert.deepStrictEqual(real.dist, [5, 49, 46, 0, 0]); assert.strictEqual(real.avgHoldSec, 231843); assert.strictEqual(real.lastActive, 1789961619000);
+    assert.strictEqual(real.name, null, 'string kosong = tidak ada'); assert.strictEqual(real.fundFromAddress, '0x22d9');
   });
 
   await uji('status dev: hold/sell (token/info) dan creator_hold/creator_close (security) disamakan', () => {
