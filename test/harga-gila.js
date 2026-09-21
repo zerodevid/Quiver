@@ -67,7 +67,7 @@ function dunia(st) {
     assert.ok(p.valueUsd > 90 && p.valueUsd < 110, `value ${p.valueUsd}`);
   });
 
-  await t('MEME 1e9× lebih mahal (pool tipis): fee dalam MEME dinilai di harga masuk, bukan milyaran', async () => {
+  await t('MEME 1e9× lebih mahal (pool tipis): fee dalam MEME dinilai di tepi rentang, bukan milyaran', async () => {
     // fee terkumpul 1 MEME (= $0.001 di harga masuk); pool bilang MEME = $1.000.000
     const d = dunia({ price: 1e-6, feeSlot: 0n });
     d.positions.rpc.ethCallMany = async (calls) => calls.map((c, i) => {
@@ -76,12 +76,12 @@ function dunia(st) {
       return hex(0n);
     });
     const [p] = await d.positions.sync(2500);
-    assert.strictEqual(p.markRef, 'entry');
+    assert.strictEqual(p.markRef, 'edge');
     assert.ok(p.feeUsd < 1, `fee ${p.feeUsd}`);
     assert.ok(p.valueUsd < 150, `value ${p.valueUsd}`);
-    assert.ok(d.logs.some((m) => /harga masuk/.test(m)), 'dilaporkan');
+    assert.ok(d.logs.some((m) => /tepi rentang/.test(m)), 'dilaporkan');
     await d.positions.sync(2500);
-    assert.strictEqual(d.logs.filter((m) => /harga masuk/.test(m)).length, 1, 'dilaporkan sekali saja');
+    assert.strictEqual(d.logs.filter((m) => /tepi rentang/.test(m)).length, 1, 'dilaporkan sekali saja');
   });
 
   await t('harga pool gila tapi pool acuan wajar: pakai pool acuan', async () => {
@@ -96,11 +96,33 @@ function dunia(st) {
     assert.ok(v.usd > 50 && v.usd < 200, `sisa $${v.usd}`);
   });
 
-  await t('rug 1e6× (harga jatuh): dinilai di harga masuk juga — bukan negatif/NaN', async () => {
+  await t('rug 1e6× (harga jatuh): dinilai di tepi rentang — bukan negatif/NaN', async () => {
     const d = dunia({ price: 1e9 });
     const [p] = await d.positions.sync(2500);
-    assert.strictEqual(p.markRef, 'entry');
+    assert.strictEqual(p.markRef, 'edge');
     assert.ok(Number.isFinite(p.valueUsd) && p.valueUsd >= 0);
+  });
+
+  // lp3 2026-09-19: posisi tangga WIN/USDG dipasang di bawah pasar (masuk di 2,2e-4,
+  // rentang 3,5e-5..5,6e-5), WIN rug 1e10×. Seluruh $110 USDG jadi 3,1 jt WIN yang
+  // dinilai di harga masuk = $675 → grafik melonjak +$1.187 palsu. Tepi bawah rentang
+  // (harga terakhir yang mengubah komposisi) adalah nilai tertinggi yang masuk akal.
+  await t('posisi tangga di bawah pasar, token rug: dinilai di tepi bawah (≈ modal), bukan harga masuk (6× modal)', async () => {
+    // harga di sini = MEME per USDG; tangga "di bawah pasar" = MEME lebih murah = angka lebih besar
+    const d = dunia({ price: 1000 });
+    const tl = mm.priceToTick(4000, 6, 18), tu = mm.priceToTick(6000, 6, 18);
+    // seluruh modal $110 USDG (token0), menunggu harga turun masuk rentang
+    const L = mm.liquidityForAmounts(sqrtOf(1000), mm.getSqrtRatioAtTick(tl), mm.getSqrtRatioAtTick(tu), 110_000_000n, 0n);
+    d.store.run('UPDATE positions SET tick_lower=?, tick_upper=?, liquidity=?, cost_quote=110, cost0=? WHERE id=?', tl, tu, L.toString(), '110000000', d.id);
+    d.st.liq = L;
+    // rug: MEME jatuh 1e10× → tick jauh di atas rentang, posisi 100% MEME, pool mati (likuiditas aktif 0)
+    d.st.price = 1000 * 1e10;
+    d.positions.chain.poolLiquidityMany = async (ids) => ids.map(() => 0n);
+    const [p] = await d.positions.sync(2500);
+    assert.strictEqual(p.markRef, 'edge');
+    // di tepi bawah: nilai ≈ modal (sedikit di bawah karena IL), bukan 110 × 6000/1000 ≈ $660 di harga masuk
+    assert.ok(p.valueUsd > 60 && p.valueUsd <= 111, `value ${p.valueUsd}`);
+    assert.ok(p.pnlUsd <= 2, `pnl ${p.pnlUsd}`);
   });
 
   await t('fee 1e30 dari perhitungan rusak: pakai fee terakhir (1.5)', async () => {

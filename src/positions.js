@@ -238,15 +238,35 @@ class Positions {
       const ex = clamp(BigInt(r.exit_sqrt));
       if (sane(ex)) return { sqrt: ex, ref: 'exit' };
     }
+    // Harga pool tidak dipercaya (gila, atau pool tanpa likuiditas aktif) dan posisi
+    // punya rentang: tepi rentang yang terdekat, BUKAN harga masuk. Di luar rentang
+    // komposisi posisi sudah beku — seluruhnya satu sisi — dan tepi adalah harga
+    // terakhir yang sungguh mengubahnya; berapa pun harga lari sesudah itu, isinya
+    // tetap sama. Harga masuk bisa jauh di luar rentang (posisi tangga dipasang di
+    // bawah pasar), dan menilai token hasil konversi di harga itu = keadaan yang
+    // mustahil: kalau harga masih di sana, posisi tidak akan memegang token itu.
+    // lp3 2026-09-19: WIN rug 1e10×, 4 posisi tangga modal $310 terbaca $1.229 dan
+    // grafik melonjak +$1.187 palsu selama dua jam.
+    if (hasRange) {
+      const edge = nearEdge(s.sqrtPriceX96);
+      if (edge !== s.sqrtPriceX96) {
+        if (!sane(s.sqrtPriceX96) && !this.markWarned.has(r.id)) {
+          this.markWarned.add(r.id);
+          this.log(`harga pool posisi #${r.id} ${s.sqrtPriceX96 > (own ?? edge) ? '>' : '< 1/'}${Positions.MARK_RATIO_MAX}× harga masuk — dinilai di tepi rentang`);
+        }
+        return { sqrt: edge, ref: 'edge' };
+      }
+      // di dalam rentang tapi pool tak layak dibaca: harga ini masih yang terbaik
+      if (sane(edge)) return { sqrt: edge, ref: null };
+    }
     if (own) {
-      if ((priceUsable(s, poolLiq ?? 0n) || alt) && !this.markWarned.has(r.id)) {
+      if (!this.markWarned.has(r.id)) {
         this.markWarned.add(r.id);
         this.log(`harga pool posisi #${r.id} ${s.sqrtPriceX96 > own ? '>' : '< 1/'}${Positions.MARK_RATIO_MAX}× harga masuk — dinilai di harga masuk`);
       }
       return { sqrt: own, ref: 'entry' };
     }
-    const cl = clamp(s.sqrtPriceX96);
-    return { sqrt: cl, ref: cl === s.sqrtPriceX96 ? null : 'edge' };
+    return { sqrt: s.sqrtPriceX96, ref: null };
   }
 
   // Baca harga pool posisi r lalu pilih harga penilainya; bentuknya slot0 supaya bisa
