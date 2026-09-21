@@ -87,6 +87,52 @@ export async function buildMask() {
   return { scrub, unscrubUrl, secrets, pseudonyms: [...new Set(labels.values())], counts: { addrs: addrs.size, labels: labels.size } };
 }
 
+// Penyamaran angka: semua nilai uang & jumlah token dikalikan faktor rahasia (QSCALE,
+// default diturunkan dari token akses) — saldo, PnL, fee, grafik tetap konsisten satu
+// sama lain dan persennya tidak berubah, tapi bukan angka aslinya. Harga, tick, sqrt,
+// dan harga ETH tidak disentuh (itu data publik pool, bukan data wallet).
+const SCALE = Number(process.env.QSCALE) || (0.45 + (parseInt(crypto.createHash('sha256').update('scale:' + TOKEN).digest('hex').slice(0, 4), 16) % 40) / 100);
+// Kunci uang tanpa akhiran usd/quote, dibatasi konteks induknya (diinventarisasi dari
+// respons API: series/baseline/extremes/now/wallet/byTarget/stats/cash/deposits).
+const MONEY_SUFFIX = /(Usd|_usd|_quote|Quote)$/;
+const PRICE_KEY = /^(eth|bnb|native)Usd$|^liquidityUsd$/;          // harga & data pool: publik, jangan diubah
+const CTX = {
+  series: /^(cash|pos|fee|total|pnl|net)$/, baseline: /^(cash|pos|fee|total|pnl|net)$/,
+  now: /^(pnl|net|netPnl|value|capital|capitalNet)$/, wallet: /^(pnl|net|netPnl|value)$/,
+  byTarget: /^(value|upnl|realized|realised)$/, summary: /^(value|upnl|realized|realised)$/,
+  pnl: /^(hi|lo|dd)$/, net: /^(hi|lo|dd)$/, value: /^(hi|lo|dd)$/,
+  stats: /^(best|worst|avgPnl)$/, cash: /^(usd|usdg|usdt|stable|native|eth|weth|bnb|wbnb)$/,
+  deposits: /^amount$/, withdrawals: /^amount$/,
+};
+// jumlah token mentah (string BigInt): amount0/1, cost0/1, fee0/1, out0/1, liquidity, sisa token
+const RAW_KEY = /^(amount|cost|fee|out|liquidity)[01]?$|^(left_amount|amountIn|amountOut)$/;
+const scaleRaw = (v) => { try { return (BigInt(String(v)) * BigInt(Math.round(SCALE * 1e6)) / 1000000n).toString(); } catch { return v; } };
+const fakeIds = new Map();
+const fakeId = (id) => { const k = String(id); if (!fakeIds.has(k)) fakeIds.set(k, 1000000 + parseInt(crypto.createHash('sha256').update('id:' + k).digest('hex').slice(0, 8), 16) % 8999999); return fakeIds.get(k); };
+const disguise = (v, key = '', parentKey = '') => {
+  if (Array.isArray(v)) {
+    // portfolio.closed = [[ts, pnl], …]
+    if (parentKey === 'closed' && v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'number' && v[0] > 1e12) return [v[0], v[1] * SCALE];
+    return v.map((x) => disguise(x, key, key));   // elemen array mewarisi kunci array-nya sebagai konteks
+  }
+  if (v && typeof v === 'object') { for (const k of Object.keys(v)) v[k] = disguise(v[k], k, key || parentKey); return v; }
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    if (/^(token_id|mirror_of)$/.test(key)) return fakeId(v);
+    if (PRICE_KEY.test(key)) return v;
+    if (MONEY_SUFFIX.test(key)) return v * SCALE;
+    if (CTX[parentKey] && CTX[parentKey].test(key)) return v * SCALE;
+    return v;
+  }
+  if (typeof v === 'string') {
+    if (/^(token_id|mirror_of)$/.test(key) && /^\d+$/.test(v)) return String(fakeId(v));
+    if (RAW_KEY.test(key) && /^\d{4,}$/.test(v)) return scaleRaw(v);
+    if (fakeIds.size && /#\d{5,}/.test(v)) return v.replace(/#(\d{5,})(?!\d)/g, (m, id) => (fakeIds.has(id) ? '#' + fakeIds.get(id) : m));
+    return v;
+  }
+  return v;
+};
+export const secretIds = () => [...fakeIds.keys()];
+
 const stripNotes = (v) => {
   if (Array.isArray(v)) return v.map(stripNotes);
   if (v && typeof v === 'object') {
@@ -133,7 +179,7 @@ export async function attach(context, mask, { hold } = {}) {
     let body = Buffer.from(entry.body, 'base64');
     if (/json|text|javascript/.test(entry.ct)) {
       let txt = mask.scrub(body.toString('utf8'));
-      if (entry.ct.includes('json')) { try { txt = JSON.stringify(stripNotes(JSON.parse(txt))); } catch { /* biarkan */ } }
+      if (entry.ct.includes('json')) { try { txt = JSON.stringify(disguise(stripNotes(JSON.parse(txt)))); } catch (e) { console.warn('  penyamaran gagal:', url.pathname, e.message); } }
       body = Buffer.from(txt, 'utf8');
     }
     return route.fulfill({ status: entry.status, headers: { 'content-type': entry.ct, 'cache-control': 'no-store' }, body }).catch(() => {});
@@ -257,15 +303,16 @@ export const censorScript = (pseudonyms) => `(() => {
       else if (!veils.has(n)) addVeils(n, /[−-]?\\$?\\s?[\\d.,]+k?/g);
     }
   };
+  const BLUR_MONEY = ${!!process.env.QMONEY_BLUR};   // angka sudah disamarkan di data; blur hanya kalau diminta
   const start = () => {
     document.head.appendChild(css);
-    mark(document.body); markMoney(document.body);
+    mark(document.body); if (BLUR_MONEY) markMoney(document.body);
     let pending = false;
     new MutationObserver((ms) => {
       for (const m of ms) for (const x of m.addedNodes) mark(x.nodeType === 3 ? x.parentNode || document.body : x);
       if (ms.some((m) => m.type === 'characterData')) mark(document.body);
       // sensor modal dijalankan sekali per frame (bukan per mutasi): mengubah DOM di dalam observer memicu observer lagi
-      if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; markMoney(document.body); }); }
+      if (BLUR_MONEY && !pending) { pending = true; requestAnimationFrame(() => { pending = false; markMoney(document.body); }); }
     }).observe(document.body, { childList: true, subtree: true, characterData: true });
   };
   if (document.body) start(); else document.addEventListener('DOMContentLoaded', start);
@@ -277,5 +324,6 @@ export async function leakCheck(page, secrets) {
   for (const a of secrets.addrs) if (html.includes(a)) found.push('addr ' + a.slice(0, 6) + '…');
   for (const [p, s] of secrets.shorts) if (new RegExp(p + '[0-9a-f]{0,4}(…|\\.\\.\\.|&hellip;)' + s).test(html)) found.push('short ' + p + '…');
   for (const l of secrets.labels) if (html.includes(l.toLowerCase())) found.push('label #' + l.length);
+  for (const id of secretIds()) if (new RegExp('#' + id + '(?!\\d)').test(html)) found.push('position id ' + id.slice(0, 3) + '…');
   return found;
 }

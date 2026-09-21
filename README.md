@@ -30,9 +30,9 @@
 
 <p align="center">
   <a href="docs/quiver-demo-en.mp4">
-    <img src="docs/demo-poster.jpg" alt="Quiver demo video — 3:09, 1080p" width="800" />
+    <img src="docs/demo-poster.jpg" alt="Quiver demo video — 3:07, 1080p" width="800" />
   </a><br />
-  <sub>Narrated walkthrough of the dashboard (3:09). Wallet addresses and target names are censored, as are portfolio and position sizes. <a href="docs/quiver-demo-en.srt">Subtitles</a></sub>
+  <sub>Narrated walkthrough of the dashboard (3:07). Wallet addresses, target names and position IDs are censored; all amounts are scaled by an undisclosed factor. <a href="docs/quiver-demo-en.srt">Subtitles</a></sub>
 </p>
 
 ## Overview

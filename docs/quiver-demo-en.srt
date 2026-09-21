@@ -1,48 +1,48 @@
 1
-00:00:16,573 --> 00:00:26,197
+00:00:15,532 --> 00:00:25,159
 Overview — Portfolio value, net PnL, fees and win rate at a glance.
 
 2
-00:00:26,572 --> 00:00:39,921
+00:00:25,521 --> 00:00:38,844
 Portfolio growth — Net vs. cumulative PnL, highs and drawdown, over any range.
 
 3
-00:00:40,285 --> 00:00:53,632
+00:00:39,208 --> 00:00:52,602
 Performance by source — A PnL calendar, and results for every copied wallet.
 
 4
-00:00:53,996 --> 00:01:12,446
+00:00:52,964 --> 00:01:13,433
 Position detail — Price action, range and on-chain history of one position.
 
 5
-00:01:16,476 --> 00:01:25,328
+00:01:16,199 --> 00:01:25,048
 Positions — Each mirrored LP position with its range, fees and live PnL.
 
 6
-00:01:25,690 --> 00:01:34,066
+00:01:25,414 --> 00:01:33,654
 Position history — Mints, fee claims and exits, each linked to its transaction.
 
 7
-00:01:37,130 --> 00:01:49,258
+00:01:36,549 --> 00:01:48,673
 Activity — Every target move is copied, simulated or skipped — with a reason.
 
 8
-00:01:52,297 --> 00:02:05,221
+00:01:51,490 --> 00:02:04,331
 Targets — Follow many wallets, switch each on or off, compare their PnL with ours.
 
 9
-00:02:05,583 --> 00:02:16,047
+00:02:04,692 --> 00:02:15,286
 Risk rules — Position size, daily budget, range width, token filters and cooldowns.
 
 10
-00:02:19,130 --> 00:02:27,878
+00:02:18,528 --> 00:02:27,274
 Research — Win rate, fees and full LP history of any wallet, from chain.
 
 11
-00:02:30,672 --> 00:02:41,800
+00:02:30,005 --> 00:02:41,288
 Manual LP — Pick a pool and an amount — the position preview is computed live.
 
 12
-00:02:42,173 --> 00:02:55,789
+00:02:41,650 --> 00:02:54,095
 Details — Dark and light themes · English and Bahasa Indonesia.
 

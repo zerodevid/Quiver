@@ -3,12 +3,14 @@
 Pipeline rekaman video presentasi dasbor — jalan sepenuhnya lokal (Chromium headless,
 ffmpeg, Kokoro TTS). Hasil: `out/quiver-demo-<lang>.mp4` (1080p60) + `.srt`.
 
-**Privasi.** Alamat wallet (target, riset, wallet bot) dan label target diganti nilai
-palsu *sebelum* respons API sampai ke browser (`privacy.mjs`), lalu diblur, lalu diaudit
-tiap 0,6 detik selama rekaman. Angka modal (total portofolio, kas, komposisi, nilai/modal
-posisi, saldo token) diblur di browser berdasarkan labelnya; PnL, fee, dan persen tetap
-terlihat. Kalau ada yang lolos, video tidak dirakit. Semua request
-non-GET ke `/api` diblokir, jadi rekaman tidak bisa menyentuh bot produksi.
+**Privasi.** Alamat wallet (target, riset, wallet bot), label target, dan nomor NFT posisi
+diganti nilai palsu *sebelum* respons API sampai ke browser (`privacy.mjs`); alamat & label
+lalu diblur dan diaudit tiap 0,6 detik selama rekaman — kalau ada yang lolos, video tidak
+dirakit. Semua nilai uang & jumlah token dikalikan faktor rahasia (`QSCALE`, default
+diturunkan dari token akses) sehingga saldo, PnL, fee, dan grafik tetap konsisten tapi bukan
+angka asli; harga, tick, dan harga ETH tidak diubah. Semua request non-GET ke `/api`
+diblokir, jadi rekaman tidak bisa menyentuh bot produksi. (`QMONEY_BLUR=1` mengaktifkan
+blur angka modal sebagai lapisan tambahan — tidak dipakai secara default karena jelek.)
 
 ## Prasyarat
 
