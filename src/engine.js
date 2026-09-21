@@ -1673,14 +1673,27 @@ class Engine {
   // baru dicatat lewat recordExit seperti keluar biasa. Ditutup dengan $0 hanya kalau
   // semuanya gagal, dan pemilik dikabari supaya bisa memperbaikinya manual.
   async closeEmptyPosition(pos) {
+    // `pos` datang dari sinkron yang bisa berumur puluhan detik. Alur keluar bot yang
+    // berjalan bersamaan (target tutup → burn) bisa sudah membukukannya di antara
+    // sinkron dan giliran posisi ini di loop trigger — `exiting` sudah kosong lagi,
+    // tapi objek posisinya masih berstatus open. Dibaca ulang dulu. lp3 #220: burn
+    // bot dibukukan +150 USDG, 5 detik kemudian dibukukan lagi dari log ModifyLiquidity
+    // dengan tx yang sama — hasil $300 dari modal $150, "untung" $150.
+    if (this.store.get('SELECT status FROM positions WHERE id=?', pos.id)?.status !== 'open') return null;
     const plan = { full: true, liquidity: pos.liquidity };
     let hash = null;
     for (const r of this.store.all("SELECT hash, detail FROM txs WHERE chain=? AND kind IN ('burn','decrease') AND ts >= ? ORDER BY ts DESC", this.network, pos.opened_ts || 0)) {
       try {
         const d = JSON.parse(r.detail || '{}');
         if (d.position !== pos.id) continue;
-        // Sudah dibukukan (tarik sebagian sebelumnya) — bukan tx yang mengosongkannya.
-        if (d.closeProceeds || d.decreaseProceeds) break;
+        // Tutup penuhnya sudah dibukukan — tidak boleh dicari lagi lewat log (tx yang
+        // sama akan ketemu dan dibukukan dua kali).
+        if (d.closeProceeds) {
+          this.store.log('warn', `#${pos.id} kosong di chain dan tx tutupnya ${r.hash.slice(0, 12)}… sudah dibukukan — tidak dibukukan ulang`, { quiet: true });
+          return null;
+        }
+        // Tarik sebagian yang sudah dibukukan — bukan tx yang mengosongkannya.
+        if (d.decreaseProceeds) break;
         hash = r.hash; break;
       } catch { /* detail lama tanpa JSON */ }
     }

@@ -71,6 +71,10 @@ class Positions {
   }
 
   markClosed(id, { out0, out1, outQuote, txHash, exitSqrt, left = null }) {
+    // Pagar terakhir: hasil DIJUMLAHKAN, jadi menutup posisi yang sudah tertutup =
+    // hasilnya dobel (lp3 #220, $150 → $300). Pemanggil yang balapan harus gagal di sini.
+    const st = this.store.get('SELECT status FROM positions WHERE id=?', id)?.status;
+    if (st !== 'open') throw new Error(`posisi #${id} sudah ${st ?? 'tidak ada'} — hasil tutup tidak dibukukan ulang`);
     this.#addProceeds(id, { out0, out1, outQuote, left });
     this.store.run(
       `UPDATE positions SET status='closed', closed_ts=?, out_quote=out_quote + COALESCE(claimed_quote,0), tx_close=?, exit_sqrt=?, liquidity='0' WHERE id=?`,

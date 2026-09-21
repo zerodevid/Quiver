@@ -150,6 +150,31 @@ const txRow = (d, kind, hash, detail) => d.store.run('INSERT INTO txs(hash,ts,ki
     assert.ok(Math.abs(p.out_quote - 110) < 1e-6, `total out ${p.out_quote}`);
   });
 
+  await t('balapan: tutup bot sudah dibukukan di antara sinkron dan closeEmptyPosition → TIDAK dibukukan ulang', async () => {
+    // lp3 #220 (2026-09-21): sinkron membaca posisi kosong saat burn bot baru masuk; alur
+    // keluar membukukan +150, lalu loop trigger memanggil closeEmptyPosition dengan objek
+    // posisi basi (status open) → tx yang sama ketemu lagi lewat log → out_quote 300.
+    const d = dunia({ liq: 0n, receipts: { [TX]: receipt() }, logs: [modLog(77n, -5_000_000n, TX, 9900)] });
+    txRow(d, 'burn', TX, { position: d.id });
+    await d.e.positions.sync(2500);
+    const stale = d.e.positions.live[0];
+    assert.ok(stale.empty);
+    // alur keluar bot membukukannya lebih dulu
+    await d.e.recordExit({ full: true, liquidity: '0' }, pos(d), TX, receipt());
+    let p = pos(d);
+    assert.strictEqual(p.status, 'closed');
+    assert.ok(Math.abs(p.out_quote - 112) < 1e-6, `out_quote ${p.out_quote}`);
+    // giliran loop trigger dengan objek basi
+    await d.e.closeEmptyPosition(stale);
+    p = pos(d);
+    assert.ok(Math.abs(p.out_quote - 112) < 1e-6, `dobel: ${p.out_quote}`);
+    assert.strictEqual(p.out0, '112000000');
+    assert.ok(!d.e.notified.some((n) => /di luar alur bot/.test(n.msg)), 'tidak dikabarkan sebagai tutup di luar bot');
+    // pagar terakhir: markClosed menolak posisi yang sudah tertutup
+    assert.throws(() => d.e.positions.markClosed(d.id, { out0: 1n, out1: 0n, outQuote: 1, txHash: TX }), /sudah closed/);
+    assert.ok(Math.abs(pos(d).out_quote - 112) < 1e-6);
+  });
+
   await t('tx keluar yang revert ditandai gagal dan tidak dibukukan', async () => {
     const d = dunia({ liq: 5_000_000n, receipts: { [TX]: receipt({ status: '0x0' }) } });
     txRow(d, 'burn', TX, { position: d.id });
