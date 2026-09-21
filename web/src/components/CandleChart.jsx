@@ -55,18 +55,26 @@ class LpOverlay {
       const x = (ts) => (ts == null ? null : chart.timeScale().timeToCoordinate(ts));
       const font = '10px ui-sans-serif, system-ui, sans-serif';
       ctx.font = font;
-      // pita rentang: sampai tepi kalau memanjang di luar grafik
-      if (o.range) {
-        let y1 = y(o.range.hi), y2 = y(o.range.lo);
-        if (y1 != null && y2 != null) {
-          y1 = Math.max(-1, Math.min(height + 1, y1)); y2 = Math.max(-1, Math.min(height + 1, y2));
-          ctx.fillStyle = withAlpha(o.c.accent, o.dark ? 0.13 : 0.1);
-          ctx.fillRect(0, y1, width, y2 - y1);
-          ctx.strokeStyle = withAlpha(o.c.accent, 0.45); ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
-          ctx.beginPath(); ctx.moveTo(0, y1); ctx.lineTo(width, y1); ctx.moveTo(0, y2); ctx.lineTo(width, y2); ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.fillStyle = o.c.text; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
-          ctx.fillText(t('rentang'), 4, Math.max(22, y1 + 3));
+      // Pita rentang: sampai tepi kalau memanjang di luar grafik. Satu pita (range)
+      // atau banyak (ranges: satu per posisi di pool yang sama, tiap pita warnanya
+      // sendiri; yang terpilih digambar lebih pekat dan bergaris utuh, yang lain
+      // tipis supaya tetap terbaca tanpa saling menutupi). Pita terpilih digambar
+      // terakhir supaya berada di atas.
+      const bands = o.ranges ? [...o.ranges].sort((a, b) => (a.selected ? 1 : 0) - (b.selected ? 1 : 0)) : o.range ? [{ ...o.range, color: o.c.accent, label: t('rentang'), selected: true }] : [];
+      for (const b of bands) {
+        let y1 = y(b.hi), y2 = y(b.lo);
+        if (y1 == null || y2 == null) continue;
+        y1 = Math.max(-1, Math.min(height + 1, y1)); y2 = Math.max(-1, Math.min(height + 1, y2));
+        const color = b.color || o.c.accent;
+        const strong = b.selected || bands.length === 1;
+        ctx.fillStyle = withAlpha(color, strong ? (o.dark ? 0.16 : 0.12) : (o.dark ? 0.07 : 0.05));
+        ctx.fillRect(0, y1, width, y2 - y1);
+        ctx.strokeStyle = withAlpha(color, strong ? 0.7 : 0.35); ctx.lineWidth = 1; ctx.setLineDash(strong ? [] : [3, 3]);
+        ctx.beginPath(); ctx.moveTo(0, y1); ctx.lineTo(width, y1); ctx.moveTo(0, y2); ctx.lineTo(width, y2); ctx.stroke();
+        ctx.setLineDash([]);
+        if (b.label) {
+          ctx.fillStyle = strong ? color : withAlpha(color, 0.75); ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+          ctx.fillText(b.label, 4, Math.max(22, y1 + 3));
         }
       }
       // garis tegak: saat masuk (aksen) & saat keluar (kuning). Labelnya ada di
@@ -94,6 +102,8 @@ function domainOf(cs, o) {
   let hi = Math.max(q(cs.map((c) => c.h), 0.97), ...cs.map((c) => Math.max(c.o, c.c)));
   for (const p of [o.entryP, o.exitP, o.nowP, o.bep]) if (p > 0) { lo = Math.min(lo, p); hi = Math.max(hi, p); }
   if (o.range && (o.pickRange || o.range.hi / o.range.lo < 3.5)) { lo = Math.min(lo, o.range.lo); hi = Math.max(hi, o.range.hi); }
+  // Banyak pita: yang terpilih selalu masuk sumbu; yang lain hanya kalau tidak terlalu lebar.
+  for (const b of o.ranges || []) if (b.selected || b.hi / b.lo < 3.5) { lo = Math.min(lo, b.lo); hi = Math.max(hi, b.hi); }
   // Saat memilih rentang, batasnya tidak boleh menempel di tepi: label sumbunya
   // tertutup legenda OHLC dan tombol skala di pojok atas.
   if (o.pickRange) { const f = Math.max(1.03, (hi / lo) ** 0.12); lo /= f; hi *= f; }
@@ -105,14 +115,19 @@ function domainOf(cs, o) {
  * tf      : '5m' | '1h' | … (untuk format label)
  * quote   : simbol aset kuotasi (legenda)
  * range   : { lo, hi } harga rentang posisi, atau null
+ * ranges  : [{ id, lo, hi, color, label, selected }] — banyak pita sekaligus (satu
+ *           per posisi di pool yang sama); onRangeClick(id) dipanggil saat pita diklik
  * entry   : { t(ms), p }  exit : { t(ms), p }  now : harga kini — semuanya opsional
  * pickRange : rentang sedang dipilih (LP manual) — kedua batasnya selalu masuk
  *             sumbu, selebar apa pun, dan diberi label harga di sumbu
  * height  : tinggi px
  */
-export default function CandleChart({ candles, tf, quote, range = null, entry = null, exit = null, now = null, bep = null, pickRange = false, height = 384 }) {
+export default function CandleChart({ candles, tf, quote, range = null, ranges = null, onRangeClick = null, entry = null, exit = null, now = null, bep = null, pickRange = false, height = 384 }) {
   const box = useRef(null);
   const ref = useRef(null);            // { chart, series, vol, overlay, markers }
+  // Pita & penangan klik dibaca dari ref oleh langganan klik yang dipasang sekali.
+  const bandsRef = useRef({ ranges, onRangeClick });
+  bandsRef.current = { ranges, onRangeClick };
   const [hover, setHover] = useState(null);
   const [scale, setScale] = useState(null);   // null = otomatis
   const [pal, setPal] = useState(palette);
@@ -148,7 +163,7 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
   };
   const entryT = snap(entry?.t), exitT = snap(exit?.t);
   const entryBefore = !!(entry?.t && data.length && data[0].time * 1000 > entry.t);
-  const dom = useMemo(() => domainOf(data.map((d) => ({ o: d.open, h: d.high, l: d.low, c: d.close })), { entryP: entry?.p, exitP: exit?.p, nowP: now, bep, range, pickRange }), [data, entry?.p, exit?.p, now, bep, range, pickRange]);
+  const dom = useMemo(() => domainOf(data.map((d) => ({ o: d.open, h: d.high, l: d.low, c: d.close })), { entryP: entry?.p, exitP: exit?.p, nowP: now, bep, range, ranges, pickRange }), [data, entry?.p, exit?.p, now, bep, range, ranges, pickRange]);
   // Log kalau rentang harga yang tampil lebih dari 4× — pergerakan persen jadi sebanding.
   const log = scale ? scale === 'log' : !!(dom && dom.hi / dom.lo > 4);
 
@@ -190,8 +205,22 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
       setHover(d && e.time != null ? { ...d, v: e.seriesData.get(vol)?.value ?? 0 } : null);
     };
     chart.subscribeCrosshairMove(onMove);
+    // Klik pita rentang -> pilih posisinya. Pita yang paling sempit menang kalau
+    // bertumpuk; kursor jadi telunjuk saat melayang di atas pita yang bisa diklik.
+    const bandAt = (point) => {
+      const { ranges: rs, onRangeClick: cb } = bandsRef.current;
+      if (!rs?.length || !cb || !point) return null;
+      const price = series.coordinateToPrice(point.y);
+      if (!(price > 0)) return null;
+      const hits = rs.filter((b) => price >= b.lo && price <= b.hi).sort((a, b) => (a.hi / a.lo) - (b.hi / b.lo));
+      return hits[0] || null;
+    };
+    const onClick = (e) => { const b = bandAt(e.point); if (b) bandsRef.current.onRangeClick(b.id); };
+    const onHover = (e) => { el.style.cursor = bandAt(e.point) ? 'pointer' : ''; };
+    chart.subscribeClick(onClick);
+    chart.subscribeCrosshairMove(onHover);
     ref.current = { chart, series, vol, overlay, markers, lines: [], dom: null };
-    return () => { chart.unsubscribeCrosshairMove(onMove); chart.remove(); ref.current = null; };
+    return () => { chart.unsubscribeCrosshairMove(onMove); chart.unsubscribeCrosshairMove(onHover); chart.unsubscribeClick(onClick); chart.remove(); ref.current = null; };
   }, []);
 
   // Warna mengikuti tema.
@@ -233,7 +262,7 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
     // di sumbu (merah 0,0106 dan putih 0,0106) cuma berisik.
     const lastClose = data[data.length - 1]?.close;
     if (now > 0 && !exit && !(lastClose > 0 && Math.abs(now / lastClose - 1) < 0.003)) line(now, withAlpha(pal.fg, 0.55), t('kini'), LineStyle.Dotted);
-    r.overlay.set({ range, entryT, exitT, entryBefore, c: pal, dark: pal.dark });
+    r.overlay.set({ range, ranges, entryT, exitT, entryBefore, c: pal, dark: pal.dark });
     r.markers.setMarkers([
       ...(entryT != null && !entryBefore ? [{ time: entryT, position: 'belowBar', color: pal.accent, shape: 'arrowUp', text: t('masuk') }] : []),
       ...(exitT != null ? [{ time: exitT, position: 'aboveBar', color: pal.warning, shape: 'arrowDown', text: t('keluar') }] : []),
@@ -243,7 +272,7 @@ export default function CandleChart({ candles, tf, quote, range = null, entry = 
       r.chart.timeScale().applyOptions({ rightOffset: 3 });
       fittedTf.current = tf;
     }
-  }, [data, tf, dom, entry?.p, exit?.p, entryT, exitT, entryBefore, now, bep, range, pickRange, pal]);
+  }, [data, tf, dom, entry?.p, exit?.p, entryT, exitT, entryBefore, now, bep, range, ranges, pickRange, pal]);
 
   const last = data[data.length - 1];
   const h = hover || (last && { ...last, v: last.value });

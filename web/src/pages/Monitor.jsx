@@ -1,6 +1,7 @@
-// Monitor: semua posisi terbuka dalam satu layar, satu kartu per posisi — grafik
-// lilin dengan pita rentang, harga live dari chain, PnL, dan seberapa dekat posisi
-// itu ke tiap aturan keluar otomatis. Pertanyaan yang dijawab halaman ini adalah
+// Monitor: semua posisi terbuka dalam satu layar, satu kartu per POOL — grafik
+// lilin dengan semua rentang posisi di pool itu sebagai pita berwarna (bisa diklik
+// untuk memilih posisinya), harga live dari chain, PnL, dan seberapa dekat posisi
+// yang dipilih ke tiap aturan keluar otomatis. Pertanyaan yang dijawab halaman ini adalah
 // "masih bertahan atau tidak?": halaman Posisi memberi angkanya, halaman detail
 // memberi satu grafik; di sini semuanya berdampingan supaya lima posisi bisa
 // dipantau tanpa berpindah halaman.
@@ -11,6 +12,10 @@
 //   /api/prices     3 dtk  — harga semua pool dalam SATU batch eth_call
 //   /api/market    45 dtk  — lilin GeckoTerminal per pool, dimulai bergiliran supaya
 //                            sepuluh kartu tidak menembak GeckoTerminal serentak
+//
+// Satu pool = satu sumbu harga, jadi lima posisi di pool yang sama muat di satu
+// grafik; dua pool berbeda untuk token yang sama (fee lain / kuotasi lain) tetap
+// jadi dua kartu karena harganya tidak sebanding.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, toast } from '@heroui/react';
 import { Activity, ArrowUpRight, LayoutGrid, Rows3 } from 'lucide-react';
@@ -84,6 +89,10 @@ function riskOf(p, trig, edge) {
 }
 
 const EDGE_CLS = { danger: 'border-l-danger', warning: 'border-l-warning', ok: 'border-l-success' };
+// Warna pita per posisi di satu pool: dipilih supaya tetap bisa dibedakan di tema
+// gelap maupun terang, dan tidak memakai hijau/merah yang sudah berarti untung/rugi.
+const BAND_COLORS = ['#3b82f6', '#a855f7', '#f97316', '#14b8a6', '#ec4899', '#eab308', '#06b6d4', '#8b5cf6'];
+const LEVEL_RANK = { danger: 2, warning: 1, ok: 0 };
 
 // Satu bar pemicu keluar: label kiri, angka kini/ambang kanan, batang di bawah.
 function TriggerBar({ x }) {
@@ -105,28 +114,33 @@ function TriggerBar({ x }) {
   );
 }
 
-// Grafik lilin satu kartu: lilin GeckoTerminal dipoll jarang, lilin terakhirnya
-// digerakkan harga live. Mulai polling setelah `delay` ms supaya kartu-kartu tidak
-// menembak GeckoTerminal serentak (jatah ~30 panggilan/menit per IP).
-function CardChart({ p, tf, live, delay, height }) {
+// Grafik lilin satu kartu (satu pool): lilin GeckoTerminal dipoll jarang, lilin
+// terakhirnya digerakkan harga live. Semua posisi di pool ini jadi pita rentang
+// berwarna; garis masuk & BEP hanya untuk posisi yang dipilih supaya tidak ramai.
+// Mulai polling setelah `delay` ms supaya kartu-kartu tidak menembak GeckoTerminal
+// serentak (jatah ~30 panggilan/menit per IP).
+function CardChart({ g, sel, onPick, tf, live, delay, height }) {
   const { t } = useI18n();
+  const p0 = g.p0;
   const [go, setGo] = useState(delay === 0);
   useEffect(() => { if (go) return undefined; const id = setTimeout(() => setGo(true), delay); return () => clearTimeout(id); }, [go, delay]);
-  // Dibulatkan ke kelipatan 50: umur posisi bertambah tiap poll, dan URL yang
-  // berubah tiap 5 detik akan memaksa lilin diambil ulang tiap 5 detik.
-  const span = (p.ageHours || 0) * 3600;
+  // Cukup lilin supaya posisi tertua di pool ini terlihat titik masuknya. Dibulatkan
+  // ke kelipatan 50: umur bertambah tiap poll, dan URL yang berubah tiap 5 detik
+  // akan memaksa lilin diambil ulang tiap 5 detik.
+  const span = Math.max(...g.items.map((x) => x.p.ageHours || 0)) * 3600;
   const limit = Math.min(500, Math.max(150, Math.ceil((span / SECS[tf] + 40) / 50) * 50));
-  const { data: m } = usePoll(go ? `/api/market?pool=${p.pool_ref}&tf=${tf}&limit=${limit}&token=${p.baseToken || ''}&pair=0` : null, 45000);
-  const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
-  const full = p.tick_lower <= -880000 && p.tick_upper >= 880000;
-  const a = at(p.tick_lower), b = at(p.tick_upper);
-  const range = full ? null : { lo: Math.min(a, b), hi: Math.max(a, b) };
-  const pEntry = sqrtPrice(p.entrySqrt, p.dec0, p.dec1, p.quoteSide);
-  const pNow = live?.price ?? (p.curSqrt ? sqrtPrice(p.curSqrt, p.dec0, p.dec1, p.quoteSide) : (p.curTick != null ? at(p.curTick) : null));
-  const oriented = useMemo(() => orientCandles(m?.ohlcv, p.baseToken, pNow ?? pEntry), [m, p.baseToken, pNow, pEntry]);
-  const candles = useLiveCandles(oriented, SECS[tf], live, `${p.pool_ref}:${tf}:mon`);
-  const bep = breakEven(p);
-  const quote = p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null;
+  const { data: m } = usePoll(go ? `/api/market?pool=${p0.pool_ref}&tf=${tf}&limit=${limit}&token=${p0.baseToken || ''}&pair=0` : null, 45000);
+  const at = (tick) => tickPrice(tick, p0.dec0, p0.dec1, p0.quoteSide);
+  const pEntry = sel ? sqrtPrice(sel.p.entrySqrt, p0.dec0, p0.dec1, p0.quoteSide) : null;
+  const pNow = live?.price ?? (p0.curSqrt ? sqrtPrice(p0.curSqrt, p0.dec0, p0.dec1, p0.quoteSide) : (p0.curTick != null ? at(p0.curTick) : null));
+  const oriented = useMemo(() => orientCandles(m?.ohlcv, p0.baseToken, pNow ?? pEntry), [m, p0.baseToken, pNow, pEntry]);
+  const candles = useLiveCandles(oriented, SECS[tf], live, `${p0.pool_ref}:${tf}:mon`);
+  const ranges = useMemo(() => g.items.filter((x) => !x.full).map((x) => {
+    const a = at(x.p.tick_lower), b = at(x.p.tick_upper);
+    return { id: x.p.id, lo: Math.min(a, b), hi: Math.max(a, b), color: x.color, label: x.tag, selected: sel?.p.id === x.p.id };
+  }), [g.items, sel?.p.id]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const bep = sel ? breakEven(sel.p) : null;
+  const quote = p0.quoteSide === 0 ? p0.symbol0 : p0.quoteSide === 1 ? p0.symbol1 : null;
   if (!m) return <div className="flex items-center justify-center" style={{ height }}><Loading text={go ? 'Memuat lilin…' : 'Antre…'} /></div>;
   if (m.ohlcv?.error || !candles.length) {
     return (
@@ -137,8 +151,8 @@ function CardChart({ p, tf, live, delay, height }) {
     );
   }
   return (
-    <CandleChart candles={candles} tf={tf} quote={quote} height={height} range={range}
-      entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: pEntry } : null}
+    <CandleChart candles={candles} tf={tf} quote={quote} height={height} ranges={ranges} onRangeClick={onPick}
+      entry={sel && (sel.p.opened_ts || pEntry != null) ? { t: sel.p.opened_ts, p: pEntry } : null}
       now={pNow} bep={bep?.price > 0 ? bep.price : null} />
   );
 }
@@ -160,96 +174,141 @@ function MarketStrip({ pair }) {
   );
 }
 
-function MonitorCard({ p, mon, live, tf, dense, delay, trig, edge, risk, pair, actions }) {
+// Legenda posisi di satu pool: satu chip per posisi, warnanya sama dengan pitanya
+// di grafik; klik chip = pilih posisi (sama seperti klik pitanya).
+function PositionChips({ items, selId, onPick }) {
+  const { t } = useI18n();
+  return (
+    <div className="flex flex-wrap gap-1.5" role="tablist" aria-label={t('Posisi di pool ini')}>
+      {items.map((x) => {
+        const on = x.p.id === selId;
+        const inR = x.edge ? x.edge.ok : x.p.inRange;
+        return (
+          <button key={x.p.id} type="button" role="tab" aria-selected={on} onClick={() => onPick(x.p.id)}
+            title={x.full ? t('Seluruh rentang') : `${price(x.lo)} – ${price(x.hi)}`}
+            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[0.6875rem] transition-colors ${on ? 'border-transparent bg-default text-foreground' : 'border-border text-muted hover:text-foreground'}`}
+            style={on ? { boxShadow: `inset 0 0 0 1px ${x.color}` } : undefined}>
+            <span className="inline-block size-2 rounded-sm" style={{ background: x.color }} />
+            <span className="mono font-medium">{x.tag}</span>
+            <span className={`num ${tone(x.p.pnlUsd)}`}>{x.p.syncing ? '—' : pct(x.p.pnlPct, 1)}</span>
+            {inR != null && <Dot tone={inR ? 'success' : 'danger'} />}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MonitorCard({ g, tf, dense, delay, actions }) {
   const { t } = useI18n();
   const { close, closing, claim, claiming, reload } = actions;
-  const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
-  const full = p.tick_lower <= -880000 && p.tick_upper >= 880000;
-  const pEntry = sqrtPrice(p.entrySqrt, p.dec0, p.dec1, p.quoteSide);
-  const pNow = live?.price ?? (p.curSqrt ? sqrtPrice(p.curSqrt, p.dec0, p.dec1, p.quoteSide) : (p.curTick != null ? at(p.curTick) : null));
+  const p0 = g.p0;
+  // Posisi yang dipilih: pilihan pengguna kalau masih ada, kalau tidak yang paling
+  // berisiko di pool ini (urutan g.items sudah begitu).
+  const [pick, setPick] = useState(null);
+  const sel = g.items.find((x) => x.p.id === pick) || g.items[0];
+  const p = sel.p;
+  const at = (tick) => tickPrice(tick, p0.dec0, p0.dec1, p0.quoteSide);
+  const pEntry = sqrtPrice(p.entrySqrt, p0.dec0, p0.dec1, p0.quoteSide);
+  const pNow = g.live?.price ?? (p0.curSqrt ? sqrtPrice(p0.curSqrt, p0.dec0, p0.dec1, p0.quoteSide) : (p0.curTick != null ? at(p0.curTick) : null));
   const move = pEntry != null && pNow != null ? (pNow / pEntry - 1) * 100 : null;
-  const quote = p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null;
-  // In-range dinilai dari tick live kalau ada — lebih segar daripada hasil sinkron.
-  const inRange = edge ? edge.ok : p.inRange;
+  const quote = p0.quoteSide === 0 ? p0.symbol0 : p0.quoteSide === 1 ? p0.symbol1 : null;
+  const inRange = sel.edge ? sel.edge.ok : p.inRange;
   const busy = closing != null || claiming != null;
   const headline = inRange == null ? null : inRange ? ['IN-RANGE', 'text-success', 'success'] : ['DI LUAR RENTANG', 'text-danger', 'danger'];
+  const many = g.items.length > 1;
+  const sum = (f) => g.items.reduce((a, x) => a + (f(x.p) || 0), 0);
+  const gPnl = sum((x) => x.pnlUsd);
 
   return (
-    <article className={`flex min-w-0 flex-col rounded-lg border border-border border-l-[3px] bg-surface ${EDGE_CLS[risk.level]}`} aria-label={`${p.symbol0}/${p.symbol1}`}>
-      {/* kepala: pasangan, sumber, umur — status besar di kanan */}
+    <article className={`flex min-w-0 flex-col rounded-lg border border-border border-l-[3px] bg-surface ${EDGE_CLS[g.risk.level]}`} aria-label={`${p0.symbol0}/${p0.symbol1}`}>
+      {/* kepala: pasangan & pool di kiri, status posisi terpilih di kanan */}
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 px-4 pt-3 pb-2">
         <div className="flex min-w-0 items-center gap-2.5">
-          <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={dense ? 22 : 26} />
+          <TokenPair token0={p0.token0} token1={p0.token1} symbol0={p0.symbol0} symbol1={p0.symbol1} size={dense ? 22 : 26} />
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
-              <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} sep="/" className="text-sm font-semibold" />
-              <a href={'#positions/' + p.id} className="text-muted hover:text-foreground" title={t('Buka detail posisi')} aria-label={t('Buka detail posisi')}><ArrowUpRight className="size-3.5" /></a>
+              <PairName token0={p0.token0} token1={p0.token1} symbol0={p0.symbol0} symbol1={p0.symbol1} pool={p0.pool_ref} sep="/" className="text-sm font-semibold" />
+              <a href={'#positions/' + p.id} className="text-muted hover:text-foreground" title={t('Buka detail posisi {tag}', { tag: sel.tag })} aria-label={t('Buka detail posisi {tag}', { tag: sel.tag })}><ArrowUpRight className="size-3.5" /></a>
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.6875rem] text-muted">
-              <span className="uppercase">{p.venue}</span><span>·</span><span className="num">{num(p.fee / 10000, 2)}%</span>
-              {p.token_id && <><span>·</span><span className="mono">#{p.token_id}</span></>}
-              <span>·</span><span>{age(p.ageHours)}</span>
+              <span className="uppercase">{p0.venue}</span><span>·</span><span className="num">{num(p0.fee / 10000, 2)}%</span>
               <span>·</span>
-              {p.target ? <a href={'#targets/' + p.target} className="hover:underline">{p.targetLabel || short(p.target)}</a> : <span>{t('manual')}</span>}
-              {p.takeover_ts != null && <span className="rounded bg-warning/15 px-1 py-px font-medium text-warning">{t('Kendali manual')}</span>}
+              {many
+                ? <span>{t('{n} posisi', { n: g.items.length })} · <span className="num">{usd(sum((x) => x.valueUsd))}</span> · <span className={`num ${tone(gPnl)}`}>{usd(gPnl)}</span></span>
+                : <><span>{age(p.ageHours)}</span><span>·</span>{p.target ? <a href={'#targets/' + p.target} className="hover:underline">{p.targetLabel || short(p.target)}</a> : <span>{t('manual')}</span>}</>}
             </div>
           </div>
         </div>
         <div className="text-end">
           {headline
-            ? <div className={`flex items-center justify-end gap-1.5 text-xs font-semibold tracking-wide ${headline[1]}`}><Dot tone={headline[2]} />{t(headline[0])}</div>
+            ? <div className={`flex items-center justify-end gap-1.5 text-xs font-semibold tracking-wide ${headline[1]}`}><Dot tone={headline[2]} />{t(headline[0])}{many && <span className="mono font-medium text-muted">{sel.tag}</span>}</div>
             : <div className="text-xs text-muted">{t(p.syncing ? 'menyinkronkan…' : 'belum tersinkron')}</div>}
-          {edge && <div className={`num text-[0.6875rem] ${edge.ok ? 'text-muted' : 'text-danger'}`}>{edge.text}</div>}
-          {full && <div className="text-[0.6875rem] text-muted">{t('Seluruh rentang')}</div>}
+          {sel.edge && <div className={`num text-[0.6875rem] ${sel.edge.ok ? 'text-muted' : 'text-danger'}`}>{sel.edge.text}</div>}
+          {sel.full && <div className="text-[0.6875rem] text-muted">{t('Seluruh rentang')}</div>}
         </div>
       </div>
 
-      {/* harga kini + rentang, lalu grafik */}
+      {/* legenda posisi (hanya kalau lebih dari satu) */}
+      {many && <div className="px-4 pb-2"><PositionChips items={g.items} selId={p.id} onPick={setPick} /></div>}
+
+      {/* harga kini + rentang posisi terpilih, lalu grafik */}
       <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-1 px-4 pb-1">
         <div className="num text-lg leading-tight font-semibold tracking-tight">
           {price(pNow)}{quote && <span className="ml-1 text-xs font-medium text-muted">{quote}</span>}
           {move != null && <span className={`ml-2 text-xs font-medium ${tone(move)}`} title={t('dari harga masuk')}>{pct(move, 1)}</span>}
-          {live && <span className="ml-2 align-middle text-[0.6875rem] font-normal"><LiveBadge /></span>}
+          {g.live && <span className="ml-2 align-middle text-[0.6875rem] font-normal"><LiveBadge /></span>}
         </div>
-        {!full && <div className="num text-[0.6875rem] text-muted">{t('rentang')} <span className="text-foreground">{price(Math.min(at(p.tick_lower), at(p.tick_upper)))} – {price(Math.max(at(p.tick_lower), at(p.tick_upper)))}</span></div>}
+        {!sel.full && <div className="num text-[0.6875rem] text-muted">
+          <span className="mr-1 inline-block size-2 rounded-sm align-middle" style={{ background: sel.color }} />
+          {t('rentang')} <span className="text-foreground">{price(sel.lo)} – {price(sel.hi)}</span>
+        </div>}
       </div>
       <div className="px-1">
-        <CardChart p={p} tf={tf} live={live} delay={delay} height={dense ? 170 : 250} />
+        <CardChart g={g} sel={sel} onPick={setPick} tf={tf} live={g.live} delay={delay} height={dense ? 170 : 250} />
       </div>
 
-      {/* pita rentang linear + angka kunci */}
-      <div className="grid gap-3 px-4 pt-2 pb-3 sm:grid-cols-[auto_1fr] sm:items-center">
-        <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={live?.tick ?? p.curTick} dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide}
-          symbol0={p.symbol0} symbol1={p.symbol1} entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} showPrices={false} />
-        <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs sm:grid-cols-4">
-          <div><dt className="text-[0.6875rem] text-muted">{t('Nilai')}</dt><dd className="num font-medium">{usd(p.valueUsd)}<span className="ml-1 font-normal text-muted">/ {usd(p.costUsd)}</span></dd></div>
-          <div><dt className="text-[0.6875rem] text-muted">PnL</dt><dd className={`num font-medium ${tone(p.pnlUsd)}`}>{p.syncing ? '—' : <>{usd(p.pnlUsd)} <span className="font-normal">{pct(p.pnlPct, 2)}</span></>}</dd></div>
-          <div><dt className="text-[0.6875rem] text-muted">{t('Fee belum diklaim')}</dt><dd className={`num font-medium ${p.feeUsd > 0.005 ? 'text-success' : ''}`}>{p.syncing ? '—' : usd(p.feeUsd)}</dd></div>
-          <div><dt className="text-[0.6875rem] text-muted">IL</dt><dd className={`num font-medium ${tone(p.ilUsd)}`}>{p.ilUsd == null ? '—' : usd(p.ilUsd)}</dd></div>
-        </dl>
+      {/* posisi terpilih: sumber & umur (kalau banyak), pita rentang linear, angka kunci */}
+      <div className="px-4 pt-2 pb-3">
+        {many && <div className="mb-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.6875rem] text-muted">
+          <span className="mono font-medium text-foreground">{sel.tag}</span><span>·</span>
+          <span>{age(p.ageHours)}</span><span>·</span>
+          {p.target ? <a href={'#targets/' + p.target} className="hover:underline">{p.targetLabel || short(p.target)}</a> : <span>{t('manual')}</span>}
+          {p.takeover_ts != null && <span className="rounded bg-warning/15 px-1 py-px font-medium text-warning">{t('Kendali manual')}</span>}
+        </div>}
+        <div className="grid gap-3 sm:grid-cols-[auto_1fr] sm:items-center">
+          <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={g.live?.tick ?? p.curTick} dec0={p0.dec0} dec1={p0.dec1} quoteSide={p0.quoteSide}
+            symbol0={p0.symbol0} symbol1={p0.symbol1} entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} showPrices={false} />
+          <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs sm:grid-cols-4">
+            <div><dt className="text-[0.6875rem] text-muted">{t('Nilai')}</dt><dd className="num font-medium">{usd(p.valueUsd)}<span className="ml-1 font-normal text-muted">/ {usd(p.costUsd)}</span></dd></div>
+            <div><dt className="text-[0.6875rem] text-muted">PnL</dt><dd className={`num font-medium ${tone(p.pnlUsd)}`}>{p.syncing ? '—' : <>{usd(p.pnlUsd)} <span className="font-normal">{pct(p.pnlPct, 2)}</span></>}</dd></div>
+            <div><dt className="text-[0.6875rem] text-muted">{t('Fee belum diklaim')}</dt><dd className={`num font-medium ${p.feeUsd > 0.005 ? 'text-success' : ''}`}>{p.syncing ? '—' : usd(p.feeUsd)}</dd></div>
+            <div><dt className="text-[0.6875rem] text-muted">IL</dt><dd className={`num font-medium ${tone(p.ilUsd)}`}>{p.ilUsd == null ? '—' : usd(p.ilUsd)}</dd></div>
+          </dl>
+        </div>
       </div>
 
-      {/* pemicu keluar otomatis */}
+      {/* pemicu keluar otomatis posisi terpilih */}
       <div className="border-t border-border px-4 py-3">
         <div className="mb-2 flex items-center justify-between text-[0.6875rem]">
-          <span className="font-medium">{t('Pemicu keluar otomatis')}</span>
-          {mon?.stale && <span className="text-warning" title={t('Nilai posisi dari sinkron terakhir tidak terbaca; aturan mandiri menunggu sinkron yang berhasil.')}>{t('data basi')}</span>}
-          {!mon?.stale && mon?.exit?.follow_target && p.target && p.takeover_ts == null && <span className="text-muted">{t('ikut target keluar')}</span>}
+          <span className="font-medium">{t('Pemicu keluar otomatis')}{many && <span className="mono ml-1.5 font-medium text-muted">{sel.tag}</span>}</span>
+          {sel.mon?.stale && <span className="text-warning" title={t('Nilai posisi dari sinkron terakhir tidak terbaca; aturan mandiri menunggu sinkron yang berhasil.')}>{t('data basi')}</span>}
+          {!sel.mon?.stale && sel.mon?.exit?.follow_target && p.target && p.takeover_ts == null && <span className="text-muted">{t('ikut target keluar')}</span>}
         </div>
-        {!mon ? <div className="text-xs text-muted">…</div>
-          : trig.length === 0 ? <p className="text-xs text-muted">{t('Tidak ada aturan keluar mandiri yang aktif untuk posisi ini — hanya ditutup mengikuti target atau manual.')}</p>
-          : <div className={`grid gap-x-4 gap-y-2.5 ${dense ? 'sm:grid-cols-2' : 'sm:grid-cols-2 xl:grid-cols-3'}`}>{trig.map((x) => <TriggerBar key={x.key} x={x} />)}</div>}
+        {!sel.mon ? <div className="text-xs text-muted">…</div>
+          : sel.trig.length === 0 ? <p className="text-xs text-muted">{t('Tidak ada aturan keluar mandiri yang aktif untuk posisi ini — hanya ditutup mengikuti target atau manual.')}</p>
+          : <div className={`grid gap-x-4 gap-y-2.5 ${dense ? 'sm:grid-cols-2' : 'sm:grid-cols-2 xl:grid-cols-3'}`}>{sel.trig.map((x) => <TriggerBar key={x.key} x={x} />)}</div>}
       </div>
 
-      {/* pasar + aksi */}
+      {/* pasar + aksi untuk posisi terpilih */}
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-border px-4 py-2.5">
-        <MarketStrip pair={pair} />
+        <MarketStrip pair={g.pair} />
         {!p.empty && (
           <div className="ml-auto flex flex-wrap justify-end gap-1.5">
             <AutoCompoundButton p={p} reload={reload} disabled={busy} />
             <TakeoverButton p={p} reload={reload} disabled={busy} />
-            <Button size="sm" variant="secondary" isPending={claiming === p.id} isDisabled={busy} onPress={() => claim(p)}>{t('Claim fee')}</Button>
-            <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={busy} onPress={() => close(p)}>{t('Tutup')}</Button>
+            <Button size="sm" variant="secondary" isPending={claiming === p.id} isDisabled={busy} onPress={() => claim(p)}>{t('Claim fee')}{many && <span className="mono ml-1 opacity-70">{sel.tag}</span>}</Button>
+            <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={busy} onPress={() => close(p)}>{t('Tutup')}{many && <span className="mono ml-1 opacity-70">{sel.tag}</span>}</Button>
           </div>
         )}
       </div>
@@ -258,18 +317,18 @@ function MonitorCard({ p, mon, live, tf, dense, delay, trig, edge, risk, pair, a
   );
 }
 
-// Peringatan saat kartu berubah status: masuk → keluar rentang, atau pemicu keluar
-// melewati 80 %. Hanya perubahan yang dibunyikan — bukan setiap poll — dan status
-// pertama yang terbaca tidak dianggap perubahan (membuka halaman dengan tiga posisi
-// di luar rentang tidak boleh langsung meraung).
-function useMonitorAlerts(cards) {
+// Peringatan saat sebuah posisi berubah status: masuk → keluar rentang, atau pemicu
+// keluar melewati 80 %. Hanya perubahan yang dibunyikan — bukan setiap poll — dan
+// status pertama yang terbaca tidak dianggap perubahan (membuka halaman dengan tiga
+// posisi di luar rentang tidak boleh langsung meraung).
+function useMonitorAlerts(items) {
   const { t } = useI18n();
   const prefs = useAlertPrefs();
   const seen = useRef(new Map());
   useEffect(() => {
-    if (!cards.length) return;
+    if (!items.length) return;
     const news = [];
-    for (const c of cards) {
+    for (const c of items) {
       const key = c.p.id;
       // Garis dasar baru dicatat setelah aturan keluarnya tiba: sebelum itu semua
       // bar kosong, dan "muncul"-nya bar saat /api/monitor mendarat bukan perubahan.
@@ -279,7 +338,7 @@ function useMonitorAlerts(cards) {
       const prev = seen.current.get(key);
       seen.current.set(key, cur);
       if (!prev) continue;
-      const pair = `${c.p.symbol0}/${c.p.symbol1}`;
+      const pair = `${c.p.symbol0}/${c.p.symbol1} ${c.tag}`;
       if (cur.out && !prev.out) news.push(['warning', t('{pair} keluar dari rentang', { pair }), c.edge?.text || null]);
       if (cur.hot && !prev.hot) {
         const x = c.trig.filter((y) => !y.good).sort((a, b) => b.ratio - a.ratio)[0];
@@ -290,7 +349,7 @@ function useMonitorAlerts(cards) {
     for (const [kind, title, desc] of news) toast[kind](title, { description: desc || undefined, timeout: 12000 });
     if (prefs.enabled && prefs.sound) alarm();
     bumpTitle(news.length);
-  }, [cards, prefs.enabled, prefs.sound, t]);
+  }, [items, prefs.enabled, prefs.sound, t]);
 }
 
 export default function Monitor() {
@@ -312,20 +371,22 @@ export default function Monitor() {
   const fresh = px && Date.now() - px.ts < 30_000 ? px : null;
 
   const now = Date.now();
-  const cards = useMemo(() => open.map((p) => {
+  // Satu butir per posisi: harga live pool-nya, jarak ke tepi, pemicu, risiko.
+  const items = useMemo(() => open.map((p) => {
     const ref = String(p.pool_ref || '').toLowerCase();
     const s = fresh?.prices?.[ref];
     const price_ = s ? sqrtPrice(s.sqrt, p.dec0, p.dec1, p.quoteSide) : null;
     const live = price_ > 0 ? { price: price_, ts: fresh.ts, tick: s.tick } : null;
     const tick = live?.tick ?? p.curTick;
     const full = p.tick_lower <= -880000 && p.tick_upper >= 880000;
+    const at = (x) => tickPrice(x, p.dec0, p.dec1, p.quoteSide);
+    const a = p.tick_lower != null ? at(p.tick_lower) : null, b = p.tick_upper != null ? at(p.tick_upper) : null;
+    const lo = a != null ? Math.min(a, b) : null, hi = a != null ? Math.max(a, b) : null;
     let edge = null;
-    if (tick != null && !full && p.tick_lower != null) {
-      const at = (x) => tickPrice(x, p.dec0, p.dec1, p.quoteSide);
-      const a = at(p.tick_lower), b = at(p.tick_upper), pLo = Math.min(a, b), pHi = Math.max(a, b);
+    if (tick != null && !full && lo != null) {
       const pNow = live?.price ?? at(tick);
       if (tick >= p.tick_lower && tick < p.tick_upper) {
-        const toLo = (pNow / pLo - 1) * 100, toHi = (pHi / pNow - 1) * 100;
+        const toLo = (pNow / lo - 1) * 100, toHi = (hi / pNow - 1) * 100;
         const m = Math.min(toLo, toHi);
         edge = { ok: true, pctToEdge: m, text: t(toLo < toHi ? '{n}% ke tepi bawah' : '{n}% ke tepi atas', { n: num(m, 1) }) };
       } else {
@@ -335,24 +396,45 @@ export default function Monitor() {
     }
     const m = mon?.positions?.[p.id] || null;
     const trig = triggersOf(p, m, live?.tick ?? null, now, t);
-    return { p, mon: m, live, edge, trig, risk: riskOf(p, trig, edge), pair: mk?.pairs?.[ref] || null };
-  }), [open, fresh, mon, mk, now, t]);
+    // Nama pendek posisi: nomor NFT-nya kalau ada (itu yang tampil di Uniswap), kalau tidak id bot.
+    const tag = p.token_id ? `#${p.token_id}` : `#${p.id}`;
+    return { p, ref, mon: m, live, edge, full, lo, hi, tag, trig, risk: riskOf(p, trig, edge) };
+  }), [open, fresh, mon, now, t]);
+
+  // Kelompokkan per pool; di dalam pool urut paling berisiko dulu (posisi terpilih
+  // awal), warna pita mengikuti urutan id supaya tidak berganti saat urutan risiko
+  // berubah. Risiko kartu = posisi terburuk di pool itu.
+  const groups = useMemo(() => {
+    const by = new Map();
+    for (const x of items) { if (!by.has(x.ref)) by.set(x.ref, []); by.get(x.ref).push(x); }
+    return [...by.entries()].map(([ref, list]) => {
+      const byId = [...list].sort((a, b) => a.p.id - b.p.id);
+      byId.forEach((x, i) => { x.color = BAND_COLORS[i % BAND_COLORS.length]; });
+      const sorted = [...list].sort((a, b) => b.risk.score - a.risk.score || (a.p.pnlPct ?? 0) - (b.p.pnlPct ?? 0));
+      const worst = sorted[0];
+      const risk = { level: worst.risk.level, score: worst.risk.score };
+      for (const x of list) if (LEVEL_RANK[x.risk.level] > LEVEL_RANK[risk.level]) risk.level = x.risk.level;
+      return { ref, p0: list[0].p, items: sorted, live: list[0].live, risk, pair: mk?.pairs?.[ref] || null,
+        pnlPct: (() => { const c = list.reduce((a, x) => a + (x.p.costUsd || 0), 0); return c > 0 ? list.reduce((a, x) => a + (x.p.pnlUsd || 0), 0) / c * 100 : 0; })(),
+        valueUsd: list.reduce((a, x) => a + (x.p.valueUsd || 0), 0), ageHours: Math.max(...list.map((x) => x.p.ageHours || 0)) };
+    });
+  }, [items, mk]);
 
   const sorted = useMemo(() => {
-    const s = [...cards];
-    const by = { risk: (a, b) => b.risk.score - a.risk.score || (a.p.pnlPct ?? 0) - (b.p.pnlPct ?? 0),
-      pnl: (a, b) => (a.p.pnlPct ?? 0) - (b.p.pnlPct ?? 0), value: (a, b) => (b.p.valueUsd || 0) - (a.p.valueUsd || 0),
-      age: (a, b) => (b.p.ageHours || 0) - (a.p.ageHours || 0) }[prefs.sort] || (() => 0);
+    const s = [...groups];
+    const by = { risk: (a, b) => b.risk.score - a.risk.score || a.pnlPct - b.pnlPct,
+      pnl: (a, b) => a.pnlPct - b.pnlPct, value: (a, b) => b.valueUsd - a.valueUsd,
+      age: (a, b) => b.ageHours - a.ageHours }[prefs.sort] || (() => 0);
     return s.sort(by);
-  }, [cards, prefs.sort]);
-  useMonitorAlerts(cards);
+  }, [groups, prefs.sort]);
+  useMonitorAlerts(items);
 
-  // Jarak mulai poll lilin per kartu: urutan tetap per posisi (bukan per urutan
+  // Jarak mulai poll lilin per kartu: urutan tetap per pool (bukan per urutan
   // tampil) supaya mengubah urutan tidak memulai ulang polling.
-  const delayOf = useMemo(() => new Map(open.map((p, i) => [p.id, i * 600])), [open]);
+  const delayOf = useMemo(() => new Map(pools.map((ref, i) => [ref, i * 600])), [pools]);
 
   const header = (
-    <PageHeader group="Pemantauan" title="Monitor" desc="Semua posisi terbuka dalam satu layar: grafik dengan rentang, harga live dari chain, PnL, dan seberapa dekat tiap posisi ke aturan keluar otomatis.">
+    <PageHeader group="Pemantauan" title="Monitor" desc="Semua posisi terbuka dalam satu layar: satu grafik per pool dengan rentang tiap posisi sebagai pita berwarna (klik pita untuk memilih), harga live dari chain, PnL, dan seberapa dekat posisi ke aturan keluar otomatis.">
       <Segmented size="sm" aria="Rentang lilin" value={prefs.tf} onChange={(tf) => setPrefs({ tf })} options={TFS} />
       <Segmented size="sm" aria="Urutan" value={prefs.sort} onChange={(sort) => setPrefs({ sort })} options={SORTS} />
       <div className="inline-flex rounded-lg border border-border bg-surface p-0.5" role="group" aria-label={t('Ukuran kartu')}>
@@ -375,11 +457,11 @@ export default function Monitor() {
   }
 
   const sum = (f) => open.reduce((a, p) => a + (f(p) || 0), 0);
-  const inN = cards.filter((c) => (c.edge ? c.edge.ok : c.p.inRange) === true).length;
-  const outN = cards.filter((c) => (c.edge ? c.edge.ok : c.p.inRange) === false).length;
-  const danger = cards.filter((c) => c.risk.level === 'danger').length;
+  const inN = items.filter((c) => (c.edge ? c.edge.ok : c.p.inRange) === true).length;
+  const outN = items.filter((c) => (c.edge ? c.edge.ok : c.p.inRange) === false).length;
+  const danger = items.filter((c) => c.risk.level === 'danger').length;
   const pnl = sum((p) => p.pnlUsd), cost = sum((p) => p.costUsd);
-  const tfOf = (p) => (prefs.tf === 'auto' ? tfFor(p.ageHours) : prefs.tf);
+  const tfOf = (g) => (prefs.tf === 'auto' ? tfFor(g.ageHours) : prefs.tf);
 
   return (
     <>
@@ -387,7 +469,7 @@ export default function Monitor() {
       {error && <div className="mb-4"><Notice status="warning" title="Gagal memperbarui daftar posisi">{error} — {t('data di bawah dari pembaruan terakhir.')}</Notice></div>}
       {/* pita ringkasan: angka yang dicari sebelum membaca kartu satu per satu */}
       <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-border bg-surface px-4 py-2.5 text-xs">
-        <span className="inline-flex items-center gap-1.5 font-medium"><Activity className="size-3.5 text-muted" />{t('{n} posisi terbuka', { n: open.length })}</span>
+        <span className="inline-flex items-center gap-1.5 font-medium"><Activity className="size-3.5 text-muted" />{t('{n} posisi terbuka', { n: open.length })}{groups.length !== open.length && <span className="font-normal text-muted">· {t('{n} pool', { n: groups.length })}</span>}</span>
         <span><Dot tone="success" /> <span className="num">{inN}</span> {t('in-range')}</span>
         <span><Dot tone="danger" /> <span className="num">{outN}</span> {t('di luar')}</span>
         {danger > 0 && <span className="font-medium text-danger">{t('{n} perlu perhatian', { n: danger })}</span>}
@@ -399,8 +481,8 @@ export default function Monitor() {
         </span>
       </div>
       <div className={`grid gap-4 ${prefs.dense ? 'lg:grid-cols-2 2xl:grid-cols-3' : 'xl:grid-cols-2'}`}>
-        {sorted.map((c) => (
-          <MonitorCard key={c.p.id} {...c} tf={tfOf(c.p)} dense={prefs.dense} delay={delayOf.get(c.p.id) || 0}
+        {sorted.map((g) => (
+          <MonitorCard key={g.ref} g={g} tf={tfOf(g)} dense={prefs.dense} delay={delayOf.get(g.ref) || 0}
             actions={{ close, closing, claim, claiming, reload }} />
         ))}
       </div>

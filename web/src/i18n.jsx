@@ -1793,7 +1793,7 @@ const EN = {
   'Tidak ada hasil untuk "{q}"': 'No results for "{q}"',
   // Halaman Monitor
   'Monitor': 'Monitor',
-  'Semua posisi terbuka dalam satu layar: grafik dengan rentang, harga live dari chain, PnL, dan seberapa dekat tiap posisi ke aturan keluar otomatis.': 'Every open position on one screen: chart with your range, live on-chain price, PnL, and how close each position is to an automatic exit rule.',
+  'Semua posisi terbuka dalam satu layar: satu grafik per pool dengan rentang tiap posisi sebagai pita berwarna (klik pita untuk memilih), harga live dari chain, PnL, dan seberapa dekat posisi ke aturan keluar otomatis.': 'Every open position on one screen: one chart per pool with each position\'s range as a coloured band (click a band to select it), live on-chain price, PnL, and how close the position is to an automatic exit rule.',
   'Otomatis': 'Auto',
   'Paling berisiko': 'Riskiest first',
   'Kartu besar': 'Large cards',
@@ -1817,6 +1817,8 @@ const EN = {
   'Grafik belum tersedia': 'Chart unavailable',
   'vol': 'vol',
   'Buka detail posisi': 'Open position detail',
+  'Buka detail posisi {tag}': 'Open position {tag}',
+  'Posisi di pool ini': 'Positions in this pool',
   'manual': 'manual',
   'IN-RANGE': 'IN RANGE',
   'DI LUAR RENTANG': 'OUT OF RANGE',
