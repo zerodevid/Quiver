@@ -309,12 +309,16 @@ async function scenario() {
   await until();
 
   await say('source');
-  await find({ text: T('Kalender PnL', 'PnL calendar'), minW: 600, minH: 400 });
-  await spot({ text: T('Kinerja per sumber', 'Performance by source'), minW: 400, minH: 250 });
-  await hover({ text: T('Kinerja per sumber', 'Performance by source') }, 800);
-  await sleep(1500);
-  await spot({ text: T('Kalender PnL', 'PnL calendar'), minW: 600, minH: 400 });
-  await sleep(1200);
+  // Kalender dulu (sorotan mengikuti urutan narasi), baru kinerja per sumber.
+  const cal = { text: T('Kalender PnL', 'PnL calendar'), minW: 600, minH: 400 };
+  await find(cal); await spot(cal);
+  const calBox = await rect(cal);
+  if (calBox) { await glide(calBox.x + calBox.width * 0.3, calBox.y + calBox.height * 0.45, 700); await glide(calBox.x + calBox.width * 0.7, calBox.y + calBox.height * 0.6, 1100); }
+  await sleep(1400);
+  const src = { text: T('Kinerja per sumber', 'Performance by source'), minW: 400, minH: 250 };
+  await spot(src);
+  await hover(src, 800);
+  await sleep(1800);
   await unspot();
   await until();
 
@@ -322,7 +326,18 @@ async function scenario() {
   await scrollTop(1200);
   const active = { text: T('Posisi aktif', 'Active positions'), prefix: true, minW: 900, minH: 150 };
   await find(active); await spot(active, 6); await sleep(300); await unspot();
-  if (await click('a[href^="#positions/"]')) {
+  // Baris -> laci posisi (PnL, komposisi token) -> tombol "Halaman detail & grafik".
+  let drilled = false;
+  if (await click(row(0))) {
+    tl.pops.push(at());
+    await page.waitForFunction(() => { const d = document.querySelector('[role=dialog]'); return d && !/Loading…|Memuat…/.test(d.innerText); }, null, { timeout: 9000 }).catch(() => {});
+    await sleep(1600);
+    const dlg = await rect('[role=dialog]');
+    if (dlg) { await glide(dlg.x + dlg.width * 0.5, dlg.y + dlg.height * 0.35, 900); await sleep(1200); }
+    drilled = await click(`[role=dialog] button:has-text("${T('Halaman detail & grafik', 'Detail page & chart')}")`);
+    if (!drilled) await page.keyboard.press('Escape');
+  }
+  if (drilled) {
     await page.locator('canvas').first().waitFor({ state: 'visible', timeout: 12000 }).catch(() => {});
     await sleep(900);
     const cv = await zoomIn('canvas', 1.3);
