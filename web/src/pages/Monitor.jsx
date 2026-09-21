@@ -251,11 +251,11 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
         </div>
       </div>
 
-      {/* Total pool (hanya kalau lebih dari satu posisi): PnL gabungan dibuat besar —
-          inilah angka yang dilihat pertama saat memutuskan bertahan atau tidak di pool
-          ini, sebelum turun ke posisi satu per satu. */}
-      {many && (
-        <div className="mx-4 mb-2 flex flex-wrap items-center justify-between gap-x-5 gap-y-1.5 rounded-md bg-default/50 px-3 py-2">
+      {/* Total pool: PnL gabungan dibuat besar — inilah angka yang dilihat pertama
+          saat memutuskan bertahan atau tidak di pool ini, sebelum turun ke posisi satu
+          per satu. Tampil juga untuk pool berposisi tunggal supaya semua kartu punya
+          angka besar di tempat yang sama. */}
+      <div className="mx-4 mb-2 flex flex-wrap items-center justify-between gap-x-5 gap-y-1.5 rounded-md bg-default/50 px-3 py-2">
           <div>
             <div className="text-[0.6875rem] text-muted">{t('PnL seluruh pool')} · {t('{n} posisi', { n: g.items.length })}</div>
             <div className={`num text-xl leading-tight font-semibold tracking-tight ${tone(gPnl)}`}>
@@ -268,7 +268,6 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
             <div><dt className="text-[0.6875rem] text-muted">{t('Fee belum diklaim')}</dt><dd className={`num font-medium ${gFee > 0.005 ? 'text-success' : ''}`}>{usd(gFee)}</dd></div>
           </dl>
         </div>
-      )}
       {/* legenda posisi (hanya kalau lebih dari satu) */}
       {many && <div className="px-4 pb-2"><PositionChips items={g.items} selId={p.id} onPick={setPick} /></div>}
 
