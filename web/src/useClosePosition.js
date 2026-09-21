@@ -64,12 +64,14 @@ export function useClosePosition(reload) {
   // Semua posisi dalam daftar, satu per satu — bukan paralel, supaya nonce wallet
   // tidak saling salip dan kalau satu gagal yang lain tetap dicoba. Satu konfirmasi
   // untuk semuanya; hasil tiap posisi tetap dilaporkan sendiri-sendiri.
-  const closeAll = async (list) => {
+  // `pair` (opsional): nama pool kalau daftarnya cuma posisi satu pool (Monitor),
+  // supaya konfirmasinya tidak terbaca seperti menutup seluruh portofolio.
+  const closeAll = async (list, { pair = null } = {}) => {
     if (closing != null || !list?.length) return;
     const value = list.reduce((s, p) => s + (p.valueUsd || 0), 0);
     const fee = list.reduce((s, p) => s + (p.feeUsd || 0), 0);
     const ok = await ask({
-      title: t('Tutup semua {n} posisi terbuka?', { n: list.length }),
+      title: pair ? t('Tutup semua {n} posisi {pair}?', { n: list.length, pair }) : t('Tutup semua {n} posisi terbuka?', { n: list.length }),
       body: fee > 0.005
         ? t('Ditutup satu per satu; tiap posisi satu transaksi. Nilai sekarang {v} + fee {f}.', { v: usd(value), f: usd(fee) })
         : t('Ditutup satu per satu; tiap posisi satu transaksi. Nilai sekarang {v}.', { v: usd(value) }),

@@ -201,7 +201,7 @@ function PositionChips({ items, selId, onPick }) {
 
 function MonitorCard({ g, tf, dense, delay, actions }) {
   const { t } = useI18n();
-  const { close, closing, claim, claiming, reload } = actions;
+  const { close, closeAll, closing, claim, claiming, reload } = actions;
   const p0 = g.p0;
   // Posisi yang dipilih: pilihan pengguna kalau masih ada, kalau tidak yang paling
   // berisiko di pool ini (urutan g.items sudah begitu).
@@ -218,7 +218,9 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
   const headline = inRange == null ? null : inRange ? ['IN-RANGE', 'text-success', 'success'] : ['DI LUAR RENTANG', 'text-danger', 'danger'];
   const many = g.items.length > 1;
   const sum = (f) => g.items.reduce((a, x) => a + (f(x.p) || 0), 0);
-  const gPnl = sum((x) => x.pnlUsd);
+  const gPnl = sum((x) => x.pnlUsd), gCost = sum((x) => x.costUsd), gFee = sum((x) => x.feeUsd);
+  const gIn = g.items.filter((x) => (x.edge ? x.edge.ok : x.p.inRange) === true).length;
+  const pairName = `${p0.symbol0}/${p0.symbol1}`;
 
   return (
     <article className={`flex min-w-0 flex-col rounded-lg border border-border border-l-[3px] bg-surface ${EDGE_CLS[g.risk.level]}`} aria-label={`${p0.symbol0}/${p0.symbol1}`}>
@@ -235,7 +237,7 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
               <span className="uppercase">{p0.venue}</span><span>·</span><span className="num">{num(p0.fee / 10000, 2)}%</span>
               <span>·</span>
               {many
-                ? <span>{t('{n} posisi', { n: g.items.length })} · <span className="num">{usd(sum((x) => x.valueUsd))}</span> · <span className={`num ${tone(gPnl)}`}>{usd(gPnl)}</span></span>
+                ? <span>{t('{n} posisi', { n: g.items.length })} · <span className="num">{gIn}/{g.items.length}</span> {t('in-range')}</span>
                 : <><span>{age(p.ageHours)}</span><span>·</span>{p.target ? <a href={'#targets/' + p.target} className="hover:underline">{p.targetLabel || short(p.target)}</a> : <span>{t('manual')}</span>}</>}
             </div>
           </div>
@@ -249,6 +251,24 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
         </div>
       </div>
 
+      {/* Total pool (hanya kalau lebih dari satu posisi): PnL gabungan dibuat besar —
+          inilah angka yang dilihat pertama saat memutuskan bertahan atau tidak di pool
+          ini, sebelum turun ke posisi satu per satu. */}
+      {many && (
+        <div className="mx-4 mb-2 flex flex-wrap items-center justify-between gap-x-5 gap-y-1.5 rounded-md bg-default/50 px-3 py-2">
+          <div>
+            <div className="text-[0.6875rem] text-muted">{t('PnL seluruh pool')} · {t('{n} posisi', { n: g.items.length })}</div>
+            <div className={`num text-xl leading-tight font-semibold tracking-tight ${tone(gPnl)}`}>
+              {usd(gPnl)}{gCost > 0 && <span className="ml-1.5 text-sm font-medium">({pct((gPnl / gCost) * 100, 2)})</span>}
+            </div>
+          </div>
+          <dl className="grid grid-cols-3 gap-x-4 text-xs">
+            <div><dt className="text-[0.6875rem] text-muted">{t('Nilai')}</dt><dd className="num font-medium">{usd(sum((x) => x.valueUsd))}</dd></div>
+            <div><dt className="text-[0.6875rem] text-muted">{t('Modal')}</dt><dd className="num font-medium">{usd(gCost)}</dd></div>
+            <div><dt className="text-[0.6875rem] text-muted">{t('Fee belum diklaim')}</dt><dd className={`num font-medium ${gFee > 0.005 ? 'text-success' : ''}`}>{usd(gFee)}</dd></div>
+          </dl>
+        </div>
+      )}
       {/* legenda posisi (hanya kalau lebih dari satu) */}
       {many && <div className="px-4 pb-2"><PositionChips items={g.items} selId={p.id} onPick={setPick} /></div>}
 
@@ -309,6 +329,11 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
             <TakeoverButton p={p} reload={reload} disabled={busy} />
             <Button size="sm" variant="secondary" isPending={claiming === p.id} isDisabled={busy} onPress={() => claim(p)}>{t('Claim fee')}{many && <span className="mono ml-1 opacity-70">{sel.tag}</span>}</Button>
             <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={busy} onPress={() => close(p)}>{t('Tutup')}{many && <span className="mono ml-1 opacity-70">{sel.tag}</span>}</Button>
+            {/* Tutup semua posisi di pool ini: satu konfirmasi, ditutup berurutan. */}
+            {many && <Button size="sm" variant="danger" isPending={closing != null && closing !== p.id} isDisabled={busy}
+              onPress={() => closeAll(g.items.filter((x) => !x.p.empty).map((x) => x.p), { pair: pairName })}>
+              {t('Tutup semua')} <span className="num ml-1 opacity-80">({g.items.length})</span>
+            </Button>}
           </div>
         )}
       </div>
@@ -359,7 +384,7 @@ export default function Monitor() {
   const { data: d, error, reload } = usePoll('/api/positions', 5000);
   const { data: mon } = usePoll('/api/monitor', 10000);
   const [resync, syncing] = useResync(reload);
-  const { close, closing } = useClosePosition(reload);
+  const { close, closeAll, closing } = useClosePosition(reload);
   const { claim, claiming } = useClaimFees(reload);
   useTick(1000);   // bar "lama di luar rentang" dan jam kesegaran berdetak
 
@@ -483,7 +508,7 @@ export default function Monitor() {
       <div className={`grid gap-4 ${prefs.dense ? 'lg:grid-cols-2 2xl:grid-cols-3' : 'xl:grid-cols-2'}`}>
         {sorted.map((g) => (
           <MonitorCard key={g.ref} g={g} tf={tfOf(g)} dense={prefs.dense} delay={delayOf.get(g.ref) || 0}
-            actions={{ close, closing, claim, claiming, reload }} />
+            actions={{ close, closeAll, closing, claim, claiming, reload }} />
         ))}
       </div>
       <p className="mt-4 text-[0.6875rem] text-muted">

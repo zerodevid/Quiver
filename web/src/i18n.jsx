@@ -1819,6 +1819,8 @@ const EN = {
   'Buka detail posisi': 'Open position detail',
   'Buka detail posisi {tag}': 'Open position {tag}',
   'Posisi di pool ini': 'Positions in this pool',
+  'PnL seluruh pool': 'Whole-pool PnL',
+  'Tutup semua {n} posisi {pair}?': 'Close all {n} {pair} positions?',
   'manual': 'manual',
   'IN-RANGE': 'IN RANGE',
   'DI LUAR RENTANG': 'OUT OF RANGE',
