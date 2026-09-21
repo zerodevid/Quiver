@@ -27,7 +27,7 @@ import { breakEven } from '../breakeven';
 import CandleChart from '../components/CandleChart';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
-import { PageHeader, Panel, Empty, Loading, Notice, PriceRange, Refresh, Segmented, Dot } from '../components/ui';
+import { PageHeader, Panel, Empty, Loading, Notice, PriceRange, Refresh, Segmented, Dot, TradeLinks, DataLinks, baseTokenOf } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
 import { useAlertPrefs, alarm, bumpTitle } from '../components/TargetAlerts';
 import { orientCandles, tfFor, SECS, LiveBadge, kUsd } from './PositionDetail';
@@ -233,6 +233,10 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
             <div className="flex items-center gap-1.5">
               <PairName token0={p0.token0} token1={p0.token1} symbol0={p0.symbol0} symbol1={p0.symbol1} pool={p0.pool_ref} sep="/" className="text-sm font-semibold" />
               <a href={'#positions/' + p.id} className="text-muted hover:text-foreground" title={t('Buka detail posisi {tag}', { tag: sel.tag })} aria-label={t('Buka detail posisi {tag}', { tag: sel.tag })}><ArrowUpRight className="size-3.5" /></a>
+              {/* Tumpukan logo: GMGN / Based / fomo / Uniswap, lalu DexScreener / GeckoTerminal —
+                  satu klik dari kartu ke terminal luar untuk token & pool ini. */}
+              <TradeLinks token={baseTokenOf(p0)} pool={p0.pool_ref} compact className="ml-1" />
+              <DataLinks pool={p0.pool_ref} dexUrl={g.pair?.url} className="ml-0.5" compact />
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.6875rem] text-muted">
               <span className="uppercase">{p0.venue}</span><span>·</span><span className="num">{num(p0.fee / 10000, 2)}%</span>

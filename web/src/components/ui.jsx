@@ -736,7 +736,7 @@ export function TradeLinks({ token, pool = null, compact = false, className = ''
 // Data pasar pihak ketiga (DexScreener, GeckoTerminal) — halaman pool kalau pool
 // diketahui, halaman token kalau cuma tokennya. dexUrl: URL DexScreener yang sudah
 // diberikan API pasangan, lebih tepat daripada menebak dari alamat.
-export function DataLinks({ pool = null, token = null, dexUrl = null, className = '' }) {
+export function DataLinks({ pool = null, token = null, dexUrl = null, compact = false, className = '' }) {
   const ref = pool || token;
   if (!ref) return null;
   const c = chainInfo();
@@ -746,5 +746,5 @@ export function DataLinks({ pool = null, token = null, dexUrl = null, className 
     { key: 'geckoterminal', label: 'GeckoTerminal', icon: '/geckoterminal.jpg', brand: '#8b5cf6',
       href: `https://www.geckoterminal.com/${c.geckoterminal || c.key}/${pool ? 'pools' : 'tokens'}/${ref}` },
   ];
-  return <LinkBar tag="Chart" links={links} className={className} />;
+  return <LinkBar tag="Chart" links={links} compact={compact} className={className} />;
 }
