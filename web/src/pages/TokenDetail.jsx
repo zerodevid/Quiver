@@ -9,6 +9,7 @@ import AdvancedChart from '../components/AdvancedChart';
 import { usePoll } from '../hooks';
 import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink, TradeLinks, DataLinks } from '../components/ui';
 import TokenIcon, { TokenPair, PairName } from '../components/TokenIcon';
+import { GmgnTokenPanel, GmgnWallets } from '../components/Gmgn';
 import { BotPositions, WalletPositions, TargetMoves } from '../components/LpTables';
 import PositionHistory from '../components/PositionHistory';
 import WalletPositionHistory from '../components/WalletPositionHistory';
@@ -133,6 +134,7 @@ export default function TokenDetail({ param }) {
               <KV label="Posisi bot">{t('{o} terbuka · {c} ditutup', { o: d.open.length, c: d.closed.length })}</KV>
             </div>
           </Panel>
+          <GmgnTokenPanel address={a} />
           {sel && (
             <Panel title="Pool terpilih" desc="DexScreener · diperbarui tiap 30 detik" bodyClass="p-0">
               <MarketPanel pair={sel} pool={sel.pool} />
@@ -140,6 +142,8 @@ export default function TokenDetail({ param }) {
           )}
         </div>
       </div>
+
+      <GmgnWallets address={a} kind="holders" symbol={tk.symbol} className="mt-4" />
 
       {pairs.length > 0 && (
         <Panel title={t('Pool ({n})', { n: pairs.length })} className="mt-4" bodyClass="p-0">

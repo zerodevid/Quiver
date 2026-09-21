@@ -20,6 +20,7 @@ const { gtTradesUrl, normalizeTrades } = require('./trades.mjs');
 // rentang posisi bisa ditumpangkan. Baca-saja cukup header X-APIKEY; paket gratis
 // ~1 permintaan/detik per key.
 const GMGN_API = 'https://openapi.gmgn.ai';
+const gmgnNorm = require('./gmgn');
 
 // Rentang waktu lilin yang ditawarkan UI -> (timeframe, aggregate) GeckoTerminal.
 const TF = {
@@ -226,6 +227,53 @@ class Market {
       }
       const candles = [...byT.values()].sort((a, b) => a.t - b.t);
       return { tf, secs, candles, source: 'gmgn', currency: 'usd', base: { address: String(token).toLowerCase() }, quote: null, fetchedAt: Date.now() };
+    });
+  }
+
+  // Profil token menurut GMGN: info + security (bobot 1 + 1), sekali per menit per
+  // token. Salah satu boleh gagal — yang lain tetap dipakai dan galatnya dibawa.
+  gmgnToken(address) {
+    const a = String(address).toLowerCase();
+    if (!this.gmgnKey()) return Promise.resolve({ enabled: false });
+    return this.memo(`gmgn-token:${a}`, 60_000, async () => {
+      const [info, sec] = await Promise.all([
+        this.gmgn('/v1/token/info', { address: a }).catch((e) => ({ error: e.message })),
+        this.gmgn('/v1/token/security', { address: a }).catch((e) => ({ error: e.message })),
+      ]);
+      if (info?.error && sec?.error) return { error: info.error };
+      return {
+        enabled: true, address: a,
+        ...(info?.error ? { infoError: info.error } : gmgnNorm.normalizeTokenInfo(info)),
+        security: sec?.error ? null : gmgnNorm.normalizeTokenSecurity(sec),
+        securityError: sec?.error || null,
+        fetchedAt: Date.now(),
+      };
+    });
+  }
+
+  // Pemegang / trader teratas satu token (bobot 5 — sekali panggil menghabiskan
+  // bucket paket gratis), jadi disimpan 3 menit dan hanya ditarik saat panelnya dibuka.
+  gmgnWallets(address, { kind = 'holders', limit = 50, orderBy = null } = {}) {
+    const a = String(address).toLowerCase();
+    if (!this.gmgnKey()) return Promise.resolve({ enabled: false });
+    const n = Math.max(5, Math.min(100, Number(limit) || 50));
+    const path = kind === 'traders' ? '/v1/market/token_top_traders' : '/v1/market/token_top_holders';
+    return this.memo(`gmgn-${kind}:${a}:${n}:${orderBy || ''}`, 180_000, async () => {
+      const d = await this.gmgn(path, { address: a, limit: n, ...(orderBy ? { order_by: orderBy } : {}) });
+      if (d?.error) return d;
+      return { enabled: true, address: a, kind, rows: gmgnNorm.normalizeWallets(d), fetchedAt: Date.now() };
+    });
+  }
+
+  // Statistik trading satu wallet menurut GMGN (bobot 3), 5 menit.
+  gmgnWallet(address, { period = '7d' } = {}) {
+    const a = String(address).toLowerCase();
+    if (!this.gmgnKey()) return Promise.resolve({ enabled: false });
+    const per = period === '30d' ? '30d' : '7d';
+    return this.memo(`gmgn-wallet:${a}:${per}`, 300_000, async () => {
+      const d = await this.gmgn('/v1/user/wallet_stats', { wallet_address: a, period: per });
+      if (d?.error) return d;
+      return { enabled: true, address: a, ...gmgnNorm.normalizeWalletStats(d, per), fetchedAt: Date.now() };
     });
   }
 

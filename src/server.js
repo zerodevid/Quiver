@@ -1032,6 +1032,32 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       me: String(engine.exec.address() || '').toLowerCase() || null,
       targets: Object.fromEntries(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label || null])),
     }),
+    // ---- OpenAPI GMGN (butuh API key; tanpa key semua menjawab { enabled: false }) ----
+    // Profil token: info + keamanan kontrak — kartu "Menurut GMGN" dan sinyal
+    // tambahan di kesehatan pool.
+    'GET /api/gmgn/token': async (req, url) => {
+      const a = String(url.searchParams.get('address') || '').toLowerCase();
+      if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat token tidak valid' };
+      return market.gmgnToken(a);
+    },
+    // Pemegang / trader teratas, dengan nama wallet yang dikenal bot.
+    'GET /api/gmgn/wallets': async (req, url) => {
+      const a = String(url.searchParams.get('address') || '').toLowerCase();
+      if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat token tidak valid' };
+      const kind = url.searchParams.get('kind') === 'traders' ? 'traders' : 'holders';
+      const orderBy = ['amount_percentage', 'profit', 'unrealized_profit', 'buy_volume_cur', 'sell_volume_cur'].includes(url.searchParams.get('order')) ? url.searchParams.get('order') : null;
+      const r = await market.gmgnWallets(a, { kind, limit: Number(url.searchParams.get('limit') || 50), orderBy });
+      if (!r?.rows) return r;
+      const labels = new Map(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label || null]));
+      const me = String(engine.exec.address() || '').toLowerCase();
+      return { ...r, rows: r.rows.map((x) => ({ ...x, target: labels.has(x.address), label: labels.get(x.address) || null, mine: !!me && x.address === me })) };
+    },
+    // Statistik trading satu wallet (target / wallet riset) menurut GMGN.
+    'GET /api/gmgn/wallet': async (req, url) => {
+      const a = String(url.searchParams.get('address') || '').toLowerCase();
+      if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat wallet tidak valid' };
+      return market.gmgnWallet(a, { period: url.searchParams.get('period') || '7d' });
+    },
     'GET /api/pool-depth': async (req, url) => {
       const ref = String(url.searchParams.get('ref') || '').toLowerCase();
       if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(ref)) return { error: 'pool tidak valid' };

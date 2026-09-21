@@ -14,6 +14,7 @@ import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, TradeLi
 import { TokenPair, TokenSym } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves } from '../components/LpTables';
 import { PriceChart, DexEmbed, GmgnEmbed, TradesTape, MarketPanel, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc } from './PositionDetail';
+import { GmgnWallets } from '../components/Gmgn';
 import { usd, pct, tone, num, price, sqrtPrice, tickPrice } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -151,6 +152,7 @@ export default function PoolDetail({ param }) {
       </div>
 
       <div className="mt-4"><LiquidityRisk key={ref} pool={{ ...pool, pool_ref: ref }} focus={focus} /></div>
+      <GmgnWallets address={pool.baseToken} kind="traders" symbol={base} className="mt-4" />
 
       <BotPositions open={d.open} closed={d.closed} onFocus={setFocus} focusId={focus?.id} onHist={setHist}
         loading={loading} className="mt-4" />

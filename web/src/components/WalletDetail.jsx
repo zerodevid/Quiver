@@ -6,6 +6,7 @@ import { Button, Card, ProgressBar, Spinner, toast } from '@heroui/react';
 import { RefreshCw, Plus, Check } from 'lucide-react';
 import { get, post } from '../api';
 import { Panel, DataTable, Empty, Loading, PriceRange, Pick, Notice, Stat, KV, Refreshing } from './ui';
+import { GmgnWalletCard } from './Gmgn';
 import { TokenPair, PairName } from './TokenIcon';
 import PnlCalendar from './PnlCalendar';
 import WalletPositionHistory from './WalletPositionHistory';
@@ -371,6 +372,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
               <Stat label="Belum terealisasi" value={usd(s.unrealizedUsd || 0)} valueClass={tone(s.unrealizedUsd)}
                 sub={t('{n} posisi berjalan', { n: data.open.length })} />
             </div>
+            <GmgnWalletCard address={address} />
             {s.incompleteCount > 0 && <div className="mb-3"><Notice status="warning">{t('{n} posisi riwayatnya terpotong jendela pindai — tidak ikut dihitung. Perluas jendela untuk melengkapinya.', { n: s.incompleteCount })}</Notice></div>}
             <div className="mb-4 grid items-start gap-3 lg:grid-cols-5">
               <Panel title="Rincian" className="lg:col-span-2" bodyClass="px-4 py-1"

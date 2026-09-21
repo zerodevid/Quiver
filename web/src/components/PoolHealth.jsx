@@ -3,6 +3,7 @@ import { usePoll, useTick } from '../hooks';
 import { useI18n } from '../i18n';
 import { num, ago, short, price } from '../fmt';
 import { poolHealth } from '../poolHealth.mjs';
+import { GmgnSecurity } from './Gmgn';
 
 const STATUS = {
   healthy: ['Sehat pada indikator yang diperiksa', 'text-success', ShieldCheck],
@@ -16,7 +17,10 @@ export default function PoolHealth({ pool, pair, open = [] }) {
   const { data, error } = usePoll(token ? `/api/holders?token=${encodeURIComponent(token)}` : null, 15000);
   useTick(30000);
   const holders = data?.token === token?.toLowerCase() && !error ? data : null;
-  const h = poolHealth({ pool, pair, holders, open });
+  // Profil GMGN (keamanan kontrak, perilaku dev/trader) — hanya kalau API key ada.
+  const { data: gm } = usePoll(token ? `/api/gmgn/token?address=${encodeURIComponent(token)}` : null, 60000);
+  const gmgn = gm && gm.enabled !== false ? gm : undefined;
+  const h = poolHealth({ pool, pair, holders, open, gmgn });
   const [title, color, Icon] = STATUS[h.status];
   const items = h.holdersOk ? holders.items : [];
   return (
@@ -49,7 +53,8 @@ export default function PoolHealth({ pool, pair, open = [] }) {
           {h.holdersOk && <p className="mt-3 text-xs text-muted">{holders.source} · {ago(holders.snapshotAt || holders.fetchedAt)}{holders.block ? ` · ${t('Blok')} ${num(holders.block)}` : ''} <a className="ml-2 inline-flex items-center gap-1 text-accent" href={holders.url} target="_blank" rel="noreferrer">Blockscout <ExternalLink size={11} /></a></p>}
         </div>
       </div>
-      <details className="border-t border-border px-4 py-3 text-xs text-muted"><summary className="cursor-pointer">{t('Ambang penilaian')}</summary><p className="mt-2 leading-relaxed">{t('Waspada: turun ≥20%/24j atau ≥10%/1j, likuiditas <$50rb, satu alamat ≥10%, top 10 ≥40%, holder <100. Risiko tinggi: turun ≥50%/24j atau ≥20%/1j, likuiditas <$10rb, satu alamat ≥20%, top 10 ≥60%. Data tidak lengkap tidak diberi status sehat.')}</p></details>
+      {gmgn && <div className="border-t border-border px-4 py-3"><h3 className="mb-2 text-xs font-medium text-muted">{t('Keamanan kontrak')}</h3><GmgnSecurity g={gmgn} /></div>}
+      <details className="border-t border-border px-4 py-3 text-xs text-muted"><summary className="cursor-pointer">{t('Ambang penilaian')}</summary><p className="mt-2 leading-relaxed">{t('Waspada: turun ≥20%/24j atau ≥10%/1j, likuiditas <$50rb, satu alamat ≥10%, top 10 ≥40%, holder <100. Risiko tinggi: turun ≥50%/24j atau ≥20%/1j, likuiditas <$10rb, satu alamat ≥20%, top 10 ≥60%. Data tidak lengkap tidak diberi status sehat.')}{gmgn && <> {t('GMGN — waspada: pajak ≥3%, skor rug ≥20%, orang dalam ≥20%, bundler/rat ≥30% volume, dev sudah jual, wash trading, kontrak belum diverifikasi/owner belum dilepas. Risiko tinggi: honeypot, pajak ≥10%, skor rug ≥50%, orang dalam ≥40%.')}</>}</p></details>
     </section>
   );
 }
