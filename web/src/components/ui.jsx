@@ -346,11 +346,20 @@ const valOf = (c, r) => (c.sort ? c.sort(r) : r[c.key]);
 
 export function DataTable({
   label, columns, rows, rowKey, empty, dense, footer,
-  searchable, pageSize = 0, defaultSort, onRow,
+  searchable, pageSize = 0, defaultSort, onRow, pinTop,
 }) {
   const [sort, setSort] = useState(defaultSort || null);
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
+  // Jumlah baris per halaman bisa diubah pembaca; pilihannya diingat per tabel
+  // (kunci = label) di peramban. pageSize dari pemanggil hanya nilai awal.
+  const sizes = useMemo(() => (pageSize > 0 ? [...new Set([4, 10, 25, 50, 100, pageSize])].sort((a, b) => a - b) : []), [pageSize]);
+  const [size, setSizeRaw] = useState(() => {
+    if (!pageSize) return 0;
+    try { const v = Number(localStorage.getItem(`lpcopy.rows.${label}`)); if (v > 0) return v; } catch { /* penyimpanan diblokir */ }
+    return pageSize;
+  });
+  const setSize = (v) => { setSizeRaw(v); setPage(1); try { localStorage.setItem(`lpcopy.rows.${label}`, String(v)); } catch { /* abaikan */ } };
 
   const searchCols = columns.filter((c) => c.search || (c.sortable !== false && typeof valOf(c, rows[0] || {}) === 'string'));
   const filtered = useMemo(() => {
@@ -363,16 +372,18 @@ export function DataTable({
   }, [rows, q]);
 
   const sorted = useMemo(() => {
-    if (!sort?.column) return filtered;
-    const col = columns.find((c) => c.key === sort.column);
-    if (!col) return filtered;
-    const dir = sort.direction === 'descending' ? -1 : 1;
-    return [...filtered].sort((a, b) => cmp(valOf(col, a), valOf(col, b)) * dir);
-  }, [filtered, sort, columns]);
+    const col = sort?.column ? columns.find((c) => c.key === sort.column) : null;
+    if (!col && !pinTop) return filtered;
+    const dir = sort?.direction === 'descending' ? -1 : 1;
+    const byCol = col ? (a, b) => cmp(valOf(col, a), valOf(col, b)) * dir : () => 0;
+    // pinTop: baris yang lolos predikat selalu di atas (mis. posisi yang masih terbuka), apa pun kolom/arah sortirnya.
+    const order = pinTop ? (a, b) => (pinTop(b) ? 1 : 0) - (pinTop(a) ? 1 : 0) || byCol(a, b) : byCol;
+    return [...filtered].sort(order);
+  }, [filtered, sort, columns, pinTop]);
 
-  const pages = pageSize ? Math.max(1, Math.ceil(sorted.length / pageSize)) : 1;
+  const pages = size ? Math.max(1, Math.ceil(sorted.length / size)) : 1;
   const cur = Math.min(page, pages);
-  const view = pageSize ? sorted.slice((cur - 1) * pageSize, cur * pageSize) : sorted;
+  const view = size ? sorted.slice((cur - 1) * size, cur * size) : sorted;
 
   // Menyaring atau menyortir mengubah isi halaman — kembali ke halaman pertama.
   useEffect(() => { setPage(1); }, [q, sort?.column, sort?.direction, rows.length]);
@@ -380,7 +391,7 @@ export function DataTable({
   // Kotak cari di atas tabel berisi 2 baris cuma perabot kosong; muncul setelah
   // daftarnya cukup panjang untuk benar-benar perlu disaring.
   const bisaCari = searchable && rows.length >= 8;
-  const head = rows.length > 0 && (bisaCari || (pageSize > 0 && rows.length > pageSize));
+  const head = rows.length > 0 && (bisaCari || (size > 0 && rows.length > size));
   // Kolom pertama (nama pasangan/wallet) menempel saat tabel digulir mendatar — di
   // ponsel, tabel lebar cuma memperlihatkan satu-dua kolom; tanpa ini angka yang
   // digulir kehilangan barisnya. Bayangan di tepi kolom hanya saat sudah bergeser.
@@ -452,9 +463,18 @@ export function DataTable({
       {footer && rows.length > 0 && (
         <div className="border-t border-border px-4 py-2.5 text-sm">{footer}</div>
       )}
-      {pageSize > 0 && pages > 1 && (
-        <div className="border-t border-border px-4 py-3">
-          <Pager page={cur} pages={pages} total={sorted.length} pageSize={pageSize} onChange={setPage} />
+      {/* Kaki tabel tampil begitu daftarnya lebih panjang dari pilihan terkecil, supaya
+          jumlah baris tetap bisa dikecilkan meski semuanya sedang muat di satu halaman. */}
+      {size > 0 && sorted.length > sizes[0] && (
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 border-t border-border px-4 py-3">
+          <span className="flex items-center gap-2 text-xs text-muted">
+            {t('Baris per halaman')}
+            <Pick aria="Baris per halaman" className="w-20" value={String(size)} onChange={(v) => setSize(Number(v))}
+              options={sizes.map((n) => [String(n), String(n)])} />
+          </span>
+          {pages > 1
+            ? <Pager page={cur} pages={pages} total={sorted.length} pageSize={size} onChange={setPage} />
+            : <span className="text-sm text-muted">{t('{n} baris', { n: sorted.length })}</span>}
         </div>
       )}
     </div>
@@ -472,7 +492,7 @@ function Pager({ page, pages, total, pageSize, onChange }) {
     nums.push(pages);
   }
   return (
-    <Pagination>
+    <Pagination className="ml-auto w-auto">
       <Pagination.Summary>
         {t('Baris {a}–{b} dari {n}', { a: (page - 1) * pageSize + 1, b: Math.min(page * pageSize, total), n: total })}
       </Pagination.Summary>

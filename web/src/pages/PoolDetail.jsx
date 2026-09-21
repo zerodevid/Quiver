@@ -25,7 +25,7 @@ const DYNAMIC_FEE = 0x800000;   // penanda fee dinamis v4 (diatur hook)
 export default function PoolDetail({ param }) {
   const { t } = useI18n();
   const ref = String(param || '').toLowerCase();
-  const { data: d, loading } = usePoll(`/api/pool?ref=${encodeURIComponent(ref)}`, 15000);
+  const { data: d, loading, reload } = usePoll(`/api/pool?ref=${encodeURIComponent(ref)}`, 15000);
   // undefined = pilihan otomatis (posisi terbuka terbaru), null = tanpa posisi di grafik.
   const [focusPick, setFocus] = useState(undefined);
   const [tfPick, setTf] = useState(null);
@@ -155,7 +155,7 @@ export default function PoolDetail({ param }) {
       <GmgnWallets address={pool.baseToken} kind="traders" symbol={base} className="mt-4" />
 
       <BotPositions open={d.open} closed={d.closed} onFocus={setFocus} focusId={focus?.id} onHist={setHist}
-        loading={loading} className="mt-4" />
+        reload={reload} loading={loading} className="mt-4" />
       <PositionHistory id={hist} onClose={() => setHist(null)} />
       <WalletPositions rows={d.wallets} onHist={(p) => setWhist(wkey(p))} loading={loading} className="mt-4" />
       <WalletPositionHistory p={whist} address={whist?.wallet} onClose={() => setWhist(null)} />

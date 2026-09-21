@@ -7,8 +7,12 @@ import { TokenPair, PairName } from './TokenIcon';
 import { Pair } from '../pages/Positions';
 import { usd, pct, tone, ago, short, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
 import { useI18n, reason } from '../i18n';
+import { useClosePosition } from '../useClosePosition';
 
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
+
+// Posisi yang masih terbuka selalu ditampilkan di atas yang sudah ditutup.
+const isOpen = (p) => p.status === 'open';
 
 function Status({ open }) {
   const { t } = useI18n();
@@ -24,26 +28,58 @@ function When({ p }) {
   );
 }
 
+// Dari wallet mana posisi bot ini disalin. Versi ringkas kolom Sumber di halaman
+// Posisi: hanya label dan alamat target (plus nomor NFT aslinya), tanpa nasib
+// posisi aslinya — lpRows tidak menghitung itu, dan di halaman token/pool yang
+// ditanya pembaca adalah "ini ikut siapa", bukan "target untung berapa".
+function CopiedFrom({ p }) {
+  const { t } = useI18n();
+  if (!p.target) {
+    return (
+      <span className="text-xs text-muted" title={t('Posisi ini tidak menyalin target mana pun: dibuka manual, atau sudah ada di wallet sebelum bot memantaunya.')}>
+        {t('Manual / di luar bot')}
+      </span>
+    );
+  }
+  return (
+    <a href={'#targets/' + p.target} className="group block max-w-40" title={p.target}>
+      {p.targetLabel && <div className="truncate font-medium group-hover:underline">{p.targetLabel}</div>}
+      <div className="mono text-xs whitespace-nowrap text-muted group-hover:text-foreground">
+        {short(p.target)}{p.mirror_of ? ` · #${p.mirror_of}` : ''}
+      </div>
+    </a>
+  );
+}
+
 // Semua posisi bot (terbuka + tertutup) dengan modal, nilai/hasil, dan PnL.
 // onFocus: tombol "Grafik" per baris untuk menggambar posisi itu di grafik halaman.
 // onHist: klik baris -> laci riwayat posisi, sama seperti tabel di halaman Posisi.
-export function BotPositions({ open, closed, onFocus, focusId, onHist, loading = false, className = '' }) {
+// reload: dipanggil setelah posisi ditutup dari tabel ini; tanpa itu tombol tutup
+// tidak ditampilkan (halaman yang datanya tidak bisa dimuat ulang).
+export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, loading = false, className = '' }) {
   const { t } = useI18n();
+  const { close, closeAll, closing } = useClosePosition(reload);
   const rows = [...open.map((p) => ({ ...p, status: 'open' })), ...closed];
   const pnl = sum(rows, (p) => p.pnlUsd);
+  const canClose = !!reload;
   return (
     <Panel title={t('Posisi bot ({n})', { n: rows.length })} className={className} bodyClass="p-0"
       desc={onHist && rows.length > 0 ? 'Klik baris untuk riwayat transaksi dan catatan bot.' : undefined}
       action={<div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
         <Refreshing loading={loading} />
         {rows.length > 0 && <span className="text-xs"><span className="text-muted">PnL</span> <span className={`num font-medium ${tone(pnl)}`}>{usd(pnl)}</span></span>}
+        {canClose && open.length > 1 && (
+          <Button size="sm" variant="danger-soft" isPending={closing != null} isDisabled={closing != null} onPress={() => closeAll(open)}>
+            {t('Tutup semua ({n})', { n: open.length })}
+          </Button>)}
       </div>}>
       <DataTable label="Posisi bot" rows={rows} rowKey={(p) => p.id} pageSize={10}
         onRow={onHist ? (p) => onHist(p.id) : undefined}
-        defaultSort={{ column: 'when', direction: 'descending' }}
+        defaultSort={{ column: 'when', direction: 'descending' }} pinTop={isOpen}
         empty={<Empty title="Bot belum pernah membuka posisi di sini" />}
         columns={[
           { key: 'pair', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <Pair p={p} /> },
+          { key: 'tgt', label: 'Sumber', sort: (p) => p.targetLabel || p.target || '', render: (p) => <CopiedFrom p={p} /> },
           { key: 'st', label: 'Status', sort: (p) => p.status, render: (p) => <Status open={p.status === 'open'} /> },
           { key: 'range', label: 'Rentang harga', sortable: false, render: (p) => (
             <PriceRange position={p} lo={p.tick_lower} hi={p.tick_upper} cur={p.status === 'open' ? p.curTick : null}
@@ -57,10 +93,14 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, loading =
           { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnlUsd, render: (p) => (
             <div className={tone(p.pnlUsd)}>{usd(p.pnlUsd)}<div className="text-xs">{p.pnlPct == null ? '' : pct(p.pnlPct, 2)}</div></div>) },
           { key: 'when', label: 'Waktu', align: 'end', sort: (p) => p.closed_ts || p.opened_ts, render: (p) => <When p={p} /> },
-          ...(onFocus ? [{ key: 'act', label: '', sortable: false, className: 'text-end', render: (p) => (
-            p.id === focusId
-              ? <span className="text-xs text-muted">{t('di grafik')}</span>
-              : <Button size="sm" variant="outline" onPress={() => onFocus(p.id)}>{t('Grafik')}</Button>) }] : []),
+          ...(onFocus || canClose ? [{ key: 'act', label: '', sortable: false, className: 'text-end', render: (p) => (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {onFocus && (p.id === focusId
+                ? <span className="text-xs text-muted">{t('di grafik')}</span>
+                : <Button size="sm" variant="outline" onPress={() => onFocus(p.id)}>{t('Grafik')}</Button>)}
+              {canClose && p.status === 'open' && (
+                <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={closing != null} onPress={() => close(p)}>{t('Tutup')}</Button>)}
+            </div>) }] : []),
         ]} />
     </Panel>
   );
@@ -78,7 +118,7 @@ export function WalletPositions({ rows, onHist, loading = false, className = '' 
         : 'Modal dan hasil dari pemindaian wallet; posisi yang masih terbuka dinilai ulang di harga sekarang.'}
       className={className} bodyClass="p-0" action={<Refreshing loading={loading} />}>
       <DataTable label="Posisi wallet" rows={rows} rowKey={(p) => `${p.wallet}:${p.venue}:${p.token_id}`} searchable pageSize={15}
-        onRow={onHist} defaultSort={{ column: 'when', direction: 'descending' }}
+        onRow={onHist} defaultSort={{ column: 'when', direction: 'descending' }} pinTop={isOpen}
         columns={[
           { key: 'w', label: 'Wallet', sort: (p) => p.walletLabel || p.wallet, search: (p) => `${p.walletLabel || ''} ${p.wallet}`, render: (p) => (
             <a href={(p.isTarget ? '#targets/' : '#wallet/') + p.wallet} className="group block max-w-40" title={p.wallet}>

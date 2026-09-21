@@ -447,7 +447,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     const dec = (x) => toks.get(x)?.decimals ?? QUOTES[x]?.decimals ?? 18;
     const kOf = (q) => (chain.isEthLike(q) ? engine.ethUsd : 1);
 
+    // Label wallet: dipakai kolom sumber posisi bot (wallet target yang disalin),
+    // kolom wallet posisi riset, dan kolom target di gerakan target.
+    const labels = new Map(store.all('SELECT address,label FROM wallets WHERE chain=?', chain.network).map((w) => [w.address, w.label]));
+    for (const t of store.all('SELECT address,label FROM targets WHERE chain=?', chain.network)) if (t.label) labels.set(t.address, t.label);
+
     // Posisi bot. Yang terbuka dari hasil sinkron terakhir (nilai & PnL kini).
+    // targetLabel ditempel di salinan barisnya, bukan di objek live milik engine.
     const live = new Map(engine.positions.live.map((p) => [p.id, p]));
     const mine = store.all(`SELECT * FROM positions WHERE chain=? AND (${cond}) AND status IN ('open','closed')
       ORDER BY COALESCE(closed_ts, opened_ts) DESC LIMIT 200`, chain.network, ...args);
@@ -456,15 +462,16 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       if (r.status === 'open') {
         const l = live.get(r.id);
         if (l?.empty) continue;
-        open.push(l || {
-          ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
+        const targetLabel = labels.get(r.target) || null;
+        open.push(l ? { ...l, targetLabel } : {
+          ...r, targetLabel, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
           quoteSide: quoteSideOf(r.token0, r.token1), entrySqrt: Positions.entrySqrtOf(r), curTick: null, inRange: null,
           costUsd: (r.cost_quote || 0) * kOf(r.quote_symbol), valueUsd: (r.cost_quote || 0) * kOf(r.quote_symbol), feeUsd: 0, pnlUsd: 0, pnlPct: 0,
           ageHours: (Date.now() - (r.opened_ts || Date.now())) / 3600000,
         });
       } else {
         const cost = (r.cost_quote || 0) * kOf(r.quote_symbol), out = (r.out_quote || 0) * kOf(r.quote_symbol);
-        closed.push({ ...r, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
+        closed.push({ ...r, targetLabel: labels.get(r.target) || null, symbol0: sym(r.token0), symbol1: sym(r.token1), dec0: dec(r.token0), dec1: dec(r.token1),
           quoteSide: quoteSideOf(r.token0, r.token1), entrySqrt: Positions.entrySqrtOf(r), exitSqrt: r.exit_sqrt || null,
           costUsd: cost, outUsd: out, pnlUsd: out - cost, pnlPct: cost > 0 ? ((out - cost) / cost) * 100 : null,
           ageHours: ((r.closed_ts || Date.now()) - (r.opened_ts || Date.now())) / 3600000 });
@@ -472,8 +479,6 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     }
 
     // Posisi wallet hasil riset (target maupun wallet lain yang pernah dipindai).
-    const labels = new Map(store.all('SELECT address,label FROM wallets WHERE chain=?', chain.network).map((w) => [w.address, w.label]));
-    for (const t of store.all('SELECT address,label FROM targets WHERE chain=?', chain.network)) if (t.label) labels.set(t.address, t.label);
     const targets = new Set(store.all('SELECT address FROM targets WHERE chain=?', chain.network).map((t) => t.address));
     // liquidity & returned_q ikut dibaca karena penilaian ulang di bawah memerlukannya:
     // tanpa liquidity posisi v3 tak bisa dinilai, dan tanpa returned_q penarikan yang

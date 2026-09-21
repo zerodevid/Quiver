@@ -203,7 +203,7 @@ export function GmgnWallets({ address, kind = 'holders', symbol, className = '' 
       desc={<span className="inline-flex items-center gap-2"><Src at={g.fetchedAt} />{g.stale && <span className="text-warning">{t('tertunda')}</span>}</span>}
       action={<Segmented size="sm" aria="Urutan" value={order} onChange={setOrder} options={ORDERS[kind]} />}>
       {g.error ? <div className="p-4 text-sm text-muted">{t(g.error)}</div> : !g.rows ? <Loading /> : (
-        <DataTable label={title} rows={rows} rowKey={(r) => r.address} dense pageSize={25}
+        <DataTable label={title} rows={rows} rowKey={(r) => r.address} dense pageSize={kind === 'traders' ? 4 : 25}
           empty={<Empty title="Belum ada data" sub="GMGN belum punya daftar untuk token ini." />}
           columns={[
             { key: 'w', label: 'Wallet', sort: (r) => r.label || r.name || r.address, render: (r) => (

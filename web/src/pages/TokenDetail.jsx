@@ -42,7 +42,7 @@ function TokenChart({ m, tf, poolRef }) {
 export default function TokenDetail({ param }) {
   const { t } = useI18n();
   const a = String(param || '').toLowerCase();
-  const { data: d, loading } = usePoll(`/api/token?a=${encodeURIComponent(a)}`, 30000);
+  const { data: d, loading, reload } = usePoll(`/api/token?a=${encodeURIComponent(a)}`, 30000);
   const [poolPick, setPool] = useState(null);
   const [tf, setTf] = useState('1h');
   // Klik baris tabel posisi bot -> laci riwayat, sama seperti halaman Posisi.
@@ -178,7 +178,7 @@ export default function TokenDetail({ param }) {
         </Panel>
       )}
 
-      <BotPositions open={d.open} closed={d.closed} onHist={setHist} loading={loading} className="mt-4" />
+      <BotPositions open={d.open} closed={d.closed} onHist={setHist} reload={reload} loading={loading} className="mt-4" />
       <PositionHistory id={hist} onClose={() => setHist(null)} />
       <WalletPositions rows={d.wallets} onHist={(p) => setWhist(wkey(p))} loading={loading} className="mt-4" />
       <WalletPositionHistory p={whist} address={whist?.wallet} onClose={() => setWhist(null)} />
