@@ -563,6 +563,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         stats: { ...engine.stats, uptimeSec: Math.round((Date.now() - engine.stats.startedAt) / 1000), lastError: engine.lastError },
         totals: tot,
         summary: s, equity: eq, decisionsTotal: dec, skipReasons: skipTop,
+        // sisa jatah salin (anggaran harian, eksposur, slot posisi, kas siap pakai)
+        room: engine.copyRoom ? engine.copyRoom(cash) : null,
         rpc: rpc.stats(),
         unsupportedSenders: [...engine.watcher.unsupported.entries()].map(([a, n]) => ({ address: a, n })),
         lastSync: engine.positions.lastSync,

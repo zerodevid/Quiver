@@ -1675,6 +1675,22 @@ class Telegram {
       [tr("sudah terealisasi"), sgn(s.realizedUsd)],
     ]));
 
+    // 1b. Sisa jatah salin: ruang yang masih tersisa di plafon aturan umum — plafon yang
+    // habis adalah alasan posisi berikutnya dilewati.
+    if (o.room) {
+      const r = o.room;
+      const sisa = (x, fmt = (v) => usd(v, 0)) => (x.limit > 0 && x.left <= 0 ? tr("habis") : `${fmt(x.left)} / ${fmt(x.limit)}`);
+      L.push('');
+      L.push(tr("<b>🎯 Jatah salin</b> <i>(sisa / plafon)</i>"));
+      L.push(angka([
+        [tr("anggaran harian"), sisa(r.daily)],
+        [tr("eksposur total"), sisa(r.exposure)],
+        [tr("slot posisi"), sisa(r.slots, num)],
+        [tr("batas per posisi"), usd(r.perPositionUsd, 0)],
+        [tr("kas siap pakai"), r.cashUsd != null ? usd(r.cashUsd) : null],
+      ]));
+    }
+
     // 2. Posisi terbuka, terbesar dulu.
     const open = (pos.positions || []).filter((p) => !p.empty).sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
     L.push('');

@@ -230,6 +230,41 @@ function ClosedStats({ st }) {
 
 // Delapan angka milidetik berjajar tidak bisa dibaca sekilas. Yang dicari mata:
 // "apakah RPC-nya sehat?" — jadi tampilkan median, dan sisanya di tooltip.
+// Sisa jatah salin: ruang yang masih tersisa di tiap plafon aturan umum. Batang penuh =
+// plafon habis — posisi berikutnya akan dilewati dengan alasan itu.
+function CopyRoom({ room, dryRun }) {
+  const { t } = useI18n();
+  const bar = ({ label, used, limit, left, fmt = usd, sub }) => {
+    const p = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+    const full = limit > 0 && left <= 0;
+    return (
+      <div key={label} className="py-2.5">
+        <div className="flex items-baseline justify-between gap-3 text-sm">
+          <span className="min-w-0 text-muted">{t(label)}</span>
+          <span className={`num shrink-0 font-medium ${full ? 'text-danger' : ''}`}>{full ? t('habis') : t('sisa {v}', { v: fmt(left) })}</span>
+        </div>
+        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-default/60" role="progressbar" aria-valuenow={Math.round(p)} aria-valuemin={0} aria-valuemax={100}>
+          <div className={`h-full rounded-full ${full ? 'bg-danger' : p >= 80 ? 'bg-warning' : 'bg-accent'}`} style={{ width: `${p}%` }} />
+        </div>
+        <div className="mt-1 text-xs text-muted">{sub || t('{u} dari {l}', { u: fmt(used), l: fmt(limit) })}</div>
+      </div>
+    );
+  };
+  return (
+    <div className="divide-y divide-border px-4">
+      {bar({ label: 'Anggaran harian', ...room.daily, sub: t('{u} dari {l} · dibuka 24 jam terakhir', { u: usd(room.daily.used), l: usd(room.daily.limit) }) })}
+      {bar({ label: 'Eksposur total', ...room.exposure })}
+      {bar({ label: 'Slot posisi', ...room.slots, fmt: (v) => num(v) })}
+      <KV label="Batas per posisi">{usd(room.perPositionUsd)}</KV>
+      <KV label="Kas siap pakai">
+        {room.cashUsd != null
+          ? <span title={t('Kas di atas cadangan gas — posisi baru diukur dari sini')}>{usd(room.cashUsd)}</span>
+          : <span className="text-muted">{dryRun ? t('tidak dibatasi (simulasi)') : '—'}</span>}
+      </KV>
+    </div>
+  );
+}
+
 function Latency({ rpc }) {
   const { t } = useI18n();
   const ms = rpc.map((r) => r.lastMs).filter((x) => x != null).sort((a, b) => a - b);
@@ -396,7 +431,10 @@ export default function Overview() {
         </div>
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Panel title="Jatah salin" desc="Sisa ruang di plafon aturan umum" bodyClass="p-0" className="h-full">
+          {d.room ? <CopyRoom room={d.room} dryRun={d.mode.dry_run} /> : <Loading />}
+        </Panel>
         <Panel title="Kesehatan mesin" bodyClass="p-0" className="h-full">
           <div className="divide-y divide-border px-4">
             <KV label="Blok terkini">{num(d.chain.head)}</KV>

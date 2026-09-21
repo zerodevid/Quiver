@@ -474,12 +474,7 @@ class Engine {
       return this.decide(act.id, 'skip', `cooldown pool ${Math.round((cd - (Date.now() - last)) / 1000)}s`);
     }
     const sum = this.positions.summary(this.ethUsd);
-    const since = Date.now() - 86400_000;
-    // Anggaran harian = modal posisi yang DIBUKA 24 jam terakhir + TAMBAHAN ke posisi yang
-    // lebih tua (dulu tidak terhitung: menambah ke posisi berumur 2 hari lolos anggaran).
-    const spent = (this.store.get(
-      "SELECT COALESCE(SUM(cost_quote * CASE WHEN quote_symbol IN (?,?) THEN ? ELSE 1 END),0) AS s FROM positions WHERE chain=? AND opened_ts > ?",
-      this.chain.nativeSymbol, this.chain.wethSymbol, this.ethUsd, this.network, since)?.s || 0) + this.increasesUsdSince(since);
+    const spent = this.spentTodayUsd();
 
     if (rules.filters.min_pool_age_minutes > 0 && act.venue === 'v4' && act.poolRef) {
       try {
@@ -569,6 +564,38 @@ class Engine {
       this.decide(act.id, 'error', String(e.message).slice(0, 300), d.plan);
       this.store.log('error', `eksekusi masuk: ${e.message}`);
     }
+  }
+
+  // Anggaran harian = modal posisi yang DIBUKA 24 jam terakhir + TAMBAHAN ke posisi yang
+  // lebih tua (dulu tidak terhitung: menambah ke posisi berumur 2 hari lolos anggaran).
+  spentTodayUsd() {
+    const since = Date.now() - 86400_000;
+    return (this.store.get(
+      "SELECT COALESCE(SUM(cost_quote * CASE WHEN quote_symbol IN (?,?) THEN ? ELSE 1 END),0) AS s FROM positions WHERE chain=? AND opened_ts > ?",
+      this.chain.nativeSymbol, this.chain.wethSymbol, this.ethUsd, this.network, since)?.s || 0) + this.increasesUsdSince(since);
+  }
+
+  // Sisa jatah salin untuk dasbor: ruang yang masih tersisa di tiap plafon yang dipakai
+  // planEntry — anggaran harian, eksposur total, jumlah posisi, kas. Dihitung dari aturan
+  // UMUM; target dengan aturan khusus punya plafonnya sendiri, tapi kas dan posisi yang
+  // sudah terbuka sama untuk semuanya. Kas siap pakai = kas di atas cadangan gas, dari
+  // bacaan kas terakhir (bukan RPC baru — overview dipoll tiap 5 detik).
+  copyRoom(cash) {
+    const { sizing: s, filters: f } = rulesFor(this.cfg.rules);
+    const sum = this.positions.summary(this.ethUsd);
+    const spent = this.spentTodayUsd();
+    let cashUsd = null;
+    if (cash) {
+      const reserve = Number(this.exec.gasReserveCached?.() ?? 0n) / 1e18;
+      cashUsd = cash.usdg + Math.max(0, cash.eth + cash.weth - reserve) * this.ethUsd;
+    }
+    return {
+      daily: { limit: s.daily_budget_usd, used: spent, left: Math.max(0, s.daily_budget_usd - spent) },
+      exposure: { limit: s.max_total_exposure_usd, used: sum.exposureUsd, left: Math.max(0, s.max_total_exposure_usd - sum.exposureUsd) },
+      slots: { limit: f.max_open_positions, used: sum.openCount, left: Math.max(0, f.max_open_positions - sum.openCount) },
+      perPositionUsd: s.max_quote_per_position_usd,
+      cashUsd,
+    };
   }
 
   // Nilai (USD) tambahan likuiditas yang berhasil disalin sejak `since`, ke posisi yang

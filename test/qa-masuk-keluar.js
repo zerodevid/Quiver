@@ -589,6 +589,27 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     assert.ok(Math.abs(spent - 300) < 1e-6);
   });
 
+  await t('sisa jatah salin (dasbor) memakai angka yang sama dengan planEntry: anggaran 24 jam, eksposur, slot, kas di atas cadangan gas', async () => {
+    const { eng, store } = engineWith();
+    eng.cfg.rules = { sizing: { daily_budget_usd: 500, max_total_exposure_usd: 1000, max_quote_per_position_usd: 200 }, filters: { max_open_positions: 3 } };
+    eng.cfg.gas = { native_reserve_wei: String(2n * 10n ** 15n) };
+    // dibuka 2 hari lalu: eksposur ya, anggaran harian tidak
+    store.run(`INSERT INTO positions(venue,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,status,opened_ts,cost_quote,out_quote,quote_symbol)
+      VALUES('v4','1',?,?,?,-60,60,'5','open',?,150,0,'USDG')`, POOL, USDG, MEME, Date.now() - 2 * 86400_000);
+    store.run(`INSERT INTO positions(venue,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,status,opened_ts,cost_quote,out_quote,quote_symbol)
+      VALUES('v4','2',?,?,?,-60,60,'5','open',?,0.04,0,'ETH')`, POOL, ETH, MEME, Date.now() - 1000);   // $100 hari ini
+    const r = eng.copyRoom({ usdg: 300, eth: 0.012, weth: 0, usd: 330 });
+    assert.strictEqual(r.daily.limit, 500); assert.ok(Math.abs(r.daily.used - 100) < 1e-6); assert.ok(Math.abs(r.daily.left - 400) < 1e-6);
+    assert.strictEqual(r.exposure.limit, 1000); assert.ok(Math.abs(r.exposure.used - 250) < 1e-6); assert.ok(Math.abs(r.exposure.left - 750) < 1e-6);
+    assert.deepStrictEqual(r.slots, { limit: 3, used: 2, left: 1 });
+    assert.strictEqual(r.perPositionUsd, 200);
+    assert.ok(Math.abs(r.cashUsd - (300 + 0.010 * 2500)) < 1e-6, String(r.cashUsd));   // ETH dikurangi cadangan 0,002
+    assert.strictEqual(eng.copyRoom(null).cashUsd, null);
+    // plafon terlampaui tidak jadi negatif
+    eng.cfg.rules.sizing.daily_budget_usd = 50;
+    assert.strictEqual(eng.copyRoom(null).daily.left, 0);
+  });
+
   await t('policy: "ikut menarik sebagian" dimatikan → tarikan sebagian diabaikan (dulu: tutup penuh); keluar penuh tetap diikuti', async () => {
     const { planExit, rulesFor } = require('../src/policy');
     const rules = rulesFor({ exit: { follow_target: true, follow_partial: false } });
