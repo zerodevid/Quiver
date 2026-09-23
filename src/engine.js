@@ -1877,15 +1877,29 @@ class Engine {
   // manual (dasbor/Telegram) menunggu receipt sampai 90 detik; tanpa penjaga ini
   // pemicu keluar mandiri, rekonsiliasi, atau klik kedua di selang itu mengirim tx
   // kedua yang pasti revert setelah tx pertama membakar NFT-nya — gas terbuang.
-  async executeExit(plan, pos) {
+  // `force` (tutup paksa dari dasbor): penjaga compound/claim yang masih menunggu
+  // dilewati, dan likuiditas yang dibakar dibaca ulang dari chain — bukan dari catatan
+  // yang bisa basi — supaya posisinya benar-benar kosong. Penjaga tx ganda (`exiting`)
+  // dan status tertutup tetap berlaku: itu yang mencegah burn kedua yang pasti revert.
+  async executeExit(plan, pos, { force = false } = {}) {
     if (this.stopping) throw new Error('bot sedang berhenti (restart) — keluar dilanjutkan saat hidup lagi');
     if (this.exiting.has(pos.id)) throw new Error('posisi ini sedang dalam proses ditutup');
-    const comp = this.compound?.pending(pos.id);
-    if (comp && comp.status !== 'sukses') throw new Error('compound sebelumnya belum selesai — tunggu konfirmasi');
-    const claim = this.pendingFeeClaim(pos.id);
-    if (claim && claim.status !== 'sukses') throw new Error('claim fee sebelumnya belum selesai — tunggu konfirmasi dan sinkronisasi');
+    if (!force) {
+      const comp = this.compound?.pending(pos.id);
+      if (comp && comp.status !== 'sukses') throw new Error('compound sebelumnya belum selesai — tunggu konfirmasi');
+      const claim = this.pendingFeeClaim(pos.id);
+      if (claim && claim.status !== 'sukses') throw new Error('claim fee sebelumnya belum selesai — tunggu konfirmasi dan sinkronisasi');
+    }
     const cur = this.store.get('SELECT status FROM positions WHERE id=?', pos.id);
     if (cur && cur.status !== 'open') throw new Error('posisi sudah tertutup');
+    if (force && plan.full) {
+      const L = await this.chainLiquidity(pos);
+      if (L === 0n) throw new Error('likuiditas posisi sudah nol di chain — dibukukan oleh sinkron berikutnya');
+      if (L != null && L !== BigInt(plan.liquidity)) {
+        this.store.log('warn', `tutup paksa #${pos.id}: likuiditas di chain ${L} ≠ catatan ${plan.liquidity} — dibakar sesuai chain`, { quiet: true });
+        plan = { ...plan, liquidity: L.toString() };
+      }
+    }
     this.exiting.add(pos.id);
     try { return await this.sendExit(plan, pos); }
     finally { this.exiting.delete(pos.id); }

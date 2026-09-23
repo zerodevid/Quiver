@@ -17,7 +17,7 @@ export function useClosePosition(reload) {
   const [closing, setClosing] = useState(null);   // id posisi yang sedang ditutup
   // Satu posisi: kirim permintaan, tunggu chain, laporkan lewat toast. Dipakai
   // baik oleh tutup satu maupun tutup semua; konfirmasinya ada di pemanggil.
-  const run = async (p) => {
+  const run = async (p, { force = false } = {}) => {
     const pair = `${p.symbol0}/${p.symbol1}`;
     setClosing(p.id);
     muteClose(p.id);   // toast hasilnya dari alur ini; umpan peringatan jangan mengulang
@@ -25,7 +25,7 @@ export function useClosePosition(reload) {
       description: t('Menunggu konfirmasi di chain, bisa sampai 1–2 menit.'), isLoading: true, timeout: 0,
     });
     let r;
-    try { r = await post('/api/positions/close', { id: p.id }); }
+    try { r = await post('/api/positions/close', force ? { id: p.id, force: true } : { id: p.id }); }
     catch (e) { r = { error: e.message, lost: true }; }
     toast.close(wait);
     if (r.lost || /^HTTP 5\d\d$/.test(r.error || '')) {
@@ -85,5 +85,30 @@ export function useClosePosition(reload) {
     setClosing(null);
     reload?.();
   };
-  return { close, closeAll, closing };
+  // Tutup paksa semua posisi terbuka (tombol darurat halaman Posisi). Bedanya dari
+  // closeAll: server melewati penjaga compound/claim yang masih menunggu, membakar
+  // likuiditas menurut chain (bukan catatan), dan posisi yang sudah kosong di chain
+  // langsung dibukukan. Posisi yang gagal dilewati, sisanya tetap dicoba; di akhir
+  // dilaporkan berapa yang tertutup dan berapa yang gagal.
+  const forceCloseAll = async (list) => {
+    if (closing != null || !list?.length) return;
+    const value = list.reduce((s, p) => s + (p.valueUsd || 0), 0);
+    const ok = await ask({
+      title: t('Tutup paksa semua {n} posisi terbuka?', { n: list.length }),
+      body: t('Semua posisi ditutup satu per satu tanpa menunggu compound/claim yang tertunda, dan likuiditas dibakar sesuai chain. Nilai sekarang {v}. Tidak bisa dibatalkan setelah berjalan.', { v: usd(value) }),
+      confirm: t('Tutup paksa semua'), danger: true,
+    });
+    if (!ok) return;
+    let done = 0, failed = 0;
+    for (const p of list) {
+      const r = await run(p, { force: true });
+      if (r?.ok) done++; else failed++;
+      reload?.();
+    }
+    setClosing(null);
+    reload?.();
+    if (failed) toast.warning(t('Tutup paksa selesai: {d} tertutup, {f} gagal', { d: done, f: failed }), { timeout: 12000 });
+    else toast.success(t('Tutup paksa selesai: {d} posisi tertutup', { d: done }), { timeout: 10000 });
+  };
+  return { close, closeAll, forceCloseAll, closing };
 }

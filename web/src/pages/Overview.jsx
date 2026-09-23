@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { Button } from '@heroui/react';
 import { useStatus } from '../App';
 import { usePoll, useResync } from '../hooks';
 import { PageHeader, Stat, Panel, Empty, Loading, Notice, KV, Dot, DataTable, PriceRange, Segmented, Refresh } from '../components/ui';
@@ -9,6 +10,7 @@ import { Pair, SyncState } from './Positions';
 import PositionHistory from '../components/PositionHistory';
 import { usd, tone, num, pct, age, ago, short, txHref, locale as fmtLocale, TXKIND, TXSTATUS } from '../fmt';
 import { useI18n, reason } from '../i18n';
+import { useClosePosition } from '../useClosePosition';
 
 const RANGES = [['24h', '24 jam'], ['7d', '7 hari'], ['30d', '30 hari'], ['all', 'Semua']];
 const VIEWS = [['pnl', 'PnL kumulatif'], ['value', 'Nilai']];
@@ -316,6 +318,9 @@ export default function Overview() {
     await Promise.all([reloadPos(), reloadPortfolio()]);
   }, [reloadPos, reloadPortfolio]);
   const [resync, syncing] = useResync(reloadAll);
+  // Tombol darurat "tutup paksa semua" — sama dengan yang di halaman Posisi, dipakai
+  // dari ringkasan supaya tidak perlu pindah halaman dulu saat pasar bergerak cepat.
+  const { forceCloseAll, closing } = useClosePosition(reloadAll);
   if (!d) return <Loading page />;
   const s = d.summary, T = d.totals || {};
   // Kursor bisa sedikit MENDAHULUI kepala rantai yang terakhir dibaca; itu sinkron,
@@ -384,6 +389,10 @@ export default function Overview() {
             <span className="whitespace-nowrap"><span className="text-muted">{t('uPnL')}</span> <span className={`num font-medium ${tone(sum(open, (x) => x.pnlUsd))}`}>{usd(sum(open, (x) => x.pnlUsd))}</span></span>
           </>}
           <a href="#positions" className="font-medium text-accent hover:underline">{t('Semua posisi →')}</a>
+          {open.length > 0 && (
+            <Button size="sm" variant="danger" isPending={closing != null} isDisabled={closing != null} onPress={() => forceCloseAll(open)}>
+              {t('Tutup paksa semua ({n})', { n: open.length })}
+            </Button>)}
         </div>}>
         {!pos?.positions ? <Loading text="Memuat posisi…" /> : (
           <DataTable label="Posisi aktif" rows={open} rowKey={(x) => x.id} dense onRow={(x) => setHist(x.id)}

@@ -131,7 +131,7 @@ export default function Positions({ param }) {
   // Tombolnya memaksa pembacaan chain baru, bukan sekadar mengambil ulang hasil
   // sinkron terakhir — lihat useResync.
   const [resync, syncing] = useResync(reload);
-  const { close, closing } = useClosePosition(reload);
+  const { close, forceCloseAll, closing } = useClosePosition(reload);
   const { claim, claiming } = useClaimFees(reload);
   // Klik baris -> laci riwayat posisi (transaksi & catatan bot).
   const [hist, setHist] = useState(null);
@@ -170,6 +170,10 @@ export default function Positions({ param }) {
             ['Fee', usd(sum(open, (p) => p.feeUsd))],
             ['PnL', usd(openPnl), tone(openPnl)],
           ]} />}
+          {open.length > 0 && (
+            <Button size="sm" variant="danger" isPending={closing != null} isDisabled={closing != null || claiming != null} onPress={() => forceCloseAll(open)}>
+              {t('Tutup paksa semua ({n})', { n: open.length })}
+            </Button>)}
         </div>}>
         <DataTable label="Posisi terbuka" rows={open} rowKey={(p) => p.id} searchable onRow={(p) => setHist(p.id)}
           defaultSort={{ column: 'val', direction: 'descending' }}

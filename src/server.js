@@ -1922,14 +1922,28 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const b = await readBody(req);
       try { return await manual.handBack(b.id); } catch (e) { return { error: e.message }; }
     },
+    // force: tutup paksa — penjaga compound/claim yang menunggu dilewati dan likuiditas
+    // dibaca ulang dari chain (lihat engine.executeExit). Posisi yang sudah kosong di
+    // chain dibukukan lewat closeEmptyPosition, bukan dikirimi burn yang pasti revert.
     'POST /api/positions/close': async (req) => {
       const b = await readBody(req);
+      const force = b.force === true;
       const pos = store.get("SELECT * FROM positions WHERE chain=? AND id=? AND status='open'", chain.network, Number(b.id));
       if (!pos) return { error: 'posisi tidak ditemukan' };
       if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
       try {
-        const r = await engine.executeExit({ venue: pos.venue, action: 'burn', full: true, liquidity: pos.liquidity, tokenId: pos.token_id }, pos);
-        store.log('info', `tutup manual: ${r.note}`);
+        let r;
+        if (force && await engine.chainLiquidity(pos) === 0n) {
+          r = await engine.closeEmptyPosition(pos);
+          if (!r) {
+            const still = store.get("SELECT status FROM positions WHERE chain=? AND id=?", chain.network, pos.id)?.status === 'open';
+            if (still) return { error: 'likuiditas sudah nol di chain tetapi hasilnya belum bisa dibukukan — dicoba lagi otomatis' };
+            r = { txHash: null, note: `posisi #${pos.id} kosong di chain, dibukukan tertutup` };
+          }
+        } else {
+          r = await engine.executeExit({ venue: pos.venue, action: 'burn', full: true, liquidity: pos.liquidity, tokenId: pos.token_id }, pos, { force });
+        }
+        store.log('info', `tutup ${force ? 'paksa' : 'manual'}: ${r.note}`);
         // Hasil dibaca dari baris yang baru ditutup, dengan konversi yang sama seperti
         // GET /api/position, supaya angka di notifikasi cocok dengan halaman detail.
         const row = store.get('SELECT out_quote, cost_quote, quote_symbol FROM positions WHERE chain=? AND id=?', chain.network, pos.id);
