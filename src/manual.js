@@ -966,10 +966,11 @@ class Manual {
     // Hasil dari receipt; kalau tidak terbaca (ETH native + node tertinggal) pakai kutipan.
     const outRaw = r.amountOut ?? BigInt(r.quote?.amountOut ?? 0);
     const keluar = Number(outRaw) / 10 ** (mo.decimals ?? 18);
-    // Yang dijual mungkin memecoin sisa dari posisi yang sudah tutup: PnL posisinya
-    // dikoreksi ke hasil jual ini (FIFO kalau beberapa posisi menyimpan token yang sama).
+    // Yang dijual mungkin memecoin dari fee yang sudah diklaim, atau sisa dari posisi
+    // yang sudah tutup: PnL posisinya dikoreksi ke hasil jual ini (FIFO kalau beberapa
+    // posisi menyimpan token yang sama).
     try {
-      eng.positions.recordLeftoverSale({ token: lc(tokenIn), amount: BigInt(amountRaw), quoteToken: lc(tokenOut),
+      eng.positions.recordTokenSale({ token: lc(tokenIn), amount: BigInt(amountRaw), quoteToken: lc(tokenOut),
         txHash: r.hash, amountOut: r.amountOut, usdOut: r.quote?.usdOut, ethUsd: eng.ethUsd });
     } catch (e) { this.store.log('warn', `catat hasil jual sisa: ${e.message}`, { quiet: true }); }
     try {

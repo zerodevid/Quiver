@@ -1906,7 +1906,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const b = await readBody(req);
       const id = Number(b.id);
       if (!Number.isSafeInteger(id) || id <= 0) return { error: 'ID posisi tidak valid' };
-      try { return await engine.claimFees(id); }
+      // `sell`: jual sisi memecoin fee ke aset kuotasi pool sesudah klaim. Tidak
+      // dikirim = ikut pengaturan panen posisi (baku: tidak menjual apa-apa).
+      try { return await engine.claimFees(id, { sell: b.sell == null ? null : !!b.sell }); }
       catch (e) { return { error: e.message }; }
     },
     // Kendali manual posisi cermin (lihat Manual.takeover). GET …/handback memeriksa posisi

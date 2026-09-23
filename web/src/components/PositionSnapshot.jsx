@@ -83,14 +83,16 @@ export default function PositionSnapshot({ id, onUpdate }) {
       <KV label="Fee diklaim sebelumnya">{usd(p.claimedUsd)}</KV>
       {p.compound && <KV label="Total ditambahkan (perkiraan)">{usd(p.compound.compoundedUsd)}</KV>}
       {!closed && <>
-        <p className="my-3 text-xs text-muted">{t('Claim mengirim fee ke wallet. Auto-compound menambahkan fee kembali ke likuiditas; keduanya memerlukan gas.')}</p>
+        <p className="my-3 text-xs text-muted">{t('Claim mengirim fee ke wallet. Panen fee otomatis mengulanginya sendiri — fee dikembalikan jadi likuiditas (compound) atau ditarik lalu sisi memecoin-nya dijual (klaim). Semuanya memerlukan gas.')}</p>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" isPending={claiming != null} isDisabled={busy || !synced || !(p.feeUsd > 0)} onPress={() => claim(p)}>{t('Claim fee')}</Button>
           <AutoCompoundButton p={p} reload={refresh} disabled={busy || !synced} />
           <Button size="sm" variant="danger-soft" isPending={closing != null} isDisabled={busy || !synced || p.empty} onPress={() => close(p)}>{t('Tutup posisi')}</Button>
         </div>
-        {p.venue !== 'v4' && <p className="mt-2 text-xs text-muted">{t('Auto-compound tersedia untuk posisi Uniswap v4.')}</p>}
-        {p.compound?.enabled && <p className="mt-3 text-xs text-muted">{t('Minimum {v} · diperiksa setiap {n} menit', { v: usd(p.compound.minUsd), n: p.compound.intervalMinutes })}</p>}
+        {p.compound && !p.compound.supported && <p className="mt-2 text-xs text-muted">{t('Panen fee otomatis tersedia untuk posisi Uniswap v3 dan v4.')}</p>}
+        {p.compound?.enabled && <p className="mt-3 text-xs text-muted">{t(p.compound.mode === 'claim'
+          ? 'Klaim otomatis · minimum {v} · diperiksa setiap {n} menit'
+          : 'Compound otomatis · minimum {v} · diperiksa setiap {n} menit', { v: usd(p.compound.minUsd), n: p.compound.intervalMinutes })}</p>}
       </>}
     </div>
     <p className="text-xs text-muted">{synced && data.syncedAt ? t('Sinkronisasi terakhir {w}', { w: ago(data.syncedAt) }) : t('Jumlah token menunggu sinkronisasi.')}</p>

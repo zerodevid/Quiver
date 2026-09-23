@@ -343,15 +343,36 @@ function open(dbPath) {
     tx_hash TEXT PRIMARY KEY, position_id INTEGER NOT NULL, ts INTEGER NOT NULL,
     amount0 TEXT NOT NULL, amount1 TEXT NOT NULL, value_quote REAL NOT NULL
   )`);
+  // Memecoin dari fee yang sudah diklaim tapi BELUM terjual. claimed_quote sudah memuat
+  // nilainya di harga pool saat klaim (est_quote); begitu terjual, taksiran itu diganti
+  // hasil jual sesungguhnya — persis pola left_token/left_quote untuk sisa penutupan,
+  // hanya saja kolom yang dikoreksi claimed_quote (dan out_quote kalau posisinya sudah
+  // ditutup, karena markClosed melipat claimed_quote ke sana).
+  db.exec(`CREATE TABLE IF NOT EXISTS fee_leftovers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, chain TEXT NOT NULL, position_id INTEGER NOT NULL,
+    ts INTEGER NOT NULL, token TEXT NOT NULL, amount TEXT NOT NULL, est_quote REAL NOT NULL,
+    tx_hash TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_feeleft_token ON fee_leftovers(chain, token);`);
   db.exec(`CREATE TABLE IF NOT EXISTS compound_settings (
     position_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
     min_usd REAL NOT NULL DEFAULT 5, interval_minutes INTEGER NOT NULL DEFAULT 30,
-    last_check INTEGER, last_tx TEXT, last_note TEXT
+    last_check INTEGER, last_tx TEXT, last_note TEXT,
+    -- Panen fee otomatis punya dua rasa: 'compound' (fee dikembalikan jadi likuiditas
+    -- di posisi yang sama) dan 'claim' (fee ditarik ke wallet; sisi memecoin-nya dijual
+    -- ke aset kuotasi pool kalau sell_fee menyala). Baris lama = compound, satu-satunya
+    -- mode yang pernah ada sebelum kolom ini.
+    mode TEXT NOT NULL DEFAULT 'compound', sell_fee INTEGER NOT NULL DEFAULT 1
   );
   CREATE TABLE IF NOT EXISTS compound_runs (
     tx_hash TEXT PRIMARY KEY, position_id INTEGER NOT NULL, ts INTEGER NOT NULL,
     liquidity TEXT NOT NULL, reinvested_quote REAL NOT NULL
   )`);
+  const cmpCols = new Set(db.prepare('PRAGMA table_info(compound_settings)').all().map((c) => c.name));
+  if (!cmpCols.has('mode')) {
+    db.exec("ALTER TABLE compound_settings ADD COLUMN mode TEXT NOT NULL DEFAULT 'compound'");
+    db.exec('ALTER TABLE compound_settings ADD COLUMN sell_fee INTEGER NOT NULL DEFAULT 1');
+  }
   if (!posCols.has('entry_sqrt')) {
     db.exec('ALTER TABLE positions ADD COLUMN entry_sqrt TEXT');
     db.exec('ALTER TABLE positions ADD COLUMN exit_sqrt TEXT');

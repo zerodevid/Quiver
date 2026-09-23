@@ -162,6 +162,16 @@ function ensureChain(x) {
   if (target.wethSymbol === undefined) target.wethSymbol = target.QUOTES[target.ADDR.weth]?.symbol || 'WETH';
   if (typeof target.isEthLike !== 'function') target.isEthLike = (sym) => sym === target.nativeSymbol || sym === target.wethSymbol;
   if (typeof target.isV3Venue !== 'function') target.isV3Venue = (v) => target.venues.some((x) => x.key === v);
+  // Sisi aset kuotasi sebuah pasangan — fungsi murni atas QUOTES, sama persis dengan
+  // Pools.quoteSideOf. Dipakai jalur fee/sisa untuk memisahkan "uang" dari memecoin.
+  if (typeof target.quoteSideOf !== 'function') {
+    target.quoteSideOf = (t0, t1) => {
+      const q0 = target.QUOTES[(t0 || '').toLowerCase()], q1 = target.QUOTES[(t1 || '').toLowerCase()];
+      if (q0) return { side: 0, ...q0 };
+      if (q1) return { side: 1, ...q1 };
+      return null;
+    };
+  }
   if (typeof target.venueOf !== 'function') target.venueOf = (v) => target.venues.find((x) => x.key === v) || null;
   if (typeof target.npmFor !== 'function') target.npmFor = (v) => target.venueOf(v)?.npmV3 || target.ADDR.npmV3;
   return target;

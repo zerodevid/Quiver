@@ -1682,7 +1682,10 @@ class Engine {
       AND json_extract(t.detail,'$.position')=? ORDER BY t.ts LIMIT 1`, id);
   }
 
-  async claimFees(id) {
+  // `sell`: jual sisi memecoin fee ke aset kuotasi pool sesudah klaim. null = ikut
+  // pengaturan posisi (panen otomatis mode 'claim'); klaim manual tidak menjual apa pun
+  // kecuali diminta, supaya tombol "Claim fee" tetap berarti persis seperti dulu.
+  async claimFees(id, opts = {}) {
     if (this.dryRun() || !this.exec.address()) throw new Error('mode simulasi: tidak mengirim transaksi');
     if (this.exiting.has(id)) throw new Error('posisi ini sedang diproses');
     if (this.compound?.pending(id)) throw new Error('compound sebelumnya belum selesai — tunggu konfirmasi');
@@ -1718,7 +1721,14 @@ class Engine {
         return { ok: true, tx: hash, accountingPending: true };
       }
       try { await this.positions.sync(this.ethUsd); } catch { /* sinkron berikutnya mencoba lagi */ }
-      return { ok: true, tx: hash, ...result };
+      let sold = null;
+      if (this.sellFeeWanted(id, opts.sell)) {
+        // Gagal menjual bukan gagal klaim: fee-nya sudah di wallet dan itemnya sudah
+        // masuk antrean jual (retryLeftovers), jadi klaimnya tetap dilaporkan berhasil.
+        try { sold = await this.sellClaimedFee(pos, hash, result, { quiet: !!opts.quiet }); }
+        catch (e) { this.store.log('warn', `jual fee posisi #${id}: ${e.message}`, { quiet: true }); }
+      }
+      return { ok: true, tx: hash, ...result, sold };
     } finally { this.exiting.delete(id); }
   }
 
@@ -1772,6 +1782,9 @@ class Engine {
     const value = slot && this.chain.valueInQuote({ sqrtPriceX96: slot.sqrtPriceX96, amount0, amount1,
       dec0: t0.decimals, dec1: t1.decimals, token0: pos.token0, token1: pos.token1 });
     if (!value) throw new Error('nilai fee belum terbaca');
+    // Sisi memecoin dinilai SENDIRI di harga yang sama: itu bagian dari claimed_quote
+    // yang belum benar-benar jadi uang, dan angka inilah yang nanti diganti hasil jual.
+    const meme = this.memeSideOf(pos, amount0, amount1, slot, [t0, t1]);
     this.store.db.exec('BEGIN IMMEDIATE');
     try {
       const r = this.store.run('INSERT OR IGNORE INTO fee_claims(tx_hash,position_id,ts,amount0,amount1,value_quote) VALUES(?,?,?,?,?,?)',
@@ -1780,7 +1793,46 @@ class Engine {
         out_quote=out_quote+CASE WHEN status='closed' THEN ? ELSE 0 END, fees_quote=0 WHERE id=?`, value.value, value.value, pos.id);
       this.store.db.exec('COMMIT');
     } catch (e) { this.store.db.exec('ROLLBACK'); throw e; }
-    return { amount0: String(amount0), amount1: String(amount1), claimedUsd: quoteToUsd(value.value, value.kind, this.ethUsd) };
+    return { amount0: String(amount0), amount1: String(amount1), meme,
+      claimedUsd: quoteToUsd(value.value, value.kind, this.ethUsd) };
+  }
+
+  // Sisi bukan-kuotasi sebuah klaim fee: { token, quote, amount, quoteValue } atau null
+  // untuk pasangan yang dua-duanya uang (ETH/USDG) atau yang memecoin-nya nol.
+  memeSideOf(pos, amount0, amount1, slot, toks) {
+    const q = this.chain.quoteSideOf(pos.token0, pos.token1);
+    if (!q) return null;
+    const side = q.side === 0 ? 1 : 0;
+    const token = String(side === 0 ? pos.token0 : pos.token1).toLowerCase();
+    const quote = String(q.side === 0 ? pos.token0 : pos.token1).toLowerCase();
+    if (this.chain.quoteSideOf(token, token)) return null;
+    const amount = side === 0 ? amount0 : amount1;
+    if (!(amount > 0n)) return null;   // dikembalikan sebagai string: hasil klaim dikirim sebagai JSON
+    const v = slot && this.chain.valueInQuote({ sqrtPriceX96: slot.sqrtPriceX96,
+      amount0: side === 0 ? amount : 0n, amount1: side === 1 ? amount : 0n,
+      dec0: toks[0].decimals, dec1: toks[1].decimals, token0: pos.token0, token1: pos.token1 });
+    return { token, quote, amount: amount.toString(), quoteValue: v?.value ?? 0 };
+  }
+
+  // Apakah sisi memecoin fee dijual sesudah klaim? Penimpaan eksplisit menang;
+  // kalau tidak, panen otomatis mode 'claim' yang menentukan.
+  sellFeeWanted(id, override = null) {
+    if (override != null) return !!override;
+    const st = this.store.get('SELECT enabled, mode, sell_fee FROM compound_settings WHERE position_id=?', id);
+    return !!(st?.enabled && st.mode === 'claim' && st.sell_fee);
+  }
+
+  // Memecoin dari fee yang baru diklaim: dicatat di buku fee (supaya taksiran harga
+  // klaim nanti diganti hasil jual sesungguhnya) lalu dijual ke aset kuotasi pool yang
+  // sama. Jumlahnya dari receipt klaim, bukan saldo wallet — wallet ini bisa memegang
+  // token yang sama dari posisi atau program lain.
+  async sellClaimedFee(pos, hash, claim, { quiet = false } = {}) {
+    const meme = claim?.meme;
+    if (!meme || !(BigInt(meme.amount) > 0n)) return null;
+    this.positions.noteFeeLeftover({ posId: pos.id, token: meme.token, amount: meme.amount,
+      estQuote: meme.quoteValue, txHash: hash });
+    return this.sellToken({ posId: pos.id, target: pos.target, token: meme.token, quote: meme.quote,
+      amount: BigInt(meme.amount), tries: 0, kind: 'fee' }, { quiet });
   }
 
   async reconcileFeeClaims() {
@@ -1805,7 +1857,16 @@ class Engine {
         }
         const ok = BigInt(rc.status) === 1n;
         this.store.run('UPDATE txs SET status=? WHERE hash=?', ok ? 'sukses' : 'gagal', row.hash);
-        if (ok) await this.recordFeeClaim(pos, row.hash, rc);
+        if (!ok) continue;
+        const result = await this.recordFeeClaim(pos, row.hash, rc);
+        // Klaim yang selesai SESUDAH proses mati: sisi memecoin-nya tidak pernah
+        // masuk antrean jual dan tidak tersapu (sapu wallet melewati token posisi yang
+        // masih terbuka). Diantrekan di sini, sekali — recordFeeClaim mengembalikan {}
+        // untuk klaim yang sudah pernah dibukukan.
+        if (row.kind === 'claim_fees' && this.sellFeeWanted(id)) {
+          try { await this.sellClaimedFee(pos, row.hash, result, { quiet: true }); }
+          catch (e) { this.store.log('warn', `jual fee posisi #${id}: ${e.message}`, { quiet: true }); }
+        }
       } catch (e) {
         this.store.log('warn', `pencatatan claim fee ${row.hash}: ${e.message}`, { quiet: true });
       } finally { this.exiting.delete(id); }
@@ -2215,6 +2276,11 @@ class Engine {
       const rows = this.positions.leftoverRows(item.token)
         .filter((r) => item.posId == null || r.id === item.posId);
       if (rows.length) ref.usdIn = await this.positions.valueLeftover(rows, amount, this.ethUsd);
+      else {
+        // Memecoin fee yang belum terjual punya buku sendiri, bentuk barisnya sama.
+        const fee = this.positions.feeLeftoverRows(item.token, item.posId ?? null);
+        if (fee.length) ref.usdIn = await this.positions.valueLeftover(fee, amount, this.ethUsd);
+      }
     } catch (e) {
       this.store.log('warn', `pembanding harga sisa ${String(item.token).slice(0, 10)}…: ${e.message}`, { quiet: true });
     }
@@ -2321,7 +2387,9 @@ class Engine {
         'sebagian terjual, sisanya menunggu likuiditas');
       else this.dropLeftover(item);
       try {
-        this.positions.recordLeftoverSale({ posId: item.posId, token: item.token, amount: sold, quoteToken: item.quote,
+        // Fee yang sudah diklaim dan sisa penutupan bisa sama-sama memuat token ini:
+        // recordTokenSale membagi hasilnya ke buku yang benar.
+        this.positions.recordTokenSale({ posId: item.posId, token: item.token, amount: sold, quoteToken: item.quote,
           txHash: r.hash, amountOut: r.amountOut, usdOut: r.quote?.usdOut, ethUsd: this.ethUsd });
       } catch (e) { this.store.log('warn', `catat hasil jual ${asalSisa(item)}: ${e.message}`, { quiet: true }); }
       // usdOut Kyber bisa kosong pada token tipis; sisi keluar aset kuotasi, jadi nilainya

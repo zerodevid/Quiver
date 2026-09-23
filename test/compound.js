@@ -17,8 +17,8 @@ function fixture() {
   const transfer = (token) => ({ address: token, topics: [TOPIC.transfer, ethers.zeroPadValue(ADDR.poolManager, 32), ethers.zeroPadValue(ME, 32)], data: coder.encode(['uint256'], [150000n]) });
   const receipt = { status: '0x1', logs: [transfer(TOKEN), transfer(ADDR.usdg)], gasUsed: '0x100', effectiveGasPrice: '0x2', blockNumber: '0x10' };
   const rpc = {
-    ethCallMany: async (calls) => calls.length === 9
-      ? [state.growth0, state.growth1, 0n, 0n, 0n, 0n, liquidity, 0n, 0n].map((n) => coder.encode(['uint256'], [n]))
+    ethCallMany: async (calls) => calls.length === 10
+      ? [state.growth0, state.growth1, 0n, 0n, 0n, 0n, liquidity, 0n, 0n, 0n].map((n) => coder.encode(['uint256'], [n]))
       : [coder.encode(['address'], [state.owner])],
     call: async () => state.timeout ? null : { ...receipt, status: state.revert ? '0x0' : '0x1' },
   };
@@ -61,8 +61,12 @@ test('default OFF; per-position settings persist and reject invalid values', () 
     for (const input of [{ minUsd: 0 }, { minUsd: NaN }, { intervalMinutes: 0 }, { intervalMinutes: 1.5 }, { enabled: 'true' }]) {
       assert.throws(() => f.c.configure(f.id, input));
     }
+    // v3 ikut dipanen sejak jalur multicall collect+increaseLiquidity ada; venue tanpa
+    // NFT posisi (pool langsung) tetap ditolak.
     f.store.run("UPDATE positions SET venue='v3' WHERE id=?", f.id);
-    assert.throws(() => f.c.configure(f.id, { enabled: true }), /v4/);
+    assert.equal(f.c.configure(f.id, { enabled: true }).supported, true);
+    f.store.run("UPDATE positions SET venue='v3pool' WHERE id=?", f.id);
+    assert.throws(() => f.c.configure(f.id, { enabled: true }), /v3 dan v4/);
   } finally { f.store.db.close(); }
 });
 

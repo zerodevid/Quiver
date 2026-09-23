@@ -1020,6 +1020,13 @@ class Telegram {
         if (r.error) return out(esc(note(r.error)), kb([[btn(tr("↩︎ Posisi"), `p:${rest[0]}`)]]));
         return out(...(await this.compoundScreen(rest[0])));
       }
+      // Mode panen (compound / klaim) dan saklar "jual sisi memecoin fee".
+      case 'acD': case 'acS': {
+        const body = head === 'acD' ? { mode: rest[1] } : { sellFee: rest[1] === '1' };
+        const r = await this.api('POST', '/api/positions/compound', { id: Number(rest[0]), ...body });
+        if (r.error) return out(esc(note(r.error)), kb([[btn(tr("↩︎ Posisi"), `p:${rest[0]}`)]]));
+        return out(...(await this.compoundScreen(rest[0])));
+      }
       case 'acM': return this.ask(chatId, { kind: 'compoundMin', posId: Number(rest[0]), retry: `ac:${rest[0]}` },
         tr("Ketik minimum fee yang ditambahkan dalam USD, misalnya 5. Batas: 0,01 sampai 1.000.000."));
       case 'acI': return this.ask(chatId, { kind: 'compoundInterval', posId: Number(rest[0]), retry: `ac:${rest[0]}` },
@@ -1851,7 +1858,10 @@ class Telegram {
     const ong = ongkosTeks(p.cost);
     if (ong) L.push('', ong);
     if (p.inRange === false) L.push(tr('<i>Di luar rentang: tidak menghasilkan fee swap sampai harga kembali ke rentang.</i>'));
-    if (p.compound?.enabled) L.push(tr('♻️ Minimum {0} · periksa setiap {1} menit', [usd(p.compound.minUsd), p.compound.intervalMinutes]));
+    if (p.compound?.enabled) {
+      L.push(tr('{0} Minimum {1} · periksa setiap {2} menit', [p.compound.mode === 'claim' ? '💰' : '♻️',
+        usd(p.compound.minUsd), p.compound.intervalMinutes]));
+    }
     L.push(tr('<i>Sinkronisasi terakhir: {0}</i>', [esc(d.syncedAt ? ago(d.syncedAt) : '—')]));
     const jejak = tabel([
       [tr("posisi"), `#${p.id}`],
@@ -1862,7 +1872,7 @@ class Telegram {
     return [L.filter((x) => x != null).join('\n'), kb([
       [btn(tr("📈 Grafik"), `pg:${p.id}`)],
       ...tradeRows(this.net().chain, p.quoteSide === 0 ? p.token1 : p.quoteSide === 1 ? p.token0 : null, p.pool_ref),
-      p.venue === 'v4' ? [btn(`♻️ Auto-compound · ${p.compound?.enabled ? 'ON' : 'OFF'}`, `ac:${p.id}`)] : null,
+      p.compound?.supported ? [btn(`${p.compound?.mode === 'claim' ? '💰' : '♻️'} ${tr('Panen fee')} · ${p.compound?.enabled ? (p.compound.mode === 'claim' ? tr('KLAIM') : tr('COMPOUND')) : 'OFF'}`, `ac:${p.id}`)] : null,
       [btn(tr("💰 Claim fee"), `pf:${p.id}`)],
       [btn(tr("🔴 Tutup posisi ini"), `pc:${p.id}`)],
       [btn(tr("🔄 Segarkan"), `p:${p.id}`), btn(tr("📤 Bagikan kartu"), `ps:${p.id}`)],
@@ -1916,14 +1926,18 @@ class Telegram {
     const r = await this.api('GET', '/api/positions/compound', {}, { id });
     if (r.error) return [esc(note(r.error)), kb([[btn(tr("↩︎ Posisi"), `p:${id}`)]])];
     const c = r.compound;
+    const klaim = c.mode === 'claim';
     const L = [
-      tr("♻️ <b>Auto-compound posisi #{0}</b>", [esc(id)]),
-      tr("Fee ditambahkan ke posisi v4 yang sama. Hanya fee yang dipakai; gas dibayar dari wallet. Sisa token yang tidak cocok dengan rasio LP masuk ke wallet."),
+      tr("♻️ <b>Panen fee otomatis posisi #{0}</b>", [esc(id)]),
+      klaim
+        ? tr("Fee ditarik ke wallet. Sisi aset kuotasi langsung jadi uang; sisi memecoin-nya dijual ke aset kuotasi pool kalau saklar jual menyala.")
+        : tr("Fee dikembalikan jadi likuiditas di posisi yang sama. Hanya fee yang dipakai, tidak ada swap; sisa yang tidak cocok dengan rasio LP masuk ke wallet."),
       '',
-      `Status: <b>${c.enabled ? 'ON' : 'OFF'}</b>`,
+      `Status: <b>${c.enabled ? 'ON' : 'OFF'}</b> · ${klaim ? tr('mode klaim') : tr('mode compound')}`,
       angka([
         [tr('Minimum'), usd(c.minUsd)],
         [tr('Interval'), tr('{0} menit', [c.intervalMinutes])],
+        [tr('Jual sisi memecoin'), klaim ? (c.sellFee ? 'ON' : 'OFF') : '—'],
         [tr('Total ditambahkan'), usd(c.compoundedUsd)],
         [tr('Terakhir'), c.lastCheck ? ago(c.lastCheck) : '—'],
       ]),
@@ -1932,7 +1946,10 @@ class Telegram {
       tr("Berjalan saat LIVE dan bot tidak dijeda. Slippage serta batas posisi mengikuti Aturan. Mengaktifkan mengizinkan transaksi otomatis."),
     ];
     return [L.filter((x) => x != null).join('\n'), kb([
-      c.supported ? [btn(c.enabled ? tr("⏸ Matikan auto-compound") : tr("▶️ Aktifkan auto-compound"), `acT:${id}:${c.enabled ? 0 : 1}`)] : null,
+      c.supported ? [btn(c.enabled ? tr("⏸ Matikan panen otomatis") : tr("▶️ Aktifkan panen otomatis"), `acT:${id}:${c.enabled ? 0 : 1}`)] : null,
+      c.supported ? [btn(klaim ? tr("♻️ Compound") : tr("· ♻️ Compound ·"), `acD:${id}:compound`),
+        btn(klaim ? tr("· 💰 Klaim ·") : tr("💰 Klaim"), `acD:${id}:claim`)] : null,
+      c.supported && klaim ? [btn(tr("🔁 Jual sisi memecoin · {0}", [c.sellFee ? 'ON' : 'OFF']), `acS:${id}:${c.sellFee ? 0 : 1}`)] : null,
       c.supported ? [btn(tr("✏️ Minimum fee"), `acM:${id}`), btn(tr("⏱ Interval"), `acI:${id}`)] : null,
       [btn(tr("🔄 Segarkan"), `ac:${id}`)],
       [btn(tr("↩︎ Posisi"), `p:${id}`)],

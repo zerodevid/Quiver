@@ -143,6 +143,97 @@ class Positions {
     return done;
   }
 
+  // ---- memecoin dari fee yang sudah diklaim -------------------------------
+  // Klaim fee mengembalikan DUA token: aset kuotasi (langsung uang) dan memecoin
+  // (belum tentu). recordFeeClaim membukukan keduanya ke claimed_quote di harga pool
+  // saat klaim; sisi memecoin-nya dicatat di sini sampai benar-benar terjual, lalu
+  // taksiran itu diganti hasil jual sesungguhnya. Tanpa buku ini, fee $40 yang baru
+  // laku $9 sesudah dampak harga tetap tercatat $40 selamanya.
+  noteFeeLeftover({ posId, token, amount, estQuote, txHash = null }) {
+    if (!(BigInt(amount) > 0n)) return null;
+    const r = this.store.run('INSERT INTO fee_leftovers(chain,position_id,ts,token,amount,est_quote,tx_hash) VALUES(?,?,?,?,?,?,?)',
+      this.chain.network, posId, Date.now(), String(token).toLowerCase(), String(amount), estQuote || 0, txHash);
+    return Number(r.lastInsertRowid);
+  }
+
+  // Baris fee yang belum terjual, berbentuk SAMA dengan leftoverRows (left_token/
+  // left_amount/left_quote) supaya valueLeftover dan leftoverQuote bisa dipakai apa
+  // adanya untuk menilainya. Urut tertua dulu (FIFO).
+  feeLeftoverRows(token = null, posId = null) {
+    return this.store.all(`SELECT f.id AS fee_id, f.position_id AS id, f.ts AS fee_ts, f.est_quote AS left_quote,
+        f.token AS left_token, f.amount AS left_amount,
+        p.token0, p.token1, p.pool_ref, p.venue, p.quote_symbol, p.status, p.out_quote, p.claimed_quote,
+        p.entry_sqrt, p.exit_sqrt, p.liquidity, p.cost0, p.cost1, p.tick_lower, p.tick_upper
+      FROM fee_leftovers f JOIN positions p ON p.id=f.position_id
+      WHERE f.chain=? AND f.amount != '0'${token ? ' AND f.token=?' : ''}${posId != null ? ' AND f.position_id=?' : ''}
+      ORDER BY f.ts, f.id`,
+    this.chain.network, ...(token ? [String(token).toLowerCase()] : []), ...(posId != null ? [posId] : []));
+  }
+
+  // Dipanggil setelah memecoin fee terjual. Mengembalikan berapa banyak dari `amount`
+  // yang memang berasal dari buku fee — sisanya milik buku sisa penutupan dan
+  // diserahkan ke recordLeftoverSale oleh pemanggil. Fee dialokasikan lebih dulu
+  // karena klaim selalu mendahului penutupan posisi yang sama.
+  recordFeeSale({ posId = null, token, amount, quoteToken, amountOut, usdOut, ethUsd, txHash = null }) {
+    const rows = this.feeLeftoverRows(token, posId);
+    let rem = BigInt(amount);
+    if (!rows.length || rem <= 0n) return { consumed: 0n, done: [] };
+    const qt = String(quoteToken || '').toLowerCase();
+    const q = this.chain.quoteSideOf(qt, qt);
+    const gotUsd = q && amountOut != null
+      ? (Number(BigInt(amountOut)) / 10 ** q.decimals) * (q.kind === 'eth' ? ethUsd : 1)
+      : (usdOut || 0);
+    const total = BigInt(amount);
+    const done = [];
+    for (const r of rows) {
+      if (rem <= 0n) break;
+      const left = BigInt(r.left_amount || '0');
+      if (left <= 0n) continue;
+      const take = left < rem ? left : rem;
+      rem -= take;
+      const frac = Number(take) / Number(left);
+      const share = gotUsd * (Number(take) / Number(total));
+      const k = usdPerQuote(r.quote_symbol, ethUsd, this.chain);
+      const gotQuote = share / k;
+      const estQuote = (r.left_quote || 0) * frac;
+      // Posisi yang sudah ditutup: markClosed sudah melipat claimed_quote ke out_quote,
+      // jadi koreksinya harus mengenai keduanya — kalau tidak, PnL posisi tertutup
+      // tetap memakai taksiran harga klaim.
+      this.store.run(`UPDATE positions SET claimed_quote = COALESCE(claimed_quote,0) - ? + ?,
+          out_quote = out_quote + CASE WHEN status='closed' THEN ? ELSE 0 END WHERE id=?`,
+      estQuote, gotQuote, gotQuote - estQuote, r.id);
+      this.store.run('UPDATE fee_leftovers SET amount=?, est_quote=? WHERE id=?',
+        (left - take).toString(), (r.left_quote || 0) - estQuote, r.fee_id);
+      done.push({ id: r.id, take, estQuote, gotQuote });
+      this.log(`posisi #${r.id}: fee terjual, hasil ${r.quote_symbol} ${gotQuote.toFixed(2)} menggantikan taksiran klaim ${estQuote.toFixed(2)}`);
+    }
+    if (txHash && done.length) {
+      const tx = this.store.get('SELECT detail FROM txs WHERE hash=?', txHash);
+      const detail = JSON.parse(tx?.detail || '{}');
+      detail.feeSales = done.map((r) => ({ position: r.id, amount: r.take.toString(),
+        estQuote: r.estQuote, gotQuote: r.gotQuote }));
+      this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify(detail), txHash);
+    }
+    return { consumed: BigInt(amount) - rem, done };
+  }
+
+  // Satu penjualan token, dibagi ke dua buku yang mungkin memuatnya: fee yang sudah
+  // diklaim tapi belum terjual, lalu sisa penutupan posisi. Fee didahulukan karena
+  // klaim selalu mendahului penutupan posisi yang sama. Hasil penjualan dibagi
+  // proporsional menurut jumlah yang diambil tiap buku — kalau tidak, satu penjualan
+  // mengoreksi dua kolom dengan hasil penuh yang sama.
+  recordTokenSale({ posId = null, token, amount, quoteToken, amountOut, usdOut, ethUsd, txHash = null }) {
+    const sold = BigInt(amount);
+    const fee = this.recordFeeSale({ posId, token, amount: sold, quoteToken, amountOut, usdOut, ethUsd, txHash });
+    const rest = sold - (fee?.consumed || 0n);
+    if (rest <= 0n) return { fee, leftover: [] };
+    const bagian = (x) => (x == null ? null : x * Number(rest) / Number(sold));
+    const leftover = this.recordLeftoverSale({ posId, token, amount: rest, quoteToken, txHash,
+      amountOut: amountOut != null ? (BigInt(amountOut) * rest / sold).toString() : null,
+      usdOut: bagian(usdOut ?? null), ethUsd });
+    return { fee, leftover };
+  }
+
   // Nilai memecoin sisa yang masih dipegang, di harga pool SEKARANG. Dibaca tiap
   // sinkron bersama kas; hasilnya dipakai summary() supaya total portofolio tidak
   // "anjlok" begitu posisi tutup lalu "melonjak" begitu sisanya terjual.
@@ -153,23 +244,43 @@ class Positions {
     // Token yang ternyata sudah tidak ada di wallet (dijual lewat DEX lain, dikirim
     // keluar) tidak boleh terus dinilai: kekurangannya dianggap terealisasi di harga
     // kini, seperti perlakuan riset wallet terhadap transfer keluar tanpa hasil.
-    if (rows.length && wallet) {
-      const toksL = [...new Set(rows.map((r) => r.left_token))];
+    // Memecoin fee yang sudah diklaim ikut diperiksa: saldonya di wallet yang sama,
+    // dan kalau ia hilang di luar bot, claimed_quote-nya juga harus berhenti memakai
+    // taksiran harga klaim.
+    let feeRows = wallet ? this.feeLeftoverRows() : [];
+    if ((rows.length || feeRows.length) && wallet) {
+      const toksL = [...new Set([...rows.map((r) => r.left_token), ...feeRows.map((r) => r.left_token)])];
       const IF = new ethers.Interface(['function balanceOf(address) view returns (uint256)']);
       const bals = await this.rpc.ethCallMany(toksL.map((t) => ({ to: t, data: IF.encodeFunctionData('balanceOf', [wallet]) })));
       let changed = false;
       for (let i = 0; i < toksL.length; i++) {
         if (!bals[i] || bals[i] === '0x') continue;
         const bal = BigInt(bals[i]);
-        const total = rows.filter((r) => r.left_token === toksL[i]).reduce((a, r) => a + BigInt(r.left_amount), 0n);
+        const mine = rows.filter((r) => r.left_token === toksL[i]);
+        const mineFee = feeRows.filter((r) => r.left_token === toksL[i]);
+        const jumlah = (list) => list.reduce((a, r) => a + BigInt(r.left_amount), 0n);
+        const total = jumlah(mine) + jumlah(mineFee);
         if (bal >= total) continue;
-        const gone = total - bal;
-        const val = await this.valueLeftover(rows.filter((r) => r.left_token === toksL[i]), gone, ethUsd);
-        this.log(`token sisa ${toksL[i].slice(0, 10)}… berkurang di luar bot (${gone} satuan) — dianggap terjual $${val.toFixed(2)}`);
-        this.recordLeftoverSale({ token: toksL[i], amount: gone, quoteToken: null, usdOut: val, ethUsd });
-        changed = true;
+        let gone = total - bal;
+        // Kekurangannya dibebankan ke buku fee dulu, urutan yang sama dengan
+        // recordTokenSale — supaya satu token yang ada di dua buku tidak pernah
+        // dihitung dua kali.
+        const ambilFee = jumlah(mineFee) < gone ? jumlah(mineFee) : gone;
+        if (ambilFee > 0n) {
+          const val = await this.valueLeftover(mineFee, ambilFee, ethUsd);
+          this.log(`fee ${toksL[i].slice(0, 10)}… berkurang di luar bot (${ambilFee} satuan) — dianggap terjual $${val.toFixed(2)}`);
+          this.recordFeeSale({ token: toksL[i], amount: ambilFee, quoteToken: null, usdOut: val, ethUsd });
+          gone -= ambilFee;
+          changed = true;
+        }
+        if (gone > 0n && mine.length) {
+          const val = await this.valueLeftover(mine, gone, ethUsd);
+          this.log(`token sisa ${toksL[i].slice(0, 10)}… berkurang di luar bot (${gone} satuan) — dianggap terjual $${val.toFixed(2)}`);
+          this.recordLeftoverSale({ token: toksL[i], amount: gone, quoteToken: null, usdOut: val, ethUsd });
+          changed = true;
+        }
       }
-      if (changed) rows = this.leftoverRows();
+      if (changed) { rows = this.leftoverRows(); feeRows = this.feeLeftoverRows(); }
     }
     if (rows.length) {
       const v4 = [...new Set(rows.filter((r) => !this.chain.isV3Venue(r.venue)).map((r) => r.pool_ref))];

@@ -498,6 +498,20 @@ class Executor {
     return { to: this.chain.ADDR.posmV4, value: '0', data: IF_POSM.encodeFunctionData('modifyLiquidities', [unlock, deadlineSec]) };
   }
 
+  // v3 tidak punya "increase dari fee" seperti v4: fee harus ditarik dulu. Satu
+  // multicall NPM melakukan keduanya dalam SATU transaksi — collect mengirim fee ke
+  // wallet, increaseLiquidity menariknya kembali lewat transferFrom (jadi NPM perlu
+  // allowance ERC20 kedua token). Yang tidak muat pada rasio LP tetap di wallet.
+  buildV3Compound(plan, deadlineSec) {
+    const owner = this.address();
+    const calls = [
+      IF_NPM.encodeFunctionData('collect', [[plan.tokenId, owner, MAX_UINT160 >> 32n, MAX_UINT160 >> 32n]]),
+      IF_NPM.encodeFunctionData('increaseLiquidity', [[plan.tokenId, plan.amount0Max, plan.amount1Max,
+        plan.amount0Min || 0, plan.amount1Min || 0, deadlineSec]]),
+    ];
+    return { to: this.chain.npmFor(plan.venue), data: IF_NPM.encodeFunctionData('multicall', [calls]), value: '0' };
+  }
+
   buildV3Collect(plan) {
     return { to: this.chain.npmFor(plan.venue), value: '0', data: IF_NPM.encodeFunctionData('collect',
       [[plan.tokenId, this.address(), (1n << 128n) - 1n, (1n << 128n) - 1n]]) };
