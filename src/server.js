@@ -1201,18 +1201,37 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const ref = String(url.searchParams.get('ref') || '').trim().toLowerCase();
       if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(ref)) return { error: 'pool tidak valid' };
       const cols = 'pool_ref, venue, token0, token1, fee, tick_spacing, hooks';
-      let pool = store.get(`SELECT ${cols} FROM pools WHERE chain=? AND pool_ref=?`, chain.network, ref)
-        || store.get(`SELECT ${cols} FROM positions WHERE chain=? AND pool_ref=? LIMIT 1`, chain.network, ref)
-        || store.get(`SELECT ${cols} FROM wpositions WHERE chain=? AND pool_ref=? LIMIT 1`, chain.network, ref)
-        || store.get(`SELECT ${cols} FROM actions WHERE chain=? AND pool_ref=? LIMIT 1`, chain.network, ref);
+      // Baris pools bisa saja ada tapi belum berisi pasangan tokennya (mis. ditulis
+      // pemeriksa umur pool). Yang dipakai baris pertama yang PUNYA token0/token1 —
+      // kalau tidak, halamannya cuma bisa menulis "?/?" padahal tabel lain tahu.
+      const cands = [
+        store.get(`SELECT ${cols} FROM pools WHERE chain=? AND pool_ref=?`, chain.network, ref),
+        store.get(`SELECT ${cols} FROM positions WHERE chain=? AND pool_ref=? LIMIT 1`, chain.network, ref),
+        store.get(`SELECT ${cols} FROM wpositions WHERE chain=? AND pool_ref=? LIMIT 1`, chain.network, ref),
+        store.get(`SELECT ${cols} FROM actions WHERE chain=? AND pool_ref=? LIMIT 1`, chain.network, ref),
+      ].filter(Boolean);
+      let pool = cands.find((p) => p.token0 && p.token1) || cands[0];
+      // Sisa kolom (fee/tick_spacing/hooks/venue) ditambal dari baris lain yang punya.
+      if (pool) for (const k of ['venue', 'fee', 'tick_spacing', 'hooks']) {
+        if (pool[k] == null) pool[k] = cands.find((p) => p[k] != null)?.[k] ?? null;
+      }
       if (!pool) {
         const pr = await market.pair(ref);
         if (!pr || pr.error) return { error: 'pool tidak dikenal — belum tersentuh bot/riset dan belum terindeks DexScreener' };
         // DexScreener memakai urutan dasar/kuotasi; Uniswap mengurutkan menurut alamat.
-        const [t0, t1] = [pr.base.address, pr.quote.address].sort();
+        const [t0, t1] = [pr.base.address, pr.quote.address].map((a) => String(a || '').toLowerCase()).sort();
         pool = { pool_ref: ref, venue: ref.length === 42 ? 'v3' : 'v4', token0: t0, token1: t1, fee: null, tick_spacing: null, hooks: null };
       }
-      const [m0, m1] = await chain.tokens([pool.token0, pool.token1]).catch(() => [QUOTES[pool.token0], QUOTES[pool.token1]]);
+      // Alamat disamakan huruf kecilnya: tabel lama bisa menyimpannya ber-checksum,
+      // sedangkan QUOTES dan cache token berkunci huruf kecil.
+      pool.token0 = pool.token0 ? String(pool.token0).toLowerCase() : null;
+      pool.token1 = pool.token1 ? String(pool.token1).toLowerCase() : null;
+      // chain.tokens() membuang alamat kosong dan duplikat, jadi hasilnya dicocokkan
+      // lewat alamat — bukan lewat urutan.
+      const metas = await chain.tokens([pool.token0, pool.token1]).catch(() => []);
+      const byAddr = new Map(metas.filter(Boolean).map((m) => [String(m.address).toLowerCase(), m]));
+      const m0 = byAddr.get(pool.token0) || QUOTES[pool.token0];
+      const m1 = byAddr.get(pool.token1) || QUOTES[pool.token1];
       const quoteSide = quoteSideOf(pool.token0, pool.token1);
       // Harga kini: v4 = poolId (32 byte) dibaca dari PoolManager, v3 = alamat pool.
       let slot = null;

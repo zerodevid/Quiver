@@ -403,7 +403,12 @@ Chain.prototype.poolKeyOfId = async function poolKeyOfId(poolId, hintBlock = nul
       hooks: '0x' + ethers.hexlify(b.slice(2 * 32 + 12, 3 * 32)).slice(2),
     };
     this.store.run(
-      'INSERT OR REPLACE INTO pools(chain,pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block,init_block,init_sqrt) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+      `INSERT INTO pools(chain,pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block,init_block,init_sqrt)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(chain,pool_ref) DO UPDATE SET
+         token0=excluded.token0, token1=excluded.token1, fee=excluded.fee,
+         tick_spacing=excluded.tick_spacing, hooks=excluded.hooks,
+         first_block=excluded.first_block, init_block=excluded.init_block, init_sqrt=excluded.init_sqrt`,
       this.network, poolId, 'v4', pk.currency0, pk.currency1, pk.fee, pk.tickSpacing, pk.hooks, parseInt(l.blockNumber, 16),
       parseInt(l.blockNumber, 16), w(3).toString());
     return pk;
@@ -466,7 +471,10 @@ Chain.prototype.poolKeyFromCalldata = async function poolKeyFromCalldata(poolId,
     };
     if (computePoolId(pk) !== poolId) continue;
     this.store.run(
-      'INSERT OR REPLACE INTO pools(chain,pool_ref,venue,token0,token1,fee,tick_spacing,hooks) VALUES(?,?,?,?,?,?,?,?)',
+      `INSERT INTO pools(chain,pool_ref,venue,token0,token1,fee,tick_spacing,hooks) VALUES(?,?,?,?,?,?,?,?)
+       ON CONFLICT(chain,pool_ref) DO UPDATE SET
+         token0=excluded.token0, token1=excluded.token1, fee=excluded.fee,
+         tick_spacing=excluded.tick_spacing, hooks=excluded.hooks`,
       this.network, poolId, 'v4', pk.currency0, pk.currency1, pk.fee, pk.tickSpacing, pk.hooks);
     return pk;
   }
@@ -474,6 +482,12 @@ Chain.prototype.poolKeyFromCalldata = async function poolKeyFromCalldata(poolId,
 };
 
 // ---- umur pool ------------------------------------------------------------
+// Umur hanya menulis blok/waktu lahir. Dulu barisnya ditulis INSERT OR REPLACE:
+// kolom yang tidak disebut (token0/token1/fee/tick_spacing/hooks) ikut jadi NULL,
+// jadi pool yang metadatanya sudah dikenal berubah jadi "?/?" di halaman pool.
+const AGE_UPSERT = `INSERT INTO pools(chain,pool_ref,venue,first_block,first_ts) VALUES(?,?,?,?,?)
+  ON CONFLICT(chain,pool_ref) DO UPDATE SET first_block=excluded.first_block, first_ts=excluded.first_ts`;
+
 // Event Initialize mengindeks poolId, jadi pencarian per-pool murah. Kalau tidak
 // ketemu di jendela pindai, pool itu lebih tua dari jendela (dan itu aman).
 Chain.prototype.poolAgeMinutes = async function poolAgeMinutes(poolId, windowBlocks = 900_000) {
@@ -490,13 +504,12 @@ Chain.prototype.poolAgeMinutes = async function poolAgeMinutes(poolId, windowBlo
   } catch { return Infinity; }
   if (!logs.length) {
     // lebih tua dari jendela: catat sebagai "sangat tua" supaya tidak dipindai ulang
-    this.store.run('INSERT OR REPLACE INTO pools(chain,pool_ref,venue,first_block,first_ts) VALUES(?,?,?,?,?)',
-      this.network, poolId, 'v4', from, Date.now() - windowBlocks * this.blockMs);
+    this.store.run(AGE_UPSERT, this.network, poolId, 'v4', from, Date.now() - windowBlocks * this.blockMs);
     return (windowBlocks * this.blockMs) / 60000;
   }
   const b = parseInt(logs[0].blockNumber, 16);
   const ts = await this.blockTs(b);
-  this.store.run('INSERT OR REPLACE INTO pools(chain,pool_ref,venue,first_block,first_ts) VALUES(?,?,?,?,?)', this.network, poolId, 'v4', b, ts);
+  this.store.run(AGE_UPSERT, this.network, poolId, 'v4', b, ts);
   return (Date.now() - ts) / 60000;
 };
 
