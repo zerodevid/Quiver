@@ -15,6 +15,7 @@ const IF_EXT = new ethers.Interface(['function extsload(bytes32 slot) view retur
 const IF_NPM = new ethers.Interface(ABI.npmV3);
 const Q128 = 1n << 128n;
 const MOD = 1n << 256n;
+const PIN_LAG = 3;
 const sub = (a, b) => ((a - b) % MOD + MOD) % MOD;   // pengurangan yang membungkus, seperti Solidity
 
 const slotHex = (n) => '0x' + n.toString(16).padStart(64, '0');
@@ -49,11 +50,19 @@ async function unclaimedV4(chain, items, curTickByPool, rpc = null) {
       tl + 1n, tl + 2n,              // fgOutside di tickLower
       tu + 1n, tu + 2n,              // fgOutside di tickUpper
       ps, ps + 1n, ps + 2n,          // L, fgInside0Last, fgInside1Last
+      base,                          // slot0 → tick, dibaca di blok yang sama
     ];
     idx.push([calls.length, slots.length]);
     for (const s of slots) calls.push({ to: ADDR.poolManager, data: IF_EXT.encodeFunctionData('extsload', [slotHex(s)]) });
   }
-  const res = await rpc.ethCallMany(calls);
+  // Semua slot dibaca di SATU blok. Dengan 'latest', potongan batch / ulangan bisa
+  // mendarat di endpoint lain pada blok berbeda: L sesudah mint tapi fgInsideLast atau
+  // fgOutside dari sebelum mint (nol) → fee = L × seluruh riwayat fee pool. Pernah
+  // masuk ekuitas lp3 sebagai +$591 sesaat (2026-09-22). Mundur beberapa blok supaya
+  // endpoint yang sedikit tertinggal masih punya state-nya (publicnode menolak >~50).
+  const head = typeof rpc.blockNumber === 'function' ? await rpc.blockNumber().catch(() => null) : null;
+  const block = Number.isFinite(head) && head > PIN_LAG ? '0x' + (head - PIN_LAG).toString(16) : 'latest';
+  const res = await rpc.ethCallMany(calls, block);
   const out = [];
   items.forEach((it, i) => {
     const [off, n] = idx[i];
@@ -66,7 +75,11 @@ async function unclaimedV4(chain, items, curTickByPool, rpc = null) {
     const lo0 = v(2), lo1 = v(3), hi0 = v(4), hi1 = v(5);
     const L = v(6) & ((1n << 128n) - 1n);
     const last0 = v(7), last1 = v(8);
-    const cur = curTickByPool.get(it.poolId);
+    // Tick dari slot0 di blok yang sama; tick dari panggilan lain (blok lain) yang
+    // melompati batas rentang membuat below/above salah sisi.
+    const s0 = v(9);
+    let cur = s0 ? Number((s0 >> 160n) & 0xffffffn) : curTickByPool?.get(it.poolId);
+    if (s0 && cur >= 0x800000) cur -= 0x1000000;
     if (cur == null || L === 0n) { out.push({ fee0: 0n, fee1: 0n, liquidity: L }); return; }
     const below0 = cur >= it.tickLower ? lo0 : sub(fg0, lo0);
     const below1 = cur >= it.tickLower ? lo1 : sub(fg1, lo1);
