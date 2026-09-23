@@ -15,6 +15,7 @@ import { TokenPair, TokenSym } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
 import { PriceChart, DexEmbed, GmgnEmbed, TradesTape, MarketPanel, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc } from './PositionDetail';
 import { GmgnWallets } from '../components/Gmgn';
+import { BAND_COLORS } from '../components/CandleChart';
 import { usd, pct, tone, num, price, sqrtPrice, tickPrice } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -46,9 +47,11 @@ export default function PoolDetail({ param }) {
   const all = d ? [...d.open, ...d.closed] : [];
   const focus = focusPick === undefined ? (d?.open[0] || null) : all.find((p) => p.id === focusPick) || null;
   const tf = tfPick || (focus?.status === 'open' ? tfFor(focus.ageHours) : '1h');
-  // Cukup lilin supaya titik masuk posisi yang digambar masih terlihat.
-  const sinceOpen = focus?.opened_ts ? (Date.now() - focus.opened_ts) / 1000 : 0;
-  const limit = focus ? Math.min(1000, Math.max(120, Math.ceil(sinceOpen / SECS[tf]) + 40)) : 240;
+  // Cukup lilin supaya titik masuk semua posisi yang digambar masih terlihat — bukan
+  // hanya yang sedang disorot: pita posisi tertua pun mulai di lilin masuknya.
+  const firstOpen = Math.min(...(d?.open || []).map((p) => p.opened_ts || Date.now()), focus?.opened_ts || Date.now());
+  const sinceOpen = (Date.now() - firstOpen) / 1000;
+  const limit = focus || d?.open.length ? Math.min(1000, Math.max(120, Math.ceil(sinceOpen / SECS[tf]) + 40)) : 240;
   const { data: m } = usePoll(pool ? `/api/market?pool=${ref}&tf=${tf}&limit=${limit}&token=${pool.baseToken || ''}${src === 'gmgn' ? '&src=gmgn' : ''}` : null, 30000);
 
   if (!d) return <Loading page />;
@@ -67,6 +70,23 @@ export default function PoolDetail({ param }) {
   const openVal = sum(d.open, (p) => p.valueUsd), openFee = sum(d.open, (p) => p.feeUsd), openCost = sum(d.open, (p) => p.costUsd);
   const upnl = sum(d.open, (p) => p.pnlUsd), realized = sum(d.closed, (p) => p.pnlUsd);
   const wins = d.closed.filter((p) => p.pnlUsd > 0).length;
+
+  // Grafik: semua rentang posisi terbuka bot di pool ini digambar sekaligus (seperti
+  // kartu pool di halaman Monitor), warnanya urut menurut id supaya tidak berganti saat
+  // daftar berubah. Posisi yang sedang disorot jadi pita pekat; yang lain tipis. Posisi
+  // yang sudah ditutup hanya digambar kalau dia yang sedang disorot.
+  const at = (tick) => tickPrice(tick, pool.dec0, pool.dec1, pool.quoteSide);
+  const hasRange = (p) => p.tick_lower != null && p.tick_upper != null && !(p.tick_lower <= -880000 && p.tick_upper >= 880000);
+  const band = (p, color) => {
+    const a = at(p.tick_lower), b = at(p.tick_upper);
+    return { id: p.id, lo: Math.min(a, b), hi: Math.max(a, b), color,
+      label: p.token_id ? `#${p.token_id}` : `#${p.id}`, selected: focus?.id === p.id,
+      from: p.opened_ts || null, to: p.status === 'closed' ? p.closed_ts || null : null };
+  };
+  // "sembunyikan" (focusPick === null) tetap berarti grafik bersih tanpa posisi.
+  const openBands = focusPick === null ? [] : [...d.open].sort((a, b) => a.id - b.id).filter(hasRange);
+  const ranges = openBands.map((p, i) => band(p, BAND_COLORS[i % BAND_COLORS.length]));
+  if (focus && focus.status === 'closed' && hasRange(focus)) ranges.push(band(focus, BAND_COLORS[openBands.length % BAND_COLORS.length]));
 
   // Grafik: harga pool + (kalau ada) rentang dan titik masuk posisi yang dipilih.
   const chartP = {
@@ -118,14 +138,16 @@ export default function PoolDetail({ param }) {
       <div className="grid items-start gap-3 lg:grid-cols-3">
         <Panel title={t('Harga {b} / {q}', { b: base, q: quote || '?' })} className="lg:col-span-2"
           desc={focus
-            ? <span>{t('menampilkan posisi bot #{id}', { id: focus.token_id || focus.id })} · <button type="button" className="text-accent hover:underline" onClick={() => setFocus(null)}>{t('sembunyikan')}</button></span>
-            : null}
+            ? <span>{ranges.length > 1
+                ? t('{n} rentang posisi bot · disorot #{id}', { n: ranges.length, id: focus.token_id || focus.id })
+                : t('menampilkan posisi bot #{id}', { id: focus.token_id || focus.id })} · <button type="button" className="text-accent hover:underline" onClick={() => setFocus(null)}>{t('sembunyikan')}</button></span>
+            : ranges.length ? <span>{t('{n} rentang posisi bot', { n: ranges.length })}</span> : null}
           action={<div className="flex flex-wrap gap-2">
             <Segmented size="sm" aria="Tampilan grafik" value={view} onChange={setView} options={VIEWS} />
             {view === 'chart' && (m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
             {view !== 'dex' && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}
           </div>}>
-          {view === 'dex' ? <DexEmbed pool={ref} /> : view === 'gmgn' ? <GmgnEmbed token={pool.baseToken} tf={tf} p={chartP} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={chartP} m={m} tf={tf} />}
+          {view === 'dex' ? <DexEmbed pool={ref} /> : view === 'gmgn' ? <GmgnEmbed token={pool.baseToken} tf={tf} p={chartP} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={chartP} m={m} tf={tf} ranges={ranges} onRangeClick={setFocus} />}
           <TradesTape pool={ref} token={pool.baseToken} base={base} quote={quote} />
         </Panel>
 

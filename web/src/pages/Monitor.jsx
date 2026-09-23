@@ -24,7 +24,7 @@ import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
 import { useLiveCandles } from '../liveCandles';
 import { breakEven } from '../breakeven';
-import CandleChart from '../components/CandleChart';
+import CandleChart, { BAND_COLORS } from '../components/CandleChart';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
 import { PageHeader, Panel, Empty, Loading, Notice, PriceRange, Refresh, Segmented, Dot, TradeLinks, DataLinks, baseTokenOf } from '../components/ui';
@@ -91,7 +91,6 @@ function riskOf(p, trig, edge) {
 const EDGE_CLS = { danger: 'border-l-danger', warning: 'border-l-warning', ok: 'border-l-success' };
 // Warna pita per posisi di satu pool: dipilih supaya tetap bisa dibedakan di tema
 // gelap maupun terang, dan tidak memakai hijau/merah yang sudah berarti untung/rugi.
-const BAND_COLORS = ['#3b82f6', '#a855f7', '#f97316', '#14b8a6', '#ec4899', '#eab308', '#06b6d4', '#8b5cf6'];
 const LEVEL_RANK = { danger: 2, warning: 1, ok: 0 };
 
 // Satu bar pemicu keluar: label kiri, angka kini/ambang kanan, batang di bawah.
