@@ -122,6 +122,12 @@ class Kyber {
    * selisih saldo, bukan dari kutipan. null kalau Kyber tidak bisa merutekan (pemanggil
    * boleh pakai cadangan). Melempar galat kalau pengaman gagal atau batas rugi terlampaui
    * — tidak pernah diam-diam mengirim sesuatu yang tidak aman.
+   *
+   * Galat yang dilempar ditandai supaya pemanggil bisa membedakan sebabnya: `e.loss`
+   * (rute di atas batas rugi, berisi angkanya), `e.reverted` (ditolak chain sampai
+   * percobaan ketiga), `e.pending` (receipt belum terbaca — tx-nya mungkin tetap masuk,
+   * jangan pernah diulang). Yang tanpa tanda = pengaman gagal. Engine hanya mengalihkan
+   * `loss`/`reverted` ke pool langsung; sisanya menghentikan operasi.
    */
   async swap(tokenIn, tokenOut, amountIn, { slippageBps = 150, maxLossBps = null, kind = 'kyber_swap', detail = null, ref = null, requireLoss = false } = {}) {
     if (!this.enabled() || amountIn <= 0n) return null;

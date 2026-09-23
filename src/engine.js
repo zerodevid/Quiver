@@ -933,14 +933,24 @@ class Engine {
       let payK = (rev.amountOut * BigInt(10_000 + slipBps)) / 10_000n;
       if (payK > payHave) throw tooShort(payK);
       await unwrapFor(payK);
-      const r = await this.kyber.swap(payTok, outTok, payK, {
-        slippageBps: slipBps, maxLossBps: rules.swap.max_price_impact_bps, kind: 'bridge_swap', detail: { via: 'kyber', wantEth },
-      });
+      let r = null, kyberGagal = false;
+      try {
+        r = await this.kyber.swap(payTok, outTok, payK, {
+          slippageBps: slipBps, maxLossBps: rules.swap.max_price_impact_bps, kind: 'bridge_swap', detail: { via: 'kyber', wantEth },
+        });
+      } catch (e) {
+        // Rute terlalu rugi atau tx ditolak chain berkali-kali — soal pasar, jadi pool
+        // langsung di bawah tetap dicoba (dampak harganya disaring batas yang sama).
+        // Pengaman yang gagal dan receipt yang belum terbaca tetap menghentikan entry.
+        if (!(e.loss || e.reverted)) throw e;
+        kyberGagal = true;
+        this.store.log('warn', `jembatan via Kyber tidak jadi (${e.message}) — mencoba pool langsung`, { quiet: true });
+      }
       if (r) {
         notes.push(`${wantEth ? `jembatan ${usdgSymbol}→${nativeSymbol}` : `jembatan ${nativeSymbol}→${usdgSymbol}`} via Kyber (${r.quote.dex})`);
         return this.wrapIfWeth(quoteTok, needQuoteRaw, balOf, notes);
       }
-      this.store.log('warn', 'Kyber tidak bisa merutekan jembatan — mencoba pool langsung', { quiet: true });
+      if (!kyberGagal) this.store.log('warn', 'Kyber tidak bisa merutekan jembatan — mencoba pool langsung', { quiet: true });
     }
 
     // Cadangan: satu pool ETH/USDG langsung. Banyak pool ETH/USDG di chain ini menolak
@@ -1347,7 +1357,7 @@ class Engine {
         else z.gainedUnknown = true;
         trace.zapped = z;
       };
-      let kz;
+      let kz, kyberErr = null;
       try {
         kz = await this.kyber.swap(payTok, buyTok, payRaw, {
           slippageBps: rules.swap.max_slippage_bps, maxLossBps: zapLossBps,
@@ -1356,8 +1366,15 @@ class Engine {
       } catch (e) {
         // Receipt zap belum terbaca: tokennya mungkin tetap masuk — jangan zap lagi di
         // percobaan berikutnya tanpa tahu; pemulihan zap yatim yang mengurusnya.
-        if (e.pending) e.message = `${e.message} — entry dihentikan, zap diurus belakangan`;
-        throw e;
+        if (e.pending) { e.message = `${e.message} — entry dihentikan, zap diurus belakangan`; throw e; }
+        // Rute Kyber terlalu rugi (e.loss), atau tx-nya ditolak chain sampai percobaan
+        // ketiga karena harga basi (e.reverted): dua-duanya soal PASAR, bukan pengaman
+        // yang gagal — dan revert tidak memindahkan token apa pun. Pool langsung di
+        // bawah masih boleh dicoba, dengan batas rugi yang sama. Galat pengaman (router
+        // tidak cocok, calldata janggal) tetap menghentikan entry di sini.
+        if (!(e.loss || e.reverted)) throw e;
+        kyberErr = e;
+        this.log(`zap via Kyber tidak jadi (${e.message}) — coba pool langsung`);
       }
       if (kz) {
         notes.push(`zap ${idx === 0 ? 'beli token0' : 'beli token1'} via Kyber`);
@@ -1385,7 +1402,19 @@ class Engine {
           hooks: plan.poolKey?.hooks ?? pk?.hooks ?? null, pool_addr: this.chain.isV3Venue(plan.venue) ? plan.poolRef : null,
         }],
       });
-      if (!pick) throw new Error(`zap lewat pool langsung tidak bisa: ${info.reason}`);
+      if (!pick) throw kyberErr || new Error(`zap lewat pool langsung tidak bisa: ${info.reason}`);
+      // Sampai di sini lewat rute Kyber yang ditolak batas rugi: pool langsung harus
+      // diukur dengan batas yang SAMA — fee pool + dampak harga, bukan dampak harga saja
+      // (pemilih pool hanya menyaring dampak). Tanpa ini cadangan berubah jadi pintu
+      // belakang yang melewati gerbang rugi dengan membayar fee pool 10% diam-diam.
+      if (kyberErr?.loss) {
+        const lossBps = (pick.impactBps ?? 0) + (pick.feePpm ?? 0) / 100;
+        if (lossBps > zapLossBps) {
+          this.log(`pool langsung juga rugi ${(lossBps / 100).toFixed(1)}% (batas ${(zapLossBps / 100).toFixed(1)}%) — zap dibatalkan`);
+          throw kyberErr;
+        }
+        this.log(`zap lewat pool langsung: rugi ${(lossBps / 100).toFixed(1)}% vs ${(kyberErr.loss.lossBps / 100).toFixed(1)}% di Kyber`);
+      }
       if (pick.pool.pool_ref !== plan.poolRef) {
         this.log(`zap lewat pool lain ${pick.pool.pool_ref.slice(0, 10)}… (fee ${(pick.feePpm / 10000).toFixed(2)}%`
           + `${pick.impactBps != null ? `, dampak ~${Math.round(pick.impactBps)} bps` : ''}) — terbaik dari ${info.scored} pool berpasangan sama`);
@@ -2226,14 +2255,29 @@ class Engine {
       try {
         r = await this.kyber.swap(item.token, item.quote, amount, swapOpts);
       } catch (e) {
-        // Jumlah penuh tidak muat di batas rugi: cari potongan terbesar yang muat dan
-        // jual itu dulu. Sisanya tetap di antrean, bukan hangus dan bukan dibuang paksa.
-        if (!e.loss) throw e;
-        const fit = await this.fitSell(item, amount, rules, ref);
-        if (!fit) throw e;
-        this.log(`sisa ${label}: jumlah penuh rugi ${(e.loss.lossBps / 100).toFixed(1)}%, dijual bertahap ${(Number(fit.amount * 1000n / amount) / 10).toFixed(0)}% dulu (rugi ${(fit.loss / 100).toFixed(1)}%)`);
-        sold = fit.amount;
-        r = await this.kyber.swap(item.token, item.quote, sold, swapOpts);
+        // Pengaman yang gagal atau receipt yang belum terbaca berhenti di sini. Yang
+        // lolos ke bawah cuma dua sebab pasar: rute terlalu rugi (e.loss) dan tx yang
+        // ditolak chain sampai percobaan ketiga (e.reverted).
+        if (!(e.loss || e.reverted)) throw e;
+        // Rute agregator yang mahal belum tentu berarti pasarnya mahal — Kyber
+        // kadang merutekan lewat jalur buruk, dan harganya sendiri bisa kosong. Pool
+        // langsung dinilai sendiri (fee pool + dampak harga) dengan batas yang sama,
+        // dan hanya dikirim kalau simulasinya lolos; kalau pool juga tidak muat,
+        // barulah jumlahnya dipotong dan dijual bertahap lewat Kyber.
+        const viaPool = await this.sellViaPool(item, amount, rules).catch(() => null);
+        if (viaPool) {
+          this.log(`sisa ${label}: Kyber tidak jadi (${e.message}) — terjual utuh lewat pool langsung`);
+          r = viaPool;
+        } else {
+          // Jumlah penuh tidak muat di batas rugi: cari potongan terbesar yang muat dan
+          // jual itu dulu. Sisanya tetap di antrean, bukan hangus dan bukan dibuang paksa.
+          if (!e.loss) throw e;
+          const fit = await this.fitSell(item, amount, rules, ref);
+          if (!fit) throw e;
+          this.log(`sisa ${label}: jumlah penuh rugi ${(e.loss.lossBps / 100).toFixed(1)}%, dijual bertahap ${(Number(fit.amount * 1000n / amount) / 10).toFixed(0)}% dulu (rugi ${(fit.loss / 100).toFixed(1)}%)`);
+          sold = fit.amount;
+          r = await this.kyber.swap(item.token, item.quote, sold, swapOpts);
+        }
       }
       // Kyber belum mengenal rutenya (pool token baru sering belum terindeks): coba jual
       // langsung ke pool yang kita kenal — pool posisinya sendiri dan pool berpasangan sama.

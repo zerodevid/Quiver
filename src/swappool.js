@@ -2,7 +2,10 @@
 // Memilih pool terbaik untuk swap LANGSUNG ke pool — jalur cadangan auto-swap.
 //
 // Jalur utama zap tetap Kyber: ia merutekan lintas semua DEX dan pool di chain ini.
-// Cadangan ini dipakai kalau Kyber tidak punya rute (atau dimatikan di config). Dulu
+// Cadangan ini dipakai kalau Kyber tidak punya rute, rutenya terlalu rugi, tx-nya
+// ditolak chain berkali-kali (kutipan basi), atau Kyber dimatikan di config — tiga yang
+// pertama sama-sama soal pasar. Galat PENGAMAN Kyber (router tidak cocok, calldata tidak
+// terbaca, receipt belum terkonfirmasi) tidak pernah jatuh ke sini. Dulu
 // cadangannya memakai pool posisi itu sendiri apa adanya — padahal pool itu sering
 // bukan tempat terbaik untuk menukar: fee-nya bisa 4–10%, likuiditasnya tipis sehingga
 // swap kecil pun menggeser harga, dan sebagian pool (yang ber-hook) menolak swap lewat

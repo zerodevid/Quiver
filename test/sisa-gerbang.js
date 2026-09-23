@@ -39,7 +39,7 @@ async function t(name, fn) {
 
 // Dunia tiruan sederhana. `kurva(amount)` menentukan berapa USDG yang keluar untuk satu
 // jumlah — dipakai untuk meniru pool tipis: makin besar yang dijual, makin buruk harganya.
-function dunia({ kurva, usdKyber = true, punyaPosisi = true, nilaiPool = null } = {}) {
+function dunia({ kurva, usdKyber = true, punyaPosisi = true, nilaiPool = null, poolJual = null, pengamanGagal = false } = {}) {
   const store = new Store(':memory:');
   const chain = {
     tokens: async (l) => l.map((address) => ({ address, symbol: address === MEME ? 'MEME' : 'USDG', decimals: address === MEME ? 18 : 6 })),
@@ -79,6 +79,9 @@ function dunia({ kurva, usdKyber = true, punyaPosisi = true, nilaiPool = null } 
   // Pengaman asli dipakai apa adanya; hanya lapisan HTTP/tx-nya yang ditiru.
   const terjual = [];
   e.kyber.swap = async (tokenIn, tokenOut, amountIn, o) => {
+    // Pengaman yang gagal (router tidak cocok, calldata janggal) melempar galat polos:
+    // tanpa .loss dan tanpa .reverted — itu yang membedakannya dari galat pasar.
+    if (pengamanGagal) throw new Error('router Kyber tidak cocok: 0xdead ≠ whitelist');
     const q = await e.kyber.quote(tokenIn, tokenOut, amountIn);
     const loss = Kyber.routeLoss(q, o.ref);
     if (o.maxLossBps != null && o.requireLoss && !loss) throw new Error('rugi rute tidak terukur');
@@ -90,8 +93,17 @@ function dunia({ kurva, usdKyber = true, punyaPosisi = true, nilaiPool = null } 
     terjual.push(amountIn);
     return { hash: '0x' + 'e'.repeat(64), amountOut: q.amountOut, quote: q };
   };
-  e.sellViaPool = async () => null;
-  return { e, store, kutipan, terjual, dicatat };
+  // Cadangan pool langsung. `poolJual(amount)` mengembalikan berapa USDG yang keluar,
+  // atau null kalau pool juga tidak layak — persis bentuk balasan sellViaPool asli.
+  const lewatPool = [];
+  e.sellViaPool = async (it, amount) => {
+    lewatPool.push(amount);
+    const out = poolJual ? poolJual(amount) : null;
+    if (out == null) return null;
+    return { hash: '0x' + 'p'.repeat(64), amountOut: BigInt(Math.round(out * 1e6)),
+      quote: { dex: 'pool v4 0x1234abcd…', usdIn: null, usdOut: out } };
+  };
+  return { e, store, kutipan, terjual, dicatat, lewatPool };
 }
 
 const item = () => ({ posId: 82, target: null, token: MEME, quote: ADDR.usdg, amount: (10n * E18).toString(), tries: 0 });
@@ -176,6 +188,41 @@ const item = () => ({ posId: 82, target: null, token: MEME, quote: ADDR.usdg, am
     const d = dunia({ kurva: (amt) => (100 * Number(amt) * 0.1) / Number(10n * E18), nilaiPool: 100 });
     await d.e.sellToken(item()).catch(() => {});
     assert.ok(d.kutipan.length <= 8, `kutipan ${d.kutipan.length} terlalu banyak untuk satu penjualan`);
+  });
+
+  await t('cadangan: rute Kyber terlalu rugi, pool langsung muat -> terjual UTUH lewat pool', async () => {
+    // Kyber merutekan lewat jalur buruk (rugi 50%), sementara pool yang kita kenal cuma
+    // rugi 3%. Dulu jumlah penuh dipotong dan dijual mahal-mahal lewat Kyber; sekarang
+    // pool langsung dicoba dulu — pengaman rugi yang sama tetap berlaku di sana.
+    const penuh = 10n * E18;
+    const d = dunia({ kurva: () => 50, nilaiPool: 100, poolJual: () => 97 });
+    await d.e.sellToken(item());
+    assert.strictEqual(d.terjual.length, 0, 'tidak boleh ada swap Kyber');
+    assert.deepStrictEqual(d.lewatPool, [penuh], 'pool dicoba sekali, untuk jumlah PENUH');
+    assert.strictEqual(d.e.leftovers().length, 0, 'habis terjual: keluar dari antrean');
+    assert.strictEqual(d.dicatat[0].amount, penuh, 'yang tercatat = jumlah penuh');
+  });
+
+  await t('cadangan: pool juga tidak layak -> kembali ke jual bertahap lewat Kyber', async () => {
+    const penuh = 10n * E18;
+    const kurva = (amt) => {
+      const frac = Number(amt) / Number(penuh);
+      return 100 * frac * (1 - 0.5 * frac);
+    };
+    const d = dunia({ kurva, nilaiPool: 100, poolJual: () => null });
+    await d.e.sellToken(item());
+    assert.strictEqual(d.lewatPool.length, 1, 'pool tetap dicoba lebih dulu');
+    assert.strictEqual(d.terjual.length, 1, 'lalu jual bertahap lewat Kyber seperti dulu');
+    assert.ok(d.terjual[0] < penuh, 'yang dijual lebih kecil dari jumlah penuh');
+  });
+
+  await t('cadangan: galat PENGAMAN tidak pernah dialihkan ke pool', async () => {
+    // Router tidak cocok / calldata janggal bukan soal harga — kalau galat begini boleh
+    // jatuh ke pool, pengaman Kyber berubah jadi sekadar saran.
+    const d = dunia({ kurva: () => 98, nilaiPool: 100, poolJual: () => 97, pengamanGagal: true });
+    await d.e.sellToken(item()).catch(() => {});
+    assert.strictEqual(d.lewatPool.length, 0, 'pool tidak boleh dicoba');
+    assert.strictEqual(d.e.leftovers().length, 1, 'tetap di antrean untuk dicoba lagi');
   });
 
   console.log(`\n${pass} lulus, ${fail} gagal`);

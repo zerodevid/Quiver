@@ -292,15 +292,25 @@ Kas yang cuma ada di satu aset akan memblokir separuh peluang, jadi ada dua ting
 Keduanya dibatasi slippage dan dampak harga; swap yang menggeser harga melebihi batas
 ditolak, bukan dipaksakan.
 
-Zap dikerjakan lewat **Kyber** (rute terbaik lintas seluruh DEX chain ini). Kalau Kyber
-tidak punya rute, cadangannya swap langsung ke pool — dan pool-nya **dicari**, bukan
-memakai pool posisi apa adanya: semua pool berpasangan token sama dinilai (fee, termasuk
-fee dinamis dari slot0, plus dampak harga terhadap likuiditasnya), yang terbaik
-**disimulasikan dengan `eth_call` sebagai wallet bot**, dan hanya yang lolos dikirim.
-Pool tipis tersaring batas dampak harga di Aturan; pool yang menolak swap (hook-nya
-revert) ketahuan di simulasi, sebelum gas keluar. Pencarian ini hanya di jalur **buka
-posisi**: menutup posisi dan menjual token sisa tetap lewat Kyber saja, supaya penutupan
-tidak ikut melambat.
+Zap dikerjakan lewat **Kyber** (rute terbaik lintas seluruh DEX chain ini), dengan swap
+langsung ke pool sebagai cadangan. Cadangan itu dipakai pada tiga keadaan, semuanya soal
+pasar: Kyber **tidak punya rute**, rutenya **terlalu rugi** (fee + dampak harga di atas
+batas), atau transaksinya **ditolak chain berkali-kali** karena kutipan basi. Galat
+pengaman — router tidak cocok dengan whitelist, calldata tidak terbaca, receipt belum
+terkonfirmasi — tidak pernah dialihkan ke pool: itu bukan soal harga, dan cadangan bukan
+pintu belakang untuk melewati pengaman.
+
+Pool-nya **dicari**, bukan memakai pool posisi apa adanya: semua pool berpasangan token
+sama dinilai (fee, termasuk fee dinamis dari slot0, plus dampak harga terhadap
+likuiditasnya), yang terbaik **disimulasikan dengan `eth_call` sebagai wallet bot**, dan
+hanya yang lolos dikirim. Pool tipis tersaring batas dampak harga di Aturan; pool yang
+menolak swap (hook-nya revert) ketahuan di simulasi, sebelum gas keluar. Saat cadangan
+dipakai karena rute Kyber terlalu rugi, pool diukur dengan **batas yang sama** (fee pool
++ dampak harga) — kalau pool juga tidak muat, yang dilaporkan tetap angka rugi Kyber.
+
+Jalur yang memakai cadangan ini: **zap saat buka posisi**, **jembatan ETH↔stablecoin**,
+dan **penjualan token sisa** (di sana pool dicoba utuh dulu; kalau pool juga tidak muat,
+jumlahnya dipotong dan dijual bertahap lewat Kyber seperti biasa).
 
 **Kenapa jembatan boleh lewat pool ber-hook padahal LP tidak.** Semua 16 pool ETH/USDG
 di chain ini memakai hook (fee `8388608` = flag dynamic-fee). Untuk *swap* itu jauh lebih
