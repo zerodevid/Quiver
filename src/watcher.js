@@ -197,7 +197,7 @@ class Watcher {
     }
 
     // 2. v4 ModifyLiquidity
-    const v4Rows = [];
+    const v4Rows = [], claimRows = [];
     const unsupportedTx = new Set();
     this.unsupportedSender.clear();
     for (const l of modLiq) {
@@ -216,7 +216,15 @@ class Watcher {
       const tickLower = i24(w(0)), tickUpper = i24(w(1));
       const liqDelta = i256(w(2));
       const tokenId = w(3).toString();
-      if (liqDelta === 0n) continue; // hanya klaim fee
+      if (liqDelta === 0n) {
+        // Delta nol = target cuma memanen fee. Tidak ada yang bisa dicermin (posisi
+        // kita punya fee sendiri, dan menirunya cuma membakar gas), tapi POLANYA
+        // berguna: target yang tiba-tiba rajin panen sering sedang bersiap keluar.
+        // Dicatat sebagai aksi 'claim'; engine memutuskannya 'skip' dan hanya berbunyi
+        // kalau berulang pada posisi yang cerminnya kita pegang.
+        claimRows.push({ l, poolId: l.topics[1], tickLower, tickUpper, tokenId });
+        continue;
+      }
       v4Rows.push({ l, poolId: l.topics[1], tickLower, tickUpper, liqDelta, tokenId });
     }
     // 2b. Jaring pengaman silang. Aksi transfer/penitipan dan aksi likuiditas datang
@@ -255,7 +263,7 @@ class Watcher {
     // peringatan keras — sekali per target, supaya log tidak banjir.
     if (unsupportedTx.size) await this.warnIfTargetUnsupported([...unsupportedTx], enabled);
 
-    await this.resolveOwners('v4', v4Rows.map((r) => r.tokenId));
+    await this.resolveOwners('v4', [...v4Rows, ...claimRows].map((r) => r.tokenId));
 
     // 3. v3 NPM increase/decrease
     const v3Rows = [];
@@ -279,6 +287,17 @@ class Watcher {
 
     const out = [];
     if (mineV4.length) out.push(...await this.enrichV4(mineV4));
+    // Panen fee target: dicatat apa adanya (tanpa harga/nilai — tidak ada yang
+    // dihitung darinya, jadi tidak perlu RPC tambahan).
+    for (const r of claimRows.filter((x) => targets.has(this.knownOwner('v4', x.tokenId) || ''))) {
+      out.push({
+        ts: await this.chain.blockTs(parseInt(r.l.blockNumber, 16)),
+        block: parseInt(r.l.blockNumber, 16), txHash: r.l.transactionHash,
+        logIndex: parseInt(r.l.logIndex, 16), target: this.knownOwner('v4', r.tokenId), venue: 'v4',
+        kind: 'claim', tokenId: r.tokenId, poolRef: r.poolId,
+        tickLower: r.tickLower, tickUpper: r.tickUpper,
+      });
+    }
     for (const venue of new Set(mineV3.map((r) => r.venue))) {
       out.push(...await this.enrichV3(mineV3.filter((r) => r.venue === venue), venue));
     }

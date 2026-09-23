@@ -79,7 +79,7 @@ export const AKSI = {
   increase: ['Tambah likuiditas', 'accent'], decrease: ['Kurangi likuiditas', 'warning'], claim_fees: ['Klaim fee', 'success'], compound: ['Auto-compound', 'success'],
   custody_out: ['Titip ke otomasi', 'default'], custody_in: ['Kembali dari otomasi', 'default'],
   transfer_in: ['Terima posisi', 'default'], transfer_out: ['Kirim posisi', 'warning'],
-  mint: ['Buka posisi', 'accent'], collect: ['Klaim fee', 'success'],
+  mint: ['Buka posisi', 'accent'], collect: ['Klaim fee', 'success'], claim: ['Target panen fee', 'default'],
   reentry: ['Buka lagi (harga mendekat)', 'accent'],
 };
 export const KEPUTUSAN = {

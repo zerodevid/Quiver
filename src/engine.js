@@ -454,7 +454,38 @@ class Engine {
     if (act.kind === 'custody_out') return this.decide(act.id, 'skip', 'posisi dititipkan ke kontrak otomasi — bukan sinyal keluar');
     if (act.kind === 'custody_in') return this.decide(act.id, 'skip', 'posisi dikembalikan dari kontrak otomasi');
     if (act.kind === 'transfer_in') return this.decide(act.id, 'skip', 'target menerima posisi dari wallet lain — tidak dicermin');
+    if (act.kind === 'claim') return this.noteTargetClaim(act);
     return this.decide(act.id, 'skip', `jenis aksi ${act.kind} tidak dicermin`);
+  }
+
+  // Berapa kali target harus memanen fee dalam 24 jam sebelum dikabarkan, dan berapa
+  // lama kabar itu didiamkan sesudahnya. Bukan aturan uang — tidak ada transaksi yang
+  // bergantung padanya — jadi tidak dijadikan setelan.
+  static CLAIM_SIGNAL_MIN = 3;
+  static CLAIM_SIGNAL_QUIET_MS = 6 * 3600_000;
+
+  // Target memanen fee. TIDAK dicermin: klaim bukan aksi pasar, tidak ada alpha yang
+  // hilang kalau kita telat, dan menirunya cuma membayar gas mengikuti kebiasaan orang
+  // lain (fee posisi kita dipanen dengan aturan sendiri — lihat Compound). Yang dipakai
+  // dari sini cuma polanya: panen berulang pada posisi yang kita cermin sering
+  // mendahului keluarnya target, dan itu layak dikabarkan sekali.
+  async noteTargetClaim(act) {
+    const sejak = Date.now() - 24 * 3600_000;
+    const n = this.store.get(`SELECT COUNT(*) c FROM actions WHERE chain=? AND target=? AND kind='claim'
+      AND token_id=? AND ts>=?`, this.network, act.target, String(act.tokenId ?? ''), sejak)?.c || 0;
+    const mirror = this.store.get(`SELECT id FROM positions WHERE chain=? AND status='open' AND target=? AND mirror_of=?`,
+      this.network, act.target, String(act.tokenId ?? ''));
+    this.decide(act.id, 'skip', `target panen fee${n > 1 ? ` (ke-${n} dalam 24 jam)` : ''}${mirror ? ` — cermin posisi #${mirror.id}` : ''} — klaim tidak dicermin`);
+    if (!mirror || n < Engine.CLAIM_SIGNAL_MIN) return;
+    const key = this.sk(`claim_signal:${act.tokenId}`);
+    const last = Number(this.store.getState(key, '0')) || 0;
+    if (Date.now() - last < Engine.CLAIM_SIGNAL_QUIET_MS) return;
+    this.store.setState(key, String(Date.now()));
+    const p = this.store.get('SELECT * FROM positions WHERE id=?', mirror.id);
+    const toks = await this.chain.tokens([p.token0, p.token1]).catch(() => []);
+    const pair = toks.length === 2 ? `${toks[0]?.symbol || '?'}/${toks[1]?.symbol || '?'}` : '';
+    this.notify(`target memanen fee ${n}× dalam 24 jam di ${pair || 'pool cermin'} (posisi #${mirror.id}) — sering mendahului keluarnya target`,
+      { kind: 'target_claim', positionId: mirror.id, target: act.target, mirrorOf: act.tokenId, count: n, pair });
   }
 
   async handleEntry(act, rules) {
