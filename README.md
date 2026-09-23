@@ -13,7 +13,10 @@
 
 <p align="center">
   <img src="public/robinhood-chain.jpg" alt="" width="20" height="20" align="absmiddle" />
-  <span>Built on Robinhood Chain</span>
+  <span>Robinhood Chain</span>
+  &nbsp;·&nbsp;
+  <img src="public/bnb-chain.png" alt="" width="20" height="20" align="absmiddle" />
+  <span>BNB Smart Chain</span>
 </p>
 
 <p align="center">
@@ -23,6 +26,7 @@
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#configuration">Configuration</a> ·
+  <a href="#dashboard-and-telegram">Dashboard</a> ·
   <a href="#deployment">Deployment</a> ·
   <a href="#security-and-access">Security</a> ·
   <a href="README.id.md">Bahasa Indonesia</a>
@@ -37,7 +41,7 @@
 
 ## Overview
 
-Quiver is a self-hosted application that watches target wallets on Robinhood Chain and copies supported Uniswap v3 and v4 liquidity actions according to configurable rules. It also supports manual LP management, swaps, wallet research, and PnL reporting.
+Quiver is a self-hosted application that watches target wallets on Robinhood Chain and BNB Smart Chain and copies supported Uniswap v3, Uniswap v4 and PancakeSwap v3 liquidity actions according to configurable rules. It also supports manual LP management, swaps, wallet and pool research, and PnL reporting.
 
 The example configuration starts in **simulation mode**, binds the dashboard to `127.0.0.1`, and contains no target wallets. Review simulated decisions before enabling live execution. Live mode can sign transactions and move funds from the configured wallet.
 
@@ -46,20 +50,23 @@ The example configuration starts in **simulation mode**, binds the dashboard to 
 | Area | Features |
 | --- | --- |
 | Copy execution | Event-based detection, target-specific rules, position sizing, range selection, and token/pool filters. |
-| Position management | Partial and full exits, fee claims, exit triggers, and optional v4 fee compounding. |
+| Position management | Partial and full exits, fee claims, exit triggers, and automatic fee harvesting (v3/v4 compounding, or claiming with the memecoin side sold into the quote asset). |
+| Monitoring | One card per pool with live candles, every position's range as a clickable band, whole-pool PnL, and distance to each exit trigger. |
 | Manual trading | LP creation and swaps with previews and confirmation. |
 | Portfolio reporting | Position history, collected and unclaimed fees, realised PnL, held-token valuation, and equity charts. |
 | Wallet research | Historical v3/v4 position reconstruction, performance summaries, and daily PnL calendars. |
+| Pool and token research | Pool health, holder distribution, price depth and target-exit scenarios, DexScreener/GeckoTerminal/GMGN data, and trade-terminal links. |
+| Learning | A built-in bilingual concentrated-liquidity course with a range simulator and glossary. |
 | Sharing | PNG cards for individual positions, total PnL, and daily results, available through the dashboard and Telegram. |
-| Controls | Indonesian and English interfaces, target alerts, activity logs, and runtime settings. |
+| Controls | Indonesian and English interfaces, chain switcher, target alerts, activity logs, and runtime settings. |
 | Infrastructure | SQLite persistence, multiple RPC endpoints, failover, log-range splitting, and a single-instance process lock. |
 
 ## Quick start
 
 ### Requirements
 
-- **Node.js 22.12 or later** for the engine and dashboard build. The engine uses `node:sqlite`; the installed Vite version requires a newer Node release than the original SQLite minimum.
-- npm and access to Robinhood Chain JSON-RPC endpoints.
+- **Node.js 22.12 or later.** The engine uses `node:sqlite`, and the dashboard build (Vite 8) requires Node 20.19+ or 22.12+.
+- npm and JSON-RPC endpoints for Robinhood Chain (and BNB Smart Chain, if enabled).
 - A modern browser for the dashboard.
 - A dedicated signing wallet and transaction funding only when using live execution.
 
@@ -99,7 +106,7 @@ One process runs every enabled chain at once. Global sections apply to all chain
 | Section | Scope | Purpose |
 | --- | --- | --- |
 | `wallet` | global | Signing-key file location; overridden by `LPCOPY_PRIVATE_KEY` when set. The same key (and address) is used on every chain. |
-| `server`, `db`, `telegram`, `notify` | global | Dashboard binding and authentication, SQLite location, Telegram and ntfy notifications. |
+| `server`, `db`, `telegram`, `notify`, `gmgn` | global | Dashboard binding and authentication, SQLite location, Telegram and ntfy notifications, GMGN API key. |
 | `chains.<name>.enabled` | per chain | Start the engine for this chain. |
 | `chains.<name>.chain` | per chain | RPC endpoints, concurrency, archive support, and log-query limits. |
 | `chains.<name>.targets`, `rules` | per chain | Seed targets and copy rules (sizing, ranges, swaps, exits, filters). `filters.venues` may include `pancakev3` on BSC. |
@@ -119,16 +126,18 @@ On BNB Smart Chain the bot follows Uniswap v4, Uniswap v3, and PancakeSwap v3 (v
 | `LPCOPY_PRIVATE_KEY` | Signing key; overrides `wallet.key_file`. |
 | `LPCOPY_AUTH_TOKEN` | Dashboard access token. |
 | `LPCOPY_TELEGRAM_BOT_TOKEN` | Telegram bot token. |
-| `LPCOPY_NTFY_TOPIC` | Optional notification topic. |
+| `LPCOPY_NTFY_TOPIC` | Optional ntfy notification topic. |
+| `LPCOPY_GMGN_API_KEY` | Optional GMGN OpenAPI key for GMGN candles and wallet/token data; without it only GeckoTerminal is used. |
+| `BLOCKSCOUT_API_KEY` | Optional Blockscout Pro key for holder scans when no Alchemy endpoint is configured. |
 | `LPCOPY_CONFIG` | Alternative configuration file path. |
 | `LPCOPY_ENV` | Alternative `.env` file path. |
 | `LPCOPY_DASHBOARD_URL` | Optional URL printed by the deployment helper. |
 
-RPC URLs and headers can reference environment variables with `${NAME}` placeholders. For example:
+RPC URLs and headers can reference any environment variable with `${NAME}` placeholders, for example an `ALCHEMY_KEY` defined in `.env`:
 
 ```json
 {
-  "url": "https://rpc.example.com/v2/${RPC_API_KEY}"
+  "url": "https://robinhood-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}"
 }
 ```
 
@@ -153,7 +162,15 @@ Consult `src/policy.js` for rule defaults and evaluation. Hooks are disabled for
 
 The dashboard shows one chain at a time; the switcher under the logo (or `?chain=bsc` in the URL) picks it and every page, setting, and action then applies to that chain. The Telegram bot has the same switcher (`/chain`), remembers the choice per chat, and labels notifications with the chain they came from.
 
-The dashboard provides **Overview**, **Positions**, **Activity**, **Targets**, **Rules**, **Manual LP**, **Swap**, **Wallet**, and **Settings** views. Language preferences are stored per browser; Telegram language preferences are stored per chat.
+| Group | Pages |
+| --- | --- |
+| Monitoring | **Overview**, **Monitor**, **Positions**, **Activity** |
+| Copy | **Targets**, **Rules** |
+| Actions | **Manual LP**, **Swap** |
+| Research | **Wallet**, **Learn LP** |
+| System | **Settings** |
+
+Position, pool and token detail pages open from the tables and from the global search. Language preferences are stored per browser; Telegram language preferences are stored per chat.
 
 To connect Telegram:
 
@@ -176,6 +193,24 @@ Wallet research uses separate v3 and v4 reconstruction paths:
 - **After closing:** quote-asset proceeds and residual tokens are tracked separately. Held-token values can change until disposal; identifiable sales use their observed proceeds.
 
 Displayed valuation depends on available RPC history, prices, token behaviour, and successful reconciliation. It should not be treated as a guaranteed liquidation value.
+
+### Pool health and holder distribution
+
+Pool detail shows explicit market/position warnings, a heuristic health status, holder count and top-address concentration. Missing, mismatched or stale data cannot yield a healthy status. Thresholds are visible in the panel; this is not a contract audit.
+
+Holder scans reuse the configured Alchemy Robinhood endpoint without exposing its URL/key to the browser. The background scanner enumerates ERC-20 transfers, checks candidate balances and total supply at one fixed block, and only publishes a count when balances reconcile with supply. It excludes zero balances; counts refer to addresses, not distinct people. PoolManager, the viewed v3 pool and burn addresses are excluded from the concentration warning; other contracts remain included and are labelled.
+
+One scan runs at a time, with bounded history, address counts and request timeouts. Results are cached for 15 minutes; subsequent successful scans read new transfers. Verified snapshots and discovery state are saved beside the configured database in `holders/`. An incomplete index, nonstandard token accounting, provider failure or scan limit is shown as unavailable rather than an estimated total. Restarts reuse the verified cache; absent or damaged caches are rebuilt. If no Alchemy endpoint is configured, Blockscout is used (optional `BLOCKSCOUT_API_KEY` for its Pro API).
+
+Validation: `node test/pool-health.js`. Provider references: [Alchemy Transfers API](https://www.alchemy.com/docs/reference/transfers-api-quickstart) and [Blockscout holders API](https://docs.blockscout.com/api-reference/get-token-holders).
+
+### Price depth and target-exit scenarios
+
+Pool detail estimates gross quote-asset buying needed for +1%, +5%, +10% and the selected open position's break-even price. `/api/pool-depth` reads initialized ticks, current liquidity, NFT ownership/liquidity and tracked target token balances at one block, through configured RPC failover. Reads are bounded to ±14,000 ticks (128 bitmap words, 2,048 initialized ticks and 40 tracked NFTs), cached for 30 seconds; the UI rejects snapshots older than two minutes.
+
+The piecewise concentrated-liquidity model compares our exit now, after tracked target LP withdrawals, and after those withdrawals plus an adjustable token sale. It revalues and removes our own LP before selling returned base tokens. Existing target wallet balances are optional; untracked LPs and unclaimed target LP fees are excluded. Principal proceeds exclude collected LP fees and gas. Swap loss includes modeled price impact and snapshot swap fees, measured against the price immediately before our sale; it is not a slippage tolerance or an executable quote. Hooks, liquidity gaps, missing positions/balances and depth limits produce unavailable results rather than partial-fill estimates. Dynamic fees, taxes, MEV, transaction ordering and alternative routes may change actual proceeds.
+
+Math follows Uniswap's [concentrated-liquidity formulas](https://app.uniswap.org/whitepaper-v3.pdf) and [v4 storage layout](https://github.com/Uniswap/v4-core/blob/main/src/libraries/StateLibrary.sol). Checks: `node test/pool-depth.js`, `node test/liquidity-risk.js`, and `node --test web/src/breakeven.test.js`.
 
 ## Development
 
@@ -200,8 +235,9 @@ Vite proxies `/api` requests to `http://127.0.0.1:8799`. Use the Vite address pr
 | `node --no-warnings src/index.js add <address> "label" [--chain=bsc]` | Register a target (default chain: robinhood). |
 | `node --no-warnings src/index.js list` | List targets on every chain. |
 | `node --no-warnings src/verify-chain.js bsc [rpc-url]` | Verify a chain profile's contract addresses on-chain. |
+| `npm run export-key -- <keystore.json>` | Offline: decrypt a keystore exported from the dashboard into a raw private key. |
 
-With zsh installed, `./lp` accepts the same arguments. Do not run multiple engine instances against the same database.
+With zsh installed, `./lp` accepts the same arguments as `src/index.js`. Do not run multiple engine instances against the same database.
 
 ### Verification
 
@@ -214,17 +250,13 @@ done
 npm run build --prefix web
 ```
 
-The suites cover execution rules, wallet accounting, fee claims, compounding, Telegram, share cards, environment handling, and web security. Test results should come from the current checkout; this README does not maintain a static passing-test count.
+The suites cover execution rules, wallet accounting, fee claims, fee harvesting (compounding and claim-and-sell), Telegram, share cards, environment handling, multi-chain configuration, and web security.
 
 Optional frontend checks are in `web/check-ui.py`, `web/check-keys.py`, and `web/audit-i18n.py`. Review each script's setup requirements before running it; browser checks require Python Playwright and its browser binaries.
 
 ### Demo video
 
-`demo/` renders a narrated walkthrough of the dashboard (1080p60 MP4 + SRT) with headless
-Chromium, ffmpeg and a local TTS model. Wallet addresses and target labels are replaced
-before they reach the browser, blurred, and audited during recording; every non-GET
-`/api` request is blocked, so recording cannot act on a live bot. See
-[`demo/README.md`](demo/README.md).
+`demo/` renders a narrated walkthrough of the dashboard (1080p60 MP4 + SRT) with headless Chromium, ffmpeg and a local TTS model. Wallet addresses and target labels are replaced before they reach the browser, blurred, and audited during recording; every non-GET `/api` request is blocked, so recording cannot act on a live bot. See [`demo/README.md`](demo/README.md).
 
 ```sh
 cd demo && npm install
@@ -234,7 +266,7 @@ QLANG=en npm run voice && QLANG=en npm run studio && QLANG=en npm run record && 
 
 ## Deployment
 
-Build the frontend, install production dependencies on the host, and run a single backend process. The repository includes a PM2 configuration:
+Build the frontend, install production dependencies on the host, and run a single backend process. The repository includes a PM2 configuration; the process is named after the checkout directory, so several instances (`~/lpcopy`, `~/lpcopy2`, …) can coexist on one host, each with its own database:
 
 ```sh
 mkdir -p logs
@@ -248,7 +280,7 @@ Create the host's own `config.json` and `.env` before starting it. Set dashboard
 
 `deploy.sh` is tailored to the maintainer's SSH setup. Review its destination alias, remote path, and restart behaviour before using it in another environment. It requires zsh, SSH, rsync, and PM2 on the destination.
 
-The helper builds the dashboard, synchronises application files and `web/dist/`, installs production dependencies, and restarts the `lpcopy` process. It excludes `.env`, `config.json`, `data/`, and `logs/`. It deploys the working tree, so review uncommitted changes before running it.
+The helper builds the dashboard, synchronises application files and `web/dist/`, installs production dependencies, and restarts the PM2 process. It excludes `.env`, `config.json`, `data/`, and `logs/`. It deploys the working tree, so review uncommitted changes before running it.
 
 Preserve and back up the database separately. Replacing it with a development copy can reset the scanner cursor and accounting history. When updating a live service, retain assets needed by already-open tabs or arrange deployment so HTML and its referenced bundles remain available together.
 
@@ -274,6 +306,8 @@ Preserve and back up the database separately. Replacing it with a development co
 ```text
 src/                   Backend, execution, research, API, and Telegram
   index.js             Application startup and CLI
+  networks.js          Chain profiles (contracts, quote assets, venues)
+  multichain.js        Per-chain configuration normalisation
   engine.js            Copy engine coordination
   watcher.js           Liquidity event detection
   policy.js            Copy rules and limits
@@ -282,36 +316,25 @@ src/                   Backend, execution, research, API, and Telegram
   wallet.js            v4 wallet research
   walletv3.js          v3 wallet research
   proceeds.js          Post-close token proceeds
+  holders.js           Token holder scans
+  pool-depth.js        Price depth and target-exit model
   server.js            HTTP API and static serving
+  telegram.js          Telegram bot
   share-card.js        SVG and PNG PnL cards
   env.js               Environment loading and configuration persistence
+  verify-chain.js      Chain profile verification
+  export-key.js        Offline keystore decryption
 web/                   React dashboard and frontend checks
 public/                Shared assets, fonts, and legacy dashboard
-test/                 JavaScript regression suites
+test/                  JavaScript regression suites
 demo/                  Demo video pipeline (privacy-scrubbed recording, narration, composition)
-docs/                  Demo video, poster, and subtitles
+docs/                  Demo video, poster, subtitles, and the Learn page brief
 config.example.json    Non-secret configuration template
 .env.example           Credential variable template
 ecosystem.config.cjs   PM2 process configuration
 deploy.sh              Maintainer deployment helper
+lp                     zsh wrapper around src/index.js
+README.id.md           Indonesian documentation (more detailed)
 ```
 
 `data/`, `logs/`, `web/dist/`, and `demo/out/` are generated locally and excluded from Git.
-
-### Pool health and holder distribution
-
-Pool detail shows explicit market/position warnings, a heuristic health status, holder count and top-address concentration. Missing, mismatched or stale data cannot yield a healthy status. Thresholds are visible in the panel; this is not a contract audit.
-
-Holder scans reuse the configured Alchemy Robinhood endpoint without exposing its URL/key to the browser. The background scanner enumerates ERC-20 transfers, checks candidate balances and total supply at one fixed block, and only publishes a count when balances reconcile with supply. It excludes zero balances; counts refer to addresses, not distinct people. PoolManager, the viewed v3 pool and burn addresses are excluded from the concentration warning; other contracts remain included and are labelled.
-
-One scan runs at a time, with bounded history, address counts and request timeouts. Results are cached for 15 minutes; subsequent successful scans read new transfers. Verified snapshots and discovery state are saved beside the configured database in `holders/`. An incomplete index, nonstandard token accounting, provider failure or scan limit is shown as unavailable rather than an estimated total. Restarts reuse the verified cache; absent or damaged caches are rebuilt. If no Alchemy endpoint is configured, Blockscout is used (optional `BLOCKSCOUT_API_KEY` for its Pro API).
-
-Validation: `node test/pool-health.js`. Provider references: [Alchemy Transfers API](https://www.alchemy.com/docs/reference/transfers-api-quickstart) and [Blockscout holders API](https://docs.blockscout.com/api-reference/get-token-holders).
-
-### Price depth and target-exit scenarios
-
-Pool detail estimates gross quote-asset buying needed for +1%, +5%, +10% and the selected open position's break-even price. `/api/pool-depth` reads initialized ticks, current liquidity, NFT ownership/liquidity and tracked target token balances at one block, through configured RPC failover. Reads are bounded to ±14,000 ticks (128 bitmap words, 2,048 initialized ticks and 40 tracked NFTs), cached for 30 seconds; the UI rejects snapshots older than two minutes.
-
-The piecewise concentrated-liquidity model compares our exit now, after tracked target LP withdrawals, and after those withdrawals plus an adjustable token sale. It revalues and removes our own LP before selling returned base tokens. Existing target wallet balances are optional; untracked LPs and unclaimed target LP fees are excluded. Principal proceeds exclude collected LP fees and gas. Swap loss includes modeled price impact and snapshot swap fees, measured against the price immediately before our sale; it is not a slippage tolerance or an executable quote. Hooks, liquidity gaps, missing positions/balances and depth limits produce unavailable results rather than partial-fill estimates. Dynamic fees, taxes, MEV, transaction ordering and alternative routes may change actual proceeds.
-
-Math follows Uniswap's [concentrated-liquidity formulas](https://app.uniswap.org/whitepaper-v3.pdf) and [v4 storage layout](https://github.com/Uniswap/v4-core/blob/main/src/libraries/StateLibrary.sol). Checks: `node test/pool-depth.js`, `node test/liquidity-risk.js`, and `node --test web/src/breakeven.test.js`.
