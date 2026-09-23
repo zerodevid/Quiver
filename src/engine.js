@@ -26,6 +26,12 @@ const fmtUnits = (raw, dec) => {
 // disapu dari wallet (posId null) — bukan cuma yang keluar dari posisi.
 const asalSisa = (item) => (item.posId == null ? 'sisa di wallet' : `posisi #${item.posId}`);
 
+// Kelebihan token zap di bawah nilai ini dibiarkan saja di wallet: satu penjualan
+// memakan gas (~$0,16) dan ruang slippage 1,5% pada zap yang mulus hampir selalu
+// menyisakan sedikit — tanpa lantai ini tiap entry menaruh satu item debu yang tidak
+// pernah terjual di antrean. Sama dengan bawaan sapu wallet.
+const MIN_ZAP_SURPLUS_USD = 0.5;
+
 // Persen jarak untuk kabar/alasan, dibulatkan seperti di dasbor ("999+" untuk yang ekstrem).
 const fmtPct = (x) => (x >= 1000 ? '999+' : x.toFixed(0));
 
@@ -1064,16 +1070,106 @@ class Engine {
     this.store.log('warn', `LP gagal setelah zap — ${fmtUnits(gained, meta?.decimals ?? 18)} ${meta?.symbol || token.slice(0, 8)} masuk antrean jual`);
   }
 
+  // Kelebihan zap pada entry yang BERHASIL. Zap membeli sebanyak kebutuhan pada harga
+  // pool saat itu; harga bergerak sebelum mint masuk (#417: 9 detik, 482 tick) dan di
+  // dekat tepi rentang komposisi posisi berubah drastis — mint cuma menyetor sebagian
+  // (371 dari 3.394 NOSH) dan sisanya tertinggal telanjang di wallet. rescueZap hanya
+  // jalan kalau LP-nya GAGAL, recoverStrandedZaps sengaja melewati zap yang mint-nya
+  // jadi, dan sapu wallet melewati token posisi yang masih terbuka: tanpa ini sisanya
+  // duduk di wallet selamanya.
+  async sweepZapSurplus(plan, z, receipt, { sqrt = null, hash = null } = {}) {
+    const token = String(z.token).toLowerCase();
+    // Aset kuotasi (USDG/ETH/WETH) itu kas, bukan sisa.
+    if (this.chain.QUOTES[token] || isNative(token)) return null;
+    // Sekali per mint: alur masuk dan bookPendingMints bisa sama-sama sampai ke sini
+    // (pembukuan yang gagal tidak menandai tx `recorded`), dan item antrean untuk token
+    // yang sama DITAMBAH — tanpa penanda ini kelebihannya terhitung dua kali.
+    if (hash && this.txDetail(hash).zapSwept) return null;
+    // Yang dibeli dan yang disetor dibaca dari RECEIPT, bukan dari selisih saldo: kolam
+    // RPC bisa berpindah ke node yang tertinggal (masih melaporkan saldo sebelum mint),
+    // dan wallet ini bisa dipakai program lain yang memegang token yang sama —
+    // mengantre kelebihan hasil taksiran saldo bisa ikut menjual jatah mereka.
+    if (z.gainedUnknown) {
+      this.store.log('warn', `hasil zap ${token.slice(0, 10)}… tidak terbaca — kelebihannya (kalau ada) tidak diantrekan`, { quiet: true });
+      return null;
+    }
+    const bought = BigInt(z.gained || 0);
+    if (bought <= 0n) return null;
+    const me = this.exec.address().toLowerCase();
+    let used;
+    try { used = await this.spentIn(receipt, token, me); }
+    catch (e) { this.store.log('warn', `modal zap yang masuk LP tidak terukur: ${e.message}`, { quiet: true }); return null; }
+    let surplus = bought > used ? bought - used : 0n;
+    if (surplus <= 0n) return null;
+    // Jangan pernah mengantre lebih dari yang benar-benar bebas (saldo sekarang dikurangi
+    // saldo sebelum zap). Saldo tidak terbaca: angka receipt sudah terbukti milik kita.
+    try {
+      const bal = (await this.exec.balances([token])).get(token) || 0n;
+      const free = bal > BigInt(z.before ?? 0) ? bal - BigInt(z.before ?? 0) : 0n;
+      if (free < surplus) surplus = free;
+    } catch { /* pakai angka receipt */ }
+    if (surplus <= 0n) return null;
+    const meta = await this.chain.token(token).catch(() => null);
+    const label = `${fmtUnits(surplus, meta?.decimals ?? 18)} ${meta?.symbol || token.slice(0, 8)}`;
+    const usd = await this.valueOneSide(plan, token, surplus, sqrt);
+    if (usd != null && usd < MIN_ZAP_SURPLUS_USD) {
+      if (hash) this.markTxDetail(hash, { zapSwept: true });
+      this.store.log('info', `kelebihan zap ${label} (~$${usd.toFixed(2)}) dibiarkan di wallet — di bawah $${MIN_ZAP_SURPLUS_USD.toFixed(2)}`, { quiet: true });
+      return null;
+    }
+    // Ditandai SEBELUM diantrekan: kalau proses mati di antara keduanya, tokennya cuma
+    // tertinggal di wallet (keadaan yang sama seperti sebelum ada jalur ini) — lebih baik
+    // daripada satu kelebihan yang sama masuk antrean dua kali.
+    if (hash) this.markTxDetail(hash, { zapSwept: true });
+    // Item sapuan/zap lain untuk token yang sama (posId null) DITAMBAH, bukan ditimpa.
+    // posId tetap null: token ini tidak pernah masuk posisi, jadi hasil jualnya bukan
+    // hasil posisi itu (kalau dibukukan ke sana, untung posisinya jadi kelihatan besar).
+    const old = this.leftovers().find((x) => (x.posId ?? null) === null && x.token === token);
+    const amount = surplus + (old ? BigInt(old.amount || '0') : 0n);
+    this.keepLeftover({ posId: null, target: plan.target ?? null, token, quote: String(z.quote).toLowerCase(), amount: amount.toString(),
+      tries: 0, since: Date.now(), source: 'zap' }, 'kelebihan zap setelah LP dibuka');
+    this.store.log('info', `kelebihan zap ${label}${usd != null ? ` (~$${usd.toFixed(2)})` : ''} tidak terpakai saat mint — masuk antrean jual`);
+    return { token, amount: surplus.toString(), usd };
+  }
+
+  // Nilai satu sisi pool (hanya token0 ATAU token1) dalam USD pada harga `sqrt`; tanpa
+  // `sqrt` harga pool dibaca sekarang. null = tidak diketahui, bukan nol.
+  async valueOneSide(plan, token, amount, sqrt = null) {
+    try {
+      let s = sqrt?.sqrtPriceX96 ?? sqrt;
+      if (!s) {
+        const slot = this.chain.isV3Venue(plan.venue) ? await this.chain.slot0V3(plan.poolRef) : await this.chain.slot0V4(plan.poolRef);
+        s = slot?.sqrtPriceX96 ?? null;
+      }
+      if (!s) return null;
+      const is0 = String(token).toLowerCase() === String(plan.token0).toLowerCase();
+      const [t0, t1] = await this.chain.tokens([plan.token0, plan.token1]);
+      const v = this.chain.valueInQuote({
+        sqrtPriceX96: BigInt(s), amount0: is0 ? amount : 0n, amount1: is0 ? 0n : amount,
+        dec0: t0?.decimals ?? 18, dec1: t1?.decimals ?? 18, token0: plan.token0, token1: plan.token1,
+      });
+      const usd = v ? quoteToUsd(v.value, v.kind, this.ethUsd) : null;
+      return Number.isFinite(usd) ? usd : null;
+    } catch { return null; }
+  }
+
   // Tandai tx zap sudah ditangani supaya pemulihan zap yatim (recoverStrandedZaps) tidak
   // mengantrekannya lagi.
   markZapsRescued(hashes) {
-    for (const h of hashes || []) {
-      const row = this.store?.get?.('SELECT detail FROM txs WHERE hash=?', h);
-      if (!row) continue;
-      let d = {}; try { d = JSON.parse(row.detail || '{}'); } catch { /* detail lama */ }
-      d.handled = true;
-      this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify(d), h);
-    }
+    for (const h of hashes || []) this.markTxDetail(h, { handled: true });
+  }
+
+  // detail JSON satu tx (kosong kalau barisnya tidak ada / tidak terbaca).
+  txDetail(hash) {
+    const row = this.store?.get?.('SELECT detail FROM txs WHERE hash=?', hash);
+    if (!row) return {};
+    try { return JSON.parse(row.detail || '{}') || {}; } catch { return {}; }
+  }
+  markTxDetail(hash, patch) {
+    const row = this.store?.get?.('SELECT detail FROM txs WHERE hash=?', hash);
+    if (!row) return;
+    let d = {}; try { d = JSON.parse(row.detail || '{}') || {}; } catch { /* detail lama */ }
+    this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify({ ...d, ...patch }), hash);
   }
 
   // Zap yatim: token sudah dibeli untuk sebuah entry, tapi entry-nya tidak pernah sampai
@@ -1239,10 +1335,16 @@ class Engine {
       // Jurnal zap di tabel txs: kalau proses mati sebelum mint, recoverStrandedZaps
       // tahu token apa yang dibeli, dibayar dengan apa, dan untuk pool mana.
       const zapDetail = { pool: plan.poolRef, buy: buyTok.toLowerCase(), pay: payTok.toLowerCase(), target: plan.target ?? null };
-      const noteZap = (hash) => {
+      // `got` = token yang benar-benar masuk dari zap ini (dari receipt/kutipan Kyber).
+      // Dipakai sweepZapSurplus untuk tahu berapa yang DIBELI tapi tidak jadi disetor ke
+      // LP. Disimpan sebagai string: trace.zapped ikut ditulis ke detail tx, dan JSON
+      // tidak bisa menulis BigInt. Tidak terbaca -> ditandai, bukan ditebak.
+      const noteZap = (hash, got = null) => {
         trace.zaps = (trace.zaps || 0) + 1;
-        const z = trace.zapped || { token: buyTok.toLowerCase(), quote: payTok, before: boughtBefore, hashes: [] };
+        const z = trace.zapped || { token: buyTok.toLowerCase(), quote: payTok, before: boughtBefore, gained: '0', hashes: [] };
         if (hash) z.hashes = [...(z.hashes || []), hash];
+        if (got != null) z.gained = (BigInt(z.gained || 0) + BigInt(got)).toString();
+        else z.gainedUnknown = true;
         trace.zapped = z;
       };
       let kz;
@@ -1259,7 +1361,7 @@ class Engine {
       }
       if (kz) {
         notes.push(`zap ${idx === 0 ? 'beli token0' : 'beli token1'} via Kyber`);
-        noteZap(kz.hash);
+        noteZap(kz.hash, kz.amountOut ?? null);
         bal = await this.balancesAfterSwap([plan.token0, plan.token1], buyTok, boughtBefore, kz.amountOut);
         continue;
       }
@@ -1293,8 +1395,8 @@ class Engine {
       if (rc.timeout) throw new Error(`swap zap ${h} belum terkonfirmasi setelah 90 detik — entry dihentikan, zap diurus belakangan`);
       if (!rc.ok) throw new Error(`swap zap gagal (${h})`);
       notes.push(`zap ${idx === 0 ? 'beli token0' : 'beli token1'}`);
-      noteZap(h);
       const gotDirect = await this.receivedIn(rc.receipt, buyTok, this.exec.address().toLowerCase()).catch(() => null);
+      noteZap(h, gotDirect);
       bal = await this.balancesAfterSwap([plan.token0, plan.token1], buyTok, boughtBefore, gotDirect);
     }
 
@@ -1389,6 +1491,13 @@ class Engine {
     // Mint SUDAH jadi di chain: galat apa pun sesudah ini (pembukuan) tidak boleh memicu
     // mint kedua atau penjualan token zap — bookPendingMints membukukannya belakangan.
     trace.minted = hash;
+    // Token zap yang dibeli tapi tidak jadi disetor (harga pool bergerak antara zap dan
+    // mint) tidak boleh ditinggal telanjang: masuk antrean jual, sama seperti sisa
+    // posisi. Gagal di sini tidak boleh menjatuhkan pembukuan mint yang sudah jadi.
+    if (trace.zapped) {
+      await this.sweepZapSurplus(finalPlan, trace.zapped, rc.receipt, { sqrt: s2, hash })
+        .catch((e) => this.store?.log?.('warn', `kelebihan zap tidak terantre: ${e.message}`, { quiet: true }));
+    }
     try { return await this.recordEntry(finalPlan, hash, rc.receipt, { amt, sqrt: s2, notes }); }
     catch (e) { e.pendingMint = true; e.message = `mint ${hash} berhasil tetapi pembukuan tertunda: ${e.message}`; throw e; }
   }
@@ -1771,6 +1880,13 @@ class Engine {
         this.store.log('warn', `mint ${r.hash.slice(0, 12)}… ${receipt ? 'revert' : 'tidak pernah masuk'} — ${d.zapped ? 'token zap diantrekan dijual' : 'dana tetap di wallet'}`);
         if (d.zapped) await this.rescueZap({ target: d.target }, { ...d.zapped, before: BigInt(d.zapped.before) }, new Error('mint gagal')).catch(() => {});
         continue;
+      }
+      // Mint-nya jadi: kelebihan token zap yang tidak ikut masuk posisi diantrekan
+      // dijual di sini juga — jalur ini yang mengurusnya kalau receipt baru terbaca
+      // belakangan (alur masuknya sendiri sudah menyerah menunggu).
+      if (d.zapped) {
+        await this.sweepZapSurplus(d.plan, d.zapped, receipt, { hash: r.hash })
+          .catch((e) => this.store.log('warn', `kelebihan zap ${r.hash.slice(0, 12)}… tidak terantre: ${e.message}`, { quiet: true }));
       }
       const res = await this.recordEntry(d.plan, r.hash, receipt);
       const msg = `posisi #${res.positionId} dibukukan belakangan dari receipt ${r.hash.slice(0, 12)}… — ${res.note}`;
