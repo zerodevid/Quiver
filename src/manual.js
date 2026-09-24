@@ -724,6 +724,7 @@ class Manual {
       kind: 'entry', positionId: r.positionId, txHash: r.txHash, adding: !!r.adding,
       pair: r.pair, valueUsd: r.valueUsd, curTick: r.curTick, steps: r.steps,
       target: f.target, mirrorOf: f.tokenId, reason: `diikuti manual ${late} setelah target masuk`,
+      targetUsd: plan.targetValueUsd ?? null, targetTs: f.ts ?? null, targetRange: plan.targetRange ?? null,
     });
     return { ...r, lateMs: Date.now() - f.ts };
   }

@@ -595,6 +595,9 @@ class Engine {
         kind: 'entry', positionId: r.positionId, txHash: r.txHash, adding: !!r.adding, reentry: act.kind === 'reentry',
         pair: r.pair, valueUsd: r.valueUsd, curTick: r.curTick, steps: r.steps,
         target: act.target, mirrorOf: act.tokenId, reason: d.reason,
+        // Sisi target dari kejadian INI: berapa yang dia masukkan dan kapan. Kartu
+        // masuk menaruhnya di sebelah nominal kita supaya perbandingannya terbaca.
+        targetUsd: d.plan.targetValueUsd ?? null, targetTs: act.ts ?? null, targetRange: d.plan.targetRange ?? null,
       });
     } catch (e) {
       this.stats.errors++;
@@ -753,6 +756,10 @@ class Engine {
       this.notify(`LP ditutup: ${r.note}`, {
         kind: 'exit', positionId: pos.id, txHash: r.txHash, full: !!d.plan.full, sold: r.sold,
         target: act.target, mirrorOf: act.tokenId, reason: d.reason,
+        // Berapa yang TARGET tarik pada aksi ini, dan kapan — kartu tutup memakainya
+        // untuk menjawab "yang kita tiru keluar berapa" tanpa membuka dasbor.
+        targetUsd: (act.valueQuote || 0) * usdPerQuote(act.quoteSymbol, this.ethUsd, this.chain) || null,
+        targetTs: act.ts ?? null,
       });
       return out('copy', `${d.reason} — ${r.note}`, d.plan, { txHash: r.txHash, positionId: pos.id });
     } catch (e) {

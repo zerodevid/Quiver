@@ -41,7 +41,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const nf = (n, d = 2) => Number(n).toLocaleString(locale() === 'en' ? 'en-US' : 'id-ID', { minimumFractionDigits: d, maximumFractionDigits: d });
 const usd = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '—' : `$${nf(n, d)}`);
-const pct = (n, d = 1) => (n == null || !Number.isFinite(Number(n)) ? '—' : `${n >= 0 ? '+' : ''}${nf(n, d)}%`);
+// Persen selalu bertanda, dan minusnya memakai tanda minus sungguhan (−) seperti
+// sgn(): dalam satu kartu "−$0,05" berdampingan dengan "-0,05%" terbaca seperti dua
+// angka dari sistem yang berbeda.
+const pct = (n, d = 1) => (n == null || !Number.isFinite(Number(n)) ? '—' : `${n >= 0 ? '+' : '−'}${nf(Math.abs(n), d)}%`);
 const sgn = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '—' : `${n >= 0 ? '+' : '−'}$${nf(Math.abs(n), d)}`);
 // Telegram messages cannot set text colors; keep the sign and a semantic marker.
 const pnlMark = (n) => n == null || !Number.isFinite(Number(n)) || Number(n) === 0 ? '⚪️' : Number(n) < 0 ? '🔴' : '🟢';
@@ -1438,13 +1441,87 @@ class Telegram {
     return [`🔔 <b>${esc(msg)}</b>`, null];
   }
 
-  // Baris "cermin dari": nama target kalau ada, alamat pendek, dan NFT yang diikuti.
-  targetBaris(detail, p) {
-    const addr = detail.target || p?.target;
+  // ---- blok "asal" ---------------------------------------------------------
+  // Tiap posisi bot lahir dari posisi orang lain, tapi kartunya dulu cuma bercerita
+  // tentang kita: nominal kita, PnL kita. Blok ini menaruh angka TARGET di sebelah
+  // angka kita — dia masuk berapa, kita masuk berapa, dan (saat tutup) dia dapat apa
+  // dari posisi yang sama. Sumbernya /api/position -> origin: `watch` = aksi yang
+  // benar-benar terpantau (pokok, dinilai saat kejadian), `mirror` = hasil riset
+  // wallet (PnL lengkap, tapi baru ada setelah wallet-nya dipindai).
+  targetKepala(d, p) {
+    const addr = d.target || p?.target;
     if (!addr) return null;
-    const nama = p?.targetLabel;
-    const nft = detail.mirrorOf ?? p?.mirror_of;
-    return `${nama ? `<b>${esc(nama)}</b> ` : ''}<code>${esc(shortA(addr))}</code>${nft ? ` · NFT #${esc(nft)}` : ''}`;
+    const nama = p?.targetLabel || p?.origin?.targetLabel;
+    return tr("🎯 Meniru {0}<code>{1}</code>", [nama ? `<b>${esc(compact(nama, 28))}</b> · ` : '', esc(shortA(addr))]);
+  }
+
+  // Sisi target saat MASUK: ukurannya, ukuran kita, dan berapa lama kita tertinggal.
+  targetTabelMasuk(d, p) {
+    const w = p?.origin?.watch || null;
+    const nft = d.mirrorOf ?? p?.mirror_of ?? p?.origin?.tokenId ?? null;
+    const dia = d.targetUsd ?? w?.inUsd ?? null;
+    const kita = d.valueUsd ?? p?.costUsd ?? null;
+    // Target yang sudah beberapa kali menambah: nominal aksi ini dan total dia di
+    // posisi itu adalah dua angka berbeda, dan keduanya menjawab pertanyaan lain.
+    const total = w && dia != null && w.inUsd > dia + 0.01 ? w.inUsd : null;
+    const jeda = d.targetTs ? (Date.now() - d.targetTs) / 1000 : null;
+    return kolom([
+      [tr("posisi dia"), nft ? `NFT #${nft}` : null, null],
+      [tr("dia masuk"), dia != null ? usd(dia) : null, null],
+      [tr("total dia"), total != null ? usd(total) : null, null],
+      [d.adding ? tr("kita tambah") : tr("kita masuk"), kita != null ? usd(kita) : null, null],
+      // Menambah ke cermin yang sudah ada: yang dibandingkan dengan target adalah
+      // TOTAL kita di posisi itu, bukan cuma tambahan barusan.
+      [tr("total kita"), d.adding && p?.costUsd != null ? usd(p.costUsd) : null, null],
+      [tr("porsi kita"), dia > 0 && (d.adding ? p?.costUsd : kita) != null ? `${trimZ(nf(((d.adding ? p.costUsd : kita) / dia) * 100, 2))}%` : null, tr("dari dia")],
+      [tr("tertinggal"), jeda != null && jeda >= 0 ? dur(jeda) : null, null],
+    ].filter((r) => r[1] != null), 'lrl');
+  }
+
+  // Sisi target saat TUTUP: apa yang dia dapat dari posisi yang sama dengan kita.
+  // `kita` = {pnl, pnlPct, holdSec} supaya dua hasil itu berdampingan, bukan di dua
+  // layar berbeda.
+  targetTabelKeluar(d, p, kita) {
+    const o = p?.origin || null;
+    const w = o?.watch || null;
+    const riset = o?.mirror && !o.mirror.stale ? o.mirror : null;   // riset wallet yang sudah final
+    const nft = d.mirrorOf ?? p?.mirror_of ?? o?.tokenId ?? null;
+    const tarik = w?.outUsd || d.targetUsd || null;
+    // PnL target: hasil riset kalau ada (sudah termasuk fee & token sisa yang dijual),
+    // kalau tidak selisih tarik − taruh dari aksi yang terpantau.
+    const pnlDia = riset ? riset.pnlUsd : w?.pnlUsd ?? null;
+    const pnlDiaPct = riset ? riset.pnlPct : w?.pnlPct ?? null;
+    const rows = [
+      [tr("posisi dia"), nft ? `NFT #${nft}` : null, null],
+      [tr("dia masuk"), w?.inUsd ? usd(w.inUsd) : riset ? usd(riset.costUsd) : null, null],
+      [tr("dia tarik"), tarik != null ? usd(tarik) : null, null],
+      [tr("hasil dia"), pnlDia != null ? sgn(pnlDia) : null, pnlDia != null && pnlDiaPct != null ? pct(pnlDiaPct) : null],
+      [tr("hasil kita"), kita?.pnl != null ? sgn(kita.pnl) : null, kita?.pnl != null && kita.pnlPct != null ? pct(kita.pnlPct, Math.abs(kita.pnlPct) < 0.1 ? 2 : 1) : null],
+      [tr("dia pegang"), w?.heldSec ? dur(w.heldSec) : null, w?.open ? tr("masih terbuka") : null],
+      [tr("kita pegang"), kita?.holdSec > 0 ? dur(kita.holdSec) : null, null],
+    ].filter((r) => r[1] != null);
+    return { tabel: kolom(rows, 'lrl'), perkiraan: pnlDia != null && !riset };
+  }
+
+  // Rentang ASLI target, kalau aturan (recenter/skala/lebar sendiri) membuat rentang
+  // kita berbeda. Batang rentang di atas menggambarkan rentang KITA; tanpa baris ini
+  // tidak ada cara tahu bahwa yang ditiru memasang batas yang lain.
+  targetRentang(d, p) {
+    const t = d.targetRange;
+    if (!t || t[0] == null || t[1] == null || !p || p.quoteSide == null) return null;
+    const lo = p.tick_lower ?? p.tickLower, hi = p.tick_upper ?? p.tickUpper;
+    if (lo === t[0] && hi === t[1]) return null;
+    const a = tickPrice(t[0], p.dec0, p.dec1, p.quoteSide), b = tickPrice(t[1], p.dec0, p.dec1, p.quoteSide);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+    const [x, y] = a <= b ? [a, b] : [b, a];
+    return tr("↔ Rentang dia {0} – {1}", [esc(harga(x)), esc(harga(y))]);
+  }
+
+  // Blok asal lengkap (kepala + isi), siap ditempel ke kartu.
+  targetBlok(d, p, ...isi) {
+    const kepala = this.targetKepala(d, p);
+    if (!kepala) return [];
+    return ['', kepala, ...isi.flat()].filter((x) => x != null);
   }
   txBaris(hash) { return hash ? `🔗 <code>${esc(shortH(hash))}</code>` : null; }
   modeTag() { return this.engine.dryRun() ? tr("🧪 SIMULASI") : '🟢 LIVE'; }
@@ -1469,8 +1546,8 @@ class Telegram {
       L.push(r.bar);
       L.push(r.kini ? `${esc(r.kini)}${r.ket ? ` — ${esc(r.ket)}` : ''}` : null);
     }
+    L.push(...this.targetBlok(d, p, this.targetTabelMasuk(d, p), this.targetRentang(d, p)));
     const jejak = [
-      ['🎯', this.targetBaris(d, p)],
       ['📝', d.reason ? esc(note(d.reason)) : null],
       ['⚙️', d.steps?.length ? esc(d.steps.map(note).join(' · ')) : null],
       [null, ongkosTeks(p?.cost, 'open')],
@@ -1496,15 +1573,15 @@ class Telegram {
       `<b>${esc(pair)}</b>${p?.token_id ? ` · NFT #${esc(p.token_id)}` : ''}${lama}`,
       '',
     ];
+    // Untung/rugi yang ditebalkan adalah angka BERSIH: hasil − modal − ongkos
+    // (gas + slippage buka & tutup). PnL mentah cuma hasil − modal, dan pada
+    // posisi tipis ongkos itulah yang membedakan untung dan rugi. Ongkos ditaruh
+    // di tabel sebagai baris minus supaya jumlahnya bisa dicek dengan mata.
+    const ongkos = p?.cost?.totalUsd || 0;
+    const adaOngkos = Math.abs(ongkos) >= 0.0005;
+    const bersih = adaOngkos && pnl != null ? pnl - ongkos : pnl;
+    const bersihPct = !p ? null : adaOngkos ? (p.costUsd > 0 ? (bersih / p.costUsd) * 100 : null) : p.pnlPct;
     if (d.full && p?.empty) {
-      // Untung/rugi yang ditebalkan adalah angka BERSIH: hasil − modal − ongkos
-      // (gas + slippage buka & tutup). PnL mentah cuma hasil − modal, dan pada
-      // posisi tipis ongkos itulah yang membedakan untung dan rugi. Ongkos ditaruh
-      // di tabel sebagai baris minus supaya jumlahnya bisa dicek dengan mata.
-      const ongkos = p.cost?.totalUsd || 0;
-      const adaOngkos = Math.abs(ongkos) >= 0.0005;
-      const bersih = adaOngkos && pnl != null ? pnl - ongkos : pnl;
-      const bersihPct = adaOngkos ? (p.costUsd > 0 ? (bersih / p.costUsd) * 100 : null) : p.pnlPct;
       // Posisinya sendiri tidak rugi (hasil − modal − slippage ≥ 0) tapi bersihnya
       // tidak untung: minusnya cuma gas. Itu bukan "rugi" dan bukan "untung" —
       // jangan dilabeli salah satunya. Minus karena slippage tetap rugi.
@@ -1521,10 +1598,21 @@ class Telegram {
       // Tutup sebagian: nilai yang tersisa baru akurat setelah sinkron berikutnya.
       L.push(angka([[tr("modal awal"), usd(p.costUsd)]]));
     }
+    // Hasil kita vs hasil target di posisi yang sama. Kita masuk beberapa blok
+    // setelah dia dan keluar atas keputusan sendiri, jadi dua angka ini hampir tidak
+    // pernah sama — dan selisihnya itulah yang dinilai orang saat membaca kartu.
+    const sisiTarget = this.targetTabelKeluar(d, p, {
+      pnl: d.full && p?.empty ? bersih : null,
+      pnlPct: d.full && p?.empty ? bersihPct : null,
+      holdSec: p?.ageHours > 0 ? p.ageHours * 3600 : null,
+    });
+    L.push(...this.targetBlok(d, p, sisiTarget.tabel));
+    if (sisiTarget.tabel && sisiTarget.perkiraan) {
+      L.push(tr("<i>Angka target = pokok yang terpantau masuk & keluar; fee yang dia panen terpisah belum terhitung.</i>"));
+    }
     const jejak = [
       ['📝', d.reason ? esc(note(d.reason)) : null],
       ['🧹', d.sold ? esc(note(d.sold)) : null],
-      ['🎯', this.targetBaris(d, p)],
       [null, ongkosTeks(p?.cost)],
       [null, this.txBaris(d.txHash)],
     ].filter(([, v]) => v).map(([ic, v]) => (ic ? `${ic} ${v}` : v));
