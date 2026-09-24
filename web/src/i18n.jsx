@@ -135,6 +135,8 @@ const EN = {
   "Trade": "Trade",
   "Chart": "Chart",
   "Klik untuk membaca seluruhnya": "Click to read the whole note",
+  "Transaksi target": "Target transaction",
+  "Transaksi salinan kita": "Our copy transaction",
   "Membuka posisi {pair}…": "Opening {pair} position…",
   "Jembatan kas, zap, lalu mint — bisa sampai satu menit.": "Cash bridge, zap, then mint — this can take up to a minute.",
   "Gagal membuka {pair}": "Failed to open {pair}",

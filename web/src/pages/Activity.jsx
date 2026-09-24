@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Plus, Minus, ArrowLeftRight, CircleDollarSign, UserPlus } from 'lucide-react';
+import { Plus, Minus, ArrowLeftRight, CircleDollarSign, UserPlus, ExternalLink } from 'lucide-react';
 import { Button } from '@heroui/react';
 import { usePoll } from '../hooks';
 import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Pick, Dot, TradeLinks, baseTokenOf } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
-import { usd, ago, short, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
+import { usd, ago, short, txHref, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
+import { chainInfo, EXPLORER_NAME } from '../chain';
 import { useI18n, reason } from '../i18n';
 import FollowDialog from '../components/FollowDialog';
 
@@ -16,6 +17,22 @@ const WARNA = { increase: 'text-accent', mint: 'text-accent', reentry: 'text-acc
 function ukuranKita(a) {
   if (!a.plan) return null;
   try { const v = JSON.parse(a.plan).valueUsd; return Number.isFinite(v) ? v : null; } catch { return null; }
+}
+
+// Transaksi di penjelajah blok: yang di kolom waktu adalah transaksi TARGET (aksi
+// yang terbaca dari chain), yang di kolom keputusan transaksi salinan KITA. Hash-nya
+// ditampilkan pendek — yang dicari orang biasanya cuma jalan ke penjelajahnya.
+function TxLink({ hash, label, className = '' }) {
+  const { t } = useI18n();
+  if (!hash) return null;
+  const situs = EXPLORER_NAME[chainInfo().key] || t('Penjelajah');
+  return (
+    <a href={txHref(hash)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
+      title={`${t(label)} · ${situs}\n${hash}`}
+      className={`mono inline-flex items-center gap-1 text-[0.6875rem] text-muted hover:text-accent hover:underline ${className}`}>
+      {short(hash)}<ExternalLink className="size-3" />
+    </a>
+  );
 }
 
 // Alasan keputusan bisa panjang (tiga-empat kalimat); tampil dua baris supaya
@@ -80,8 +97,11 @@ export default function Activity() {
           defaultSort={{ column: 'ts', direction: 'descending' }}
           empty={<Empty title="Belum ada aktivitas" sub="Gerakan LP wallet target akan muncul di sini begitu terdeteksi." />}
           columns={[
-            { key: 'ts', label: 'Waktu', sort: (a) => a.ts, render: (a) => (
-              <span className="whitespace-nowrap text-xs text-muted" title={new Date(a.ts).toLocaleString(fmtLocale())}>{ago(a.ts)}</span>) },
+            { key: 'ts', label: 'Waktu', sort: (a) => a.ts, search: (a) => a.tx_hash || '', render: (a) => (
+              <div className="whitespace-nowrap">
+                <div className="text-xs text-muted" title={new Date(a.ts).toLocaleString(fmtLocale())}>{ago(a.ts)}</div>
+                <TxLink hash={a.tx_hash} label="Transaksi target" className="mt-1" />
+              </div>) },
             { key: 'tgt', label: 'Target', sort: (a) => a.targetLabel || a.target, search: (a) => `${a.targetLabel || ''} ${a.target}`, render: (a) => (
               <a href={'#targets/' + a.target} className="group block w-44" title={a.target}>
                 {a.targetLabel && <div className="truncate font-medium group-hover:underline">{a.targetLabel}</div>}
@@ -121,13 +141,16 @@ export default function Activity() {
                   {kita != null && <div className="mt-1 text-xs font-normal text-muted">{t('kita {v}', { v: usd(kita) })}</div>}
                 </div>);
             } },
-            { key: 'dec', label: 'Keputusan', sort: (a) => a.verdict, search: (a) => `${a.verdict || ''} ${a.reason || ''}`, render: (a) => {
+            { key: 'dec', label: 'Keputusan', sort: (a) => a.verdict, search: (a) => `${a.verdict || ''} ${a.reason || ''} ${a.decision_tx || ''}`, render: (a) => {
               const k = KEPUTUSAN[a.verdict];
               return (
                 <div className="min-w-48 max-w-80">
-                  <div className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium ${k?.[1] === 'danger' ? 'bg-danger/10' : k?.[1] === 'success' ? 'bg-success/10' : 'bg-default'}`}>
-                    <Dot tone={k?.[1] || 'default'} />
-                    <span className={k?.[1] === 'danger' ? 'text-danger' : k?.[1] === 'success' ? 'text-success' : ''}>{k ? t(k[0]) : (a.verdict || '—')}</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium ${k?.[1] === 'danger' ? 'bg-danger/10' : k?.[1] === 'success' ? 'bg-success/10' : 'bg-default'}`}>
+                      <Dot tone={k?.[1] || 'default'} />
+                      <span className={k?.[1] === 'danger' ? 'text-danger' : k?.[1] === 'success' ? 'text-success' : ''}>{k ? t(k[0]) : (a.verdict || '—')}</span>
+                    </div>
+                    <TxLink hash={a.decision_tx} label="Transaksi salinan kita" />
                   </div>
                   {a.reason && <Reason text={reason(a.reason)} />}
                   {a.followable && (
