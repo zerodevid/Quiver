@@ -112,7 +112,7 @@ function Recap({ list }) {
   const best = rows.length ? rows.reduce((a, b) => (oursTotal(b.ours) > oursTotal(a.ours) ? b : a)) : null;
   return (
     <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
-      <Stat label="Hasil dari semua target" value={signed(realized + upnl)} valueClass={tone(realized + upnl)}
+      <Stat label="Hasil dari semua target" value={signed(realized + upnl)} fx={realized + upnl} valueClass={tone(realized + upnl)}
         sub={t('terealisasi {r} · berjalan {u}', { r: usd(realized), u: usd(upnl) })} />
       <Stat label="Posisi ditutup" value={closed}
         sub={closed ? t(closed - wins - losses ? '{w} menang · {l} kalah · {f} impas' : '{w} menang · {l} kalah', { w: wins, l: losses, f: closed - wins - losses }) : t('belum ada')} />
@@ -296,14 +296,14 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
       {/* aktivitas copy untuk target ini */}
       <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-5">
         {/* Uang dia sendiri — kalau tinggal puluhan dolar, mengikutinya sudah tidak ada gunanya. */}
-        <Stat label="Saldo dia" value={balKnown(tg.balance) ? kUsd(balTotal(tg.balance)) : '—'} valueClass={balTone(tg.balance)}
+        <Stat label="Saldo dia" value={balKnown(tg.balance) ? kUsd(balTotal(tg.balance)) : '—'} fx={balKnown(tg.balance) ? balTotal(tg.balance) : null} valueClass={balTone(tg.balance)}
           sub={balKnown(tg.balance)
             ? t('kas {c} · LP {l} ({n} posisi)', { c: money(tg.balance.cashUsd), l: money(tg.balance.lpUsd), n: tg.balance.lpOpenN })
             : t('Belum terbaca')} />
         <Stat label="Aksi terdeteksi" value={tg.actions} sub={tg.lastActionTs ? t('terakhir {w}', { w: ago(tg.lastActionTs) }) : t('belum ada aksi')} />
         <Stat label="Disalin / simulasi" value={tg.copied} />
         <Stat label="Posisi kita terbuka" value={tg.openPositions} sub={t('modal {v}', { v: usd(tg.openCostQuote) })} />
-        <Stat label="Hasil kita" value={signed(oursTotal(tg.ours))} valueClass={tone(oursTotal(tg.ours))}
+        <Stat label="Hasil kita" value={signed(oursTotal(tg.ours))} fx={oursTotal(tg.ours)} valueClass={tone(oursTotal(tg.ours))}
           sub={tg.ours ? t('terealisasi {r} · berjalan {u}', { r: usd(tg.ours.realized), u: usd(tg.ours.upnl) }) : t('Belum ada posisi')} />
       </div>
 

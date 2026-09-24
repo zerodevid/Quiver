@@ -9,6 +9,7 @@ import { usePoll, useHash, useTheme } from './hooks';
 import { post } from './api';
 import { short, usd, num } from './fmt';
 import { chainInfo, setChain, CHAIN_ICON } from './chain';
+import { setFx } from './currency';
 import { useI18n, LOCALES } from './i18n';
 import { QuiverLogo } from './components/Logo';
 import { AlertBell, useTargetAlerts, setBaseTitle } from './components/TargetAlerts';
@@ -252,6 +253,8 @@ export default function App() {
   // Identitas chain (simbol native, penjelajah, slug DexScreener) dibagikan ke pembantu
   // non-React lewat chain.js begitu status pertama tiba.
   useEffect(() => { if (status?.chain?.key) setChain(status.chain); }, [status?.chain?.key]);
+  // Kurs mata uang kedua ikut di poll yang sama; komponen <Fx> yang membacanya.
+  useEffect(() => { setFx(status?.fx || null); }, [status?.fx?.currency, status?.fx?.rate]);
   const chain = status?.chain?.key ? status.chain : chainInfo();
   // Judul tab ikut angka hidup: "Quiver · $1.234,56 · +$56,78" (digulir, lihat setBaseTitle) — total portofolio dan
   // PnL (bersih kalau modal terlacak, kalau tidak PnL posisi), sama dengan kartu di

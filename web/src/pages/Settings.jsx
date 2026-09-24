@@ -1,13 +1,14 @@
 import { chainInfo } from '../chain';
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Chip, Checkbox, Separator, Tabs, toast } from '@heroui/react';
-import { Pencil, Activity as Pulse, Trash2, KeyRound, Unlock, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck, ShieldAlert, ChartCandlestick } from 'lucide-react';
+import { Pencil, Activity as Pulse, Trash2, KeyRound, Unlock, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck, ShieldAlert, ChartCandlestick, Coins, RefreshCw } from 'lucide-react';
 import { Wallet as EthersWallet } from 'ethers';
 import SettingInfo from '../components/SettingInfo';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { PageHeader, Loading, Notice, Text, Pick, Toggle, ask } from '../components/ui';
-import { num, usd, locale as fmtLocale } from '../fmt';
+import { num, usd, locale as fmtLocale, ago } from '../fmt';
+import { fxFormat } from '../currency';
 import { useI18n, translate as tt } from '../i18n';
 
 const amt = (v, d = 4) => (v == null ? '—' : Number(v).toLocaleString(fmtLocale(), { maximumFractionDigits: d }));
@@ -21,6 +22,7 @@ const SETTINGS_NAV = [
   ['telegram', 'Telegram', 'Hubungkan bot dan chat', MessageCircle],
   ['gmgn', 'GMGN', 'API key untuk lilin harga GMGN', ChartCandlestick],
   ['loop', 'Mesin', 'Pemindaian dan harga ETH', Settings2],
+  ['display', 'Tampilan', 'Mata uang kedua di samping dolar', Coins],
   ['security', 'Keamanan', 'Akses masuk dasbor', ShieldCheck],
 ];
 
@@ -604,6 +606,66 @@ function TelegramTab({ d, reload }) {
   );
 }
 
+// ---------------- tampilan: mata uang kedua ----------------
+// Bukan pengaturan mesin: tidak ada satu pun keputusan bot yang berubah karenanya.
+// Yang berubah cuma cara dasbor menulis angka — dolar tetap angka utamanya, mata uang
+// pilihan menempel kecil di sebelahnya.
+function DisplayTab({ d, reload }) {
+  const { t } = useI18n();
+  const dp = d.display || {};
+  const fx = dp.fx;
+  const [busy, setBusy] = useState('');
+  const OFF = 'off';
+  const options = [[OFF, 'Tidak ada — dolar saja'], ...(dp.currencies || []).map((c) => [c.code, `${c.code} · ${c.name}`])];
+  const pick = async (id) => {
+    setBusy('save');
+    const r = await post('/api/settings/display', { currency: id === OFF ? '' : id });
+    setBusy('');
+    say(r, id === OFF ? 'Dasbor kembali menampilkan dolar saja' : 'Mata uang kedua tersimpan');
+    if (!r.error) reload();
+  };
+  const refresh = async () => {
+    setBusy('fx');
+    const r = await post('/api/settings/display/refresh', {});
+    setBusy('');
+    say(r, 'Kurs diperbarui');
+    if (!r.error) reload();
+  };
+  // Contoh dipakai supaya pilihannya terlihat hasilnya sebelum pindah halaman.
+  const sample = fx?.rate ? fxFormat(1234.56, fx) : null;
+  return (
+    <Section title="Mata uang kedua" desc="Semua nominal di dasbor dihitung dalam dolar — itu satuan yang dipakai pool, harga token, dan seluruh perhitungan PnL. Pilihan di sini menambahkan nilai yang sama dalam mata uang lain, ditulis kecil di sebelah angka dolarnya, supaya nominalnya punya rasa besaran. Angka utamanya tidak berubah.">
+      <div className="grid gap-5 md:grid-cols-2">
+        <Pick label="Mata uang" value={dp.currency || OFF} onChange={pick} isDisabled={busy === 'save'} options={options}
+          hint={t('Kursnya diambil server otomatis dari sumber kurs terbuka (open.er-api.com, cadangan frankfurter.app) dan disegarkan tiap enam jam.')} />
+        <div className="flex flex-col gap-2">
+          <div className="text-xs text-muted">{t('Contoh tampilan')}</div>
+          <div className="num rounded-md border border-border px-3 py-2.5 text-lg font-semibold tracking-tight">
+            {usd(1234.56)}{sample && <span className="ml-1.5 text-xs font-medium text-muted">≈ {sample}</span>}
+          </div>
+          {dp.currency && !fx?.rate && <Notice status="warning">{t('Kurs belum terbaca')}{fx?.error ? ` — ${fx.error}` : ''}</Notice>}
+        </div>
+      </div>
+
+      {dp.currency && (
+        <>
+          <Separator />
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div className="text-sm">
+              {fx?.rate
+                ? <>1 USD = <span className="num font-medium">{num(fx.rate, fx.rate < 100 ? 4 : 2)} {fx.currency}</span></>
+                : <span className="text-muted">{t('Kurs belum tersedia.')}</span>}
+              {fx?.at && <span className="ml-2 text-xs text-muted">{t('diperbarui {w}', { w: ago(fx.at) })}{fx.source ? ` · ${fx.source}` : ''}</span>}
+            </div>
+            <Button variant="outline" size="sm" isPending={busy === 'fx'} onPress={refresh}><RefreshCw className="size-4" />{t('Perbarui kurs')}</Button>
+          </div>
+          {fx?.stale && <Notice status="warning">{t('Sumber kurs sedang tidak bisa dihubungi; yang dipakai kurs terakhir yang berhasil diambil.')}</Notice>}
+        </>
+      )}
+    </Section>
+  );
+}
+
 function SecurityTab({ d }) {
   const { t } = useI18n();
   const [tok, setTok] = useState(null);
@@ -695,6 +757,7 @@ export default function Settings() {
                       ['auto_eth_price', `Ambil harga ${chainInfo().nativeSymbol} dari chain`, `Aktif: gunakan harga dari pool ${chainInfo().nativeSymbol}/${chainInfo().usdgSymbol}. Nonaktif: gunakan harga cadangan yang diisi di atas.`, 'bool'],
                     ]} />
                 </Tabs.Panel>
+                <Tabs.Panel id="display"><DisplayTab d={d} reload={load} /></Tabs.Panel>
                 <Tabs.Panel id="security"><SecurityTab d={d} /></Tabs.Panel>
               </div>
             </Tabs>

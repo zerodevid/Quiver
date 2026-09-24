@@ -172,6 +172,8 @@ The dashboard shows one chain at a time; the switcher under the logo (or `?chain
 
 Position, pool and token detail pages open from the tables and from the global search. Language preferences are stored per browser; Telegram language preferences are stored per chat.
 
+**Settings → Display** adds a second currency beside every dollar figure on the dashboard (`$1,983.22  ≈ Rp 35.4M`). Dollars remain the primary unit: pools, token prices, copy budgets and every PnL calculation stay in USD, and the second currency is display-only annotation, written small and grey. The server fetches the rate from open exchange-rate sources (open.er-api.com, falling back to frankfurter.app), refreshes it every six hours, caches the last good rate across restarts, and serves it to the dashboard with the regular status poll. Choosing *None* removes the annotation entirely.
+
 To connect Telegram:
 
 1. Create a bot through BotFather and set `LPCOPY_TELEGRAM_BOT_TOKEN` in `.env`, then restart the application. Alternatively, configure the token through Settings if it is not environment-managed.

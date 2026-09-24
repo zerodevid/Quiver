@@ -22,6 +22,7 @@ const { ethers } = require('ethers');
 const { RpcPool } = require('./rpc');
 const { TOPIC } = require('./chain');
 const { writeCfg, envName, privateKeyFromEnv } = require('./env');
+const { CURRENCIES, currencyOf } = require('./fx');
 
 const MASK = '••••';
 
@@ -115,7 +116,7 @@ async function probeRpc({ url, headers }, chain) {
 
 // `engines`: semua mesin di proses ini (wallet yang sama dipakai semua chain — ganti
 // kunci harus me-reset dompet tiap mesin). `chain` = profil chain tampilan ini.
-function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market = null }) {
+function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market = null, fx = null }) {
   chain = ensureChain(chain || engine?.chain);
   // Lewat writeCfg: nilai dari .env tidak boleh ikut tertulis ke config.json.
   const saveCfg = () => writeCfg(cfgPath, cfg);
@@ -264,6 +265,11 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
           sync_seconds: cfg.loop?.sync_seconds ?? 30,
         },
         prices: { eth_usd: cfg.prices?.eth_usd ?? 2500, auto_eth_price: cfg.prices?.auto_eth_price !== false },
+        display: {
+          currency: currencyOf(cfg),
+          currencies: Object.entries(CURRENCIES).map(([code, name]) => ({ code, name })),
+          fx: fx ? fx.view(currencyOf(cfg)) : null,
+        },
       };
     },
 
@@ -427,6 +433,28 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
         .then((x) => x.status).catch((e) => e.message);
       return r === 200 ? { ok: true } : { error: `ntfy membalas ${r}` };
     },
+    // ---- tampilan: mata uang kedua ----
+    // Hanya keterangan di dasbor. Mesin, batas anggaran, dan semua perhitungan tetap
+    // dalam dolar — mengganti pilihan di sini tidak menyentuh satu pun keputusan bot.
+    'POST /api/settings/display': async (req) => {
+      const b = await readBody(req);
+      const code = String(b.currency || '').trim().toUpperCase();
+      if (code && !CURRENCIES[code]) return { error: 'Mata uang itu tidak ada di daftar.' };
+      cfg.display = { ...(cfg.display || {}), currency: code || null };
+      saveCfg();
+      // Kurs ditarik sekarang kalau belum ada, supaya angkanya langsung terlihat di
+      // halaman ini — bukan baru muncul beberapa detik kemudian.
+      if (code && fx) await fx.refresh().catch(() => {});
+      return { ok: true, fx: code && fx ? fx.view(code) : null };
+    },
+    'POST /api/settings/display/refresh': async () => {
+      if (!fx) return { error: 'Kurs belum tersedia.' };
+      await fx.refresh(true).catch(() => {});
+      const v = fx.view(currencyOf(cfg));
+      if (!v) return { error: 'Pilih mata uang dulu.' };
+      return v.rate ? { ok: true, fx: v } : { error: fx.error || 'Kurs gagal diambil.' };
+    },
+
     // ---- OpenAPI GMGN ----
     'POST /api/settings/gmgn': async (req) => {
       const b = await readBody(req);

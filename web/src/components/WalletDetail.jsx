@@ -361,7 +361,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
           <>
             {running && <ScanProgress job={job} compact />}
             <div className="mb-3 grid grid-cols-2 gap-3 xl:grid-cols-4">
-              <Stat label="Total profit (tertutup)" value={kUsd(s.totalProfitUsd || 0)} valueClass={tone(s.totalProfitUsd)}
+              <Stat label="Total profit (tertutup)" value={kUsd(s.totalProfitUsd || 0)} fx={s.totalProfitUsd || 0} valueClass={tone(s.totalProfitUsd)}
                 sub={Math.abs(s.heldUnrealizedUsd || 0) >= 0.01
                   ? t('{n} posisi ditutup · {v} masih berupa token', { n: s.closedCount ?? 0, v: usd(s.heldUnrealizedUsd) })
                   : t('{n} posisi ditutup', { n: s.closedCount ?? 0 })} />
@@ -369,7 +369,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
                 sub={t('laba per posisi {v}', { v: usd(s.expectedValueUsd || 0) })} />
               <Stat label="Fee didapat" value={kUsd(s.feeEarnedUsd || 0)}
                 sub={s.avgInvestedUsd ? t('modal rata-rata {v}', { v: usd(s.avgInvestedUsd, 0) }) : null} />
-              <Stat label="Belum terealisasi" value={usd(s.unrealizedUsd || 0)} valueClass={tone(s.unrealizedUsd)}
+              <Stat label="Belum terealisasi" value={usd(s.unrealizedUsd || 0)} fx={s.unrealizedUsd || 0} valueClass={tone(s.unrealizedUsd)}
                 sub={t('{n} posisi berjalan', { n: data.open.length })} />
             </div>
             <GmgnWalletCard address={address} />

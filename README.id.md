@@ -648,6 +648,20 @@ cd web && python3 check-keys.py   # setiap t('…') di kode ada padanannya di ka
 cd web && python3 audit-i18n.py   # render tiap halaman di kedua bahasa, cari teks yang identik
 ```
 
+## Mata uang kedua
+
+**Pengaturan → Tampilan** menempelkan nilai yang sama dalam mata uang lain di sebelah tiap
+angka dolar (`$1.983,22  ≈ Rp 35,4 jt`). Dolarnya tetap angka utama: pool, harga token,
+anggaran salin, dan seluruh perhitungan PnL dihitung dalam USD — yang ditambahkan cuma
+keterangan kecil berwarna kelabu, supaya nominalnya punya rasa besaran. Tidak ada satu pun
+keputusan bot yang berubah karenanya.
+
+Kursnya ditarik server (`src/fx.js`) dari sumber kurs terbuka — open.er-api.com, cadangan
+frankfurter.app — disegarkan tiap enam jam, disimpan di tabel `state` supaya restart tidak
+berarti menarik ulang, lalu ikut menumpang `/api/overview` yang memang sudah dipoll tiap 5
+detik. Kalau kedua sumber tidak bisa dihubungi, kurs terakhir tetap dipakai dan ditandai
+basi di halaman Pengaturan. Pilih **Tidak ada** untuk kembali ke dolar saja.
+
 ## Tampilan (React + HeroUI v3)
 
 Sumbernya di `web/` (Vite + React 19 + HeroUI v3 + Tailwind v4 + lucide-react + recharts),

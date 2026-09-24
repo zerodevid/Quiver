@@ -128,9 +128,9 @@ export default function PoolDetail({ param }) {
         <Stat label={t('Harga {b}', { b: base })} value={<>{price(pNow)}{quote && <span className="ml-1 text-sm font-medium text-muted">{quote}</span>}</>}
           sub={ch24 != null ? <span><span className={tone(ch24)}>{pct(ch24, 1)}</span> {t('24 jam')}</span> : pair?.priceUsd ? usd(pair.priceUsd, pair.priceUsd < 0.01 ? 6 : 4) : null} />
         <Stat label="Likuiditas pool" value={kUsd(pair?.liquidityUsd)} sub={pair ? t('volume 24 jam {v}', { v: kUsd(pair.volume?.h24) }) : null} />
-        <Stat label="PnL bot di pool ini" value={all.length ? usd(upnl + realized) : '—'} valueClass={all.length ? tone(upnl + realized) : ''}
+        <Stat label="PnL bot di pool ini" value={all.length ? usd(upnl + realized) : '—'} fx={all.length ? upnl + realized : null} valueClass={all.length ? tone(upnl + realized) : ''}
           sub={t('{o} terbuka · {c} ditutup', { o: d.open.length, c: d.closed.length })} />
-        <Stat label="Nilai posisi terbuka" value={d.open.length ? usd(openVal + openFee) : '—'} sub={d.open.length ? t('modal {v}', { v: usd(openCost) }) : null} />
+        <Stat label="Nilai posisi terbuka" value={d.open.length ? usd(openVal + openFee) : '—'} fx={d.open.length ? openVal + openFee : null} sub={d.open.length ? t('modal {v}', { v: usd(openCost) }) : null} />
       </div>
 
       <PoolHealth pool={{ ...pool, pool_ref: ref }} pair={pair} open={d.open} />

@@ -359,7 +359,7 @@ export default function Overview() {
           sama membuat "total portofolio" dan "win rate" tampak sama pentingnya. */}
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Hero className="col-span-2 lg:row-span-2">
-          <HeroFigure label="Total portofolio" value={now ? usd(now.value) : '—'}
+          <HeroFigure label="Total portofolio" value={now ? usd(now.value) : '—'} fx={now?.value}
             sub={!now ? null : now.cash
               ? t('kas {c} · di posisi {p}', { c: usd(now.cash.usd), p: usd(now.positionsUsd + now.feeUsd) })
                 + ((now.leftoverUsd || 0) > 0.005 ? t(' · sisa token {v}', { v: usd(now.leftoverUsd) }) : '')
@@ -367,15 +367,15 @@ export default function Overview() {
           {now?.netPnl != null
             // Modal wallet terlacak: yang utama PnL bersih terhadap modal nyata; PnL
             // per-posisi (tanpa biaya zap/gas/swap) jadi keterangan.
-            ? <HeroFigure className="border-t border-border pt-4 sm:pt-5" label="PnL bersih" value={usd(now.netPnl)} valueClass={tone(now.netPnl)}
+            ? <HeroFigure className="border-t border-border pt-4 sm:pt-5" label="PnL bersih" value={usd(now.netPnl)} fx={now.netPnl} valueClass={tone(now.netPnl)}
               aside={now.capitalNet > 0 ? <span className={`num text-sm font-semibold ${tone(now.netPnl)}`}>{pct((now.netPnl / now.capitalNet) * 100, 2)}</span> : null}
               sub={t('modal {m} · PnL posisi {v}', { m: usd(now.capitalNet), v: usd(now.pnl) })} />
-            : <HeroFigure className="border-t border-border pt-4 sm:pt-5" label="Total PnL" value={now ? usd(now.pnl) : '—'} valueClass={now ? tone(now.pnl) : ''}
+            : <HeroFigure className="border-t border-border pt-4 sm:pt-5" label="Total PnL" value={now ? usd(now.pnl) : '—'} fx={now?.pnl} valueClass={now ? tone(now.pnl) : ''}
               aside={now?.capital > 0 ? <span className={`num text-sm font-semibold ${tone(now.pnl)}`}>{pct((now.pnl / now.capital) * 100, 2)}</span> : null}
               sub={!now ? null : t('terealisasi {r} · berjalan {u}', { r: usd(now.realizedUsd), u: usd(now.unrealizedUsd) })} />}
         </Hero>
         {/* Fee tanpa APR cuma memberi tahu jumlahnya, bukan apakah modalnya bekerja. */}
-        <Stat label="Fee terkumpul" value={usd(s.feeUsd)}
+        <Stat label="Fee terkumpul" value={usd(s.feeUsd)} fx={s.feeUsd}
           badge={portApr == null ? null : (
             <span className="num shrink-0 rounded bg-success/12 px-1.5 py-0.5 text-[0.6875rem] font-semibold whitespace-nowrap text-success"
               title={t('Fee seluruh posisi terbuka (termasuk yang sudah dipanen) disetahunkan terhadap modalnya')}>
@@ -383,7 +383,7 @@ export default function Overview() {
             </span>)}
           sub={s.costUsd > 0 ? t('{p}% dari modal · belum diklaim', { p: num((s.feeUsd / s.costUsd) * 100, 2) }) : t('belum diklaim')} />
         {/* Pertanyaan pokok LP: fee yang dihasilkan menutup impermanent loss atau tidak. */}
-        <Stat label="Fee vs IL" value={ilOpen == null ? '—' : usd(feeOpen + ilOpen)}
+        <Stat label="Fee vs IL" value={ilOpen == null ? '—' : usd(feeOpen + ilOpen)} fx={ilOpen == null ? null : feeOpen + ilOpen}
           valueClass={ilOpen == null ? '' : tone(feeOpen + ilOpen)}
           sub={<span title={t('Fee posisi terbuka ditambah impermanent loss-nya: selisih terhadap sekadar memegang token yang sama tanpa ber-LP.')}>
             {ilOpen == null ? t('IL belum terhitung') : t('fee {f} · IL {i}', { f: usd(feeOpen), i: usd(ilOpen) })}

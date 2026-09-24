@@ -1142,7 +1142,28 @@ const EN = {
   'Gas': 'Gas',
   'Notifikasi': 'Notifications',
   'Mesin': 'Engine',
+  'Tampilan': 'Display',
+  'Mata uang kedua di samping dolar': 'A second currency next to the dollar',
   'Keamanan': 'Security',
+  // mata uang kedua
+  'Mata uang kedua': 'Second currency',
+  'Semua nominal di dasbor dihitung dalam dolar — itu satuan yang dipakai pool, harga token, dan seluruh perhitungan PnL. Pilihan di sini menambahkan nilai yang sama dalam mata uang lain, ditulis kecil di sebelah angka dolarnya, supaya nominalnya punya rasa besaran. Angka utamanya tidak berubah.':
+    'Every amount on this dashboard is computed in dollars — that is the unit of the pools, the token prices, and every PnL calculation. This setting adds the same amount in another currency, written small beside the dollar figure, so the numbers have a sense of scale. The main figure does not change.',
+  'Mata uang': 'Currency',
+  'Tidak ada — dolar saja': 'None — dollars only',
+  'Kursnya diambil server otomatis dari sumber kurs terbuka (open.er-api.com, cadangan frankfurter.app) dan disegarkan tiap enam jam.':
+    'The server fetches the rate automatically from open exchange-rate sources (open.er-api.com, with frankfurter.app as backup) and refreshes it every six hours.',
+  'Contoh tampilan': 'Preview',
+  'Kurs belum terbaca': 'No rate yet',
+  'Kurs belum tersedia.': 'No rate available yet.',
+  'diperbarui {w}': 'updated {w}',
+  'Perbarui kurs': 'Refresh rate',
+  'Sumber kurs sedang tidak bisa dihubungi; yang dipakai kurs terakhir yang berhasil diambil.':
+    'The rate sources cannot be reached right now; the last rate fetched successfully is being used.',
+  'Mata uang kedua tersimpan': 'Second currency saved',
+  'Dasbor kembali menampilkan dolar saja': 'The dashboard shows dollars only again',
+  'Kurs diperbarui': 'Rate updated',
+  'Kurs {r} per USD, diambil otomatis': 'Rate {r} per USD, fetched automatically',
   'Bagian pengaturan': 'Settings sections',
   'Wallet bot': 'Bot wallet',
   'Pakai wallet khusus bot, jangan wallet utama. Kunci privat disimpan di server':

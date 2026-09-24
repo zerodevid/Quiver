@@ -10,6 +10,7 @@ import { price, tickPrice, sqrtPrice, widthPct, pct, short, txHref, ago } from '
 import { breakEven } from '../breakeven';
 import { useTick } from '../hooks';
 import { translate as t } from '../i18n';
+import { useFx, fxText } from '../currency';
 import { chainInfo } from '../chain';
 
 export function PageHeader({ group, title, desc, children }) {
@@ -28,14 +29,14 @@ export function PageHeader({ group, title, desc, children }) {
 // HURUF BESAR SEMUA, yang pada empat kartu berjajar berubah jadi teriakan.
 // `badge` = satu penanda kecil di samping label (mis. APR, status in-range):
 // sifat angkanya, bukan angka kedua yang bersaing dengan yang utama.
-export function Stat({ label, value, sub, valueClass = '', badge = null, className = '' }) {
+export function Stat({ label, value, sub, fx = null, valueClass = '', badge = null, className = '' }) {
   return (
     <Card className={`min-w-0 gap-1.5! p-3.5! ${className}`}>
       <div className="flex items-center justify-between gap-2">
         <div className="truncate text-xs font-medium text-muted">{t(label)}</div>
         {badge}
       </div>
-      <div className={`num break-words text-lg sm:text-[1.375rem] leading-tight font-semibold tracking-tight ${valueClass}`}>{value}</div>
+      <div className={`num break-words text-lg sm:text-[1.375rem] leading-tight font-semibold tracking-tight ${valueClass}`}>{value}<Fx v={fx} /></div>
       {/* Di HP ubinnya selebar setengah layar: keterangan yang dipotong satu baris
           ("$851,40 di luar rentang — ti…") membuang justru bagian yang menjelaskan.
           Dua baris; tinggi kartu tetap rata karena semuanya satu baris kisi. */}
@@ -55,26 +56,42 @@ export function Hero({ children, className = '' }) {
     </Card>
   );
 }
-export function HeroFigure({ label, value, sub, valueClass = '', aside = null, className = '' }) {
+export function HeroFigure({ label, value, sub, fx = null, valueClass = '', aside = null, className = '' }) {
   return (
     <div className={`min-w-0 ${className}`}>
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <span className="text-xs font-medium text-muted">{t(label)}</span>
         {aside}
       </div>
-      <div className={`num mt-1.5 break-words text-[1.75rem] leading-[1.1] font-semibold tracking-tight sm:text-[2.125rem] ${valueClass}`}>{value}</div>
+      <div className={`num mt-1.5 break-words text-[1.75rem] leading-[1.1] font-semibold tracking-tight sm:text-[2.125rem] ${valueClass}`}>{value}<Fx v={fx} className="text-sm" /></div>
       {sub && <div className="mt-1.5 text-xs text-muted">{typeof sub === 'string' ? t(sub) : sub}</div>}
     </div>
   );
 }
 
 // Baris label/nilai — dipakai di semua panel ringkasan.
-export function KV({ label, children, className = '' }) {
+export function KV({ label, children, fx = null, className = '' }) {
   return (
     <div className={`kv-row flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 text-sm ${className}`}>
       <span className="min-w-0 text-muted">{t(label)}</span>
-      <span className="num min-w-0 max-w-full break-words text-end font-medium">{children}</span>
+      <span className="num min-w-0 max-w-full break-words text-end font-medium">{children}<Fx v={fx} /></span>
     </div>
+  );
+}
+
+// Nilai yang sama dalam mata uang kedua (Pengaturan -> Tampilan), menempel di kanan
+// angka dolarnya. Sengaja kecil dan kelabu: yang dibaca tetap dolarnya, ini cuma
+// rasa besaran. Tanpa mata uang kedua — atau untuk nilai yang membulat jadi nol —
+// tidak ada apa-apa yang digambar, jadi tata letaknya sama persis seperti sebelumnya.
+export function Fx({ v, className = '' }) {
+  const fx = useFx();
+  const s = fx ? fxText(v) : null;
+  if (!s) return null;
+  return (
+    <span className={`ml-1.5 align-baseline text-xs font-medium whitespace-nowrap text-muted ${className}`}
+      title={t('Kurs {r} per USD, diambil otomatis', { r: new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(fx.rate) })}>
+      ≈ {s}
+    </span>
   );
 }
 

@@ -13,6 +13,7 @@ const { Compound } = require('./compound');
 const { Holdings } = require('./holdings');
 const { Icons } = require('./icons');
 const { Market, TF } = require('./market');
+const { Fx, currencyOf } = require('./fx');
 const { Positions } = require('./positions');
 const { Costs, swapCostOf } = require('./costs');
 const { writeCfg } = require('./env');
@@ -160,6 +161,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // tiap hitungan berarti puluhan eth_call + DexScreener.
   const holdingsCache = new Map();
   const market = new Market({ log, chain, gmgnKey: () => cfg.gmgn?.api_key || null });
+  // Kurs mata uang kedua (keterangan kecil di samping angka dolar, lihat fx.js).
+  const fx = new Fx({ store, log });
   // Ongkos jalan tiap posisi (gas + selisih swap) — dihitung sekali untuk semua
   // posisi lalu di-cache sampai ada transaksi baru.
   const costs = new Costs(store, chain.network);
@@ -637,6 +640,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         rpc: rpc.stats(),
         unsupportedSenders: [...engine.watcher.unsupported.entries()].map(([a, n]) => ({ address: a, n })),
         lastSync: engine.positions.lastSync,
+        // Mata uang kedua: dasbor menempelkannya kecil-kecil di samping angka dolar.
+        // Ikut di sini supaya semua halaman mendapat kursnya dari poll yang sudah ada.
+        fx: fx.view(currencyOf(cfg)),
         leftovers: leftoverRows(), leftoverRetrySec: engine.leftoverRetrySec ? engine.leftoverRetrySec() : 5,
       };
     },
@@ -2004,7 +2010,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     },
   };
 
-  Object.assign(routes, createSettingsRoutes({ engine, engines, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market }));
+  Object.assign(routes, createSettingsRoutes({ engine, engines, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market, fx }));
   routes['GET /api/chains'] = async () => ({ chains: await chainList(), current: chain.network });
   // Pemilih chain: cookie lpcopy_chain dibaca pintu depan (index.js) untuk memilih
   // server chain mana yang menjawab permintaan berikutnya. Cookie ini bukan rahasia.

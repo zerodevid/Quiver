@@ -532,17 +532,17 @@ export default function PositionDetail({ id }) {
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-5">
-        <Stat label={closed ? 'Hasil' : 'Nilai'} value={usd(closed ? p.outUsd : p.valueUsd)} sub={t('modal {v}', { v: usd(p.costUsd) })} />
+        <Stat label={closed ? 'Hasil' : 'Nilai'} value={usd(closed ? p.outUsd : p.valueUsd)} fx={closed ? p.outUsd : p.valueUsd} sub={t('modal {v}', { v: usd(p.costUsd) })} />
         {/* APR-nya di sebelah label: yang menentukan posisi ini layak dipertahankan atau
             tidak bukan nominal fee-nya, melainkan berapa cepat modalnya menghasilkan. */}
-        <Stat label={closed ? 'Fee (sudah diklaim)' : 'Fee belum diklaim'} value={closed ? '—' : usd(p.feeUsd)} valueClass={!closed && p.feeUsd > 0.005 ? 'text-success' : ''}
+        <Stat label={closed ? 'Fee (sudah diklaim)' : 'Fee belum diklaim'} value={closed ? '—' : usd(p.feeUsd)} fx={closed ? null : p.feeUsd} valueClass={!closed && p.feeUsd > 0.005 ? 'text-success' : ''}
           badge={closed || feeApr(p) == null ? null : (
             <span className="num shrink-0 rounded bg-success/12 px-1.5 py-0.5 text-[0.6875rem] font-semibold whitespace-nowrap text-success"
               title={t('Fee {f} dalam {age} atas modal {c}, disetahunkan', { f: usd((p.feeUsd || 0) + (p.claimedUsd || 0)), age: age(p.ageHours), c: usd(p.costUsd) })}>
               {t('APR {v}', { v: aprText(feeApr(p)) })}
             </span>)}
           sub={!closed && p.costUsd > 0 ? t('{p}% dari modal', { p: num((p.feeUsd / p.costUsd) * 100, 2) }) : null} />
-        <Stat label="PnL" value={usd(p.pnlUsd)} valueClass={tone(p.pnlUsd)}
+        <Stat label="PnL" value={usd(p.pnlUsd)} fx={p.pnlUsd} valueClass={tone(p.pnlUsd)}
           sub={<span>{pct(p.pnlPct, 2)}{p.ilUsd != null && <> · IL <span className={tone(p.ilUsd)}>{usd(p.ilUsd)}</span></>}</span>} />
         <Stat label={closed ? 'Ditahan' : 'Umur'} value={age(p.ageHours)} sub={t('masuk {d}', { d: fmtDate(p.opened_ts) })} />
         {/* Ongkos jalan: gas + selisih swap. Tidak ikut dihitung di PnL, padahal
