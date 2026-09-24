@@ -38,7 +38,10 @@ const WINDOW_BLOCK_MS = 101;
 // Wallet bot bisa punya ribuan transaksi sehari (kebanyakan swap). Batas per pindai;
 // yang lebih tua dari itu ditandai tidak lengkap.
 const MAX_TX = 2500;
-const TX_CONCURRENCY = 4;
+// publicnode melayani getTransaction ±50/detik; mainnet-beta hampir selalu 429.
+const TX_CONCURRENCY = 10;
+// Endpoint riwayat yang menolak sekian kali beruntun dianggap mati untuk pindai ini.
+const HIST_DEAD_AFTER = 6;
 
 const flatAccounts = (list) => (list || []).flatMap((a) => (a.accounts ? flatAccounts(a.accounts) : [a.name]));
 const big = (x) => (x == null ? 0n : BigInt(x.toString()));
@@ -102,19 +105,55 @@ class SolanaWalletResearch {
     // Versi 1: sebagian transaksi mainnet sudah memakai format pesan v1; jsonParsed
     // dikembalikan sebagai JSON, jadi klien web3.js v1 tidak perlu men-decode-nya.
     const opts = { maxSupportedTransactionVersion: 1, commitment: 'confirmed' };
+    const fetchTx = (sig) => (c) => c.getParsedTransaction(sig, opts);
     const out = new Array(sigs.length);
     let next = 0, done = 0, skipped = 0;
     const missing = [];
-    // Transaksi yang tidak bisa dibaca (format baru, galat tetap) dilewati — satu
-    // transaksi aneh tidak boleh menggagalkan seluruh pindai.
-    const one = async (sig) => {
+    // Endpoint cepat (publicnode) hanya menyimpan ±1 hari transaksi; yang lebih tua cuma
+    // ada di endpoint riwayat (mainnet-beta), yang dari banyak IP menolak getTransaction
+    // sama sekali. Maka: coba endpoint cepat dulu; begitu ia menjawab "tidak ada" untuk
+    // transaksi berumur T, transaksi yang lebih tua dari T langsung ke endpoint riwayat.
+    // Kalau endpoint riwayat menolak terus, sisanya dilewati (posisinya jadi "tidak
+    // lengkap") — pindai tidak boleh berputar belasan menit tanpa hasil.
+    let quickFloor = 0, histFails = 0, histDead = false;
+    this.oldUnread = 0;
+    const history = async (sig) => {
+      if (histDead) return undefined;
       try {
-        const get = (o) => this.withRetry(() => this.rpc.run((c) => c.getParsedTransaction(sig, opts), o), 'baca transaksi');
-        let tx = await get({}) || await get({ needsHistory: true });
+        const tx = await this.rpc.run(fetchTx(sig), { needsHistory: true });
+        histFails = 0;
+        return tx;
+      } catch (e) {
+        if (!TRANSIENT.test(String(e.message))) throw e;
+        if (++histFails >= HIST_DEAD_AFTER && !histDead) {
+          histDead = true;
+          this.log(`riset: endpoint riwayat menolak terus (${String(e.message).slice(0, 60)}) — transaksi lebih tua dari ±1 hari dilewati; tambahkan RPC berkunci (Helius) untuk riwayat penuh`);
+        }
+        await new Promise((r) => setTimeout(r, 400 * histFails));
+        return histDead ? undefined : history(sig);
+      }
+    };
+    const one = async (s) => {
+      const sig = s.signature;
+      try {
+        let tx = null;
+        const old = s.blockTime && quickFloor && s.blockTime <= quickFloor;
+        if (!old) {
+          tx = await this.withRetry(() => this.rpc.run(fetchTx(sig)), 'baca transaksi');
+          if (!tx && s.blockTime && Date.now() / 1000 - s.blockTime > 600) quickFloor = Math.max(quickFloor, s.blockTime);
+        }
+        if (!tx) {
+          const h = await history(sig);
+          if (h === undefined) { this.oldUnread++; return null; }
+          tx = h;
+        }
         // Transaksi yang sangat baru bisa belum tersedia di node yang ditanya: sekali lagi
         // sesudah jeda. Masih null = "tertunda" (dibaca pada pembaruan berikutnya).
-        if (!tx) { await new Promise((r) => setTimeout(r, 2500)); tx = await get({ needsHistory: true }); }
-        if (!tx) missing.push(sig);
+        if (!tx && (!s.blockTime || Date.now() / 1000 - s.blockTime < 600)) {
+          await new Promise((r) => setTimeout(r, 2500));
+          tx = await this.rpc.run(fetchTx(sig)).catch(() => null);
+          if (!tx) missing.push(sig);
+        }
         return tx;
       } catch (e) {
         // Masih 429 sesudah semua percobaan ulang: jadi "tertunda", pindai tetap selesai.
@@ -126,15 +165,16 @@ class SolanaWalletResearch {
     const worker = async () => {
       while (next < sigs.length) {
         const k = next++;
-        const tx = await one(sigs[k].signature);
+        const tx = await one(sigs[k]);
         if (tx && !tx.meta?.err) out[k] = { sig: sigs[k].signature, tx };
         done++;
-        if (onProgress && done % 10 === 0) onProgress({ phase: 'transaksi', scanned: done, total: sigs.length });
+        if (onProgress && (done % 10 === 0 || done === sigs.length)) onProgress({ phase: 'transaksi', scanned: done, total: sigs.length });
       }
     };
     await Promise.all(Array.from({ length: TX_CONCURRENCY }, worker));
     const txs = out.filter(Boolean);
     txs.missing = missing;
+    txs.oldUnread = this.oldUnread;
     return txs;
   }
 
@@ -467,6 +507,7 @@ class SolanaWalletResearch {
     const stats = await this.persist(wallet, positions, { fromSlot, head, ethUsd });
     this.store.setState(this.stateKey(wallet), JSON.stringify({ newest: sigs[0]?.signature || null, sinceMs, capped, pending: txs.missing }));
     if (txs.missing.length) this.log(`riset ${wallet.slice(0, 6)}…: ${txs.missing.length} transaksi belum tersedia — dibaca pada pembaruan berikutnya`);
+    if (txs.oldUnread) this.log(`riset ${wallet.slice(0, 6)}…: ${txs.oldUnread} transaksi lama tidak terbaca dari RPC publik — posisinya ditandai tidak lengkap`);
     if (capped) this.log(`riset ${wallet.slice(0, 6)}…: dibatasi ${MAX_TX} transaksi terbaru — posisi yang lebih tua tidak lengkap`);
     return { wallet, positions: [...positions.values()], head, from: fromSlot, stats, txs: txs.length };
   }

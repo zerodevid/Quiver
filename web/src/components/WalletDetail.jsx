@@ -20,14 +20,18 @@ function phaseText(j) {
   if (!j) return tt('Menyiapkan pemindaian…');
   if (j.mode === 'refresh') {
     if (j.phase === 'posisi') return tt('menghitung ulang posisi {done} / {total}', { done: j.done || 0, total: j.total || '?' });
+    if (j.phase === 'transaksi') return tt('membaca transaksi baru {done} / {total}', { done: j.done || 0, total: j.total || '?' });
     return tt('mencari posisi baru sejak pindai terakhir');
   }
   if (j.phase === 'transfer') return tt('Tahap 1 dari 2 — mencari posisi di chain ({p}%)', { p: j.progress || 0 });
+  // Solana: daftar tanda tangan wallet, lalu tiap transaksinya dibaca
+  if (j.phase === 'tanda tangan') return tt('Tahap 1 dari 2 — mengambil daftar transaksi wallet');
+  if (j.phase === 'transaksi') return tt('Tahap 1 dari 2 — membaca transaksi {done} / {total}', { done: j.done || 0, total: j.total || '?' });
   if (j.phase === 'posisi') return tt('Tahap 2 dari 2 — menghitung posisi {done} / {total}', { done: j.done || 0, total: j.total || '?' });
   return tt('Menyiapkan pemindaian…');
 }
 // progres gabungan: tahap 1 = 0–30%, tahap 2 = 30–100%
-const overall = (j) => (!j ? 2 : j.phase === 'transfer' ? Math.round((j.progress || 0) * 0.3)
+const overall = (j) => (!j ? 2 : j.phase === 'transfer' || j.phase === 'transaksi' ? Math.round((j.progress || 0) * 0.3)
   : j.phase === 'posisi' ? 30 + Math.round((j.progress || 0) * 0.7) : 2);
 
 function ScanProgress({ job, compact }) {

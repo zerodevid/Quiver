@@ -130,6 +130,26 @@ const ev = (r, name) => { const f = fx(name); return r.extract({ sig: f.signatur
     assert.strictEqual(p.in_range, 1);
   });
 
+  await t('RPC publik: transaksi lama yang ditolak endpoint riwayat (429 terus) dilewati cepat — pindai tidak macet', async () => {
+    const { r } = research();
+    const now = Math.floor(Date.now() / 1000);
+    // 3 transaksi baru (ada di endpoint cepat), 40 transaksi lama (hanya di endpoint riwayat, yang selalu 429)
+    const sigs = [...Array(43)].map((_, i) => ({ signature: `s${i}`, blockTime: i < 3 ? now - 60 * 30 : now - 3600 * 40 - i }));
+    let histCalls = 0;
+    r.rpc = { run: async (fn, o = {}) => {
+      if (o.needsHistory) { histCalls++; throw new Error('429 Too Many Requests'); }
+      return fn({ getParsedTransaction: async (s) => (Number(s.slice(1)) < 3 ? { meta: { err: null }, transaction: {} } : null) });
+    } };
+    r.withRetry = (f) => f();
+    const t0 = Date.now();
+    const txs = await r.transactions(sigs);
+    assert.strictEqual(txs.length, 3);
+    assert.strictEqual(txs.oldUnread, 40);
+    assert.strictEqual(txs.missing.length, 0, 'tidak dijadikan tertunda (tidak akan pernah tersedia)');
+    assert.ok(histCalls <= 12, `endpoint riwayat ditanya ${histCalls}× — harus berhenti setelah beberapa penolakan`);
+    assert.ok(Date.now() - t0 < 15_000, 'selesai cepat');
+  });
+
   console.log(`\n${pass} ok, ${fail} gagal`);
   process.exit(fail ? 1 : 0);
 })();
