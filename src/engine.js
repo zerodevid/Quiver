@@ -3011,13 +3011,20 @@ class Engine {
   // total portofolio menghitung dana dua kali sesaat setelah posisi dibuka.
   async refreshCash() {
     if (!this.exec.address()) { this.cash = null; return null; }
-    // Bacaan pertama sesudah sebuah tx masuk blok dipatok di blok tx itu (atau
-    // sesudahnya): endpoint yang tertinggal beberapa blok akan menjawab saldo LAMA
-    // untuk 'latest' — kas pun tampak belum berkurang/bertambah padahal posisinya sudah
-    // tercatat. Endpoint yang belum punya blok itu menjawab galat sementara dan kolam
-    // RPC pindah ke endpoint lain. Bacaan berikutnya kembali ke 'latest'.
+    // Bacaan pertama sesudah sebuah tx masuk blok dipatok di blok: endpoint yang
+    // tertinggal beberapa blok akan menjawab saldo LAMA untuk 'latest' — kas pun tampak
+    // belum berkurang/bertambah padahal posisinya sudah tercatat. Endpoint yang belum
+    // punya blok itu menjawab galat sementara dan kolam RPC pindah ke endpoint lain.
+    // Bacaan berikutnya kembali ke 'latest': memancang SETIAP bacaan membuat endpoint
+    // gratis (publicnode) menolaknya sebagai permintaan arsip, dan beban pindah ke
+    // Alchemy yang kuotanya sudah habis — mahal untuk perlindungan yang sudah dipegang
+    // penjaga `txSeq` di snapshotEquity.
+    // Patokannya kepala rantai kalau sudah lewat blok tx itu (`head` = kepala TERENDAH
+    // di antara endpoint, jadi semuanya sudah punya): setoran yang masuk sesudah tx
+    // kita ikut terbaca, bukan cuma keadaan di blok tx.
     const seq = this.exec.txSeq;
-    const block = seq !== this.cashSeq && this.exec.minedBlock ? '0x' + this.exec.minedBlock.toString(16) : 'latest';
+    const at = Math.max(this.exec.minedBlock || 0, this.head || 0);
+    const block = seq !== this.cashSeq && at ? '0x' + at.toString(16) : 'latest';
     const { usdgDecimals } = this.chain;
     const b = await this.exec.balances([this.chain.ADDR.native, this.chain.ADDR.usdg, this.chain.ADDR.weth], block);
     const eth = Number(b.get(this.chain.ADDR.native) || 0n) / 1e18;
@@ -3050,26 +3057,38 @@ class Engine {
   async snapshotEquity() {
     // Di tengah transaksi masuk/keluar kas sudah berpindah tapi posisinya belum
     // tercatat (atau sebaliknya): titiknya pasti salah. Lewati; 5 menit lagi ada lagi.
-    if ((this.activeEntries || 0) > 0 || this.exiting.size > 0) return;
     // Kas SELALU dibaca ulang di sini, bukan dari cache tick. Cache itu diisi di awal
     // tick, SEBELUM posisi dibuka/ditutup di tick yang sama — snapshot yang memakainya
     // mencatat kas lama + posisi baru: total anjlok $139 saat #38 tutup, dan kurva PnL
     // bersih ikut menukik lalu melonjak. Tidak terbaca = NULL (titik dilewati grafik).
-    const cash = this.exec.address() ? await this.refreshCash().catch(() => null) : null;
-    const s = this.positions.summary(this.ethUsd);
-    const w = cash ? cash.usd : null;   // tidak terbaca = NULL, bukan 0
-    // Memecoin sisa yang belum terjual ikut dihitung sebagai "posisi": tanpa ini
-    // kurva total anjlok saat posisi tutup dan melonjak lagi saat sisanya terjual.
-    const lo = s.leftoverUsd || 0;
-    const total = (w || 0) + s.exposureUsd + lo + s.feeUsd;
-    this.store.run(
-      'INSERT OR REPLACE INTO equity(chain,ts,wallet_quote,positions_quote,total_quote,realized_quote,fees_quote,open_positions,pnl_quote) VALUES(?,?,?,?,?,?,?,?,?)',
-      this.network, Date.now(), w, s.exposureUsd + lo, total, s.realizedUsd, s.feeUsd, s.openCount,
-      s.realizedUsd + s.unrealizedUsd);
-    // Wallet terpasang tapi kas gagal dibaca siklus ini: `total` anjlok palsu sebesar
-    // kas yang hilang (lihat komentar `w` di atas) — lewati breaker, jangan terpicu
-    // gara-gara RPC seret, bukan portofolio yang sungguh rugi.
-    if (!this.exec.address() || cash) this.updateDrawdown(total);
+    //
+    // Penjaga di atas cuma berlaku di detik itu: bacaan kas makan beberapa detik, dan
+    // sebuah entry/exit bisa mulai DAN selesai di sela itu — kas dari sebelum tx,
+    // ringkasan posisi dari sesudahnya. Karena itu `txSeq` dicatat sebelum dan diperiksa
+    // lagi sesudah; kalau ada tx yang masuk blok di sela, titik itu diulang sekali
+    // (kas dibaca ulang, kini pasti memuat tx tadi) dan kalau masih ramai, dilewati —
+    // 5 menit lagi ada titik berikutnya.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if ((this.activeEntries || 0) > 0 || this.exiting.size > 0) return;
+      const seq = this.exec.txSeq;
+      const cash = this.exec.address() ? await this.refreshCash().catch(() => null) : null;
+      const s = this.positions.summary(this.ethUsd);
+      if (this.exec.txSeq !== seq || (this.activeEntries || 0) > 0 || this.exiting.size > 0) continue;
+      const w = cash ? cash.usd : null;   // tidak terbaca = NULL, bukan 0
+      // Memecoin sisa yang belum terjual ikut dihitung sebagai "posisi": tanpa ini
+      // kurva total anjlok saat posisi tutup dan melonjak lagi saat sisanya terjual.
+      const lo = s.leftoverUsd || 0;
+      const total = (w || 0) + s.exposureUsd + lo + s.feeUsd;
+      this.store.run(
+        'INSERT OR REPLACE INTO equity(chain,ts,wallet_quote,positions_quote,total_quote,realized_quote,fees_quote,open_positions,pnl_quote) VALUES(?,?,?,?,?,?,?,?,?)',
+        this.network, Date.now(), w, s.exposureUsd + lo, total, s.realizedUsd, s.feeUsd, s.openCount,
+        s.realizedUsd + s.unrealizedUsd);
+      // Wallet terpasang tapi kas gagal dibaca siklus ini: `total` anjlok palsu sebesar
+      // kas yang hilang (lihat komentar `w` di atas) — lewati breaker, jangan terpicu
+      // gara-gara RPC seret, bukan portofolio yang sungguh rugi.
+      if (!this.exec.address() || cash) this.updateDrawdown(total);
+      return;
+    }
   }
 
   // Titik ekuitas dari sebelum kolom pnl_quote ada. PnL-nya bisa direkonstruksi dari
