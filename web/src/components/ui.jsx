@@ -26,13 +26,45 @@ export function PageHeader({ group, title, desc, children }) {
 
 // Angka utama. Label kecil di atas, nilai besar, keterangan di bawah — tanpa
 // HURUF BESAR SEMUA, yang pada empat kartu berjajar berubah jadi teriakan.
-export function Stat({ label, value, sub, valueClass = '' }) {
+// `badge` = satu penanda kecil di samping label (mis. APR, status in-range):
+// sifat angkanya, bukan angka kedua yang bersaing dengan yang utama.
+export function Stat({ label, value, sub, valueClass = '', badge = null, className = '' }) {
   return (
-    <Card className="min-w-0 gap-1.5! p-3.5!">
-      <div className="truncate text-xs font-medium text-muted">{t(label)}</div>
+    <Card className={`min-w-0 gap-1.5! p-3.5! ${className}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="truncate text-xs font-medium text-muted">{t(label)}</div>
+        {badge}
+      </div>
       <div className={`num break-words text-lg sm:text-[1.375rem] leading-tight font-semibold tracking-tight ${valueClass}`}>{value}</div>
-      {sub && <div className="truncate text-xs text-muted">{typeof sub === 'string' ? t(sub) : sub}</div>}
+      {/* Di HP ubinnya selebar setengah layar: keterangan yang dipotong satu baris
+          ("$851,40 di luar rentang — ti…") membuang justru bagian yang menjelaskan.
+          Dua baris; tinggi kartu tetap rata karena semuanya satu baris kisi. */}
+      {sub && <div className="line-clamp-2 text-xs text-muted">{typeof sub === 'string' ? t(sub) : sub}</div>}
     </Card>
+  );
+}
+
+// Pita angka utama. Empat ubin seukuran sama membuat "total portofolio" dan
+// "win rate" tampak sama pentingnya; padahal dua angka pertama yang dicari mata
+// setiap kali halaman dibuka. Keduanya dinaikkan ke kartu selebar halaman dengan
+// ukuran huruf yang jelas lebih besar, sisanya turun jadi ubin di bawahnya.
+export function Hero({ children, className = '' }) {
+  return (
+    <Card className={`min-w-0 gap-0! p-0! ${className}`}>
+      <div className="flex h-full flex-col justify-center gap-4 p-4 sm:gap-5 sm:p-5">{children}</div>
+    </Card>
+  );
+}
+export function HeroFigure({ label, value, sub, valueClass = '', aside = null, className = '' }) {
+  return (
+    <div className={`min-w-0 ${className}`}>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <span className="text-xs font-medium text-muted">{t(label)}</span>
+        {aside}
+      </div>
+      <div className={`num mt-1.5 break-words text-[1.75rem] leading-[1.1] font-semibold tracking-tight sm:text-[2.125rem] ${valueClass}`}>{value}</div>
+      {sub && <div className="mt-1.5 text-xs text-muted">{typeof sub === 'string' ? t(sub) : sub}</div>}
+    </div>
   );
 }
 

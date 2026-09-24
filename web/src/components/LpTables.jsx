@@ -75,7 +75,7 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, w
   return (
     <Panel title={t('Posisi bot ({n})', { n: rows.length })} className={className} bodyClass="p-0"
       desc={onHist && rows.length > 0 ? 'Klik baris untuk riwayat transaksi dan catatan bot.' : undefined}
-      action={<div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
+      action={<div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:justify-end">
         <Refreshing loading={loading} />
         {rows.length > 0 && <span className="text-xs"><span className="text-muted">PnL</span> <span className={`num font-medium ${tone(pnl)}`}>{usd(pnl)}</span></span>}
         {canClose && open.length > 1 && (

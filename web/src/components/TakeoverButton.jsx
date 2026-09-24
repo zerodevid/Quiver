@@ -8,7 +8,7 @@ import { useI18n, reason } from '../i18n';
 // Kendali manual posisi cermin. "Ambil alih": bot berhenti mengelola posisi ini (tidak
 // ikut keluar/tambah target, tanpa SL/TP/umur/luar rentang). "Kembalikan": ikut target
 // lagi — hanya selama posisi target itu masih terbuka di chain, diperiksa sebelum konfirmasi.
-export default function TakeoverButton({ p, reload, disabled = false, size = 'sm' }) {
+export default function TakeoverButton({ p, reload, disabled = false, size = 'sm', compact = false }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   if (!p?.target || !p?.mirror_of || p.empty) return null;
@@ -85,7 +85,14 @@ export default function TakeoverButton({ p, reload, disabled = false, size = 'sm
     reload?.();
   };
 
-  return manual
-    ? <Button size={size} variant="outline" isPending={busy} isDisabled={disabled || busy} onPress={handBack}><Undo2 className="size-3.5" />{t('Kembalikan')}</Button>
-    : <Button size={size} variant="outline" isPending={busy} isDisabled={disabled || busy} onPress={takeover}><Hand className="size-3.5" />{t('Ambil alih')}</Button>;
+  const label = manual ? t('Kembalikan ke otomatis') : t('Ambil alih posisi');
+  const Icon = manual ? Undo2 : Hand;
+  const run = manual ? handBack : takeover;
+  // Ringkas = lambang saja (lihat AutoCompoundButton); di laci & halaman detail
+  // tombolnya tetap berlabel, karena di sana ruangnya ada dan konteksnya perlu.
+  return compact
+    ? <Button size={size} variant="tertiary" isIconOnly isPending={busy} isDisabled={disabled || busy} onPress={run}
+      aria-label={label} title={label}><Icon className="size-4" /></Button>
+    : <Button size={size} variant="outline" isPending={busy} isDisabled={disabled || busy} onPress={run}>
+      <Icon className="size-3.5" />{manual ? t('Kembalikan') : t('Ambil alih')}</Button>;
 }

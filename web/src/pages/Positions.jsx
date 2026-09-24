@@ -1,16 +1,17 @@
 import { lazy, Suspense, useState } from 'react';
 import { Button, Spinner } from '@heroui/react';
+import { Coins, DoorOpen } from 'lucide-react';
 import { usePoll, useResync } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
-import { PageHeader, Panel, DataTable, Empty, Loading, Notice, PriceRange, Dot, Refresh, TradeLinks, baseTokenOf } from '../components/ui';
+import { PageHeader, Panel, DataTable, Empty, Loading, Notice, PriceRange, Dot, Refresh, Segmented, TradeLinks, baseTokenOf } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
 // Halaman detail membawa pustaka grafik — dimuat hanya saat dibuka.
 const PositionDetail = lazy(() => import('./PositionDetail'));
 import PositionHistory from '../components/PositionHistory';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
-import { usd, pct, tone, age, ago, short, num } from '../fmt';
+import { usd, pct, tone, age, ago, short, num, feeApr, aprText } from '../fmt';
 import { useI18n } from '../i18n';
 
 const sum = (rows, f) => rows.reduce((a, r) => a + (f(r) || 0), 0);
@@ -19,7 +20,7 @@ const sum = (rows, f) => rows.reduce((a, r) => a + (f(r) || 0), 0);
 function Totals({ items }) {
   const { t } = useI18n();
   return (
-    <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 text-xs">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs sm:justify-end">
       {items.map(([k, v, cls]) => (
         <span key={k} className="whitespace-nowrap"><span className="text-muted">{t(k)}</span> <span className={`num font-medium ${cls || ''}`}>{v}</span></span>
       ))}
@@ -49,6 +50,26 @@ export function Pair({ p, link = true }) {
         </div>
         <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} compact className="mt-1" />
       </div>
+    </div>
+  );
+}
+
+// Fee posisi beserta imbal hasilnya. Nominal saja tidak bisa dibandingkan antarbaris:
+// $12 atas modal $2.000 selama lima hari dan $1,40 atas modal $300 selama enam jam
+// adalah angka yang sama sekali berbeda artinya. APR-nya yang sebanding — dan itu
+// juga yang membuat pool dan lebar rentang bisa dinilai, bukan cuma dihitung.
+// Dipakai tabel Posisi dan panel "Posisi aktif" di Ringkasan.
+export function FeeCell({ p }) {
+  const { t } = useI18n();
+  const a = feeApr(p);
+  const claimed = p.claimedUsd || 0;
+  const title = a == null ? undefined
+    : t('Fee {f} dalam {age} atas modal {c}, disetahunkan', { f: usd((p.feeUsd || 0) + claimed), age: age(p.ageHours), c: usd(p.costUsd) })
+      + (claimed > 0.005 ? ` · ${t('{v} sudah dipanen', { v: usd(claimed) })}` : '');
+  return (
+    <div className="whitespace-nowrap">
+      <span className={p.feeUsd > 0.005 ? 'text-success' : 'text-muted'}>{usd(p.feeUsd)}</span>
+      {a != null && <div className="text-xs text-muted" title={title}>{t('APR {v}', { v: aprText(a) })}</div>}
     </div>
   );
 }
@@ -135,6 +156,12 @@ export default function Positions({ param }) {
   const { claim, claiming } = useClaimFees(reload);
   // Klik baris -> laci riwayat posisi (transaksi & catatan bot).
   const [hist, setHist] = useState(null);
+  // Saringan kesehatan rentang. Pertanyaan yang paling sering dibawa ke halaman ini
+  // bukan "posisi apa saja yang saya punya", melainkan "mana yang sedang tidak
+  // menghasilkan fee" — dengan dua belas baris, menyortir kolom rentang tidak
+  // menjawabnya. Angka totalnya sengaja tetap untuk SELURUH posisi terbuka: itu
+  // kebenaran portofolio, dan tidak boleh berubah hanya karena tabelnya disaring.
+  const [lens, setLens] = useState('all');
   if (param) return <Suspense fallback={<Loading page />}><PositionDetail id={param} /></Suspense>;
   const header = <PageHeader group="Pemantauan" title="Posisi" desc="Posisi LP milik bot — nilai, fee, dan PnL diperbarui dari chain tiap 30 detik. Klik baris untuk melihat riwayat transaksi dan catatan bot." />;
   // Belum ada balasan sama sekali: tampilkan di tempat tabel akan muncul, bukan
@@ -155,6 +182,14 @@ export default function Positions({ param }) {
   const closedPnl = sum(closed, (c) => c.pnlUsd);
   const pending = open.filter((p) => p.syncing).length;
   const dash = (p, node) => (p.syncing ? <span className="text-muted">—</span> : node);
+  const nIn = open.filter((p) => p.inRange).length;
+  const nOut = open.filter((p) => p.inRange === false).length;
+  // Saringan hanya muncul saat ada yang di luar rentang. Kalau semuanya kembali masuk
+  // sementara saringan sedang di "Di luar", kontrolnya hilang — maka pilihannya ikut
+  // jatuh ke "Semua", supaya tabel tidak tertinggal kosong tanpa jalan kembali.
+  const bisaSaring = open.length > 1 && nOut > 0;
+  const lensNow = bisaSaring ? lens : 'all';
+  const shown = lensNow === 'in' ? open.filter((p) => p.inRange) : lensNow === 'out' ? open.filter((p) => p.inRange === false) : open;
 
   return (
     <>
@@ -162,7 +197,10 @@ export default function Positions({ param }) {
       <PositionHistory id={hist} onClose={() => setHist(null)} />
       {error && <div className="mb-4"><Notice status="warning" title="Gagal memperbarui daftar posisi">{error} — {t('data di bawah dari pembaruan terakhir.')}</Notice></div>}
       <Panel title={t('Posisi terbuka ({n})', { n: open.length })} className="mb-4" bodyClass="p-0"
-        action={<div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
+        action={<div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:justify-end">
+          {bisaSaring && (
+            <Segmented size="sm" aria="Saring menurut rentang" value={lensNow} onChange={setLens}
+              options={[['all', 'Semua', open.length], ['in', 'In-range', nIn], ['out', 'Di luar', nOut]]} />)}
           <Refresh at={d.syncedAt} busy={syncing} onPress={resync} />
           <SyncState syncedAt={d.syncedAt} pending={pending} />
           {open.length > 0 && <Totals items={[
@@ -171,13 +209,14 @@ export default function Positions({ param }) {
             ['PnL', usd(openPnl), tone(openPnl)],
           ]} />}
           {open.length > 0 && (
-            <Button size="sm" variant="danger" isPending={closing != null} isDisabled={closing != null || claiming != null} onPress={() => forceCloseAll(open)}>
+            <Button size="sm" variant="outline" className="text-danger" isPending={closing != null} isDisabled={closing != null || claiming != null} onPress={() => forceCloseAll(open)}>
               {t('Tutup paksa semua ({n})', { n: open.length })}
             </Button>)}
         </div>}>
-        <DataTable label="Posisi terbuka" rows={open} rowKey={(p) => p.id} searchable onRow={(p) => setHist(p.id)}
+        <DataTable label="Posisi terbuka" rows={shown} rowKey={(p) => p.id} searchable onRow={(p) => setHist(p.id)}
           defaultSort={{ column: 'val', direction: 'descending' }}
-          empty={<Empty title="Belum ada posisi terbuka" sub="Posisi muncul di sini setelah bot menyalin LP dari wallet target." />}
+          empty={<Empty title={lensNow === 'in' ? 'Tidak ada posisi in-range' : lensNow === 'out' ? 'Semua posisi ada di dalam rentang' : 'Belum ada posisi terbuka'}
+            sub={lensNow === 'all' ? 'Posisi muncul di sini setelah bot menyalin LP dari wallet target.' : null} />}
           columns={[
             { key: 'pair', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <Pair p={p} link={false} /> },
             { key: 'range', label: 'Rentang harga', sortable: false, render: (p) => (
@@ -186,10 +225,10 @@ export default function Positions({ param }) {
                 entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />) },
             { key: 'val', label: 'Nilai', align: 'end', sort: (p) => p.valueUsd, render: (p) => (
               <div className="whitespace-nowrap">{usd(p.valueUsd)}<div className="text-xs text-muted">{t('modal {v}', { v: usd(p.costUsd) })}</div></div>) },
-            { key: 'fee', label: 'Fee', align: 'end', sort: (p) => p.feeUsd, render: (p) => dash(p, <span className={p.feeUsd > 0.005 ? 'text-success' : 'text-muted'}>{usd(p.feeUsd)}</span>) },
+            { key: 'fee', label: 'Fee', align: 'end', sort: (p) => p.feeUsd, render: (p) => dash(p, <FeeCell p={p} />) },
             { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnlUsd, render: (p) => dash(p, (
               <div className={`whitespace-nowrap ${tone(p.pnlUsd)}`}>{usd(p.pnlUsd)}<div className="text-xs">{pct(p.pnlPct)}</div></div>)) },
-            { key: 'il', label: 'IL', align: 'end', sort: (p) => p.ilUsd, render: (p) => <span className={tone(p.ilUsd)}>{p.ilUsd == null ? '—' : usd(p.ilUsd)}</span> },
+            { key: 'il', label: 'IL', align: 'end', sort: (p) => p.ilUsd, render: (p) => <span className={`whitespace-nowrap ${tone(p.ilUsd)}`}>{p.ilUsd == null ? '—' : usd(p.ilUsd)}</span> },
             // Ongkos jalan: gas + selisih swap. Di luar PnL, jadi kolomnya sendiri.
             { key: 'ong', label: 'Ongkos', align: 'end', sort: (p) => p.cost?.totalUsd ?? -1, render: (p) => (
               !p.cost?.txN ? <span className="text-muted">—</span> : (
@@ -200,12 +239,22 @@ export default function Positions({ param }) {
             { key: 'age', label: 'Umur', align: 'end', sort: (p) => p.ageHours, render: (p) => <span className="whitespace-nowrap text-muted">{age(p.ageHours)}</span> },
             { key: 'tgt', label: 'Sumber', sort: (p) => p.targetLabel || p.target,
               search: (p) => `${p.targetLabel || ''} ${p.target || ''}`, render: (p) => <Source p={p} /> },
-            { key: 'act', label: '', sortable: false, className: 'text-end', render: (p) => (
-              <div className="flex flex-wrap gap-2 justify-end">
-                <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} />
-                <TakeoverButton p={p} reload={reload} disabled={claiming != null || closing != null} />
-                <Button size="sm" variant="secondary" isPending={claiming === p.id} isDisabled={claiming != null || closing != null || p.empty} onPress={() => claim(p)}>{t('Claim fee')}</Button>
-                <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={closing != null || claiming != null} onPress={() => close(p)}>{t('Tutup')}</Button>
+            // Empat tombol berlabel per baris melebarkan kolom ini sampai tabelnya harus
+            // digulir jauh ke kanan hanya untuk mencapainya. Jadi lambang saja, dalam satu
+            // baris yang tidak melipat: masing-masing bernama untuk pembaca layar, punya
+            // tooltip, dan tetap dijaga kotak konfirmasi sebelum mengirim transaksi.
+            { key: 'act', label: 'Aksi', sortable: false, className: 'text-end', render: (p) => (
+              <div className="flex items-center justify-end gap-1">
+                <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} compact />
+                <TakeoverButton p={p} reload={reload} disabled={claiming != null || closing != null} compact />
+                <Button size="sm" variant="tertiary" isIconOnly aria-label={t('Claim fee')} title={t('Claim fee')}
+                  isPending={claiming === p.id} isDisabled={claiming != null || closing != null || p.empty} onPress={() => claim(p)}>
+                  <Coins className="size-4" />
+                </Button>
+                <Button size="sm" variant="tertiary" className="text-danger" isIconOnly aria-label={t('Tutup posisi')} title={t('Tutup posisi')}
+                  isPending={closing === p.id} isDisabled={closing != null || claiming != null} onPress={() => close(p)}>
+                  <DoorOpen className="size-4" />
+                </Button>
               </div>) },
           ]} />
       </Panel>

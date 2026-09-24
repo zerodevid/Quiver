@@ -2,13 +2,13 @@ import { useCallback, useState } from 'react';
 import { Button } from '@heroui/react';
 import { useStatus } from '../App';
 import { usePoll, useResync } from '../hooks';
-import { PageHeader, Stat, Panel, Empty, Loading, Notice, KV, Dot, DataTable, PriceRange, Segmented, Refresh } from '../components/ui';
+import { PageHeader, Stat, Hero, HeroFigure, Panel, Empty, Loading, Notice, KV, Dot, DataTable, PriceRange, Segmented, Refresh } from '../components/ui';
 import PnlCalendar from '../components/PnlCalendar';
 import GrowthChart from '../components/GrowthChart';
 import ShareButton, { ShareDialog, totalCard, dailyCard } from '../components/ShareCard';
-import { Pair, SyncState } from './Positions';
+import { Pair, SyncState, FeeCell } from './Positions';
 import PositionHistory from '../components/PositionHistory';
-import { usd, tone, num, pct, age, ago, short, txHref, locale as fmtLocale, TXKIND, TXSTATUS } from '../fmt';
+import { usd, tone, num, pct, age, ago, short, txHref, aprOf, aprText, locale as fmtLocale, TXKIND, TXSTATUS } from '../fmt';
 import { useI18n, reason } from '../i18n';
 import { useClosePosition } from '../useClosePosition';
 
@@ -334,6 +334,16 @@ export default function Overview() {
   const pendingSync = open.filter((x) => x.syncing).length;
   const dash = (x, node) => (x.syncing ? <span className="text-muted">—</span> : node);
   const cal = p ? dailyOf(p.closed) : null;
+  // Kesehatan LP dihitung dari daftar posisi yang sama dengan tabel di bawah, bukan
+  // dari ringkasan mesin: dua angka untuk hal yang sama dengan umur berbeda di satu
+  // layar adalah bug yang terlihat.
+  const inRangeN = open.filter((x) => x.inRange).length;
+  const outUsd = sum(open.filter((x) => x.inRange === false), (x) => x.valueUsd);
+  const feeOpen = sum(open, (x) => (x.feeUsd || 0) + (x.claimedUsd || 0));
+  const ilRows = open.filter((x) => x.ilUsd != null);
+  const ilOpen = ilRows.length ? sum(ilRows, (x) => x.ilUsd) : null;
+  const portApr = aprOf(open);
+
 
   return (
     <>
@@ -343,22 +353,48 @@ export default function Overview() {
       {/* Kartu PnL harian: hari yang diklik di kalender. Server merakit datanya sendiri. */}
       <ShareDialog card={shareDay && cal ? dailyCard({ day: shareDay, pnl: cal.daily[shareDay] }) : null} onClose={() => setShareDay(null)} />
       <PositionHistory id={hist} onClose={() => setHist(null)} />
-      <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <Stat label="Total portofolio" value={now ? usd(now.value) : '—'}
-          sub={!now ? null : now.cash
-            ? t('kas {c} · di posisi {p}', { c: usd(now.cash.usd), p: usd(now.positionsUsd + now.feeUsd) })
-              + ((now.leftoverUsd || 0) > 0.005 ? t(' · sisa token {v}', { v: usd(now.leftoverUsd) }) : '')
-            : t('hanya posisi — saldo kas tidak terbaca')} />
-        {now?.netPnl != null
-          // Modal wallet terlacak: yang utama PnL bersih terhadap modal nyata; PnL
-          // per-posisi (tanpa biaya zap/gas/swap) jadi keterangan.
-          ? <Stat label="PnL bersih" value={usd(now.netPnl)} valueClass={tone(now.netPnl)}
-            sub={t('modal {m} · {p} · PnL posisi {v}', { m: usd(now.capitalNet), p: pct((now.netPnl / now.capitalNet) * 100, 2), v: usd(now.pnl) })} />
-          : <Stat label="Total PnL" value={now ? usd(now.pnl) : '—'} valueClass={now ? tone(now.pnl) : ''}
-            sub={!now ? null : t('terealisasi {r} · berjalan {u}', { r: usd(now.realizedUsd), u: usd(now.unrealizedUsd) })
-              + (now.capital > 0 ? ` · ${pct((now.pnl / now.capital) * 100, 2)}` : '')} />}
+      {/* Satu blok ringkasan, dua tingkat: dua angka yang dicari setiap kali halaman
+          dibuka (berapa nilainya, untung berapa) berdiri sendiri dalam kartu besar di
+          kiri; empat ukuran kesehatan LP jadi ubin di sebelahnya. Empat kartu seukuran
+          sama membuat "total portofolio" dan "win rate" tampak sama pentingnya. */}
+      <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Hero className="col-span-2 lg:row-span-2">
+          <HeroFigure label="Total portofolio" value={now ? usd(now.value) : '—'}
+            sub={!now ? null : now.cash
+              ? t('kas {c} · di posisi {p}', { c: usd(now.cash.usd), p: usd(now.positionsUsd + now.feeUsd) })
+                + ((now.leftoverUsd || 0) > 0.005 ? t(' · sisa token {v}', { v: usd(now.leftoverUsd) }) : '')
+              : t('hanya posisi — saldo kas tidak terbaca')} />
+          {now?.netPnl != null
+            // Modal wallet terlacak: yang utama PnL bersih terhadap modal nyata; PnL
+            // per-posisi (tanpa biaya zap/gas/swap) jadi keterangan.
+            ? <HeroFigure className="border-t border-border pt-4 sm:pt-5" label="PnL bersih" value={usd(now.netPnl)} valueClass={tone(now.netPnl)}
+              aside={now.capitalNet > 0 ? <span className={`num text-sm font-semibold ${tone(now.netPnl)}`}>{pct((now.netPnl / now.capitalNet) * 100, 2)}</span> : null}
+              sub={t('modal {m} · PnL posisi {v}', { m: usd(now.capitalNet), v: usd(now.pnl) })} />
+            : <HeroFigure className="border-t border-border pt-4 sm:pt-5" label="Total PnL" value={now ? usd(now.pnl) : '—'} valueClass={now ? tone(now.pnl) : ''}
+              aside={now?.capital > 0 ? <span className={`num text-sm font-semibold ${tone(now.pnl)}`}>{pct((now.pnl / now.capital) * 100, 2)}</span> : null}
+              sub={!now ? null : t('terealisasi {r} · berjalan {u}', { r: usd(now.realizedUsd), u: usd(now.unrealizedUsd) })} />}
+        </Hero>
+        {/* Fee tanpa APR cuma memberi tahu jumlahnya, bukan apakah modalnya bekerja. */}
         <Stat label="Fee terkumpul" value={usd(s.feeUsd)}
+          badge={portApr == null ? null : (
+            <span className="num shrink-0 rounded bg-success/12 px-1.5 py-0.5 text-[0.6875rem] font-semibold whitespace-nowrap text-success"
+              title={t('Fee seluruh posisi terbuka (termasuk yang sudah dipanen) disetahunkan terhadap modalnya')}>
+              {t('APR {v}', { v: aprText(portApr) })}
+            </span>)}
           sub={s.costUsd > 0 ? t('{p}% dari modal · belum diklaim', { p: num((s.feeUsd / s.costUsd) * 100, 2) }) : t('belum diklaim')} />
+        {/* Pertanyaan pokok LP: fee yang dihasilkan menutup impermanent loss atau tidak. */}
+        <Stat label="Fee vs IL" value={ilOpen == null ? '—' : usd(feeOpen + ilOpen)}
+          valueClass={ilOpen == null ? '' : tone(feeOpen + ilOpen)}
+          sub={<span title={t('Fee posisi terbuka ditambah impermanent loss-nya: selisih terhadap sekadar memegang token yang sama tanpa ber-LP.')}>
+            {ilOpen == null ? t('IL belum terhitung') : t('fee {f} · IL {i}', { f: usd(feeOpen), i: usd(ilOpen) })}
+          </span>} />
+        {/* Posisi di luar rentang berhenti menghasilkan fee — angka yang menentukan
+            apakah ada yang harus dikerjakan sekarang. */}
+        <Stat label="Posisi in-range" value={open.length ? `${inRangeN}/${open.length}` : '—'}
+          valueClass={!open.length ? '' : inRangeN === open.length ? 'text-success' : 'text-warning'}
+          sub={!open.length ? t('belum ada posisi terbuka')
+            : outUsd > 0.005 ? t('{v} di luar rentang — tidak menghasilkan fee', { v: usd(outUsd) })
+              : t('semua posisi menghasilkan fee')} />
         <Stat label="Win rate" value={st?.winRatePct != null ? `${num(st.winRatePct, 0)}%` : '—'}
           valueClass={st?.winRatePct == null ? '' : st.winRatePct >= 50 ? 'text-success' : 'text-danger'}
           sub={!st ? null : st.closedCount
@@ -381,7 +417,7 @@ export default function Overview() {
       </div>
 
       <Panel title={t('Posisi aktif ({n})', { n: open.length })} className="mb-4" bodyClass="p-0"
-        action={<div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 text-xs">
+        action={<div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs sm:justify-end">
           <Refresh at={pos?.syncedAt} busy={syncing} onPress={resync} />
           <SyncState syncedAt={pos?.syncedAt} pending={pendingSync} />
           {open.length > 0 && <>
@@ -390,7 +426,7 @@ export default function Overview() {
           </>}
           <a href="#positions" className="font-medium text-accent hover:underline">{t('Semua posisi →')}</a>
           {open.length > 0 && (
-            <Button size="sm" variant="danger" isPending={closing != null} isDisabled={closing != null} onPress={() => forceCloseAll(open)}>
+            <Button size="sm" variant="outline" className="text-danger" isPending={closing != null} isDisabled={closing != null} onPress={() => forceCloseAll(open)}>
               {t('Tutup paksa semua ({n})', { n: open.length })}
             </Button>)}
         </div>}>
@@ -415,7 +451,7 @@ export default function Overview() {
                   entrySqrt={x.entrySqrt} exitSqrt={x.exitSqrt} showPrices={false} />) },
               { key: 'val', label: 'Nilai', align: 'end', sort: (x) => x.valueUsd, render: (x) => (
                 <div className="whitespace-nowrap">{usd(x.valueUsd)}<div className="text-xs text-muted">{t('modal {v}', { v: usd(x.costUsd) })}</div></div>) },
-              { key: 'fee', label: 'Fee', align: 'end', sort: (x) => x.feeUsd, render: (x) => dash(x, <span className={x.feeUsd > 0.005 ? 'text-success' : 'text-muted'}>{usd(x.feeUsd)}</span>) },
+              { key: 'fee', label: 'Fee', align: 'end', sort: (x) => x.feeUsd, render: (x) => dash(x, <FeeCell p={x} />) },
               { key: 'pnl', label: 'PnL', align: 'end', sort: (x) => x.pnlUsd, render: (x) => dash(x, (
                 <div className={`whitespace-nowrap ${tone(x.pnlUsd)}`}>{usd(x.pnlUsd)}<div className="text-xs">{pct(x.pnlPct)}</div></div>)) },
               { key: 'age', label: 'Umur', align: 'end', sort: (x) => x.ageHours, render: (x) => <span className="whitespace-nowrap text-muted">{age(x.ageHours)}</span> },

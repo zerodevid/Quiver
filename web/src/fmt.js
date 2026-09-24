@@ -22,6 +22,39 @@ export const lpagentHref = (a) => (a ? `https://app.lpagent.io/portfolio?address
 export const tone = (v) => (v > 0.005 ? 'text-success' : v < -0.005 ? 'text-danger' : '');
 export const widthPct = (lo, hi) => (1.0001 ** (hi - lo) - 1) * 100;
 
+// --- imbal hasil fee -------------------------------------------------------
+// Pertanyaan yang tidak bisa dijawab kolom "Fee" sendirian: posisi $2.000 yang
+// sudah 5 hari menghasilkan $12, dan posisi $300 yang baru 6 jam menghasilkan
+// $1,40 — mana yang lebih baik? Fee disetahunkan terhadap modal menyamakan
+// keduanya, dan itulah angka yang dipakai LP untuk membandingkan posisi, pool,
+// dan lebar rentang.
+//
+// Umur muda membuat angkanya meledak ($0,10 dalam 2 menit = puluhan ribu persen),
+// jadi di bawah dua jam tidak ada APR sama sekali — lebih baik diam daripada memberi
+// angka yang akan dibaca sebagai janji. Di atas 999% pun angkanya dipotong (aprText):
+// yang diberitahukan bukan "4.812%", melainkan "posisi ini masih terlalu muda".
+export function apr(feeUsd, costUsd, ageHours) {
+  if (!(costUsd > 0) || !(ageHours >= 2) || !(feeUsd > 0.005)) return null;
+  return (feeUsd / costUsd) * (8760 / ageHours) * 100;
+}
+// Fee posisi = yang belum diklaim + yang sudah ditarik ke wallet. Hanya memakai
+// yang belum diklaim akan membuat posisi yang rajin panen tampak tidak produktif.
+export const feeApr = (p) => (!p || p.syncing ? null : apr((p.feeUsd || 0) + (p.claimedUsd || 0), p.costUsd, p.ageHours));
+// APR gabungan beberapa posisi: tertimbang modal DAN umur (satu posisi besar yang
+// baru dibuka tidak boleh menarik turun rata-rata seolah ia sudah lama menganggur).
+export function aprOf(rows) {
+  let fee = 0, base = 0;
+  for (const p of rows || []) {
+    if (p.syncing || !(p.costUsd > 0) || !(p.ageHours >= 2)) continue;
+    fee += (p.feeUsd || 0) + (p.claimedUsd || 0);
+    base += p.costUsd * (p.ageHours / 8760);
+  }
+  return base > 0 ? (fee / base) * 100 : null;
+}
+// Tanpa tanda "+": APR bukan perubahan, jadi tidak perlu arah. Dibatasi seperti
+// jarak ke tepi rentang — "+4.812%" cuma berarti "posisi ini masih sangat muda".
+export const aprText = (v) => (v == null ? '—' : v >= 1000 ? '999+%' : `${num(v, Math.abs(v) < 10 ? 1 : 0)}%`);
+
 // Harga token bisa 0,00000032 sampai 4.200 — jadi pakai angka penting, bukan
 // jumlah desimal tetap (0,00 tidak memberi tahu apa pun).
 export function price(p) {
