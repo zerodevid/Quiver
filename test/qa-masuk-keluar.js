@@ -465,7 +465,7 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     eng.kyber.swap = async () => null;   // Kyber tidak kenal rutenya
     eng.exec.ensureRouterAllowance = async () => [];
     eng.exec.deadline = () => 9e9;
-    eng.rpc.ethCallMany = async (c) => c.map(() => '0x');   // simulasi lolos
+    eng.rpc.batch = async (c) => c.map(() => ({ result: '0x' }));   // simulasi lolos
     const sent = [];
     eng.exec.send = async (tx, meta) => { sent.push(meta); return '0xsellpool'; };
     eng.exec.waitReceipt = async () => ({ ok: true, receipt: { logs: [{ address: USDG, topics: [TOPIC.transfer, addrTopic(POOL.slice(0, 42)), addrTopic(ME)], data: pad(990_000n) }] } });
@@ -490,7 +490,7 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     store.run(`INSERT INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks) VALUES(?,?,?,?,?,?,?)`, POOL, 'v4', USDG, MEME, 100000, 200, ADDR.native);
     eng.chain.slot0V4Many = async (ids) => ids.map(() => ({ sqrtPriceX96: m.getSqrtRatioAtTick(0), tick: 0 }));
     eng.chain.poolLiquidityMany = async (ids) => ids.map(() => 10n ** 24n);
-    eng.rpc.ethCallMany = async (c) => c.map(() => '0x');
+    eng.rpc.batch = async (c) => c.map(() => ({ result: '0x' }));
     eng.cfg.rules = { exit: { sell_max_loss_bps: 500 } };
     await assert.rejects(eng.sellToken({ posId: null, target: null, token: MEME, quote: USDG, amount: String(10n ** 21n) }), /rugi 10\.\d%/);
     assert.strictEqual(sends, 0);

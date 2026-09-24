@@ -28,8 +28,11 @@ async function t(name, fn) {
 }
 
 // Dunia uji: sejumlah pool v4 untuk pasangan USDG/MEME, masing-masing dengan fee dan
-// likuiditas sendiri. `tolak` = daftar pool yang revert saat swap disimulasikan.
-function dunia(pools, { tolak = [] } = {}) {
+// likuiditas sendiri. `tolak` = daftar pool (menurut fee-nya) yang revert saat swap
+// disimulasikan. `bentuk` = bentuk params swap v4 yang router palsu ini terima —
+// bentuk yang lain revert TANPA data, persis seperti router sungguhan. `buta` = RPC
+// yang tidak menjawab (galat kuota), bukan revert.
+function dunia(pools, { tolak = [], bentuk = 'limit', buta = false } = {}) {
   const store = new Store(':memory:');
   for (const p of pools) {
     store.run(`INSERT INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks,pool_addr,first_block)
@@ -42,20 +45,30 @@ function dunia(pools, { tolak = [] } = {}) {
     slot0V4Many: async (ids) => ids.map((id) => ({ sqrtPriceX96: byRef.get(id).sqrt ?? SQRT, tick: 0, lpFee: byRef.get(id).lpFee ?? 0 })),
     poolLiquidityMany: async (ids) => ids.map((id) => byRef.get(id).L),
   };
+  let diingat = null;
   const exec = {
     address: () => ME,
-    // Pool dikenali dari fee-nya: tiap pool uji punya fee sendiri.
-    buildSwapV4: (pk, zeroForOne, amountIn, minOut, deadline) => {
-      dibangun.push({ pk, zeroForOne, amountIn, minOut, deadline });
-      return { to: '0x' + 'ab'.repeat(20), data: '0x' + String(pk.fee).padStart(8, '0'), value: '0' };
+    // Pool dikenali dari fee-nya, bentuk params dari dua digit terakhir calldata.
+    buildSwapV4: (pk, zeroForOne, amountIn, minOut, deadline, layout) => {
+      dibangun.push({ pk, zeroForOne, amountIn, minOut, deadline, layout });
+      return { to: '0x' + 'ab'.repeat(20), data: `0x${String(pk.fee).padStart(8, '0')}${layout === 'limit' ? '01' : '00'}`, value: '0' };
     },
     buildSwapV3: () => { throw new Error('tidak dipakai di uji ini'); },
+    v4SwapLayouts: () => (diingat ? [diingat] : ['limit', 'plain']),
+    rememberV4Layout: (l) => { if (l) diingat = l; },
+    get layout() { return diingat; },
   };
   const rpc = {
-    ethCallMany: async (items) => items.map((i) => {
-      const fee = Number(i.data.slice(2));
-      disimulasikan.push({ fee, from: i.from });
-      return tolak.includes(fee) ? null : '0x01';
+    batch: async (calls) => calls.map((c) => {
+      const [tx] = c.params;
+      const fee = Number(tx.data.slice(2, 10));
+      const layout = tx.data.slice(10) === '01' ? 'limit' : 'plain';
+      disimulasikan.push({ fee, layout, from: tx.from });
+      if (buta) return { error: { code: 429, message: 'Too Many Requests' }, transient: true };
+      // Bentuk params yang keliru revert tanpa data — tidak bisa dibedakan dari pool
+      // yang memang menolak, kecuali dengan mencoba bentuk yang satunya.
+      if (layout !== bentuk || tolak.includes(fee)) return { error: { code: 3, message: 'execution reverted' } };
+      return { result: '0x01' };
     }),
   };
   return { store, chain, exec, rpc, dibangun, disimulasikan };
@@ -154,6 +167,43 @@ const panggil = (d, opts = {}) => pickSwapPool(d, {
     assert.equal(b.amountIn, BAYAR);
     assert.equal(b.minOut, 1n, 'amountOutMinimum sungguhan ikut disimulasikan');
     assert.equal(b.deadline, 1234);
+  });
+
+  await t('bentuk params swap yang diterima router ditemukan lewat simulasi', async () => {
+    // Router di Robinhood Chain memakai bentuk LAMA (dengan sqrtPriceLimitX96); yang
+    // baru revert tanpa pesan. Dulu cuma satu bentuk yang dikirim, jadi cadangan ini
+    // selalu berakhir "semua pool menolak swap" — zap batal padahal poolnya sehat.
+    const d = dunia([{ ref: ref(1), fee: 3000, L: BESAR }], { bentuk: 'limit' });
+    const pick = await panggil(d);
+    assert.ok(pick, 'bentuk yang benar harus ketemu');
+    assert.equal(pick.pool.pool_ref, ref(1));
+    assert.equal(d.exec.layout, 'limit', 'bentuk yang lolos diingat');
+  });
+
+  await t('router bentuk baru juga terlayani', async () => {
+    const d = dunia([{ ref: ref(1), fee: 3000, L: BESAR }], { bentuk: 'plain' });
+    const pick = await panggil(d);
+    assert.ok(pick, 'bentuk baru harus ikut dicoba');
+    assert.equal(d.exec.layout, 'plain');
+  });
+
+  await t('bentuk yang sudah terbukti tidak dicoba dua kali lagi', async () => {
+    const d = dunia([{ ref: ref(1), fee: 3000, L: BESAR }], { bentuk: 'plain' });
+    await panggil(d);
+    const putaran1 = d.disimulasikan.length;
+    d.disimulasikan.length = 0;
+    await panggil(d);
+    assert.equal(putaran1, 2, 'putaran pertama mencoba kedua bentuk');
+    assert.equal(d.disimulasikan.length, 1, 'putaran kedua cukup satu panggilan');
+  });
+
+  await t('RPC yang tidak menjawab bukan "pool menolak"', async () => {
+    const d = dunia([{ ref: ref(1), fee: 3000, L: BESAR }], { buta: true });
+    const info = {};
+    const pick = await panggil(d, { info });
+    assert.equal(pick, null);
+    assert.match(info.reason, /tidak terjawab RPC/);
+    assert.doesNotMatch(info.reason, /menolak swap/);
   });
 
   await t('fee dinamis dibaca dari slot0, bukan dari kolom fee', async () => {

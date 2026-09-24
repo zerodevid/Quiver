@@ -431,11 +431,12 @@ async function t(name, fn) {
     eng.chain.poolLiquidityMany = async (ids) => ids.map(() => 10n ** 24n);
     // Tiap kandidat yang disimulasikan dibangunkan transaksinya; yang menentukan
     // adalah transaksi mana yang akhirnya DIKIRIM.
-    const dibangun = new Map();
+    // (satu pool bisa dibangunkan dua kali: dua bentuk params swap v4 ikut disimulasikan)
+    const dibangun = [];
     const asli = eng.exec.buildSwapV4.bind(eng.exec);
     eng.exec.buildSwapV4 = (key, ...rest) => {
       const tx = asli(key, ...rest);
-      dibangun.set(key.fee, { key, tx });
+      dibangun.push({ key, tx });
       return tx;
     };
     // MEME baru ada di wallet SESUDAH zap terkirim — tanpa ini putaran zap mengira
@@ -454,9 +455,12 @@ async function t(name, fn) {
     assert.strictEqual(verdictOf(store).verdict, 'copy', verdictOf(store).reason);
     const zap = sent.find((s) => s.kind === 'zap_swap');
     assert.ok(zap, 'zap harus terkirim lewat pool langsung');
-    assert.ok(dibangun.has(500) && dibangun.has(3000), 'kedua pool harus ikut dinilai');
-    assert.strictEqual(zap.tx.data, dibangun.get(500).tx.data, 'pool 0,05% harus menang dari pool posisi 0,3%');
-    assert.strictEqual(dibangun.get(500).key.tickSpacing, 10, 'poolKey diambil dari pool terpilih, bukan pool posisi');
+    const fee = new Set(dibangun.map((d) => d.key.fee));
+    assert.ok(fee.has(500) && fee.has(3000), 'kedua pool harus ikut dinilai');
+    const terpakai = dibangun.find((d) => d.tx.data === zap.tx.data);
+    assert.ok(terpakai, 'yang dikirim harus salah satu calldata yang disimulasikan');
+    assert.strictEqual(terpakai.key.fee, 500, 'pool 0,05% harus menang dari pool posisi 0,3%');
+    assert.strictEqual(terpakai.key.tickSpacing, 10, 'poolKey diambil dari pool terpilih, bukan pool posisi');
   });
 
   await t('jembatan gagal di tengah eksekusi -> galat jelas, tidak ada posisi tercatat', async () => {

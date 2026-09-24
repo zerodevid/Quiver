@@ -22,6 +22,7 @@
 // kebenaran terakhirnya ada di simulasi, yang memakai amountOutMinimum sungguhan.
 const { ethers } = require('ethers');
 const { ABI } = require('./chain');
+const { RpcPool } = require('./rpc');
 const { ensureChain } = require('./networks');
 const m = require('./v3math');
 
@@ -31,7 +32,8 @@ const lc = (t) => String(t || '').toLowerCase();
 // sekarang dibaca dari slot0 pool.
 const DYNAMIC_FEE = 0x800000;
 const MAX_CANDIDATES = 8;   // dibaca dari chain
-const MAX_SIMULATED = 4;    // disimulasikan; keduanya satu batch, bukan panggilan beruntun
+const MAX_SIMULATED = 4;    // pool yang disimulasikan (v4: sampai 2 calldata per pool,
+                            // lihat buildSwapV4) — semuanya satu batch, bukan beruntun
 
 // Hasil swap (kasar) di satu pool, setelah fee, dengan likuiditas dianggap tetap.
 function estimate({ sqrtP, L, feePpm, amountIn, zeroForOne }) {
@@ -134,28 +136,50 @@ async function pickSwapPool({ store, chain, rpc, exec, log = () => {} }, {
 
   // Hasil terbanyak dulu. Taksiran cuma pengurut; simulasi yang memutuskan.
   scored.sort((a, b) => (a.out < b.out ? 1 : a.out > b.out ? -1 : 0));
-  const coba = scored.slice(0, MAX_SIMULATED).map((c) => ({
-    ...c,
-    tx: chain.isV3Venue(c.row.venue)
-      ? exec.buildSwapV3(tokenIn, tokenOut, c.row.fee, amountIn, minOut, deadlineSec)
-      : exec.buildSwapV4({
-        currency0: c.row.token0, currency1: c.row.token1,
-        fee: c.row.fee, tickSpacing: c.row.tick_spacing, hooks: c.row.hooks || ethers.ZeroAddress,
-      }, c.zeroForOne, amountIn, minOut, deadlineSec),
-  }));
+  const top = scored.slice(0, MAX_SIMULATED);
+  // Satu pool v4 bisa menghasilkan DUA calon calldata: dua bentuk params swap beredar
+  // di v4-periphery dan yang keliru revert tanpa pesan (lihat Executor#buildSwapV4).
+  // Selama bentuk yang benar belum terbukti, keduanya ikut ke batch simulasi yang
+  // sama — satu perjalanan RPC, bukan tebakan yang diam-diam mematikan cadangan ini.
+  const coba = [];
+  top.forEach((c, rank) => {
+    if (chain.isV3Venue(c.row.venue)) {
+      coba.push({ ...c, rank, tx: exec.buildSwapV3(tokenIn, tokenOut, c.row.fee, amountIn, minOut, deadlineSec) });
+      return;
+    }
+    const pk = {
+      currency0: c.row.token0, currency1: c.row.token1,
+      fee: c.row.fee, tickSpacing: c.row.tick_spacing, hooks: c.row.hooks || ethers.ZeroAddress,
+    };
+    for (const layout of exec.v4SwapLayouts()) {
+      coba.push({ ...c, rank, layout, tx: exec.buildSwapV4(pk, c.zeroForOne, amountIn, minOut, deadlineSec, layout) });
+    }
+  });
   const from = exec.address();
-  const sim = await rpc.ethCallMany(coba.map((c) => ({ to: c.tx.to, data: c.tx.data, from, value: c.tx.value })));
-  const ok = coba.findIndex((c, i) => sim[i] != null);
-  info.simulated = coba.length;
+  const sim = await rpc.batch(coba.map((c) => {
+    const tx = { to: c.tx.to, data: c.tx.data, from };
+    if (c.tx.value != null && BigInt(c.tx.value) > 0n) tx.value = '0x' + BigInt(c.tx.value).toString(16);
+    return { method: 'eth_call', params: [tx, 'latest'] };
+  }));
+  const ok = sim.findIndex((r) => r && !r.error);
+  info.simulated = top.length;
   if (ok < 0) {
-    info.reason = `${coba.length} pool teratas menolak swap saat disimulasikan`;
+    // "Ditolak pool" hanya sah kalau RPC-nya memang menjawab REVERT. Balasan yang
+    // hilang atau galat kuota (chain ini sering 429) dulu terbaca sama seperti revert,
+    // jadi gangguan RPC sesaat dilaporkan sebagai pasar yang menolak — dan zap batal
+    // padahal tidak ada yang salah dengan poolnya.
+    const buta = sim.filter((r) => !r || r.transient || (r.error && !RpcPool.isRevert(r.error))).length;
+    info.reason = buta
+      ? `simulasi swap tidak terjawab RPC (${buta} dari ${coba.length} panggilan) — bukan penolakan pool`
+      : `${top.length} pool teratas menolak swap saat disimulasikan`;
     return null;
   }
   const pick = coba[ok];
-  if (ok > 0) log(`pool swap terbaik menolak simulasi — pakai pilihan ke-${ok + 1}: ${pick.row.pool_ref.slice(0, 10)}…`);
+  exec.rememberV4Layout(pick.layout);
+  if (pick.rank > 0) log(`pool swap terbaik menolak simulasi — pakai pilihan ke-${pick.rank + 1}: ${pick.row.pool_ref.slice(0, 10)}…`);
   return {
     tx: pick.tx, pool: pick.row, outEst: pick.out,
-    impactBps: pick.impactBps, feePpm: pick.feePpm, rank: ok,
+    impactBps: pick.impactBps, feePpm: pick.feePpm, rank: pick.rank,
   };
 }
 
