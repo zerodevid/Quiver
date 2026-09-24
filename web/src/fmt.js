@@ -1,4 +1,4 @@
-import { chainInfo } from './chain';
+import { chainInfo, ETHERSCAN } from './chain';
 import { getLocale, translate as t } from './i18n';
 
 // Semua format angka & waktu mengikuti bahasa yang sedang dipakai:
@@ -19,6 +19,12 @@ export const txHref = (hash) => (hash ? `${chainInfo().explorer}/tx/${hash}` : n
 export const addrHref = (a) => (a ? `${chainInfo().explorer}/address/${a}` : null);
 // Portofolio LP wallet di LPAgent — pembanding luar untuk angka riset kita.
 export const lpagentHref = (a) => (a ? `https://app.lpagent.io/portfolio?address=${a}&chain=${chainInfo().key === 'bsc' ? 'BSC' : 'ROBINHOOD'}` : null);
+// Isi dompet lintas chain di DeBank: token, posisi DeFi, dan nilainya di semua chain
+// sekaligus — yang tidak bisa dilihat dari dasbor ini (satu chain pada satu waktu).
+export const debankHref = (a) => (a ? `https://debank.com/profile/${a}` : null);
+// Etherscan chain ini (robin.etherscan.io di Robinhood) — indeks tx/token/NFT-nya
+// berbeda dari Blockscout, jadi wallet yang di sana kosong sering terbaca di sini.
+export const etherscanHref = (a) => (a && ETHERSCAN[chainInfo().key] ? `${ETHERSCAN[chainInfo().key]}/address/${a}` : null);
 export const tone = (v) => (v > 0.005 ? 'text-success' : v < -0.005 ? 'text-danger' : '');
 export const widthPct = (lo, hi) => (1.0001 ** (hi - lo) - 1) * 100;
 

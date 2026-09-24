@@ -2,7 +2,7 @@
 // posisi wallet hasil riset, dan gerakan target. Datanya dari lpRows di server.
 import { chainInfo, isEthLike } from '../chain';
 import { Button } from '@heroui/react';
-import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing, TradeLinks, baseTokenOf } from './ui';
+import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing, TradeLinks, WalletLinks, baseTokenOf } from './ui';
 import { TokenPair, PairName } from './TokenIcon';
 import { Pair } from '../pages/Positions';
 import { usd, pct, tone, ago, short, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
@@ -138,10 +138,13 @@ export function WalletPositions({ rows, onHist, jumpTo, loading = false, classNa
         onRow={onHist} defaultSort={{ column: 'when', direction: 'descending' }} pinTop={isOpen}
         columns={[
           { key: 'w', label: 'Wallet', sort: (p) => p.walletLabel || p.wallet, search: (p) => `${p.walletLabel || ''} ${p.wallet}`, render: (p) => (
-            <a href={(p.isTarget ? '#targets/' : '#wallet/') + p.wallet} className="group block max-w-40" title={p.wallet}>
-              {p.walletLabel && <div className="truncate font-medium group-hover:underline">{p.walletLabel}</div>}
-              <div className="mono text-xs text-muted group-hover:text-foreground">{short(p.wallet)}</div>
-            </a>) },
+            <div className="max-w-40">
+              <a href={(p.isTarget ? '#targets/' : '#wallet/') + p.wallet} className="group block" title={p.wallet}>
+                {p.walletLabel && <div className="truncate font-medium group-hover:underline">{p.walletLabel}</div>}
+                <div className="mono text-xs text-muted group-hover:text-foreground">{short(p.wallet)}</div>
+              </a>
+              <WalletLinks address={p.wallet} compact className="mt-0.5" />
+            </div>) },
           { key: 'pair', label: 'Posisi / pool', sort: (p) => `${p.symbol0}/${p.symbol1}`, search: (p) => `${p.symbol0}/${p.symbol1} ${p.token_id}`, render: (p) => (
             <div className="flex items-center gap-2.5">
               <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={20} />
@@ -149,7 +152,7 @@ export function WalletPositions({ rows, onHist, jumpTo, loading = false, classNa
                 <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} className="block font-medium" />
                 <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
                   <span className="uppercase">{p.venue}</span><span>·</span><span className="mono">#{p.token_id}</span>
-                  <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} compact className="ml-1" />
+                  <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} compact className="ml-2" />
                 </div>
               </div>
             </div>) },
@@ -190,10 +193,13 @@ export function TargetMoves({ rows, className = '' }) {
           { key: 'ts', label: 'Waktu', sort: (x) => x.ts, render: (x) => (
             <span className="whitespace-nowrap text-muted" title={new Date(x.ts).toLocaleString(fmtLocale())}>{ago(x.ts)}</span>) },
           { key: 'tgt', label: 'Target', sort: (x) => x.targetLabel || x.target, render: (x) => (
-            <a href={'#targets/' + x.target} className="group block max-w-40" title={x.target}>
-              {x.targetLabel && <div className="truncate font-medium group-hover:underline">{x.targetLabel}</div>}
-              <div className="mono text-xs text-muted">{short(x.target)}</div>
-            </a>) },
+            <div className="max-w-40">
+              <a href={'#targets/' + x.target} className="group block" title={x.target}>
+                {x.targetLabel && <div className="truncate font-medium group-hover:underline">{x.targetLabel}</div>}
+                <div className="mono text-xs text-muted">{short(x.target)}</div>
+              </a>
+              <WalletLinks address={x.target} compact className="mt-0.5" />
+            </div>) },
           { key: 'kind', label: 'Aksi', sort: (x) => x.kind, render: (x) => (
             <span className="whitespace-nowrap">{t(AKSI[x.kind]?.[0] || x.kind)} <span className="text-[0.6875rem] text-muted uppercase">{x.venue}</span></span>) },
           { key: 'pair', label: 'Pasangan', sort: (x) => `${x.symbol0}/${x.symbol1}`, render: (x) => (

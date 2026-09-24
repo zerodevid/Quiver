@@ -16,7 +16,7 @@ import { AlertBell, useTargetAlerts, setBaseTitle } from './components/TargetAle
 import StuckAlert from './components/StuckAlert';
 import SearchModal, { SearchTrigger } from './components/GlobalSearch';
 
-import { Loading, ConfirmHost, ask } from './components/ui';
+import { Loading, ConfirmHost, WalletLinks, ask } from './components/ui';
 import { hideSplash } from './splash';
 
 // Tiap halaman dimuat saat dibuka — pustaka grafik cuma diunduh untuk Ringkasan.
@@ -129,9 +129,14 @@ function StatusFoot({ status, reload, theme, toggleTheme }) {
           <span className="text-xs text-muted">{t('Mode')}</span>
           <ModeBadge m={m} />
         </div>
-        <div className="mt-1.5 flex items-center justify-between">
+        <div className="mt-1.5 flex items-center justify-between gap-2">
           <span className="text-xs text-muted">{t('Wallet')}</span>
-          <span className="mono text-xs text-muted">{m?.wallet ? short(m.wallet) : t('belum ada')}</span>
+          {/* Wallet bot sendiri juga bisa dibuka di luar — memeriksa saldo & tx-nya
+              tanpa menyalin alamatnya dulu. */}
+          <span className="flex items-center gap-1">
+            <span className="mono text-xs whitespace-nowrap text-muted">{m?.wallet ? short(m.wallet) : t('belum ada')}</span>
+            {m?.wallet && <WalletLinks address={m.wallet} compact className="ml-1.5" />}
+          </span>
         </div>
       </div>
       {/* Jeda/lanjut satu-satunya aksi yang mengubah bot — berdiri sendiri, selebar sidebar. */}

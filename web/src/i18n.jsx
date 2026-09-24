@@ -975,6 +975,7 @@ const EN = {
   'Batal': 'Cancel',
   'Nama diperbarui': 'Name updated',
   'Salin alamat': 'Copy address',
+  'Penjelajah': 'Explorer',
   'Alamat tersalin': 'Address copied',
   'Sedang dicopy': 'Being copied',
   'Dimatikan': 'Disabled',

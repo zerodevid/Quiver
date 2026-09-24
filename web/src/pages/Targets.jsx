@@ -3,11 +3,11 @@ import { Button, Card, Chip, Switch, toast } from '@heroui/react';
 import { Trash2, SlidersHorizontal, Plus, ChevronRight, ArrowLeft, Copy, Pencil, Check as CheckIcon, X } from 'lucide-react';
 import { usePoll } from '../hooks';
 import { post } from '../api';
-import { PageHeader, Panel, Text, Empty, Loading, Stat, ExtLink, ask } from '../components/ui';
+import { PageHeader, Panel, Text, Empty, Loading, Stat, WalletLinks, ask } from '../components/ui';
 import RulesForm from '../components/RulesForm';
 import WalletDetail from '../components/WalletDetail';
 import WalletHoldings from '../components/WalletHoldings';
-import { usd, kUsd, tone, ago, short, addrHref, lpagentHref } from '../fmt';
+import { usd, kUsd, tone, ago, short } from '../fmt';
 import { useI18n } from '../i18n';
 
 // Editor aturan per-target — dipakai di kartu (dilipat) dan di halaman detail.
@@ -177,17 +177,23 @@ function TargetRow({ tg, enabled, onToggle, onChanged }) {
         <Switch isSelected={enabled} onChange={(on) => onToggle(tg, on)} aria-label={t('Aktifkan target')} size="sm">
           <Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
         </Switch>
-        {/* Nama bisa diklik: membuka PnL, posisi, dan riwayat wallet ini */}
-        <a href={href} className="group min-w-0 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent">
-          <div className="flex items-center gap-2">
-            <span className={`truncate font-medium group-hover:underline ${enabled ? '' : 'text-muted'}`}>{tg.label || t('Tanpa label')}</span>
-            {tg.rulesOwn && <Chip size="sm" variant="soft" color="accent" className="shrink-0">{t('aturan sendiri')}</Chip>}
-            {balTone(tg.balance) && (
-              <Chip size="sm" variant="soft" color={balTotal(tg.balance) < DEAD_USD ? 'danger' : 'warning'} className="shrink-0">
-                {t(balTotal(tg.balance) < DEAD_USD ? 'dana habis' : 'dana tipis')}</Chip>)}
+        {/* Nama bisa diklik: membuka PnL, posisi, dan riwayat wallet ini. Tombol ke
+            situs luar berdiri di luar tautan itu — tautan tidak boleh bersarang. */}
+        <div className="min-w-0">
+          <a href={href} className="group block min-w-0 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent">
+            <div className="flex items-center gap-2">
+              <span className={`truncate font-medium group-hover:underline ${enabled ? '' : 'text-muted'}`}>{tg.label || t('Tanpa label')}</span>
+              {tg.rulesOwn && <Chip size="sm" variant="soft" color="accent" className="shrink-0">{t('aturan sendiri')}</Chip>}
+              {balTone(tg.balance) && (
+                <Chip size="sm" variant="soft" color={balTotal(tg.balance) < DEAD_USD ? 'danger' : 'warning'} className="shrink-0">
+                  {t(balTotal(tg.balance) < DEAD_USD ? 'dana habis' : 'dana tipis')}</Chip>)}
+            </div>
+          </a>
+          <div className="flex min-w-0 items-center gap-1">
+            <a href={href} className="mono truncate text-xs text-muted hover:text-foreground">{short(tg.address)}</a>
+            <WalletLinks address={tg.address} compact className="ml-2" />
           </div>
-          <div className="mono truncate text-xs text-muted">{short(tg.address)}</div>
-        </a>
+        </div>
         <div className="hidden min-w-0 md:block"><Saldo b={tg.balance} /></div>
         <div className="hidden md:block"><Research r={tg.research} /></div>
         <div className="hidden min-w-0 md:block"><Ours o={tg.ours} /></div>
@@ -275,11 +281,9 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
             <Button size="sm" variant="ghost" isIconOnly aria-label={t('Salin alamat')}
               onPress={() => { navigator.clipboard?.writeText(tg.address); toast.success(t('Alamat tersalin')); }}><Copy className="size-3.5" /></Button>
           </div>
-          {/* Lihat wallet ini di luar: portofolio LPAgent dan penjelajah blok. */}
-          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
-            <ExtLink href={lpagentHref(tg.address)}>LPAgent</ExtLink>
-            <ExtLink href={addrHref(tg.address)}>Blockscout</ExtLink>
-          </div>
+          {/* Lihat wallet ini di luar: isi dompetnya (DeBank), portofolio LP-nya
+              (LPAgent), dan tiap transaksinya (Etherscan, penjelajah chain). */}
+          <WalletLinks address={tg.address} className="mt-2" />
         </div>
         <div className="flex items-center gap-3">
           <Switch isSelected={enabledOf(tg)} onChange={(on) => onToggle(tg, on)}>

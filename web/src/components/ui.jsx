@@ -6,12 +6,12 @@ import {
   Switch, Table, Spinner, Alert, Pagination, AlertDialog, Button,
 } from '@heroui/react';
 import { Inbox, Search, ArrowLeft, ArrowUpRight, Copy, Check, ExternalLink, RefreshCw } from 'lucide-react';
-import { price, tickPrice, sqrtPrice, widthPct, pct, short, txHref, ago } from '../fmt';
+import { price, tickPrice, sqrtPrice, widthPct, pct, short, txHref, addrHref, debankHref, lpagentHref, etherscanHref, ago } from '../fmt';
 import { breakEven } from '../breakeven';
 import { useTick } from '../hooks';
 import { translate as t } from '../i18n';
 import { useFx, fxText } from '../currency';
-import { chainInfo } from '../chain';
+import { chainInfo, CHAIN_ICON, EXPLORER_NAME } from '../chain';
 
 export function PageHeader({ group, title, desc, children }) {
   return (
@@ -800,6 +800,31 @@ function LinkBar({ tag, links, compact = false, className = '' }) {
       ))}
     </span>
   );
+}
+// Tombol lompat ke luar untuk satu WALLET — dipasang di mana pun alamat 0x… tampil
+// (daftar target, detail target, halaman riset wallet, wallet bot sendiri). Tiga
+// pertanyaan yang tidak bisa dijawab dasbor ini sendirian: apa saja isi dompetnya di
+// chain lain (DeBank), bagaimana posisi LP-nya menurut pihak ketiga (LPAgent), dan
+// setiap transaksinya (Etherscan + penjelajah chain). Logonya jadi penanda, bukan teks,
+// seperti bilah trading token di atas.
+export const WALLET_APPS = [
+  { key: 'debank', label: 'DeBank', icon: '/debank.png', brand: '#ff6238', href: debankHref },
+  { key: 'lpagent', label: 'LPAgent', icon: '/lpagent.png', brand: '#e3f35b', href: lpagentHref },
+  { key: 'etherscan', label: 'Etherscan', icon: '/etherscan.png', brand: '#3b6fd4', href: etherscanHref },
+];
+// explorer: bilah penuh ikut membawa penjelajah blok; tumpukan ringkas di baris tabel
+// cukup tiga situs luar supaya logonya tidak menutupi kolom sebelahnya.
+export function WalletLinks({ address, compact = false, explorer = !compact, className = '' }) {
+  if (!address) return null;
+  const c = chainInfo();
+  const links = WALLET_APPS.map((app) => ({ ...app, href: app.href(address) }));
+  // Penjelajah blok chain yang sedang ditampilkan, berlogo chain-nya. Di BSC penjelajahnya
+  // BscScan — etherscanHref kosong di sana, jadi situsnya tidak muncul dua kali.
+  if (explorer) {
+    links.push({ key: 'explorer', label: EXPLORER_NAME[c.key] || t('Penjelajah'), icon: CHAIN_ICON[c.key] || '/favicon.svg',
+      brand: 'var(--accent)', href: addrHref(address) });
+  }
+  return <LinkBar tag="Wallet" links={links.filter((x) => x.href)} compact={compact} className={className} />;
 }
 export function TradeLinks({ token, pool = null, compact = false, className = '' }) {
   if (!token) return null;
