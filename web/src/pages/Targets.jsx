@@ -7,8 +7,9 @@ import { PageHeader, Panel, Text, Empty, Loading, Stat, ExtLink, ask } from '../
 import RulesForm from '../components/RulesForm';
 import WalletDetail from '../components/WalletDetail';
 import WalletHoldings from '../components/WalletHoldings';
-import { usd, kUsd, tone, ago, short, addrHref, lpagentHref } from '../fmt';
+import { usd, kUsd, tone, ago, short, addrHref, lpagentHref, explorerName } from '../fmt';
 import { useI18n } from '../i18n';
+import { isAddr, canonAddr, isSolana } from '../chain';
 
 // Editor aturan per-target — dipakai di kartu (dilipat) dan di halaman detail.
 function TargetRules({ tg, onChanged }) {
@@ -254,7 +255,7 @@ function EditableLabel({ tg, onChanged }) {
 // Halaman detail satu target: status copy + riset wallet lengkap (sama dengan menu Wallet).
 function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
   const { t } = useI18n();
-  const tg = targets.find((x) => x.address === address.toLowerCase());
+  const tg = targets.find((x) => x.address === canonAddr(address));
   const [rulesOpen, setRulesOpen] = useState(false);
   if (!tg) {
     return (
@@ -278,7 +279,7 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
           {/* Lihat wallet ini di luar: portofolio LPAgent dan penjelajah blok. */}
           <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
             <ExtLink href={lpagentHref(tg.address)}>LPAgent</ExtLink>
-            <ExtLink href={addrHref(tg.address)}>Blockscout</ExtLink>
+            <ExtLink href={addrHref(tg.address)}>{explorerName()}</ExtLink>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -326,7 +327,7 @@ export default function Targets({ param }) {
   const [label, setLabel] = useState('');
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
-  const valid = /^0x[0-9a-fA-F]{40}$/.test(addr.trim());
+  const valid = isAddr(canonAddr(addr));
 
   if (param) return !d ? <Loading page /> : <TargetDetail address={param} targets={d.targets} reload={reload} enabledOf={enabledOf} onToggle={toggle} />;
 
@@ -353,8 +354,8 @@ export default function Targets({ param }) {
       {adding && (
         <Panel className="mb-4">
           <div className="grid items-start gap-3 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]">
-            <Text label="Alamat" mono placeholder="0x…" value={addr} onChange={setAddr}
-              isInvalid={addr !== '' && !valid} error="Alamat harus 0x diikuti 40 karakter hex." />
+            <Text label="Alamat" mono placeholder={isSolana() ? 'base58…' : '0x…'} value={addr} onChange={setAddr}
+              isInvalid={addr !== '' && !valid} error={isSolana() ? 'Alamat Solana harus base58, 32–44 karakter.' : 'Alamat harus 0x diikuti 40 karakter hex.'} />
             <Text label="Label (opsional)" placeholder="mis. LP pro #1" value={label} onChange={setLabel} />
             <Button className="md:mt-[1.6rem]" onPress={add} isDisabled={!valid} isPending={busy}><Plus className="size-4" />{t('Tambah')}</Button>
           </div>

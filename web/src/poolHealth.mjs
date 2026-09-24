@@ -32,13 +32,15 @@ export function poolHealth({ pool = {}, pair, holders, open = [], gmgn, now = Da
   if (pool.fee >= 0x800000) add('warn', 'Fee dinamis; biaya swap dapat berubah.');
   else if (finite(pool.fee) && pool.fee >= 30000) add('warn', 'Fee swap {value}% per transaksi.', { value: (pool.fee / 10000).toFixed(2) });
   if (pool.hooks && !/^0x0{40}$/i.test(pool.hooks)) add('warn', 'Pool memakai hook; perilaku kontrak tambahan belum diverifikasi.');
-  const holdersOk = holders && !holders.error && Array.isArray(holders.items) && holders.items.every((h) => finite(h.percent) && typeof h.address === 'string') && holders.token === pool.baseToken?.toLowerCase() && holders.fetchedAt && now - (holders.snapshotAt || holders.fetchedAt) <= 1200000;
+  const holdersOk = holders && !holders.error && Array.isArray(holders.items) && holders.items.every((h) => finite(h.percent) && typeof h.address === 'string') && String(holders.token).toLowerCase() === pool.baseToken?.toLowerCase() && holders.fetchedAt && now - (holders.snapshotAt || holders.fetchedAt) <= 1200000;
   let eligible = [], top10 = null, largest = null;
   if (!holdersOk) missing.push('Data holder belum tersedia atau sudah kedaluwarsa; dominasi belum dapat dinilai.');
   else {
-    eligible = holders.items.filter((h) => !['pool_manager', 'burn'].includes(h.kind) && h.address !== pool.pool_ref?.toLowerCase());
+    eligible = holders.items.filter((h) => !['pool_manager', 'burn'].includes(h.kind) && h.address.toLowerCase() !== pool.pool_ref?.toLowerCase());
     largest = eligible[0]?.percent ?? null;
     if (eligible.length >= 10 || !holders.hasMore) top10 = eligible.slice(0, 10).reduce((s, h) => s + h.percent, 0);
+    // Tanpa daftar (Solana lewat audit Jupiter): porsi top holder dari sumbernya.
+    else if (!holders.items.length && finite(holders.top10Pct)) top10 = holders.top10Pct;
     if (largest >= 10) add(largest >= 20 ? 'risk' : 'warn', 'Satu alamat non-infrastruktur memegang {value}% suplai.', { value: largest.toFixed(1) });
     if (top10 >= 40) add(top10 >= 60 ? 'risk' : 'warn', '10 alamat non-infrastruktur terbesar memegang {value}% suplai.', { value: top10.toFixed(1) });
     if (holders.holderCount == null || top10 == null) missing.push('Jumlah holder atau cakupan 10 alamat terbesar belum lengkap.');

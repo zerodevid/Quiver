@@ -5,13 +5,14 @@
 import { useMemo, useRef } from 'react';
 import { usePoll } from './hooks';
 import { sqrtPrice } from './fmt';
+import { canonAddr } from './chain';
 
 export const LIVE_MS = 3000;
 
 // Harga kini dalam aset kuotasi. null kalau dimatikan, belum terbaca, atau basi
 // (poll gagal terus: harga lama tidak boleh tampil seolah-olah live).
 export function useLivePrice(pool, { dec0, dec1, quoteSide }, enabled = true) {
-  const ref = enabled && pool ? String(pool).toLowerCase() : null;
+  const ref = enabled && pool ? canonAddr(pool) : null;
   const { data } = usePoll(ref ? `/api/price?pool=${ref}` : null, LIVE_MS);
   return useMemo(() => {
     if (!ref || !data || data.error || data.pool !== ref || Date.now() - data.ts > 30_000) return null;

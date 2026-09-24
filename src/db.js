@@ -385,6 +385,12 @@ function open(dbPath) {
   // Kendali manual ("ambil alih"): waktu posisi cermin dilepas dari target. NULL =
   // otomatis. Lihat Manual.takeover.
   if (!posCols.has('takeover_ts')) db.exec('ALTER TABLE positions ADD COLUMN takeover_ts INTEGER');
+  // Data khusus venue non-EVM (JSON): rentang asli (bin DLMM / tick Orca-Raydium),
+  // binStep, mint NFT posisi, dan L target sebelum aksi. tick_lower/tick_upper tetap
+  // diisi tick setara Uniswap supaya dasbor & pemicu keluar berlaku apa adanya.
+  if (!posCols.has('ext')) db.exec('ALTER TABLE positions ADD COLUMN ext TEXT');
+  const actCols = new Set(db.prepare('PRAGMA table_info(actions)').all().map((c) => c.name));
+  if (!actCols.has('ext')) db.exec('ALTER TABLE actions ADD COLUMN ext TEXT');
   const poolCols = new Set(db.prepare('PRAGMA table_info(pools)').all().map((c) => c.name));
   if (!poolCols.has('init_sqrt')) {
     db.exec('ALTER TABLE pools ADD COLUMN init_block INTEGER');

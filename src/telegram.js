@@ -19,6 +19,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { writeCfg } = require('./env');
+const { isSolana, normAddr, addrHint } = require('./networks');
 // Chain yang sedang dipakai sebuah percakapan. Sama polanya dengan localeContext: tiap
 // update Telegram dijalankan di dalam run(<chain>), dan this.api/this.engine/kartu
 // otomatis mengarah ke chain itu — tidak ada tombol yang perlu tahu soal chain.
@@ -298,6 +299,15 @@ const BACK_HOME = btn('🏠 Menu', 'h');
 // Uniswap menunjuk halaman pool-nya kalau pool diketahui (grafik, likuiditas, swap &
 // tambah LP di satu layar); tanpa pool, layar swap dengan token itu.
 const tradeRows = (chain, token, pool = null) => {
+  // Solana: GMGN (slug 'sol'), DexScreener, Jupiter — tidak ada Based/Uniswap/fomo.
+  if (chain?.kind === 'solana') {
+    if (!normAddr(chain.network, token)) return [];
+    return [
+      [{ text: '🐸 GMGN', url: `https://gmgn.ai/${chain.gmgn || 'sol'}/token/${token}` },
+        { text: '🪐 Jupiter', url: `https://jup.ag/swap/SOL-${token}` }],
+      [{ text: '📊 DexScreener', url: `https://dexscreener.com/solana/${pool && normAddr(chain.network, pool) ? pool : token}` }],
+    ];
+  }
   if (!/^0x[0-9a-f]{40}$/i.test(String(token || ''))) return [];
   const slug = chain?.gmgn || chain?.network || 'robinhood';
   const uni = chain?.uniswap || slug;
@@ -411,6 +421,18 @@ const FORMS = {
       F.int('max_gas_limit', 'Batas gas per transaksi', { lo: 100000, hi: 30000000 }),
       F.num('max_fee_gwei', 'Batas harga gas (gwei)', { lo: 0.01, hi: 10000 }),
       F.num('reserve_eth', 'Cadangan ETH tak tersentuh', { hi: 10, unit: 'ETH' }),
+    ],
+  },
+  // Solana: harga prioritas (µlamport/CU) & cadangan SOL — lihat SolanaExecutor.cuPrice.
+  gasSol: {
+    title: '⛽ Gas', post: '/api/settings/gas', pick: (s) => ({ ...s.gas }),
+    fields: [
+      F.num('price_multiplier', 'Pengali harga prioritas', { lo: 0.5, hi: 10 }),
+      F.int('min_cu_price_micro', 'Harga prioritas minimum (µlamport/CU)', { hi: 50000000 }),
+      F.int('max_cu_price_micro', 'Harga prioritas maksimum (µlamport/CU)', { lo: 1, hi: 50000000 }),
+      F.num('jupiter_max_priority_sol', 'Batas prioritas swap Jupiter (SOL)', { hi: 0.1, unit: 'SOL' }),
+      F.num('reserve_sol', 'Cadangan SOL tak tersentuh', { lo: 0.01, hi: 100, unit: 'SOL' }),
+      F.usd('topup_max_usd', 'Isi ulang SOL maksimum', { hi: 1000 }),
     ],
   },
   mesin: {
@@ -849,6 +871,11 @@ class Telegram {
     // token -> langsung ke kartu pasang LP; wallet -> pilihan riset / jadikan target.
     // (?![0-9a-f]) mencegah poolId v4 (64 hex) terbaca sebagai alamat 40 hex.
     if (!text.startsWith('/') && text.length <= 300) {
+      // Chat yang sedang di chain Solana: alamat base58 (huruf dipertahankan).
+      if (isSolana(this.chatChain(chatId))) {
+        const b = text.match(/(?<![1-9A-HJ-NP-Za-km-z])[1-9A-HJ-NP-Za-km-z]{32,44}(?![1-9A-HJ-NP-Za-km-z])/)?.[0];
+        if (b) return this.tempel(chatId, b);
+      }
       const a = text.match(/0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/)?.[0];
       if (a) return this.tempel(chatId, a.toLowerCase());
     }
@@ -879,7 +906,7 @@ class Telegram {
       case 'resume': return this.setPause(chatId, null, false);
       case 'scout':
         if (arg) return this.runScout(chatId, arg);
-        return this.ask(chatId, { kind: 'scout' }, tr("Kirim alamat wallet yang mau dipotret.\n<i>Contoh:</i> <code>0x3c92…2976</code>"));
+        return this.ask(chatId, { kind: 'scout' }, (isSolana(this.chatChain(chatId)) ? tr("Kirim alamat wallet Solana yang mau dipotret.\n<i>Contoh:</i> <code>6mch5r…XwTD</code>") : tr("Kirim alamat wallet yang mau dipotret.\n<i>Contoh:</i> <code>0x3c92…2976</code>")));
       case 'research':
         if (arg) return this.runRiset(chatId, arg);
         return this.ask(chatId, { kind: 'riset' }, tr("Kirim alamat wallet yang mau diriset (PnL, posisi, riwayat)."));
@@ -1225,7 +1252,7 @@ class Telegram {
 
       // ---- alamat wallet yang ditempel ----
       case 'adT': {
-        if (!/^0x[0-9a-f]{40}$/.test(s.alamat || '')) return out(tr("Alamatnya sudah tidak tersimpan — tempel lagi."), kb([[BACK_HOME]]));
+        if (!normAddr(this.chatChain(chatId), s.alamat)) return out(tr("Alamatnya sudah tidak tersimpan — tempel lagi."), kb([[BACK_HOME]]));
         const r = await this.api('POST', '/api/targets', { address: s.alamat, label: null });
         if (r.error) return out(`❌ ${esc(note(r.error))}`, kb([[BACK_HOME]]));
         return out(tr("✅ <code>{0}</code> sekarang diikuti.\n<i>Aturan default dipakai sampai kamu setel sendiri.</i>", [esc(shortA(s.alamat))]), kb([[btn(tr("🎯 Daftar target"), 't'), BACK_HOME]]));
@@ -1239,7 +1266,9 @@ class Telegram {
       }
       case 'mlc': return this.ask(chatId, { kind: 'poolCari', retry: 'mlp:0' }, tr("Ketik nama pasangan yang dicari, misal <code>HOOKR</code> atau <code>USDG/ND4</code>."));
       case 'mla': return this.ask(chatId, { kind: 'scanToken', retry: 'mlp:0' },
-        tr("Kirim <b>alamat token</b>-nya. Bot akan mencari sendiri semua pool Uniswap v3 & v4 yang memuat token itu, langsung dari chain.\n\n<i>Contoh:</i> <code>0x12d5ee7917ca430073c3a638ee1e6f0648a98a01</code>"));
+        isSolana(this.chatChain(chatId))
+          ? tr("Kirim <b>alamat mint</b> token-nya. Bot mencari pool Meteora DLMM, Orca, dan Raydium CLMM yang memuat token itu (indeks DexScreener/GeckoTerminal, dipastikan ke chain).\n\n<i>Contoh:</i> <code>JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN</code>")
+          : tr("Kirim <b>alamat token</b>-nya. Bot akan mencari sendiri semua pool Uniswap v3 & v4 yang memuat token itu, langsung dari chain.\n\n<i>Contoh:</i> <code>0x12d5ee7917ca430073c3a638ee1e6f0648a98a01</code>"));
       case 'mls': return out(...(await this.lpHasilPindai(chatId, rest[0], rest[1] === 'all')));
       case 'mln': return this.ask(chatId, { kind: 'lpUsd', retry: 'ml' }, tr("Berapa dolar yang mau dimasukkan?\n\n<i>Ini nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.</i>"));
       case 'mlr': return out(...(await this.lpRange(chatId)));
@@ -1281,7 +1310,7 @@ class Telegram {
       case 'swX': {
         const d = s.sw || {};
         if (ack) await ack(tr("Menukar…"));
-        await out(tr("⏳ Menukar lewat Kyber…"));
+        await out(isSolana(this.chatChain(chatId)) ? tr("⏳ Menukar lewat Jupiter…") : tr("⏳ Menukar lewat Kyber…"));
         const r = await this.api('POST', '/api/manual/swap', { tokenIn: d.from, tokenOut: d.to, amount: d.amount });
         if (r.error) return out(tr("⛔ <b>Swap gagal</b>\n<code>{0}</code>", [esc(note(r.error))]), kb([[btn('↩︎ Swap', 'sw'), BACK_HOME]]));
         s.sw = { ...d, amount: null };
@@ -2139,7 +2168,7 @@ class Telegram {
       tabel([
         ['RPC', `${st.rpc.length} endpoint`],
         [tr('Pengali gas'), nf(st.gas.price_multiplier, 2)],
-        [tr('Cadangan {0}', [st.chain?.nativeSymbol || 'ETH']), nf(st.gas.reserve_eth, 4)],
+        [tr('Cadangan {0}', [st.chain?.nativeSymbol || 'ETH']), nf(st.gas.reserve_eth ?? st.gas.reserve_sol, 4)],
         [tr('Interval pindai'), `${num(st.loop.poll_ms)} ms`],
         [tr('Sinkronisasi'), `${num(st.loop.sync_seconds)} s`],
         ['ntfy', st.notify.ntfy_topic || tr('mati')],
@@ -2150,7 +2179,7 @@ class Telegram {
       [btn(st.mode.dry_run ? tr("🟢 Nyalakan LIVE") : tr("🧪 Kembali ke simulasi"), 'sl')],
       [btn(st.mode.paused ? tr("▶️ Lanjutkan") : tr("⏸ Jeda penyalinan"), 'sp')],
       [btn(tr("🔑 Wallet bot"), 'wb'), btn('🌐 RPC', 'sr')],
-      [btn('⛽ Gas', 'sf:gas'), btn(tr("🔧 Mesin"), 'sf:mesin')],
+      [btn('⛽ Gas', st.wallet?.kind === 'solana' ? 'sf:gasSol' : 'sf:gas'), btn(tr("🔧 Mesin"), 'sf:mesin')],
       [btn(tr("🔔 Notifikasi"), 'sn'), btn(tr("💬 Chat Telegram"), 'sc')],
       [btn(tr("🔐 Ganti token dasbor"), 'sk')],
       [btn('🌐 Language / Bahasa', 'lang')],
@@ -2393,8 +2422,8 @@ class Telegram {
       return this.edit(chatId, msgId, [
         `<b>${esc(sym)}</b> <code>${esc(shortA(token))}</code>`,
         '',
-        tr("Belum ada pool Uniswap v3/v4 yang bisa dimasuki untuk token ini."),
-        j.total ? tr("<i>{0} pool ditemukan, tapi semuanya kosong, berfee dinamis, atau tidak dipasangkan USDG/ETH.</i>", [j.total]) : null,
+        isSolana(this.chatChain(chatId)) ? tr("Belum ada pool Meteora DLMM / Orca / Raydium CLMM yang bisa dimasuki untuk token ini.") : tr("Belum ada pool Uniswap v3/v4 yang bisa dimasuki untuk token ini."),
+        j.total ? (isSolana(this.chatChain(chatId)) ? tr("<i>{0} pool ditemukan, tapi semuanya kosong, nonaktif, atau tidak dipasangkan USDC/USDT/SOL.</i>", [j.total]) : tr("<i>{0} pool ditemukan, tapi semuanya kosong, berfee dinamis, atau tidak dipasangkan USDG/ETH.</i>", [j.total])) : null,
         ...pasarLainTeks(j.lainnya),
       ].filter((x) => x != null).join('\n'), kb([[BACK_HOME]]));
     }
@@ -2497,9 +2526,9 @@ class Telegram {
   // Mencari pool sebuah token langsung dari chain. Pesannya disunting selama
   // pemindaian berjalan supaya terlihat masih hidup — bisa belasan detik.
   async runScanPool(chatId, tokenRaw) {
-    const token = String(tokenRaw).trim().toLowerCase();
-    if (!/^0x[0-9a-f]{40}$/.test(token)) {
-      return this.send(chatId, tr("❌ Alamat token harus 0x diikuti 40 karakter hex."), kb([[btn(tr("↩︎ Coba lagi"), 'mla'), BACK_HOME]]));
+    const token = normAddr(this.chatChain(chatId), tokenRaw);
+    if (!token) {
+      return this.send(chatId, `❌ ${esc(addrHint(this.chatChain(chatId)))}`, kb([[btn(tr("↩︎ Coba lagi"), 'mla'), BACK_HOME]]));
     }
     const r0 = await this.api('POST', '/api/manual/pools/scan', { token });
     if (r0.error) return this.send(chatId, `❌ ${esc(note(r0.error))}`, kb([[BACK_HOME]]));
@@ -2537,7 +2566,7 @@ class Telegram {
       L.push(kolom(list.slice(0, 10).map((p) => [
         p.pair, p.dynamicFee ? tr("dinamis") : `${trimZ(nf(p.feePct ?? 0, 2))}%`, p.hasHooks ? 'hook' : '',
       ]), 'lr'));
-      if (j.hidden) L.push(tr("<i>Yang disembunyikan: pool tanpa likuiditas, berfee dinamis, atau tidak dipasangkan USDG/ETH — masuk ke sana sama saja membuang gas.</i>"));
+      if (j.hidden) L.push(isSolana(this.chatChain(chatId)) ? tr("<i>Yang disembunyikan: pool tanpa likuiditas, nonaktif, atau tidak dipasangkan USDC/USDT/SOL.</i>") : tr("<i>Yang disembunyikan: pool tanpa likuiditas, berfee dinamis, atau tidak dipasangkan USDG/ETH — masuk ke sana sama saja membuang gas.</i>"));
     }
     const rows = list.slice(0, 10).map((p, i) => [btn(
       `${p.hasHooks ? '🪝 ' : ''}${p.pair} · ${p.dynamicFee ? tr("dinamis") : trimZ(nf(p.feePct ?? 0, 2)) + '%'}`.slice(0, 40), `mlP:${i}`)]);
@@ -2615,7 +2644,7 @@ class Telegram {
     const punya = t.tokens.filter((x) => x.amount > 0);
     const L = [
       tr("<b>🔁 Swap</b>"),
-      tr("Menukar lewat agregator Kyber — rute yang sama dipakai bot untuk zap dan menjual sisa."),
+      isSolana(this.chatChain(chatId)) ? tr("Menukar lewat agregator Jupiter — rute yang sama dipakai bot untuk membeli token posisi dan menjual sisa.") : tr("Menukar lewat agregator Kyber — rute yang sama dipakai bot untuk zap dan menjual sisa."),
       '',
       tabel([
         [tr("dari"), d.symFrom || tr('— belum dipilih')],
@@ -2682,8 +2711,8 @@ class Telegram {
 
   // ---- scout & riset -------------------------------------------------------
   async runScout(chatId, addrRaw) {
-    const addr = String(addrRaw).trim().toLowerCase();
-    if (!/^0x[0-9a-f]{40}$/.test(addr)) return this.send(chatId, tr("❌ Alamat harus 0x diikuti 40 karakter hex."), kb([[btn(tr("↩︎ Coba lagi"), 'k'), BACK_HOME]]));
+    const addr = normAddr(this.chatChain(chatId), addrRaw);
+    if (!addr) return this.send(chatId, `❌ ${esc(addrHint(this.chatChain(chatId)))}`, kb([[btn(tr("↩︎ Coba lagi"), 'k'), BACK_HOME]]));
     const r0 = await this.api('POST', '/api/scout', { address: addr });
     if (r0.error) return this.send(chatId, `❌ ${esc(note(r0.error))}`, kb([[BACK_HOME]]));
     const m = await this.send(chatId, tr("🔭 Memotret <code>{0}</code>…", [esc(shortA(addr))]));
@@ -2717,8 +2746,8 @@ class Telegram {
   }
 
   async runRiset(chatId, addrRaw) {
-    const addr = String(addrRaw).trim().toLowerCase();
-    if (!/^0x[0-9a-f]{40}$/.test(addr)) return this.send(chatId, tr("❌ Alamat harus 0x diikuti 40 karakter hex."), kb([[btn(tr("↩︎ Coba lagi"), 'w'), BACK_HOME]]));
+    const addr = normAddr(this.chatChain(chatId), addrRaw);
+    if (!addr) return this.send(chatId, `❌ ${esc(addrHint(this.chatChain(chatId)))}`, kb([[btn(tr("↩︎ Coba lagi"), 'w'), BACK_HOME]]));
     const w = await this.api('GET', '/api/wallet', {}, { address: addr });
     if (!w.found) {
       await this.api('POST', '/api/wallet/scan', { address: addr, mode: 'full' });

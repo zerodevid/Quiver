@@ -127,6 +127,13 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
     return n ? { error: `Diatur lewat ${n} di .env — ubah di berkas itu lalu restart.` } : null;
   };
   const exec = engine.exec;
+  // Solana: kunci ed25519 terpisah (~/.lpcopy/solana-key, LPCOPY_SOLANA_PRIVATE_KEY) —
+  // dibuat/diimpor/dilepas lewat rute yang sama, dengan bentuk kunci Solana.
+  const SOL = chain.kind === 'solana';
+  const sol = SOL ? require('./solana/wallet') : null;
+  const keyFromEnv = () => (SOL ? sol.solanaKeyFromEnv() : privateKeyFromEnv());
+  const keyEnvName = SOL ? 'LPCOPY_SOLANA_PRIVATE_KEY' : 'LPCOPY_PRIVATE_KEY';
+  const walletStateKey = SOL ? `wallet_address:${chain.network}` : 'wallet_address';
 
   const backupKey = (p) => {
     if (!fs.existsSync(p)) return null;
@@ -142,12 +149,12 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
     fs.chmodSync(p, 0o600);
     resetWallets();
     const addr = exec.address();
-    if (addr) store.setState('wallet_address', addr);
+    if (addr) store.setState(walletStateKey, addr);
     log(`kunci wallet diganti -> ${addr}${bak ? ` (kunci lama dicadangkan: ${path.basename(bak)})` : ''}`);
     return { address: addr, backup: bak ? path.basename(bak) : null };
   };
   const refuseIfLive = () => {
-    if (privateKeyFromEnv()) return { error: 'Kunci wallet diatur lewat LPCOPY_PRIVATE_KEY di .env — ganti atau hapus di berkas itu lalu restart.' };
+    if (keyFromEnv()) return { error: `Kunci wallet diatur lewat ${keyEnvName} di .env — ganti atau hapus di berkas itu lalu restart.` };
     // Kunci diganti di tengah entry/keluar/penjualan: transaksi berikutnya (mint, jual token
     // zap) ditandatangani wallet LAIN yang tidak memegang tokennya.
     // (Mode LIVE sudah wajib mati, tapi entry yang dimulai sebelum mode dimatikan tetap
@@ -220,7 +227,17 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       try { perms = (fs.statSync(p).mode & 0o777).toString(8); } catch { perms = null; }
       let balances = null;
       const { ADDR } = chain;
-      if (addr) {
+      if (addr && SOL) {
+        try {
+          const b = await exec.balances();
+          balances = {
+            eth: Number(b.get('SOL') || 0n) / 1e9,
+            usdg: (Number(b.get(ADDR.usdg) || 0n) + Number(b.get(ADDR.usdt) || 0n)) / 1e6,
+            weth: Number(b.get(ADDR.weth) || 0n) / 1e9,
+            symbols: { eth: 'SOL', usdg: 'USDC+USDT', weth: 'wSOL' },
+          };
+        } catch { balances = null; }
+      } else if (addr) {
         try {
           const b = await exec.balances([ADDR.native, ADDR.usdg, ADDR.weth]);
           balances = {
@@ -235,12 +252,13 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
         ? fs.readdirSync(path.dirname(p)).filter((f) => f.startsWith(path.basename(p) + '.bak-')).length : 0;
       return {
         chain: { key: chain.network, label: chain.label, chainId: chain.CHAIN_ID, nativeSymbol: chain.nativeSymbol, verified: chain.verified,
-          venues: ['v4', ...chain.venues.map((v) => v.key)] },
+          venues: [...(SOL ? [] : ['v4']), ...chain.venues.map((v) => v.key)] },
         wallet: {
-          address: addr, keyFile: cfg.wallet?.key_file || '~/.lpcopy/key',
-          hasKey: privateKeyFromEnv() || fs.existsSync(p), perms, balances, backups,
+          address: addr, keyFile: SOL ? (cfg.wallet?.solana_key_file || sol.DEFAULT_FILE) : (cfg.wallet?.key_file || '~/.lpcopy/key'),
+          hasKey: keyFromEnv() || fs.existsSync(p), perms, balances, backups,
           // Kunci dari .env mengalahkan berkas kunci; tombol ganti/lepas tidak berlaku.
-          fromEnv: privateKeyFromEnv() ? 'LPCOPY_PRIVATE_KEY' : null,
+          fromEnv: keyFromEnv() ? keyEnvName : null,
+          kind: SOL ? 'solana' : 'evm',
         },
         mode: { dry_run: engine.dryRun(), paused: engine.paused() },
         risk: {
@@ -248,7 +266,16 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
           status: { ...engine.drawdownStatus(), equityUsd: await equityNow() },
         },
         rpc: rpcView(),
-        gas: {
+        gas: SOL ? {
+          // Solana: harga prioritas (microLamport per CU) = persentil 75 fee terkini ×
+          // pengali, diapit min/max; cadangan SOL untuk biaya & sewa akun.
+          price_multiplier: cfg.gas?.price_multiplier ?? 1.2,
+          min_cu_price_micro: cfg.gas?.min_cu_price_micro ?? 10_000,
+          max_cu_price_micro: cfg.gas?.max_cu_price_micro ?? 2_000_000,
+          jupiter_max_priority_sol: (cfg.gas?.jupiter_max_priority_lamports ?? 2_000_000) / 1e9,
+          reserve_sol: (cfg.gas?.native_reserve_lamports ?? 150_000_000) / 1e9,
+          topup_max_usd: cfg.gas?.topup_max_usd ?? 25,
+        } : {
           price_multiplier: cfg.gas?.price_multiplier ?? 1.5,
           priority_gwei: (cfg.gas?.priority_wei ?? 10_000_000) / 1e9,
           max_gas_limit: cfg.gas?.max_gas_limit ?? 4_000_000,
@@ -272,6 +299,12 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       const b = await readBody(req);
       const live = refuseIfLive(); if (live) return live;
       if (fs.existsSync(exec.keyPath()) && !b.replace) return { error: 'Sudah ada kunci. Centang "ganti kunci yang ada" untuk menggantinya (kunci lama dicadangkan).' };
+      if (SOL) {
+        // Kunci Solana tanpa frasa pemulihan: berkasnya sendiri adalah cadangannya
+        // (base58 — bisa diimpor ke Phantom/Solflare).
+        const kp = require('@solana/web3.js').Keypair.generate();
+        return { ok: true, ...writeKey(require('bs58').default.encode(kp.secretKey)) };
+      }
       const w = ethers.Wallet.createRandom();
       const res = writeKey(w.privateKey);
       // frasa pemulihan disimpan di server berdampingan dengan kunci, tidak dikirim ke browser
@@ -282,6 +315,13 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       const b = await readBody(req);
       const live = refuseIfLive(); if (live) return live;
       let pk = String(b.privateKey || '').trim();
+      if (SOL) {
+        let kp;
+        try { kp = sol.parseSecret(pk); } catch (e) { return { error: `Kunci Solana tidak valid: ${e.message}` }; }
+        if (!kp) return { error: 'Kunci Solana kosong.' };
+        if (fs.existsSync(exec.keyPath()) && !b.replace) return { error: 'Sudah ada kunci. Centang "ganti kunci yang ada" untuk menggantinya (kunci lama dicadangkan).' };
+        return { ok: true, ...writeKey(require('bs58').default.encode(kp.secretKey)) };
+      }
       if (!/^(0x)?[0-9a-fA-F]{64}$/.test(pk)) return { error: 'Kunci privat harus 64 karakter hex (boleh diawali 0x).' };
       if (!pk.startsWith('0x')) pk = '0x' + pk;
       try { new ethers.Wallet(pk); } catch { return { error: 'Kunci privat tidak valid.' }; }
@@ -293,10 +333,11 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       const live = refuseIfLive(); if (live) return live;
       const addr = exec.address();
       if (!addr) return { error: 'Tidak ada wallet terpasang.' };
-      if (String(b.confirm || '').toLowerCase() !== addr) return { error: 'Ketik alamat wallet persis untuk konfirmasi.' };
+      const typed = SOL ? String(b.confirm || '').trim() : String(b.confirm || '').toLowerCase();
+      if (typed !== addr) return { error: 'Ketik alamat wallet persis untuk konfirmasi.' };
       const bak = backupKey(exec.keyPath());
       resetWallets();
-      store.setState('wallet_address', '');
+      store.setState(walletStateKey, '');
       log(`kunci wallet dilepas (dicadangkan: ${bak ? path.basename(bak) : '-'})`);
       return { ok: true, backup: bak ? path.basename(bak) : null };
     },
@@ -317,6 +358,22 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       if (!addr) return { error: 'Tidak ada wallet terpasang.' };
       const pass = String(b.password || '');
       if (pass.length < 8) return { error: 'Password keystore minimal 8 karakter.' };
+      // Solana tidak punya format keystore baku: kunci rahasia 64 byte dienkripsi
+      // PBKDF2-SHA256 (600 rb iterasi) → AES-256-GCM, supaya bisa dibuka di peramban
+      // (WebCrypto) lewat "Buka keystore (offline)" di halaman ini.
+      if (SOL) {
+        let kp;
+        try { kp = exec.loadWallet(); } catch (e) { return { error: e.message }; }
+        const salt = crypto.randomBytes(16), iv = crypto.randomBytes(12), iterations = 600_000;
+        const key = crypto.pbkdf2Sync(pass, salt, iterations, 32, 'sha256');
+        const c = crypto.createCipheriv('aes-256-gcm', key, iv);
+        const ct = Buffer.concat([c.update(Buffer.from(kp.secretKey)), c.final(), c.getAuthTag()]);
+        log(`wallet ${addr} diekspor sebagai keystore terenkripsi`);
+        return { ok: true, address: addr, keystore: {
+          format: 'quiver-solana-keystore', version: 1, address: addr,
+          crypto: { cipher: 'aes-256-gcm', kdf: 'pbkdf2', kdfparams: { hash: 'sha256', iterations, salt: salt.toString('hex') }, iv: iv.toString('hex'), ciphertext: ct.toString('hex') },
+        } };
+      }
       let w;
       try { w = exec.loadWallet(); } catch (e) { return { error: e.message }; }
       const keystore = await w.encrypt(pass);
@@ -400,6 +457,21 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
     'POST /api/settings/gas': async (req) => {
       const b = await readBody(req);
       try {
+        if (SOL) {
+          const lo = Math.round(num(b.min_cu_price_micro, 0, 50_000_000, 'Harga prioritas minimum'));
+          const hi = Math.round(num(b.max_cu_price_micro, 1, 50_000_000, 'Harga prioritas maksimum'));
+          if (hi < lo) throw new Error('Harga prioritas maksimum harus ≥ minimum');
+          cfg.gas = {
+            ...(cfg.gas || {}),
+            price_multiplier: num(b.price_multiplier, 0.5, 10, 'Pengali harga prioritas'),
+            min_cu_price_micro: lo, max_cu_price_micro: hi,
+            jupiter_max_priority_lamports: Math.round(num(b.jupiter_max_priority_sol, 0, 0.1, 'Batas prioritas Jupiter') * 1e9),
+            native_reserve_lamports: Math.round(num(b.reserve_sol, 0.01, 100, 'Cadangan SOL') * 1e9),
+            topup_max_usd: num(b.topup_max_usd, 0, 1000, 'Isi ulang SOL maksimum'),
+          };
+          saveCfg();
+          return { ok: true };
+        }
         cfg.gas = {
           ...(cfg.gas || {}),
           price_multiplier: num(b.price_multiplier, 1, 5, 'Pengali harga gas'),

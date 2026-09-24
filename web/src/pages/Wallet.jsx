@@ -6,22 +6,22 @@ import { PageHeader, Panel, Text, DataTable } from '../components/ui';
 import WalletDetail from '../components/WalletDetail';
 import { kUsd, tone, short, num, ago } from '../fmt';
 import { useI18n } from '../i18n';
+import { isAddr, canonAddr } from '../chain';
 
-const isAddr = (a) => /^0x[0-9a-f]{40}$/.test(a);
 
 // Halaman riset: cari wallet mana pun. #wallet/0x… langsung membuka alamat itu.
 export default function WalletPage({ param }) {
   const { t } = useI18n();
-  const initial = param && isAddr(param.toLowerCase()) ? param.toLowerCase() : null;
+  const initial = param && isAddr(canonAddr(param)) ? canonAddr(param) : null;
   const [addr, setAddr] = useState(initial || '');
   const [current, setCurrent] = useState(initial);
   const [recent, setRecent] = useState([]);
-  const valid = isAddr(addr.trim().toLowerCase());
+  const valid = isAddr(canonAddr(addr));
 
   const loadRecent = useCallback(() => get('/api/wallets').then((d) => setRecent(d.wallets || [])), []);
   useEffect(() => { loadRecent(); }, [loadRecent]);
 
-  const open = (a = addr.trim().toLowerCase()) => {
+  const open = (a = canonAddr(addr)) => {
     if (!isAddr(a)) return;
     setAddr(a); setCurrent(a);
     history.replaceState(null, '', '#wallet/' + a);   // bisa di-bookmark / dibagikan

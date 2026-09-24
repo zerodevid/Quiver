@@ -11,6 +11,7 @@
 // sama, sehingga tetap bisa dikenali sekilas. Logo asli menimpanya begitu termuat,
 // tanpa menggeser tata letak.
 import { useEffect, useState } from 'react';
+import { isAddr, isPoolRef, canonAddr } from '../chain';
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 
@@ -28,10 +29,9 @@ export function hue(addr = '') {
   return h;
 }
 
-const isAddr = (a) => /^0x[0-9a-f]{40}$/.test(a);
 // Rute halaman detail token; null kalau alamatnya tidak dikenal (tidak ditautkan).
 export const tokenHref = (address) => {
-  const a = (address || '').toLowerCase();
+  const a = canonAddr(address);
   return isAddr(a) ? `#token/${a}` : null;
 };
 
@@ -51,7 +51,7 @@ export default function TokenIcon({ link = false, ...props }) {
 }
 
 function Icon({ address, symbol, size = 20, className = '' }) {
-  const a = (address || '').toLowerCase();
+  const a = canonAddr(address);
   const local = KNOWN[a];
   // coba → (gagal) tunggu → ulang → (gagal lagi) henti. Server mungkin masih mengambil.
   const [phase, setPhase] = useState('coba');
@@ -68,7 +68,7 @@ function Icon({ address, symbol, size = 20, className = '' }) {
     return () => clearTimeout(id);
   }, [phase]);
 
-  const src = local || (/^0x[0-9a-f]{40}$/.test(a) && a !== ZERO ? `/api/icon?a=${a}${phase === 'ulang' ? '&r=1' : ''}` : null);
+  const src = local || (isAddr(a) && a !== ZERO ? `/api/icon?a=${a}${phase === 'ulang' ? '&r=1' : ''}` : null);
   const showImg = src && (phase === 'coba' || phase === 'ulang');
 
   return (
@@ -107,8 +107,8 @@ export function TokenSym({ address, symbol, className = '' }) {
 
 // Rute halaman detail pool: v4 = poolId (32 byte), v3 = alamat pool.
 export const poolHref = (ref) => {
-  const r = (ref || '').toLowerCase();
-  return /^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(r) ? `#pool/${r}` : null;
+  const r = canonAddr(ref);
+  return isPoolRef(r) ? `#pool/${r}` : null;
 };
 
 // "USDG / OPAI". Dengan `pool`, pasangan itu satu tautan ke halaman pool-nya (seperti

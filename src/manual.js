@@ -51,6 +51,8 @@ function lamanya(ms) {
   const j = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
   return m ? `${j} jam ${m} mnt` : `${j} jam`;
 }
+// Venue Solana (src/solana/manual.js) — aksi mereka juga bisa diikuti manual.
+const SOL_VENUES = new Set(['meteora', 'orca', 'raydium']);
 const feeDinamis = (f) => f != null && (Number(f) & DYNAMIC_FEE) !== 0;
 const feePctOf = (f) => (f == null || feeDinamis(f) ? null : Number(f) / 10000);
 
@@ -631,7 +633,7 @@ class Manual {
 
   // Syarat aksi yang boleh diikuti, tanpa RPC — dipakai juga daftar Aktivitas.
   static followable(a, openMirrors) {
-    return (a.kind === 'increase' || a.kind === 'mint') && (a.venue === 'v4' || String(a.venue).endsWith('v3'))
+    return (a.kind === 'increase' || a.kind === 'mint') && (a.venue === 'v4' || String(a.venue).endsWith('v3') || SOL_VENUES.has(a.venue))
       && (a.verdict === 'skip' || a.verdict === 'error') && !!a.token_id && !!a.pool_ref
       && a.tick_lower != null && a.tick_upper != null
       && !openMirrors.has(`${a.target}|${a.token_id}`);

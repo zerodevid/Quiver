@@ -11,6 +11,7 @@ import { useLivePrice, useLiveCandles } from '../liveCandles';
 import TokenIcon, { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, num, ago, price, tickPrice, locale } from '../fmt';
 import { useI18n } from '../i18n';
+import { isSolana, isAddr, canonAddr, chainInfo } from '../chain';
 
 // Pilihan cepat rentang: [perubahan batas bawah %, perubahan batas atas %, label],
 // bertanda dari harga kini. Persennya dalam harga, jadi "±50%" benar-benar setengah
@@ -149,7 +150,7 @@ function Saldo({ saldo, pool }) {
         </table>
       </div>
       <p className="border-t border-border px-3 py-2 text-xs text-muted">
-        {t('{e} ETH ditahan untuk gas dan tidak ikut dipakai.', { e: num(saldo.gasReserveEth, 4) })}
+        {t('{e} {s} ditahan untuk biaya transaksi dan tidak ikut dipakai.', { e: num(saldo.gasReserveEth, 4), s: saldo.nativeSymbol || chainInfo().nativeSymbol })}
       </p>
     </div>
   );
@@ -186,7 +187,7 @@ function AutoSwap({ p }) {
               <div className="flex items-center gap-2 text-xs text-muted">
                 <span className="flex size-4 items-center justify-center rounded-full border border-border text-[0.625rem]">{i + 1}</span>
                 <span className="font-medium text-foreground">{t(JENIS[s.jenis] || s.jenis, { s: s.ke.symbol })}</span>
-                {s.jenis === 'zap' || s.jenis === 'jembatan' ? <span>· Kyber</span> : <span>· {t('1:1, tanpa slippage')}</span>}
+                {s.jenis === 'zap' || s.jenis === 'jembatan' ? <span>· {s.router || 'Kyber'}</span> : <span>· {t('1:1, tanpa slippage')}</span>}
               </div>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                 <span className="flex items-center gap-1.5">
@@ -203,7 +204,7 @@ function AutoSwap({ p }) {
               {s.maxLossBps != null && (
                 <div className="text-xs text-muted">
                   {t('dibatalkan kalau rugi rute lebih dari {r}%', { r: num(s.maxLossBps / 100, 2) })}
-                  {s.taksiran ? ' · ' + t('jumlah pasti dari kutipan Kyber saat eksekusi') : ''}
+                  {s.taksiran ? ' · ' + t('jumlah pasti dari kutipan {r} saat eksekusi', { r: s.router || 'Kyber' }) : ''}
                 </div>
               )}
             </li>
@@ -286,8 +287,8 @@ function PilihPool({ pools, onPick }) {
   const [scan, setScan] = useState(null);     // hasil pindai dari alamat token
   const [semua, setSemua] = useState(false);
   const timer = useRef(null);
-  const token = q.trim().toLowerCase();
-  const isAlamat = /^0x[0-9a-f]{40}$/.test(token);
+  const token = canonAddr(q);
+  const isAlamat = isAddr(token);
   useEffect(() => () => clearInterval(timer.current), []);
 
   const ambil = async (tok, all) => {
@@ -345,15 +346,15 @@ function PilihPool({ pools, onPick }) {
       )}
       {pakaiScan && !!scan.hidden && !semua && (
         <p className="text-xs text-muted">
-          {t('Yang disembunyikan: pool tanpa likuiditas, berfee dinamis, atau tidak dipasangkan USDG/ETH — masuk ke sana sama saja membuang gas.')}
+          {t(isSolana() ? 'Yang disembunyikan: pool tanpa likuiditas, pool nonaktif, atau tidak dipasangkan USDC/USDT/SOL.' : 'Yang disembunyikan: pool tanpa likuiditas, berfee dinamis, atau tidak dipasangkan USDG/ETH — masuk ke sana sama saja membuang gas.')}
         </p>
       )}
 
       <div className="max-h-80 overflow-y-auto rounded-md border border-border">
         {!hasil.length ? (
           <div>
-            <Empty title={isAlamat ? 'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki' : 'Tidak ada pool yang cocok'}
-              sub={isAlamat ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.' : 'Tempel alamat token untuk mencari poolnya langsung dari chain.'} />
+            <Empty title={isAlamat ? (isSolana() ? 'Tidak ada pool Meteora DLMM / Orca / Raydium CLMM yang bisa dimasuki' : 'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki') : 'Tidak ada pool yang cocok'}
+              sub={isAlamat ? (isSolana() ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDC, USDT, atau SOL.' : 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.') : 'Tempel alamat token untuk mencari poolnya langsung dari chain.'} />
             {pakaiScan && scan.lainnya?.length > 0 && (
               <div className="border-t border-border px-3 py-3 text-sm">
                 <div className="mb-1.5 font-medium">{t('Diperdagangkan di tempat lain')}</div>
@@ -363,7 +364,7 @@ function PilihPool({ pools, onPick }) {
                     <span className="num shrink-0">{usd(x.reserveUsd, 0)}</span>
                   </div>
                 ))}
-                <p className="mt-2 text-xs text-muted">{t('Bot hanya bisa membuka LP di Uniswap v3/v4 (likuiditas terkonsentrasi dengan rentang harga). Pool gaya v2 tidak punya rentang maupun NFT posisi.')}</p>
+                <p className="mt-2 text-xs text-muted">{t(isSolana() ? 'Di Solana bot membuka LP di Meteora DLMM, Orca Whirlpools, dan Raydium CLMM (likuiditas terkonsentrasi dengan rentang harga). AMM biasa tidak punya rentang.' : 'Bot hanya bisa membuka LP di Uniswap v3/v4 (likuiditas terkonsentrasi dengan rentang harga). Pool gaya v2 tidak punya rentang maupun NFT posisi.')}</p>
               </div>
             )}
           </div>
@@ -609,7 +610,7 @@ export default function ManualLp() {
                 </p>
               )}
               {!full && p && !plan?.error && (Math.abs(-p.lowerPct - lo) >= 0.05 || Math.abs(p.upperPct - up) >= 0.05) && (
-                <p className="text-xs text-muted">{t('Dibulatkan ke tick pool: {a} / {b}.', { a: bertanda(-p.lowerPct), b: bertanda(p.upperPct) })}</p>
+                <p className="text-xs text-muted">{t(p.nativeUnit === 'bin' ? 'Dibulatkan ke bin pool: {a} / {b}.' : 'Dibulatkan ke tick pool: {a} / {b}.', { a: bertanda(-p.lowerPct), b: bertanda(p.upperPct) })}</p>
               )}
               <p className="text-xs text-muted">
                 {t('Fee hanya mengalir selama harga ada di dalam rentang. Sempit = fee lebih besar tapi lebih cepat keluar; lebar = lebih aman tapi encer.')}

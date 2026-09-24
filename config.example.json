@@ -220,6 +220,81 @@
         "max_price_impact_bps": 500
       },
       "catatan": "Blok BSC dibuat otomatis: mode simulasi, belum ada target. Tambah target lewat dasbor/Telegram (pilih chain BSC), lalu matikan simulasi kalau sudah yakin."
+    },
+    "solana": {
+      "enabled": false,
+      "chain": {
+        "endpoints": [
+          {
+            "url": "https://api.mainnet-beta.solana.com",
+            "catatan": "resmi: getProgramAccounts OK tapi 429 cepat; cadangan"
+          },
+          {
+            "url": "https://solana-rpc.publicnode.com",
+            "no_gpa": true,
+            "no_history": true,
+            "catatan": "publicnode: cepat untuk baca akun; getProgramAccounts ditolak (410), riwayat tanda tangan kosong untuk wallet yang tidak baru aktif"
+          }
+        ]
+      },
+      "targets": [],
+      "rules": {
+        "filters": {
+          "quote_whitelist": [],
+          "venues": [
+            "meteora",
+            "orca",
+            "raydium"
+          ],
+          "max_fee_bps": 100000
+        },
+        "sizing": {
+          "mode": "fixed_quote",
+          "fixed_quote_usd": 10,
+          "fixed_quote_eth": 0.1,
+          "min_quote_usd": 5,
+          "max_quote_per_position_usd": 25,
+          "max_total_exposure_usd": 100,
+          "daily_budget_usd": 100
+        },
+        "swap": {
+          "enabled": true,
+          "max_slippage_bps": 150,
+          "max_price_impact_bps": 500
+        }
+      },
+      "mode": {
+        "dry_run": true,
+        "paused": false
+      },
+      "loop": {
+        "poll_ms": 4000,
+        "sync_seconds": 30,
+        "equity_seconds": 300,
+        "stale_action_seconds": 180
+      },
+      "gas": {
+        "native_reserve_lamports": 150000000,
+        "min_cu_price_micro": 10000,
+        "max_cu_price_micro": 2000000,
+        "price_multiplier": 1.2,
+        "jupiter_max_priority_lamports": 2000000,
+        "topup_max_usd": 25
+      },
+      "prices": {
+        "eth_usd": 150,
+        "auto_eth_price": true
+      },
+      "scout": {},
+      "risk": {
+        "max_daily_drawdown_pct": 0
+      },
+      "swap": {
+        "enabled": true,
+        "max_slippage_bps": 150,
+        "max_price_impact_bps": 500
+      },
+      "catatan": "Blok Solana dibuat otomatis dalam keadaan MATI. Tambah RPC berkunci di urutan pertama (mis. https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}, HELIUS_KEY di .env), isi LPCOPY_SOLANA_PRIVATE_KEY di .env, set enabled:true, tambah target, lalu matikan simulasi kalau sudah yakin."
     }
   }
 }

@@ -17,13 +17,14 @@ import { PriceChart, DexEmbed, GmgnEmbed, TradesTape, MarketPanel, TFS, VIEWS, S
 import { GmgnWallets } from '../components/Gmgn';
 import { usd, pct, tone, num, price, sqrtPrice, tickPrice } from '../fmt';
 import { useI18n } from '../i18n';
+import { canonAddr } from '../chain';
 
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
 const DYNAMIC_FEE = 0x800000;   // penanda fee dinamis v4 (diatur hook)
 
 export default function PoolDetail({ param }) {
   const { t } = useI18n();
-  const ref = String(param || '').toLowerCase();
+  const ref = canonAddr(param);
   const { data: d, loading, reload } = usePoll(`/api/pool?ref=${encodeURIComponent(ref)}`, 15000);
   // undefined = pilihan otomatis (posisi terbuka terbaru), null = tanpa posisi di grafik.
   const [focusPick, setFocus] = useState(undefined);

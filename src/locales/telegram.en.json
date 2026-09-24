@@ -803,5 +803,18 @@
   "{0} Minimum {1} · periksa setiap {2} menit": "{0} Minimum {1} · checked every {2} minutes",
   "klaim fee berhasil": "fee claim successful",
   "klaim fee menunggu konfirmasi": "fee claim awaiting confirmation",
-  "panen fee otomatis tersedia untuk posisi Uniswap v3 dan v4": "automatic fee harvesting is available for Uniswap v3 and v4 positions"
+  "panen fee otomatis tersedia untuk posisi Uniswap v3 dan v4": "automatic fee harvesting is available for Uniswap v3 and v4 positions",
+  "Belum ada pool Meteora DLMM / Orca / Raydium CLMM yang bisa dimasuki untuk token ini.": "No Meteora DLMM / Orca / Raydium CLMM pool you can enter for this token yet.",
+  "Pengali harga prioritas": "Priority price multiplier",
+  "Harga prioritas minimum (µlamport/CU)": "Minimum priority price (µlamports/CU)",
+  "Harga prioritas maksimum (µlamport/CU)": "Maximum priority price (µlamports/CU)",
+  "Batas prioritas swap Jupiter (SOL)": "Jupiter swap priority cap (SOL)",
+  "Cadangan SOL tak tersentuh": "Minimum SOL reserve",
+  "Isi ulang SOL maksimum": "Maximum SOL top-up",
+  "Kirim alamat wallet Solana yang mau dipotret.\n<i>Contoh:</i> <code>6mch5r…XwTD</code>": "Send the Solana wallet address to snapshot.\n<i>Example:</i> <code>6mch5r…XwTD</code>",
+  "Kirim <b>alamat mint</b> token-nya. Bot mencari pool Meteora DLMM, Orca, dan Raydium CLMM yang memuat token itu (indeks DexScreener/GeckoTerminal, dipastikan ke chain).\n\n<i>Contoh:</i> <code>JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN</code>": "Send the token’s <b>mint address</b>. The bot looks up Meteora DLMM, Orca and Raydium CLMM pools holding it (DexScreener/GeckoTerminal index, confirmed on chain).\n\n<i>Example:</i> <code>JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN</code>",
+  "⏳ Menukar lewat Jupiter…": "⏳ Swapping via Jupiter…",
+  "Menukar lewat agregator Jupiter — rute yang sama dipakai bot untuk membeli token posisi dan menjual sisa.": "Swaps through the Jupiter aggregator — the same route the bot uses to buy position tokens and sell leftovers.",
+  "<i>{0} pool ditemukan, tapi semuanya kosong, nonaktif, atau tidak dipasangkan USDC/USDT/SOL.</i>": "<i>{0} pools found, but all are empty, disabled, or not paired with USDC/USDT/SOL.</i>",
+  "<i>Yang disembunyikan: pool tanpa likuiditas, nonaktif, atau tidak dipasangkan USDC/USDT/SOL.</i>": "<i>Hidden: pools with no liquidity, disabled, or not paired with USDC/USDT/SOL.</i>"
 }

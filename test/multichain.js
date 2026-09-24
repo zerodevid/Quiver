@@ -180,10 +180,14 @@ const rpcStub = { blockNumber: async () => 100, ethCallMany: async (c) => c.map(
     assert.ok(calls.length === 0 || calls.every(([, k]) => k === 'robinhood'));
   });
 
-  await t('setiap jaringan di NETWORKS bisa dibangun dan alamatnya huruf kecil', () => {
+  await t('setiap jaringan di NETWORKS bisa dibangun; alamat EVM huruf kecil, Solana base58 utuh', () => {
+    const { isSolana, normAddr } = require('../src/networks');
     for (const key of Object.keys(NETWORKS)) {
       const p = build(key);
-      for (const [k, a] of Object.entries(p.ADDR)) assert.ok(/^0x[0-9a-f]{40}$/.test(a), `${key}.${k} = ${a}`);
+      for (const [k, a] of Object.entries(p.ADDR)) {
+        if (isSolana(key)) assert.strictEqual(normAddr(key, a), a, `${key}.${k} = ${a}`);
+        else assert.ok(/^0x[0-9a-f]{40}$/.test(a), `${key}.${k} = ${a}`);
+      }
       assert.ok(p.venues.length >= 1);
     }
   });

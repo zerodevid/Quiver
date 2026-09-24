@@ -213,13 +213,7 @@ class Proceeds {
     const preKey = `wpre:${this.network}:${wallet}:${token}:${first}`;
     let pre = this.store.getState(preKey);
     if (pre == null) {
-      pre = '0';
-      if (this.rpc.hasArchive()) {
-        try {
-          const w = await this.rpc.callAt(token, IF_ERC20.encodeFunctionData('balanceOf', [wallet]), first - 1);
-          pre = BigInt(w).toString();
-        } catch (e) { this.log(`saldo awal ${token.slice(0, 10)} gagal: ${e.message}`); }
-      }
+      pre = (await this.preBalance(wallet, token, first)).toString();
       this.store.setState(preKey, pre);
     }
 
@@ -244,40 +238,58 @@ class Proceeds {
       WHERE e.chain=? AND e.wallet=? AND (p.token0=? OR p.token1=?)`, this.network, wallet, token, token).map((x) => x.tx_hash));
     for (const [lo, hi] of parts) {
       if (lo > hi) continue;
-      const logs = await getLogsSafe(this.rpc, { address: token, topics: [TOPIC.transfer, pad32(wallet)] }, lo, hi);
-      const outOf = new Map();
-      for (const l of logs) outOf.set(l.transactionHash, (outOf.get(l.transactionHash) || 0n) + BigInt(l.data));
-      for (const tx of outOf.keys()) {
-        if (seenTx.has(tx)) continue;
-        seenTx.add(tx);
-        const a = await this.analyzeSale(wallet, token, tx, ethUsd);
-        if (!a || a.tokOut === 0n) continue;
-        const ts = await this.chain.blockTs(a.block);
-        this.store.run('INSERT OR REPLACE INTO wsales(chain,wallet,token,tx_hash,block,ts,tok_out,quote_usd,kind) VALUES(?,?,?,?,?,?,?,?,?)',
-          this.network, wallet, token, tx, a.block, ts, a.tokOut.toString(), a.usd, a.usd != null ? 'sell' : 'send');
-        known.push({ tx_hash: tx, block: a.block, tok_out: a.tokOut.toString(), quote_usd: a.usd });
-      }
-      // Arah sebaliknya: token yang masuk dari luar posisi kita — dibeli di pasar atau
-      // dikirim wallet lain. Tanpa ini antrean kehabisan stok dan penjualan lama
-      // tumpah ke posisi yang belum dibuka saat penjualan itu terjadi.
-      const inLogs = await getLogsSafe(this.rpc, { address: token, topics: [TOPIC.transfer, null, pad32(wallet)] }, lo, hi);
-      const inOf = new Map();
-      for (const l of inLogs) {
-        const cur = inOf.get(l.transactionHash) || { block: parseInt(l.blockNumber, 16), amt: 0n };
-        cur.amt += BigInt(l.data);
-        inOf.set(l.transactionHash, cur);
-      }
-      for (const [tx, v] of inOf) {
-        if (lpTx.has(tx)) continue;
-        const net = v.amt - (outOf.get(tx) || 0n);
-        if (net <= 0n) continue;
-        const ts = await this.chain.blockTs(v.block);
-        this.store.run('INSERT OR REPLACE INTO wflows(chain,wallet,token,tx_hash,block,ts,tok_in) VALUES(?,?,?,?,?,?,?)',
-          this.network, wallet, token, tx, v.block, ts, net.toString());
-      }
+      await this.scanTransfers(wallet, token, lo, hi, { ethUsd, known, seenTx, lpTx });
     }
     this.store.setState(spanKey, JSON.stringify({ from: Math.min(first, span?.from ?? first), to: head }));
     known.sort((x, y) => x.block - y.block);
+    await this.allocate(wallet, token, lots, { first, pre, known, ethUsd, head });
+  }
+
+  // Saldo token sebelum lot pertama (butuh node arsip; tanpa itu nol).
+  async preBalance(wallet, token, first) {
+    if (!this.rpc.hasArchive()) return 0n;
+    try {
+      const w = await this.rpc.callAt(token, IF_ERC20.encodeFunctionData('balanceOf', [wallet]), first - 1);
+      return BigInt(w);
+    } catch (e) { this.log(`saldo awal ${token.slice(0, 10)} gagal: ${e.message}`); return 0n; }
+  }
+
+  // Transfer token keluar (→ wsales) dan masuk dari luar posisi (→ wflows) di [lo, hi].
+  async scanTransfers(wallet, token, lo, hi, { ethUsd, known, seenTx, lpTx }) {
+    const logs = await getLogsSafe(this.rpc, { address: token, topics: [TOPIC.transfer, pad32(wallet)] }, lo, hi);
+    const outOf = new Map();
+    for (const l of logs) outOf.set(l.transactionHash, (outOf.get(l.transactionHash) || 0n) + BigInt(l.data));
+    for (const tx of outOf.keys()) {
+      if (seenTx.has(tx)) continue;
+      seenTx.add(tx);
+      const a = await this.analyzeSale(wallet, token, tx, ethUsd);
+      if (!a || a.tokOut === 0n) continue;
+      const ts = await this.chain.blockTs(a.block);
+      this.store.run('INSERT OR REPLACE INTO wsales(chain,wallet,token,tx_hash,block,ts,tok_out,quote_usd,kind) VALUES(?,?,?,?,?,?,?,?,?)',
+        this.network, wallet, token, tx, a.block, ts, a.tokOut.toString(), a.usd, a.usd != null ? 'sell' : 'send');
+      known.push({ tx_hash: tx, block: a.block, tok_out: a.tokOut.toString(), quote_usd: a.usd });
+    }
+    // Arah sebaliknya: token yang masuk dari luar posisi kita — dibeli di pasar atau
+    // dikirim wallet lain. Tanpa ini antrean kehabisan stok dan penjualan lama
+    // tumpah ke posisi yang belum dibuka saat penjualan itu terjadi.
+    const inLogs = await getLogsSafe(this.rpc, { address: token, topics: [TOPIC.transfer, null, pad32(wallet)] }, lo, hi);
+    const inOf = new Map();
+    for (const l of inLogs) {
+      const cur = inOf.get(l.transactionHash) || { block: parseInt(l.blockNumber, 16), amt: 0n };
+      cur.amt += BigInt(l.data);
+      inOf.set(l.transactionHash, cur);
+    }
+    for (const [tx, v] of inOf) {
+      if (lpTx.has(tx)) continue;
+      const net = v.amt - (outOf.get(tx) || 0n);
+      if (net <= 0n) continue;
+      const ts = await this.chain.blockTs(v.block);
+      this.store.run('INSERT OR REPLACE INTO wflows(chain,wallet,token,tx_hash,block,ts,tok_in) VALUES(?,?,?,?,?,?,?)',
+        this.network, wallet, token, tx, v.block, ts, net.toString());
+    }
+  }
+
+  async allocate(wallet, token, lots, { first, pre, known, ethUsd, head }) {
 
     // Nilai sisi non-kuotasi di harga tutup, per satuan mentah — cadangan kalau harga
     // pool di blok penjualan / sekarang tidak terbaca (lebih jujur daripada nol).

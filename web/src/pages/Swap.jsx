@@ -8,9 +8,9 @@ import { PageHeader, Notice, Loading, KV, Panel, Empty, Refreshing, TxHash } fro
 import TokenIcon, { TokenSym } from '../components/TokenIcon';
 import { usd, num, pct, short, ago, TXSTATUS } from '../fmt';
 import { useI18n } from '../i18n';
+import { isAddr, canonAddr, isSolana } from '../chain';
 
 const PORSI = [['25%', '25%'], ['50%', '50%'], ['75%', '75%'], ['semua', 'Maks']];
-const isAddr = (a) => /^0x[0-9a-f]{40}$/.test(a);
 
 // Satu baris token di pemilih: lambang, simbol (+ penanda "manual"), alamat singkat,
 // saldo dan nilainya di kanan.
@@ -46,14 +46,15 @@ function TokenPicker({ value, onChange, list, all, exclude, side, onImport }) {
   const [tambah, setTambah] = useState(false);
   const cur = all.find((x) => x.address === value);
   const qq = q.trim().toLowerCase();
+  const qa = canonAddr(q);   // alamat: bentuk kanonik chain (Solana peka huruf)
 
   const shown = useMemo(() => (qq
-    ? list.filter((x) => x.symbol.toLowerCase().includes(qq) || x.address.includes(qq))
+    ? list.filter((x) => x.symbol.toLowerCase().includes(qq) || x.address.toLowerCase().includes(qq))
     : list), [list, qq]);
   // Alamat yang ditempel tapi tidak ada di daftar sisi ini. Kalau tokennya sudah
   // dikenal (mis. saldo kosong di sisi "dari"), tidak perlu ditanyakan ke chain.
-  const known = isAddr(qq) ? all.find((x) => x.address === qq) : null;
-  const perluCek = isAddr(qq) && !shown.length && !known;
+  const known = isAddr(qa) ? all.find((x) => x.address === qa) : null;
+  const perluCek = isAddr(qa) && !shown.length && !known;
 
   useEffect(() => {
     setCek(null);
@@ -96,7 +97,7 @@ function TokenPicker({ value, onChange, list, all, exclude, side, onImport }) {
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted" />
                   <Input autoFocus variant="secondary" className="w-full pl-9" value={q} onChange={(e) => setQ(e.target.value)}
-                    placeholder={t('Cari simbol atau tempel alamat 0x…')} aria-label={t('Cari token')} />
+                    placeholder={t(isSolana() ? 'Cari simbol atau tempel alamat mint…' : 'Cari simbol atau tempel alamat 0x…')} aria-label={t('Cari token')} />
                 </div>
 
                 {!qq && side === 'to' && (
@@ -135,13 +136,13 @@ function TokenPicker({ value, onChange, list, all, exclude, side, onImport }) {
                       </div>
                     ) : cek ? (
                       <div className="px-2.5 py-6 text-center text-sm text-danger">
-                        {cek.error || (cek.kind === 'wallet' ? t('Itu alamat wallet, bukan token.') : t('Kontrak ini bukan token ERC-20.'))}
+                        {cek.error || (cek.kind === 'wallet' ? t('Itu alamat wallet, bukan token.') : t(isSolana() ? 'Alamat ini bukan mint token.' : 'Kontrak ini bukan token ERC-20.'))}
                       </div>
                     ) : null
                   )}
-                  {!shown.length && !isAddr(qq) && (
+                  {!shown.length && !isAddr(qa) && (
                     <div className="px-2.5 py-6 text-center text-sm text-muted">
-                      {qq.startsWith('0x') ? t('Alamat belum lengkap — 0x diikuti 40 karakter.') : t('Tidak ada yang cocok. Tempel alamat kontraknya untuk menambahkan token baru.')}
+                      {!isSolana() && qq.startsWith('0x') ? t('Alamat belum lengkap — 0x diikuti 40 karakter.') : t('Tidak ada yang cocok. Tempel alamat kontraknya untuk menambahkan token baru.')}
                     </div>
                   )}
                 </div>
@@ -191,7 +192,7 @@ function Holdings({ tokens, dari, onUse, onRemove, onImport, harga, onRetryHarga
   const halIni = Math.min(hal, nHal - 1);
   const dari0 = halIni * PER_HAL;
   const tampil = rows.slice(dari0, dari0 + PER_HAL);
-  const a = addr.trim().toLowerCase();
+  const a = canonAddr(addr);
 
   const tambah = async () => {
     setKirim(true);
@@ -301,7 +302,7 @@ function Holdings({ tokens, dari, onUse, onRemove, onImport, harga, onRetryHarga
 
       {/* input token manual */}
       <form className="flex gap-2 border-t border-border p-3" onSubmit={(e) => { e.preventDefault(); if (isAddr(a)) tambah(); }}>
-        <Input variant="secondary" value={addr} onChange={(e) => setAddr(e.target.value)} placeholder={t('Tambah token: alamat 0x…')}
+        <Input variant="secondary" value={addr} onChange={(e) => setAddr(e.target.value)} placeholder={t(isSolana() ? 'Tambah token: alamat mint…' : 'Tambah token: alamat 0x…')}
           aria-label={t('Alamat token')} className="mono min-w-0 flex-1 text-xs" />
         <Button type="submit" size="sm" variant="outline" className="h-9" isDisabled={!isAddr(a)} isPending={kirim}>
           <Plus className="size-4" />{t('Tambah')}
@@ -542,7 +543,7 @@ export default function Swap() {
 
   const dry = status?.mode?.dry_run !== false;
   const header = <PageHeader group="Aksi" title="Swap"
-    desc="Menukar aset lewat agregator Kyber — rute yang sama dipakai bot untuk zap dan menjual memecoin sisa." />;
+    desc={isSolana() ? 'Menukar aset lewat agregator Jupiter — rute yang sama dipakai bot untuk membeli token posisi dan menjual memecoin sisa.' : 'Menukar aset lewat agregator Kyber — rute yang sama dipakai bot untuk zap dan menjual memecoin sisa.'} />;
 
   if (tokens === null) return (<>{header}<Loading page /></>);
 
@@ -577,7 +578,7 @@ export default function Swap() {
             <div>
               <div className="font-medium">{t('Belum ada aset yang bisa ditukar')}</div>
               <p className="mt-1 text-sm text-muted">
-                {t('Wallet bot kosong. Isi dengan ETH atau USDG dulu — alamatnya ada di Pengaturan.')}
+                {t(isSolana() ? 'Wallet bot kosong. Isi dengan SOL atau USDC dulu — alamatnya ada di Pengaturan.' : 'Wallet bot kosong. Isi dengan ETH atau USDG dulu — alamatnya ada di Pengaturan.')}
               </p>
             </div>
             <Button variant="outline" onPress={() => { location.hash = 'settings'; }}>{t('Buka Pengaturan')}</Button>

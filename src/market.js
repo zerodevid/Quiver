@@ -46,6 +46,8 @@ class Market {
     this.gmgnNext = 0;        // ms — panggilan GMGN berikutnya paling cepat (jarak antar panggilan)
     this.gmgnQueue = null;    // rantai promise antrean GMGN
     this.network = chain?.network || 'robinhood';
+    // Alamat EVM dibandingkan dalam huruf kecil; alamat Solana (base58) peka huruf.
+    this.lc = chain?.kind === 'solana' ? (x) => String(x || '') : (x) => String(x || '').toLowerCase();
     this.DS = dsBase(chain?.dexscreener || 'robinhood');
     this.DS_TOKEN = dsTokenBase(chain?.dexscreener || 'robinhood');
     this.gtSlug = chain?.geckoterminal || 'robinhood';
@@ -131,12 +133,12 @@ class Market {
 
   // Statistik pool dari DexScreener. pool v4 = poolId (bytes32), v3 = alamat pool.
   pair(ref) {
-    const key = `ds:${String(ref).toLowerCase()}`;
+    const key = `ds:${this.lc(ref)}`;
     return this.memo(key, 30_000, async () => {
       const j = await this.json(this.DS + ref);
       const p = j?.pairs?.[0] || j?.pair;
       if (!p) return { error: 'pool ini belum terindeks di DexScreener' };
-      const lc = (a) => String(a || '').toLowerCase();
+      const lc = this.lc;
       return {
         url: p.url, dexId: p.dexId, labels: p.labels || [],
         base: { address: lc(p.baseToken?.address), symbol: p.baseToken?.symbol },
@@ -155,11 +157,11 @@ class Market {
   // Semua pool satu token dari DexScreener, likuiditas terbesar di depan — bahan
   // halaman detail token. Pool pertama jadi sumber grafik harganya.
   token(address) {
-    const a = String(address).toLowerCase();
+    const a = this.lc(address);
     return this.memo(`dst:${a}`, 30_000, async () => {
       const j = await this.json(this.DS_TOKEN + a);
       const list = Array.isArray(j) ? j : j?.pairs || [];
-      const lc = (x) => String(x || '').toLowerCase();
+      const lc = this.lc;
       const pairs = list.filter((p) => p?.pairAddress).map((p) => ({
         pool: lc(p.pairAddress), url: p.url, dexId: p.dexId, labels: p.labels || [],
         base: { address: lc(p.baseToken?.address), symbol: p.baseToken?.symbol, name: p.baseToken?.name },
@@ -186,7 +188,7 @@ class Market {
     const [frame, agg, secs] = TF[tf] || TF['1h'];
     const n = Math.max(10, Math.min(1000, Number(limit) || 300));
     const beforeS = before ? Math.ceil(before / 1000 / secs) * secs : null;
-    const key = `gt:${String(ref).toLowerCase()}:${tf}:${n}:${token || ''}:${currency}:${beforeS || ''}`;
+    const key = `gt:${this.lc(ref)}:${tf}:${n}:${token || ''}:${currency}:${beforeS || ''}`;
     // Cache selama setengah lilin, maksimum 60 detik: lilin yang sedang berjalan
     // tetap terlihat bergerak tanpa membanjiri GeckoTerminal. Riwayat yang sudah
     // lewat (before) tidak berubah lagi — simpan lebih lama.
@@ -202,8 +204,8 @@ class Market {
       const candles = [...byT.values()].sort((a, b) => a.t - b.t);
       return {
         tf, secs, candles,
-        base: j?.meta?.base ? { address: String(j.meta.base.address || '').toLowerCase(), symbol: j.meta.base.symbol } : null,
-        quote: j?.meta?.quote ? { address: String(j.meta.quote.address || '').toLowerCase(), symbol: j.meta.quote.symbol } : null,
+        base: j?.meta?.base ? { address: this.lc(j.meta.base.address || ''), symbol: j.meta.base.symbol } : null,
+        quote: j?.meta?.quote ? { address: this.lc(j.meta.quote.address || ''), symbol: j.meta.quote.symbol } : null,
         fetchedAt: Date.now(),
       };
     });
@@ -236,10 +238,10 @@ class Market {
     const [, , secs] = TF[tf] || TF['1h'];
     const n = Math.max(10, Math.min(1000, Number(limit) || 300));
     const beforeS = before ? Math.ceil(before / 1000 / secs) * secs : null;
-    const ck = `gmgn:${String(token).toLowerCase()}:${tf}:${n}:${beforeS || ''}`;
+    const ck = `gmgn:${this.lc(token)}:${tf}:${n}:${beforeS || ''}`;
     return this.memo(ck, beforeS ? 10 * 60_000 : Math.min(60_000, Math.max(15_000, (secs * 1000) / 2)), async () => {
       const to = beforeS ? beforeS : Math.floor(Date.now() / 1000);
-      const j = await this.gmgn('/v1/market/token_kline', { address: String(token).toLowerCase(), resolution: tf, from: (to - n * secs) * 1000, to: to * 1000 });
+      const j = await this.gmgn('/v1/market/token_kline', { address: this.lc(token), resolution: tf, from: (to - n * secs) * 1000, to: to * 1000 });
       if (j?.error) return j;
       const byT = new Map();
       for (const c of j?.list || []) {
@@ -249,14 +251,14 @@ class Market {
         byT.set(t, { t: t * 1000, o, h, l, c: cl, v: Number(c.amount) || 0 });
       }
       const candles = [...byT.values()].sort((a, b) => a.t - b.t);
-      return { tf, secs, candles, source: 'gmgn', currency: 'usd', base: { address: String(token).toLowerCase() }, quote: null, fetchedAt: Date.now() };
+      return { tf, secs, candles, source: 'gmgn', currency: 'usd', base: { address: this.lc(token) }, quote: null, fetchedAt: Date.now() };
     });
   }
 
   // Profil token menurut GMGN: info + security (bobot 1 + 1), sekali per menit per
   // token. Salah satu boleh gagal — yang lain tetap dipakai dan galatnya dibawa.
   gmgnToken(address) {
-    const a = String(address).toLowerCase();
+    const a = this.lc(address);
     if (!this.gmgnKey()) return Promise.resolve({ enabled: false });
     return this.memo(`gmgn-token:${a}`, 60_000, async () => {
       const [info, sec] = await Promise.all([
@@ -277,7 +279,7 @@ class Market {
   // Pemegang / trader teratas satu token (bobot 5 — sekali panggil menghabiskan
   // bucket paket gratis), jadi disimpan 3 menit dan hanya ditarik saat panelnya dibuka.
   gmgnWallets(address, { kind = 'holders', limit = 50, orderBy = null } = {}) {
-    const a = String(address).toLowerCase();
+    const a = this.lc(address);
     if (!this.gmgnKey()) return Promise.resolve({ enabled: false });
     const n = Math.max(5, Math.min(100, Number(limit) || 50));
     const path = kind === 'traders' ? '/v1/market/token_top_traders' : '/v1/market/token_top_holders';
@@ -290,7 +292,7 @@ class Market {
 
   // Statistik trading satu wallet menurut GMGN (bobot 3), 5 menit.
   gmgnWallet(address, { period = '7d' } = {}) {
-    const a = String(address).toLowerCase();
+    const a = this.lc(address);
     if (!this.gmgnKey()) return Promise.resolve({ enabled: false });
     const per = period === '30d' ? '30d' : '7d';
     return this.memo(`gmgn-wallet:${a}:${per}`, 300_000, async () => {
@@ -341,8 +343,8 @@ class Market {
   // bisa memanggil GeckoTerminal sendiri (lihat trades.mjs). Cache 15 detik: IP VPS
   // ini dipakai tiga instance sekaligus dan jatahnya ~30 panggilan/menit.
   trades(ref, { token = null, limit = 80 } = {}) {
-    const t = String(token || '').toLowerCase();
-    return this.memo(`gtt:${String(ref).toLowerCase()}:${t}:${limit}`, 15_000, async () => {
+    const t = this.lc(token || '');
+    return this.memo(`gtt:${this.lc(ref)}:${t}:${limit}`, 15_000, async () => {
       const j = await this.json(gtTradesUrl(this.gtSlug, ref));
       if (!j) return { error: 'pool ini belum terindeks di GeckoTerminal' };
       return { trades: normalizeTrades(j, { token: t || null, limit }), fetchedAt: Date.now() };

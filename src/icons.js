@@ -40,12 +40,18 @@ function sniff(b) {
   if (b.length > 12 && b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP') return ['webp', 'image/webp'];
   return null;
 }
-const isAddr = (a) => /^0x[0-9a-f]{40}$/.test(a);
+const isEvmAddr = (a) => /^0x[0-9a-f]{40}$/.test(a);
+const isBase58 = (a) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a);
 
 class Icons {
   constructor({ store, dir, chain = null, log = () => {}, fetchImpl = globalThis.fetch, gapMs = GAP_MS, collectMs = 150, now = Date.now }) {
     this.store = store; this.dir = dir; this.log = log; this.fetch = fetchImpl;
     this.network = chain?.network || 'robinhood';
+    // Solana: alamat base58 PEKA HURUF (tidak di-lowercase); ikon cadangan dari Jupiter.
+    this.chain = chain;
+    this.sol = chain?.kind === 'solana';
+    this.lc = this.sol ? (x) => String(x || '').trim() : (x) => String(x || '').toLowerCase();
+    this.isAddr = this.sol ? isBase58 : isEvmAddr;
     this.API = apiFor(chain?.geckoterminal || 'robinhood');
     this.DS_API = dsApiFor(chain?.dexscreener || 'robinhood');
     this.gapMs = gapMs; this.collectMs = collectMs; this.now = now;
@@ -93,8 +99,8 @@ class Icons {
 
   // Logo satu token. `wait` = berapa lama boleh menunggu pengambilan pertama.
   async get(addr, { wait = 0 } = {}) {
-    const a = String(addr || '').toLowerCase();
-    if (!isAddr(a) || a === ZERO) return null;
+    const a = this.lc(addr);
+    if (!this.isAddr(a) || a === ZERO) return null;
     if (!this.stale(this.row(a))) return this.read(a);
     if (!wait) { this.enqueue([a]); return this.read(a); }
     await new Promise((resolve) => {
@@ -109,8 +115,8 @@ class Icons {
 
   enqueue(addrs) {
     for (const x of addrs) {
-      const a = String(x || '').toLowerCase();
-      if (isAddr(a) && a !== ZERO && this.stale(this.row(a))) this.want.add(a);
+      const a = this.lc(x);
+      if (this.isAddr(a) && a !== ZERO && this.stale(this.row(a))) this.want.add(a);
     }
     if (this.want.size && !this.running) this.loop().catch((e) => this.log(`logo: ${e.message}`));
   }
@@ -166,7 +172,7 @@ class Icons {
     for (const d of data) {
       const u = d.attributes?.image_url;
       // "missing.png" = GeckoTerminal tahu tokennya tapi tidak punya logonya.
-      if (u && !/missing/i.test(u) && /^https:\/\//.test(u)) url.set(String(d.attributes.address || '').toLowerCase(), u);
+      if (u && !/missing/i.test(u) && /^https:\/\//.test(u)) url.set(this.lc(d.attributes.address), u);
     }
     const kurang = batch.filter((a) => !url.has(a));
     if (kurang.length) {
@@ -174,11 +180,20 @@ class Icons {
         const r = await this.fetch(this.DS_API + kurang.join(','), { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
         const pairs = r.ok ? await r.json() : [];
         for (const p of Array.isArray(pairs) ? pairs : []) {
-          const a = String(p.baseToken?.address || '').toLowerCase();
+          const a = this.lc(p.baseToken?.address);
           const u = p.info?.imageUrl;
           if (kurang.includes(a) && !url.has(a) && /^https:\/\//.test(u || '')) url.set(a, u);
         }
       } catch { /* cadangan saja — GeckoTerminal sudah menjawab */ }
+    }
+    // Solana: Jupiter mengenal logo hampir semua token SPL (termasuk memecoin baru yang
+    // belum terindeks GeckoTerminal/DexScreener).
+    const sisa = batch.filter((a) => !url.has(a));
+    if (this.sol && sisa.length && this.chain?.jup?.tokenInfo) {
+      try {
+        const info = await this.chain.jup.tokenInfo(sisa);
+        for (const a of sisa) { const u = info.get(a)?.icon; if (/^https:\/\//.test(u || '')) url.set(a, u); }
+      } catch { /* cadangan saja */ }
     }
     for (const a of batch) {
       const prev = this.row(a);

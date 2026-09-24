@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "commonjs",
-  "description": "Quiver — copy-LP untuk Robinhood Chain: cermin posisi likuiditas Uniswap v3/v4 dari wallet target, dengan dasbor dan bot Telegram",
+  "description": "Quiver — copy-LP untuk Robinhood Chain, BNB Smart Chain & Solana: cermin posisi likuiditas Uniswap v3/v4, PancakeSwap v3, Meteora DLMM, Orca, dan Raydium dari wallet target, dengan dasbor dan bot Telegram",
   "main": "src/index.js",
   "scripts": {
     "start": "node --no-warnings src/index.js",
@@ -11,7 +11,17 @@
     "export-key": "node --no-warnings src/export-key.js"
   },
   "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@meteora-ag/dlmm": "^1.9.14",
+    "@orca-so/common-sdk": "^0.7.1",
+    "@orca-so/whirlpools-sdk": "^0.22.0",
+    "@raydium-io/raydium-sdk-v2": "0.2.73-alpha",
     "@resvg/resvg-js": "^2.6.2",
+    "@solana/spl-token": "^0.4.15",
+    "@solana/web3.js": "^1.99.0",
+    "bn.js": "^5.2.5",
+    "bs58": "^6.0.0",
+    "decimal.js": "^10.6.0",
     "ethers": "^6.17.0"
   }
 }

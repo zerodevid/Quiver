@@ -22,7 +22,7 @@ const cols = [
       <TokenIcon address={x.address} symbol={x.symbol} size={22} link />
       <div className="min-w-0">
         <span className="flex items-center gap-2"><TokenSym address={x.address} symbol={x.symbol} className="font-medium" />{!x.native && <TradeLinks token={x.address} compact />}</span>
-        <div className="mono truncate text-xs text-muted">{x.native ? tt('ETH native') : x.name || `${x.address.slice(0, 6)}…${x.address.slice(-4)}`}</div>
+        <div className="mono truncate text-xs text-muted">{x.native ? (x.name || tt('ETH native')) : x.name || `${x.address.slice(0, 6)}…${x.address.slice(-4)}`}</div>
       </div>
     </div>) },
   { key: 'amt', label: 'Jumlah', align: 'end', sort: (x) => x.amount, render: (x) => <span className="num whitespace-nowrap">{amount(x.amount)}</span> },

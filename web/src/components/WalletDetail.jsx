@@ -12,9 +12,9 @@ import PnlCalendar from './PnlCalendar';
 import WalletPositionHistory from './WalletPositionHistory';
 import { usd, kUsd, pct, tone, ago, dur, num, age, widthPct } from '../fmt';
 import { useI18n, translate as tt } from '../i18n';
+import { isAddr } from '../chain';
 
 export const WINDOWS = [['250000', '~7 jam'], ['900000', '~1 hari'], ['2600000', '~3 hari'], ['6000000', '~7 hari'], ['100000000', 'Semua riwayat']];
-const isAddr = (a) => /^0x[0-9a-f]{40}$/.test(a);
 
 function phaseText(j) {
   if (!j) return tt('Menyiapkan pemindaian…');

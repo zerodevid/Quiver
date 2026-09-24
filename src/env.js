@@ -9,6 +9,8 @@
 //
 // Yang bisa diisi (lihat .env.example):
 //   LPCOPY_PRIVATE_KEY          kunci privat wallet bot (menggantikan wallet.key_file)
+//   LPCOPY_SOLANA_PRIVATE_KEY   kunci wallet Solana, base58 atau larik JSON
+//                               (menggantikan wallet.solana_key_file)
 //   LPCOPY_AUTH_TOKEN           token masuk dasbor           -> server.auth_token
 //   LPCOPY_TELEGRAM_BOT_TOKEN   token bot dari @BotFather    -> telegram.bot_token
 //   LPCOPY_NTFY_TOPIC           topik ntfy.sh                -> notify.ntfy_topic
@@ -54,7 +56,7 @@ function loadDotEnv(file) {
   const loose = (st.mode & 0o077) !== 0;
   // Kunci privat di berkas yang bisa dibaca pengguna lain = bocor. Sama kerasnya
   // dengan pemeriksaan wallet.key_file di executor.
-  if (loose && vars.LPCOPY_PRIVATE_KEY) throw new Error(`izin ${file} terlalu longgar untuk menyimpan kunci privat — jalankan: chmod 600 ${file}`);
+  if (loose && (vars.LPCOPY_PRIVATE_KEY || vars.LPCOPY_SOLANA_PRIVATE_KEY)) throw new Error(`izin ${file} terlalu longgar untuk menyimpan kunci privat — jalankan: chmod 600 ${file}`);
   const keys = [], external = [];
   for (const [k, v] of Object.entries(vars)) {
     if (v === '') continue;                                   // kosong = tidak diisi

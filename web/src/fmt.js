@@ -16,9 +16,14 @@ export const short = (a) => (a ? a.slice(0, 6) + '…' + a.slice(-4) : '—');
 // Penjelajah blok chain yang sedang ditampilkan (Blockscout / BscScan memakai jalur
 // /tx dan /address yang sama) — tautan transaksi di riwayat posisi dan aktivitas.
 export const txHref = (hash) => (hash ? `${chainInfo().explorer}/tx/${hash}` : null);
-export const addrHref = (a) => (a ? `${chainInfo().explorer}/address/${a}` : null);
+// Solscan menamai halaman alamat /account/, penjelajah EVM /address/.
+export const addrHref = (a) => (a ? `${chainInfo().explorer}/${chainInfo().kind === 'solana' ? 'account' : 'address'}/${a}` : null);
 // Portofolio LP wallet di LPAgent — pembanding luar untuk angka riset kita.
-export const lpagentHref = (a) => (a ? `https://app.lpagent.io/portfolio?address=${a}&chain=${chainInfo().key === 'bsc' ? 'BSC' : 'ROBINHOOD'}` : null);
+// LPAgent aslinya alat analitik LP Solana (Meteora): tanpa parameter chain = Solana.
+export const lpagentHref = (a) => (!a ? null : chainInfo().kind === 'solana' ? `https://app.lpagent.io/portfolio?address=${a}`
+  : `https://app.lpagent.io/portfolio?address=${a}&chain=${chainInfo().key === 'bsc' ? 'BSC' : 'ROBINHOOD'}`);
+// Nama penjelajah blok chain ini untuk label tautan (Solscan / BscScan / Blockscout).
+export const explorerName = () => { const e = chainInfo().explorer || ''; return /solscan/.test(e) ? 'Solscan' : /bscscan/.test(e) ? 'BscScan' : 'Blockscout'; };
 export const tone = (v) => (v > 0.005 ? 'text-success' : v < -0.005 ? 'text-danger' : '');
 export const widthPct = (lo, hi) => (1.0001 ** (hi - lo) - 1) * 100;
 
