@@ -6,9 +6,11 @@
 // Posisi Orca = NFT: pemilik posisi = pemegang NFT-nya. Enumerasi wallet lewat SDK
 // (getAllPositionAccountsByOwner: akun token SPL + Token-2022 milik wallet → PDA posisi).
 const { PublicKey } = require('@solana/web3.js');
+const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = require('@solana/spl-token');
 const BN = require('bn.js');
 const {
-  WhirlpoolContext, buildWhirlpoolClient, getAllPositionAccountsByOwner, PDAUtil, TickArrayUtil,
+  WhirlpoolContext, buildWhirlpoolClient, PDAUtil, TickArrayUtil,
+  ParsableWhirlpool, ParsableTickArray, ParsablePosition,
   TokenExtensionUtil, decreaseLiquidityQuoteByLiquidityWithParams, IGNORE_CACHE, ORCA_WHIRLPOOL_PROGRAM_ID,
 } = require('@orca-so/whirlpools-sdk');
 const { Percentage } = require('@orca-so/common-sdk');
@@ -39,7 +41,22 @@ class OrcaVenue {
   ctx(owner, conn) {
     return WhirlpoolContext.from(conn, viewWallet(owner || PublicKey.default.toBase58()));
   }
-  on(owner, fn) { return this.rpc.run((c) => fn(this.ctx(owner, c))); }
+  on(owner, fn, opts) { return this.rpc.run((c) => fn(this.ctx(owner, c)), opts); }
+
+  // Akun dibaca sendiri lewat rpc.run (≤100 per getMultipleAccounts, berurutan, dengan
+  // alih endpoint), SDK Orca hanya dipakai untuk parse. Fetcher SDK memakai
+  // `new Promise(async …)`: kalau RPC menolak, galatnya jadi promise tak tertangani dan
+  // panggilannya menggantung sampai timeout 10 detik.
+  async fetchMany(method, keys) {
+    const P = { getPools: ParsableWhirlpool, getTickArrays: ParsableTickArray, getPositions: ParsablePosition }[method];
+    const out = [];
+    for (let i = 0; i < keys.length; i += 100) {
+      const part = keys.slice(i, i + 100).map((k) => new PublicKey(k));
+      const infos = await this.rpc.run((c) => c.getMultipleAccountsInfo(part));
+      part.forEach((pk, k) => out.push([pk.toBase58(), infos[k] ? P.parse(pk, infos[k]) : null]));
+    }
+    return method === 'getTickArrays' ? out.map(([, v]) => v) : new Map(out);
+  }
 
   poolState(addr, d, dec) {
     const a = b58(d.tokenMintA), b = b58(d.tokenMintB);
@@ -59,7 +76,7 @@ class OrcaVenue {
   async pools(addrs, decimalsOf) {
     const out = new Map();
     if (!addrs.length) return out;
-    const got = await this.on(null, (ctx) => ctx.fetcher.getPools(addrs, IGNORE_CACHE));
+    const got = await this.fetchMany('getPools', addrs);
     const mints = [];
     for (const d of got.values()) if (d) mints.push(b58(d.tokenMintA), b58(d.tokenMintB));
     const dec = decimalsOf ? await decimalsOf([...new Set(mints)]) : new Map();
@@ -89,8 +106,21 @@ class OrcaVenue {
   }
 
   async listPositions(owner, decimalsOf) {
-    const map = await this.on(null, (ctx) => getAllPositionAccountsByOwner({ ctx, owner: new PublicKey(owner), includesBundledPositions: false }));
-    const all = [...map.positions, ...map.positionsWithTokenExtensions];
+    // NFT posisi (jumlah 1, desimal 0) di kedua program token → PDA posisi (sama dengan
+    // getAllPositionAccountsByOwner SDK tanpa bundle, tapi lewat rpc.run).
+    const own = new PublicKey(owner);
+    const mints = [];
+    for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+      const r = await this.rpc.run((c) => c.getParsedTokenAccountsByOwner(own, { programId }), { indexed: true });
+      for (const { account } of r.value) {
+        const info = account.data?.parsed?.info;
+        if (info?.tokenAmount?.decimals === 0 && info.tokenAmount.amount === '1') mints.push(info.mint);
+      }
+    }
+    if (!mints.length) return [];
+    const pdas = mints.map((mint) => PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, new PublicKey(mint)).publicKey.toBase58());
+    const got = await this.fetchMany('getPositions', pdas);
+    const all = [...got].filter(([, p]) => p);
     const pools = await this.pools([...new Set(all.map(([, p]) => b58(p.whirlpool)))], decimalsOf);
     return all.map(([id, p]) => ({ ...this.norm(String(id), p, pools.get(b58(p.whirlpool))), owner }));
   }
@@ -102,7 +132,7 @@ class OrcaVenue {
     const starts = [];
     for (let s = Math.floor(start / span) * span; s <= end; s += span) starts.push(s);
     const addrs = starts.map((s) => PDAUtil.getTickArray(ORCA_WHIRLPOOL_PROGRAM_ID, new PublicKey(pool.id), s).publicKey.toBase58());
-    const arrs = await this.on(null, (ctx) => ctx.fetcher.getTickArrays(addrs, IGNORE_CACHE));
+    const arrs = await this.fetchMany('getTickArrays', addrs);
     const ticks = [];
     for (const a of arrs) {
       if (!a) continue;
@@ -123,7 +153,7 @@ class OrcaVenue {
         addrs.push(PDAUtil.getTickArrayFromTickIndex(t, pool.spacing, new PublicKey(pool.id), ORCA_WHIRLPOOL_PROGRAM_ID).publicKey.toBase58());
       }
     }
-    const arrs = addrs.length ? await this.on(null, (ctx) => ctx.fetcher.getTickArrays([...new Set(addrs)], IGNORE_CACHE)) : [];
+    const arrs = addrs.length ? await this.fetchMany('getTickArrays', [...new Set(addrs)]) : [];
     const byAddr = new Map([...new Set(addrs)].map((a, i) => [a, arrs[i]]));
     return rows.map(({ p, pool }, i) => {
       try {
@@ -146,7 +176,7 @@ class OrcaVenue {
     const out = new Map();
     if (!items.length) return out;
     const ids = items.map((x) => x.id);
-    const got = await this.on(null, (ctx) => ctx.fetcher.getPositions(ids, IGNORE_CACHE));
+    const got = await this.fetchMany('getPositions', ids);
     const pools = await this.pools([...new Set([...got.values()].filter(Boolean).map((p) => b58(p.whirlpool)))], decimalsOf);
     const rows = [];
     for (const id of ids) {

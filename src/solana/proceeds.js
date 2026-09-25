@@ -69,7 +69,7 @@ class SolanaProceeds extends Proceeds {
     const owner = new PublicKey(wallet), mint = new PublicKey(token);
     const set = new Set([TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((p) => getAssociatedTokenAddressSync(mint, owner, true, p).toBase58()));
     try {
-      const r = await this.rpc.run((c) => c.getTokenAccountsByOwner(owner, { mint }), { needsHistory: true });   // terindeks: bukan publicnode
+      const r = await this.rpc.run((c) => c.getTokenAccountsByOwner(owner, { mint }), { indexed: true });
       for (const a of r.value) set.add(a.pubkey.toBase58());
     } catch { /* ATA cukup */ }
     return [...set];

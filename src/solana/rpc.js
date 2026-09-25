@@ -12,6 +12,10 @@ const { Connection } = require('@solana/web3.js');
 const TRANSIENT = /429|too many requests|rate limit|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up|502|503|504|Bad Gateway|Service Unavailable|Internal server error|node is behind|Block not available|Slot .* was skipped|failed to get info about account/i;
 // getProgramAccounts ditolak endpoint publik untuk program besar: bukan galat
 // sementara, tapi endpoint lain (berbayar) mungkin melayaninya.
+// Permintaan "terindeks" (akun token per pemilik, holder terbesar, getProgramAccounts)
+// ditolak endpoint gratis tertentu dengan 403. Ditandai no_indexed di config, atau
+// dipelajari saat galat ini muncul pertama kali.
+const INDEXED_REFUSED = /Indexed requests require|personal token/i;
 const UNSUPPORTED = /excluded from account secondary indexes|getProgramAccounts.*(disabled|not available|not allowed)|method not found|Method not found|410 Gone|403 Forbidden|Request blocked|not available on free plan/i;
 
 class SolanaRpc {
@@ -28,6 +32,10 @@ class SolanaRpc {
       // no_history: riwayat tanda tangan terpotong/kosong (publicnode) — tidak dipakai
       // untuk getSignaturesForAddress; jawaban kosongnya terbaca "target diam".
       noHistory: !!e.no_history,
+      // no_indexed: tidak melayani getTokenAccountsByOwner/getTokenLargestAccounts. Panggilan
+      // itu tidak pernah dikirim ke sana — sebuah 403 di dalam SDK yang menjalankan dua
+      // permintaan paralel meninggalkan promise tak tertangani. publicnode dikenal begitu.
+      noIndexed: e.no_indexed ?? /publicnode\.com/.test(e.url),
       conn: new Connection(e.url, {
         commitment: opts.commitment || 'confirmed',
         httpHeaders: e.headers || undefined,
@@ -47,9 +55,10 @@ class SolanaRpc {
     return (this.eps.find((e) => e.cooldownUntil <= now && !e.noSend) || this.eps[0]).conn;
   }
 
-  order({ needsGpa = false, send = false, needsHistory = false } = {}) {
+  order({ needsGpa = false, send = false, needsHistory = false, indexed = false } = {}) {
     const now = Date.now();
-    const ok = this.eps.filter((e) => !(needsGpa && e.noGpa) && !(send && e.noSend) && !(needsHistory && e.noHistory));
+    const ok = this.eps.filter((e) => !(needsGpa && e.noGpa) && !(send && e.noSend) && !(needsHistory && e.noHistory)
+      && !(indexed && e.noIndexed));
     const warm = ok.filter((e) => e.cooldownUntil <= now);
     const cold = ok.filter((e) => e.cooldownUntil > now).sort((a, b) => a.cooldownUntil - b.cooldownUntil);
     // Putar di antara yang sehat supaya beban tersebar; endpoint pertama di config tetap
@@ -60,8 +69,8 @@ class SolanaRpc {
 
   // fn(connection, endpoint) -> Promise. Diulang di endpoint lain kalau galatnya
   // sementara; galat lain dilempar apa adanya.
-  async run(fn, { needsGpa = false, send = false, needsHistory = false, tries = null } = {}) {
-    const list = this.order({ needsGpa, send, needsHistory });
+  async run(fn, { needsGpa = false, send = false, needsHistory = false, indexed = false, tries = null } = {}) {
+    const list = this.order({ needsGpa, send, needsHistory, indexed });
     if (!list.length) throw new Error(needsGpa ? 'tidak ada endpoint Solana yang melayani getProgramAccounts (tambahkan RPC berbayar: Helius/QuickNode/Alchemy)' : 'tidak ada endpoint Solana');
     let last;
     for (const e of list.slice(0, tries || list.length)) {
@@ -74,7 +83,11 @@ class SolanaRpc {
       } catch (err) {
         e.lastMs = Date.now() - t0;
         const msg = String(err?.message || err);
-        if (UNSUPPORTED.test(msg)) { e.errors++; if (needsGpa) e.noGpa = true; last = err; continue; }
+        if (UNSUPPORTED.test(msg)) {
+          e.errors++; if (needsGpa) e.noGpa = true;
+          if (INDEXED_REFUSED.test(msg) && !e.noIndexed) { e.noIndexed = true; this.log(`RPC Solana ${e.url.replace(/\?.*$/, '')}: menolak permintaan terindeks — tidak dipakai lagi untuk itu`); }
+          last = err; continue;
+        }
         if (!TRANSIENT.test(msg)) throw err;
         e.errors++; e.streak++;
         e.cooldownUntil = Date.now() + Math.min(60_000, 2000 * 2 ** Math.min(5, e.streak - 1));
@@ -95,7 +108,7 @@ class SolanaRpc {
     return this.eps.map((e) => ({
       host: (() => { try { return new URL(e.url).hostname; } catch { return '?'; } })(),
       calls: e.calls, errors: e.errors, lastMs: e.lastMs, cooling: e.cooldownUntil > Date.now(),
-      noGpa: e.noGpa, noSend: e.noSend, noHistory: e.noHistory, inflight: e.inflight, url: e.url,
+      noGpa: e.noGpa, noSend: e.noSend, noHistory: e.noHistory, noIndexed: e.noIndexed, inflight: e.inflight, url: e.url,
     }));
   }
 }

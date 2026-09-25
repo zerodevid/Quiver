@@ -21,9 +21,8 @@ async function solanaHolders({ rpc, chain }, mint) {
     let sup, largest;
     [sup, largest, rec] = await Promise.all([
       rpc.run((c) => c.getTokenSupply(pk)),
-      // Permintaan terindeks: publicnode (no_history) memblokirnya dengan 403, dan web3.js
-      // lalu meninggalkan promise tak tertangani — jangan dikirim ke sana sama sekali.
-      rpc.run((c) => c.getTokenLargestAccounts(pk), { needsHistory: true }),
+      // Permintaan terindeks: tidak dikirim ke endpoint yang menolaknya (rpc.js no_indexed).
+      rpc.run((c) => c.getTokenLargestAccounts(pk), { indexed: true }),
       chain.jup.tokenRecord(mint).catch(() => null),
     ]);
     const supply = BigInt(sup.value.amount);

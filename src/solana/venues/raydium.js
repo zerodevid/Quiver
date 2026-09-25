@@ -86,7 +86,7 @@ class RaydiumVenue {
     const own = new PublicKey(owner);
     const mints = [];
     for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
-      const r = await this.rpc.run((c) => c.getParsedTokenAccountsByOwner(own, { programId }));
+      const r = await this.rpc.run((c) => c.getParsedTokenAccountsByOwner(own, { programId }), { indexed: true });
       for (const { account } of r.value) {
         const info = account.data?.parsed?.info;
         if (info?.tokenAmount?.decimals === 0 && info.tokenAmount.amount === '1') mints.push(info.mint);

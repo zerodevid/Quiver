@@ -50,8 +50,8 @@ class SolanaExecutor {
     const pk = new PublicKey(owner);
     const [lamports, a, b] = await Promise.all([
       this.rpc.run((c) => c.getBalance(pk, 'confirmed')),
-      this.rpc.run((c) => c.getParsedTokenAccountsByOwner(pk, { programId: TOKEN_PROGRAM_ID })),
-      this.rpc.run((c) => c.getParsedTokenAccountsByOwner(pk, { programId: TOKEN_2022_PROGRAM_ID })),
+      this.rpc.run((c) => c.getParsedTokenAccountsByOwner(pk, { programId: TOKEN_PROGRAM_ID }), { indexed: true }),
+      this.rpc.run((c) => c.getParsedTokenAccountsByOwner(pk, { programId: TOKEN_2022_PROGRAM_ID }), { indexed: true }),
     ]);
     out.set('SOL', BigInt(lamports));
     for (const { account } of [...a.value, ...b.value]) {

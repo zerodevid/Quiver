@@ -104,7 +104,7 @@ async function poolDepthSol({ rpc, chain, store, engine }, ref) {
   let missingWallets = false;
   for (const owner of [...new Set(positions.filter((p) => p.kind === 'target').map((p) => p.owner))]) {
     try {
-      const r = await rpc.run((c) => c.getParsedTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(base) }));
+      const r = await rpc.run((c) => c.getParsedTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(base) }), { indexed: true });
       const raw = r.value.reduce((a, x) => a + BigInt(x.account.data?.parsed?.info?.tokenAmount?.amount || '0'), 0n);
       walletBalances.push({ owner, base: Number(raw) / 10 ** dec });
     } catch { missingWallets = true; }
