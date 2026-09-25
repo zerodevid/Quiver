@@ -106,6 +106,8 @@
           "token_blacklist": [],
           "token_whitelist": [],
           "min_pool_age_minutes": 0,
+          "min_liquidity_usd": 0,
+          "min_volume24h_usd": 0,
           "min_target_quote_usd": 25,
           "max_open_positions": 3,
           "cooldown_seconds": 20,

@@ -29,6 +29,7 @@ import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
 import { PageHeader, Panel, Empty, Loading, Notice, PriceRange, Refresh, Segmented, Dot, TradeLinks, DataLinks, baseTokenOf } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
+import { GmgnDot, GmgnProvider } from '../components/GmgnDot';
 import { useAlertPrefs, alarm, bumpTitle } from '../components/TargetAlerts';
 import { orientCandles, tfFor, SECS, LiveBadge, kUsd } from './PositionDetail';
 import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice } from '../fmt';
@@ -231,6 +232,8 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <PairName token0={p0.token0} token1={p0.token1} symbol0={p0.symbol0} symbol1={p0.symbol1} pool={p0.pool_ref} sep="/" className="text-sm font-semibold" />
+              {/* Keamanan token menurut GMGN — perisai kecil, keterangannya saat disentuh. */}
+              <GmgnDot token={baseTokenOf(p0)} />
               <a href={'#positions/' + p.id} className="text-muted hover:text-foreground" title={t('Buka detail posisi {tag}', { tag: sel.tag })} aria-label={t('Buka detail posisi {tag}', { tag: sel.tag })}><ArrowUpRight className="size-3.5" /></a>
               {/* Tumpukan logo: GMGN / Based / fomo / Uniswap, lalu DexScreener / GeckoTerminal —
                   satu klik dari kartu ke terminal luar untuk token & pool ini. */}
@@ -506,7 +509,7 @@ export default function Monitor() {
   const tfOf = (g) => (prefs.tf === 'auto' ? tfFor(g.ageHours) : prefs.tf);
 
   return (
-    <>
+    <GmgnProvider tokens={open.map((p) => baseTokenOf(p))}>
       {header}
       {error && <div className="mb-4"><Notice status="warning" title="Gagal memperbarui daftar posisi">{error} — {t('data di bawah dari pembaruan terakhir.')}</Notice></div>}
       {/* pita ringkasan: angka yang dicari sebelum membaca kartu satu per satu */}
@@ -531,6 +534,6 @@ export default function Monitor() {
       <p className="mt-4 text-[0.6875rem] text-muted">
         {t('Harga dibaca langsung dari pool tiap 3 detik; nilai, fee, dan PnL dari sinkron mesin tiap ~30 detik; lilin dari GeckoTerminal. Bar pemicu memakai aturan keluar yang berlaku untuk tiap posisi (aturan per-target menimpa aturan global).')}
       </p>
-    </>
+    </GmgnProvider>
   );
 }

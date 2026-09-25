@@ -1128,6 +1128,36 @@ const EN = {
     'Principal and fees are separated with liquidity math against pool state at each event block, not estimated from token transfers.',
   'Halaman pool & grafik': 'Pool page & chart',
 
+  // sisi kita atas posisi wallet itu (salinan / alasan tidak menyalin)
+  'Salinan kita': 'Our copy',
+  'Kendali manual': 'Manual control',
+  'Lihat posisi #{id}': 'View position #{id}',
+  'Baru dibuka — modal {v}; angka selengkapnya menyusul sinkron berikutnya.':
+    'Just opened — capital {v}; the rest of the numbers arrive with the next sync.',
+  'Salinan ini tidak pernah jadi posisi — transaksinya {s}.': 'This copy never became a position — its transaction {s}.',
+  'masih menggantung': 'is still pending',
+  'Target {a} atas modalnya · kita {b} atas modal kita': 'Target {a} on its own capital · us {b} on ours',
+  'Kita tidak menyalin posisi ini': 'We did not copy this position',
+  'Wallet ini bukan target — posisinya hanya diriset, tidak pernah diikuti mesin.':
+    'This wallet is not a target — its positions are only researched, never followed by the engine.',
+  'Target ini baru ditambahkan setelah posisi ini dibuka, jadi pembukaannya tidak pernah dilihat pemantau.':
+    'This target was added after the position had been opened, so the watcher never saw it open.',
+  'Pemantau tidak mencatat satu aksi pun di posisi ini — kemungkinan terjadi selagi mesin mati dan di luar jangkauan backfill.':
+    'The watcher recorded no action at all on this position — it probably happened while the engine was down, beyond the reach of the backfill.',
+  'Mesin melihat aksinya, tapi tidak menyalinnya:': 'The engine saw its actions, but did not copy them:',
+  'Aksinya tercatat, tapi belum ada keputusan atasnya.': 'Its actions are recorded, but no decision has been made on them yet.',
+  'Target ini sedang dimatikan.': 'This target is currently disabled.',
+  'Belum diputuskan': 'Not decided yet',
+  'buka posisi': 'open position',
+  'tambah likuiditas': 'add liquidity',
+  'tarik likuiditas': 'withdraw liquidity',
+  'tutup posisi': 'close position',
+  'klaim fee': 'claim fees',
+  'terima posisi': 'receive position',
+  'kirim posisi': 'send position',
+  'ambil dari otomasi': 'take back from automation',
+  'titip ke otomasi': 'hand over to automation',
+
   // ---- profil gaya LP (dulu halaman Scout, sekarang di dalam Wallet) ----
   'Gaya LP · dari {n} posisi berjalan': 'LP style · from {n} open positions',
   'Sedang in-range': 'Currently in range',
@@ -1342,6 +1372,14 @@ const EN = {
   'Izinkan pool v4 dengan hook': 'Allow v4 pools with hooks',
   'Hook bisa memblokir penarikan — default: tolak': 'A hook can block withdrawals — default: refuse',
   'Abaikan posisi target di bawah (USD)': 'Ignore target positions below (USD)',
+  'Likuiditas pool minimum (USD)': 'Minimum pool liquidity (USD)',
+  'Pool tipis sulit ditutup tanpa rugi; 0 = mati': 'Thin pools are hard to exit without a loss; 0 = off',
+  'Volume 24 jam minimum (USD)': 'Minimum 24h volume (USD)',
+  'Tanpa volume tidak ada fee, seberapa pun betulnya rentangnya; 0 = mati': 'No volume, no fees — however well the range is placed; 0 = off',
+  'Lewati pool yang likuiditasnya (TVL menurut DexScreener) lebih kecil dari angka ini. Pool tipis menggeser harga saat kita masuk dan saat keluar, dan sisa tokennya susah dijual. Pool yang belum terindeks DexScreener tidak punya angka ini dan tetap dilewatkan — saringan ini menolak pool yang terbukti tipis, bukan pool yang belum dikenal. 0 = nonaktif.':
+    'Skip pools whose liquidity (TVL per DexScreener) is below this number. Thin pools move the price both when we enter and when we leave, and their leftover tokens are hard to sell. A pool DexScreener has not indexed has no such number and is let through — this filter rejects pools proven to be thin, not pools that are merely unknown. 0 = off.',
+  'Lewati pool yang volume swap 24 jamnya lebih kecil dari angka ini. Fee LP lahir dari volume: pool sepi membayar mendekati nol berapa pun modalnya, sementara risiko tokennya tetap penuh. Angkanya sumber yang sama dengan kolom Volume 24 jam di daftar posisi. Pool yang belum terindeks DexScreener tetap dilewatkan. 0 = nonaktif.':
+    'Skip pools whose 24-hour swap volume is below this number. LP fees are born of volume: a quiet pool pays close to nothing however much capital sits in it, while the token risk stays full. Same source as the 24h volume column in the position list. A pool DexScreener has not indexed is let through. 0 = off.',
   'Maksimum posisi terbuka': 'Maximum open positions',
   'Jeda antar salinan di pool sama (detik)': 'Cooldown between copies in the same pool (seconds)',
   'Aset kuotasi diizinkan': 'Allowed quote assets',
@@ -1760,6 +1798,26 @@ const EN = {
   'Harga': 'Price',
   'Perubahan': 'Change',
   'Volume 24 jam': '24h volume',
+  '1 jam {v}': '1 hr {v}',
+  'bagian kita {v}': 'our share {v}',
+  // ---- titik keamanan GMGN di daftar posisi ----
+  'GMGN': 'GMGN',
+  'Keamanan token': 'Token safety',
+  'Bahaya menurut GMGN': 'Dangerous per GMGN',
+  'Perlu waspada menurut GMGN': 'Caution per GMGN',
+  'Tidak ada tanda bahaya pada yang diperiksa GMGN': 'No danger signs in what GMGN checked',
+  'GMGN belum punya cukup data untuk token ini': 'GMGN does not have enough data on this token',
+  'honeypot: tidak': 'honeypot: no',
+  'pajak beli/jual {b}/{s}%': 'buy/sell tax {b}/{s}%',
+  'kontrak terverifikasi': 'contract verified',
+  'owner sudah dilepas': 'ownership renounced',
+  'Kolom keamanan yang dipakai penilaian belum terisi di GMGN. Belum dinilai bukan berarti aman.':
+    'The security fields this check relies on are empty at GMGN. Not judged does not mean safe.',
+  'Penilaian dari data GMGN, bukan audit kontrak.': 'A reading of GMGN data, not a contract audit.',
+  'Seluruh isi pool menurut DexScreener. Bagian kita dihitung dari nilai posisi terhadap angka itu — bukan terhadap likuiditas yang aktif di rentang harga sekarang.':
+    "The pool's entire contents per DexScreener. Our share is the position's value against that figure — not against the liquidity active in the current price range.",
+  'Pool ini belum terindeks di DexScreener.': 'This pool is not indexed by DexScreener yet.',
+  'Volume swap pool ini menurut DexScreener, bukan volume token di seluruh pool.': "This pool's swap volume per DexScreener, not the token's volume across every pool.",
   'Transaksi 24 jam': '24h transactions',
   'beli': 'buys',
   'jual': 'sells',

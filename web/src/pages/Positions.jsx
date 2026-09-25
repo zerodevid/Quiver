@@ -6,6 +6,7 @@ import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
 import { PageHeader, Panel, DataTable, Empty, Loading, Notice, PriceRange, Dot, Refresh, Segmented, TradeLinks, baseTokenOf } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
+import { GmgnDot, GmgnProvider } from '../components/GmgnDot';
 // Halaman detail membawa pustaka grafik — dimuat hanya saat dibuka.
 const PositionDetail = lazy(() => import('./PositionDetail'));
 import PositionHistory from '../components/PositionHistory';
@@ -42,6 +43,8 @@ export function Pair({ p, link = true }) {
         {link ? <a href={'#positions/' + p.id} className="font-medium whitespace-nowrap hover:underline">{name}</a>
           : <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} sep="/" className="font-medium" />}
         <div className="mt-0.5 flex items-center gap-1.5 text-xs whitespace-nowrap text-muted">
+          {/* Keamanan token menurut GMGN — hanya muncul kalau API key-nya terpasang. */}
+          <GmgnDot token={baseTokenOf(p)} />
           <span className="uppercase">{p.venue}</span><span>·</span><span className="num">{num(p.fee / 10000, 2)}%</span>
           {p.syncing ? <><span>·</span><Spinner size="sm" color="current" className="size-3" />
             <span title={t('Posisi baru tercatat; nilai, fee, dan PnL menyusul setelah sinkron dengan chain.')}>{t('menyinkronkan…')}</span></>
@@ -192,7 +195,7 @@ export default function Positions({ param }) {
   const shown = lensNow === 'in' ? open.filter((p) => p.inRange) : lensNow === 'out' ? open.filter((p) => p.inRange === false) : open;
 
   return (
-    <>
+    <GmgnProvider tokens={open.map((p) => baseTokenOf(p))}>
       {header}
       <PositionHistory id={hist} onClose={() => setHist(null)} />
       {error && <div className="mb-4"><Notice status="warning" title="Gagal memperbarui daftar posisi">{error} — {t('data di bawah dari pembaruan terakhir.')}</Notice></div>}
@@ -294,6 +297,6 @@ export default function Positions({ param }) {
             { key: 'at', label: 'Ditutup', align: 'end', sort: (c) => c.closed_ts, render: (c) => <span className="whitespace-nowrap text-muted">{ago(c.closed_ts)}</span> },
           ]} />
       </Panel>
-    </>
+    </GmgnProvider>
   );
 }

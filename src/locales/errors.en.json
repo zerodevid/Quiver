@@ -29,5 +29,5 @@
   "Belum ada chat yang tersambung.": "No Telegram chats are connected.",
   "Tidak bisa dihubungi": "Endpoint unreachable",
   "harga belum terambil dari GeckoTerminal — coba lagi sebentar": "Price candles could not be fetched from GeckoTerminal. Try again in a moment.",
-  "belum ada riwayat portofolio — grafik terisi setelah bot membuka posisi (dicatat tiap 5 menit)": "No portfolio history yet. The chart fills in after the bot opens a position (recorded every 5 minutes)."
+  "Belum ada riwayat portofolio. Grafiknya terisi setelah bot membuka posisi pertama — nilai portofolio dicatat tiap 5 menit.": "No portfolio history yet. The chart fills in once the bot opens its first position — portfolio value is recorded every 5 minutes."
 }

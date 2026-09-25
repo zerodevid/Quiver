@@ -72,6 +72,11 @@ const DEFAULTS = {
     token_blacklist: [],
     token_whitelist: [],
     min_pool_age_minutes: 0,
+    // Saringan pasar (DexScreener, dibaca saat entry). 0 = mati. Pool yang belum
+    // terindeks sama sekali tidak punya angka ini — dibiarkan lewat, sama seperti
+    // umur pool yang tidak terbaca.
+    min_liquidity_usd: 0,
+    min_volume24h_usd: 0,
     min_target_quote_usd: 25,
     max_open_positions: 25,
     cooldown_seconds: 20,
@@ -112,6 +117,7 @@ const RULE_SPEC = {
   filters: {
     allow_hooks: ['bool'], quote_whitelist: ['list'], token_blacklist: ['list'], token_whitelist: ['list'],
     min_pool_age_minutes: ['num', 0, 1e7], min_target_quote_usd: ['num', 0, 1e9],
+    min_liquidity_usd: ['num', 0, 1e12], min_volume24h_usd: ['num', 0, 1e12],
     max_open_positions: ['int', 0, 100_000], cooldown_seconds: ['num', 0, 1e7],
     venues: ['list'], max_fee_bps: ['int', 0, 1_000_000],
   },

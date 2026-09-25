@@ -64,6 +64,13 @@ const rules = [
   [/^(.+?) belum terjual: (.+)$/s, '{1} remains unsold: {2}', '{1} belum terjual: {2}'],
   [/^rute Kyber rugi ([\d.,]+)% \(batas ([\d.,]+)%\)(.*)$/s, 'Kyber route loss is {1}% (limit {2}%){3}', 'Kerugian rute Kyber {1}% (batas {2}%){3}'],
   [/^dipotong oleh (.+?) \((\$[\d.,]+)\)(.*)$/s, 'Position size capped by the {1} ({2}){3}', 'Ukuran posisi dibatasi oleh {1} ({2}){3}'],
+  // Catatan ukuran dari policy.js: "<mode> → $200.00". Modenya istilah berkas
+  // aturan, bukan kalimat — dan baris ini yang paling sering dibaca di Aktivitas,
+  // karena menjawab "kenapa segini yang masuk".
+  [/^mirror → (\$[\d.,]+)$/, 'Matched the target\u2019s liquidity → {1}', 'Menyamai likuiditas target → {1}'],
+  [/^pct → (\$[\d.,]+)$/, 'Percentage of the target\u2019s position → {1}', 'Persentase dari posisi target → {1}'],
+  [/^multiplier → (\$[\d.,]+)$/, 'Multiple of the target\u2019s position → {1}', 'Kelipatan dari posisi target → {1}'],
+  [/^fixed_quote → (\$[\d.,]+)$/, 'Fixed amount per position → {1}', 'Nominal tetap per posisi → {1}'],
   [/^dipaksa ke (\$[\d.,]+) \(hitungan (\$[\d.,]+) < minimum (\$[\d.,]+)\)$/,
     'Position size forced up to {1} (calculated {2}, below the {3} minimum)',
     'Ukuran posisi dipaksa ke {1} (hitungan {2}, di bawah minimum {3})'],

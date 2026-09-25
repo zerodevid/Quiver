@@ -267,7 +267,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.match(text, /Bang GE/);
     assert.match(text, /🔴 −\$250,00/);
     assert.ok(text.includes('<pre>'));
-    assert.match(text, /Pair\s+Sumber\s+PnL/);
+    assert.match(text, /Pasangan\s+Sumber\s+PnL/);
     for (const block of text.matchAll(/<pre>([\s\S]*?)<\/pre>/g)) {
       for (const line of block[1].split('\n')) assert.ok(Array.from(line.replace(/&(?:amp|lt|gt);/g, 'x')).length <= 42, line);
     }
@@ -367,6 +367,50 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     await w.bot.handle(cbq('o', ASING));
     assert.strictEqual(outs(w.sent).length, 0, 'tidak boleh ada pesan terkirim');
     assert.match(w.last().params.text, /tidak berwenang/i);
+  });
+
+  await t('layar utama memakai PnL bersih kalau modal terlacak — angka & delta 24 jam dari kurva yang sama', async () => {
+    const w = build({ dryRun: false });
+    const asli = w.bot.api;
+    const now = Date.now();
+    // PnL posisi yang dihitung mesin di basis data uji ini +$18,50; modal yang terlacak
+    // membuat angka bersihnya +$6,50 — selisih $12 adalah gas & swap di luar posisi.
+    // Dua kurva 24 jam yang berbeda (+$8,50 vs +$6,50) supaya ketahuan kalau kartu
+    // mengambil angka dari satu kurva dan deltanya dari kurva yang lain.
+    const pf = (net) => ({
+      range: '24h', baseline: null,
+      series: [
+        { ts: now - 86000_000, pnl: 10, net: net ? 0 : null, total: 2062, cash: 1200 },
+        { ts: now, pnl: 18.5, net: net ? 6.5 : null, total: 2132.42, cash: 1221.3 },
+      ],
+      now: {
+        value: 2132.42, cash: { usd: 1221.3, usdg: 1216.45, eth: 0, weth: 0 },
+        pnl: 18.5, realizedUsd: 12, unrealizedUsd: 6.5, positionsUsd: 205, costUsd: 200,
+        capital: 2113.92, capitalNet: net ? 2125.92 : null, netPnl: net ? 6.5 : null,
+        openCount: 1, inRange: 1,
+      },
+      capital: null, stats: {}, daily: {}, byTarget: [], closed: [],
+    });
+    const pakai = (net) => { w.bot.api = async (m, path, b, q) => (path === '/api/portfolio' ? pf(net) : asli(m, path, b, q)); };
+
+    pakai(true);
+    const [bersih] = await w.bot.home();
+    assert.match(bersih, /PnL bersih <b>🟢 \+\$6,50<\/b> · 24 jam \+\$6,50/, bersih);
+    // Modal tidak terlacak (setoran belum terbaca dari chain): tidak ada angka bersih
+    // yang bisa dipercaya, jadi kembali ke PnL kumulatif posisi — beserta delta 24
+    // jamnya sendiri, bukan delta kurva yang lain.
+    pakai(false);
+    const [kumulatif] = await w.bot.home();
+    assert.ok(!/PnL bersih/.test(kumulatif), 'tanpa modal terlacak tidak boleh mengaku bersih');
+    assert.match(kumulatif, /PnL <b>🟢 \+\$18,50<\/b> · 24 jam \+\$8,50/, kumulatif);
+    // Ringkasan memakai angka yang sama, dan tabelnya mendamaikan keduanya.
+    pakai(true);
+    const [ringkas] = await w.bot.overview();
+    assert.match(ringkas, /PnL bersih <b>🟢 \+\$6,50<\/b>/, ringkas);
+    assert.match(ringkas, /PnL posisi\s+\+\$18,50/, ringkas);
+    assert.match(ringkas, /−\$12,00/, ringkas);
+    w.bot.api = asli;
+    w.bot.stop();
   });
 
   await t('bahasa Telegram tersimpan per chat dan tidak bocor antar permintaan', async () => {
@@ -901,7 +945,12 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.ok(o, 'kartu harus terkirim');
     const teks = o.params.text;
     assert.match(teks, /🧪 SIMULASI/);
-    assert.match(teks, /<b>USDG\/MEME<\/b> · NFT #889/);
+    // Hasilnya harus ikut baris pasangan: pratinjau notifikasi HP terpotong sekitar
+    // seratus karakter, dan "posisi ditutup" tanpa angkanya tidak memberi tahu apa pun.
+    assert.match(teks, /<b>USDG\/MEME<\/b> · 📈 <b>\+\$12,00<\/b> \+12,0%/);
+    assert.match(teks, /\nNFT #889\n/);
+    assert.ok(teks.replace(/<[^>]+>/g, '').slice(0, 100).includes('+$12,00'),
+      'untung harus muat di seratus karakter pertama (pratinjau notifikasi)');
     assert.match(teks, /📈 Untung <b>\+\$12,00<\/b>\s+\+12,0%/);
     assert.match(teks, /Hasil\s+\$112,00/);
     assert.match(teks, /Modal\s+\$100,00/);
@@ -984,7 +1033,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.match(a, /tiap 5 dtk/);
     assert.match(a, /Jumlah percobaan\s+1×/);
     assert.match(b, /Rute tidak tersedia/);
-    assert.match(b, /sejak/);
+    assert.match(b, /[Ss]ejak/);
     const tombol = JSON.stringify(kartu[0].params.reply_markup || {});
     for (const cb of ['"fr"', '"sw"', '"f"', '"r"']) assert.ok(tombol.includes(cb), `tombol ${cb} harus ada`);
     w.bot.stop();
@@ -1015,7 +1064,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.match(teks, /USDG\/MEME\s+Bang GE\s+🟢 \+\$6,50/);
     assert.match(teks, /Rekam jejak · 1 ditutup/);
     assert.match(teks, /Bang GE\s+1 buka/);
-    assert.match(teks, /akan disalin \(simulasi\)/);
+    assert.match(teks, /Akan disalin \(simulasi\)/);
     assert.ok(!/24 jam \+\$0,00/.test(teks), 'tanpa riwayat, perubahan 24 jam tidak boleh tampil sebagai nol');
     assert.ok(!/0 dtk lalu/.test(teks), 'sinkron barusan ditulis "baru saja"');
   });
@@ -1107,8 +1156,8 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     const w = build();
     await w.bot.handle(cbq('f'));
     const teks = lastOut(w.sent).params.text;
-    assert.match(teks, /dicoba\s+2×/, `teks antrean salah:\n${teks}`);
-    assert.match(teks, /sejak\s+\d+ (dtk|mnt) lalu/, `waktu mulai tersangkut harus tampil:\n${teks}`);
+    assert.match(teks, /Percobaan\s+2×/, `teks antrean salah:\n${teks}`);
+    assert.match(teks, /Sejak\s+\d+ (dtk|mnt) lalu/, `waktu mulai tersangkut harus tampil:\n${teks}`);
     assert.match(teks, /rugi rute rugi 18%|rute rugi 18%/);
   });
 
@@ -1241,7 +1290,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
   await t('showVal menampilkan bps sebagai persen, bukan angka mentah', async () => {
     assert.strictEqual(showVal({ type: 'bps' }, 150), '1,5%');
     assert.strictEqual(showVal({ type: 'bps' }, 500), '5%');
-    assert.strictEqual(showVal({ type: 'bool' }, true), '✅ ya');
+    assert.strictEqual(showVal({ type: 'bool' }, true), '✅ Ya');
     assert.strictEqual(showVal({ type: 'daftar' }, []), '(kosong)');
     // pemisah ribuan Indonesia adalah titik: jangan sampai "1.000" dipangkas jadi "1."
     assert.strictEqual(showVal({ type: 'int' }, 1000), '1.000');
@@ -1621,7 +1670,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     await w.bot.handle(cbq('qkn:50'));
     let teks = lastOut(w.sent).params.text;
     assert.match(teks, /\$50/);
-    assert.match(teks, /kas tersedia/, 'pratinjau muncul setelah nominal dipilih');
+    assert.match(teks, /Kas tersedia/, 'pratinjau muncul setelah nominal dipilih');
     assert.ok(buttons(lastOut(w.sent)).some((x) => x === 'qkn:50'), 'tombol tetap ada');
     assert.ok(lastOut(w.sent).params.reply_markup.inline_keyboard.flat().some((x) => x.text === '✓ $50'), 'pilihan aktif ditandai');
     await w.bot.handle(cbq('qkw:10:30'));
@@ -1875,7 +1924,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     await w.bot.handle(cbq('swn'));
     await w.bot.handle(msg('10'));
     const teks = lastOut(w.sent).params.text;
-    assert.match(teks, /dikirim|diterima/, `kutipan tidak muncul:\n${teks}`);
+    assert.match(teks, /Dikirim|Diterima/, `kutipan tidak muncul:\n${teks}`);
   });
 
   await t('sisi "dari" hanya menawarkan token yang ada saldonya', async () => {

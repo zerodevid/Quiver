@@ -14,7 +14,7 @@ import { get } from '../api';
 import { Stat, Empty, Loading, Notice, PriceRange, TxHash } from './ui';
 import TokenIcon, { TokenPair } from './TokenIcon';
 import { usd, pct, tone, age, ago, num, short, qty, fmtQty, price, sqrtPrice, locale as fmtLocale } from '../fmt';
-import { useI18n } from '../i18n';
+import { useI18n, reason } from '../i18n';
 
 const KIND = {
   mint: ['Buka posisi', 'success'],
@@ -116,6 +116,135 @@ function Events({ events, p }) {
   );
 }
 
+// ---- sisi kita atas posisi orang lain ----
+//
+// Laci ini menilai posisi WALLET LAIN sampai tuntas, lalu berhenti tepat sebelum
+// pertanyaan yang membuat orang membukanya: "kita ikut atau tidak?". Jawabannya
+// dulu tersebar — salinan kita di halaman Posisi, alasan melewat di Aktivitas —
+// jadi menilai satu posisi target berarti membuka tiga halaman dan mencocokkan
+// nomor NFT sendiri. Di sini keduanya diletakkan di bawah angka target: salinan
+// kita kalau ada, dan kalau tidak, alasan mesin menolak — apa adanya, dengan
+// kata-kata yang sama seperti yang tercatat saat keputusannya dibuat.
+const VERDICT = { copy: ['Disalin', 'success'], dry: ['Simulasi', 'accent'], skip: ['Dilewati', 'default'], error: ['Gagal', 'danger'] };
+const AKSI = {
+  mint: 'buka posisi', increase: 'tambah likuiditas', decrease: 'tarik likuiditas', burn: 'tutup posisi',
+  collect: 'klaim fee', claim: 'klaim fee', transfer_in: 'terima posisi', transfer_out: 'kirim posisi',
+  custody_in: 'ambil dari otomasi', custody_out: 'titip ke otomasi',
+};
+const STATUS = { open: ['Terbuka', 'success'], closed: ['Ditutup', 'danger'], pending: ['Menunggu', 'warning'], failed: ['Gagal', 'danger'] };
+
+const Fig = ({ label, value, sub, cls = '' }) => {
+  const { t } = useI18n();
+  return (
+    <div className="min-w-0">
+      <div className="truncate text-xs text-muted">{t(label)}</div>
+      <div className={`num truncate text-sm font-semibold ${cls}`}>{value}</div>
+      {sub && <div className="truncate text-xs text-muted">{sub}</div>}
+    </div>
+  );
+};
+
+function Salinan({ q, p }) {
+  const { t } = useI18n();
+  const open = q.status === 'open';
+  const s = STATUS[q.status] || [q.status, 'default'];
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <span className="flex items-center gap-2 text-sm font-medium">
+          {t('Salinan kita')}
+          <Chip size="sm" variant="soft" color={s[1]}>{t(s[0])}</Chip>
+          {q.takeoverTs != null && open && (
+            <Chip size="sm" variant="soft" color="warning">{t('Kendali manual')}</Chip>
+          )}
+        </span>
+        <a href={'#positions/' + q.id} className="text-xs text-accent hover:underline">{t('Lihat posisi #{id}', { id: q.id })}</a>
+      </div>
+      {q.status === 'open' || q.status === 'closed' ? (
+        q.syncing ? (
+          <div className="text-xs text-muted">{t('Baru dibuka — modal {v}; angka selengkapnya menyusul sinkron berikutnya.', { v: usd(q.costUsd) })}</div>
+        ) : (
+          <div className="grid grid-cols-3 gap-3">
+            <Fig label="Modal" value={usd(q.costUsd)} />
+            <Fig label={open ? 'Nilai kini' : 'Hasil'} value={usd(open ? q.valueUsd : q.outUsd)}
+              sub={q.feeUsd > 0.005 ? t('fee {v}', { v: usd(q.feeUsd) }) : null} />
+            <Fig label={open ? 'PnL (belum terealisasi)' : 'PnL'} value={usd(q.pnlUsd)} cls={tone(q.pnlUsd)}
+              sub={q.pnlPct == null ? null : pct(q.pnlPct, 2)} />
+          </div>
+        )
+      ) : (
+        <div className="text-xs text-muted">{t('Salinan ini tidak pernah jadi posisi — transaksinya {s}.', { s: t(q.status === 'pending' ? 'masih menggantung' : 'gagal') })}</div>
+      )}
+      {/* Modal kita hampir tidak pernah sebesar modal target, jadi dolarnya tidak
+          bisa diadu; persen terhadap modal masing-masing bisa. */}
+      {q.pnlPct != null && p.pnlPct != null && !q.syncing && (
+        <div className="mt-2 text-xs text-muted">
+          {t('Target {a} atas modalnya · kita {b} atas modal kita', { a: pct(p.pnlPct, 2), b: pct(q.pnlPct, 2) })}
+        </div>
+      )}
+      <div className="mt-1 text-xs text-muted">
+        {q.openedTs ? t('dibuka {w}', { w: ago(q.openedTs) }) : null}
+        {q.closedTs ? ` · ${t('ditutup {w}', { w: ago(q.closedTs) })}` : null}
+      </div>
+    </div>
+  );
+}
+
+function OurSide({ copy, p }) {
+  const { t } = useI18n();
+  if (!copy) return null;
+  const ours = copy.positions || [];
+  // Urut kronologis, bukan terbaru di atas seperti tabel lain: yang menjawab
+  // "kenapa tidak ikut" adalah keputusan atas pembukaan posisi — keputusan
+  // sesudahnya ("tidak ada cermin yang cocok" saat target menarik) cuma akibatnya.
+  const decs = copy.decisions || [];
+  const ditolak = decs.some((d) => d.verdict && d.verdict !== 'copy');
+  // Kenapa tidak ada salinan. Urutannya dari yang paling menjelaskan: wallet ini
+  // memang bukan target > target baru ditambah setelah posisinya dibuka > mesin
+  // memang tidak pernah melihat aksinya > mesin melihat tapi menolak (daftar
+  // alasannya menyusul di bawah).
+  const sebab = !copy.isTarget
+    ? 'Wallet ini bukan target — posisinya hanya diriset, tidak pernah diikuti mesin.'
+    : !decs.length
+      ? (copy.addedTs && p.opened_ts && copy.addedTs > p.opened_ts
+        ? 'Target ini baru ditambahkan setelah posisi ini dibuka, jadi pembukaannya tidak pernah dilihat pemantau.'
+        : 'Pemantau tidak mencatat satu aksi pun di posisi ini — kemungkinan terjadi selagi mesin mati dan di luar jangkauan backfill.')
+      : ditolak
+        ? 'Mesin melihat aksinya, tapi tidak menyalinnya:'
+        : 'Aksinya tercatat, tapi belum ada keputusan atasnya.';
+  return (
+    <div className="mb-4 space-y-3">
+      {ours.map((q) => <Salinan key={q.id} q={q} p={p} />)}
+      {!ours.length && (
+        <div className="rounded-lg border border-border p-3">
+          <div className="text-sm font-medium">{t('Kita tidak menyalin posisi ini')}</div>
+          <p className="mt-1 text-xs text-muted">{t(sebab)}</p>
+          {copy.isTarget && !copy.enabled && (
+            <p className="mt-1 text-xs text-muted">{t('Target ini sedang dimatikan.')}</p>
+          )}
+          {decs.length > 0 && (
+            <ul className="mt-2 space-y-2 border-t border-border pt-2">
+              {decs.slice(0, 6).map((d) => {
+                const v = d.verdict ? VERDICT[d.verdict] : null;
+                return (
+                  <li key={d.actionId} className="flex flex-col gap-1 text-xs sm:flex-row sm:items-baseline sm:gap-2">
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      <Chip size="sm" variant="soft" color={v ? v[1] : 'default'}>{v ? t(v[0]) : t('Belum diputuskan')}</Chip>
+                      <span className="text-muted">{t(AKSI[d.kind] || d.kind)}</span>
+                    </span>
+                    <span className="min-w-0 flex-1 break-words">{d.reason ? reason(d.reason) : '—'}</span>
+                    <span className="shrink-0 text-muted" title={fmtDate(d.ts)}>{ago(d.ts)}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * p       : baris posisi dari /api/wallet (null = laci tertutup)
  * address : wallet pemiliknya — kejadian diambil per (wallet, token_id)
@@ -123,18 +252,24 @@ function Events({ events, p }) {
 export default function WalletPositionHistory({ p, address, onClose }) {
   const { t } = useI18n();
   const [events, setEvents] = useState(null);
+  const [copy, setCopy] = useState(null);
   const [err, setErr] = useState(null);
   const id = p?.token_id;
+  const venue = p?.venue || '';
 
   useEffect(() => {
     if (!id) return undefined;
     let alive = true;
-    setEvents(null); setErr(null);
-    get(`/api/wallet/events?address=${address}&token_id=${id}`)
-      .then((r) => { if (!alive) return; if (r.error) setErr(r.error); else setEvents(r.events || []); })
+    setEvents(null); setCopy(null); setErr(null);
+    get(`/api/wallet/events?address=${address}&token_id=${id}&venue=${venue}`)
+      .then((r) => {
+        if (!alive) return;
+        if (r.error) setErr(r.error);
+        else { setEvents(r.events || []); setCopy(r.copy || null); }
+      })
       .catch((e) => alive && setErr(e.message));
     return () => { alive = false; };
-  }, [id, address]);
+  }, [id, address, venue]);
 
   const open = p?.status === 'open';
   const fee = (p?.fees_q || 0) + (open ? (p?.live_fee_q || 0) : 0);
@@ -187,6 +322,8 @@ export default function WalletPositionHistory({ p, address, onClose }) {
                       dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1}
                       entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />
                   </div>
+
+                  <OurSide copy={copy} p={p} />
 
                   {p.incomplete === 1 && (
                     <div className="mb-4"><Notice status="warning" title="Riwayat posisi ini terpotong">

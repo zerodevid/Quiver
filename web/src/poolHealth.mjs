@@ -45,33 +45,50 @@ export function poolHealth({ pool = {}, pair, holders, open = [], gmgn, now = Da
     if (holders.holderCount != null && holders.holderCount < 100) add('warn', 'Baru {value} alamat memiliki token ini.', { value: holders.holderCount });
   }
   // Sinyal GMGN: keamanan kontrak dan perilaku dev/trader yang tidak terlihat dari
-  // harga maupun daftar holder. Konsentrasi top-10 versi GMGN hanya dipakai kalau
-  // daftar holder kita sendiri tidak ada, supaya tidak dihitung dua kali.
+  // harga maupun daftar holder. Aturannya dipisah ke gmgnSignals() karena dipakai
+  // juga oleh titik indikator di daftar posisi — dua tempat yang menilai token yang
+  // sama tidak boleh memakai ambang yang berbeda.
   const gm = gmgn && !gmgn.error && gmgn.enabled !== false && (gmgn.address == null || gmgn.address === pool.baseToken?.toLowerCase()) ? gmgn : null;
   if (gmgn && !gm) missing.push('Data GMGN belum tersedia; keamanan kontrak belum dinilai.');
-  if (gm) {
-    const sec = gm.security || {};
-    if (sec.honeypot === true) add('risk', 'GMGN menandai token ini honeypot: bisa dibeli, tidak bisa dijual.');
-    for (const [k, label] of [['sellTaxPct', 'Pajak jual {value}% di kontrak (GMGN).'], ['buyTaxPct', 'Pajak beli {value}% di kontrak (GMGN).']]) {
-      if (finite(sec[k]) && sec[k] >= 3) add(sec[k] >= 10 ? 'risk' : 'warn', label, { value: Number(sec[k]).toFixed(1) });
-    }
-    if (finite(sec.rugPct) && sec.rugPct >= 20) add(sec.rugPct >= 50 ? 'risk' : 'warn', 'Skor risiko rug {value}% menurut GMGN.', { value: Math.round(sec.rugPct) });
-    if (sec.washTrading === true) add('warn', 'GMGN mendeteksi wash trading pada token ini.');
-    if (sec.creatorSold === true || gm.dev?.status === 'sell') add('warn', 'Dev/pembuat token sudah menjual pegangannya (GMGN).');
-    if (finite(sec.insiderPct) && sec.insiderPct >= 20) add(sec.insiderPct >= 40 ? 'risk' : 'warn', 'Wallet yang dicurigai orang dalam memegang {value}% suplai (GMGN).', { value: Number(sec.insiderPct).toFixed(1) });
-    const bundler = finite(sec.bundlerVolPct) ? sec.bundlerVolPct : gm.stat?.bundlerVolPct;
-    if (finite(bundler) && bundler >= 30) add('warn', '{value}% volume berasal dari bundler bot (GMGN).', { value: Math.round(bundler) });
-    const rat = finite(sec.ratVolPct) ? sec.ratVolPct : gm.stat?.ratVolPct;
-    if (finite(rat) && rat >= 30) add('warn', '{value}% volume berasal dari rat trader / orang dalam (GMGN).', { value: Math.round(rat) });
-    if (sec.openSource === false) add('warn', 'Kode kontrak belum diverifikasi (GMGN).');
-    if (sec.ownerRenounced === false) add('warn', 'Kepemilikan kontrak belum dilepas; owner masih bisa mengubah kontrak (GMGN).');
-    const t10 = finite(sec.top10Pct) ? sec.top10Pct : gm.stat?.top10Pct;
-    if (!holdersOk && finite(t10) && t10 >= 40) add(t10 >= 60 ? 'risk' : 'warn', '10 wallet terbesar memegang {value}% suplai (GMGN).', { value: Number(t10).toFixed(1) });
-  }
+  // Konsentrasi top-10 versi GMGN hanya dipakai kalau daftar holder kita sendiri
+  // tidak ada, supaya tidak dihitung dua kali.
+  if (gm) for (const s of gmgnSignals(gm, { skipTop10: holdersOk }).signals) signals.push(s);
   const out = open.filter((p) => p.inRange === false).length;
   if (out) add('warn', '{value} posisi bot di luar rentang dan tidak menghasilkan fee swap.', { value: out });
   const cost = open.reduce((s, p) => s + (p.costUsd || 0), 0), pnl = open.reduce((s, p) => s + (p.pnlUsd || 0), 0);
   if (cost > 0 && pnl / cost <= -0.2) add('warn', 'PnL posisi terbuka {value}% dari modal.', { value: (pnl / cost * 100).toFixed(1) });
   const status = signals.some((s) => s.level === 'risk') ? 'risk' : signals.length ? 'warn' : missing.length ? 'unknown' : 'healthy';
   return { status, signals, missing, holdersOk: !!holdersOk, eligible, largest, top10, gmgnOk: !!gm };
+}
+
+// Aturan GMGN saja, dipakai panel Kesehatan pool dan titik indikator di daftar
+// posisi. `graded` menjawab pertanyaan yang berbeda dari daftar sinyal: apakah ada
+// cukup data untuk berkata "tidak ada tanda bahaya" sama sekali. Banyak token di
+// chain ini hanya terisi sebagian di GMGN (rug/insider null) — diam bukan berarti
+// aman, dan itu yang membedakan titik hijau dari titik abu-abu.
+export function gmgnSignals(gm, { skipTop10 = false } = {}) {
+  const signals = [];
+  const add = (level, key, values = {}) => signals.push({ level, key, values });
+  const sec = gm?.security || {};
+  if (sec.honeypot === true) add('risk', 'GMGN menandai token ini honeypot: bisa dibeli, tidak bisa dijual.');
+  for (const [k, label] of [['sellTaxPct', 'Pajak jual {value}% di kontrak (GMGN).'], ['buyTaxPct', 'Pajak beli {value}% di kontrak (GMGN).']]) {
+    if (finite(sec[k]) && sec[k] >= 3) add(sec[k] >= 10 ? 'risk' : 'warn', label, { value: Number(sec[k]).toFixed(1) });
+  }
+  if (finite(sec.rugPct) && sec.rugPct >= 20) add(sec.rugPct >= 50 ? 'risk' : 'warn', 'Skor risiko rug {value}% menurut GMGN.', { value: Math.round(sec.rugPct) });
+  if (sec.washTrading === true) add('warn', 'GMGN mendeteksi wash trading pada token ini.');
+  if (sec.creatorSold === true || gm?.dev?.status === 'sell') add('warn', 'Dev/pembuat token sudah menjual pegangannya (GMGN).');
+  if (finite(sec.insiderPct) && sec.insiderPct >= 20) add(sec.insiderPct >= 40 ? 'risk' : 'warn', 'Wallet yang dicurigai orang dalam memegang {value}% suplai (GMGN).', { value: Number(sec.insiderPct).toFixed(1) });
+  const bundler = finite(sec.bundlerVolPct) ? sec.bundlerVolPct : gm?.stat?.bundlerVolPct;
+  if (finite(bundler) && bundler >= 30) add('warn', '{value}% volume berasal dari bundler bot (GMGN).', { value: Math.round(bundler) });
+  const rat = finite(sec.ratVolPct) ? sec.ratVolPct : gm?.stat?.ratVolPct;
+  if (finite(rat) && rat >= 30) add('warn', '{value}% volume berasal dari rat trader / orang dalam (GMGN).', { value: Math.round(rat) });
+  if (sec.openSource === false) add('warn', 'Kode kontrak belum diverifikasi (GMGN).');
+  if (sec.ownerRenounced === false) add('warn', 'Kepemilikan kontrak belum dilepas; owner masih bisa mengubah kontrak (GMGN).');
+  const t10 = finite(sec.top10Pct) ? sec.top10Pct : gm?.stat?.top10Pct;
+  if (!skipTop10 && finite(t10) && t10 >= 40) add(t10 >= 60 ? 'risk' : 'warn', '10 wallet terbesar memegang {value}% suplai (GMGN).', { value: Number(t10).toFixed(1) });
+  // Cukup dinilai kalau GMGN benar-benar menjawab soal kontraknya: honeypot dan
+  // pajak adalah dua kolom yang terisi untuk hampir semua token yang dia kenal.
+  const graded = sec.honeypot != null && (finite(sec.buyTaxPct) || finite(sec.sellTaxPct) || sec.openSource != null);
+  const level = signals.some((s) => s.level === 'risk') ? 'risk' : signals.length ? 'warn' : graded ? 'ok' : 'unknown';
+  return { signals, graded, level };
 }

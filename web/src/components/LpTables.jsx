@@ -5,6 +5,7 @@ import { Button } from '@heroui/react';
 import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing, TradeLinks, WalletLinks, baseTokenOf } from './ui';
 import { TokenPair, PairName } from './TokenIcon';
 import { Pair } from '../pages/Positions';
+import { GmgnProvider } from './GmgnDot';
 import { usd, pct, tone, ago, short, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
 import { useI18n, reason } from '../i18n';
 import { useClosePosition } from '../useClosePosition';
@@ -73,6 +74,7 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, w
     : null);
   const canSource = !!onSource && rows.some(sourceOf);
   return (
+    <GmgnProvider tokens={open.map((p) => baseTokenOf(p))}>
     <Panel title={t('Posisi bot ({n})', { n: rows.length })} className={className} bodyClass="p-0"
       desc={onHist && rows.length > 0 ? 'Klik baris untuk riwayat transaksi dan catatan bot.' : undefined}
       action={<div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:justify-end">
@@ -118,6 +120,7 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, w
             </div>) }] : []),
         ]} />
     </Panel>
+    </GmgnProvider>
   );
 }
 

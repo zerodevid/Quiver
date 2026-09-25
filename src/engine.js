@@ -12,6 +12,7 @@ const { Compound } = require('./compound');
 const { Capital } = require('./capital');
 const { rulesFor, planEntry, planExit, quoteToUsd, usdPerQuote } = require('./policy');
 const { enumerateV4, livePositions } = require('./scout');
+const { Market } = require('./market');
 const m = require('./v3math');
 
 const IF_POSM = new ethers.Interface(ABI.posmV4);
@@ -31,6 +32,16 @@ const asalSisa = (item) => (item.posId == null ? 'sisa di wallet' : `posisi #${i
 // menyisakan sedikit — tanpa lantai ini tiap entry menaruh satu item debu yang tidak
 // pernah terjual di antrean. Sama dengan bawaan sapu wallet.
 const MIN_ZAP_SURPLUS_USD = 0.5;
+
+// Nominal besar untuk alasan keputusan: "$12.3rb", "$1.45jt". Likuiditas pool ditulis
+// utuh ($1.234.567) tidak terbaca sekali lihat di daftar keputusan.
+const uangRingkas = (v) => {
+  const a = Math.abs(Number(v) || 0);
+  if (a >= 1e9) return `$${(a / 1e9).toFixed(2)}m`;
+  if (a >= 1e6) return `$${(a / 1e6).toFixed(2)}jt`;
+  if (a >= 1000) return `$${(a / 1000).toFixed(1)}rb`;
+  return `$${a.toFixed(2)}`;
+};
 
 // Persen jarak untuk kabar/alasan, dibulatkan seperti di dasbor ("999+" untuk yang ekstrem).
 const fmtPct = (x) => (x >= 1000 ? '999+' : x.toFixed(0));
@@ -70,6 +81,10 @@ class Engine {
     this.capital = new Capital({ rpc, store, chain, cfg, log: this.log });
     this.troubles = new Map();     // kunci -> galat beruntun yang sedang ditangani cadangan
     this.lastCopyAt = new Map();   // poolRef -> ts (cooldown)
+    // Statistik pool pihak ketiga (DexScreener) untuk saringan likuiditas/volume.
+    // Server menyuntikkan instance miliknya (createServer) supaya memo 30 detiknya
+    // dipakai bersama dasbor; di luar itu — CLI, uji — dibuat sendiri saat dibutuhkan.
+    this.market = null;
     this.stats = { scanned: 0, actions: 0, copied: 0, skipped: 0, errors: 0, startedAt: Date.now() };
     this.lastError = null;
     // Rentang pindai menyusut saat RPC mengeluh dan tumbuh lagi saat lancar.
@@ -488,6 +503,18 @@ class Engine {
       { kind: 'target_claim', positionId: mirror.id, target: act.target, mirrorOf: act.tokenId, count: n, pair });
   }
 
+  // Likuiditas & volume pool dari DexScreener untuk saringan entry, atau null kalau
+  // tidak terbaca (pool belum terindeks, DexScreener sedang tumbang/lambat). Sinyal
+  // masuk tidak boleh menunggu lama di sini: lewat 4 detik dianggap tidak terbaca.
+  async poolStats(ref) {
+    if (!this.market) this.market = new Market({ log: this.log, chain: this.chain });
+    const pair = await Promise.race([
+      this.market.pair(ref).catch(() => null),
+      new Promise((r) => setTimeout(() => r(null), 4000)),
+    ]).catch(() => null);
+    return pair && !pair.error ? pair : null;
+  }
+
   async handleEntry(act, rules) {
     // Sinyal masuk yang sudah basi tidak disalin. Kursor dilanjutkan dari blok tersimpan,
     // jadi setelah VPS/RPC mati sejam pemindaian mengejar dan menemukan entry target dari
@@ -520,6 +547,26 @@ class Engine {
           return this.decide(act.id, 'skip', `pool baru ${age.toFixed(0)} menit (< ${rules.filters.min_pool_age_minutes})`);
         }
       } catch { /* kalau tidak terbaca, jangan halangi */ }
+    }
+    // Saringan pasar: pool yang likuiditas atau volumenya tipis tidak menghasilkan fee
+    // sebanyak apa pun yang dilakukan target di sana — modalnya cuma menanggung risiko
+    // token tanpa dibayar. Angkanya dari DexScreener, sumber yang sama dengan kolom
+    // Volume di dasbor, jadi ambang yang dipasang di Aturan sebanding dengan yang dilihat.
+    const fMin = rules.filters;
+    if ((fMin.min_liquidity_usd > 0 || fMin.min_volume24h_usd > 0) && act.poolRef) {
+      const pair = await this.poolStats(act.poolRef);
+      // Pool yang belum terindeks DexScreener tidak punya angka sama sekali. Dibiarkan
+      // lewat — sama seperti umur pool yang tidak terbaca di atas: saringan ini menolak
+      // pool yang TERBUKTI sepi, bukan pool yang belum sempat dikenal.
+      if (pair) {
+        const liq = pair.liquidityUsd, vol = pair.volume?.h24;
+        if (fMin.min_liquidity_usd > 0 && liq != null && liq < fMin.min_liquidity_usd) {
+          return this.decide(act.id, 'skip', `likuiditas pool ${uangRingkas(liq)} (< ${uangRingkas(fMin.min_liquidity_usd)})`);
+        }
+        if (fMin.min_volume24h_usd > 0 && vol != null && vol < fMin.min_volume24h_usd) {
+          return this.decide(act.id, 'skip', `volume 24 jam ${uangRingkas(vol)} (< ${uangRingkas(fMin.min_volume24h_usd)})`);
+        }
+      }
     }
     // Metadata token yang belum dikenal dibaca dari RPC; galat sementara diulang sebentar
     // (sinyal masuk target tidak menunggu lama).

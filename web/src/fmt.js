@@ -8,7 +8,15 @@ export const locale = loc;   // dipakai halaman lain untuk memformat tanggal
 
 export const usd = (v, d = 2) => (v == null || Number.isNaN(v)) ? '—'
   : (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d });
-export const kUsd = (v) => (Math.abs(v) >= 1000 ? (v < 0 ? '−$' : '$') + (Math.abs(v) / 1000).toFixed(2) + 'k' : usd(v));
+// Angka besar yang cuma perlu dibaca sekilas (volume, likuiditas, MCap). Di atas
+// sejuta, satuan 'k' berhenti membantu — "$3200.00k" harus dihitung dulu sebelum
+// terbaca sebagai tiga juta.
+export const kUsd = (v) => {
+  const a = Math.abs(v);
+  if (!(a >= 1000)) return usd(v);
+  const [d, unit] = a >= 1e9 ? [1e9, 'B'] : a >= 1e6 ? [1e6, 'M'] : [1e3, 'k'];
+  return (v < 0 ? '−$' : '$') + (a / d).toFixed(2) + unit;
+};
 export const pct = (v, d = 1) => (v == null ? '—'
   : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d }) + '%');
 export const num = (v, d = 0) => (v == null ? '—' : Number(v).toLocaleString(loc(), { maximumFractionDigits: d }));

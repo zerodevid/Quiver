@@ -34,6 +34,29 @@ const CHART_SPANS = [[0, 'auto'], [24, '1 hari'], [72, '3 hari'], [168, '7 hari'
 // Ukuran & tema kartu bagikan: daftar dan labelnya dari penggambarnya sendiri.
 const { SIZES: CARD_SIZES, THEMES: CARD_THEMES } = require('./share-card');
 
+// Nama manusiawi untuk apa yang terjadi di chain. Tabel `actions.kind` dan
+// `txs.kind` menyimpan istilah mesin ('increase', 'zap_swap'); menampilkannya apa
+// adanya memaksa pembaca menghafal kosakata internal bot, dan istilah yang sama
+// sudah punya nama di dasbor — dua permukaan tidak boleh menyebut satu hal dengan
+// dua nama.
+const AKSI_TARGET = {
+  mint: 'Buka posisi', increase: 'Tambah likuiditas', decrease: 'Tarik likuiditas',
+  burn: 'Tutup posisi', collect: 'Klaim fee', claim: 'Klaim fee',
+  transfer_in: 'Terima posisi', transfer_out: 'Kirim posisi',
+  custody_in: 'Ambil dari kontrak otomasi', custody_out: 'Titip ke kontrak otomasi',
+};
+// Keputusan bot atas aksi itu: ikon untuk dipindai sekilas, kata untuk dimengerti.
+const KEPUTUSAN = {
+  copy: ['✅', 'Disalin'], dry: ['🧪', 'Simulasi'], skip: ['⏭', 'Dilewati'], error: ['⛔', 'Gagal'],
+};
+const TX_JENIS = {
+  mint: 'Buka posisi', increase: 'Tambah likuiditas', decrease: 'Tarik likuiditas',
+  burn: 'Tutup posisi', claim_fees: 'Klaim fee', compound: 'Fee jadi likuiditas',
+  zap_swap: 'Tukar modal (zap)', bridge_swap: 'Tukar aset kuotasi', sell_leftover: 'Jual token sisa',
+  kyber_swap: 'Swap', swap_manual: 'Swap manual', wrap_eth: 'Bungkus ETH', unwrap_weth: 'Buka bungkus WETH',
+  approve_erc20: 'Izin token', approve_permit2: 'Izin Permit2', approve_kyber: 'Izin Kyber',
+};
+
 const API = 'https://api.telegram.org/bot';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -46,6 +69,19 @@ const usd = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '—' : `$
 // angka dari sistem yang berbeda.
 const pct = (n, d = 1) => (n == null || !Number.isFinite(Number(n)) ? '—' : `${n >= 0 ? '+' : '−'}${nf(Math.abs(n), d)}%`);
 const sgn = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '—' : `${n >= 0 ? '+' : '−'}$${nf(Math.abs(n), d)}`);
+// Nominal besar yang cuma perlu dibaca sekilas (likuiditas pool, volume): di kartu
+// yang lebarnya layar ponsel, "$1.234.567" memakan sebaris sendiri tanpa memberi
+// tahu apa pun yang tidak diberikan "$1,23jt".
+const kUsd = (n) => {
+  const a = Math.abs(Number(n));
+  if (n == null || !Number.isFinite(a)) return '—';
+  // Satuan k/M/B, sama persis dengan kolom Volume & Likuiditas di dasbor — kartu
+  // dan layar tidak boleh menulis angka yang sama dengan dua cara.
+  if (a >= 1e9) return `$${trimZ(nf(a / 1e9, 2))}B`;
+  if (a >= 1e6) return `$${trimZ(nf(a / 1e6, 2))}M`;
+  if (a >= 1000) return `$${trimZ(nf(a / 1000, 1))}k`;
+  return usd(a);
+};
 // Telegram messages cannot set text colors; keep the sign and a semantic marker.
 const pnlMark = (n) => n == null || !Number.isFinite(Number(n)) || Number(n) === 0 ? '⚪️' : Number(n) < 0 ? '🔴' : '🟢';
 const pnlText = (n) => `${pnlMark(n)} ${sgn(n)}`;
@@ -78,7 +114,7 @@ const sourceText = (p) => p.targetLabel ? compact(p.targetLabel) : p.target ? sh
 // Keep mobile tables narrow; color markers occupy the final column so their
 // platform-dependent emoji width cannot shift any following column.
 const positionTable = (positions, history = false) => kolom([
-  ['Pair', tr('Sumber'), 'PnL'],
+  [tr('Pasangan'), tr('Sumber'), 'PnL'],
   ...positions.flatMap((p) => [
     [compact(pairText(p), 13), compact(sourceText(p), 10), pnlText(p.pnlUsd)],
     ...(history ? [[`#${compact(p.token_id, 12)}`, compact(ago(p.closed_ts), 10), '']] : []),
@@ -394,6 +430,8 @@ const RULE_GROUPS = [
       F.list('token_blacklist', 'Daftar hitam token', { help: 'Alamat, dipisah koma. "-" untuk kosongkan.' }),
       F.list('token_whitelist', 'Daftar putih token', { help: 'Kalau diisi, HANYA token ini yang diikuti.' }),
       F.int('min_pool_age_minutes', 'Umur pool minimum (menit)'),
+      F.usd('min_liquidity_usd', 'Likuiditas pool minimum', { hi: 1e12, help: 'Pool tipis susah ditutup tanpa rugi. 0 = mati.' }),
+      F.usd('min_volume24h_usd', 'Volume 24 jam minimum', { hi: 1e12, help: 'Tanpa volume tidak ada fee. Angka DexScreener. 0 = mati.' }),
       F.usd('min_target_quote_usd', 'Abaikan aksi target di bawah'),
       F.int('max_open_positions', 'Maksimum posisi terbuka', { hi: 1000 }),
       F.int('cooldown_seconds', 'Jeda antar salinan (detik)'),
@@ -430,7 +468,7 @@ const FORMS = {
 };
 
 const NOTIF = [
-  ['penting', 'Kabar penting (LP disalin / ditutup)'],
+  ['penting', 'Posisi disalin & ditutup'],
   ['error', 'Galat'],
   ['warn', 'Peringatan'],
   ['info', 'Semua baris log'],
@@ -447,7 +485,7 @@ function ddel(o, a, b) {
 function showVal(spec, v) {
   if (v === undefined || v === null) return '—';
   switch (spec.type) {
-    case 'bool': return v ? tr("✅ ya") : tr("❌ tidak");
+    case 'bool': return v ? tr("✅ Ya") : tr("❌ Tidak");
     case 'usd': return usd(v, v >= 100 ? 0 : 2);
     case 'pct': return `${trimZ(nf(v, 2))}%`;
     case 'bps': return `${trimZ(nf(v / 100, 2))}%`;
@@ -882,10 +920,10 @@ class Telegram {
       case 'resume': return this.setPause(chatId, null, false);
       case 'scout':
         if (arg) return this.runScout(chatId, arg);
-        return this.ask(chatId, { kind: 'scout' }, tr("Kirim alamat wallet yang mau dipotret.\n<i>Contoh:</i> <code>0x3c92…2976</code>"));
+        return this.ask(chatId, { kind: 'scout' }, tr("Kirim alamat wallet untuk memotret gaya LP-nya: ukuran posisi khas, lebar rentang, dan seberapa sering harga masih di dalam rentang.\n<i>Contoh:</i> <code>0x3c92…2976</code>"));
       case 'research':
         if (arg) return this.runRiset(chatId, arg);
-        return this.ask(chatId, { kind: 'riset' }, tr("Kirim alamat wallet yang mau diriset (PnL, posisi, riwayat)."));
+        return this.ask(chatId, { kind: 'riset' }, tr("Kirim alamat wallet yang mau diriset. Bot membaca seluruh posisi LP-nya langsung dari chain: modal, hasil, fee, dan riwayat tiap posisi."));
       case 'help':
         return this.send(chatId, tr("<b>Perintah</b>\n{0}\n\nSemua ini juga ada tombolnya di /menu.\n\n💡 Tempel <b>alamat token</b> kapan saja → langsung ke layar pasang LP. Tempel <b>alamat wallet</b> → riset PnL atau jadikan target.", [COMMANDS.map(([c, d]) => `/${c} — ${esc(tr(d))}`).join('\n')]), kb([[BACK_HOME]]));
       default:
@@ -1291,8 +1329,8 @@ class Telegram {
         return out(tr("✅ <b>Swap selesai</b>\n{0}{1}\ntx <code>{2}</code>", [esc(r.note), r.dex ? tr("\nlewat {0}", [esc(r.dex)]) : '', esc(shortH(r.tx))]), kb([[btn(tr("💵 Saldo"), 'b'), btn(tr("🔁 Swap lagi"), 'sw')], [BACK_HOME]]));
       }
 
-      case 'k': return this.ask(chatId, { kind: 'scout' }, tr("Kirim alamat wallet yang mau dipotret."));
-      case 'w': return this.ask(chatId, { kind: 'riset' }, tr("Kirim alamat wallet yang mau diriset."));
+      case 'k': return this.ask(chatId, { kind: 'scout' }, tr("Kirim alamat wallet untuk memotret gaya LP-nya: ukuran posisi khas, lebar rentang, dan seberapa sering harga masih di dalam rentang."));
+      case 'w': return this.ask(chatId, { kind: 'riset' }, tr("Kirim alamat wallet yang mau diriset. Bot membaca seluruh posisi LP-nya langsung dari chain: modal, hasil, fee, dan riwayat tiap posisi."));
       case 'wl': return out(...(await this.walletList()));
       case 'wr': return out(...(await this.riset(rest[0])));
       default: return out(...(await this.home()));
@@ -1434,8 +1472,11 @@ class Telegram {
       try { p = (await this.api('GET', '/api/position', null, { id: detail.positionId })).position || null; }
       catch { p = null; }
     }
-    if (detail.kind === 'entry') return this.kartuMasuk(detail, p);
-    if (detail.kind === 'exit') return this.kartuKeluar(detail, p);
+    // Konteks pool dibaca sekali di sini: kartu masuk dan kartu tutup memakainya sama.
+    const pool = detail.kind === 'entry' || detail.kind === 'exit'
+      ? await this.poolInfo(p).catch(() => null) : null;
+    if (detail.kind === 'entry') return this.kartuMasuk(detail, p, pool);
+    if (detail.kind === 'exit') return this.kartuKeluar(detail, p, pool);
     if (detail.kind === 'leftover') return this.kartuSisa(detail, p);
     if (detail.kind === 'leftover_stuck') return this.kartuSisaMacet(detail, p);
     return [`🔔 <b>${esc(msg)}</b>`, null];
@@ -1523,19 +1564,88 @@ class Telegram {
     if (!kepala) return [];
     return ['', kepala, ...isi.flat()].filter((x) => x != null);
   }
+  // ---- konteks pool --------------------------------------------------------
+  // Kartu dulu cuma bercerita tentang posisi kita. Dua angka pool mengubah artinya:
+  // VOLUME adalah asal fee (pool sepi membayar mendekati nol berapa pun modalnya),
+  // dan LIKUIDITAS menentukan seberapa keras kita menggeser harga sendiri saat
+  // keluar. Keduanya dari DexScreener, sumber yang sama dengan kolom Volume &
+  // Likuiditas di dasbor. Skor GMGN ikut hanya kalau API key-nya terpasang.
+  //
+  // Tidak boleh menahan kabar: kabar LP disalin/ditutup yang terlambat lebih buruk
+  // daripada kabar tanpa baris pool, jadi tiap panggilan dibatasi 4 detik dan
+  // kegagalan apa pun berarti barisnya absen — bukan kartunya batal.
+  async poolInfo(p) {
+    if (!p?.pool_ref) return null;
+    const batas = (janji) => Promise.race([
+      Promise.resolve(janji).catch(() => null),
+      new Promise((r) => setTimeout(() => r(null), 4000)),
+    ]).catch(() => null);
+    const ref = String(p.pool_ref).toLowerCase();
+    const [mk, gm] = await Promise.all([
+      batas(this.api('GET', '/api/monitor/market', null, { pools: ref })),
+      p.baseToken ? batas(this.api('GET', '/api/gmgn/token', null, { address: p.baseToken })) : null,
+    ]);
+    const pair = mk?.pairs?.[ref] || null;
+    return { pair, gmgn: gm && gm.enabled !== false && !gm.error ? gm : null };
+  }
+
+  // Dua baris paling banyak: satu pasar, satu GMGN. Yang kosong tidak ditulis —
+  // "likuiditas —" tidak memberi tahu apa pun dan cuma memanjangkan kartu.
+  poolBaris(info, p) {
+    if (!info) return [];
+    const L = [];
+    const { pair, gmgn } = info;
+    if (pair) {
+      const nilai = p?.valueUsd ?? p?.costUsd ?? null;
+      const bagian = pair.liquidityUsd > 0 && nilai > 0 ? (nilai / pair.liquidityUsd) * 100 : null;
+      const bagianTeks = bagian == null ? null
+        : tr("bagian kita {0}%", [trimZ(nf(bagian, bagian < 1 ? 2 : 1))]) + (bagian >= 5 ? ' ⚠️' : '');
+      const bit = [
+        pair.liquidityUsd != null ? tr("likuiditas {0}", [kUsd(pair.liquidityUsd)]) : null,
+        pair.volume?.h24 != null ? tr("volume 24j {0}", [kUsd(pair.volume.h24)]) : null,
+        bagianTeks,
+      ].filter(Boolean);
+      if (bit.length) L.push(`🌊 ${esc(bit.join(' · '))}`);
+    }
+    const sec = gmgn?.security || null;
+    if (sec) {
+      // Honeypot bukan "skor" — itu vonis, dan ditulis lebih dulu.
+      const bit = [
+        sec.honeypot === true ? tr("HONEYPOT") : null,
+        sec.rugPct != null ? tr("skor rug {0}%", [trimZ(nf(sec.rugPct, 0))]) : null,
+        sec.buyTaxPct != null || sec.sellTaxPct != null
+          ? tr("pajak {0}/{1}%", [trimZ(nf(sec.buyTaxPct || 0, 1)), trimZ(nf(sec.sellTaxPct || 0, 1))]) : null,
+        sec.insiderPct >= 10 ? tr("orang dalam {0}%", [trimZ(nf(sec.insiderPct, 0))]) : null,
+        sec.creatorSold === true ? tr("dev sudah jual") : null,
+      ].filter(Boolean);
+      // Penanda bahaya dipakai hanya kalau ambangnya sama dengan yang dipakai
+      // Kesehatan pool di dasbor (poolHealth.mjs), supaya dua layar tidak berbeda.
+      const bahaya = sec.honeypot === true || sec.rugPct >= 50 || sec.buyTaxPct >= 10 || sec.sellTaxPct >= 10;
+      const waspada = sec.rugPct >= 20 || sec.buyTaxPct >= 3 || sec.sellTaxPct >= 3 || sec.insiderPct >= 20;
+      if (bit.length) L.push(`${bahaya ? '🛑' : waspada ? '⚠️' : '🧪'} ${tr("GMGN")} · ${esc(bit.join(' · '))}`);
+    }
+    return L;
+  }
+
   txBaris(hash) { return hash ? `🔗 <code>${esc(shortH(hash))}</code>` : null; }
   modeTag() { return this.engine.dryRun() ? tr("🧪 SIMULASI") : '🟢 LIVE'; }
 
-  kartuMasuk(d, p) {
+  kartuMasuk(d, p, pool = null) {
     const pair = p ? `${p.symbol0}/${p.symbol1}` : (d.pair || '?');
     const venue = p?.venue ? esc(p.venue) : null;
     const fee = p?.fee != null ? tr("fee {0}%", [trimZ(nf(p.fee / 10000, 2))]) : null;
     const nilai = d.valueUsd ?? p?.costUsd;
+    // Nominalnya ikut baris pasangan — sama seperti kartu tutup: pratinjau notifikasi
+    // di layar kunci cuma memuat sekitar seratus karakter pertama, dan "LP disalin"
+    // tanpa angka memaksa membuka aplikasi untuk tahu berapa yang baru saja masuk.
     const L = [
       `${d.adding ? tr("➕ <b>LP DITAMBAH</b>") : tr("🟢 <b>LP DISALIN</b>")} · ${this.modeTag()}`,
-      `<b>${esc(pair)}</b>${[venue, fee].filter(Boolean).map((x) => ` · ${x}`).join('')}`,
-      '',
-      `💰 ${d.adding ? tr("Ditambah") : tr("Modal masuk")} <b>${usd(nilai)}</b>${d.adding && p?.costUsd != null ? tr(" · total modal {0}", [usd(p.costUsd)]) : ''}`,
+      `<b>${esc(pair)}</b> · 💰 <b>${d.adding ? '+' : ''}${usd(nilai)}</b>`,
+      [venue, fee].filter(Boolean).join(' · ') || null,
+      // Tambahan likuiditas: yang belum terjawab di baris atas adalah modal posisi
+      // ini SETELAH ditambah. Untuk posisi baru, angka itu sama saja dengan yang
+      // sudah tertulis, jadi tidak diulang.
+      d.adding && p?.costUsd != null ? tr("Total modal posisi ini {0}", [usd(p.costUsd)]) : null,
     ];
     // Rentang: posisi baru belum tersinkron, jadi harga kini diambil dari tick pool
     // saat mint yang dibawa mesin — tanpa itu batangnya tidak bertitik.
@@ -1546,6 +1656,8 @@ class Telegram {
       L.push(r.bar);
       L.push(r.kini ? `${esc(r.kini)}${r.ket ? ` — ${esc(r.ket)}` : ''}` : null);
     }
+    const poolBaris = this.poolBaris(pool, p);
+    if (poolBaris.length) { L.push(''); L.push(...poolBaris); }
     L.push(...this.targetBlok(d, p, this.targetTabelMasuk(d, p), this.targetRentang(d, p)));
     const jejak = [
       ['📝', d.reason ? esc(note(d.reason)) : null],
@@ -1563,16 +1675,10 @@ class Telegram {
     ])];
   }
 
-  kartuKeluar(d, p) {
+  kartuKeluar(d, p, pool = null) {
     const pair = p ? `${p.symbol0}/${p.symbol1}` : tr("posisi #{0}", [d.positionId]);
     const pnl = p?.pnlUsd;
     const judul = d.auto ? tr("🛡 <b>KELUAR MANDIRI</b>") : d.full ? tr("🔴 <b>LP DITUTUP</b>") : tr("➖ <b>LP DIKURANGI</b>");
-    const lama = p?.ageHours > 0 ? tr(" · dipegang {0}", [esc(dur(p.ageHours * 3600))]) : '';
-    const L = [
-      `${judul} · ${this.modeTag()}`,
-      `<b>${esc(pair)}</b>${p?.token_id ? ` · NFT #${esc(p.token_id)}` : ''}${lama}`,
-      '',
-    ];
     // Untung/rugi yang ditebalkan adalah angka BERSIH: hasil − modal − ongkos
     // (gas + slippage buka & tutup). PnL mentah cuma hasil − modal, dan pada
     // posisi tipis ongkos itulah yang membedakan untung dan rugi. Ongkos ditaruh
@@ -1581,14 +1687,34 @@ class Telegram {
     const adaOngkos = Math.abs(ongkos) >= 0.0005;
     const bersih = adaOngkos && pnl != null ? pnl - ongkos : pnl;
     const bersihPct = !p ? null : adaOngkos ? (p.costUsd > 0 ? (bersih / p.costUsd) * 100 : null) : p.pnlPct;
-    if (d.full && p?.empty) {
-      // Posisinya sendiri tidak rugi (hasil − modal − slippage ≥ 0) tapi bersihnya
-      // tidak untung: minusnya cuma gas. Itu bukan "rugi" dan bukan "untung" —
-      // jangan dilabeli salah satunya. Minus karena slippage tetap rugi.
-      const cumaGas = (pnl ?? 0) - (p.cost?.slipUsd || 0) >= -0.005 && bersih < 0.005;
-      const label = cumaGas ? (adaOngkos ? tr("⚖️ Cuma gas") : tr("⚖️ Impas"))
-        : bersih >= 0 ? (adaOngkos ? tr("📈 Untung bersih") : tr("📈 Untung")) : (adaOngkos ? tr("📉 Rugi bersih") : tr("📉 Rugi"));
-      L.push(`${label} <b>${sgn(bersih)}</b>  ${pct(bersihPct, Math.abs(bersihPct) < 0.1 ? 2 : 1)}`);
+    // Hasil akhir baru pasti kalau likuiditasnya benar-benar nol; tutup sebagian
+    // masih menunggu sinkron berikutnya.
+    const selesai = d.full && !!p?.empty && bersih != null;
+    // Posisinya sendiri tidak rugi (hasil − modal − slippage ≥ 0) tapi bersihnya
+    // tidak untung: minusnya cuma gas. Itu bukan "rugi" dan bukan "untung" —
+    // jangan dilabeli salah satunya. Minus karena slippage tetap rugi.
+    const cumaGas = selesai && (pnl ?? 0) - (p.cost?.slipUsd || 0) >= -0.005 && bersih < 0.005;
+    const label = cumaGas ? (adaOngkos ? tr("⚖️ Cuma gas") : tr("⚖️ Impas"))
+      : bersih >= 0 ? (adaOngkos ? tr("📈 Untung bersih") : tr("📈 Untung")) : (adaOngkos ? tr("📉 Rugi bersih") : tr("📉 Rugi"));
+    const bersihPctTeks = bersihPct == null ? null : pct(bersihPct, Math.abs(bersihPct) < 0.1 ? 2 : 1);
+    // Hasilnya ikut baris pasangan, bukan menunggu baris sendiri di bawah: pratinjau
+    // notifikasi HP cuma memuat sekitar seratus karakter pertama, dan kabar "posisi
+    // ditutup" tanpa angkanya memaksa buka aplikasi hanya untuk tahu untung atau rugi.
+    // NFT dan lama dipegang turun ke baris berikutnya — keduanya menarik setelah itu,
+    // bukan sebelumnya.
+    const hasil = selesai ? ` · ${cumaGas ? '⚖️' : bersih >= 0 ? '📈' : '📉'} <b>${sgn(bersih)}</b>${bersihPctTeks ? ` ${bersihPctTeks}` : ''}` : '';
+    const ident = [
+      p?.token_id ? `NFT #${esc(p.token_id)}` : null,
+      p?.ageHours > 0 ? tr("dipegang {0}", [esc(dur(p.ageHours * 3600))]) : null,
+    ].filter(Boolean).join(' · ');
+    const L = [
+      `${judul} · ${this.modeTag()}`,
+      `<b>${esc(pair)}</b>${hasil}`,
+      ident || null,
+      '',
+    ];
+    if (selesai) {
+      L.push(`${label} <b>${sgn(bersih)}</b>  ${bersihPctTeks || '—'}`);
       L.push(angka([
         [tr("hasil"), usd(p.outUsd ?? p.valueUsd)],
         [tr("modal"), usd(p.costUsd)],
@@ -1602,10 +1728,12 @@ class Telegram {
     // setelah dia dan keluar atas keputusan sendiri, jadi dua angka ini hampir tidak
     // pernah sama — dan selisihnya itulah yang dinilai orang saat membaca kartu.
     const sisiTarget = this.targetTabelKeluar(d, p, {
-      pnl: d.full && p?.empty ? bersih : null,
-      pnlPct: d.full && p?.empty ? bersihPct : null,
+      pnl: selesai ? bersih : null,
+      pnlPct: selesai ? bersihPct : null,
       holdSec: p?.ageHours > 0 ? p.ageHours * 3600 : null,
     });
+    const poolBarisKeluar = this.poolBaris(pool, p);
+    if (poolBarisKeluar.length) { L.push(''); L.push(...poolBarisKeluar); }
     L.push(...this.targetBlok(d, p, sisiTarget.tabel));
     if (sisiTarget.tabel && sisiTarget.perkiraan) {
       L.push(tr("<i>Angka target = pokok yang terpantau masuk & keluar; fee yang dia panen terpisah belum terhitung.</i>"));
@@ -1698,12 +1826,18 @@ class Telegram {
   async porto24() {
     try {
       const p = await this.api('GET', '/api/portfolio', null, { range: '24h' });
-      const pts = (p.series || []).filter((e) => e.pnl != null);
-      const awal = p.baseline?.pnl ?? pts[0]?.pnl;
-      // Satu titik saja (cuma titik "sekarang") berarti belum ada riwayat: selisihnya
-      // pasti nol dan menyesatkan, jadi tidak ditampilkan.
-      const ada = p.baseline?.pnl != null ? pts.length >= 1 : pts.length >= 2;
-      return { ...p, delta24: ada ? pts[pts.length - 1].pnl - awal : null };
+      // Dua kurva, aturan yang sama: `pnl` = PnL kumulatif posisi, `net` = nilai
+      // wallet − modal yang disetor. Yang dipakai kartu mengikuti angka utamanya,
+      // supaya "+$470" dan "24 jam +$48" tidak pernah datang dari dua ukuran berbeda.
+      const delta = (key) => {
+        const pts = (p.series || []).filter((e) => e[key] != null);
+        const awal = p.baseline?.[key] ?? pts[0]?.[key];
+        // Satu titik saja (cuma titik "sekarang") berarti belum ada riwayat: selisihnya
+        // pasti nol dan menyesatkan, jadi tidak ditampilkan.
+        const ada = p.baseline?.[key] != null ? pts.length >= 1 : pts.length >= 2;
+        return ada ? pts[pts.length - 1][key] - awal : null;
+      };
+      return { ...p, delta24: delta('pnl'), delta24net: delta('net') };
     } catch { return null; }
   }
 
@@ -1712,18 +1846,32 @@ class Telegram {
     const mode = o.mode.dry_run ? tr("🧪 SIMULASI") : '🟢 LIVE';
     const s = o.summary;
     const pnl = s.realizedUsd + s.unrealizedUsd;
+    // PnL BERSIH kalau modalnya terlacak (setoran − penarikan dari chain): itu yang
+    // menjawab "sejak setor, untung berapa", karena memuat gas dan selisih swap yang
+    // tidak pernah masuk PnL per posisi — dua angka ini bisa beda puluhan dolar, dan
+    // yang lebih kecil itulah uang sungguhan. Tanpa pelacakan modal tinggal kumulatif.
+    const net = pf?.now?.netPnl ?? null;
+    const d24 = (net != null ? pf?.delta24net : pf?.delta24) ?? null;
     const text = [
-      `<b>Quiver</b> · ${mode}`,
+      `<b>Quiver</b> · ${mode}${o.mode.paused ? tr(" · ⏸ DIJEDA") : ''}`,
       this.chainLine(),
       `<code>${esc(shortA(o.mode.wallet))}</code>`,
       this.kesehatan(o),
-      o.mode.dry_run ? tr("Mode simulasi: transaksi salin tidak dikirim ke chain.") : tr("Mode LIVE: transaksi menggunakan dana wallet."),
+      // Kalimat mode ditulis sebagai akibat, bukan status: yang perlu diketahui orang
+      // sebelum menekan apa pun adalah "uang saya bergerak atau tidak".
+      o.mode.dry_run ? tr("Mode simulasi: bot menghitung dan mencatat semuanya, tapi tidak mengirim transaksi apa pun.")
+        : tr("Mode LIVE: transaksi dikirim ke chain dan memakai dana wallet."),
+      o.mode.paused ? tr("Penyalinan dijeda: posisi target baru tidak diikuti. Posisi yang sudah terbuka tetap dijaga — aturan keluar dan sinyal keluar target tetap berjalan.") : null,
       '',
       pf?.now?.cash ? tr("💰 Portofolio <b>{0}</b>", [usd(pf.now.value)]) : null,
-      `PnL <b>${pnlText(pnl)}</b>${pf?.delta24 != null ? tr(" · 24 jam {0}", [sgn(pf.delta24)]) : ''}`,
-      tr("💼 {0} posisi · {1}{2}", [s.openCount, usd(s.exposureUsd), s.openCount ? ` · ${s.inRange}/${s.openCount} in-range` : '']),
+      `${net != null ? tr("PnL bersih") : 'PnL'} <b>${pnlText(net ?? pnl)}</b>${d24 != null ? tr(" · 24 jam {0}", [sgn(d24)]) : ''}`,
+      tr("💼 {0} posisi · {1}{2}", [s.openCount, usd(s.exposureUsd), s.openCount ? ` · ${tr("{0} dari {1} di dalam rentang", [s.inRange, s.openCount])}` : '']),
+      // Dua angka yang selalu ditanyakan setelah PnL: berapa yang masih menganggur
+      // (itu yang membatasi salinan berikutnya) dan berapa fee yang sudah terkumpul
+      // tapi belum diklaim.
+      pf?.now?.cash ? tr("💵 Kas {0} · fee belum diklaim {1}", [usd(pf.now.cash.usd), usd(s.feeUsd)]) : null,
       '',
-      tr("Pilih <b>Target</b> untuk mengikuti wallet, atau <b>LP manual</b> untuk membuka posisi sendiri.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap.</i>"),
+      tr("Pilih <b>Target</b> untuk mengikuti wallet, atau <b>LP manual</b> untuk membuka posisi sendiri.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap ke chat ini.</i>"),
     ].filter((x) => x != null).join('\n');
     return [text, kb([
       [btn(tr("📊 Ringkasan"), 'o'), btn(tr("💼 Posisi"), 'p')],
@@ -1748,7 +1896,11 @@ class Telegram {
     const pnl = s.realizedUsd + s.unrealizedUsd;
     // modal nyata kalau terlacak; "nilai − PnL" melingkar (PnL besar → pembagi kecil)
     const cap = now?.capitalNet ?? now?.capital;
-    const pnlPct = cap > 0 ? (pnl / cap) * 100 : null;
+    // Sama dengan kartu utama: bersih kalau ada, kumulatif kalau tidak.
+    const net = now?.netPnl ?? null;
+    const utama = net ?? pnl;
+    const d24 = (net != null ? pf?.delta24net : pf?.delta24) ?? null;
+    const pnlPct = cap > 0 ? (utama / cap) * 100 : null;
     const L = [
       tr("📊 <b>Ringkasan</b> · {0}", [o.mode.dry_run ? tr("🧪 SIMULASI") : '🟢 LIVE']),
       this.chainLine(),
@@ -1759,7 +1911,7 @@ class Telegram {
 
     // 1. Uang: angka terbesar di atas, tebal; rinciannya di tabel yang lurus.
     if (now?.cash) L.push(tr("💰 Portofolio <b>{0}</b>", [usd(now.value)]));
-    L.push(`PnL <b>${pnlText(pnl)}</b>${pnlPct != null ? ` ${pct(pnlPct)}` : ''}${pf?.delta24 != null ? tr(" · 24 jam {0}", [sgn(pf.delta24)]) : ''}`);
+    L.push(`${net != null ? tr("PnL bersih") : 'PnL'} <b>${pnlText(utama)}</b>${pnlPct != null ? ` ${pct(pnlPct)}` : ''}${d24 != null ? tr(" · 24 jam {0}", [sgn(d24)]) : ''}`);
     L.push(angka([
       [tr("kas wallet"), now?.cash ? usd(now.cash.usd) : null],
       [tr("dalam posisi"), usd(s.exposureUsd)],
@@ -1768,7 +1920,17 @@ class Telegram {
       [tr("modal posisi"), usd(s.costUsd)],
       [tr("belum terealisasi"), sgn(s.unrealizedUsd)],
       [tr("sudah terealisasi"), sgn(s.realizedUsd)],
+      // Dua baris terakhir hanya ada kalau angka utamanya bersih: tanpa keduanya
+      // "PnL bersih" di atas tidak cocok dengan penjumlahan di bawahnya, dan selisih
+      // yang tak dijelaskan terbaca sebagai bug.
+      ...(net != null ? [
+        [tr("PnL posisi"), sgn(pnl)],
+        [tr("gas & swap di luar posisi"), sgn(net - pnl)],
+      ] : []),
     ]));
+    if (net != null) {
+      L.push(tr("<i>PnL bersih = nilai portofolio sekarang − modal yang pernah disetor, jadi gas dan selisih swap ikut terhitung. PnL posisi hanya membandingkan modal dengan hasil tiap posisi.</i>"));
+    }
 
     // 1b. Sisa jatah salin: ruang yang masih tersisa di plafon aturan umum — plafon yang
     // habis adalah alasan posisi berikutnya dilewati.
@@ -1789,7 +1951,7 @@ class Telegram {
     // 2. Posisi terbuka, terbesar dulu.
     const open = (pos.positions || []).filter((p) => !p.empty).sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
     L.push('');
-    L.push(tr("<b>💼 Posisi terbuka · {0}</b>{1}", [open.length, open.length ? tr("  🟢 {0} in · 🟡 {1} luar", [s.inRange, open.length - s.inRange]) : '']));
+    L.push(tr("<b>💼 Posisi terbuka · {0}</b>{1}", [open.length, open.length ? tr("  🟢 {0} di dalam rentang · 🟡 {1} di luar", [s.inRange, open.length - s.inRange]) : '']));
     if (open.length) {
       L.push(positionTable(open.slice(0, 6)));
       if (open.length > 6) L.push(tr("<i>+{0} posisi lainnya</i>", [open.length - 6]));
@@ -1803,7 +1965,7 @@ class Telegram {
         [tr("menang / kalah"), `${st.wins} / ${st.losses}`],
         [tr("impas"), st.flat ? String(st.flat) : null],
         [tr("win rate"), pct(st.winRatePct, 0).replace('+', '')],
-        ['rata-rata', sgn(st.avgPnl)],
+        [tr('rata-rata'), sgn(st.avgPnl)],
         [tr("terbaik"), sgn(st.best)],
         [tr("terburuk"), sgn(st.worst)],
         [tr("rata-rata dipegang"), st.avgHoldHours != null ? dur(st.avgHoldHours * 3600) : null],
@@ -1816,7 +1978,7 @@ class Telegram {
       L.push('');
       L.push(tr("<b>🎯 Per sumber</b>"));
       L.push(kolom(src.map((g) => [
-        (g.label || (g.target ? shortA(g.target) : 'manual')).slice(0, 14),
+        (g.label || (g.target ? shortA(g.target) : tr('Manual'))).slice(0, 14),
         tr("{0} buka", [g.open]), sgn(g.realized + g.upnl),
       ]), 'lrr'));
     }
@@ -1826,7 +1988,7 @@ class Telegram {
     L.push(tr("<b>🛰 Penyalinan</b>"));
     L.push(angka([
       [tr("aksi target terpantau"), num(t.actions)],
-      [o.mode.dry_run ? tr("akan disalin (simulasi)") : tr("disalin"), num(o.mode.dry_run ? t.would : t.copied)],
+      [o.mode.dry_run ? tr("Akan disalin (simulasi)") : tr("disalin"), num(o.mode.dry_run ? t.would : t.copied)],
       [tr("dilewat"), num(t.skipped)],
       [tr("galat"), t.errors ? num(t.errors) : null],
     ]));
@@ -1866,13 +2028,28 @@ class Telegram {
         [tr("nilai"), tr("{0} · {1} posisi", [usd(o.summary.exposureUsd), o.summary.openCount])],
         [tr("fee belum diklaim"), usd(o.summary.feeUsd)],
       ]),
+      // Saldo mentah bukan uang yang bisa dipakai: sebagian ditahan untuk gas, dan
+      // plafon aturan bisa memotongnya lagi. Yang menentukan salinan berikutnya muat
+      // atau tidak adalah angka ini.
+      o.room?.cashUsd != null ? tr("<b>Siap dipakai menyalin</b>") : null,
+      o.room?.cashUsd != null ? tabel([
+        [tr("kas siap pakai"), usd(o.room.cashUsd)],
+        [tr("batas per posisi"), usd(o.room.perPositionUsd, 0)],
+        [tr("sisa anggaran hari ini"), o.room.daily?.limit > 0 ? `${usd(o.room.daily.left, 0)} / ${usd(o.room.daily.limit, 0)}` : tr("tanpa batas")],
+      ]) : null,
+      o.room?.cashUsd != null ? tr("<i>Kas siap pakai sudah dikurangi cadangan gas yang tidak pernah disentuh bot.</i>") : null,
     ];
     return [L.filter((x) => x != null).join('\n'), kb([[btn(tr("🔄 Segarkan"), 'b'), btn(tr("💼 Posisi"), 'p')], [BACK_HOME]])];
   }
 
   async posisi(openPage = 0, closedPage = 0) {
     const d = await this.api('GET', '/api/positions');
-    const open = (d.positions || []).filter((p) => !p.empty);
+    // Urutan: yang untung dulu (terbesar di atas), lalu yang rugi, dan yang PnL-nya
+    // masih nol paling belakang — posisi tanpa gerakan tidak membawa kabar apa pun,
+    // jadi tidak layak menempati baris pertama halaman.
+    const belumBergerak = (p) => !Number.isFinite(Number(p.pnlUsd)) || Number(p.pnlUsd) === 0;
+    const open = (d.positions || []).filter((p) => !p.empty)
+      .sort((a, b) => (Number(belumBergerak(a)) - Number(belumBergerak(b))) || ((b.pnlUsd || 0) - (a.pnlUsd || 0)));
     const closed = d.closed || [];
     const size = 4;
     const page = (n, count) => Math.min(Math.max(0, Math.floor(Number(n) || 0)), Math.max(0, Math.ceil(count / size) - 1));
@@ -1883,7 +2060,7 @@ class Telegram {
     const L = [tr('<b>💼 Posisi terbuka — {0}</b>', [open.length])];
     if (!open.length) L.push(tr('\nBelum ada posisi terbuka.'));
     else {
-      L.push(tr('Nilai {0} · fee {1}', [usd(tot.v), usd(tot.f)]), `PnL <b>${pnlText(tot.p)}</b>`, '');
+      L.push(tr('Nilai {0} · fee belum diklaim {1}', [usd(tot.v), usd(tot.f)]), `PnL <b>${pnlText(tot.p)}</b>`, '');
       L.push(positionTable(visible));
     }
     const rows = visible.map((p) => [btn(`${pnlMark(p.pnlUsd)} ${pairText(p)} · ${sgn(p.pnlUsd)}`, `p:${p.id}`)]);
@@ -1945,7 +2122,10 @@ class Telegram {
     }
     const ong = ongkosTeks(p.cost);
     if (ong) L.push('', ong);
-    if (p.inRange === false) L.push(tr('<i>Di luar rentang: tidak menghasilkan fee swap sampai harga kembali ke rentang.</i>'));
+    if (p.ilUsd != null) {
+      L.push(tr('<i>IL vs HODL: selisih nilai posisi ini dibanding kalau kedua tokennya cuma dipegang tanpa di-LP-kan. Minus artinya harga bergerak jauh dari rentang; fee-lah yang harus menutupnya.</i>'));
+    }
+    if (p.inRange === false) L.push(tr('<i>Di luar rentang: posisi berhenti menghasilkan fee sampai harga kembali masuk. Bot tetap memantau dan menutup sesuai aturan keluar.</i>'));
     if (p.compound?.enabled) {
       L.push(tr('{0} Minimum {1} · periksa setiap {2} menit', [p.compound.mode === 'claim' ? '💰' : '♻️',
         usd(p.compound.minUsd), p.compound.intervalMinutes]));
@@ -2122,28 +2302,41 @@ class Telegram {
     ])];
   }
 
+  // Riwayat keputusan: setiap aksi target yang terbaca, dan apa yang bot lakukan
+  // atasnya. Ini satu-satunya layar yang menjawab "kenapa posisi itu tidak saya
+  // punya", jadi keputusannya ditulis dengan kata — bukan cuma ikon — dan alasannya
+  // dikutip apa adanya dari mesin, diterjemahkan ke bahasa pembaca.
   async aktivitas(off = 0) {
     const d = await this.api('GET', '/api/activity', {}, { limit: 60 });
     const rows = d.activity.slice(off, off + 10);
-    const icon = { copy: '✅', dry: '🧪', skip: '⏭', error: '⛔' };
     const L = [tr("<b>📜 Aktivitas target</b> <i>({0}–{1} dari {2})</i>", [off + 1, off + rows.length, d.activity.length])];
     for (const a of rows) {
       const pair = a.symbol0 && a.symbol1 ? `${a.symbol0}/${a.symbol1}` : (a.pool_ref ? shortA(a.pool_ref) : '—');
+      const k = KEPUTUSAN[a.verdict] || ['•', a.verdict ? String(a.verdict) : 'Belum diputuskan'];
       L.push('');
-      L.push(`${icon[a.verdict] || '•'} <b>${esc(a.kind)}</b> ${esc(pair)}`);
+      L.push(`${k[0]} <b>${esc(tr(k[1]))}</b> · ${esc(tr(AKSI_TARGET[a.kind] || a.kind))}`);
       L.push(tabel([
+        [tr('Pasangan'), pair],
         [tr('Sumber'), a.targetLabel || shortA(a.target)],
-        [tr('nilai'), a.value_quote != null ? `${nf(a.value_quote, 2)} ${a.quote_symbol || ''}` : '—'],
+        // Nilai aksi TARGET, dalam aset kuotasi pool-nya — ini ukuran taruhan dia,
+        // bukan modal kita; ukuran kita ada di kartu posisi.
+        [tr('Nilai aksi target'), a.value_quote != null ? `${nf(a.value_quote, 2)} ${a.quote_symbol || ''}` : null],
         [tr('Waktu'), ago(a.ts)],
-        ['Tx', a.decision_tx ? shortH(a.decision_tx) : null],
+        [tr('Transaksi bot'), a.decision_tx ? shortH(a.decision_tx) : null],
       ]));
       if (a.reason) L.push(`<i>${esc(note(a.reason))}</i>`);
     }
-    if (!rows.length) L.push(tr("\nBelum ada aksi terpantau."));
+    if (!rows.length) {
+      L.push(tr("\nBelum ada aksi target yang terbaca. Begitu target menambah atau menarik likuiditas, barisnya muncul di sini."));
+    } else {
+      L.push('');
+      L.push(tr("<i>✅ disalin · 🧪 simulasi · ⏭ dilewati aturan · ⛔ gagal dieksekusi. Baris miring adalah alasan bot — atur ambangnya di Aturan salin.</i>"));
+    }
     const nav = [];
     if (off > 0) nav.push(btn(tr("⬅️ Baru"), `a:${Math.max(0, off - 10)}`));
     if (off + 10 < d.activity.length) nav.push(btn(tr("Lama ➡️"), `a:${off + 10}`));
-    return [L.join('\n'), kb([nav.length ? nav : null, [btn(tr("🔄 Segarkan"), `a:${off}`), BACK_HOME]])];
+    return [cut(L.join('\n')), kb([nav.length ? nav : null,
+      [btn(tr("⚙️ Aturan salin"), 'r'), btn(tr("🔄 Segarkan"), `a:${off}`)], [BACK_HOME]])];
   }
 
   async logs() {
@@ -2155,19 +2348,26 @@ class Telegram {
     return [L.join('\n'), kb([[btn(tr("🔄 Segarkan"), 'l'), BACK_HOME]])];
   }
 
+  // Transaksi yang BOT kirim sendiri — beserta gas yang benar-benar terbakar.
+  // Gas tidak pernah masuk PnL per posisi, jadi layar ini satu-satunya tempat
+  // ongkos jalan itu bisa dijumlah dengan mata.
   async txs() {
     const d = await this.api('GET', '/api/txs');
-    const L = [tr("<b>🧾 Transaksi terakhir</b>"), ''];
+    const L = [tr("<b>🧾 Transaksi bot terakhir</b>"), ''];
+    const gasTotal = d.txs.slice(0, 20).reduce((a, t) => a + (t.gas_quote || 0), 0);
     for (const t of d.txs.slice(0, 20)) {
-      L.push(`${t.status === 'ok' ? '✅' : t.status === 'error' ? '⛔' : '⏳'} <b>${esc(t.kind)}</b> · ${esc(ago(t.ts))}`);
+      const status = t.status === 'ok' ? ['✅', 'Berhasil'] : t.status === 'error' ? ['⛔', 'Gagal'] : ['⏳', 'Menunggu'];
+      L.push(`${status[0]} <b>${esc(tr(TX_JENIS[t.kind] || t.kind))}</b> · ${esc(ago(t.ts))}`);
       L.push(tabel([
-        ['Tx', shortH(t.hash)],
+        [tr('Status'), tr(status[1])],
+        [tr('Transaksi'), shortH(t.hash)],
         ['Gas', t.gas_quote != null ? usd(t.gas_quote, 4) : null],
       ]));
-      if (t.error) L.push(`  <i>${esc(String(t.error).slice(0, 120))}</i>`);
+      if (t.error) L.push(`  <i>${esc(note(String(t.error)).slice(0, 160))}</i>`);
     }
-    if (!d.txs.length) L.push(tr("(belum ada)"));
-    return [L.join('\n'), kb([[btn(tr("🔄 Segarkan"), 'x'), BACK_HOME]])];
+    if (!d.txs.length) L.push(tr("Belum ada transaksi. Bot baru mengirim transaksi saat menyalin posisi, memanen fee, atau menjual token sisa."));
+    else L.push(tr("\n<i>Gas {0} transaksi terakhir: {1}. Transaksi yang gagal pun tetap membayar gas.</i>", [d.txs.slice(0, 20).length, usd(gasTotal, 4)]));
+    return [cut(L.join('\n')), kb([[btn(tr("🔄 Segarkan"), 'x'), BACK_HOME]])];
   }
 
   // ---- aturan --------------------------------------------------------------
@@ -2181,7 +2381,7 @@ class Telegram {
         ? tr("Ini aturan umum. Tiap target bisa punya penyesuaian sendiri lewat halaman targetnya.")
         : tr("Kolom bertanda • disesuaikan khusus untuk target ini; sisanya ikut aturan umum."),
       '',
-      tr("Pilih kelompok:"),
+      tr("Pilih kelompok aturan yang ingin diperiksa atau diubah:"),
     ];
     const rows = localizeSchema(RULE_GROUPS).map((g, i) => {
       const n = Object.keys(cur.raw[g.g] || {}).length;
@@ -2303,9 +2503,9 @@ class Telegram {
     if (r.suggest) {
       L.push('');
       L.push(tr("<b>Bendera yang cocok</b>"));
-      L.push(tr("• tanpa getLogs: {0}", [r.suggest.no_logs ? tr("ya") : tr("tidak")]));
+      L.push(tr("• tanpa getLogs: {0}", [r.suggest.no_logs ? tr("Ya") : tr("Tidak")]));
       L.push(tr("• batas blok getLogs: {0}", [r.suggest.max_log_blocks || tr("tanpa batas")]));
-      L.push(tr("• node arsip: {0}", [r.suggest.archive ? tr("ya") : tr("tidak")]));
+      L.push(tr("• node arsip: {0}", [r.suggest.archive ? tr("Ya") : tr("Tidak")]));
       L.push('');
       L.push(tr("<i>Bendera diatur dari dasbor; di sini hanya pengujiannya.</i>"));
     }
@@ -2335,7 +2535,7 @@ class Telegram {
       `ntfy: ${st.notify.ntfy_topic ? `<code>${esc(st.notify.ntfy_topic)}</code>` : tr("(mati)")}`,
       '',
       tr("<b>Kirim ke Telegram</b>"),
-      tabel(localizeSchema(NOTIF).map(([k, lbl]) => [lbl, n[k] ? tr('ya') : tr('tidak')])),
+      tabel(localizeSchema(NOTIF).map(([k, lbl]) => [lbl, n[k] ? tr('Ya') : tr('Tidak')])),
     ];
     return [L.join('\n'), kb([
       ...localizeSchema(NOTIF).map(([k, lbl]) => [btn(`${n[k] ? '✅' : '❌'} ${lbl}`.slice(0, 40), `snb:${k}`)]),
@@ -2368,7 +2568,7 @@ class Telegram {
     if (err) L.push(`⚠️ ${esc(err)}\n`);
     if (!d.leftovers.length) L.push(tr("Kosong — tidak ada sisa yang menunggu dijual."));
     for (const it of d.leftovers) {
-      L.push(tr("• posisi #{0} · <code>{1}</code>", [it.posId, esc(it.symbol || shortA(it.token))]));
+      L.push(tr("• <b>Posisi #{0}</b> · <code>{1}</code>", [it.posId, esc(it.symbol || shortA(it.token))]));
       L.push(tabel([
         [tr('dicoba'), `${num(it.tries || 0)}×`],
         [tr('sejak'), it.since ? ago(it.since) : '—'],
@@ -2395,7 +2595,7 @@ class Telegram {
       tr("💡 <i>Paling cepat: tempel alamat token di chat ini kapan saja.</i>"),
       '',
       tabel([
-        ['pool', d.pair || tr('— belum dipilih')],
+        [tr('pool'), d.pair || tr('— belum dipilih')],
         [tr("nominal"), d.usd ? usd(d.usd) : tr("— belum diisi")],
         [tr("rentang"), d.full ? tr("seluruh rentang harga") : tr("{0} dari harga kini", [rentangTeks(d)])],
       ]),
@@ -2577,7 +2777,7 @@ class Telegram {
     return [[
       tr("<b>Kirim transaksi sungguhan?</b>"),
       '',
-      tabel([['pool', d.pair], [tr("nominal"), usd(d.usd)], [tr("rentang"), d.full ? tr("seluruh rentang") : rentangTeks(d)]]),
+      tabel([[tr('pool'), d.pair], [tr("nominal"), usd(d.usd)], [tr("rentang"), d.full ? tr("seluruh rentang") : rentangTeks(d)]]),
       tr("Kas dijembatani, token ditukar seperlunya, lalu mint — bisa sampai satu menit. Posisi ini tidak ikut ditutup saat target mana pun keluar."),
     ].join('\n'), kb([[btn(tr("✅ Ya, buka sekarang"), 'mlX')], [btn(tr("↩︎ Batal"), 'qk')]])];
   }

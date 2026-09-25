@@ -9,6 +9,8 @@ import { Button, Chip, Drawer } from '@heroui/react';
 import { X, ChartCandlestick } from 'lucide-react';
 import { get } from '../api';
 import { Stat, Empty, Loading, Notice, TxHash, TradeLinks, baseTokenOf } from './ui';
+import { GmgnDot, GmgnProvider, useGmgn } from './GmgnDot';
+import { GmgnSecurity } from './Gmgn';
 import TokenIcon, { TokenPair } from './TokenIcon';
 import { usd, pct, tone, age, ago, short, qty, fmtQty, sqrtPrice, locale as fmtLocale } from '../fmt';
 import { useI18n, reason } from '../i18n';
@@ -241,6 +243,7 @@ export default function PositionHistory({ id, onClose }) {
   const closed = p?.status === 'closed';
   const hours = p ? ((p.closed_ts || Date.now()) - (p.opened_ts || Date.now())) / 3600000 : null;
   return (
+    <GmgnProvider tokens={p ? [baseTokenOf(p)] : []}>
     <Drawer isOpen={!!id} onOpenChange={(o) => { if (!o) onClose(); }}>
       <Drawer.Backdrop isDismissable>
         <Drawer.Content placement="right">
@@ -252,6 +255,7 @@ export default function PositionHistory({ id, onClose }) {
                   <div className="min-w-0">
                     <Drawer.Heading className="flex flex-wrap items-center gap-2 text-base font-semibold">
                       {p.symbol0}/{p.symbol1}
+                      <GmgnDot token={baseTokenOf(p)} />
                       <Chip size="sm" variant="soft" color={closed ? 'danger' : 'success'}>{t(closed ? 'Ditutup' : 'Terbuka')}</Chip>
                     </Drawer.Heading>
                     <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted">
@@ -277,6 +281,7 @@ export default function PositionHistory({ id, onClose }) {
                       sub={p.costUsd > 0 ? pct((p.feesUsd / p.costUsd) * 100, 2).replace('+', '') : null} />
                     <Stat label="Modal" value={usd(p.costUsd)} sub={closed ? t('hasil {v}', { v: usd(p.outUsd) }) : null} />
                   </div>
+                  <GmgnPanel token={baseTokenOf(p)} />
                   {!closed && <PnlWhy p={p} />}
                   <Ongkos c={p.cost} cost={p.costUsd} />
                   <PositionSnapshot key={id} id={id} onUpdate={() => setRevision((v) => v + 1)} />
@@ -311,5 +316,22 @@ export default function PositionHistory({ id, onClose }) {
         </Drawer.Content>
       </Drawer.Backdrop>
     </Drawer>
+    </GmgnProvider>
+  );
+}
+
+// Angka keamanan GMGN untuk token spekulatif posisi ini. Di daftar, tempatnya cuma
+// cukup untuk perisai; laci punya ruang, jadi di sini angkanya sendiri yang tampil —
+// chip yang sama persis dengan panel Kesehatan pool di halaman Pool/Token, bukan
+// susunan kedua yang bisa berbeda pendapat. Tanpa API key GMGN, seluruh blok absen.
+function GmgnPanel({ token }) {
+  const { t } = useI18n();
+  const g = useGmgn(token);
+  if (!g) return null;
+  return (
+    <div className="mb-4 rounded-lg border border-border p-3">
+      <h3 className="mb-2 text-sm font-semibold">{t('Keamanan token')}</h3>
+      <GmgnSecurity g={g} />
+    </div>
   );
 }

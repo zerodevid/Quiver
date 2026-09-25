@@ -161,6 +161,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // tiap hitungan berarti puluhan eth_call + DexScreener.
   const holdingsCache = new Map();
   const market = new Market({ log, chain, gmgnKey: () => cfg.gmgn?.api_key || null });
+  // Mesin memakai instance yang sama untuk saringan likuiditas/volume: satu memo
+  // 30 detik dipakai bersama, jadi pool yang sedang dilihat di dasbor tidak ditarik
+  // dua kali saat entry menilainya.
+  if (engine && !engine.market) engine.market = market;
   // Kurs mata uang kedua (keterangan kecil di samping angka dolar, lihat fx.js).
   const fx = new Fx({ store, log });
   // Ongkos jalan tiap posisi (gas + selisih swap) — dihitung sekali untuk semua
@@ -236,6 +240,59 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       tickLower: first.tick_lower, tickUpper: first.tick_upper,
     };
     return out;
+  };
+
+  // Kebalikan originOf: dari satu posisi WALLET TARGET, apa yang kita lakukan
+  // terhadapnya. Laci riset wallet menampilkan posisi orang lain sampai tuntas —
+  // pokok, fee, tiap kejadian on-chain — tapi diam soal satu-satunya hal yang
+  // benar-benar milik kita: apakah posisi itu kita salin, dan kalau tidak, kenapa.
+  // Jawabannya selama ini tersebar di halaman Posisi dan Aktivitas; di sini
+  // dikumpulkan jadi satu:
+  //  - `positions`: salinan kita (positions.mirror_of = token_id target itu),
+  //  - `decisions`: keputusan mesin atas tiap aksi target di posisi itu — inilah
+  //    alasan "kenapa tidak ikut" yang sudah ditulis apa adanya oleh policy/engine,
+  //  - sisanya (bukan target, target dimatikan, target baru ditambah belakangan)
+  //    dikirim mentah supaya kalimatnya disusun tampilan, dalam bahasanya sendiri.
+  const copyOf = (target, tokenId, venue = null) => {
+    const t = store.get('SELECT label, enabled, added_ts FROM targets WHERE chain=? AND address=?', chain.network, target);
+    const k = (q) => (chain.isEthLike(q) ? engine.ethUsd : 1);
+    const live = new Map(engine.positions.live.map((p) => [p.id, p]));
+    const rows = store.all(
+      `SELECT * FROM positions WHERE chain=? AND target=? AND mirror_of=?${venue ? ' AND venue=?' : ''} ORDER BY id`,
+      ...[chain.network, target, String(tokenId), ...(venue ? [venue] : [])]);
+    const positions = rows.map((r) => {
+      const l = live.get(r.id);
+      const costUsd = (r.cost_quote || 0) * k(r.quote_symbol);
+      const outUsd = (r.out_quote || 0) * k(r.quote_symbol);
+      const base = {
+        id: r.id, status: r.status, venue: r.venue, tokenId: r.token_id,
+        openedTs: r.opened_ts, closedTs: r.closed_ts, takeoverTs: r.takeover_ts ?? null,
+        txOpen: r.tx_open, txClose: r.tx_close, costUsd,
+      };
+      if (r.status === 'closed') return { ...base, outUsd, feeUsd: (r.fees_quote || 0) * k(r.quote_symbol), pnlUsd: outUsd - costUsd, pnlPct: costUsd > 0 ? ((outUsd - costUsd) / costUsd) * 100 : null };
+      if (r.status !== 'open') return base;
+      // Posisi terbuka yang belum tersentuh sinkron (baru dimint, atau mesin baru
+      // hidup) hanya punya modalnya; ditandai `syncing` supaya tampilan tidak
+      // menyajikan PnL nol sebagai kabar.
+      if (!l) return { ...base, syncing: true };
+      return { ...base, valueUsd: l.valueUsd, feeUsd: l.feeUsd, pnlUsd: l.pnlUsd, pnlPct: l.pnlPct, inRange: l.inRange };
+    });
+    const decisions = store.all(
+      `SELECT a.id AS action_id, a.ts, a.kind, a.value_quote, a.quote_symbol, a.tx_hash,
+              d.verdict, d.reason, d.position_id
+       FROM actions a LEFT JOIN decisions d ON d.action_id = a.id
+       WHERE a.chain=? AND a.target=? AND a.token_id=?${venue ? ' AND a.venue=?' : ''}
+       ORDER BY a.ts, a.id`,
+      ...[chain.network, target, String(tokenId), ...(venue ? [venue] : [])])
+      .map((r) => ({
+        actionId: r.action_id, ts: r.ts, kind: r.kind, txHash: r.tx_hash,
+        verdict: r.verdict || null, reason: r.reason || null, positionId: r.position_id || null,
+        valueUsd: r.value_quote == null ? null : r.value_quote * k(r.quote_symbol),
+      }));
+    return {
+      isTarget: !!t, label: t?.label || null, enabled: t ? !!t.enabled : false,
+      addedTs: t?.added_ts ?? null, positions, decisions,
+    };
   };
 
   // Antrean memecoin sisa yang belum terjual, dengan simbol & desimal supaya dasbor
@@ -1099,6 +1156,22 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat token tidak valid' };
       return market.gmgnToken(a);
     },
+    // Versi banyak-token untuk titik indikator di daftar posisi: hanya blok yang
+    // dipakai penilaian (security/stat/dev), bukan seluruh profil. Disimpan 5 menit
+    // — keamanan kontrak tidak berubah semenit sekali, dan satu daftar posisi berisi
+    // sepuluh token berarti dua puluh panggilan GMGN kalau tidak ditahan.
+    'GET /api/gmgn/tokens': async (req, url) => {
+      if (!market.gmgnEnabled()) return { enabled: false, tokens: {} };
+      const list = [...new Set(String(url.searchParams.get('addresses') || '').toLowerCase().split(',')
+        .map((x) => x.trim()).filter((a) => /^0x[0-9a-f]{40}$/.test(a)))].slice(0, 25);
+      const rs = await Promise.all(list.map((a) => market.memo(`gmgn-lite:${a}`, 300_000, async () => {
+        const g = await market.gmgnToken(a);
+        if (!g || g.error || g.enabled === false) return { error: g?.error || 'tidak tersedia' };
+        return { address: a, symbol: g.symbol || null, security: g.security || null, stat: g.stat || null,
+          dev: g.dev ? { status: g.dev.status } : null, links: { gmgn: g.links?.gmgn || null }, fetchedAt: g.fetchedAt || Date.now() };
+      }).catch(() => ({ error: 'tidak tersedia' }))));
+      return { enabled: true, tokens: Object.fromEntries(list.map((a, i) => [a, rs[i]])), ts: Date.now() };
+    },
     // Pemegang / trader teratas, dengan nama wallet yang dikenal bot.
     'GET /api/gmgn/wallets': async (req, url) => {
       const a = String(url.searchParams.get('address') || '').toLowerCase();
@@ -1655,10 +1728,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       };
     },
 
+    // Kejadian on-chain satu posisi wallet + apa yang KITA lakukan atasnya (copyOf):
+    // laci riset dibuka justru untuk menilai satu posisi target, dan pertanyaan
+    // pertama setelah melihat hasilnya selalu "kita ikut atau tidak, kenapa".
     'GET /api/wallet/events': (req, url) => {
       const addr = String(url.searchParams.get('address') || '').toLowerCase();
       const id = String(url.searchParams.get('token_id') || '');
-      return { events: store.all('SELECT * FROM wevents WHERE chain=? AND wallet=? AND token_id=? ORDER BY block', chain.network, addr, id) };
+      const venue = String(url.searchParams.get('venue') || '') || null;
+      return {
+        events: store.all('SELECT * FROM wevents WHERE chain=? AND wallet=? AND token_id=? ORDER BY block', chain.network, addr, id),
+        copy: copyOf(addr, id, venue),
+      };
     },
 
     // Isi wallet (portofolio) — token yang dipegang + nilai USD-nya. Untuk wallet
@@ -2198,7 +2278,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     const pf = await callApi('GET', '/api/portfolio', {}, { range: r });
     if (pf.error) return { error: pf.error };
     const data = portfolioCard.prepare(pf, view);
-    if (data.pts.length < 2) return { error: 'belum ada riwayat portofolio — grafik terisi setelah bot membuka posisi (dicatat tiap 5 menit)' };
+    if (data.pts.length < 2) return { error: 'Belum ada riwayat portofolio. Grafiknya terisi setelah bot membuka posisi pertama — nilai portofolio dicatat tiap 5 menit.' };
     const opts = { lang, timeZone: tz || cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone };
     return { png: portfolioCard.render(data, opts), caption: portfolioCard.caption(data, lang), range: r, view: data.view, points: data.pts.length };
   };
