@@ -27,6 +27,10 @@ function cssColor(name) {
   return hex;
 }
 export const withAlpha = (hex, a) => hex + Math.round(a * 255).toString(16).padStart(2, '0');
+
+// Warna pita rentang saat beberapa posisi digambar di satu grafik (Monitor, detail
+// pool). Dipilih berurutan menurut id posisi supaya warnanya tidak berganti-ganti.
+export const BAND_COLORS = ['#3b82f6', '#a855f7', '#f97316', '#14b8a6', '#ec4899', '#eab308', '#06b6d4', '#8b5cf6'];
 export function palette() {
   const dark = document.documentElement.classList.contains('dark');
   return {

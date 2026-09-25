@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Button, Modal, toast } from '@heroui/react';
+import { Sprout } from 'lucide-react';
 import { get, post } from '../api';
 import { useI18n } from '../i18n';
 import { usd, ago } from '../fmt';
@@ -8,7 +9,7 @@ import { usd, ago } from '../fmt';
 //   compound — fee dikembalikan jadi likuiditas di posisi yang sama (v3 & v4)
 //   klaim    — fee ditarik ke wallet; sisi memecoin-nya dijual ke aset kuotasi pool
 // Tombolnya tetap satu: yang dipilih di dalam modal menentukan apa yang dijalankan.
-export default function AutoCompoundButton({ p, reload, disabled = false }) {
+export default function AutoCompoundButton({ p, reload, disabled = false, compact = false }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false);
   const [data, setData] = useState(null), [error, setError] = useState('');
@@ -56,14 +57,24 @@ export default function AutoCompoundButton({ p, reload, disabled = false }) {
       <span className="text-xs text-muted">{ket}</span>
     </span>
   </label>;
+  const modeLabel = on ? (modeNow === 'claim' ? t('KLAIM') : t('COMPOUND')) : 'OFF';
   return <>
-    <Button size="sm" variant="outline" isDisabled={disabled || p.empty} onPress={show}>
-      <span aria-hidden className={`size-1.5 rounded-full ${on ? 'bg-success' : 'bg-muted/50'}`} />
-      {t('Panen fee')}
-      <span className={`text-[11px] font-medium tracking-wide ${on ? 'text-success' : 'text-muted'}`}>
-        {on ? (modeNow === 'claim' ? t('KLAIM') : t('COMPOUND')) : 'OFF'}
-      </span>
-    </Button>
+    {/* Di baris tabel tombolnya menyusut jadi lambang: empat tombol berlabel penuh per
+        baris melebarkan kolom aksi melewati layar dan membuat tabel terbaca seperti
+        formulir. Statusnya tetap terlihat — titik hijau di sudut saat panen menyala. */}
+    {compact ? (
+      <Button size="sm" variant="tertiary" isIconOnly className="relative" isDisabled={disabled || p.empty} onPress={show}
+        aria-label={`${t('Panen fee otomatis')} · ${modeLabel}`} title={`${t('Panen fee otomatis')} · ${modeLabel}`}>
+        <Sprout className="size-4" />
+        {on && <span aria-hidden className="absolute end-0.5 top-0.5 size-1.5 rounded-full bg-success ring-2 ring-surface" />}
+      </Button>
+    ) : (
+      <Button size="sm" variant="outline" isDisabled={disabled || p.empty} onPress={show}>
+        <span aria-hidden className={`size-1.5 rounded-full ${on ? 'bg-success' : 'bg-muted/50'}`} />
+        {t('Panen fee')}
+        <span className={`text-[11px] font-medium tracking-wide ${on ? 'text-success' : 'text-muted'}`}>{modeLabel}</span>
+      </Button>
+    )}
     <Modal isOpen={open} onOpenChange={setOpen}>
       <Modal.Backdrop isDismissable={!busy}>
         <Modal.Container size="sm" placement="center">

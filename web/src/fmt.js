@@ -1,4 +1,4 @@
-import { chainInfo } from './chain';
+import { chainInfo, ETHERSCAN } from './chain';
 import { getLocale, translate as t } from './i18n';
 
 // Semua format angka & waktu mengikuti bahasa yang sedang dipakai:
@@ -24,8 +24,48 @@ export const lpagentHref = (a) => (!a ? null : chainInfo().kind === 'solana' ? `
   : `https://app.lpagent.io/portfolio?address=${a}&chain=${chainInfo().key === 'bsc' ? 'BSC' : 'ROBINHOOD'}`);
 // Nama penjelajah blok chain ini untuk label tautan (Solscan / BscScan / Blockscout).
 export const explorerName = () => { const e = chainInfo().explorer || ''; return /solscan/.test(e) ? 'Solscan' : /bscscan/.test(e) ? 'BscScan' : 'Blockscout'; };
+// Isi dompet lintas chain di DeBank: token, posisi DeFi, dan nilainya di semua chain
+// sekaligus — yang tidak bisa dilihat dari dasbor ini (satu chain pada satu waktu).
+// DeBank hanya EVM: di Solana tautannya tidak ditampilkan.
+export const debankHref = (a) => (a && chainInfo().kind !== 'solana' ? `https://debank.com/profile/${a}` : null);
+// Etherscan chain ini (robin.etherscan.io di Robinhood) — indeks tx/token/NFT-nya
+// berbeda dari Blockscout, jadi wallet yang di sana kosong sering terbaca di sini.
+export const etherscanHref = (a) => (a && ETHERSCAN[chainInfo().key] ? `${ETHERSCAN[chainInfo().key]}/address/${a}` : null);
 export const tone = (v) => (v > 0.005 ? 'text-success' : v < -0.005 ? 'text-danger' : '');
 export const widthPct = (lo, hi) => (1.0001 ** (hi - lo) - 1) * 100;
+
+// --- imbal hasil fee -------------------------------------------------------
+// Pertanyaan yang tidak bisa dijawab kolom "Fee" sendirian: posisi $2.000 yang
+// sudah 5 hari menghasilkan $12, dan posisi $300 yang baru 6 jam menghasilkan
+// $1,40 — mana yang lebih baik? Fee disetahunkan terhadap modal menyamakan
+// keduanya, dan itulah angka yang dipakai LP untuk membandingkan posisi, pool,
+// dan lebar rentang.
+//
+// Umur muda membuat angkanya meledak ($0,10 dalam 2 menit = puluhan ribu persen),
+// jadi di bawah dua jam tidak ada APR sama sekali — lebih baik diam daripada memberi
+// angka yang akan dibaca sebagai janji. Di atas 999% pun angkanya dipotong (aprText):
+// yang diberitahukan bukan "4.812%", melainkan "posisi ini masih terlalu muda".
+export function apr(feeUsd, costUsd, ageHours) {
+  if (!(costUsd > 0) || !(ageHours >= 2) || !(feeUsd > 0.005)) return null;
+  return (feeUsd / costUsd) * (8760 / ageHours) * 100;
+}
+// Fee posisi = yang belum diklaim + yang sudah ditarik ke wallet. Hanya memakai
+// yang belum diklaim akan membuat posisi yang rajin panen tampak tidak produktif.
+export const feeApr = (p) => (!p || p.syncing ? null : apr((p.feeUsd || 0) + (p.claimedUsd || 0), p.costUsd, p.ageHours));
+// APR gabungan beberapa posisi: tertimbang modal DAN umur (satu posisi besar yang
+// baru dibuka tidak boleh menarik turun rata-rata seolah ia sudah lama menganggur).
+export function aprOf(rows) {
+  let fee = 0, base = 0;
+  for (const p of rows || []) {
+    if (p.syncing || !(p.costUsd > 0) || !(p.ageHours >= 2)) continue;
+    fee += (p.feeUsd || 0) + (p.claimedUsd || 0);
+    base += p.costUsd * (p.ageHours / 8760);
+  }
+  return base > 0 ? (fee / base) * 100 : null;
+}
+// Tanpa tanda "+": APR bukan perubahan, jadi tidak perlu arah. Dibatasi seperti
+// jarak ke tepi rentang — "+4.812%" cuma berarti "posisi ini masih sangat muda".
+export const aprText = (v) => (v == null ? '—' : v >= 1000 ? '999+%' : `${num(v, Math.abs(v) < 10 ? 1 : 0)}%`);
 
 // Harga token bisa 0,00000032 sampai 4.200 — jadi pakai angka penting, bukan
 // jumlah desimal tetap (0,00 tidak memberi tahu apa pun).

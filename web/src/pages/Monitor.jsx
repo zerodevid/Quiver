@@ -24,7 +24,7 @@ import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
 import { useLiveCandles } from '../liveCandles';
 import { breakEven } from '../breakeven';
-import CandleChart from '../components/CandleChart';
+import CandleChart, { BAND_COLORS } from '../components/CandleChart';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
 import { PageHeader, Panel, Empty, Loading, Notice, PriceRange, Refresh, Segmented, Dot, TradeLinks, DataLinks, baseTokenOf } from '../components/ui';
@@ -92,7 +92,6 @@ function riskOf(p, trig, edge) {
 const EDGE_CLS = { danger: 'border-l-danger', warning: 'border-l-warning', ok: 'border-l-success' };
 // Warna pita per posisi di satu pool: dipilih supaya tetap bisa dibedakan di tema
 // gelap maupun terang, dan tidak memakai hijau/merah yang sudah berarti untung/rugi.
-const BAND_COLORS = ['#3b82f6', '#a855f7', '#f97316', '#14b8a6', '#ec4899', '#eab308', '#06b6d4', '#8b5cf6'];
 const LEVEL_RANK = { danger: 2, warning: 1, ok: 0 };
 
 // Satu bar pemicu keluar: label kiri, angka kini/ambang kanan, batang di bawah.
@@ -236,8 +235,8 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
               <a href={'#positions/' + p.id} className="text-muted hover:text-foreground" title={t('Buka detail posisi {tag}', { tag: sel.tag })} aria-label={t('Buka detail posisi {tag}', { tag: sel.tag })}><ArrowUpRight className="size-3.5" /></a>
               {/* Tumpukan logo: GMGN / Based / fomo / Uniswap, lalu DexScreener / GeckoTerminal —
                   satu klik dari kartu ke terminal luar untuk token & pool ini. */}
-              <TradeLinks token={baseTokenOf(p0)} pool={p0.pool_ref} compact className="ml-1" />
-              <DataLinks pool={p0.pool_ref} dexUrl={g.pair?.url} className="ml-0.5" compact />
+              <TradeLinks token={baseTokenOf(p0)} pool={p0.pool_ref} compact className="ml-2" />
+              <DataLinks pool={p0.pool_ref} dexUrl={g.pair?.url} className="ml-1.5" compact />
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.6875rem] text-muted">
               <span className="uppercase">{p0.venue}</span><span>·</span><span className="num">{num(p0.fee / 10000, 2)}%</span>

@@ -6,11 +6,12 @@ import {
   Switch, Table, Spinner, Alert, Pagination, AlertDialog, Button,
 } from '@heroui/react';
 import { Inbox, Search, ArrowLeft, ArrowUpRight, Copy, Check, ExternalLink, RefreshCw } from 'lucide-react';
-import { price, tickPrice, sqrtPrice, widthPct, pct, short, txHref, ago } from '../fmt';
+import { price, tickPrice, sqrtPrice, widthPct, pct, short, txHref, addrHref, debankHref, lpagentHref, etherscanHref, ago } from '../fmt';
 import { breakEven } from '../breakeven';
 import { useTick } from '../hooks';
 import { translate as t } from '../i18n';
-import { chainInfo } from '../chain';
+import { useFx, fxText } from '../currency';
+import { chainInfo, CHAIN_ICON, EXPLORER_NAME } from '../chain';
 
 export function PageHeader({ group, title, desc, children }) {
   return (
@@ -26,23 +27,71 @@ export function PageHeader({ group, title, desc, children }) {
 
 // Angka utama. Label kecil di atas, nilai besar, keterangan di bawah — tanpa
 // HURUF BESAR SEMUA, yang pada empat kartu berjajar berubah jadi teriakan.
-export function Stat({ label, value, sub, valueClass = '' }) {
+// `badge` = satu penanda kecil di samping label (mis. APR, status in-range):
+// sifat angkanya, bukan angka kedua yang bersaing dengan yang utama.
+export function Stat({ label, value, sub, fx = null, valueClass = '', badge = null, className = '' }) {
   return (
-    <Card className="min-w-0 gap-1.5! p-3.5!">
-      <div className="truncate text-xs font-medium text-muted">{t(label)}</div>
-      <div className={`num break-words text-lg sm:text-[1.375rem] leading-tight font-semibold tracking-tight ${valueClass}`}>{value}</div>
-      {sub && <div className="truncate text-xs text-muted">{typeof sub === 'string' ? t(sub) : sub}</div>}
+    <Card className={`min-w-0 gap-1.5! p-3.5! ${className}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="truncate text-xs font-medium text-muted">{t(label)}</div>
+        {badge}
+      </div>
+      <div className={`num break-words text-lg sm:text-[1.375rem] leading-tight font-semibold tracking-tight ${valueClass}`}>{value}<Fx v={fx} /></div>
+      {/* Di HP ubinnya selebar setengah layar: keterangan yang dipotong satu baris
+          ("$851,40 di luar rentang — ti…") membuang justru bagian yang menjelaskan.
+          Dua baris; tinggi kartu tetap rata karena semuanya satu baris kisi. */}
+      {sub && <div className="line-clamp-2 text-xs text-muted">{typeof sub === 'string' ? t(sub) : sub}</div>}
     </Card>
   );
 }
 
+// Pita angka utama. Empat ubin seukuran sama membuat "total portofolio" dan
+// "win rate" tampak sama pentingnya; padahal dua angka pertama yang dicari mata
+// setiap kali halaman dibuka. Keduanya dinaikkan ke kartu selebar halaman dengan
+// ukuran huruf yang jelas lebih besar, sisanya turun jadi ubin di bawahnya.
+export function Hero({ children, className = '' }) {
+  return (
+    <Card className={`min-w-0 gap-0! p-0! ${className}`}>
+      <div className="flex h-full flex-col justify-center gap-4 p-4 sm:gap-5 sm:p-5">{children}</div>
+    </Card>
+  );
+}
+export function HeroFigure({ label, value, sub, fx = null, valueClass = '', aside = null, className = '' }) {
+  return (
+    <div className={`min-w-0 ${className}`}>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <span className="text-xs font-medium text-muted">{t(label)}</span>
+        {aside}
+      </div>
+      <div className={`num mt-1.5 break-words text-[1.75rem] leading-[1.1] font-semibold tracking-tight sm:text-[2.125rem] ${valueClass}`}>{value}<Fx v={fx} className="text-sm" /></div>
+      {sub && <div className="mt-1.5 text-xs text-muted">{typeof sub === 'string' ? t(sub) : sub}</div>}
+    </div>
+  );
+}
+
 // Baris label/nilai — dipakai di semua panel ringkasan.
-export function KV({ label, children, className = '' }) {
+export function KV({ label, children, fx = null, className = '' }) {
   return (
     <div className={`kv-row flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 text-sm ${className}`}>
       <span className="min-w-0 text-muted">{t(label)}</span>
-      <span className="num min-w-0 max-w-full break-words text-end font-medium">{children}</span>
+      <span className="num min-w-0 max-w-full break-words text-end font-medium">{children}<Fx v={fx} /></span>
     </div>
+  );
+}
+
+// Nilai yang sama dalam mata uang kedua (Pengaturan -> Tampilan), menempel di kanan
+// angka dolarnya. Sengaja kecil dan kelabu: yang dibaca tetap dolarnya, ini cuma
+// rasa besaran. Tanpa mata uang kedua — atau untuk nilai yang membulat jadi nol —
+// tidak ada apa-apa yang digambar, jadi tata letaknya sama persis seperti sebelumnya.
+export function Fx({ v, className = '' }) {
+  const fx = useFx();
+  const s = fx ? fxText(v) : null;
+  if (!s) return null;
+  return (
+    <span className={`ml-1.5 align-baseline text-xs font-medium whitespace-nowrap text-muted ${className}`}
+      title={t('Kurs {r} per USD, diambil otomatis', { r: new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(fx.rate) })}>
+      ≈ {s}
+    </span>
   );
 }
 
@@ -754,6 +803,31 @@ function LinkBar({ tag, links, compact = false, className = '' }) {
       ))}
     </span>
   );
+}
+// Tombol lompat ke luar untuk satu WALLET — dipasang di mana pun alamat 0x… tampil
+// (daftar target, detail target, halaman riset wallet, wallet bot sendiri). Tiga
+// pertanyaan yang tidak bisa dijawab dasbor ini sendirian: apa saja isi dompetnya di
+// chain lain (DeBank), bagaimana posisi LP-nya menurut pihak ketiga (LPAgent), dan
+// setiap transaksinya (Etherscan + penjelajah chain). Logonya jadi penanda, bukan teks,
+// seperti bilah trading token di atas.
+export const WALLET_APPS = [
+  { key: 'debank', label: 'DeBank', icon: '/debank.png', brand: '#ff6238', href: debankHref },
+  { key: 'lpagent', label: 'LPAgent', icon: '/lpagent.png', brand: '#e3f35b', href: lpagentHref },
+  { key: 'etherscan', label: 'Etherscan', icon: '/etherscan.png', brand: '#3b6fd4', href: etherscanHref },
+];
+// explorer: bilah penuh ikut membawa penjelajah blok; tumpukan ringkas di baris tabel
+// cukup tiga situs luar supaya logonya tidak menutupi kolom sebelahnya.
+export function WalletLinks({ address, compact = false, explorer = !compact, className = '' }) {
+  if (!address) return null;
+  const c = chainInfo();
+  const links = WALLET_APPS.map((app) => ({ ...app, href: app.href(address) }));
+  // Penjelajah blok chain yang sedang ditampilkan, berlogo chain-nya. Di BSC penjelajahnya
+  // BscScan — etherscanHref kosong di sana, jadi situsnya tidak muncul dua kali.
+  if (explorer) {
+    links.push({ key: 'explorer', label: EXPLORER_NAME[c.key] || t('Penjelajah'), icon: CHAIN_ICON[c.key] || '/favicon.svg',
+      brand: 'var(--accent)', href: addrHref(address) });
+  }
+  return <LinkBar tag="Wallet" links={links.filter((x) => x.href)} compact={compact} className={className} />;
 }
 export function TradeLinks({ token, pool = null, compact = false, className = '' }) {
   if (!token) return null;

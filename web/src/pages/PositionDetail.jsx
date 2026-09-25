@@ -27,7 +27,7 @@ import TakeoverButton from '../components/TakeoverButton';
 import ShareButton, { positionCard } from '../components/ShareCard';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask, TradeLinks, DataLinks } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
-import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice, widthPct, txHref, addrHref, locale as fmtLocale } from '../fmt';
+import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice, widthPct, txHref, addrHref, feeApr, aprText, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
 
 export const TFS = [['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam'], ['1d', '1 hari']];
@@ -75,7 +75,10 @@ const SRC_KEY = 'lpcopy-chart-src';
 export const readSrc = () => { try { return localStorage.getItem(SRC_KEY) === 'gmgn' ? 'gmgn' : 'gt'; } catch { return 'gt'; } };
 export const writeSrc = (v) => { try { localStorage.setItem(SRC_KEY, v); } catch { /* abaikan */ } };
 
-export function PriceChart({ p, m, tf }) {
+// `ranges` (opsional): semua posisi terbuka di pool ini, supaya grafik detail pool
+// menunjukkan tiap rentang aktif seperti di halaman Monitor. Yang `selected` adalah
+// posisi yang sedang disorot (garis masuk/keluar/BEP tetap hanya untuk yang itu).
+export function PriceChart({ p, m, tf, ranges = null, onRangeClick = null }) {
   const { t } = useI18n();
   const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
   const hasRange = p.tick_lower != null && p.tick_upper != null;
@@ -108,6 +111,9 @@ export function PriceChart({ p, m, tf }) {
   const closed = p.status === 'closed';
   const quote = gmgn ? 'USD' : quoteSym;
   const cv = (v) => (v != null && k ? v * k : null);
+  // Lilin GMGN berharga USD: pita ikut dikalikan kurs kuotasi->USD. Tanpa kurs, pita
+  // tidak digambar (sama seperti rentang posisi tunggal).
+  const bands = k ? (ranges || []).filter((b) => b.lo > 0 && b.hi > 0).map((b) => ({ ...b, lo: b.lo * k, hi: b.hi * k })) : [];
   return (
     <div>
       {gmgn && m.ohlcv.fallback && <p className="mb-2 text-xs text-warning">{t('GMGN gagal, memakai GeckoTerminal')}: {t(m.ohlcv.fallback)}</p>}
@@ -117,11 +123,32 @@ export function PriceChart({ p, m, tf }) {
       </p>}
       <AdvancedChart key={`${p.pool_ref || p.baseToken || "pool"}:${p.id || "none"}:${tf}:${gmgn ? 'gmgn' : 'gt'}`}
         candles={candles} tf={tf} quote={quote} poolRef={p.pool_ref || p.baseToken || null} range={range && k ? { lo: range.lo * k, hi: range.hi * k } : null}
+        ranges={bands.length ? bands : null}
         entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: cv(pEntry) } : null}
         exit={closed ? { t: p.closed_ts, p: cv(pExit) } : null}
         now={closed ? null : cv(pNow)} bep={cv(bep?.price)} />
+      {bands.length > 1 && (
+        <div className="mt-2 flex flex-wrap gap-1.5" role="tablist" aria-label={t('Rentang posisi di pool ini')}>
+          {bands.map((b) => {
+            const on = !!b.selected;
+            return (
+              <button key={b.id} type="button" role="tab" aria-selected={on} disabled={!onRangeClick}
+                onClick={onRangeClick ? () => onRangeClick(b.id) : undefined}
+                title={`${price(b.lo)} – ${price(b.hi)}`}
+                className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[0.6875rem] transition-colors ${on ? 'border-transparent bg-default text-foreground' : 'border-border text-muted hover:text-foreground'}`}
+                style={on ? { boxShadow: `inset 0 0 0 1px ${b.color}` } : undefined}>
+                <span className="inline-block size-2 rounded-sm" style={{ background: b.color }} />
+                <span className="mono font-medium">{b.label}</span>
+                <span className="num text-muted">{price(b.lo)} – {price(b.hi)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-        {range && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang posisi')}</span>}
+        {bands.length > 1
+          ? <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('{n} rentang aktif', { n: bands.length })}</span>
+          : range && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang posisi')}</span>}
         {p.opened_ts && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 w-px border-l-2 border-dashed border-accent" />{t('saat masuk')}</span>}
         {pEntry != null && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-px w-4 border-t border-dashed border-muted" />{t('harga masuk')}</span>}
         {bep?.price > 0 && <span className="inline-flex items-center gap-1.5 text-warning"><span aria-hidden className="inline-block w-4 border-t-2 border-dashed border-warning" />BEP {price(bep.price)} {quoteSym}</span>}
@@ -505,10 +532,17 @@ export default function PositionDetail({ id }) {
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-5">
-        <Stat label={closed ? 'Hasil' : 'Nilai'} value={usd(closed ? p.outUsd : p.valueUsd)} sub={t('modal {v}', { v: usd(p.costUsd) })} />
-        <Stat label={closed ? 'Fee (sudah diklaim)' : 'Fee belum diklaim'} value={closed ? '—' : usd(p.feeUsd)} valueClass={!closed && p.feeUsd > 0.005 ? 'text-success' : ''}
+        <Stat label={closed ? 'Hasil' : 'Nilai'} value={usd(closed ? p.outUsd : p.valueUsd)} fx={closed ? p.outUsd : p.valueUsd} sub={t('modal {v}', { v: usd(p.costUsd) })} />
+        {/* APR-nya di sebelah label: yang menentukan posisi ini layak dipertahankan atau
+            tidak bukan nominal fee-nya, melainkan berapa cepat modalnya menghasilkan. */}
+        <Stat label={closed ? 'Fee (sudah diklaim)' : 'Fee belum diklaim'} value={closed ? '—' : usd(p.feeUsd)} fx={closed ? null : p.feeUsd} valueClass={!closed && p.feeUsd > 0.005 ? 'text-success' : ''}
+          badge={closed || feeApr(p) == null ? null : (
+            <span className="num shrink-0 rounded bg-success/12 px-1.5 py-0.5 text-[0.6875rem] font-semibold whitespace-nowrap text-success"
+              title={t('Fee {f} dalam {age} atas modal {c}, disetahunkan', { f: usd((p.feeUsd || 0) + (p.claimedUsd || 0)), age: age(p.ageHours), c: usd(p.costUsd) })}>
+              {t('APR {v}', { v: aprText(feeApr(p)) })}
+            </span>)}
           sub={!closed && p.costUsd > 0 ? t('{p}% dari modal', { p: num((p.feeUsd / p.costUsd) * 100, 2) }) : null} />
-        <Stat label="PnL" value={usd(p.pnlUsd)} valueClass={tone(p.pnlUsd)}
+        <Stat label="PnL" value={usd(p.pnlUsd)} fx={p.pnlUsd} valueClass={tone(p.pnlUsd)}
           sub={<span>{pct(p.pnlPct, 2)}{p.ilUsd != null && <> · IL <span className={tone(p.ilUsd)}>{usd(p.ilUsd)}</span></>}</span>} />
         <Stat label={closed ? 'Ditahan' : 'Umur'} value={age(p.ageHours)} sub={t('masuk {d}', { d: fmtDate(p.opened_ts) })} />
         {/* Ongkos jalan: gas + selisih swap. Tidak ikut dihitung di PnL, padahal

@@ -267,8 +267,11 @@ html.app-enter [data-reveal="foot"] { animation: q-fade .4s ease .35s both; }
   color: var(--foreground); text-decoration: none; line-height: 1;
   transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
 }
+/* Garis rambut di tepi logo: banyak logo berlatar putih penuh, tanpa ini tepinya
+   lenyap di tema terang dan yang tersisa cuma guratan warnanya. */
 .trade-link img {
   width: 1rem; height: 1rem; border-radius: 0.25rem; display: block;
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--foreground) 14%, transparent);
   transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .trade-link svg {
@@ -285,16 +288,20 @@ html.app-enter [data-reveal="foot"] { animation: q-fade .4s ease .35s both; }
 .trade-link:active img { transform: scale(0.96); }
 
 /* Ringkas: tumpukan logo. Setiap logo diberi cincin sewarna permukaan supaya
-   tumpang-tindihnya terbaca; saat bilahnya disorot, tumpukan merekah. */
-.trade-stack { display: inline-flex; align-items: center; padding-left: 0.25rem; }
+   tumpang-tindihnya terbaca; saat bilahnya disorot, tumpukan merekah. Logo pertama
+   tidak ditarik ke kiri: tepi kiri tumpukan rata dengan teks di sebelahnya, dan
+   merekahnya hanya tumbuh ke kanan sehingga isi baris tidak ikut bergeser. */
+.trade-stack { display: inline-flex; align-items: center; }
 .trade-stack .trade-link {
-  padding: 0; margin-left: -0.375rem; border-radius: 9999px;
+  padding: 0; margin-left: -0.3125rem; border-radius: 9999px;
   background: var(--surface); box-shadow: 0 0 0 2px var(--surface);
   transition: margin 0.22s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.18s ease, transform 0.18s ease;
 }
+.trade-stack .trade-link:first-child { margin-left: 0; }
 .trade-stack .trade-link img { width: 1.125rem; height: 1.125rem; border-radius: 9999px; }
 .trade-stack .trade-link svg { display: none; }
-.trade-stack:hover .trade-link, .trade-stack:focus-within .trade-link { margin-left: 0.125rem; }
+.trade-stack:hover .trade-link, .trade-stack:focus-within .trade-link { margin-left: 0.25rem; }
+.trade-stack:hover .trade-link:first-child, .trade-stack:focus-within .trade-link:first-child { margin-left: 0; }
 .trade-stack .trade-link:hover, .trade-stack .trade-link:focus-visible {
   background: var(--surface); transform: translateY(-1px);
   box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--brand);
@@ -308,9 +315,7 @@ html.app-enter [data-reveal="foot"] { animation: q-fade .4s ease .35s both; }
    dan bantalan sentuh ±30px (logo tetap 18px), sedangkan bilah penuh boleh melipat
    ke baris berikutnya di layar sempit. Warna merek tetap muncul saat ditekan. */
 @media (hover: none) {
-  .trade-stack { padding-left: 0; margin-left: -0.375rem; }
-  .trade-stack .trade-link { margin-left: 0; padding: 0.375rem; box-shadow: none; background: transparent; }
-  .trade-stack .trade-link img { box-shadow: 0 0 0 1px var(--border); }
+  .trade-stack .trade-link, .trade-stack .trade-link:first-child { margin-left: 0; padding: 0.375rem; box-shadow: none; background: transparent; }
   .trade-stack .trade-link:active { transform: none; background: color-mix(in oklab, var(--brand) 18%, transparent); box-shadow: none; }
   .trade-bar { flex-wrap: wrap; }
   .trade-link { padding: 0.4rem 0.6rem; }

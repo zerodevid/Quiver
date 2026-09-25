@@ -13,6 +13,7 @@ const { Compound } = require('./compound');
 const { Holdings } = require('./holdings');
 const { Icons } = require('./icons');
 const { Market, TF } = require('./market');
+const { Fx, currencyOf } = require('./fx');
 const { Positions } = require('./positions');
 const { Costs, swapCostOf } = require('./costs');
 const { writeCfg } = require('./env');
@@ -177,6 +178,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // tiap hitungan berarti puluhan eth_call + DexScreener.
   const holdingsCache = new Map();
   const market = new Market({ log, chain, gmgnKey: () => cfg.gmgn?.api_key || null });
+  // Kurs mata uang kedua (keterangan kecil di samping angka dolar, lihat fx.js).
+  const fx = new Fx({ store, log });
   // Ongkos jalan tiap posisi (gas + selisih swap) — dihitung sekali untuk semua
   // posisi lalu di-cache sampai ada transaksi baru.
   const costs = new Costs(store, chain.network);
@@ -186,6 +189,70 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const costOf = (id, costUsd = null) => {
     const { hashes, ...c } = costs.of(id, engine.ethUsd);
     return { ...c, pctOfCost: costUsd > 0 ? (c.totalUsd / costUsd) * 100 : null };
+  };
+
+  // Asal-usul sebuah posisi: target yang ditiru, posisi aslinya, dan — sejauh yang
+  // terpantau — berapa yang DIA taruh dan tarik di posisi itu. Dua sumber, sengaja
+  // dipisah karena umurnya berbeda:
+  //  - `watch`: dari aksi yang benar-benar dilihat pemantau (pokok saja, dinilai pada
+  //    harga saat kejadian). Selalu ada dan selalu segar, tapi hanya memuat yang
+  //    terjadi setelah wallet itu mulai diikuti.
+  //  - `mirror`: hasil riset wallet (wpositions) — PnL lengkap termasuk fee dan token
+  //    sisa yang dijual, tapi cuma ada setelah wallet-nya dipindai dan bisa basi.
+  // Dipakai kartu Telegram (masuk & tutup) dan tabel riwayat: "kita meniru siapa, dia
+  // masuk berapa, kita masuk berapa" tidak boleh butuh dua halaman untuk dijawab.
+  const originOf = (row, { watch = false } = {}) => {
+    if (!row?.target) return { targetLabel: null, mirror: null, watch: null };
+    const targetLabel = store.get('SELECT label FROM targets WHERE chain=? AND address=?', chain.network, row.target)?.label || null;
+    const w = row.mirror_of
+      ? store.get('SELECT * FROM wpositions WHERE chain=? AND wallet=? AND venue=? AND token_id=?', chain.network, row.target, row.venue, row.mirror_of)
+      : null;
+    const out = {
+      targetLabel,
+      target: row.target,
+      tokenId: row.mirror_of || null,
+      // Nilai di wpositions SUDAH dalam USD (lihat WalletResearch.persist) — sisi
+      // kuotasi ETH tidak boleh dikalikan harga ETH lagi: dulu target ber-kuotasi WETH
+      // tampil bermodal $75 juta di kolom asal.
+      mirror: !w ? null : {
+        tokenId: w.token_id, status: w.status,
+        costUsd: w.invested_q || 0,
+        pnlUsd: w.pnl_q || 0,
+        pnlPct: w.invested_q > 0 ? (w.pnl_q / w.invested_q) * 100 : null,
+        openedTs: w.opened_ts, closedTs: w.closed_ts,
+        // Posisi target yang masih terbuka bernilai sebesar pemindaian terakhir
+        // wallet itu, bukan harga sekarang — UI harus mengatakannya.
+        stale: w.status === 'open',
+      },
+      watch: null,
+    };
+    if (!watch || !row.mirror_of) return out;
+    const acts = store.all(`SELECT ts, kind, liquidity, value_quote, quote_symbol, tick_lower, tick_upper
+      FROM actions WHERE chain=? AND target=? AND venue=? AND token_id=? ORDER BY ts, id`,
+    chain.network, row.target, row.venue, row.mirror_of);
+    if (!acts.length) return out;
+    let inUsd = 0, outUsd = 0, claims = 0, net = 0n;
+    for (const a of acts) {
+      const v = (a.value_quote || 0) * (chain.isEthLike(a.quote_symbol) ? engine.ethUsd : 1);
+      if (a.kind === 'increase') inUsd += v;
+      else if (a.kind === 'decrease') outUsd += v;
+      else if (a.kind === 'claim') claims++;
+      try { net += BigInt(a.liquidity || 0); } catch { /* aksi tanpa delta L */ }
+    }
+    const first = acts[0], last = acts[acts.length - 1];
+    out.watch = {
+      inUsd, outUsd, claims, events: acts.length,
+      // Selisih tarik − taruh: POKOK saja. Fee yang mereka panen terpisah tidak
+      // terhitung (tidak ada nilainya di aksi 'claim'), jadi angka ini lantai, bukan
+      // laba pasti — yang menampilkannya harus bilang begitu.
+      pnlUsd: outUsd > 0 && inUsd > 0 ? outUsd - inUsd : null,
+      pnlPct: outUsd > 0 && inUsd > 0 ? ((outUsd - inUsd) / inUsd) * 100 : null,
+      open: net > 0n,
+      openedTs: first.ts, lastTs: last.ts,
+      heldSec: last.ts > first.ts ? (last.ts - first.ts) / 1000 : null,
+      tickLower: first.tick_lower, tickUpper: first.tick_upper,
+    };
+    return out;
   };
 
   // Antrean memecoin sisa yang belum terjual, dengan simbol & desimal supaya dasbor
@@ -596,6 +663,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         rpc: rpc.stats(),
         unsupportedSenders: [...engine.watcher.unsupported.entries()].map(([a, n]) => ({ address: a, n })),
         lastSync: engine.positions.lastSync,
+        // Mata uang kedua: dasbor menempelkannya kecil-kecil di samping angka dolar.
+        // Ikut di sini supaya semua halaman mendapat kursnya dari poll yang sudah ada.
+        fx: fx.view(currencyOf(cfg)),
         leftovers: leftoverRows(), leftoverRetrySec: engine.leftoverRetrySec ? engine.leftoverRetrySec() : 5,
       };
     },
@@ -749,29 +819,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // target dan keluar atas keputusan sendiri, jadi hasilnya hampir tidak pernah
       // sama; menaruh kedua angka berdampingan membuat selisihnya terbaca, bukan
       // ditebak dari dua halaman berbeda.
-      const tLabel = new Map(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label]));
-      const origin = (r) => {
-        if (!r.target) return { targetLabel: null, mirror: null };
-        const w = r.mirror_of
-          ? store.get('SELECT * FROM wpositions WHERE chain=? AND wallet=? AND venue=? AND token_id=?', chain.network, r.target, r.venue, r.mirror_of)
-          : null;
-        // Nilai di wpositions SUDAH dalam USD (lihat WalletResearch.persist) — sisi
-        // kuotasi ETH tidak boleh dikalikan harga ETH lagi: dulu target ber-kuotasi WETH
-        // tampil bermodal $75 juta di kolom asal.
-        return {
-          targetLabel: tLabel.get(r.target) || null,
-          mirror: !w ? null : {
-            tokenId: w.token_id, status: w.status,
-            costUsd: w.invested_q || 0,
-            pnlUsd: w.pnl_q || 0,
-            pnlPct: w.invested_q > 0 ? (w.pnl_q / w.invested_q) * 100 : null,
-            openedTs: w.opened_ts, closedTs: w.closed_ts,
-            // Posisi target yang masih terbuka bernilai sebesar pemindaian terakhir
-            // wallet itu, bukan harga sekarang — UI harus mengatakannya.
-            stale: w.status === 'open',
-          },
-        };
-      };
+      const origin = (r) => { const { targetLabel, mirror } = originOf(r); return { targetLabel, mirror }; };
       for (const r of closed) {
         r.symbol0 = toks.get(r.token0)?.symbol || null;
         r.symbol1 = toks.get(r.token1)?.symbol || null;
@@ -855,7 +903,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       pos.compound = compound.status(row);
       pos.outUsd = outUsd;
       pos.quoteKind = chain.isEthLike(row.quote_symbol) ? 'eth' : 'usd';
-      pos.targetLabel = row.target ? (store.get('SELECT label FROM targets WHERE chain=? AND address=?', chain.network, row.target)?.label || null) : null;
+      // Asal posisi: siapa yang ditiru, posisi mana miliknya, dan berapa yang dia
+      // taruh/tarik di sana. Kartu Telegram masuk & tutup menaruhnya bersebelahan
+      // dengan angka kita sendiri.
+      pos.origin = originOf(row, { watch: true });
+      pos.targetLabel = pos.origin.targetLabel;
       pos.target = row.target; pos.mirror_of = row.mirror_of; pos.takeover_ts = row.takeover_ts ?? null;
       // Token spekulatif = yang bukan aset kuotasi; dasar harga di grafik.
       pos.baseToken = pos.quoteSide === 0 ? row.token1 : pos.quoteSide === 1 ? row.token0 : row.token0;
@@ -1990,7 +2042,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     },
   };
 
-  Object.assign(routes, createSettingsRoutes({ engine, engines, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market }));
+  Object.assign(routes, createSettingsRoutes({ engine, engines, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market, fx }));
   routes['GET /api/chains'] = async () => ({ chains: await chainList(), current: chain.network });
   // Pemilih chain: cookie lpcopy_chain dibaca pintu depan (index.js) untuk memilih
   // server chain mana yang menjawab permintaan berikutnya. Cookie ini bukan rahasia.

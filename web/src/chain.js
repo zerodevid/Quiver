@@ -28,3 +28,16 @@ export const CHAIN_ICON = {
   bsc: '/bnb-chain.png',
   solana: '/solana.svg',
 };
+// Nama penjelajah blok chain ini — dipakai sebagai label tombol wallet (fmt.js/ui.jsx),
+// karena "Blockscout" dan "BscScan" lebih dikenal daripada nama host-nya.
+export const EXPLORER_NAME = {
+  robinhood: 'Blockscout',
+  bsc: 'BscScan',
+  solana: 'Solscan',
+};
+// Etherscan chain ini, kalau ada — indeks tx/token yang berbeda dari Blockscout, jadi
+// keduanya berguna berdampingan. Di BSC penjelajahnya SUDAH BscScan (keluarga Etherscan),
+// jadi tidak ada entri kedua: satu tombol untuk satu situs.
+export const ETHERSCAN = {
+  robinhood: 'https://robin.etherscan.io',
+};

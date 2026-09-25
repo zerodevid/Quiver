@@ -41,6 +41,9 @@ class Executor {
     // membandingkan hitungannya untuk tahu bacaannya sudah basi.
     this.txSeq = 0;
     this.minedBlock = 0;
+    // Bentuk params swap v4 yang router chain ini terima — lihat buildSwapV4.
+    // null = belum terbukti; pemilih pool menyimulasikan kedua bentuk.
+    this.v4Layout = null;
   }
 
   // ---- dompet -------------------------------------------------------------
@@ -542,13 +545,31 @@ class Executor {
 
   // ---- swap lewat UniversalRouter ----------------------------------------
   // v4: V4_SWAP -> SWAP_EXACT_IN_SINGLE + SETTLE_ALL + TAKE_ALL
-  buildSwapV4(poolKey, zeroForOne, amountIn, amountOutMin, deadlineSec) {
+  //
+  // `layout` = bentuk IV4Router.ExactInputSingleParams yang dipakai router. Ada DUA
+  // yang beredar: 'limit' (lama) memuat `uint160 sqrtPriceLimitX96` antara
+  // amountOutMinimum dan hookData, 'plain' (v4-periphery akhir 2024) membuangnya.
+  // v4-periphery membaca params lewat offset calldata mentah, bukan abi.decode, jadi
+  // bentuk yang keliru tidak pernah memberi pesan: swap-nya revert TANPA data sama
+  // sekali. Diukur 2026-09-24 di Robinhood Chain: bentuk 'plain' revert 0x di 12 pool
+  // berbeda, 'limit' lolos simulasi di semuanya — itulah sebabnya cadangan zap lewat
+  // pool langsung selalu berakhir "semua pool menolak swap". Bentuknya tidak ditebak
+  // dari nama chain; pemilih pool (swappool.js) menyimulasikan keduanya lalu
+  // mengingat yang diterima lewat rememberV4Layout.
+  buildSwapV4(poolKey, zeroForOne, amountIn, amountOutMin, deadlineSec, layout = this.v4Layout || 'limit') {
     const acts = actionsHex([ACT.SWAP_EXACT_IN_SINGLE, ACT.SETTLE_ALL, ACT.TAKE_ALL]);
     const inCur = zeroForOne ? poolKey.currency0 : poolKey.currency1;
     const outCur = zeroForOne ? poolKey.currency1 : poolKey.currency0;
+    const key = [poolKey.currency0, poolKey.currency1, poolKey.fee, poolKey.tickSpacing, poolKey.hooks];
+    // Batas harga = ujung rentang yang sah untuk arahnya (tanpa batas sendiri). Router
+    // lama yang mengabaikannya tidak dirugikan; yang menghormatinya butuh nilai sah.
+    const limit = zeroForOne ? m.MIN_SQRT_RATIO + 1n : m.MAX_SQRT_RATIO - 1n;
     const params = [
-      coder.encode([`tuple(${PK_TUPLE} poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,bytes hookData)`],
-        [[[poolKey.currency0, poolKey.currency1, poolKey.fee, poolKey.tickSpacing, poolKey.hooks], zeroForOne, amountIn, amountOutMin, '0x']]),
+      layout === 'limit'
+        ? coder.encode([`tuple(${PK_TUPLE} poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,uint160 sqrtPriceLimitX96,bytes hookData)`],
+          [[key, zeroForOne, amountIn, amountOutMin, limit, '0x']])
+        : coder.encode([`tuple(${PK_TUPLE} poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,bytes hookData)`],
+          [[key, zeroForOne, amountIn, amountOutMin, '0x']]),
       coder.encode(['address', 'uint256'], [inCur, amountIn]),
       coder.encode(['address', 'uint256'], [outCur, amountOutMin]),
     ];
@@ -559,6 +580,15 @@ class Executor {
       data: IF_UR.encodeFunctionData('execute', [commands, [input], deadlineSec]),
       value: isNative(inCur) ? String(amountIn) : '0',
     };
+  }
+
+  // Bentuk yang harus dicoba saat menyimulasikan swap v4: yang sudah terbukti kalau
+  // sudah diketahui, kalau belum dua-duanya (satu batch eth_call, bukan tebak-tebakan).
+  v4SwapLayouts() { return this.v4Layout ? [this.v4Layout] : ['limit', 'plain']; }
+  rememberV4Layout(layout) {
+    if (!layout || this.v4Layout === layout) return;
+    this.v4Layout = layout;
+    this.log(`swap v4 lewat router: bentuk params '${layout}'${layout === 'limit' ? ' (lama, dengan sqrtPriceLimit)' : ' (baru)'}`);
   }
 
   // v3: V3_SWAP_EXACT_IN(recipient, amountIn, amountOutMin, path, payerIsUser)

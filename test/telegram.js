@@ -866,6 +866,10 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.match(teks, /●/, 'batang rentang harus bertitik (harga kini dari tick mint)');
     assert.match(teks, /Bang GE/, 'nama target harus tampil');
     assert.match(teks, /NFT #777/);
+    // Blok asal: ukuran target di sebelah ukuran kita, dari aksi yang terpantau.
+    assert.match(teks, /Dia masuk\s+\$200,00/, `nominal target harus tampil: ${teks}`);
+    assert.match(teks, /Kita masuk\s+\$200,00/);
+    assert.match(teks, /Porsi kita\s+100%/, 'porsi kita terhadap target harus tampil');
     assert.match(teks, /Target membuka posisi baru/);
     assert.match(teks, /bungkus 0.05000 ETH · zap beli token1 via Kyber/);
     // gas 0,0003 ETH × $2500 = $0,75 · selisih zap $0,60
@@ -907,6 +911,36 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     w.bot.stop();
   });
 
+  await t('kartu tutup menyandingkan hasil target dengan hasil kita', async () => {
+    const w = build();
+    const now = Date.now();
+    // Posisi #2 dijadikan cermin NFT #778 milik target, dan dua aksi target atas NFT
+    // itu dicatat: masuk $500 lalu keluar $560. Kartu harus bisa menjawab "yang kita
+    // tiru untung berapa" tanpa ada riset wallet sama sekali.
+    w.store.run("UPDATE positions SET target=?, mirror_of='778', opened_ts=? WHERE id=2", TARGET, now - 7500_000);
+    w.store.run(`INSERT INTO actions(id,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_lower,tick_upper,liquidity,value_quote,quote_symbol)
+      VALUES(2,?,101,'0xa2',0,?,'v4','increase','778','0xpool',?,?,3000,-600,600,'2000',500,'USDG')`, now - 7600_000, TARGET, ADDR.usdg, MEME);
+    w.store.run(`INSERT INTO actions(id,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_lower,tick_upper,liquidity,value_quote,quote_symbol)
+      VALUES(3,?,102,'0xa3',0,?,'v4','decrease','778','0xpool',?,?,3000,-600,600,'-2000',560,'USDG')`, now - 7300_000, TARGET, ADDR.usdg, MEME);
+    await w.bot.start();
+    w.engine.notify('LP ditutup: tutup penuh posisi #2', {
+      kind: 'exit', positionId: 2, txHash: '0xburn1234567890', full: true,
+      target: TARGET, mirrorOf: '778', reason: 'target menutup posisi', targetUsd: 560, targetTs: now - 7300_000,
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    const teks = outs(w.sent).find((x) => /Posisi ditutup/.test(x.params.text))?.params.text;
+    assert.ok(teks, 'kartu harus terkirim');
+    assert.match(teks, /Meniru <b>Bang GE<\/b>/, `kartu harus menyebut siapa yang ditiru: ${teks}`);
+    assert.match(teks, /Posisi dia\s+NFT #778/);
+    assert.match(teks, /Dia masuk\s+\$500,00/);
+    assert.match(teks, /Dia tarik\s+\$560,00/);
+    assert.match(teks, /Hasil dia\s+\+\$60,00\s+\+12,0%/, `hasil target harus dihitung dari aksinya: ${teks}`);
+    assert.match(teks, /Hasil kita\s+\+\$12,00/);
+    assert.match(teks, /Dia pegang\s+5 menit/);
+    assert.match(teks, /pokok yang terpantau/, 'batas ketelitian angka target harus disebut');
+    w.bot.stop();
+  });
+
   await t('keluar mandiri dan sisa terjual punya kartunya sendiri', async () => {
     const w = build();
     await w.bot.start();
@@ -920,7 +954,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     const sisa = teks.find((x) => /Token sisa terjual/.test(x));
     assert.ok(sisa, 'kartu sisa harus terkirim');
     assert.match(sisa, /\$4,20/);
-    assert.match(sisa, /Selisih\s+-16,0%/);
+    assert.match(sisa, /Selisih\s+−16,0%/);
     assert.match(sisa, /uji-dex/);
     assert.match(sisa, /ke-3/);
     w.bot.stop();

@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS actions (
 CREATE INDEX IF NOT EXISTS idx_actions_ts ON actions(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_actions_target ON actions(target, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_actions_chain_ts ON actions(chain, ts DESC);
+-- riwayat satu posisi target (kartu Telegram: dia masuk/tarik berapa di NFT itu)
+CREATE INDEX IF NOT EXISTS idx_actions_pos ON actions(chain, target, venue, token_id, ts);
 
 -- keputusan bot atas setiap aksi (disalin / dilewat + alasannya)
 CREATE TABLE IF NOT EXISTS decisions (

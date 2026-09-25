@@ -14,6 +14,11 @@ import { palette, withAlpha } from './CandleChart';
 // Sumbu waktu dipotong ke masa posisi hidup: mulai di lilin masuk (atau tepi kiri kalau
 // masuknya sebelum lilin pertama) dan berhenti di lilin keluar; posisi yang masih
 // terbuka (extendData.open) memanjang sampai tepi kanan pane.
+//
+// Kalau satu pool punya beberapa posisi, tiap posisi jadi pitanya sendiri: yang
+// sedang dipilih digambar pekat dan bergaris utuh, sisanya tipis dan putus-putus
+// (extendData.dim) supaya tidak saling menutupi. extendData.label = nama pendek
+// posisi, ditulis di tepi kiri pita.
 registerOverlay({
   name: 'lpRange', totalStep: 2,
   needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
@@ -21,15 +26,21 @@ registerOverlay({
     const [c1, c2] = coordinates;
     if (!c1 || !c2) return [];
     const y1 = Math.min(c1.y, c2.y), y2 = Math.max(c1.y, c2.y);
-    const { fill, line, open } = overlay.extendData || {};
+    const { fill, line, open, dim, label } = overlay.extendData || {};
     const x1 = Math.max(0, Math.min(c1.x, c2.x));
     const x2 = open ? bounding.width : Math.min(bounding.width, Math.max(c1.x, c2.x));
     if (x2 <= x1) return [];
-    return [
+    const style = dim ? 'dashed' : 'solid';
+    const figures = [
       { type: 'rect', ignoreEvent: true, attrs: { x: x1, y: y1, width: x2 - x1, height: Math.max(1, y2 - y1) }, styles: { style: 'fill', color: fill } },
-      { type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: x1, y: y1 }, { x: x2, y: y1 }] }, styles: { style: 'dashed', color: line, size: 1 } },
-      { type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: x1, y: y2 }, { x: x2, y: y2 }] }, styles: { style: 'dashed', color: line, size: 1 } },
+      { type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: x1, y: y1 }, { x: x2, y: y1 }] }, styles: { style, color: line, size: 1 } },
+      { type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: x1, y: y2 }, { x: x2, y: y2 }] }, styles: { style, color: line, size: 1 } },
     ];
+    if (label) {
+      figures.push({ type: 'text', ignoreEvent: true, attrs: { x: x1 + 4, y: y1 + 2, text: label, align: 'left', baseline: 'top' },
+        styles: { color: line, size: 10, family: 'ui-sans-serif, system-ui, sans-serif', paddingLeft: 0, paddingRight: 0, paddingTop: 0, paddingBottom: 0, backgroundColor: 'transparent' } });
+    }
+    return figures;
   },
 });
 
@@ -122,10 +133,13 @@ const userOverlays = (chart) => chart.getOverlays().filter((o) => o.groupId !== 
  * quote    : simbol aset kuotasi (ticker di legenda)
  * poolRef  : kunci penyimpanan gambar/indikator di server — null = tidak disimpan
  * range    : { lo, hi } harga rentang posisi LP, atau null
+ * ranges   : [{ id, lo, hi, color, label, selected, from(ms), to(ms) }] — banyak pita
+ *            sekaligus (semua posisi terbuka di pool yang sama). Kalau diisi, `range`
+ *            diabaikan: pita yang `selected` yang mewakili posisi yang sedang dilihat.
  * entry    : { t(ms), p }  exit : { t(ms), p }  now : harga kini — semuanya opsional,
  *            dipakai untuk menggambar konteks posisi (bukan gambar pengguna)
  */
-export default function AdvancedChart({ candles, tf, quote, poolRef, height = 420, range = null, entry = null, exit = null, now = null, bep = null }) {
+export default function AdvancedChart({ candles, tf, quote, poolRef, height = 420, range = null, ranges = null, entry = null, exit = null, now = null, bep = null }) {
   const { t } = useI18n();
   const box = useRef(null);
   const chartRef = useRef(null);
@@ -210,6 +224,11 @@ export default function AdvancedChart({ candles, tf, quote, poolRef, height = 42
     if (last.timestamp >= lastTsRef.current) { r.loader.push(last); lastTsRef.current = last.timestamp; }
   }, [data, ready]);
 
+  // Pita rentang: disaring ke yang harganya masuk akal, lalu diringkas jadi satu kunci
+  // supaya efek di bawah hanya dibangun ulang saat pitanya benar-benar berubah.
+  const bandList = useMemo(() => (ranges || []).filter((b) => b.lo > 0 && b.hi > 0), [ranges]);
+  const bandKey = useMemo(() => bandList.map((b) => `${b.id}:${b.lo}:${b.hi}:${b.from || 0}:${b.to || 0}:${b.color}:${b.selected ? 1 : 0}`).join('|'), [bandList]);
+
   // Konteks posisi LP: pita rentang + garis masuk/keluar/BEP/kini. Dibangun ulang
   // (bukan dipindah) tiap props berubah — cukup murah dan menghindari melacak id per garis.
   useEffect(() => {
@@ -218,15 +237,30 @@ export default function AdvancedChart({ candles, tf, quote, poolRef, height = 42
     for (const o of r.chart.getOverlays({ groupId: LP_GROUP })) r.chart.removeOverlay({ id: o.id });
     const anchor = data[data.length - 1].timestamp;
     const specs = [];
-    if (range?.lo > 0 && range?.hi > 0) {
+    // Banyak pita (semua posisi terbuka di pool) atau satu pita saja. Yang terpilih
+    // digambar belakangan supaya berada di atas pita lain.
+    const bands = bandList.length
+      ? [...bandList].sort((a, b) => (a.selected ? 1 : 0) - (b.selected ? 1 : 0))
+      : range?.lo > 0 && range?.hi > 0
+        ? [{ lo: range.lo, hi: range.hi, color: pal.accent, selected: true, from: entry?.t, to: exit?.t }]
+        : [];
+    // Tanpa posisi yang disorot, semua pita digambar pekat — tidak ada yang "kalah".
+    const anySel = bands.some((b) => b.selected);
+    for (const b of bands) {
       // Tanpa waktu masuk, pita mulai dari lilin pertama; tanpa waktu keluar, pita
       // dianggap masih terbuka dan memanjang ke tepi kanan.
-      const from = entry?.t > 0 ? entry.t : data[0].timestamp;
-      const to = exit?.t > 0 ? exit.t : anchor;
+      const from = b.from > 0 ? Math.max(b.from, data[0].timestamp) : data[0].timestamp;
+      const to = b.to > 0 ? b.to : anchor;
+      const color = b.color || pal.accent;
+      const strong = b.selected || !anySel || bands.length === 1;
       specs.push({
         name: 'lpRange', groupId: LP_GROUP, lock: true,
-        points: [{ timestamp: from, value: range.hi }, { timestamp: to, value: range.lo }],
-        extendData: { fill: withAlpha(pal.accent, pal.dark ? 0.13 : 0.1), line: withAlpha(pal.accent, 0.45), open: !(exit?.t > 0) },
+        points: [{ timestamp: from, value: b.hi }, { timestamp: to, value: b.lo }],
+        extendData: {
+          fill: withAlpha(color, strong ? (pal.dark ? 0.13 : 0.1) : (pal.dark ? 0.06 : 0.05)),
+          line: withAlpha(color, strong ? 0.6 : 0.3),
+          open: !(b.to > 0), dim: !strong, label: bands.length > 1 ? b.label || null : null,
+        },
       });
     }
     const priceLine = (p, color, ts) => specs.push({
@@ -240,7 +274,7 @@ export default function AdvancedChart({ candles, tf, quote, poolRef, height = 42
     if (now > 0) priceLine(now, withAlpha(pal.fg, 0.55));
     if (specs.length) r.chart.createOverlay(specs);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, data.length, range?.lo, range?.hi, entry?.p, entry?.t, exit?.p, exit?.t, now, bep, pal]);
+  }, [ready, data.length, bandKey, range?.lo, range?.hi, entry?.p, entry?.t, exit?.p, exit?.t, now, bep, pal]);
 
   const draw = (name) => chartRef.current?.chart.createOverlay(withHooks({ name }));
   const clearAll = async () => {

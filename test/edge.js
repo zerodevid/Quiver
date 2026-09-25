@@ -431,11 +431,12 @@ async function t(name, fn) {
     eng.chain.poolLiquidityMany = async (ids) => ids.map(() => 10n ** 24n);
     // Tiap kandidat yang disimulasikan dibangunkan transaksinya; yang menentukan
     // adalah transaksi mana yang akhirnya DIKIRIM.
-    const dibangun = new Map();
+    // (satu pool bisa dibangunkan dua kali: dua bentuk params swap v4 ikut disimulasikan)
+    const dibangun = [];
     const asli = eng.exec.buildSwapV4.bind(eng.exec);
     eng.exec.buildSwapV4 = (key, ...rest) => {
       const tx = asli(key, ...rest);
-      dibangun.set(key.fee, { key, tx });
+      dibangun.push({ key, tx });
       return tx;
     };
     // MEME baru ada di wallet SESUDAH zap terkirim — tanpa ini putaran zap mengira
@@ -454,9 +455,12 @@ async function t(name, fn) {
     assert.strictEqual(verdictOf(store).verdict, 'copy', verdictOf(store).reason);
     const zap = sent.find((s) => s.kind === 'zap_swap');
     assert.ok(zap, 'zap harus terkirim lewat pool langsung');
-    assert.ok(dibangun.has(500) && dibangun.has(3000), 'kedua pool harus ikut dinilai');
-    assert.strictEqual(zap.tx.data, dibangun.get(500).tx.data, 'pool 0,05% harus menang dari pool posisi 0,3%');
-    assert.strictEqual(dibangun.get(500).key.tickSpacing, 10, 'poolKey diambil dari pool terpilih, bukan pool posisi');
+    const fee = new Set(dibangun.map((d) => d.key.fee));
+    assert.ok(fee.has(500) && fee.has(3000), 'kedua pool harus ikut dinilai');
+    const terpakai = dibangun.find((d) => d.tx.data === zap.tx.data);
+    assert.ok(terpakai, 'yang dikirim harus salah satu calldata yang disimulasikan');
+    assert.strictEqual(terpakai.key.fee, 500, 'pool 0,05% harus menang dari pool posisi 0,3%');
+    assert.strictEqual(terpakai.key.tickSpacing, 10, 'poolKey diambil dari pool terpilih, bukan pool posisi');
   });
 
   await t('jembatan gagal di tengah eksekusi -> galat jelas, tidak ada posisi tercatat', async () => {
@@ -920,15 +924,55 @@ async function t(name, fn) {
     const [a, b] = await Promise.all([eng.freshCash(), eng.freshCash()]);
     assert.strictEqual(a.usdg, 800); assert.strictEqual(b.usdg, 800);
     assert.deepStrictEqual(reads, ['latest', '0x1f4']);
-    // Sesudah itu kembali 'latest' (setoran masuk tanpa tx dari bot tetap terbaca).
+    // Sesudah itu kembali 'latest' (setoran masuk tanpa tx dari bot tetap terbaca;
+    // memancang tiap bacaan ditolak endpoint gratis sebagai permintaan arsip).
     bal.usdg = 850_000_000n;
     await eng.refreshCash();
     assert.strictEqual(eng.cash.usdg, 850);
     assert.strictEqual(reads[2], 'latest');
+    // Kepala rantai sudah lewat blok tx: patokannya kepala, bukan blok tx yang lama.
+    eng.exec.txSeq++; eng.head = 620;
+    await eng.refreshCash();
+    assert.strictEqual(reads[3], '0x26c');
     // RPC gagal saat kas basi: angka lama dikembalikan, bukan null/lempar.
     eng.exec.txSeq++;
     eng.exec.balances = async () => { throw new Error('429'); };
     assert.strictEqual((await eng.freshCash()).usdg, 850);
+  });
+
+  await t('titik ekuitas: tx yang masuk blok DI SELA bacaan kas tidak jadi puncak palsu', async () => {
+    const { eng, store } = harness();
+    // Mint masuk blok tepat sesudah saldo dibaca: kas masih yang lama ($1000), tapi
+    // ringkasan posisi sesudahnya sudah berisi posisi $200 yang baru — titik ekuitas
+    // menghitung dana itu dua kali ($1200, bukan $1000). Ini lonjakan +$100 di kurva
+    // lp3 2026-09-24 08:40 UTC.
+    let minted = false, reads = 0;
+    eng.positions.refreshLeftovers = async () => {};
+    eng.exec.balances = async (list) => {
+      const usdg = minted ? 800_000_000n : 1_000_000_000n;
+      reads++;
+      if (!minted) { minted = true; eng.exec.txSeq++; eng.exec.minedBlock = 500; }
+      return new Map(list.map((tk) => [String(tk).toLowerCase(), String(tk).toLowerCase() === USDG ? usdg : 0n]));
+    };
+    eng.positions.summary = () => ({
+      exposureUsd: minted ? 200 : 0, leftoverUsd: 0, feeUsd: 0, costUsd: minted ? 200 : 0,
+      realizedUsd: 0, unrealizedUsd: 0, openCount: minted ? 1 : 0, inRange: minted ? 1 : 0,
+    });
+    await eng.snapshotEquity();
+    const rows = store.all('SELECT * FROM equity');
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(reads, 2);                       // diulang sekali dengan kas sesudah tx
+    assert.strictEqual(Math.round(rows[0].wallet_quote), 800);
+    assert.strictEqual(Math.round(rows[0].total_quote), 1000);
+
+    // Masih ramai di percobaan kedua -> titik dilewati, bukan ditulis salah.
+    store.run('DELETE FROM equity');
+    eng.exec.balances = async (list) => {
+      eng.exec.txSeq++;
+      return new Map(list.map((tk) => [String(tk).toLowerCase(), 0n]));
+    };
+    await eng.snapshotEquity();
+    assert.strictEqual(store.all('SELECT * FROM equity').length, 0);
   });
 
   await t('receipt yang terbaca menandai tx masuk blok — sukses maupun gagal (gas tetap terbakar)', async () => {
