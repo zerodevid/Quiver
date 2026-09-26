@@ -76,6 +76,10 @@ class Engine {
     this.cursor = 0;
     this.head = 0;
     this.busy = false;
+    this.busySince = 0;            // kapan tick yang sedang jalan dimulai (0 = tidak ada)
+    this.tickGen = 0;              // nomor seri tick; naik juga saat tick macet dilepas paksa
+    this.tickStage = null;         // tahap tick yang sedang ditunggu — muncul di pesan macet
+    this.lastScanAt = 0;           // tick TERAKHIR YANG BERHASIL, bukan sekadar tick terakhir
     this.exiting = new Set();      // id posisi yang transaksi keluarnya sedang berjalan
     this.compound = new Compound(this);
     this.capital = new Capital({ rpc, store, chain, cfg, log: this.log });
@@ -360,22 +364,62 @@ class Engine {
     return this.idle();
   }
 
+  // Umur tick yang sedang berjalan. 0 = tidak ada yang berjalan.
+  tickStuckMs() { return this.busy && this.busySince ? Date.now() - this.busySince : 0; }
+
+  // Tick yang menggantung lebih lama dari batas dianggap MATI: flagnya dilepas supaya
+  // siklus berikutnya jalan lagi, dan hasil tick lama dibuang lewat `tickGen` (kursor
+  // tidak boleh mundur ke ujung rentang yang sudah basi).
+  //
+  // Kenapa perlu: satu `await` yang tidak pernah selesai — socket RPC yang mati tanpa
+  // suara, mis. — membekukan pemindaian SELAMANYA tanpa satu pun galat. Lebih jahat
+  // lagi, `head` juga cuma diperbarui DI DALAM tick, jadi dasbor tetap memperlihatkan
+  // "lag 0" alias sehat sementara bot sudah 15 jam buta (lpcopy3, 2026-09-25: 2 posisi
+  // target terlewat). Batasnya longgar (bawaan 3 menit) — jauh di atas timeout RPC
+  // 45 detik plus failover antar-endpoint — supaya tick yang cuma lambat tidak dipotong.
+  unwedge() {
+    const ms = this.tickStuckMs();
+    const limit = (this.cfg.loop?.tick_stuck_seconds || 180) * 1000;
+    if (ms < limit) return;
+    this.tickGen++;
+    this.busy = false; this.busySince = 0;
+    this.stats.errors++;
+    const msg = `pemindaian macet ${Math.round(ms / 1000)} dtk di tahap "${this.tickStage || '?'}" — dilepas paksa, dilanjutkan dari blok ${this.cursor}`;
+    this.tickStage = null;
+    this.lastError = msg;
+    this.log(msg);
+    this.store.log('warn', msg, { cursor: this.cursor });
+  }
+
   async tick() {
-    if (this.stopping || this.busy || this.compound?.running) return;
+    if (this.stopping || this.compound?.running) return;
+    // Masih ada tick yang berjalan: biasanya cuma lambat — tapi kalau sudah kelewat
+    // lama, lepaskan paksa (lihat unwedge) supaya pemindaian tidak mati diam-diam.
+    if (this.busy) return this.unwedge();
     // Semua endpoint sedang istirahat: jangan menambah beban, tunggu saja.
     if (this.rpc.allCooling()) return;
     this.busy = true;
+    this.busySince = Date.now();
+    // Tick ini basi kalau nomor serinya sudah dilewati — artinya unwedge menganggapnya
+    // mati dan tick lain sudah mengambil alih. Yang basi tidak boleh menyentuh apa pun.
+    const gen = ++this.tickGen;
+    const stale = () => gen !== this.tickGen;
     try {
       // Pakai kepala TERENDAH di antara semua endpoint. Kalau kursor dimajukan ke
       // kepala endpoint tercepat sementara getLogs dilayani endpoint yang tertinggal,
       // blok di antaranya tidak akan pernah dipindai ulang.
+      this.tickStage = 'baca kepala blok';
       const h = await this.rpc.safeHead();
+      if (stale()) return;
       this.head = h.min;
       this.headSpread = h.spread;
       if (this.head <= this.cursor) return;
       const maxSpan = this.cfg.loop?.max_block_span || 1500;
       const to = Math.min(this.head, this.cursor + this.span);
+      this.tickStage = `pindai blok ${this.cursor + 1}-${to}`;
       const acts = await this.watcher.scan(this.cursor + 1, to);
+      if (stale()) return;
+      this.lastScanAt = Date.now();
       this.stats.scanned += to - this.cursor;
       this.cursor = to;
       this.store.setState(this.sk('cursor'), this.cursor);
@@ -395,6 +439,9 @@ class Engine {
       this.cleared('tick', `pemindaian blok: kembali normal, kursor di blok ${this.cursor}`);
       if (this.span < maxSpan) this.span = Math.min(maxSpan, Math.ceil(this.span * 1.5));
     } catch (e) {
+      // Tick yang sudah dilepas paksa tidak boleh mengecilkan span atau menimpa
+      // lastError milik tick yang sekarang berjalan.
+      if (stale()) return;
       this.stats.errors++;
       this.failStreak++;
       this.span = Math.max(150, Math.floor(this.span / 2));
@@ -405,7 +452,10 @@ class Engine {
       this.trouble('tick', `tick: ${e.message} — rentang -> ${this.span}`, { after: 5, afterMs: 3 * 60_000 });
       // beri jeda tambahan supaya tidak menghajar endpoint yang sedang marah
       if (this.failStreak > 2) await new Promise((r) => setTimeout(r, Math.min(15000, 1000 * this.failStreak)));
-    } finally { this.busy = false; }
+    } finally {
+      // Yang basi tidak melepas `busy`: flag itu sudah milik tick yang menggantikannya.
+      if (!stale()) { this.busy = false; this.busySince = 0; this.tickStage = null; }
+    }
   }
 
   // Dua antrean terpisah: KELUAR (tarik/tutup/pindah — melindungi dana, tidak boleh

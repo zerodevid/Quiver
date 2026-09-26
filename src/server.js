@@ -763,6 +763,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         wallet,
         chain: {
           head: engine.head, cursor: engine.cursor, lag: engine.head - engine.cursor, ethUsd: engine.ethUsd, headSpread: engine.headSpread,
+          // "Tertinggal" saja tidak cukup untuk menilai kesehatan: `head` hanya
+          // diperbarui DI DALAM tick, jadi tick yang macet membekukan head DAN cursor
+          // sekaligus — lag tetap 0 sementara bot sudah berjam-jam buta. Umur
+          // pemindaian terakhir yang BERHASIL adalah angka yang jujur.
+          lastScan: engine.lastScanAt || null, stuckSec: Math.round((engine.tickStuckMs?.() || 0) / 1000),
           // identitas chain tampilan ini — dasbor memakainya untuk label, simbol, dan tautan penjelajah
           key: chain.network, label: chain.label, chainId: chain.CHAIN_ID, nativeSymbol: chain.nativeSymbol,
           usdgSymbol: chain.usdgSymbol, wethSymbol: chain.wethSymbol, verified: chain.verified,

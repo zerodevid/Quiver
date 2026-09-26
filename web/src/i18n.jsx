@@ -792,6 +792,7 @@ const EN = {
   'tidak dibatasi (simulasi)': 'unlimited (simulation)',
   'Blok terkini': 'Latest block',
   'Tertinggal': 'Behind',
+  'Pemindaian terakhir': 'Last scan',
   '{n} blok': '{n} blocks',
   'Aksi terdeteksi': 'Actions detected',
   'Disalin / dilewati': 'Copied / skipped',

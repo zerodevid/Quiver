@@ -40,6 +40,9 @@ class RpcPool {
     this.logsLast = 0;
     // blok ≈ 0,1 detik: 20 blok ≈ 2 detik keterlambatan membaca aksi target
     this.headMargin = opts.head_margin_blocks ?? 20;
+    // Kelonggaran batas KERAS di atas timeout socket (lihat post): cukup untuk balasan
+    // yang sedang mengalir pelan, tidak cukup untuk menggantung selamanya.
+    this.hardMarginMs = opts.hard_margin_ms ?? 5000;
   }
 
   async logsSlot(priority = false) {
@@ -132,9 +135,23 @@ class RpcPool {
     return a;
   }
 
+  // Satu permintaan HTTP WAJIB selesai — berhasil atau gagal. Opsi `timeout` bawaan
+  // https hanya mengukur DIAM-nya socket dan baru terpasang setelah permintaan dapat
+  // giliran socket dari agent; permintaan yang menggantung sebelum itu, atau socket
+  // yang mati tanpa memancarkan 'error' maupun 'timeout', membuat Promise ini tidak
+  // pernah selesai. Satu saja yang begitu di jalur tick membekukan pemindaian SELAMANYA
+  // (`busy` tidak pernah dilepas, dan `ep.inflight` tidak pernah turun): itu yang
+  // terjadi pada lpcopy3 2026-09-25 — 15 jam tanpa satu blok baru dipindai, tanpa galat.
+  // Karena itu ada tiga jaring: batas keras berbasis jam dinding, penolakan saat socket
+  // tertutup tanpa balasan, dan penjaga sekali-pakai supaya Promise tidak diselesaikan
+  // dua kali.
   post(urlStr, body, timeoutMs, ips, extraHeaders = null) {
     const u = new URL(urlStr);
+    const hardMs = timeoutMs + this.hardMarginMs;
     return new Promise((resolve, reject) => {
+      let settled = false;
+      let guard = null;
+      const done = (fn, v) => { if (settled) return; settled = true; clearTimeout(guard); fn(v); };
       const req = https.request({
         protocol: u.protocol, hostname: u.hostname, port: u.port || 443,
         path: u.pathname + u.search, method: 'POST',
@@ -146,12 +163,22 @@ class RpcPool {
         res.on('data', (c) => chunks.push(c));
         res.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8');
-          if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}: ${text.slice(0, 120)}`));
-          try { resolve(JSON.parse(text)); } catch { reject(new Error(`balasan bukan JSON: ${text.slice(0, 120)}`)); }
+          if (res.statusCode !== 200) return done(reject, new Error(`HTTP ${res.statusCode}: ${text.slice(0, 120)}`));
+          try { done(resolve, JSON.parse(text)); } catch { done(reject, new Error(`balasan bukan JSON: ${text.slice(0, 120)}`)); }
         });
       });
+      guard = setTimeout(() => {
+        req.destroy(new Error('batas keras'));
+        done(reject, new Error(`tidak ada balasan dalam ${Math.round(hardMs / 1000)} dtk (batas keras)`));
+      }, hardMs);
+      // Sengaja TIDAK di-unref: penjaga ini justru yang harus tetap hidup ketika
+      // permintaannya sendiri sudah tidak memegang handle apa pun lagi.
       req.on('timeout', () => req.destroy(new Error('timeout')));
-      req.on('error', reject);
+      req.on('error', (e) => done(reject, e));
+      // Socket tertutup tanpa balasan lengkap dan tanpa 'error' (keep-alive yang
+      // diputus server persis saat dipakai ulang). Balasan yang sukses sudah lebih
+      // dulu memanggil done() di 'end', jadi ini tidak pernah menimpa hasil yang sah.
+      req.on('close', () => done(reject, new Error('koneksi tertutup tanpa balasan')));
       req.end(body);
     });
   }

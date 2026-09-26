@@ -384,6 +384,9 @@ export default function Overview() {
   // Kursor bisa sedikit MENDAHULUI kepala rantai yang terakhir dibaca; itu sinkron,
   // bukan "tertinggal −19 blok".
   const lag = Math.max(0, d.chain.lag);
+  // Dua menit tanpa satu pun pemindaian berhasil sudah jauh di luar irama normal
+  // (satu siklus tiap 1,5 detik) — itu bukan RPC lambat lagi, itu macet.
+  const scanStale = !d.chain.lastScan || Date.now() - d.chain.lastScan > 120_000;
   const maxSkip = Math.max(1, ...(d.skipReasons || []).map((r) => r.n));
   const now = p?.now, st = p?.stats;
   const view = viewPick === 'net' && now?.netPnl == null ? 'pnl' : viewPick;
@@ -549,6 +552,14 @@ export default function Overview() {
             <KV label="Tertinggal">
               <Dot tone={lag < 60 ? 'success' : 'warning'} />
               <span className="ml-1.5">{lag === 0 ? t('sinkron') : t('{n} blok', { n: num(lag) })}</span>
+            </KV>
+            {/* "Tertinggal" bisa menipu: blok terkini hanya dibaca di dalam siklus
+                pemindaian, jadi siklus yang macet membekukan keduanya sekaligus dan
+                lag tetap 0 padahal bot sudah lama buta. Umur pemindaian terakhir yang
+                berhasil tidak bisa ditipu seperti itu. */}
+            <KV label="Pemindaian terakhir">
+              <Dot tone={scanStale ? 'warning' : 'success'} />
+              <span className="ml-1.5">{ago(d.chain.lastScan)}</span>
             </KV>
             <KV label="Aksi terdeteksi">{num(T.actions)}</KV>
             <KV label="Disalin / dilewati">{num(T.would)} / {num(T.skipped)}</KV>
