@@ -9,11 +9,11 @@
 // memanggil chain sama sekali.
 import { useEffect, useState } from 'react';
 import { Button, Chip, Drawer } from '@heroui/react';
-import { X, ChartCandlestick } from 'lucide-react';
+import { X, ChartCandlestick, PlusCircle } from 'lucide-react';
 import { get } from '../api';
 import { Stat, Empty, Loading, Notice, PriceRange, TxHash } from './ui';
 import TokenIcon, { TokenPair } from './TokenIcon';
-import { usd, pct, tone, age, ago, num, short, qty, fmtQty, price, sqrtPrice, locale as fmtLocale } from '../fmt';
+import { usd, pct, tone, age, ago, num, short, qty, fmtQty, price, sqrtPrice, tickPrice, locale as fmtLocale } from '../fmt';
 import { useI18n, reason } from '../i18n';
 
 const KIND = {
@@ -133,6 +133,25 @@ const AKSI = {
 };
 const STATUS = { open: ['Terbuka', 'success'], closed: ['Ditutup', 'danger'], pending: ['Menunggu', 'warning'], failed: ['Gagal', 'danger'] };
 
+// Tautan "Salin manual": posisi target dibawa ke halaman LP manual dengan pool dan
+// rentangnya sudah terisi. Rentangnya diterjemahkan ke bahasa halaman itu — persen
+// bertanda tiap batas TERHADAP HARGA KINI, bukan tick — supaya pool yang dikuotasi
+// token0 (harganya bergerak berlawanan arah tick) tidak terbalik atas-bawahnya.
+// Kalau harga kini tidak diketahui (posisi sudah ditutup) atau rentangnya di luar
+// batas yang diterima halaman itu, yang dibawa cuma poolnya.
+function manualHash(p) {
+  const ref = '#manual-lp/' + p.pool_ref;
+  const cur = p.curTick == null ? null : tickPrice(p.curTick, p.dec0, p.dec1, p.quoteSide);
+  if (!(cur > 0) || p.tick_lower == null || p.tick_upper == null) return ref;
+  const a = tickPrice(p.tick_lower, p.dec0, p.dec1, p.quoteSide);
+  const b = tickPrice(p.tick_upper, p.dec0, p.dec1, p.quoteSide);
+  const lo = ((Math.min(a, b) - cur) / cur) * 100;
+  const up = ((Math.max(a, b) - cur) / cur) * 100;
+  if (!(lo > -100) || !(up > -100 && up <= 100000) || !(up > lo)) return ref;
+  const bulat = (v) => Math.round(v * 100) / 100;
+  return `${ref}?lo=${bulat(lo)}&up=${bulat(up)}`;
+}
+
 const Fig = ({ label, value, sub, cls = '' }) => {
   const { t } = useI18n();
   return (
@@ -190,7 +209,7 @@ function Salinan({ q, p }) {
   );
 }
 
-function OurSide({ copy, p }) {
+function OurSide({ copy, p, onClose }) {
   const { t } = useI18n();
   if (!copy) return null;
   const ours = copy.positions || [];
@@ -217,11 +236,24 @@ function OurSide({ copy, p }) {
       {ours.map((q) => <Salinan key={q.id} q={q} p={p} />)}
       {!ours.length && (
         <div className="rounded-lg border border-border p-3">
-          <div className="text-sm font-medium">{t('Kita tidak menyalin posisi ini')}</div>
-          <p className="mt-1 text-xs text-muted">{t(sebab)}</p>
-          {copy.isTarget && !copy.enabled && (
-            <p className="mt-1 text-xs text-muted">{t('Target ini sedang dimatikan.')}</p>
-          )}
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-sm font-medium">{t('Kita tidak menyalin posisi ini')}</div>
+              <p className="mt-1 text-xs text-muted">{t(sebab)}</p>
+              {copy.isTarget && !copy.enabled && (
+                <p className="mt-1 text-xs text-muted">{t('Target ini sedang dimatikan.')}</p>
+              )}
+            </div>
+            {/* Mesin sudah tidak akan mengambilnya lagi; masuk sendiri masih bisa.
+                Halaman LP manual yang memutuskan boleh atau tidak — di sini cuma
+                pool dan rentangnya yang dititipkan. */}
+            {p.pool_ref && (
+              <Button size="sm" variant="outline" className="shrink-0"
+                onPress={() => { onClose(); location.hash = manualHash(p); }}>
+                <PlusCircle className="size-4" />{t('Salin manual')}
+              </Button>
+            )}
+          </div>
           {decs.length > 0 && (
             <ul className="mt-2 space-y-2 border-t border-border pt-2">
               {decs.slice(0, 6).map((d) => {
@@ -323,7 +355,7 @@ export default function WalletPositionHistory({ p, address, onClose }) {
                       entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />
                   </div>
 
-                  <OurSide copy={copy} p={p} />
+                  <OurSide copy={copy} p={p} onClose={onClose} />
 
                   {p.incomplete === 1 && (
                     <div className="mb-4"><Notice status="warning" title="Riwayat posisi ini terpotong">

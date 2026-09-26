@@ -1139,6 +1139,7 @@ const EN = {
   'masih menggantung': 'is still pending',
   'Target {a} atas modalnya · kita {b} atas modal kita': 'Target {a} on its own capital · us {b} on ours',
   'Kita tidak menyalin posisi ini': 'We did not copy this position',
+  'Salin manual': 'Copy manually',
   'Wallet ini bukan target — posisinya hanya diriset, tidak pernah diikuti mesin.':
     'This wallet is not a target — its positions are only researched, never followed by the engine.',
   'Target ini baru ditambahkan setelah posisi ini dibuka, jadi pembukaannya tidak pernah dilihat pemantau.':

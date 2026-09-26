@@ -387,7 +387,7 @@ function PilihPool({ pools, onPick }) {
   );
 }
 
-export default function ManualLp() {
+export default function ManualLp({ param }) {
   const { t } = useI18n();
   const { status, reload: reloadStatus } = useStatus();
   const [pools, setPools] = useState(null);
@@ -413,6 +413,28 @@ export default function ManualLp() {
     get('/api/manual/pools?limit=200').then((d) => setPools(d.pools || []));
     get('/api/rules').then(setRules);
   }, []);
+
+  // Dibuka dari laci posisi wallet: "#manual-lp/<poolRef>?lo=…&up=…" membawa pool
+  // dan rentang posisi target, tinggal nominalnya yang diisi. Poolnya dicari lewat
+  // daftar yang sama dengan pemilihnya (q juga cocok dengan pool_ref), jadi bentuk
+  // datanya persis sama dengan yang dipilih tangan — termasuk pool di luar 200 teratas.
+  useEffect(() => {
+    const [ref, qs] = String(param || '').split('?');
+    if (!ref) return undefined;
+    const sp = new URLSearchParams(qs || '');
+    const lo = Number(sp.get('lo')), up = Number(sp.get('up'));
+    if (Number.isFinite(lo) && Number.isFinite(up) && lo > -100 && up > -100 && up <= 100000 && up > lo) {
+      setFull(false);
+      setBawah(String(Math.abs(lo))); setArahBawah(lo > 0 ? 1 : -1);
+      setAtas(String(Math.abs(up))); setArahAtas(up < 0 ? -1 : 1);
+    }
+    let alive = true;
+    get(`/api/manual/pools?q=${encodeURIComponent(ref)}&limit=1`).then((d) => {
+      const x = (d.pools || [])[0];
+      if (alive && x) setPool(x);
+    });
+    return () => { alive = false; };
+  }, [param]);
 
   // Saldo dibaca sendiri, tidak menunggu pratinjau: pengguna perlu tahu kasnya
   // SEBELUM memilih nominal. Dibaca ulang saat pool berganti (token pasangannya
