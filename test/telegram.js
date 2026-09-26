@@ -254,6 +254,31 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
 (async () => {
   console.log('bot Telegram\n');
 
+  await t('mini app: tombol muncul hanya kalau dasbor punya alamat https', async () => {
+    const w = build();
+    // Tanpa server.public_url tidak ada apa-apa: instance yang cuma mendengar di
+    // 127.0.0.1 memang tidak punya alamat yang bisa dibuka Telegram.
+    const polos = (await w.bot.home())[1].inline_keyboard.flat();
+    assert.ok(!polos.some((b) => b.web_app));
+    assert.equal(w.bot.miniUrl(), null);
+
+    w.cfg.server.public_url = 'http://lp.contoh.test';       // http ditolak Telegram
+    assert.equal(w.bot.miniUrl(), null);
+
+    w.cfg.server.public_url = 'https://lp.contoh.test/';     // garis miring di ujung tidak menggandakan
+    assert.equal(w.bot.miniUrl(), 'https://lp.contoh.test/mini');
+    const tombol = (await w.bot.home())[1].inline_keyboard.flat().find((b) => b.web_app);
+    assert.equal(tombol.web_app.url, 'https://lp.contoh.test/mini');
+    assert.ok(!tombol.callback_data, 'tombol mini app membuka halaman, bukan mengirim callback');
+
+    // Tombol di sebelah kolom ketik dipasang per chat yang tersambung.
+    await w.bot.syncMenuButton();
+    const menu = w.sent.filter((x) => x.method === 'setChatMenuButton');
+    assert.equal(menu.length, w.bot.chats().length);
+    assert.equal(menu[0].params.menu_button.type, 'web_app');
+    assert.equal(menu[0].params.menu_button.web_app.url, 'https://lp.contoh.test/mini');
+  });
+
   await t('posisi: rugi merah, sumber, history USD, dan halaman tetap ringkas', async () => {
     const w = build();
     const base = (await w.api('GET', '/api/positions')).positions[0];

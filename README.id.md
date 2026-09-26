@@ -467,6 +467,41 @@ saat hidup — jadi memasang lewat SSH saja pun bisa:
 telegram: belum ada chat terhubung. Kirim ke bot →  /start 3F9A21C0   (berlaku 15 menit)
 ```
 
+### Mini app
+
+Tombol **📱 Buka mini app** di menu utama — dan tombol di sebelah kolom ketik —
+membuka `‹dasbor›/mini`: tiga layar (Ringkasan, Posisi, Aktivitas) yang dirancang
+untuk layar HP di dalam Telegram, bukan dasbor desktop yang dikecilkan. Kulitnya sama
+dengan dasbor — token warna, Inter 15px, kartu bergaris, chip, lencana mode, dan
+susunan angka yang sama dengan `web/src/pages/*.jsx`, termasuk lambang token dan
+lencana APR. Yang diambil dari Telegram cuma terang/gelapnya, supaya mini app tidak
+menyala putih di aplikasi bertema gelap. Tombol kembali dan getaran memakai yang
+bawaan, dan dari layar posisi fee bisa diklaim atau posisi ditutup — lewat rute API
+yang sama dengan dasbor dan bot.
+
+Lambang token dipasang lewat `<img>`, yang tidak bisa membawa header `Authorization`;
+jadi khusus `/api/icon` tiketnya boleh ikut sebagai `?t=`. Tiket di URL itu tidak
+membuka rute lain — rute gambar itu saja.
+
+Halaman itu bundel tersendiri (`web/mini.html` + `web/src/mini/`, ±14 KB, tanpa React)
+supaya terbuka seketika di jaringan seluler; karena itu ia sengaja tidak mengimpor apa
+pun dari `web/src/`.
+
+**Masuknya** tanpa token: Telegram menandatangani `initData` dengan `bot_token`, server
+memeriksa tanda tangan itu (`checkInitData` di `src/server.js`), menolak yang basi atau
+yang diubah, lalu menuntut syarat yang sama dengan bot — pengguna harus ada di
+`telegram.chat_ids`. Yang lolos menerima tiket acak berumur 12 jam, bukan token dasbor
+itu sendiri; tiket itu dikirim sebagai `Authorization: Bearer` karena di Telegram Web
+halamannya hidup dalam iframe milik `web.telegram.org`, tempat cookie `SameSite=Lax`
+memang tidak ikut terkirim. Hanya `/mini` dan potongan `mini-*` yang boleh dimuat
+sebelum ada sesi; dasbor dan seluruh `/api/*` tetap di balik gerbang token.
+
+**Menyalakan:** isi alamat https dasbor di `server.public_url` (atau
+`LPCOPY_DASHBOARD_URL` di `.env`; satu VPS beberapa instance boleh memakai akhiran nama
+foldernya, `LPCOPY_DASHBOARD_URL_LPCOPY2`). Tanpa itu tombolnya tidak muncul — Telegram
+hanya mau membuka https, dan instance yang cuma mendengar di `127.0.0.1` memang tidak
+punya alamat yang bisa dibuka.
+
 **Menu**
 
 | | |

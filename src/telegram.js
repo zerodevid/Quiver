@@ -326,6 +326,10 @@ function logBaris(level, msg) {
 
 // ---- papan tombol ---------------------------------------------------------
 const btn = (text, data) => ({ text, callback_data: data });
+// Tombol yang membuka mini app, bukan mengirim callback. Telegram hanya menerima
+// https di sini — alamat http atau kosong membuat seluruh papan tombol ditolak, jadi
+// pemanggilnya selalu memeriksa miniUrl() dulu.
+const wbtn = (text, url) => ({ text, web_app: { url } });
 const kb = (rows) => ({ inline_keyboard: rows.filter(Boolean) });
 const BACK_HOME = btn('🏠 Menu', 'h');
 // Satu baris tombol lompat ke terminal trading untuk token spekulatif posisi: GMGN,
@@ -607,6 +611,14 @@ class Telegram {
     this.sess(chatId).pending = null;
   }
   token() { return this.cfg.telegram?.bot_token || null; }
+  // Alamat mini app: dasbor yang sama, halaman /mini. Diisi dari server.public_url
+  // (atau LPCOPY_DASHBOARD_URL di .env). Tanpa https tidak ada mini app — dan itu
+  // bukan kesalahan: instance yang cuma mendengar di 127.0.0.1 memang tidak punya
+  // alamat yang bisa dibuka Telegram.
+  miniUrl() {
+    const base = String(this.cfg.server?.public_url || '').trim().replace(/\/+$/, '');
+    return /^https:\/\/[^\s]+$/i.test(base) ? `${base}/mini` : null;
+  }
   chats() { return (this.cfg.telegram?.chat_ids || []).map(String); }
   notifCfg() { return { penting: true, error: true, warn: true, info: false, ...(this.cfg.telegram?.notify || {}) }; }
   saveCfg() {
@@ -730,6 +742,7 @@ class Telegram {
     this.cfg.telegram = { ...(this.cfg.telegram || {}), chat_ids: ids };
     this.saveCfg();
     this.log(`telegram: chat ${chatId} disambungkan`);
+    this.syncMenuButton().catch(() => { /* sudah dicatat di dalam */ });
     return { ok: true };
   }
 
@@ -749,6 +762,7 @@ class Telegram {
     }
     if (gen !== this.gen) return { ok: false, reason: 'dibatalkan' };   // keburu diganti lagi
     this.log(`telegram: bot ${this.me ? '@' + this.me.username : '(?)'} jalan · ${this.chats().length} chat terhubung`);
+    await this.syncMenuButton();
     if (!this.chats().length) {
       const c = this.newPairCode();
       this.log(`telegram: belum ada chat terhubung. Kirim ke bot →  /start ${c}   (berlaku 15 menit)`);
@@ -756,6 +770,22 @@ class Telegram {
     this.wire();
     this.poll(gen);
     return { ok: !this.startError, username: this.me?.username || null, error: this.startError };
+  }
+
+  // Tombol di sebelah kolom ketik: mini app kalau dasbor punya alamat https, kalau
+  // tidak daftar perintah seperti bawaannya. Dipasang PER CHAT yang tersambung —
+  // tombol bawaan berlaku untuk siapa saja yang membuka bot ini, dan pintu masuk
+  // dasbor tidak perlu terpampang buat orang yang kebetulan menemukannya.
+  async syncMenuButton() {
+    const url = this.miniUrl();
+    if (!url) return this.log('telegram: mini app mati — isi server.public_url (LPCOPY_DASHBOARD_URL di .env) dengan URL https dasbor');
+    const menu_button = { type: 'web_app', text: 'Quiver', web_app: { url } };
+    for (const chatId of this.chats()) {
+      if (Number(chatId) < 0) continue;                 // grup/kanal tidak punya tombol menu
+      try { await this.tg('setChatMenuButton', { chat_id: Number(chatId), menu_button }); }
+      catch (e) { this.log(`telegram: tombol mini app chat ${chatId}: ${e.message}`); }
+    }
+    this.log(`telegram: mini app ${url}`);
   }
 
   // Menyalakan ulang dengan token yang baru disimpan, tanpa me-restart proses.
@@ -1873,7 +1903,9 @@ class Telegram {
       '',
       tr("Pilih <b>Target</b> untuk mengikuti wallet, atau <b>LP manual</b> untuk membuka posisi sendiri.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap ke chat ini.</i>"),
     ].filter((x) => x != null).join('\n');
+    const mini = this.miniUrl();
     return [text, kb([
+      mini ? [wbtn(tr("📱 Buka mini app"), mini)] : null,
       [btn(tr("📊 Ringkasan"), 'o'), btn(tr("💼 Posisi"), 'p')],
       [btn(tr("📈 Grafik portofolio"), 'pfg'), btn('🎯 Target', 't')],
       [btn(tr("📜 Aktivitas"), 'a:0'), btn(tr("💵 Saldo"), 'b')],

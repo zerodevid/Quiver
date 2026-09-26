@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <!-- viewport-fit=cover: Telegram menggambar sampai ke tepi layar; padding aman diatur CSS. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Quiver</title>
+    <link rel="icon" href="/favicon.svg" />
+    <!-- SDK Telegram harus dari domain Telegram (tidak boleh di-bundle): ia yang
+         menyuntikkan variabel tema, initData, dan tombol bawaan ke halaman ini. -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script type="module" src="/src/mini/main.js"></script>
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

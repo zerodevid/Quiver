@@ -126,6 +126,66 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 // nosniff mencegah MIME-sniffing. CSP di sini sengaja hanya membatasi frame-ancestors
 // supaya tidak mematahkan skrip/gaya inline aplikasi & halaman masuk.
 const SEC_HEADERS = { 'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'", 'x-content-type-options': 'nosniff' };
+// Halaman mini app dibuka DI DALAM Telegram. Di Telegram Web ia hidup dalam <iframe>
+// milik web.telegram.org, jadi `frame-ancestors 'none'` akan menutupnya sebelum sempat
+// tampil; di HP webview-nya halaman puncak dan header ini tidak berpengaruh. Yang boleh
+// membingkai cuma Telegram — situs lain tetap ditolak, dan x-frame-options sengaja tidak
+// ikut karena DENY mengalahkan daftar izin apa pun.
+const TG_SEC_HEADERS = {
+  'content-security-policy': 'frame-ancestors https://web.telegram.org https://*.telegram.org https://*.t.me',
+  'x-content-type-options': 'nosniff',
+};
+// Berkas yang harus bisa dimuat SEBELUM ada sesi: halaman mini app dan potongan
+// bangunannya (entri 'mini' di vite.config.js — namanya selalu berawalan mini-), plus
+// tambalan modulepreload yang Vite selipkan ke SETIAP entri. Tidak ada rahasia di
+// dalamnya: datanya tetap di balik gerbang, ini cuma kerangka halamannya.
+const MINI_PUBLIC = /^\/(?:mini|assets\/(?:mini|modulepreload-polyfill)-[A-Za-z0-9_.-]+\.(?:js|css))$/;
+
+// Periksa initData sebuah Telegram Mini App. Telegram menandatanganinya dengan
+// bot_token, jadi hanya server yang memegang token itu bisa membuktikan bahwa
+// data ini benar datang dari Telegram dan belum diubah:
+//   secret = HMAC-SHA256(key: "WebAppData", msg: bot_token)
+//   hash   = HMAC-SHA256(key: secret, msg: semua kolom lain, "k=v" diurut, dipisah \n)
+//
+// Soal `signature` (tanda tangan Ed25519 untuk pihak ketiga, ada sejak Bot API 8.0):
+// dokumentasi Telegram bilang "semua kolom yang diterima kecuali hash", jadi ia IKUT
+// dihitung — mengeluarkannya membuat setiap klien baru ditolak. Klien lama tidak
+// mengirimnya sama sekali. Sebagian pustaka terlanjur mengeluarkannya, jadi kalau
+// perhitungan pertama meleset kita coba sekali lagi tanpa `signature`: keduanya sama-sama
+// HMAC dengan bot_token, jadi menerima salah satunya tidak melonggarkan apa pun.
+function checkInitData(initData, botToken, { maxAgeSec = 86400, now = Date.now() } = {}) {
+  let q;
+  try { q = new URLSearchParams(String(initData || '')); } catch { return { error: 'initData tidak terbaca' }; }
+  const hash = q.get('hash');
+  if (!hash || !/^[0-9a-f]{64}$/i.test(hash)) return { error: 'initData tanpa tanda tangan' };
+  q.delete('hash');
+  const secret = crypto.createHmac('sha256', 'WebAppData').update(String(botToken)).digest();
+  const diminta = Buffer.from(hash.toLowerCase(), 'hex');
+  const cocok = (kolom) => {
+    const data = kolom.map(([k, v]) => `${k}=${v}`).sort().join('\n');
+    const calc = Buffer.from(crypto.createHmac('sha256', secret).update(data).digest('hex'), 'hex');
+    return calc.length === diminta.length && crypto.timingSafeEqual(calc, diminta);
+  };
+  const kolom = [...q.entries()];
+  let varian = 'baku';
+  if (!cocok(kolom)) {
+    const tanpa = kolom.filter(([k]) => k !== 'signature');
+    if (tanpa.length === kolom.length || !cocok(tanpa)) {
+      // Nama kolomnya saja yang dicatat — isinya identitas pengguna.
+      return { error: 'tanda tangan initData tidak cocok', kolom: kolom.map(([k]) => k) };
+    }
+    varian = 'tanpa signature';
+  }
+  // Umur: initData bisa dipakai ulang selama masih di dalam jendela ini. Toleransi ke
+  // depan 5 menit untuk jam server yang meleset sedikit.
+  const authDate = Number(q.get('auth_date') || 0);
+  const ageSec = now / 1000 - authDate;
+  if (!authDate || ageSec > maxAgeSec || ageSec < -300) return { error: 'initData kedaluwarsa — tutup lalu buka lagi mini app-nya' };
+  let user = null;
+  try { user = JSON.parse(q.get('user') || 'null'); } catch { /* bukan JSON */ }
+  if (!user || user.id == null) return { error: 'initData tanpa pengguna' };
+  return { user, authDate, varian };
+}
 
 function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, nets = null }) {
   chain = ensureChain(chain || engine?.chain);
@@ -450,12 +510,32 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // Gerbang token. Dasbor ini bisa menyalakan mode LIVE dan menutup posisi, jadi ia
   // tidak boleh terbuka begitu saja begitu diekspos ke internet. Token disimpan di
   // config; kalau kosong, gerbangnya mati (aman untuk 127.0.0.1 saja).
+  // Sesi mini app Telegram. Halaman /mini menukar initData dengan tiket acak berumur
+  // pendek dan memakainya sebagai Bearer. Sengaja BUKAN token dasbor itu sendiri:
+  // di Telegram Web halaman kita ada di dalam iframe orang lain, jadi cookie
+  // SameSite=Lax tidak ikut terkirim dan halaman terpaksa memegang sesuatu sendiri —
+  // yang dipegang jangan kunci yang bisa dipakai selamanya.
+  const miniSessions = new Map();                  // tiket -> { exp, userId, name }
+  const MINI_TTL = 12 * 3600_000;
+  const miniNew = (user) => {
+    const now = Date.now();
+    for (const [k, v] of miniSessions) if (v.exp <= now) miniSessions.delete(k);
+    const t = crypto.randomBytes(32).toString('hex');
+    miniSessions.set(t, { exp: now + MINI_TTL, userId: String(user.id), name: user.username || user.first_name || null });
+    return t;
+  };
+  const miniOk = (t) => { const s = miniSessions.get(t); return !!s && s.exp > Date.now(); };
+
   const tokenNow = () => cfg.server?.auth_token || null;
   const authed = (req) => {
     const TOKEN = tokenNow();
     if (!TOKEN) return true;
     const h = req.headers.authorization;
-    if (h && h.startsWith('Bearer ') && safeEq(h.slice(7), TOKEN)) return true;
+    if (h && h.startsWith('Bearer ')) {
+      const t = h.slice(7);
+      if (safeEq(t, TOKEN)) return true;
+      if (miniOk(t)) return true;                  // tiket mini app: hak sama, umur pendek
+    }
     const ck = (req.headers.cookie || '').split(';').map((x) => x.trim());
     const c = ck.find((x) => x.startsWith('lpcopy_token='));
     return !!c && safeEq(decodeURIComponent(c.slice(13)), TOKEN);
@@ -2283,9 +2363,53 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     return { png: portfolioCard.render(data, opts), caption: portfolioCard.caption(data, lang), range: r, view: data.view, points: data.pts.length };
   };
 
+  // Pintu masuk mini app Telegram: initData ditukar dengan tiket sesi. Satu-satunya
+  // rute yang boleh dipanggil sebelum ada sesi — penjagaannya ada di tanda tangan
+  // Telegram (butuh bot_token) DITAMBAH syarat chat-nya sudah tersambung, aturan yang
+  // sama dengan bot: yang tidak ada di telegram.chat_ids tidak bisa membaca apa pun.
+  const tgAuth = async (req, res) => {
+    const ip = clientIp(req);
+    if (loginBlocked(ip)) {
+      res.writeHead(429, { 'content-type': 'application/json; charset=utf-8', 'retry-after': '300', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify({ error: 'terlalu banyak percobaan — tunggu beberapa menit' }));
+    }
+    const b = await readBody(req).catch(() => ({}));
+    const botToken = cfg.telegram?.bot_token || null;
+    if (!botToken) return json(res, 200, { error: 'bot Telegram belum disetel di server ini' });
+    const r = checkInitData(b.initData, botToken);
+    if (r.error) {
+      loginFail(ip);
+      log(`mini app: ${r.error}${r.kolom ? ` (kolom: ${r.kolom.join(',')})` : ''}`);
+      return json(res, 200, { error: r.error });
+    }
+    const chats = (cfg.telegram?.chat_ids || []).map(String);
+    if (!chats.includes(String(r.user.id))) {
+      loginFail(ip);
+      log(`mini app: ditolak — chat ${r.user.id} belum tersambung`);
+      return json(res, 200, { error: 'Akun Telegram ini belum tersambung ke Quiver. Kirim /start <kode> ke bot dulu.' });
+    }
+    loginHits.delete(ip);
+    const TOKEN = tokenNow();
+    // Cookie ikut dipasang supaya tombol "Buka dasbor penuh" di dalam mini app tidak
+    // mendarat di halaman masuk (berhasil di webview HP; di iframe Telegram Web cookie
+    // pihak ketiga bisa diblokir — di sana tiketnya yang bekerja).
+    if (TOKEN) res.__setCookie = sessionCookie(req, TOKEN);
+    log(`mini app: ${r.user.username ? '@' + r.user.username : r.user.id} masuk${r.varian === 'baku' ? '' : ` (tanda tangan ${r.varian})`}`);
+    return json(res, 200, {
+      ok: true,
+      token: TOKEN ? miniNew(r.user) : null,
+      user: { id: r.user.id, name: r.user.username || r.user.first_name || null },
+      chain: { key: chain.network, label: chain.label, explorer: chain.explorer },
+    });
+  };
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     const key = `${req.method} ${url.pathname}`;
+
+    // Mini app Telegram menukar initData jadi tiket di sini — sebelum gerbang, karena
+    // saat itu memang belum ada sesi apa pun.
+    if (key === 'POST /api/tg/auth') return tgAuth(req, res);
 
     // ---- gerbang token ----
     const TOKEN = tokenNow();
@@ -2317,7 +2441,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         return res.end();
       }
       // Aset vendor, font, dan favicon boleh lewat supaya halaman masuk bisa tampil rapi.
-      const isPublicAsset = url.pathname.startsWith('/vendor/') || url.pathname.startsWith('/fonts/') || url.pathname === '/favicon.svg';
+      const isPublicAsset = url.pathname.startsWith('/vendor/') || url.pathname.startsWith('/fonts/') || url.pathname === '/favicon.svg'
+        || MINI_PUBLIC.test(url.pathname)   // mini app: halaman & potongannya dimuat sebelum ada tiket
+        // Lambang token di mini app: <img> tidak bisa membawa header Authorization, jadi
+        // tiketnya ikut di query. Hanya untuk rute gambar ini — tiket di URL tidak
+        // membuka rute lain, dan bukan token dasbor yang dibawanya.
+        || (url.pathname === '/api/icon' && miniOk(url.searchParams.get('t') || ''));
       if (!isPublicAsset && !authed(req)) {
         if (url.pathname.startsWith('/api/')) {
           res.writeHead(401, { 'content-type': 'application/json' });
@@ -2391,6 +2520,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     const isVendor = url.pathname.startsWith('/vendor/') || url.pathname === '/favicon.svg';
     const root = isVendor || !useDist ? pub : dist;
     let p = url.pathname === '/' ? '/index.html' : url.pathname;
+    if (p === '/mini' || p === '/mini/') p = '/mini.html';    // entri kedua build Vite
     let file = path.join(root, path.normalize(p).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) { res.writeHead(404); return res.end('tidak ada'); }
     if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
@@ -2408,7 +2538,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // private: browser boleh menyimpan, CDN (Cloudflare) tidak — berkas ini ada di balik gerbang token.
       'cache-control': immutable ? `${isVendor ? 'public' : 'private'}, max-age=31536000, immutable` : 'private, no-store, max-age=0',
       // Dokumen HTML dijaga dari clickjacking; aset statis tidak perlu.
-      ...(path.extname(file) === '.html' ? SEC_HEADERS : {}),
+      ...(path.extname(file) === '.html' ? (path.basename(file) === 'mini.html' ? TG_SEC_HEADERS : SEC_HEADERS) : {}),
     };
     if (!useDist && path.extname(file) === '.html') {
       const ver = Math.floor(fs.statSync(path.join(pub, 'app.js')).mtimeMs).toString(36);
@@ -2426,4 +2556,4 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   return server;
 }
 
-module.exports = { createServer };
+module.exports = { createServer, checkInitData };

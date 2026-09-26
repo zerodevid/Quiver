@@ -5,7 +5,9 @@
   "server": {
     "port": 8799,
     "host": "127.0.0.1",
-    "auth_token": null
+    "auth_token": null,
+    "public_url": null,
+    "catatan_public_url": "URL https dasbor dari luar (tunnel cloudflared), mis. \"https://lp.contoh.com\". Dipakai tombol Mini app di bot Telegram — Telegram hanya menerima https. Kosong = tombolnya tidak muncul. Boleh diisi dari .env lewat LPCOPY_DASHBOARD_URL."
   },
   "db": {
     "path": "data/lpcopy.db"

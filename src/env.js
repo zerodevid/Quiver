@@ -13,6 +13,9 @@
 //   LPCOPY_TELEGRAM_BOT_TOKEN   token bot dari @BotFather    -> telegram.bot_token
 //   LPCOPY_NTFY_TOPIC           topik ntfy.sh                -> notify.ntfy_topic
 //   LPCOPY_GMGN_API_KEY         API key OpenAPI GMGN         -> gmgn.api_key
+//   LPCOPY_DASHBOARD_URL        URL https dasbor (tunnel)    -> server.public_url
+//                               dipakai tombol mini app Telegram; boleh per instance:
+//                               LPCOPY_DASHBOARD_URL_LPCOPY2 untuk ~/lpcopy2
 //   variabel apa pun            dirujuk dari URL/header RPC sebagai ${NAMA}, mis.
 //                               "https://…alchemy.com/v2/${ALCHEMY_KEY}"
 const fs = require('node:fs');
@@ -24,7 +27,14 @@ const FIELDS = [
   ['LPCOPY_TELEGRAM_BOT_TOKEN', ['telegram', 'bot_token']],
   ['LPCOPY_NTFY_TOPIC', ['notify', 'ntfy_topic']],
   ['LPCOPY_GMGN_API_KEY', ['gmgn', 'api_key']],
+  ['LPCOPY_DASHBOARD_URL', ['server', 'public_url']],
 ];
+// Satu VPS menampung beberapa instance (~/lpcopy, ~/lpcopy2, ~/lpcopy3) yang berbagi
+// satu berkas .env, dan alamat dasbor tiap instance berbeda. Kolom di daftar ini boleh
+// diberi akhiran nama foldernya — LPCOPY_DASHBOARD_URL_LPCOPY2 — persis aturan yang
+// sudah dipakai deploy.sh untuk mencetak alamatnya.
+const PER_INSTANCE = new Set(['LPCOPY_DASHBOARD_URL']);
+const INSTANCE = path.basename(path.join(__dirname, '..')).toUpperCase().replace(/[^A-Z0-9_]/g, '_');
 const META = Symbol('lpcopy.env');
 
 // Pengurai .env kecil: KEY=nilai, baris kosong dan # komentar diabaikan, nilai boleh
@@ -87,9 +97,11 @@ function allEndpoints(cfg) {
 function applyEnv(cfg, env = process.env) {
   const meta = { fields: [], templates: new Map(), missing: [] };
   for (const [name, p] of FIELDS) {
-    const v = env[name];
+    const khusus = PER_INSTANCE.has(name) ? `${name}_${INSTANCE}` : null;
+    const pakai = khusus && env[khusus] ? khusus : name;
+    const v = env[pakai];
     if (v == null || v === '') continue;
-    meta.fields.push({ name, path: p, value: v, fileValue: getAt(cfg, p) ?? null });
+    meta.fields.push({ name: pakai, path: p, value: v, fileValue: getAt(cfg, p) ?? null });
     setAt(cfg, p, v);
   }
   // ${NAMA} di URL dan header RPC. Yang variabelnya tidak ada dibiarkan apa adanya

@@ -182,6 +182,12 @@ To connect Telegram:
 
 Paired chats can perform privileged actions, including changing execution mode and managing positions. Private-key import/export and editing RPC URLs containing credentials are excluded from Telegram controls.
 
+### Telegram mini app
+
+Set `server.public_url` (or `LPCOPY_DASHBOARD_URL` in `.env`, optionally suffixed with the instance folder name, e.g. `LPCOPY_DASHBOARD_URL_LPCOPY2`) to the dashboard's public HTTPS address and the bot gains a **Open mini app** button, plus a menu button next to the message box, both opening `<dashboard>/mini`. It is a separate ~20 KB bundle (`web/mini.html`, `web/src/mini/`, no React) with three phone-shaped screens — Summary, Positions, Activity — wearing the dashboard's own skin: the same colour tokens, Inter at a 15px root, bordered cards, chips, mode badge, token icons and figure layout as `web/src/pages/*.jsx`. Only light-or-dark is taken from Telegram. Fees can be claimed and positions closed from there, through the same API routes as the dashboard. Token icons load through `<img>`, which cannot carry an `Authorization` header, so `/api/icon` alone also accepts the ticket as `?t=`; that URL opens no other route.
+
+Sign-in carries no token. Telegram signs `initData` with the bot token; the server verifies that signature (`checkInitData` in `src/server.js`), rejects stale or altered payloads, and then applies the bot's own rule: the Telegram user must be in `telegram.chat_ids`. Whoever passes receives a random 12-hour ticket — not the dashboard token — sent as `Authorization: Bearer`, because on Telegram Web the page lives inside a `web.telegram.org` iframe where `SameSite=Lax` cookies are not sent. Only `/mini` and its `mini-*` chunks are served before a session exists; the dashboard and every `/api/*` route stay behind the token gate. Checks: `node test/mini-app.js`.
+
 ## Execution and accounting
 
 Quiver detects liquidity changes from pool and position-manager events rather than relying solely on router calldata. The watcher attributes supported position NFTs to target wallets and distinguishes custody transfers from disposal where supported.

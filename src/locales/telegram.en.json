@@ -894,5 +894,6 @@
   "Kirim alamat wallet yang mau diriset. Bot membaca seluruh posisi LP-nya langsung dari chain: modal, hasil, fee, dan riwayat tiap posisi.": "Send the wallet address you want to research. The bot reads every one of its liquidity positions straight from the chain: capital, proceeds, fees, and the history of each position.",
   "✅ Ya": "✅ Yes",
   "❌ Tidak": "❌ No",
-  "Total modal posisi ini {0}": "Total capital in this position {0}"
+  "Total modal posisi ini {0}": "Total capital in this position {0}",
+  "📱 Buka mini app": "📱 Open mini app"
 }

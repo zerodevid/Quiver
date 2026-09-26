@@ -1,0 +1,228 @@
+/* Tampilan mini app Telegram — kulit yang sama dengan dasbor.
+ *
+ * Warnanya BUKAN warna tema Telegram, melainkan token dasbor (web/src/index.css +
+ * HeroUI) yang disalin apa adanya: nilai oklch di bawah diambil dari getComputedStyle
+ * dasbor yang sudah jadi, terang dan gelap. Yang diikuti dari Telegram cuma satu hal —
+ * terang atau gelap — supaya mini app tidak menyala putih di aplikasi yang bertema gelap.
+ *
+ * Salinan, bukan impor: entri 'mini' harus berdiri sendiri (lihat vite.config.js), jadi
+ * kalau token dasbor berubah, nilai di sini ikut diubah tangan.
+ */
+@font-face {
+  font-family: 'Inter';
+  src: url('/fonts/inter-var-latin.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root, body.light {
+  --background: oklch(0.9702 0 0);
+  --surface: oklch(1 0 0);
+  --foreground: oklch(0.2103 0.0059 285.89);
+  --muted: oklch(0.5517 0.0138 285.94);
+  --border: oklch(0.885 0.004 286);
+  --default: oklch(0.94 0.001 286.375);
+  --accent: oklch(0.55 0.175 257);
+  --success: oklch(0.55 0.125 150);
+  --danger: oklch(0.545 0.185 27);
+  --warning: oklch(0.58 0.115 62);
+}
+body.dark {
+  --background: oklch(0.12 0.005 285.823);
+  --surface: oklch(0.2103 0.0059 285.89);
+  --foreground: oklch(0.9911 0 0);
+  --muted: oklch(0.705 0.015 286.067);
+  --border: oklch(0.29 0.006 286);
+  --default: oklch(0.274 0.006 286.033);
+  --accent: oklch(0.68 0.16 256);
+  --success: oklch(0.76 0.15 152);
+  --danger: oklch(0.71 0.175 22);
+  --warning: oklch(0.79 0.13 70);
+}
+
+/* Akar 15px, sama dengan dasbor: seluruh ukuran di bawah ikut skala itu. */
+html { font-size: 15px; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 1rem;
+  line-height: 1.45;
+  font-feature-settings: 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+.num { font-variant-numeric: tabular-nums; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8125rem; letter-spacing: -0.01em; }
+.up { color: var(--success); }
+.down { color: var(--danger); }
+.warn { color: var(--warning); }
+.acc { color: var(--accent); }
+.muted { color: var(--muted); }
+.xs { font-size: 0.75rem; }
+.sm { font-size: 0.8125rem; }
+
+/* ---- kerangka ---------------------------------------------------------- */
+#app { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+
+header.top {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: 0.625rem;
+  padding: 0.625rem 1rem;
+  padding-top: max(0.625rem, env(safe-area-inset-top, 0px));
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+header.top svg.logo { height: 1.25rem; width: auto; color: var(--foreground); }
+header.top .right { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
+
+main { flex: 1; padding: 0.75rem 1rem calc(4.75rem + env(safe-area-inset-bottom, 0px)); }
+
+/* Judul halaman: kelompok kecil di atas nama halaman, sama dengan PageHeader dasbor. */
+.pagehead { margin: 0.25rem 0 0.75rem; }
+.pagehead .group { font-size: 0.6875rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.pagehead h1 { margin: 0.125rem 0 0; font-size: 1.375rem; font-weight: 650; letter-spacing: -0.02em; }
+
+nav.tabs {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+nav.tabs button {
+  appearance: none; border: 0; background: none; color: var(--muted);
+  font: inherit; font-size: 0.6875rem; font-weight: 500;
+  display: flex; flex-direction: column; align-items: center; gap: 0.1875rem;
+  padding: 0.5rem 0 0.4375rem; cursor: pointer;
+}
+nav.tabs button svg { width: 1.25rem; height: 1.25rem; stroke: currentColor; fill: none; stroke-width: 1.7; }
+nav.tabs button.on { color: var(--accent); }
+
+/* ---- kartu & panel (web/src/index.css: .card) ---------------------------- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  box-shadow: none;
+  padding: 0.875rem 1rem;
+  margin-bottom: 0.75rem;
+}
+.card.pad0 { padding: 0; overflow: hidden; }
+.panel-head {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0.75rem 1rem; border-bottom: 1px solid var(--border);
+}
+.panel-head h2 { margin: 0; font-size: 0.9375rem; font-weight: 600; }
+.panel-foot { padding: 0.625rem 1rem; border-top: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); }
+
+.label { font-size: 0.8125rem; color: var(--muted); }
+.figure { font-size: 1.75rem; font-weight: 650; letter-spacing: -0.025em; margin: 0.125rem 0 0; }
+.figure.sm { font-size: 1.25rem; }
+.sub { font-size: 0.75rem; color: var(--muted); margin-top: 0.25rem; }
+.divide { border-top: 1px solid var(--border); margin-top: 0.875rem; padding-top: 0.875rem; }
+.aside { margin-left: auto; font-size: 0.875rem; font-weight: 600; }
+.figrow { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.figrow .label { white-space: nowrap; }
+.figrow .chip { flex-shrink: 0; }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem; }
+.grid2 .card { margin: 0; }
+
+/* ---- chip (dasbor: radius = --radius, bukan pil) ------------------------- */
+.chip {
+  display: inline-flex; align-items: center; gap: 0.375rem;
+  border-radius: 0.375rem; padding: 0.125rem 0.4375rem;
+  font-size: 0.6875rem; font-weight: 600; line-height: 1.6;
+  background: var(--default); color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.chip.ok { background: color-mix(in oklab, var(--success) 12%, transparent); color: var(--success); }
+.chip.warn { background: color-mix(in oklab, var(--warning) 14%, transparent); color: var(--warning); }
+.chip.bad { background: color-mix(in oklab, var(--danger) 12%, transparent); color: var(--danger); }
+.chip.acc { background: color-mix(in oklab, var(--accent) 12%, transparent); color: var(--accent); }
+
+.dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; display: inline-block; }
+/* Denyut hanya saat LIVE — satu-satunya keadaan yang memindahkan uang (App.jsx). */
+.mode { display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; font-weight: 500; }
+.mode .pulse { position: relative; display: flex; width: 0.5rem; height: 0.5rem; }
+.mode .pulse i { position: absolute; inset: 0; border-radius: 50%; background: currentColor; opacity: 0.5; animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite; }
+.mode .pulse b { position: relative; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
+@keyframes ping { 75%, 100% { transform: scale(2); opacity: 0; } }
+
+/* ---- segmented (dasbor: Segmented) -------------------------------------- */
+.seg {
+  display: inline-flex; gap: 0.125rem; padding: 0.1875rem;
+  border: 1px solid var(--border); border-radius: 0.5625rem; background: var(--surface);
+}
+.seg button {
+  appearance: none; border: 0; background: none; color: var(--muted);
+  font: inherit; font-size: 0.75rem; font-weight: 500;
+  padding: 0.25rem 0.5rem; border-radius: 0.375rem; cursor: pointer; white-space: nowrap;
+}
+.seg button.on { background: var(--default); color: var(--foreground); }
+.seg .n { color: var(--muted); font-size: 0.6875rem; margin-left: 0.25rem; }
+
+/* ---- baris daftar (dasbor: tabel, baris bergaris + zebra) ---------------- */
+.row {
+  display: flex; align-items: center; gap: 0.625rem;
+  padding: 0.75rem 1rem; width: 100%; text-align: left;
+  background: none; border: 0; border-bottom: 1px solid var(--border);
+  color: inherit; font: inherit; cursor: pointer;
+}
+.row:last-child { border-bottom: 0; }
+.row:active { background: color-mix(in oklab, var(--foreground) 4%, transparent); }
+.row.flat { cursor: default; }
+.row.zebra:nth-child(even) { background: color-mix(in oklab, var(--foreground) 1.5%, transparent); }
+.row .l { min-width: 0; flex: 1; }
+.row .r { text-align: right; white-space: nowrap; }
+.pair { font-weight: 500; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta { font-size: 0.75rem; color: var(--muted); margin-top: 0.125rem; display: flex; gap: 0.375rem; align-items: center; flex-wrap: wrap; }
+.meta .sep { opacity: 0.55; }
+
+/* Dua lambang token bertumpuk — padanan TokenPair di dasbor. */
+.icons { display: flex; align-items: center; flex-shrink: 0; }
+.icons span, .icons img {
+  width: 1.375rem; height: 1.375rem; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--default);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 0.5rem; font-weight: 700; letter-spacing: -0.02em; color: var(--muted); overflow: hidden; object-fit: cover;
+}
+.icons > :nth-child(2) { margin-left: -0.4375rem; }
+
+/* ---- tombol ------------------------------------------------------------- */
+.btns { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+button.act {
+  flex: 1; appearance: none; border: 1px solid var(--border); border-radius: 0.5625rem;
+  padding: 0.625rem 0.75rem; font: inherit; font-size: 0.8125rem; font-weight: 500;
+  background: var(--surface); color: var(--foreground); cursor: pointer;
+}
+button.act.primary { background: var(--accent); border-color: var(--accent); color: oklch(0.99 0 0); }
+button.act.danger { color: var(--danger); border-color: color-mix(in oklab, var(--danger) 40%, var(--border)); }
+button.act[disabled] { opacity: 0.45; }
+button.act:active { background: color-mix(in oklab, var(--foreground) 4%, var(--surface)); }
+
+/* ---- isi kartu kecil ---------------------------------------------------- */
+.kv { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
+.kv:last-child { border-bottom: 0; }
+.kv .k { color: var(--muted); }
+.kv .v { font-weight: 500; text-align: right; }
+
+.empty { text-align: center; color: var(--muted); padding: 2.25rem 1.25rem; font-size: 0.875rem; }
+.err {
+  border: 1px solid color-mix(in oklab, var(--danger) 35%, var(--border));
+  background: color-mix(in oklab, var(--danger) 8%, transparent);
+  color: var(--danger); border-radius: 0.5rem; padding: 0.625rem 0.75rem; margin-bottom: 0.75rem; font-size: 0.8125rem;
+}
+
+/* ---- grafik pertumbuhan ------------------------------------------------- */
+.chart { display: block; width: 100%; height: 8.5rem; overflow: visible; }
+.chart path.line { fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.chart path.area { stroke: none; opacity: 0.12; }
+.chart line.zero { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 3; }
+
+.spin { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--accent); animation: p 1s ease-in-out infinite; }
+@keyframes p { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+.skel { background: color-mix(in oklab, var(--foreground) 8%, transparent); border-radius: 0.375rem; animation: p 1.2s ease-in-out infinite; }
