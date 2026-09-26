@@ -135,7 +135,7 @@ function StatusFoot({ status, reload, theme, toggleTheme }) {
               tanpa menyalin alamatnya dulu. */}
           <span className="flex items-center gap-1">
             <span className="mono text-xs whitespace-nowrap text-muted">{m?.wallet ? short(m.wallet) : t('belum ada')}</span>
-            {m?.wallet && <WalletLinks address={m.wallet} compact className="ml-1.5" />}
+            {m?.wallet && <WalletLinks address={m.wallet} compact className="trade-snug" />}
           </span>
         </div>
       </div>
