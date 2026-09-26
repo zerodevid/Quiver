@@ -24,7 +24,9 @@ function engineWith({ stuckSeconds = 0.05 } = {}) {
     cfg: { mode: { dry_run: false }, gas: {}, rules: {}, loop: { tick_stuck_seconds: stuckSeconds } },
   });
   eng.exec.address = () => '0xme';
-  eng.notify = () => {};
+  const kabar = [];
+  eng.onNotify = (msg, detail) => kabar.push({ msg, detail });
+  eng.kabar = kabar;
   eng.cursor = 0; eng.span = 1000;
   let head = 100;
   eng.rpc.safeHead = async () => ({ min: head, max: head, spread: 0 });
@@ -37,7 +39,7 @@ function engineWith({ stuckSeconds = 0.05 } = {}) {
     return new Promise((res) => { lepas = () => res([]); });
   };
   return {
-    eng, store, calls,
+    eng, store, calls, kabar: eng.kabar,
     gantung: () => { hang = true; },
     lepas: () => lepas && lepas(),
     setHead: (n) => { head = n; },
@@ -98,6 +100,37 @@ function engineWith({ stuckSeconds = 0.05 } = {}) {
     await h.eng.tick();
     assert.strictEqual(h.eng.lastScanAt, pertama, 'tick yang macet tidak boleh menyegarkan penanda ini');
     assert.ok(h.eng.tickStuckMs() === 0, 'tidak ada tick yang menggantung lagi setelah dilepas');
+  });
+
+  await t('macet dikabarkan (ntfy + Telegram), lalu ditutup kabar pulih', async () => {
+    const h = engineWith();
+    h.gantung();
+    h.eng.tick();
+    await tidur(60);
+    await h.eng.tick();                 // lepas paksa
+    assert.strictEqual(h.kabar.length, 1, 'satu kabar macet');
+    assert.match(h.kabar[0].msg, /macet.*tahap "pindai blok 1-100"/);
+    assert.strictEqual(h.kabar[0].detail.cursor, 0);
+    // Baris lognya ikut naik ke level 'warn' — di dasbor ini masalah, bukan kabar biasa.
+    assert.strictEqual(h.store.all('SELECT level,msg FROM logs ORDER BY id DESC LIMIT 1')[0].level, 'warn');
+
+    h.setHead(500);
+    await h.eng.tick();
+    assert.strictEqual(h.kabar.length, 2, 'kabar pulih menyusul');
+    assert.match(h.kabar[1].msg, /pulih/);
+  });
+
+  await t('macet beruntun tidak membanjiri chat, tapi tetap masuk log', async () => {
+    const h = engineWith();
+    for (let i = 0; i < 3; i++) {
+      h.gantung();
+      h.eng.tick();
+      await tidur(60);
+      await h.eng.tick();               // lepas paksa, tanpa pemindaian berhasil di antaranya
+    }
+    assert.strictEqual(h.kabar.length, 1, 'cuma yang pertama dikabarkan (jeda 15 menit)');
+    const baris = h.store.all("SELECT msg FROM logs WHERE msg LIKE 'pemindaian macet%'");
+    assert.strictEqual(baris.length, 3, 'ketiganya tetap tercatat');
   });
 
   console.log(`\n${pass} ok, ${fail} gagal`);

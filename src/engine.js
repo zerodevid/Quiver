@@ -80,6 +80,7 @@ class Engine {
     this.tickGen = 0;              // nomor seri tick; naik juga saat tick macet dilepas paksa
     this.tickStage = null;         // tahap tick yang sedang ditunggu — muncul di pesan macet
     this.lastScanAt = 0;           // tick TERAKHIR YANG BERHASIL, bukan sekadar tick terakhir
+    this.wedgeNotifiedAt = 0;      // kapan macet terakhir dikabarkan (0 = tidak ada yang menggantung)
     this.exiting = new Set();      // id posisi yang transaksi keluarnya sedang berjalan
     this.compound = new Compound(this);
     this.capital = new Capital({ rpc, store, chain, cfg, log: this.log });
@@ -388,7 +389,18 @@ class Engine {
     this.tickStage = null;
     this.lastError = msg;
     this.log(msg);
-    this.store.log('warn', msg, { cursor: this.cursor });
+    // Ini KABAR, bukan sekadar baris log: selama macet bot buta total — tidak ada
+    // entry, tidak ada ikut-keluar — dan tidak ada gejala lain yang kelihatan dari
+    // luar. Dikirim ke ntfy dan Telegram lewat jalur kabar penting yang sama dengan
+    // kartu entry/exit. Macet beruntun dikabarkan paling sering 15 menit sekali
+    // supaya chat tidak dibanjiri; yang tertahan tetap masuk log.
+    const now = Date.now();
+    if (!this.wedgeNotifiedAt || now - this.wedgeNotifiedAt > 15 * 60_000) {
+      this.wedgeNotifiedAt = now;
+      this.notify(msg, { cursor: this.cursor, stuckSec: Math.round(ms / 1000) }, 'warn');
+    } else {
+      this.store.log('warn', msg, { quiet: true, cursor: this.cursor });
+    }
   }
 
   async tick() {
@@ -420,6 +432,13 @@ class Engine {
       const acts = await this.watcher.scan(this.cursor + 1, to);
       if (stale()) return;
       this.lastScanAt = Date.now();
+      // Macet yang sudah dikabarkan harus ditutup kabarnya juga — kalau tidak, satu
+      // peringatan menggantung di chat tanpa pernah jelas apakah bot sudah melihat
+      // lagi.
+      if (this.wedgeNotifiedAt) {
+        this.wedgeNotifiedAt = 0;
+        this.notify(`pemindaian pulih — blok kembali terbaca, dilanjutkan dari ${to}`, null, 'info');
+      }
       this.stats.scanned += to - this.cursor;
       this.cursor = to;
       this.store.setState(this.sk('cursor'), this.cursor);
@@ -3273,7 +3292,10 @@ class Engine {
   // `detail` (opsional) adalah data terstruktur kejadian itu — {kind:'entry'|'exit'|
   // 'leftover', positionId, txHash, ...}. ntfy tetap menerima teks polos; pendengar
   // yang bisa menata (bot Telegram) memakai detail untuk menyusun kartu yang rapi.
-  notify(msg, detail = null) {
+  // `level` menentukan baris log yang ditulis (bawaan 'info'). Kabar yang isinya
+  // masalah ditulis 'warn'/'error' supaya di dasbor ia muncul sebagai masalah, bukan
+  // berbaur dengan kartu entry/exit biasa.
+  notify(msg, detail = null, level = 'info') {
     const topic = this.cfg.notify?.ntfy_topic;
     // Pendengar tambahan (bot Telegram) dipasang dari luar; ia menerima kabar
     // penting yang sama dengan ntfy, tanpa perlu ikut mengintip semua baris log.
@@ -3281,7 +3303,7 @@ class Engine {
     // dengan teks yang sama, dan pendengar hanya bisa menyaring gemanya kalau ia
     // sudah tahu kabar apa yang barusan dikirim.
     if (this.onNotify) { try { this.onNotify(msg, { ...(detail || {}), chain: this.network, chainLabel: this.label }); } catch { /* abaikan */ } }
-    this.store.log('info', msg);
+    this.store.log(level, msg);
     if (!topic) return;
     fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body: `Quiver [${this.label}]: ${msg}` }).catch(() => {});
   }

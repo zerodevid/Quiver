@@ -810,11 +810,14 @@ class Telegram {
       const tag = this.multi() ? `⛓ ${esc(net.label)} · ` : '';
       eng.onNotify = (msg, detail) => {
         if (prevNotify) prevNotify(msg, detail);
-        // engine.notify() juga menulis baris log 'info' dengan teks yang sama. Kalau
-        // pengiriman baris info sedang dinyalakan, kabar yang sama akan datang dua
-        // kali — yang ini dicatat supaya penyaring log di bawah melewatinya.
-        this.lastNotify = msg;
+        // engine.notify() juga menulis baris log dengan teks yang sama (level apa pun
+        // — 'warn' untuk kabar masalah). Kalau pengiriman baris log itu sedang
+        // dinyalakan, kabar yang sama datang dua kali; yang ini dicatat supaya
+        // penyaring log di bawah melewatinya. Dicatat HANYA kalau kabarnya benar-benar
+        // dikirim dari sini: dengan "penting" mati tapi "warn" hidup, geman itulah
+        // satu-satunya jalan kabar tersebut sampai ke chat.
         if (!this.notifCfg().penting) return;
+        this.lastNotify = msg;
         if (!detail?.kind) return this.push(`🔔 ${tag}<b>${esc(note(msg))}</b>`, null, () => [`🔔 ${tag}<b>${esc(note(msg))}</b>`, null]);
         // Kabar berdetail disusun jadi kartu (butuh baca API, jadi asinkron). Kalau
         // penyusunannya gagal, teks polosnya tetap terkirim — kabar tidak boleh hilang.
@@ -834,6 +837,7 @@ class Telegram {
       if (meta?.quiet) return;
       // Kabar pulih menutup peringatan galat — ikut setelan galat, bukan setelan info.
       if (meta?.recovered) { if (n.error) this.push(logBaris('pulih', msg), null, () => [logBaris('pulih', msg), null]); return; }
+      if (msg === this.lastNotify && level !== 'info') return;   // geman kabar penting, lihat di atas
       if (level === 'error' && n.error) this.push(logBaris(level, msg), null, () => [logBaris(level, msg), null]);
       else if (level === 'warn' && n.warn) this.push(logBaris(level, msg), null, () => [logBaris(level, msg), null]);
       else if (level === 'info' && n.info && msg !== this.lastNotify) this.push(logBaris(level, msg), null, () => [logBaris(level, msg), null]);
