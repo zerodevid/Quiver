@@ -216,8 +216,26 @@ const { TOPIC } = require('./chain');
 
 Chain.prototype.findEthUsdgPools = async function findEthUsdgPools(headBlock, blocks = 4_000_000) {
   const stateKey = `eth_usdg_pools:${this.network}`;
+  // Daftar ini dulu di-cache SELAMANYA: sekali terisi, pool ETH/USDG yang lahir
+  // belakangan tidak pernah terlihat — termasuk pool tanpa hook, satu-satunya jenis yang
+  // swap langsungnya pasti diterima router. Sekarang dipindai ulang sehari sekali.
+  // Pindaian yang gagal MEMPERTAHANKAN daftar lama (getLogs di chain ini sering tumbang),
+  // dan dalam satu proses tidak diulang lebih rapat dari sejam supaya RPC tidak digempur.
+  const TTL = 24 * 3600_000;
+  let lama = null;
   const cached = this.store.getState(stateKey);
-  if (cached) { try { return JSON.parse(cached); } catch { /* lanjut pindai */ } }
+  if (cached) {
+    try {
+      const j = JSON.parse(cached);
+      const pools = Array.isArray(j) ? j : j.pools;      // bentuk lama: array telanjang
+      if (Array.isArray(pools) && pools.length) {
+        if (Date.now() - (Array.isArray(j) ? 0 : j.ts || 0) < TTL) return pools;
+        lama = pools;
+      }
+    } catch { /* lanjut pindai */ }
+  }
+  if (lama && this._ethUsdgScanAt && Date.now() - this._ethUsdgScanAt < 3600_000) return lama;
+  this._ethUsdgScanAt = Date.now();
   const pad = (a) => '0x' + a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
   const found = [];
   const chunk = 400_000;
@@ -243,8 +261,20 @@ Chain.prototype.findEthUsdgPools = async function findEthUsdgPools(headBlock, bl
     if (lo === 0) break;
     hi = lo - 1;
   }
-  if (found.length) this.store.setState(stateKey, JSON.stringify(found));
-  return found;
+  if (found.length) {
+    // Hasil pindaian DIGABUNG dengan daftar lama, tidak menimpanya. Potongan blok yang
+    // getLogs-nya gagal dilewati diam-diam di atas, jadi satu pindaian yang apes memberi
+    // daftar yang lebih pendek — padahal pool v4 yang sudah lahir tidak pernah hilang dari
+    // chain, jadi daftar yang menyusut SELALU berarti pindaiannya yang kurang. Pindaian
+    // ulang pertama (25 Sep 2026) memang cuma mengembalikan 9 dari 12 pool yang tercatat.
+    const ada = new Set(found.map((p) => String(p.poolId).toLowerCase()));
+    const gabung = [...found, ...(lama || []).filter((p) => !ada.has(String(p.poolId).toLowerCase()))];
+    this.store.setState(stateKey, JSON.stringify({ ts: Date.now(), pools: gabung }));
+    return gabung;
+  }
+  // Pindaian kosong tidak dicap waktunya: penjaga sejam di atas yang menahan pengulangan,
+  // supaya daftar lama tidak terkunci 24 jam gara-gara RPC yang sedang tumbang.
+  return lama || found;
 };
 
 Chain.prototype.ethUsd = async function ethUsd(fallback = 2500) {
@@ -635,22 +665,27 @@ Chain.prototype.bestEthUsdgPool = async function bestEthUsdgPool() {
         .toString(16).padStart(64, '0'),
     ]),
   })));
-  let best = null;
+  // SEMUA kandidat dikembalikan, bukan cuma yang terdalam: di chain ini pool ETH/USDG
+  // hampir selalu ber-hook dan hook-nya bisa menolak swap dari router, jadi pemanggil
+  // menyimulasikan satu per satu dan turun ke kandidat berikutnya. Satu pool saja
+  // membuat cadangan ini mati total begitu pool terdalam kebetulan menolak.
+  const cands = [];
   for (let i = 0; i < list.length; i++) {
     const s = slots[i];
     if (!s || s.sqrtPriceX96 === 0n) continue;
     const L = liqWords[i] && liqWords[i] !== '0x' ? BigInt(liqWords[i]) & ((1n << 128n) - 1n) : 0n;
-    if (!best || L > best.liquidity) {
-      best = {
-        poolId: list[i].poolId,
-        poolKey: {
-          currency0: this.ADDR.native, currency1: this.ADDR.usdg,
-          fee: list[i].fee, tickSpacing: list[i].tickSpacing, hooks: list[i].hooks,
-        },
-        slot0: s, liquidity: L,
-      };
-    }
+    cands.push({
+      poolId: list[i].poolId,
+      poolKey: {
+        currency0: this.ADDR.native, currency1: this.ADDR.usdg,
+        fee: list[i].fee, tickSpacing: list[i].tickSpacing, hooks: list[i].hooks,
+      },
+      slot0: s, liquidity: L,
+    });
   }
+  // Terdalam dulu: dampak harganya paling kecil.
+  cands.sort((a, b) => (a.liquidity < b.liquidity ? 1 : a.liquidity > b.liquidity ? -1 : 0));
+  const best = cands.length ? { ...cands[0], candidates: cands } : null;
   if (best) { this._bridge = best; this._bridgeAt = now; }
   return best;
 };

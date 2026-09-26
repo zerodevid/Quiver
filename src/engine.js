@@ -1013,7 +1013,15 @@ class Engine {
     // Jalur utama: agregator Kyber. Kutipan arah BALIK (yang dibutuhkan -> yang dibayar)
     // memberi taksiran berapa yang harus dibayar untuk mendapat shortEthLike.
     const outTok = wantEth ? this.chain.ADDR.native : this.chain.ADDR.usdg;
-    const rev = await this.kyber.quote(outTok, payTok, shortEthLike);
+    const arah = wantEth ? `${usdgSymbol}→${nativeSymbol}` : `${nativeSymbol}→${usdgSymbol}`;
+    // Kenapa SETIAP sebab mundur ke cadangan dicatat, termasuk kutipan yang kosong:
+    // kalau Kyber tidak memberi apa-apa, yang gagal adalah pool langsung di bawah — dan
+    // dulu pesan yang sampai ke pengguna cuma revert pool itu, tanpa petunjuk bahwa
+    // pemicunya Kyber. 25 Sep 2026 satu entry di lp2 batal persis begitu: kutipan balik
+    // Kyber null, nol baris log, lalu tiga percobaan entry habis dengan "estimasi gas
+    // gagal". `kyberNote` ikut dibawa ke pesan galat cadangan supaya rantainya utuh.
+    const rev = await this.kyber.quoteRetry(outTok, payTok, shortEthLike);
+    let kyberNote;
     if (rev && rev.amountOut > 0n) {
       let payK = (rev.amountOut * BigInt(10_000 + slipBps)) / 10_000n;
       if (payK > payHave) throw tooShort(payK);
@@ -1029,45 +1037,91 @@ class Engine {
         // Pengaman yang gagal dan receipt yang belum terbaca tetap menghentikan entry.
         if (!(e.loss || e.reverted)) throw e;
         kyberGagal = true;
+        kyberNote = `Kyber tidak jadi (${e.message})`;
         this.store.log('warn', `jembatan via Kyber tidak jadi (${e.message}) — mencoba pool langsung`, { quiet: true });
       }
       if (r) {
-        notes.push(`${wantEth ? `jembatan ${usdgSymbol}→${nativeSymbol}` : `jembatan ${nativeSymbol}→${usdgSymbol}`} via Kyber (${r.quote.dex})`);
+        notes.push(`jembatan ${arah} via Kyber (${r.quote.dex})`);
         return this.wrapIfWeth(quoteTok, needQuoteRaw, balOf, notes);
       }
-      if (!kyberGagal) this.store.log('warn', 'Kyber tidak bisa merutekan jembatan — mencoba pool langsung', { quiet: true });
+      if (!kyberGagal) {
+        kyberNote = 'Kyber tidak bisa merutekan';
+        this.store.log('warn', 'Kyber tidak bisa merutekan jembatan — mencoba pool langsung', { quiet: true });
+      }
+    } else {
+      kyberNote = 'Kyber tidak memberi kutipan';
+      this.store.log('warn', `Kyber tidak memberi kutipan jembatan ${arah} — mencoba pool langsung`, { quiet: true });
     }
 
-    // Cadangan: satu pool ETH/USDG langsung. Banyak pool ETH/USDG di chain ini menolak
-    // swap lewat hook-nya, jadi jalur ini hanya dipakai kalau Kyber tidak tersedia.
+    // Cadangan: satu pool ETH/USDG langsung, hanya dipakai kalau Kyber tidak tersedia.
+    // Jalur ini rapuh dan HARUS disimulasikan dulu. Diukur 25 Sep 2026 di Robinhood
+    // Chain: 12 dari 12 pool ETH/USDG yang terdaftar ber-hook, dan ke-12-nya menolak
+    // swap dari UniversalRouter dengan WrappedError (0x90bfb865) di beforeSwap. Dikirim
+    // buta, yang terjadi cuma estimasi gas revert 3x per percobaan lalu entry mati
+    // dengan "estimasi gas gagal (kemungkinan revert)" — pesan yang menuduh node basi
+    // padahal poolnya yang menolak. Simulasi = satu eth_call, dan galatnya yang benar.
     const br = await this.chain.bestEthUsdgPool();
     if (!br) throw new Error(`pool jembatan ${nativeSymbol}/${usdgSymbol} tidak ditemukan`);
-    const price = m.priceFromSqrt(br.slot0.sqrtPriceX96, 18, usdgDecimals); // stablecoin per native
     const slip = 1 + rules.swap.max_slippage_bps / 10000;
-    let payRaw;
-    if (wantEth) payRaw = BigInt(Math.ceil((Number(shortEthLike) / 1e18) * price * 10 ** usdgDecimals * slip));
-    else payRaw = BigInt(Math.ceil((Number(shortEthLike) / 10 ** usdgDecimals / price) * 1e18 * slip));
-    if (payRaw <= 0n) return notes;
-    if (payRaw > payHave) throw tooShort(payRaw);
     const zeroForOne = !wantEth;   // jual ETH(currency0) -> beli USDG
-    if (rules.swap.max_price_impact_bps > 0) {
-      const impact = m.priceImpactBps(br.slot0.sqrtPriceX96, br.liquidity, payRaw, zeroForOne);
-      if (impact != null && impact > rules.swap.max_price_impact_bps) {
-        throw new Error(`jembatan menggeser harga ${impact.toFixed(0)} bps (batas ${rules.swap.max_price_impact_bps})`);
+    const minOut = (shortEthLike * (10000n - BigInt(rules.swap.max_slippage_bps))) / 10000n;
+
+    // Babak 1 — saring dengan hitungan saja, tanpa mengirim apa pun. Gerbang yang murah
+    // (harga, kas, dampak) dijalankan lebih dulu supaya izin router dan buka bungkus di
+    // babak 2 tidak pernah terkirim untuk jembatan yang toh sudah pasti ditolak.
+    const layak = [];
+    let impactMin = null, payMin = null;
+    for (const c of br.candidates || [br]) {
+      const price = m.priceFromSqrt(c.slot0.sqrtPriceX96, 18, usdgDecimals); // stablecoin per native
+      const payRaw = wantEth
+        ? BigInt(Math.ceil((Number(shortEthLike) / 1e18) * price * 10 ** usdgDecimals * slip))
+        : BigInt(Math.ceil((Number(shortEthLike) / 10 ** usdgDecimals / price) * 1e18 * slip));
+      if (payRaw <= 0n) return notes;
+      // Kas kurang di pool ini belum tentu kurang di pool lain (harganya beda-beda), jadi
+      // kandidatnya dilewati, bukan menggugurkan seluruh jembatan. Yang termurah disimpan
+      // untuk pesan galatnya.
+      if (payRaw > payHave) { if (payMin == null || payRaw < payMin) payMin = payRaw; continue; }
+      if (rules.swap.max_price_impact_bps > 0) {
+        const impact = m.priceImpactBps(c.slot0.sqrtPriceX96, c.liquidity, payRaw, zeroForOne);
+        if (impact != null && impact > rules.swap.max_price_impact_bps) {
+          if (impactMin == null || impact < impactMin) impactMin = impact;
+          continue;
+        }
       }
+      layak.push({ pool: c, payRaw });
     }
+    if (!layak.length) {
+      if (impactMin != null) throw new Error(`jembatan menggeser harga ${impactMin.toFixed(0)} bps (batas ${rules.swap.max_price_impact_bps})`);
+      throw tooShort(payMin ?? 0n);
+    }
+
+    // Babak 2 — simulasi. Izin router disiapkan dulu: tanpa izin, swap sisi USDG revert
+    // karena transfernya dan itu akan terbaca keliru sebagai "pool menolak".
     if (!zeroForOne) {
       for (const a of await this.exec.ensureRouterAllowance(this.chain.ADDR.usdg)) {
         const h = await this.exec.send(a, { kind: a.kind });
         await this.exec.waitReceipt(h);
       }
     }
-    await unwrapFor(payRaw);
-    const minOut = (shortEthLike * (10000n - BigInt(rules.swap.max_slippage_bps))) / 10000n;
-    const tx = this.exec.buildSwapV4(br.poolKey, zeroForOne, payRaw, minOut, this.exec.deadline());
-    const h = await this.exec.send(tx, { kind: 'bridge_swap', detail: { pool: br.poolId, wantEth } });
+    // Kandidat urut dari likuiditas terdalam, tapi yang dipakai adalah yang LOLOS
+    // simulasi — di chain ini pool terdalam pun bisa menolak lewat hook-nya.
+    let pilih = null, ditolak = 0, galatTolak = null;
+    for (const { pool, payRaw } of layak) {
+      // Simulasi hanya jujur kalau dananya sudah berbentuk ETH native, sama seperti saat
+      // dikirim. Buka bungkus WETH kursnya 1:1 tanpa slippage dan dulu pun selalu
+      // dilakukan sebelum kirim, jadi ini tidak menambah risiko walau swap-nya batal.
+      await unwrapFor(payRaw);
+      const tx = this.exec.buildSwapV4(pool.poolKey, zeroForOne, payRaw, minOut, this.exec.deadline());
+      const sim = await this.exec.simulate(tx);
+      if (sim.ok) { pilih = { pool, tx }; break; }
+      ditolak++; galatTolak = sim.error;
+    }
+    if (!pilih) {
+      throw new Error(`jembatan ${arah} gagal: ${kyberNote}, dan ${ditolak} pool ${nativeSymbol}/${usdgSymbol} langsung menolak swap${galatTolak ? ` (${String(galatTolak).slice(0, 120)})` : ''}`);
+    }
+    const h = await this.exec.send(pilih.tx, { kind: 'bridge_swap', detail: { pool: pilih.pool.poolId, wantEth } });
     if (!(await this.exec.waitReceipt(h)).ok) throw new Error(`swap jembatan gagal (${h})`);
-    notes.push(wantEth ? `jembatan ${usdgSymbol}→${nativeSymbol}` : `jembatan ${nativeSymbol}→${usdgSymbol}`);
+    notes.push(`jembatan ${arah}`);
     return this.wrapIfWeth(quoteTok, needQuoteRaw, balOf, notes);
   }
 

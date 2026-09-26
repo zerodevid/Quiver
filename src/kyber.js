@@ -67,6 +67,20 @@ class Kyber {
     } catch { return null; }
   }
 
+  // Kutipan dengan beberapa percobaan. quote() menelan SEMUA kegagalan jadi null —
+  // timeout, 5xx, rute yang sesaat "tidak ada" — jadi pemanggil yang menembak sekali lalu
+  // jatuh ke jalan cadangan bisa membatalkan operasi karena gangguan sekejap. Persis itu
+  // yang terjadi pada jembatan lp2 25 Sep 2026: satu kutipan null, cadangannya pool
+  // langsung yang di chain ini pasti ditolak, entry batal. attempt() sudah lama mengulang
+  // kutipannya 3x dengan alasan yang sama; ini menyediakan hal itu untuk pemanggil luar.
+  async quoteRetry(tokenIn, tokenOut, amountIn, tries = 3) {
+    for (let i = 0; ; i++) {
+      const q = await this.quote(tokenIn, tokenOut, amountIn);
+      if (q || i >= tries - 1) return q;
+      await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+    }
+  }
+
   async build(routeSummary, sender, slippageBps) {
     try {
       const r = await fetch(`${this.api()}/route/build`, {
