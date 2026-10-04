@@ -281,8 +281,15 @@ class Capital {
       // from an archive node made a $314 "deposit" at a block where the balance did not move.
       // A real outside transfer shows as a jump at that block beyond the bot tx effect.
       const jump = (await this.balanceAt(me, hi)) - (await this.balanceAt(me, hi - 1)) - (deltaAt.get(hi) || 0n);
-      if (jump === residual) added += await this.ethEvent(me, hi, residual, ours);
-      else this.log(`selisih saldo ETH di blok ${hi} tidak terbukti (lompatan ${jump} wei vs sisa ${residual} wei), dilewati`);
+      if (jump === residual) {
+        // Independent of any archive read: a real deposit/withdrawal moves the wallet value the
+        // equity snapshots take from the live balance. Two false $300 deposits (blocks where the
+        // balance was flat) passed the re-read above, so the equity curve has the last word.
+        const seen = await this.equityConfirms(hi, residual);
+        if (seen === null) break;   // no snapshot after the block yet: look again next sync
+        if (seen) added += await this.ethEvent(me, hi, residual, ours);
+        else this.log(`selisih saldo ETH di blok ${hi} tidak terlihat di ekuitas, dilewati`);
+      } else this.log(`selisih saldo ETH di blok ${hi} tidak terbukti (lompatan ${jump} wei vs sisa ${residual} wei), dilewati`);
       lo = hi;
     }
     // There is still a remainder after ETH_EVENTS points: stop at the last point already
@@ -293,6 +300,20 @@ class Capital {
     this.backlog = partial;   // the engine calls sync more closely while the instalments are not finished
     if (partial) this.log(`selisih saldo ETH: sampai blok ${end}, sisanya (${head - end} blok) di sync berikutnya`);
     return added;
+  }
+
+  // Does the equity curve step by about the event's size across the block? true/false, or null when
+  // there is no snapshot after the block yet (cannot judge). Without any snapshot before it
+  // (very first rows) the event is let through.
+  async equityConfirms(block, residual) {
+    const ts = await this.blockTs(block);
+    const net = this.chain.network;
+    const before = this.store.get('SELECT total_quote q FROM equity WHERE chain=? AND ts <= ? ORDER BY ts DESC LIMIT 1', net, ts);
+    if (!before) return true;
+    const after = this.store.get('SELECT total_quote q FROM equity WHERE chain=? AND ts > ? ORDER BY ts LIMIT 1', net, ts);
+    if (!after) return null;
+    const usd = (Number(residual) / 1e18) * await this.chain.ethUsdAt(block);
+    return (after.q - before.q) * Math.sign(usd) >= Math.abs(usd) * 0.5;
   }
 
   // A block with an ETH balance change that is not from a bot transaction.

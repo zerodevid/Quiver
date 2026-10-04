@@ -35,12 +35,20 @@ const TRANSFER = ethers.id('Transfer(address,address,uint256)');
 // `logs`: token transfers; `eth`: ETH balance per block (a block without an entry = the previous
 // block's balance); `ourBlocks`: blocks where the bot's txs landed; `blockTxs`: block contents (wallet
 // txs that are not bot txs) — without it, the leftover difference is treated as an internal transfer.
-function world({ logs = [], senders = {}, code = {}, eth = {}, ourBlocks = {}, blockTxs = {}, batchEth = null } = {}) {
+function world({ logs = [], senders = {}, code = {}, eth = {}, ourBlocks = {}, blockTxs = {}, batchEth = null, flatEquity = false } = {}) {
   const store = new Store(':memory:');
   store.run("INSERT INTO txs(hash,ts,kind,status) VALUES('0xown',1,'burn','sukses')");
   for (const [h, b] of Object.entries(ourBlocks)) store.run("INSERT INTO txs(hash,ts,kind,status) VALUES(?,?,'mint','sukses')", h, b * 1000 * 1000);
   store.run('INSERT INTO equity(ts,total_quote) VALUES(?,0)', 1000 * 1000 * 1000);   // the bot starts recording at block 1000
   const balAt = (n) => { let v = 2n * 10n ** 15n; for (const b of Object.keys(eth).map(Number).sort((a, c) => a - c)) if (b <= n) v = BigInt(eth[b]); return v; };
+  // Equity snapshots as the bot takes them from the live balance: a step at every real balance change
+  // (`flatEquity`: the wallet value does not move at all, whatever the archive reads claim).
+  const eqUsd = (n) => Number(balAt(flatEquity ? 1000 : n)) / 1e18 * 2500;
+  for (const b of Object.keys(eth).map(Number)) {
+    store.run('INSERT OR IGNORE INTO equity(ts,total_quote) VALUES(?,?)', b * 1000 * 1000 - 1, eqUsd(b - 1));
+    store.run('INSERT OR IGNORE INTO equity(ts,total_quote) VALUES(?,?)', b * 1000 * 1000 + 1, eqUsd(b));
+  }
+  store.run('INSERT OR IGNORE INTO equity(ts,total_quote) VALUES(?,?)', 2000 * 1000 * 1000, eqUsd(2000));
   const one = async (method, params) => {
     if (method === 'eth_getBlockByNumber') return { timestamp: hex(parseInt(params[0], 16) * 1000), transactions: params[1] ? (blockTxs[parseInt(params[0], 16)] || []).map((t) => ({ ...t, value: hex(t.value || 0) })) : [] };
     if (method === 'eth_getTransactionByHash') return { from: senders[params[0]] || EOA };
@@ -114,6 +122,24 @@ const tr = ({ dir, asset = ADDR.usdg, value, block = 1500, hash, cp = EOA }) => 
     const r = await d.cap.sync(W);
     assert.strictEqual(r.added, 0);
     assert.strictEqual(d.cap.rows().length, 0);
+  });
+
+  await t('ETH deposit that the equity curve never shows is not recorded, even when every read agrees', async () => {
+    const d = world({
+      eth: { 1500: 2n * 10n ** 15n + 12n * 10n ** 16n },   // +0.12 ETH on chain reads, but the live wallet value stayed flat
+      flatEquity: true,
+    });
+    const r = await d.cap.sync(W);
+    assert.strictEqual(r.added, 0);
+    assert.strictEqual(d.cap.rows().length, 0);
+  });
+
+  await t('ETH deposit waits for the first equity snapshot after its block', async () => {
+    const d = world({ eth: { 1500: 2n * 10n ** 15n + 12n * 10n ** 16n } });
+    d.store.run('DELETE FROM equity WHERE ts > ?', 1500 * 1000 * 1000);
+    assert.strictEqual((await d.cap.sync(W)).added, 0);
+    d.store.run('INSERT INTO equity(ts,total_quote) VALUES(?,?)', 1600 * 1000 * 1000, 0.1222e0 * 2500);
+    assert.strictEqual((await d.cap.sync(W)).added, 1);
   });
 
   await t('USDG deposit from an EOA is recorded with its block & time', async () => {
