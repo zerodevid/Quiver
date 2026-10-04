@@ -63,7 +63,10 @@ const gasUsdOf = (t, ethUsd) => (t.gas_quote != null ? Number(t.gas_quote) : gas
 // would make the total cost always look more expensive than reality.
 function swapCostOf(d) {
   const num = (v) => (v != null && Number.isFinite(Number(v)) ? Number(v) : 0);
-  const route = d.usdIn != null && d.usdOut != null ? num(d.usdIn) - num(d.usdOut) : 0;
+  // A quote whose input is worth (almost) nothing against what came out is a token that had no price
+  // at the time (a leftover sale), not a swap that paid us $50: it is unmeasured, not a gain.
+  const priced = d.usdIn != null && d.usdOut != null && num(d.usdOut) <= num(d.usdIn) * 1.5 + 0.5;
+  const route = priced ? num(d.usdIn) - num(d.usdOut) : 0;
   return { route, exec: num(d.execSlipUsd) };
 }
 

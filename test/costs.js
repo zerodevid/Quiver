@@ -17,7 +17,7 @@ const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 const { Store } = require('../src/db');
-const { Costs } = require('../src/costs');
+const { Costs, swapCostOf } = require('../src/costs');
 const { createServer } = require('../src/server');
 const { ADDR } = require('../src/chain');
 
@@ -229,6 +229,19 @@ const tx = (store, hash, ts, kind, detail, { gas = true, status = 'sukses', gasQ
       const row = (x) => (r.targets || r).find((y) => y.address === x);
       assert.ok(near(row(TA).ours.failedUsd, f.get(TA).totalUsd), JSON.stringify(row(TA).ours));
       assert.equal(row(TA).ours.failedAttempts, 1);
+    });
+    await t('per-target net = realised + running − position costs − failed-copy cost', async () => {
+      const r = await api('GET', '/api/targets', {}, {});
+      for (const row of r.targets || r) {
+        const o = row.ours;
+        if (!o) continue;
+        assert.ok(near(o.net, o.realized + o.upnl - o.costUsd - o.failedUsd), JSON.stringify(o));
+      }
+    });
+    await t('a swap quote whose input had no price is unmeasured, not a negative slippage', async () => {
+      assert.deepEqual(swapCostOf({ usdIn: 0.0001, usdOut: 50 }), { route: 0, exec: 0 });
+      assert.equal(swapCostOf({ usdIn: 100, usdOut: 99 }).route, 1);
+      assert.equal(swapCostOf({ usdIn: 100, usdOut: 101 }).route, -1);   // a real small gain stays
     });
   }
 
