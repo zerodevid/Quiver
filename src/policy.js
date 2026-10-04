@@ -342,6 +342,7 @@ function planEntry(act, ctx) {
     if (tEq > 0 && ours > 0 && targetUsd > 0) {
       const raw = targetUsd / tEq;
       const share = Math.min(raw, s.equity_max_pct / 100) * s.equity_mult;
+      if (!(share > 0)) return skip('porsi equity nol (batas porsi atau pengali = 0)');
       wantQuote = usdToQuote(share * ours, q.kind, ethUsd);
       const pc = (x) => `${(x * 100).toFixed(1)}%`;
       eqNote = `equity: target ${pc(raw)} dari ${usdShort(tEq)}${raw > s.equity_max_pct / 100 ? ` (dibatasi ${s.equity_max_pct}%)` : ''}`

@@ -74,6 +74,8 @@
           "mode": "fixed_quote",
           "pct": 25,
           "multiplier": 1,
+          "equity_mult": 1,
+          "equity_max_pct": 30,
           "fixed_quote_usd": 10,
           "fixed_quote_eth": 0.004,
           "min_quote_usd": 5,

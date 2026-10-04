@@ -324,8 +324,9 @@ dijalankan. Keduanya ada uji regresinya di `test/research.js`.
 Semua ada di dashboard (tab **Aturan**), bisa global maupun **per wallet target**.
 
 **Ukuran posisi** — `mirror` (likuiditas identik dengan target), `pct` (persen dari
-target), `multiplier` (kelipatan, boleh > 1), atau `fixed_quote` (modal tetap tiap
-posisi, dalam USD atau ETH). Semua tetap tunduk pada batas per posisi, batas eksposur
+target), `multiplier` (kelipatan, boleh > 1), `fixed_quote` (modal tetap tiap
+posisi, dalam USD atau ETH), atau `equity` (porsi equity kita sama dengan porsi equity
+yang dimasukkan target; equity tidak terbaca → pakai `pct`). Semua tetap tunduk pada batas per posisi, batas eksposur
 total, dan anggaran harian — kalau kena batas, ukuran dipotong proporsional, bukan
 dibatalkan.
 

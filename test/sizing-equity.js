@@ -35,6 +35,13 @@ assert.match(r.reason, /dibatasi 30%/);
 // multiplier halves the share
 near(plan({ equity_mult: 0.5 }, { targetEquityUsd: 10_000, ourEquityUsd: 3000 }).plan.valueUsd, 300);
 
+// a zero cap or multiplier is a clear skip, not a silent zero-size result
+for (const z of [{ equity_max_pct: 0 }, { equity_mult: 0 }]) {
+  r = plan(z, { targetEquityUsd: 10_000, ourEquityUsd: 3000 });
+  assert.strictEqual(r.verdict, 'skip');
+  assert.match(r.reason, /porsi equity nol/);
+}
+
 // existing ceilings still apply after the equity size
 r = plan({ max_quote_per_position_usd: 250 }, { targetEquityUsd: 10_000, ourEquityUsd: 3000 });
 near(r.plan.valueUsd, 250);
