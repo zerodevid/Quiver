@@ -630,20 +630,23 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const pnlByTarget = (closed) => {
     const eth = engine.ethUsd;
     const k = (q) => (chain.isEthLike(q) ? eth : 1);
-    closed ??= store.all("SELECT target, cost_quote, out_quote, quote_symbol FROM positions WHERE chain=? AND status='closed' AND closed_ts IS NOT NULL", chain.network)
+    closed ??= store.all("SELECT id, target, cost_quote, out_quote, quote_symbol FROM positions WHERE chain=? AND status='closed' AND closed_ts IS NOT NULL", chain.network)
       .map((p) => ({ ...p, pnl: ((p.out_quote || 0) - (p.cost_quote || 0)) * k(p.quote_symbol) }));
     const live = new Map(engine.positions.live.map((p) => [p.id, p]));
     const labels = new Map(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label]));
     const by = new Map();
     const grp = (t) => {
       const key = t || '';
-      if (!by.has(key)) by.set(key, { target: key || null, label: key ? labels.get(key) || null : null, open: 0, value: 0, upnl: 0, closed: 0, wins: 0, losses: 0, realized: 0 });
+      if (!by.has(key)) by.set(key, { target: key || null, label: key ? labels.get(key) || null : null, open: 0, value: 0, upnl: 0, closed: 0, wins: 0, losses: 0, realized: 0, costUsd: 0 });
       return by.get(key);
     };
+    // Gas + swap slippage paid for each position (open and closed): position PnL leaves both out,
+    // so the per-source result subtracts them to be the same net figure as the wallet's net PnL.
     for (const r of store.all("SELECT id, target, cost_quote, quote_symbol FROM positions WHERE chain=? AND status='open'", chain.network)) {
       const l = live.get(r.id);
       if (l?.empty) continue;
       const g = grp(r.target);
+      g.costUsd += costs.of(r.id, eth).totalUsd || 0;
       g.open++;
       g.value += l ? (l.valueUsd || 0) + (l.feeUsd || 0) : (r.cost_quote || 0) * k(r.quote_symbol);
       g.upnl += l?.pnlUsd || 0;
@@ -651,6 +654,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     for (const p of closed) {
       const g = grp(p.target);
       const h = netResult(p);
+      g.costUsd += costs.of(p.id, eth).totalUsd || 0;
       g.closed++; g.realized += p.pnl; if (h > FLAT) g.wins++; else if (h < -FLAT) g.losses++;
     }
     // Copy attempts that never became a position (reverted mint, orphan zap): the cost has no
@@ -660,6 +664,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const g = grp(target);
       g.failedUsd = f.totalUsd; g.failedAttempts = f.attempts;
     }
+    // Net result of the source: position results minus every cost paid to get them.
+    for (const g of by.values()) g.net = g.realized + g.upnl - g.costUsd - (g.failedUsd || 0);
     return by;
   };
 
@@ -950,7 +956,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           avgHoldHours: holds.length ? holds.reduce((a, b) => a + b, 0) / holds.length : null,
         },
         closed: closed.map((p) => [p.closed_ts, p.pnl]),
-        byTarget: [...by.values()].sort((a, b) => (b.realized + b.upnl) - (a.realized + a.upnl)),
+        byTarget: [...by.values()].sort((a, b) => b.net - a.net),
       };
     },
     'GET /api/positions': () => {
@@ -1513,7 +1519,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       for (const r of rows) {
         // the result of our positions copied from this wallet (USD)
         const o = ours.get(r.address);
-        r.ours = o ? { open: o.open, value: o.value, upnl: o.upnl, closed: o.closed, wins: o.wins, losses: o.losses, realized: o.realized, failedUsd: o.failedUsd ?? 0, failedAttempts: o.failedAttempts ?? 0 } : null;
+        r.ours = o ? { open: o.open, value: o.value, upnl: o.upnl, closed: o.closed, wins: o.wins, losses: o.losses, realized: o.realized, costUsd: o.costUsd, net: o.net, failedUsd: o.failedUsd ?? 0, failedAttempts: o.failedAttempts ?? 0 } : null;
         r.rulesResolved = rulesFor(cfg.rules, r.rules);
         r.rulesOwn = r.rules ? JSON.parse(r.rules) : null;
         const st = store.get('SELECT COUNT(*) n, MAX(ts) last FROM actions WHERE chain=? AND target=?', chain.network, r.address);

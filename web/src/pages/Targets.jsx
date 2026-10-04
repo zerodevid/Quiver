@@ -49,7 +49,10 @@ function Research({ r }) {
 }
 
 const signed = (v) => (v > 0.005 ? '+' : '') + usd(v);
-const oursTotal = (o) => (o ? o.realized + o.upnl : 0);
+// Net of gas and swap slippage (the server's `net`), the same basis as the wallet's net PnL.
+const oursTotal = (o) => (o ? o.net ?? o.realized + o.upnl : 0);
+// "realised · running · costs" under a net figure: the three parts that add up to it.
+const oursSub = (t, o) => t('terealisasi {r} · berjalan {u} · biaya {c}', { r: usd(o.realized), u: usd(o.upnl), c: usd(-((o.costUsd || 0) + (o.failedUsd || 0))) });
 
 // The TARGET's own money: cash in its wallet + the value of its still-open LP positions.
 // A wallet with only a few tens of dollars left has practically stopped LPing,
@@ -96,7 +99,7 @@ function Ours({ o }) {
   return (
     <div className="num" title={tip}>
       <div className={`font-medium ${tone(tot)}`}>{signed(tot)}</div>
-      <div className="truncate text-xs text-muted">{t('terealisasi {r} · berjalan {u}', { r: usd(o.realized), u: usd(o.upnl) })}</div>
+      <div className="truncate text-xs text-muted">{oursSub(t, o)}</div>
     </div>
   );
 }
@@ -107,13 +110,15 @@ function Recap({ list }) {
   const rows = list.filter((x) => x.ours);
   const sum = (f) => rows.reduce((a, x) => a + f(x.ours), 0);
   const realized = sum((o) => o.realized), upnl = sum((o) => o.upnl);
+  const total = rows.reduce((a, x) => a + oursTotal(x.ours), 0);
+  const costs = sum((o) => (o.costUsd || 0) + (o.failedUsd || 0));
   const closed = sum((o) => o.closed), wins = sum((o) => o.wins), losses = sum((o) => o.losses || 0);
   const open = sum((o) => o.open), value = sum((o) => o.value);
   const best = rows.length ? rows.reduce((a, b) => (oursTotal(b.ours) > oursTotal(a.ours) ? b : a)) : null;
   return (
     <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
-      <Stat label="Hasil dari semua target" value={signed(realized + upnl)} fx={realized + upnl} valueClass={tone(realized + upnl)}
-        sub={t('terealisasi {r} · berjalan {u}', { r: usd(realized), u: usd(upnl) })} />
+      <Stat label="Hasil dari semua target" value={signed(total)} fx={total} valueClass={tone(total)}
+        sub={oursSub(t, { realized, upnl, costUsd: costs })} />
       <Stat label="Posisi ditutup" value={closed}
         sub={closed ? t(closed - wins - losses ? '{w} menang · {l} kalah · {f} impas' : '{w} menang · {l} kalah', { w: wins, l: losses, f: closed - wins - losses }) : t('belum ada')} />
       <Stat label="Posisi berjalan" value={open} sub={t('nilai {v}', { v: usd(value) })} />
@@ -308,7 +313,7 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
         <Stat label="Disalin / simulasi" value={tg.copied} />
         <Stat label="Posisi kita terbuka" value={tg.openPositions} sub={t('modal {v}', { v: usd(tg.openCostQuote) })} />
         <Stat label="Hasil kita" value={signed(oursTotal(tg.ours))} fx={oursTotal(tg.ours)} valueClass={tone(oursTotal(tg.ours))}
-          sub={tg.ours ? t('terealisasi {r} · berjalan {u}', { r: usd(tg.ours.realized), u: usd(tg.ours.upnl) }) : t('Belum ada posisi')} />
+          sub={tg.ours ? oursSub(t, tg.ours) : t('Belum ada posisi')} />
       </div>
 
       {rulesOpen && <Panel title="Aturan wallet ini" className="mb-4"><TargetRules tg={tg} onChanged={reload} /></Panel>}

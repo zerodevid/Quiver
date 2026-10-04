@@ -439,6 +439,7 @@ const EN = {
   'dana tipis': 'low funds',
   'Posisi kita': 'Our positions',
   'Hasil kita': 'Our result',
+  'terealisasi {r} · berjalan {u} · biaya {c}': 'realised {r} · open {u} · costs {c}',
   'Hasil dari semua target': 'Result from all targets',
   'Wallet paling cuan': 'Most profitable wallet',
   '{w} menang · {l} kalah': '{w} won · {l} lost',

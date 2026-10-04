@@ -186,7 +186,7 @@ function Composition({ now, ethUsd }) {
 function BySource({ rows }) {
   const { t } = useI18n();
   if (!rows.length) return <div className="p-4"><Empty title="Belum ada posisi" /></div>;
-  const tots = rows.map((r) => r.realized + r.upnl);
+  const tots = rows.map((r) => r.net ?? r.realized + r.upnl);   // net of gas and slippage
   const maxPos = Math.max(0, ...tots), maxNeg = Math.max(0, ...tots.map((v) => -v));
   const span = Math.max(1e-9, maxPos + maxNeg);
   const zero = (maxNeg / span) * 100;   // position of the zero line in percent of the width
