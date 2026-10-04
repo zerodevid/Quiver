@@ -21,6 +21,10 @@ const DEFAULTS = {
     // Falls back to `pct` when either equity is unknown.
     equity_mult: 1,
     equity_max_pct: 30,       // ceiling on the target's share (its equity is usually under-read)
+    equity_min_pct: 0,        // floor on OUR share after the multiplier (0 = none)
+    equity_target_usd: 0,     // manual target equity; > 0 replaces the on-chain read (memecoins, CEX, other wallets)
+    equity_our_basis: 'total', // our side: 'total' = cash + positions + leftovers + fees, 'cash' = spendable cash only
+    equity_fallback: 'pct',   // either equity unknown: 'pct' = use `pct`, 'skip' = skip the entry
     multiplier: 1,
     fixed_quote_usd: 50,
     fixed_quote_eth: 0.02,
@@ -100,7 +104,8 @@ const RULE_SPEC = {
   sizing: {
     mode: ['enum', ['mirror', 'pct', 'multiplier', 'fixed_quote', 'equity']],
     pct: ['num', 0, 100_000], multiplier: ['num', 0, 1000],
-    equity_mult: ['num', 0, 100], equity_max_pct: ['num', 0, 100],
+    equity_mult: ['num', 0, 100], equity_max_pct: ['num', 0, 100], equity_min_pct: ['num', 0, 100],
+    equity_target_usd: ['num', 0, 1e12], equity_our_basis: ['enum', ['total', 'cash']], equity_fallback: ['enum', ['pct', 'skip']],
     fixed_quote_usd: ['num', 0, 1e9], fixed_quote_eth: ['num', 0, 1e6],
     min_quote_usd: ['num', 0, 1e9], force_min: ['bool'], force_min_usd: ['num', 0, 1e9],
     max_quote_per_position_usd: ['num', 0, 1e9],
@@ -338,18 +343,25 @@ function planEntry(act, ctx) {
   // Either equity unknown (null/0) → plain pct, and the reason says so.
   let wantQuote = null, eqNote = null;
   if (mode === 'equity') {
-    const tEq = ctx.targetEquityUsd, ours = ctx.ourEquityUsd;
+    const manual = s.equity_target_usd > 0;
+    const tEq = manual ? s.equity_target_usd : ctx.targetEquityUsd;
+    const ours = s.equity_our_basis === 'cash' ? ctx.ourCashUsd : ctx.ourEquityUsd;
     if (tEq > 0 && ours > 0 && targetUsd > 0) {
       const raw = targetUsd / tEq;
-      const share = Math.min(raw, s.equity_max_pct / 100) * s.equity_mult;
+      const capped = raw > s.equity_max_pct / 100;
+      const scaled = Math.min(raw, s.equity_max_pct / 100) * s.equity_mult;
+      const floored = s.equity_min_pct > 0 && scaled < s.equity_min_pct / 100;
+      const share = floored ? s.equity_min_pct / 100 : scaled;
       if (!(share > 0)) return skip('porsi equity nol (batas porsi atau pengali = 0)');
       wantQuote = usdToQuote(share * ours, q.kind, ethUsd);
       const pc = (x) => `${(x * 100).toFixed(1)}%`;
-      eqNote = `equity: target ${pc(raw)} dari ${usdShort(tEq)}${raw > s.equity_max_pct / 100 ? ` (dibatasi ${s.equity_max_pct}%)` : ''}`
-        + ` → kita ${pc(share)} dari ${usdShort(ours)}`;
+      eqNote = `equity: target ${pc(raw)} dari ${usdShort(tEq)}${manual ? ' (manual)' : ''}${capped ? ` (dibatasi ${s.equity_max_pct}%)` : ''}`
+        + ` → kita ${pc(share)} dari ${usdShort(ours)}${s.equity_our_basis === 'cash' ? ' (kas saja)' : ''}${floored ? ` (minimum ${s.equity_min_pct}%)` : ''}`;
     } else {
+      const who = tEq > 0 ? 'kita' : 'target';
+      if (s.equity_fallback === 'skip') return skip(`equity ${who} tidak terbaca — dilewati`);
       mode = 'pct';
-      eqNote = `equity ${tEq > 0 ? 'kita' : 'target'} tidak terbaca → pct ${s.pct}%`;
+      eqNote = `equity ${who} tidak terbaca → pct ${s.pct}%`;
     }
   }
   if (mode === 'fixed_quote') wantQuote = q.kind === 'eth' ? s.fixed_quote_eth : s.fixed_quote_usd;

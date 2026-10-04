@@ -42,6 +42,27 @@ for (const z of [{ equity_max_pct: 0 }, { equity_mult: 0 }]) {
   assert.match(r.reason, /porsi equity nol/);
 }
 
+// manual target equity replaces the read: $2k of a manual $20k = 10% of our $3k = $300 (engine value ignored)
+r = plan({ equity_target_usd: 20_000 }, { targetEquityUsd: 2500, ourEquityUsd: 3000 });
+near(r.plan.valueUsd, 300);
+assert.match(r.reason, /^equity: target 10\.0% dari \$20\.0k \(manual\) → kita 10\.0% dari \$3\.0k → /);
+near(plan({ equity_target_usd: 20_000 }, { ourEquityUsd: 3000 }).plan.valueUsd, 300);   // no on-chain read needed
+
+// floor: 2k of 100k = 2% × 0.5 = 1% of $3k = $30, raised to a 5% floor = $150
+r = plan({ equity_mult: 0.5, equity_min_pct: 5 }, { targetEquityUsd: 100_000, ourEquityUsd: 3000 });
+near(r.plan.valueUsd, 150);
+assert.match(r.reason, /\(minimum 5%\)/);
+
+// our basis "cash": 20% of our $1k cash = $200 (not of the $3k total)
+r = plan({ equity_our_basis: 'cash' }, { targetEquityUsd: 10_000, ourEquityUsd: 3000, ourCashUsd: 1000 });
+near(r.plan.valueUsd, 200);
+assert.match(r.reason, /dari \$1\.0k \(kas saja\)/);
+
+// fallback "skip": unknown equity skips instead of using pct
+r = plan({ equity_fallback: 'skip' }, { targetEquityUsd: null, ourEquityUsd: 3000 });
+assert.strictEqual(r.verdict, 'skip');
+assert.match(r.reason, /^equity target tidak terbaca — dilewati/);
+
 // existing ceilings still apply after the equity size
 r = plan({ max_quote_per_position_usd: 250 }, { targetEquityUsd: 10_000, ourEquityUsd: 3000 });
 near(r.plan.valueUsd, 250);
@@ -84,5 +105,8 @@ const targetEquity = (a) => Engine.prototype.targetEquity.call(fake, a);
     'The target put 80.0% of its $2.5k equity (capped at 30%) → we put 30.0% of our $1.0k → $300.00');
   assert.strictEqual(formatNote('equity target tidak terbaca → pct 25% → $12.00', 'en'),
     'Target equity unavailable → 25% of the target’s position → $12.00');
+  assert.strictEqual(formatNote('equity: target 10.0% dari $20.0k (manual) (dibatasi 30%) → kita 5.0% dari $1.0k (kas saja) (minimum 5%) → $50.00', 'en'),
+    'The target put 10.0% of its $20.0k equity (manual) (capped at 30%) → we put 5.0% of our $1.0k (cash only) (raised to the 5% minimum) → $50.00');
+  assert.strictEqual(formatNote('equity kita tidak terbaca — dilewati', 'en'), 'Skipped: our equity could not be read');
   console.log('ok sizing-equity');
 });

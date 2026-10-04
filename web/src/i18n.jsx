@@ -1417,6 +1417,16 @@ const EN = {
   'mirror = likuiditas identik; pct/multiplier = skala; nominal tetap = modal sama tiap posisi; porsi equity = % equity yang sama dengan target':
     'mirror = identical liquidity; pct/multiplier = scaled; fixed = same capital every position; equity share = the same % of equity as the target',
   'Pengali porsi equity': 'Equity share multiplier',
+  'Minimum porsi equity (%)': 'Equity share floor (%)',
+  'Porsi kita tidak turun di bawah angka ini. 0 = tanpa minimum': 'Our share never goes below this. 0 = no floor',
+  'Equity target manual (USD)': 'Manual target equity (USD)',
+  'Isi kalau equity target terbaca terlalu kecil. 0 = baca otomatis dari chain': 'Fill in when the target\u2019s equity reads too low. 0 = read it from the chain',
+  'Dasar equity kita': 'Our equity basis',
+  'Total (kas + posisi)': 'Total (cash + positions)',
+  'Kas saja': 'Cash only',
+  'Kalau equity tidak terbaca': 'When equity cannot be read',
+  'Pakai persen dari target': 'Use percent of the target',
+  'Lewati entri': 'Skip the entry',
   'Target masuk 20% equity-nya, pengali 0,5 → kita masuk 10% equity kita':
     'The target puts in 20% of its equity, multiplier 0.5 → we put in 10% of ours',
   'Batas porsi equity (%)': 'Equity share cap (%)',

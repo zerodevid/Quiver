@@ -693,7 +693,7 @@ class Engine {
       return lv?.valueUsd ?? Math.max(0, (mp.cost_quote || 0) - (mp.out_quote || 0)) * usdPerQuote(mp.quote_symbol, this.ethUsd, this.chain);
     };
     let mirror = mirrors[0] || null;
-    const equity = rules.sizing.mode === 'equity' ? await this.sizingEquity(act, sum, cash) : {};
+    const equity = rules.sizing.mode === 'equity' ? await this.sizingEquity(act, sum, cash, rules) : {};
     const ctx = {
       chain: this.chain, rules, slot0: act.slot0, dec0: toks[0].decimals, dec1: toks[1].decimals,
       ethUsd: this.ethUsd, openExposureUsd: sum.exposureUsd, spentTodayUsd: spent, openCount: sum.openCount,
@@ -3198,14 +3198,15 @@ class Engine {
   // back to pct — a failed read never loses the copy. Our equity is the snapshotEquity sum
   // except that `cash` (live) is the spendable read just made (net of the gas reserve),
   // otherwise the last refreshCash.
-  async sizingEquity(act, sum, cash) {
+  async sizingEquity(act, sum, cash, rules) {
     const ourCash = cash ? cash.usdg + cash.eth * this.ethUsd : this.cash?.usd;
     const ourEquityUsd = ourCash == null ? null : ourCash + sum.exposureUsd + (sum.leftoverUsd || 0) + sum.feeUsd;
-    const targetEquityUsd = await this.targetEquity(act).catch((e) => {
+    // A manual target equity replaces the on-chain read, so skip its RPC calls.
+    const targetEquityUsd = rules.sizing.equity_target_usd > 0 ? null : await this.targetEquity(act).catch((e) => {
       this.log(`equity target ${act.target}: ${e.message}`);
       return null;
     });
-    return { ourEquityUsd, targetEquityUsd };
+    return { ourEquityUsd, ourCashUsd: ourCash ?? null, targetEquityUsd };
   }
 
   // Target equity = its quote cash read now + its open LP (wpositions, already USD, re-valued
