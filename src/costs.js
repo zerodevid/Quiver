@@ -86,6 +86,16 @@ class Costs {
 
   of(id, ethUsd) { return this.map(ethUsd).get(id) || emptyCost(); }
 
+  // Measured swap slippage of EVERY swap since `ts`, attributed to a position or not
+  // (ETH<->USDG bridge swaps and leftover sales belong to no position). Summed straight
+  // from the stored quotes, so it does not depend on the attribution heuristics above.
+  slipSince(ts) {
+    const rows = this.store.all('SELECT detail FROM txs WHERE chain=? AND ts >= ? AND status != ? AND detail IS NOT NULL', this.network, ts, 'gagal');
+    let route = 0, exec = 0;
+    for (const r of rows) { const sw = swapCostOf(parse(r.detail)); route += sw.route; exec += sw.exec; }
+    return { slipUsd: route + exec, swapCount: rows.length };
+  }
+
   // Cost of copy attempts that never became a position, per target ('' = unknown target).
   failed(ethUsd) { return this.map(ethUsd).failed; }
 

@@ -933,6 +933,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           // the largest cost that is in net PnL but not in position PnL. Valued at the
           // current ETH price, the same as the transaction list.
           ...gasSince(capital?.baselineTs ?? 0),
+          // Measured swap slippage over the same window (quote in − quote out − execution shift).
+          slipUsd: costs.slipSince(capital?.baselineTs ?? 0).slipUsd,
           // Gas + swap slippage of copy attempts that never became a position, all targets.
           failedCopyUsd: [...costs.failed(engine.ethUsd).values()].reduce((a, f) => a + f.totalUsd, 0),
         },

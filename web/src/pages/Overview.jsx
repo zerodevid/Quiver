@@ -30,7 +30,8 @@ function PnlGap({ p }) {
   const n = p.now, c = p.capital;
   if (n.netPnl == null) return null;
   const gas = n.gasUsd || 0;
-  const other = n.netPnl - (n.pnl - gas);
+  const slip = -(n.slipUsd || 0);                 // measured from swap quotes; a cost, so negative
+  const other = n.netPnl - (n.pnl - gas) - slip;  // what is left once gas and slippage are explained
   const signed = (v) => `${v > 0.005 ? '+' : ''}${usd(v)}`;
   const Row = ({ label, sub, v, strong }) => (
     <div className={`flex items-baseline justify-between gap-4 py-1.5 ${strong ? 'font-medium' : ''}`}>
@@ -46,7 +47,7 @@ function PnlGap({ p }) {
           {t('Kenapa PnL kumulatif dan PnL bersih berbeda?')}
         </span>
         <span className="num text-xs text-muted">
-          {t('{a} − gas {g} {o} = {b}', { a: usd(n.pnl), g: usd(gas), o: `${other < 0 ? '−' : '+'} ${usd(Math.abs(other))}`, b: usd(n.netPnl) })}
+          {t('{a} − gas {g} − slippage {s} {o} = {b}', { a: usd(n.pnl), g: usd(gas), s: usd(-slip), o: `${other < 0 ? '−' : '+'} ${usd(Math.abs(other))}`, b: usd(n.netPnl) })}
         </span>
       </summary>
       <div className="mt-2 max-w-2xl pl-4">
@@ -56,7 +57,8 @@ function PnlGap({ p }) {
         <div className="mt-2 divide-y divide-border">
           <Row label="PnL kumulatif (hasil posisi)" v={n.pnl} />
           <Row label="Gas" sub={t('{n} transaksi, termasuk yang gagal', { n: num(n.gasTxCount || 0) })} v={-gas} />
-          <Row label="Slippage swap & pergerakan harga ETH" sub={t('sisa selisih')} v={other} />
+          <Row label="Slippage swap" sub={t('terukur dari kuotasi swap')} v={slip} />
+          <Row label="Pergerakan harga ETH & lainnya" sub={t('sisa selisih')} v={other} />
           <Row label="PnL bersih" v={n.netPnl} strong />
         </div>
         {c && (
