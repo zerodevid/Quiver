@@ -42,13 +42,13 @@ const HELPER_KIND = new Set(['approve_erc20', 'approve_permit2', 'approve_kyber'
 const HELPER_GAP_MS = 15 * 60_000;
 
 const parse = (d) => { try { return JSON.parse(d || '{}') || {}; } catch { return {}; } };
-const empty = () => ({ gasUsd: 0, slipUsd: 0, routeUsd: 0, execUsd: 0, txN: 0 });
+const empty = () => ({ gasUsd: 0, slipUsd: 0, outsideSlipUsd: 0, routeUsd: 0, execUsd: 0, txN: 0 });
 const FAIL_PREFIX = 'fail:';
 const failId = (target) => `${FAIL_PREFIX}${target ? String(target).toLowerCase() : ''}`;
-const emptyFailed = () => ({ gasUsd: 0, slipUsd: 0, totalUsd: 0, attempts: 0, txN: 0, lastTs: 0 });
+const emptyFailed = () => ({ gasUsd: 0, slipUsd: 0, outsideSlipUsd: 0, totalUsd: 0, attempts: 0, txN: 0, lastTs: 0 });
 const emptyCost = () => ({
   open: empty(), close: empty(), lain: empty(),
-  gasUsd: 0, slipUsd: 0, routeUsd: 0, execUsd: 0, totalUsd: 0, txN: 0, hashes: [],
+  gasUsd: 0, slipUsd: 0, outsideSlipUsd: 0, routeUsd: 0, execUsd: 0, totalUsd: 0, txN: 0, hashes: [],
 });
 
 const gasEthOf = (t) => (t.gas_used && t.gas_price ? Number(BigInt(t.gas_used) * BigInt(t.gas_price)) / 1e18 : 0);
@@ -69,6 +69,11 @@ function swapCostOf(d) {
   const route = priced ? num(d.usdIn) - num(d.usdOut) : 0;
   return { route, exec: num(d.execSlipUsd) };
 }
+
+// Slippage that position PnL does NOT already contain. A leftover sale's result is written back into
+// the position's out_quote (db.js), so its slippage is already inside position PnL; every other swap
+// (zap on entry, ETH<->USDG bridge, manual, gas top-up) is paid from the wallet outside it.
+const outsideSlipOf = (kind, sw) => (kind === 'sell_leftover' ? 0 : sw.route + sw.exec);
 
 class Costs {
   constructor(store, network = 'robinhood') { this.store = store; this.network = network; this.cache = null; }
@@ -93,10 +98,10 @@ class Costs {
   // (ETH<->USDG bridge swaps and leftover sales belong to no position). Summed straight
   // from the stored quotes, so it does not depend on the attribution heuristics above.
   slipSince(ts) {
-    const rows = this.store.all('SELECT detail FROM txs WHERE chain=? AND ts >= ? AND status != ? AND detail IS NOT NULL', this.network, ts, 'gagal');
-    let route = 0, exec = 0;
-    for (const r of rows) { const sw = swapCostOf(parse(r.detail)); route += sw.route; exec += sw.exec; }
-    return { slipUsd: route + exec, swapCount: rows.length };
+    const rows = this.store.all('SELECT kind, detail FROM txs WHERE chain=? AND ts >= ? AND status != ? AND detail IS NOT NULL', this.network, ts, 'gagal');
+    let slip = 0;
+    for (const r of rows) slip += outsideSlipOf(r.kind, swapCostOf(parse(r.detail)));
+    return { slipUsd: slip, swapCount: rows.length };
   }
 
   // Cost of copy attempts that never became a position, per target ('' = unknown target).
@@ -215,6 +220,7 @@ class Costs {
           if (!f) { f = emptyFailed(); out.failed.set(key, f); }
           f.gasUsd += gasUsd;
           f.slipUsd += sw.route + sw.exec;
+          f.outsideSlipUsd += outsideSlipOf(t.kind, sw);
           f.txN += 1;
           if (t.kind === 'mint' || t.kind === 'increase') f.attempts += 1;
           f.lastTs = Math.max(f.lastTs, t.ts || 0);
@@ -226,6 +232,7 @@ class Costs {
         b.routeUsd += sw.route / share;
         b.execUsd += sw.exec / share;
         b.slipUsd += (sw.route + sw.exec) / share;
+        b.outsideSlipUsd += outsideSlipOf(t.kind, sw) / share;
         b.txN += 1 / share;
         c.hashes.push(t.hash);
       }
@@ -233,7 +240,7 @@ class Costs {
     for (const f of out.failed.values()) f.totalUsd = f.gasUsd + f.slipUsd;
     for (const c of out.values()) {
       for (const ph of ['open', 'close', 'lain']) {
-        c.gasUsd += c[ph].gasUsd; c.slipUsd += c[ph].slipUsd;
+        c.gasUsd += c[ph].gasUsd; c.slipUsd += c[ph].slipUsd; c.outsideSlipUsd += c[ph].outsideSlipUsd;
         c.routeUsd += c[ph].routeUsd; c.execUsd += c[ph].execUsd; c.txN += c[ph].txN;
         c[ph].txN = Math.round(c[ph].txN);
       }

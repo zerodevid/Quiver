@@ -87,6 +87,9 @@ const tx = (store, hash, ts, kind, detail, { gas = true, status = 'sukses', gasQ
       assert.ok(near(c.close.gasUsd, 3 * GAS.usd), `close gas ${c.close.gasUsd}`);
       assert.ok(near(c.close.slipUsd, 0.7), `close slip ${c.close.slipUsd}`);   // 0.6 route + 0.1 execution
     });
+    await t('leftover-sale slippage is already in position PnL, so only the zap counts as an outside cost', () => {
+      assert.ok(near(c.outsideSlipUsd, 0.8), `outside slip ${c.outsideSlipUsd}`);   // the 0.8 zap, not the 0.7 sale
+    });
     await t('total = gas + slippage, and its share of capital', async () => {
       assert.ok(near(c.totalUsd, 6 * GAS.usd + 1.5), `total ${c.totalUsd}`);
       const r = await api('GET', '/api/position', {}, { id: '1' });

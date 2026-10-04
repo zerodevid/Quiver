@@ -640,13 +640,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       if (!by.has(key)) by.set(key, { target: key || null, label: key ? labels.get(key) || null : null, open: 0, value: 0, upnl: 0, closed: 0, wins: 0, losses: 0, realized: 0, costUsd: 0 });
       return by.get(key);
     };
-    // Gas + swap slippage paid for each position (open and closed): position PnL leaves both out,
-    // so the per-source result subtracts them to be the same net figure as the wallet's net PnL.
+    // Gas + swap slippage paid for each position (open and closed) that position PnL leaves out
+    // (leftover-sale slippage is already inside it), so the per-source result is on the same
+    // net basis as the wallet's net PnL.
+    const outsideCost = (id) => { const c = costs.of(id, eth); return (c.gasUsd || 0) + (c.outsideSlipUsd || 0); };
     for (const r of store.all("SELECT id, target, cost_quote, quote_symbol FROM positions WHERE chain=? AND status='open'", chain.network)) {
       const l = live.get(r.id);
       if (l?.empty) continue;
       const g = grp(r.target);
-      g.costUsd += costs.of(r.id, eth).totalUsd || 0;
+      g.costUsd += outsideCost(r.id);
       g.open++;
       g.value += l ? (l.valueUsd || 0) + (l.feeUsd || 0) : (r.cost_quote || 0) * k(r.quote_symbol);
       g.upnl += l?.pnlUsd || 0;
@@ -654,7 +656,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     for (const p of closed) {
       const g = grp(p.target);
       const h = netResult(p);
-      g.costUsd += costs.of(p.id, eth).totalUsd || 0;
+      g.costUsd += outsideCost(p.id);
       g.closed++; g.realized += p.pnl; if (h > FLAT) g.wins++; else if (h < -FLAT) g.losses++;
     }
     // Copy attempts that never became a position (reverted mint, orphan zap): the cost has no
