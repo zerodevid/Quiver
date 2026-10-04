@@ -56,18 +56,21 @@ const T = '0x00000000000000000000000000000000000000aa';
 const fake = {
   store, network: 'robinhood', ethUsd: 2500, log: () => {},
   chain: { ADDR, usdgDecimals: 6, quoteSideOf: chain.quoteSideOf },
+  research: { refreshOpen: async () => {} },
   holdings: { balances: async () => new Map([[ADDR.native, 10n ** 18n], [ADDR.weth, 0n], [ADDR.usdg, 1000n * 10n ** 6n]]) },
 };
 const targetEquity = (a) => Engine.prototype.targetEquity.call(fake, a);
 (async () => {
   assert.strictEqual(await targetEquity({ ...act, target: T }), null, 'never researched → unknown');
-  store.run("INSERT INTO wallets(chain,address,first_block,scanned_to,last_scan_ts) VALUES('robinhood',?,0,0,0)", T);
+  store.run("INSERT INTO wallets(chain,address,first_block,scanned_to,last_scan_ts) VALUES('robinhood',?,0,100,0)", T);
   store.run(`INSERT INTO wpositions(chain,wallet,venue,token_id,live_value_q,live_fee_q,status) VALUES('robinhood',?,'v4','1',4000,100,'open')`, T);
   store.run(`INSERT INTO wpositions(chain,wallet,venue,token_id,live_value_q,live_fee_q,status) VALUES('robinhood',?,'v4','2',9999,0,'closed')`, T);
   // cash 2500 + 1000, LP 4100, this position (2000) not scanned yet
-  near(await targetEquity({ ...act, target: T.toUpperCase().replace('0X', '0x') }), 9600);
-  // already scanned → not added twice
-  near(await targetEquity({ ...act, target: T, tokenId: '1' }), 7600);
+  near(await targetEquity({ ...act, target: T.toUpperCase().replace('0X', '0x'), block: 150 }), 9600);
+  // the scan reached the block and knows the position -> not added twice
+  near(await targetEquity({ ...act, target: T, tokenId: '1', block: 90 }), 7600);
+  // an ADD to a known position after the last scan: the stored liquidity lacks it -> added once
+  near(await targetEquity({ ...act, target: T, tokenId: '1', block: 150 }), 9600);
 })().then(() => import('../src/message-copy.mjs')).then(({ formatNote }) => {
   // reason copy renders in English
   assert.strictEqual(formatNote('equity: target 80.0% dari $2.5k (dibatasi 30%) → kita 30.0% dari $1.0k → $300.00', 'en'),
