@@ -2,7 +2,7 @@
 // no new visual style outside the HeroUI theme tokens.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Card, Chip, EmptyState, Label, Description, TextField, Input, Select, ListBox,
+  Card, Chip, EmptyState, Label, Description, FieldError, TextField, Input, Select, ListBox,
   Switch, Table, Spinner, Alert, Pagination, AlertDialog, Button,
 } from '@heroui/react';
 import { Inbox, Search, ArrowLeft, ArrowUpRight, Copy, Check, ExternalLink, RefreshCw } from 'lucide-react';
@@ -613,7 +613,8 @@ export function Text({ label, value, onChange, placeholder, hint, type = 'text',
       {/* variant="secondary": the HeroUI variant for fields inside a Card/Surface. The default
           (primary) is exactly the card's colour and has no border — invisible. */}
       <Input step={type === 'number' ? (step ?? 'any') : undefined} variant="secondary" placeholder={placeholder && t(placeholder)} autoComplete={autoComplete} className={mono ? 'mono' : type === 'number' ? 'num' : ''} />
-      {isInvalid && error ? <Description className="text-danger">{t(error)}</Description> : hint && <Description>{t(hint)}</Description>}
+      {/* HeroUI hides every Description while the field is invalid; FieldError is the slot that stays visible. */}
+      {isInvalid && error ? <FieldError>{t(error)}</FieldError> : hint && <Description>{t(hint)}</Description>}
     </TextField>
   );
 }
