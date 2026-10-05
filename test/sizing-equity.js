@@ -53,6 +53,9 @@ r = plan({ equity_mult: 0.5, equity_min_pct: 5 }, { targetEquityUsd: 100_000, ou
 near(r.plan.valueUsd, 150);
 assert.match(r.reason, /\(minimum 5%\)/);
 
+// floor above the cap: the floor wins (cap 10%, floor 15% of $3k = $450)
+near(plan({ equity_max_pct: 10, equity_min_pct: 15 }, { targetEquityUsd: 10_000, ourEquityUsd: 3000 }).plan.valueUsd, 450);
+
 // our basis "cash": 20% of our $1k cash = $200 (not of the $3k total)
 r = plan({ equity_our_basis: 'cash' }, { targetEquityUsd: 10_000, ourEquityUsd: 3000, ourCashUsd: 1000 });
 near(r.plan.valueUsd, 200);
@@ -99,6 +102,12 @@ const targetEquity = (a) => Engine.prototype.targetEquity.call(fake, a);
   near(await targetEquity({ ...act, target: T, tokenId: '1', block: 90 }), 7600);
   // an ADD to a known position after the last scan: the stored liquidity lacks it -> added once
   near(await targetEquity({ ...act, target: T, tokenId: '1', block: 150 }), 9600);
+  // a manual target equity must not touch the chain at all
+  const boom = { ...fake, targetEquity: async () => { throw new Error('should not be read'); }, cash: { usd: 1000 } };
+  const si = await Engine.prototype.sizingEquity.call(boom, { ...act, target: T }, { exposureUsd: 500, feeUsd: 10 }, null, { sizing: { equity_target_usd: 5000 } });
+  assert.strictEqual(si.targetEquityUsd, null);
+  near(si.ourEquityUsd, 1510);
+  near(si.ourCashUsd, 1000);
 })().then(() => import('../src/message-copy.mjs')).then(({ formatNote }) => {
   // reason copy renders in English
   assert.strictEqual(formatNote('equity: target 80.0% dari $2.5k (dibatasi 30%) → kita 30.0% dari $1.0k → $300.00', 'en'),
