@@ -1,9 +1,9 @@
-// Detail satu pool (pasangan) — padanan halaman pair DexScreener, dibuka dari nama
-// pasangan di mana pun di dasbor: #pool/<poolId v4 | alamat pool v3>.
+// Detail of a single pool (pair) — the equivalent of a DexScreener pair page, opened from the
+// pair name anywhere in the dashboard: #pool/<v4 poolId | v3 pool address>.
 //
-// Memakai ulang grafik dan panel pasar dari halaman detail posisi. Kalau bot pernah
-// membuka posisi di pool ini, posisi itu digambar di grafik (rentang + titik masuk)
-// dan tabelnya menunjukkan PnL tiap posisi serta totalnya.
+// Reuses the chart and market panels from the position detail page. If the bot has ever
+// opened a position in this pool, that position is drawn on the chart (range + entry point)
+// and the table shows the PnL of each position as well as the total.
 import LiquidityRisk from '../components/LiquidityRisk';
 import PoolHealth from '../components/PoolHealth';
 import PositionHistory from '../components/PositionHistory';
@@ -21,35 +21,35 @@ import { useI18n } from '../i18n';
 import { canonAddr } from '../chain';
 
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
-const DYNAMIC_FEE = 0x800000;   // penanda fee dinamis v4 (diatur hook)
+const DYNAMIC_FEE = 0x800000;   // v4 dynamic fee marker (set by the hook)
 
 export default function PoolDetail({ param }) {
   const { t } = useI18n();
   const ref = canonAddr(param);
   const { data: d, loading, reload } = usePoll(`/api/pool?ref=${encodeURIComponent(ref)}`, 15000);
-  // undefined = pilihan otomatis (posisi terbuka terbaru), null = tanpa posisi di grafik.
+  // undefined = automatic choice (latest open position), null = no position on the chart.
   const [focusPick, setFocus] = useState(undefined);
   const [tfPick, setTf] = useState(null);
   const [view, setView] = useState('chart');
   const [src, setSrcState] = useState(readSrc);
   const setSrc = (v) => { setSrcState(v); writeSrc(v); };
-  // Klik baris tabel posisi -> laci riwayat, sama seperti halaman Posisi.
+  // Click a position table row -> history drawer, same as the Positions page.
   const [hist, setHist] = useState(null);
-  // Klik baris posisi wallet yang diriset -> laci kejadian on-chain-nya. Yang disimpan
-  // kuncinya, supaya angka di laci ikut segar saat tabelnya dipoll ulang.
+  // Click a researched wallet position row -> its on-chain events drawer. What is stored is
+  // the key, so the numbers in the drawer stay fresh when the table is re-polled.
   const [whistKey, setWhist] = useState(null);
-  // Tombol "Posisi asli" di tabel bot: baris tabel riset yang diminta ditunjukkan.
+  // The "Original position" button in the bot table: the requested research table row is pointed out.
   const [jump, setJump] = useState(null);
   const jumpToSource = (w) => setJump((j) => ({ key: wkey(w), n: (j?.n || 0) + 1 }));
-  // Dibuka dari baris tabel yang sudah digulir jauh: mulai dari atas.
+  // Opened from a table row scrolled far down: start from the top.
   useEffect(() => { window.scrollTo(0, 0); }, []);
 
   const pool = d?.pool;
   const all = d ? [...d.open, ...d.closed] : [];
   const focus = focusPick === undefined ? (d?.open[0] || null) : all.find((p) => p.id === focusPick) || null;
   const tf = tfPick || (focus?.status === 'open' ? tfFor(focus.ageHours) : '1h');
-  // Cukup lilin supaya titik masuk semua posisi yang digambar masih terlihat — bukan
-  // hanya yang sedang disorot: pita posisi tertua pun mulai di lilin masuknya.
+  // Enough candles that the entry points of all drawn positions are still visible — not
+  // only the highlighted one: even the oldest position's band starts at its entry candle.
   const firstOpen = Math.min(...(d?.open || []).map((p) => p.opened_ts || Date.now()), focus?.opened_ts || Date.now());
   const sinceOpen = (Date.now() - firstOpen) / 1000;
   const limit = focus || d?.open.length ? Math.min(1000, Math.max(120, Math.ceil(sinceOpen / SECS[tf]) + 40)) : 240;
@@ -67,15 +67,15 @@ export default function PoolDetail({ param }) {
   const ch24 = pair?.priceChange?.h24;
   const hasHook = pool.hooks && !/^0x0{40}$/.test(pool.hooks);
 
-  // Ringkasan posisi bot di pool ini.
+  // Summary of the bot's positions in this pool.
   const openVal = sum(d.open, (p) => p.valueUsd), openFee = sum(d.open, (p) => p.feeUsd), openCost = sum(d.open, (p) => p.costUsd);
   const upnl = sum(d.open, (p) => p.pnlUsd), realized = sum(d.closed, (p) => p.pnlUsd);
   const wins = d.closed.filter((p) => p.pnlUsd > 0).length;
 
-  // Grafik: semua rentang posisi terbuka bot di pool ini digambar sekaligus (seperti
-  // kartu pool di halaman Monitor), warnanya urut menurut id supaya tidak berganti saat
-  // daftar berubah. Posisi yang sedang disorot jadi pita pekat; yang lain tipis. Posisi
-  // yang sudah ditutup hanya digambar kalau dia yang sedang disorot.
+  // Chart: all open bot position ranges in this pool are drawn at once (like the
+  // pool card on the Monitor page), their colour ordered by id so it does not change when the
+  // list changes. The highlighted position becomes a solid band; the others thin. A
+  // closed position is only drawn if it is the one highlighted.
   const at = (tick) => tickPrice(tick, pool.dec0, pool.dec1, pool.quoteSide);
   const hasRange = (p) => p.tick_lower != null && p.tick_upper != null && !(p.tick_lower <= -880000 && p.tick_upper >= 880000);
   const band = (p, color) => {
@@ -84,12 +84,12 @@ export default function PoolDetail({ param }) {
       label: p.token_id ? `#${p.token_id}` : `#${p.id}`, selected: focus?.id === p.id,
       from: p.opened_ts || null, to: p.status === 'closed' ? p.closed_ts || null : null };
   };
-  // "sembunyikan" (focusPick === null) tetap berarti grafik bersih tanpa posisi.
+  // "hide" (focusPick === null) still means a clean chart without positions.
   const openBands = focusPick === null ? [] : [...d.open].sort((a, b) => a.id - b.id).filter(hasRange);
   const ranges = openBands.map((p, i) => band(p, BAND_COLORS[i % BAND_COLORS.length]));
   if (focus && focus.status === 'closed' && hasRange(focus)) ranges.push(band(focus, BAND_COLORS[openBands.length % BAND_COLORS.length]));
 
-  // Grafik: harga pool + (kalau ada) rentang dan titik masuk posisi yang dipilih.
+  // Chart: pool price + (if any) the range and entry point of the selected position.
   const chartP = {
     ...(focus || {}),
     pool_ref: ref,

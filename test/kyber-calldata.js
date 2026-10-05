@@ -1,8 +1,8 @@
 'use strict';
-// Uji: calldata dari API Kyber dibaca dan dicocokkan sebelum dikirim — penerima hasil,
-// token, jumlah bayar, dan minimum terima. Angka di badan JSON API bisa berkata apa saja;
-// yang dieksekusi chain adalah calldata-nya.
-// Jalankan: node test/kyber-calldata.js
+// Test: calldata from the Kyber API is decoded and cross-checked before sending — output
+// recipient, token, pay amount and minimum receive. Numbers in the API's JSON body can say
+// anything; what the chain executes is the calldata.
+// Run: node test/kyber-calldata.js
 const assert = require('node:assert');
 const { ethers } = require('ethers');
 const { Kyber, KYBER_NATIVE } = require('../src/kyber');
@@ -21,7 +21,7 @@ const dataSwap = (o) => IF.encodeFunctionData('swap', [[LAIN, LAIN, '0x', desc(o
 const dataSimple = (o) => IF.encodeFunctionData('swapSimpleMode', [LAIN, desc(o), '0x', '0x']);
 
 let pass = 0, fail = 0;
-async function t(name, fn) { try { await fn(); pass++; console.log(`  ok   ${name}`); } catch (e) { fail++; console.log(`  GAGAL ${name}\n       ${e.message}`); } }
+async function t(name, fn) { try { await fn(); pass++; console.log(`  ok   ${name}`); } catch (e) { fail++; console.log(`  FAILED ${name}\n       ${e.message}`); } }
 
 function kyberWith(data, { amountIn = 100n, amountOut = 1000n } = {}) {
   const sent = [];
@@ -41,7 +41,7 @@ const good = { src: ADDR.usdg, dst: MEME, to: ME, amount: 100n, min: 980n };
 (async () => {
   console.log('calldata Kyber:\n');
 
-  await t('calldata wajar (swap & swapSimpleMode) lolos dan dikirim', async () => {
+  await t('sane calldata (swap & swapSimpleMode) passes and is sent', async () => {
     for (const mk of [dataSwap, dataSimple]) {
       const { k, sent } = kyberWith(mk(good));
       const r = await k.swap(ADDR.usdg, MEME, 100n, { slippageBps: 100 });
@@ -49,13 +49,13 @@ const good = { src: ADDR.usdg, dst: MEME, to: ME, amount: 100n, min: 980n };
     }
   });
 
-  await t('penerima hasil bukan wallet kita → ditolak, tidak dikirim', async () => {
+  await t('result recipient is not our wallet → rejected, not sent', async () => {
     const { k, sent } = kyberWith(dataSwap({ ...good, to: LAIN }));
     await assert.rejects(k.swap(ADDR.usdg, MEME, 100n, { slippageBps: 100 }), /penerima .* bukan wallet kita/);
     assert.strictEqual(sent.length, 0);
   });
 
-  await t('token tujuan / jumlah bayar / minReturn kosong → ditolak walau JSON API bilang benar', async () => {
+  await t('destination token / pay amount / empty minReturn → rejected even though the API JSON says it is right', async () => {
     for (const [bad, re] of [
       [{ ...good, dst: LAIN }, /token/], [{ ...good, amount: 101n }, /jumlah bayar/], [{ ...good, min: 0n }, /minimum terima/], [{ ...good, min: 900n }, /minimum terima/],
     ]) {
@@ -65,7 +65,7 @@ const good = { src: ADDR.usdg, dst: MEME, to: ME, amount: 100n, min: 980n };
     }
   });
 
-  await t('ETH native dicocokkan dengan sentinel Kyber; selector asing tidak pernah dikirim', async () => {
+  await t('native ETH is matched against Kyber\'s sentinel; a foreign selector is never sent', async () => {
     const { k, sent } = kyberWith(dataSwap({ ...good, src: KYBER_NATIVE, dst: ADDR.usdg }));
     k.build = async () => ({ routerAddress: k.router(), transactionValue: '100', amountIn: '100', amountOut: '1000', data: dataSwap({ ...good, src: KYBER_NATIVE, dst: ADDR.usdg }) });
     assert.ok(await k.swap(ADDR.native, ADDR.usdg, 100n, { slippageBps: 100 }));
@@ -75,6 +75,6 @@ const good = { src: ADDR.usdg, dst: MEME, to: ME, amount: 100n, min: 980n };
     assert.strictEqual(sent.length, 1);
   });
 
-  console.log(`\n${pass} ok, ${fail} gagal`);
+  console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

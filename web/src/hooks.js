@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { get, post } from './api';
 
-// Ambil data dari path lalu perbarui tiap `ms`. Poll berhenti saat tab tidak terlihat.
-// `loading` baru menyala kalau balasan lebih lama dari 400 ms: poll yang selesai
-// sekejap tidak membuat indikator berkedip tiap beberapa detik.
+// Fetch data from a path then refresh every `ms`. Polling stops when the tab is not visible.
+// `loading` only turns on if the reply takes longer than 400 ms: a poll that finishes
+// instantly does not make the indicator blink every few seconds.
 export function usePoll(path, ms = 5000) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const alive = useRef(true);
-  // Balasan bisa datang tidak berurutan: /api/targets kadang lama (RPC kena 429),
-  // sehingga poll berkala yang berangkat lebih dulu bisa mendarat SETELAH reload
-  // yang kita minta usai mengubah sesuatu — dan menimpanya dengan data basi.
-  // Hanya balasan dari permintaan terbaru yang dipakai.
+  // Replies can arrive out of order: /api/targets is sometimes slow (RPC hit by 429),
+  // so a periodic poll that left earlier can land AFTER the reload
+  // we requested after changing something — and overwrite it with stale data.
+  // Only the reply of the latest request is used.
   const seq = useRef(0);
   const load = useCallback(async () => {
     if (!path) return;
@@ -35,27 +35,27 @@ export function usePoll(path, ms = 5000) {
   return { data, error, loading, reload: load, setData };
 }
 
-// Tombol "Perbarui" yang benar-benar memperbarui: minta server membaca chain lagi
-// (POST …/sync), baru ambil daftarnya. Memanggil reload() saja tidak cukup — itu
-// hanya mengulang hasil sinkron terakhir, yang umurnya bisa 30 detik, sehingga
-// tombolnya berkedip lalu memberi angka yang sama persis.
+// A "Refresh" button that really refreshes: ask the server to read the chain again
+// (POST …/sync), then fetch the list. Calling reload() alone is not enough — it
+// only repeats the last sync result, which can be 30 seconds old, so
+// the button blinks and then gives exactly the same numbers.
 //
-// Daftar tetap diambil ulang walau sinkronnya gagal: kalau satu RPC meleset, yang
-// benar adalah menunjukkan angka terakhir yang diketahui apa adanya, bukan diam.
+// The list is still refetched even if the sync fails: if a single RPC misses, the
+// right thing is to show the last known numbers as they are, not stay silent.
 export function useResync(reload, path = '/api/positions/sync') {
   const [busy, setBusy] = useState(false);
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
   const run = useCallback(async () => {
     setBusy(true);
-    try { await post(path); } catch { /* galat muncul lewat data yang diambil di bawah */ }
+    try { await post(path); } catch { /* the error surfaces through the data fetched below */ }
     try { await reload(); } finally { if (alive.current) setBusy(false); }
   }, [path, reload]);
   return [run, busy];
 }
 
-// Jam yang berdetak: bikin komponen menggambar ulang tiap `ms` supaya teks waktu
-// relatif ("12 dtk lalu") ikut berjalan tanpa menunggu poll berikutnya.
+// A ticking clock: makes the component redraw every `ms` so relative time
+// text ("12 s ago") keeps moving without waiting for the next poll.
 export function useTick(ms = 1000) {
   const [, set] = useState(0);
   useEffect(() => {
@@ -64,7 +64,7 @@ export function useTick(ms = 1000) {
   }, [ms]);
 }
 
-// Slug lama (bahasa Indonesia) → slug baru, supaya bookmark/link lama tetap jalan.
+// Old (Indonesian) slug → new slug, so old bookmarks/links keep working.
 const LEGACY_HASH = {
   ringkasan: 'summary', posisi: 'positions', aktivitas: 'activity', target: 'targets',
   aturan: 'rules', 'lp-manual': 'manual-lp', pengaturan: 'settings',

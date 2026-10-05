@@ -1,14 +1,14 @@
 'use strict';
-// Uji harga & cadangan gas: maxFeePerGas tidak boleh di bawah base fee blok terbaru
-// (gasPrice basi dari endpoint tertinggal), dan cadangan ETH ikut naik saat gas mahal.
-// Jalankan: node test/gas.js
+// Gas price & reserve test: maxFeePerGas must not fall below the latest block's base fee
+// (stale gasPrice from a lagging endpoint), and the ETH reserve rises when gas is expensive.
+// Run: node test/gas.js
 const assert = require('node:assert');
 const { Executor } = require('../src/executor');
 
 let pass = 0, fail = 0;
 async function t(name, fn) {
   try { await fn(); pass++; console.log(`  ok   ${name}`); }
-  catch (e) { fail++; console.log(`  GAGAL ${name}\n       ${e.message}`); }
+  catch (e) { fail++; console.log(`  FAILED ${name}\n       ${e.message}`); }
 }
 const GWEI = 1_000_000_000n;
 function exec(gasPrice, baseFee, { fail: f = false } = {}) {
@@ -26,50 +26,50 @@ function exec(gasPrice, baseFee, { fail: f = false } = {}) {
 (async () => {
   console.log('gas:');
 
-  await t('gasPrice wajar: maxFee = gasPrice × 1,5', async () => {
+  await t('sane gasPrice: maxFee = gasPrice × 1.5', async () => {
     const f = await exec(100_000_000n, 50_000_000n).gasFees();
     assert.strictEqual(f.maxFeePerGas, 150_000_000n);
   });
 
-  await t('gasPrice basi jauh di bawah base fee: maxFee dinaikkan ke 2× base fee + prioritas', async () => {
+  await t('stale gasPrice far below the base fee: maxFee raised to 2× base fee + priority', async () => {
     const f = await exec(100_000_000n, 1n * GWEI).gasFees();
     assert.strictEqual(f.maxFeePerGas, 2n * GWEI + 10_000_000n);
   });
 
-  await t('blok tanpa baseFee: tetap gasPrice × 1,5', async () => {
+  await t('block without baseFee: still gasPrice × 1.5', async () => {
     const f = await exec(100_000_000n, null).gasFees();
     assert.strictEqual(f.maxFeePerGas, 150_000_000n);
   });
 
-  await t('gasPrice ngawur dari satu endpoint (500 gwei, base 0,08): maxFee diapit ke batas 10 gwei', async () => {
+  await t('nonsense gasPrice from one endpoint (500 gwei, base 0.08): maxFee clamped to the 10 gwei limit', async () => {
     const e = exec(500n * GWEI, 85_000_000n);
     const f = await e.gasFees();
     assert.strictEqual(f.maxFeePerGas, 10n * GWEI);
-    assert.ok(await e.gasReserve() <= 4_000_000n * 10n * GWEI, 'cadangan dinamis ikut terbatas');
+    assert.ok(await e.gasReserve() <= 4_000_000n * 10n * GWEI, 'the dynamic reserve is also bounded');
   });
 
-  await t('base fee sungguhan di atas batas: melempar dengan petunjuk gas.max_fee_gwei; batas bisa dinaikkan', async () => {
+  await t('real base fee above the limit: throws with a hint to gas.max_fee_gwei; the limit can be raised', async () => {
     await assert.rejects(exec(30n * GWEI, 20n * GWEI).gasFees(), /gas.max_fee_gwei/);
     const e = exec(30n * GWEI, 20n * GWEI);
     e.cfg.gas.max_fee_gwei = 100;
     assert.strictEqual((await e.gasFees()).maxFeePerGas, 45n * GWEI);
   });
 
-  await t('gas murah: cadangan = cadangan tetap 0,002 ETH', async () => {
+  await t('cheap gas: reserve = fixed reserve 0.002 ETH', async () => {
     assert.strictEqual(await exec(100_000_000n, 50_000_000n).gasReserve(), 2_000_000_000_000_000n);
   });
 
-  await t('gas mahal (4 gwei): cadangan = 4 jt gas × maxFee, bukan 0,002 ETH', async () => {
+  await t('expensive gas (4 gwei): reserve = 4m gas × maxFee, not 0.002 ETH', async () => {
     const e = exec(4n * GWEI, 4n * GWEI);
     const r = await e.gasReserve();
     assert.strictEqual(r, 4_000_000n * (8n * GWEI + 10_000_000n));
-    assert.strictEqual(e.gasReserveCached(), r, 'versi sinkron memakai harga terakhir');
+    assert.strictEqual(e.gasReserveCached(), r, 'the synchronous version uses the last price');
   });
 
-  await t('harga gas tidak terbaca: cadangan tetap, tidak melempar', async () => {
+  await t('gas price unreadable: fixed reserve, does not throw', async () => {
     assert.strictEqual(await exec(0n, 0n, { fail: true }).gasReserve(), 2_000_000_000_000_000n);
   });
 
-  console.log(`\n${pass} ok, ${fail} gagal`);
+  console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

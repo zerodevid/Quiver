@@ -1,12 +1,14 @@
 import { lazy, Suspense, useState } from 'react';
+import { usePairs, tokenColumn } from '../components/TokenCell';
 import { Button, Spinner } from '@heroui/react';
 import { Coins, DoorOpen } from 'lucide-react';
 import { usePoll, useResync } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
-import { PageHeader, Panel, DataTable, Empty, Loading, Notice, PriceRange, Dot, Refresh, Segmented, TradeLinks, baseTokenOf } from '../components/ui';
+import { PageHeader, Panel, DataTable, Empty, Loading, Notice, PriceRange, Dot, Refresh, Segmented, TradeLinks, WalletLinks, baseTokenOf } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
-// Halaman detail membawa pustaka grafik — dimuat hanya saat dibuka.
+import { GmgnDot, GmgnProvider } from '../components/GmgnDot';
+// The detail page carries the chart library — loaded only when opened.
 const PositionDetail = lazy(() => import('./PositionDetail'));
 import PositionHistory from '../components/PositionHistory';
 import AutoCompoundButton from '../components/AutoCompoundButton';
@@ -16,7 +18,7 @@ import { useI18n } from '../i18n';
 
 const sum = (rows, f) => rows.reduce((a, r) => a + (f(r) || 0), 0);
 
-// Angka yang dicari sebelum membaca baris satu per satu, di kepala panel.
+// The figures looked for before reading row by row, at the panel head.
 function Totals({ items }) {
   const { t } = useI18n();
   return (
@@ -28,10 +30,10 @@ function Totals({ items }) {
   );
 }
 
-// Dipakai juga panel "Posisi aktif" di Ringkasan. Nama pasangan menaut ke halaman
-// detail posisi (grafik harga, titik masuk, data pasar); di halaman Posisi (link=false)
-// seluruh barisnya sudah membuka laci riwayat, jadi nama pasangan menaut ke halaman
-// pool-nya (seperti di Aktivitas) — klik baris = laci, klik pasangan = halaman pool.
+// Also used by the "Active positions" panel on the Summary. The pair name links to the position
+// detail page (price chart, entry point, market data); on the Positions page (link=false)
+// the whole row already opens the history drawer, so the pair name links to its
+// pool page (like in Activity) — click a row = drawer, click the pair = pool page.
 export function Pair({ p, link = true }) {
   const { t } = useI18n();
   const name = `${p.symbol0 || '?'}/${p.symbol1 || '?'}`;
@@ -42,6 +44,8 @@ export function Pair({ p, link = true }) {
         {link ? <a href={'#positions/' + p.id} className="font-medium whitespace-nowrap hover:underline">{name}</a>
           : <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} sep="/" className="font-medium" />}
         <div className="mt-0.5 flex items-center gap-1.5 text-xs whitespace-nowrap text-muted">
+          {/* Token safety per GMGN — only shown when the API key is installed. */}
+          <GmgnDot token={baseTokenOf(p)} />
           <span className="uppercase">{p.venue}</span><span>·</span><span className="num">{num(p.fee / 10000, 2)}%</span>
           {p.syncing ? <><span>·</span><Spinner size="sm" color="current" className="size-3" />
             <span title={t('Posisi baru tercatat; nilai, fee, dan PnL menyusul setelah sinkron dengan chain.')}>{t('menyinkronkan…')}</span></>
@@ -54,11 +58,11 @@ export function Pair({ p, link = true }) {
   );
 }
 
-// Fee posisi beserta imbal hasilnya. Nominal saja tidak bisa dibandingkan antarbaris:
-// $12 atas modal $2.000 selama lima hari dan $1,40 atas modal $300 selama enam jam
-// adalah angka yang sama sekali berbeda artinya. APR-nya yang sebanding — dan itu
-// juga yang membuat pool dan lebar rentang bisa dinilai, bukan cuma dihitung.
-// Dipakai tabel Posisi dan panel "Posisi aktif" di Ringkasan.
+// A position's fee along with its yield. The amount alone cannot be compared across rows:
+// $12 on $2,000 capital over five days and $1.40 on $300 capital over six hours
+// mean entirely different things. The APR is what is comparable — and that is
+// also what lets pools and range widths be judged, not just counted.
+// Used by the Positions table and the "Active positions" panel on the Summary.
 export function FeeCell({ p }) {
   const { t } = useI18n();
   const a = feeApr(p);
@@ -74,11 +78,11 @@ export function FeeCell({ p }) {
   );
 }
 
-// Penanda di kepala panel: kosong saat semuanya segar, supaya tidak jadi perabot
-// yang selalu ada. Tabel tidak pernah dikosongkan selama memuat ulang — data lama
-// tetap tampil sampai yang baru tiba. Dipakai juga panel "Posisi aktif" di Ringkasan.
-// "Sedang mengambil data" tidak ada di sini: itu tugas tombol Perbarui di sebelahnya,
-// yang menyalakan spinner-nya sendiri.
+// Marker at the panel head: empty when everything is fresh, so it does not become furniture
+// that is always there. The table is never emptied while reloading — old data
+// stays shown until the new arrives. Also used by the "Active positions" panel on the Summary.
+// "Fetching data" is not here: that is the job of the Refresh button beside it,
+// which turns on its own spinner.
 export function SyncState({ syncedAt, pending }) {
   const { t } = useI18n();
   const text = !syncedAt ? 'Sinkron pertama dengan chain…'
@@ -91,16 +95,16 @@ export function SyncState({ syncedAt, pending }) {
   );
 }
 
-// Dari mana posisi ini datang: wallet target yang disalin, nomor NFT posisi aslinya,
-// dan bagaimana posisi asli itu berakhir — semuanya dalam satu kolom, supaya salinan
-// kita dan aslinya terbaca dalam satu tatapan tanpa menambah lebar tabel.
+// Where this position came from: the copied target wallet, the original position's NFT number,
+// and how the original position ended — all in one column, so our copy
+// and the original read in a single glance without widening the table.
 //
-// PnL target dinilai terhadap modal target sendiri, yang jarang sebesar modal kita;
-// itu sebabnya persennya ikut ditampilkan — dolarnya hanya bercerita soal ukuran
-// taruhan mereka. Angkanya dari pemindaian wallet: wallet yang belum pernah diriset
-// tidak punya angka sama sekali, dan posisi target yang masih terbuka bernilai
-// sebesar pemindaian terakhir, bukan harga sekarang — keduanya dikatakan apa adanya
-// daripada disajikan sebagai kabar pasti.
+// The target's PnL is judged against the target's own capital, which is rarely as large as ours;
+// that is why the percentage is shown too — the dollars only tell about the size of
+// their bet. The figure comes from the wallet scan: a wallet never researched
+// has no figure at all, and a still-open target position is worth
+// the last scan, not the current price — both are stated as they are
+// rather than presented as certain news.
 function Source({ p }) {
   const { t } = useI18n();
   if (!p.target) {
@@ -119,6 +123,8 @@ function Source({ p }) {
           {short(p.target)}{p.mirror_of ? ` · #${p.mirror_of}` : ''}
         </div>
       </a>
+      {/* wallet target di luar dasbor: DeBank, LPAgent, Etherscan */}
+      <WalletLinks address={p.target} compact className="mt-0.5" />
       {p.takeover_ts != null && p.status !== 'closed' && (
         <div className="mt-1 inline-flex rounded bg-warning/15 px-1.5 py-0.5 text-[0.6875rem] font-medium text-warning"
           title={t('Diambil alih {w} — bot tidak mengikuti target dan tidak menutup otomatis.', { w: ago(p.takeover_ts) })}>
@@ -133,9 +139,9 @@ function Source({ p }) {
         <div className="mt-0.5 text-xs" title={t('modal target {v}', { v: usd(m.costUsd) })}>
           <span className="text-muted">{t('PnL target')}</span>{' '}
           <span className={`num ${tone(m.pnlUsd)}`}>{usd(m.pnlUsd)}{m.pnlPct == null ? '' : ` ${pct(m.pnlPct, 2)}`}</span>
-          {/* baris sendiri, bukan disambung dengan titik: kalimatnya sudah sepanjang
-              kolom, dan pemisah yang menggantung di ujung baris lebih berisik
-              daripada satu baris tambahan */}
+          {/* own line, not joined with a dot: the sentence is already as long as
+              the column, and a separator dangling at the line end is noisier
+              than one extra line */}
           {m.stale && <div className="text-muted">{t('masih terbuka')}</div>}
         </div>
       )}
@@ -145,27 +151,28 @@ function Source({ p }) {
 
 export default function Positions({ param }) {
   const { t } = useI18n();
-  // #positions/123 -> detail satu posisi. Poll daftar dimatikan selama detail terbuka.
-  // Endpoint-nya murah (basis data + hasil sinkron di memori), jadi posisi yang baru
-  // dibuka bot muncul dalam ~5 detik.
+  // #positions/123 -> detail of a single position. The list poll is off while the detail is open.
+  // The endpoint is cheap (database + the in-memory sync result), so a position just
+  // opened by the bot appears within ~5 seconds.
   const { data: d, error, reload } = usePoll(param ? null : '/api/positions', 5000);
-  // Tombolnya memaksa pembacaan chain baru, bukan sekadar mengambil ulang hasil
-  // sinkron terakhir — lihat useResync.
+  const pairOf = usePairs(d?.positions);
+  // The button forces a fresh chain read, not merely refetching the last
+  // sync result — see useResync.
   const [resync, syncing] = useResync(reload);
   const { close, forceCloseAll, closing } = useClosePosition(reload);
   const { claim, claiming } = useClaimFees(reload);
-  // Klik baris -> laci riwayat posisi (transaksi & catatan bot).
+  // Click a row -> position history drawer (transactions & bot notes).
   const [hist, setHist] = useState(null);
-  // Saringan kesehatan rentang. Pertanyaan yang paling sering dibawa ke halaman ini
-  // bukan "posisi apa saja yang saya punya", melainkan "mana yang sedang tidak
-  // menghasilkan fee" — dengan dua belas baris, menyortir kolom rentang tidak
-  // menjawabnya. Angka totalnya sengaja tetap untuk SELURUH posisi terbuka: itu
-  // kebenaran portofolio, dan tidak boleh berubah hanya karena tabelnya disaring.
+  // Range health filter. The question most often brought to this page
+  // is not "which positions do I have", but "which ones are not currently
+  // earning fees" — with twelve rows, sorting the range column
+  // does not answer it. The totals deliberately stay for ALL open positions: that is
+  // the portfolio's truth, and must not change just because the table is filtered.
   const [lens, setLens] = useState('all');
   if (param) return <Suspense fallback={<Loading page />}><PositionDetail id={param} /></Suspense>;
   const header = <PageHeader group="Pemantauan" title="Posisi" desc="Posisi LP milik bot — nilai, fee, dan PnL diperbarui dari chain tiap 30 detik. Klik baris untuk melihat riwayat transaksi dan catatan bot." />;
-  // Belum ada balasan sama sekali: tampilkan di tempat tabel akan muncul, bukan
-  // halaman kosong — dan kalau servernya tidak terjangkau, katakan begitu.
+  // No reply at all yet: show something where the table will appear, not
+  // an empty page — and if the server is unreachable, say so.
   if (!d?.positions) {
     return (
       <>
@@ -184,21 +191,21 @@ export default function Positions({ param }) {
   const dash = (p, node) => (p.syncing ? <span className="text-muted">—</span> : node);
   const nIn = open.filter((p) => p.inRange).length;
   const nOut = open.filter((p) => p.inRange === false).length;
-  // Saringan hanya muncul saat ada yang di luar rentang. Kalau semuanya kembali masuk
-  // sementara saringan sedang di "Di luar", kontrolnya hilang — maka pilihannya ikut
-  // jatuh ke "Semua", supaya tabel tidak tertinggal kosong tanpa jalan kembali.
-  const bisaSaring = open.length > 1 && nOut > 0;
-  const lensNow = bisaSaring ? lens : 'all';
+  // The filter only appears when something is out of range. If everything comes back in
+  // while the filter is on "Out", the control disappears — so the choice also
+  // falls back to "All", so the table is not left empty with no way back.
+  const canFilter = open.length > 1 && nOut > 0;
+  const lensNow = canFilter ? lens : 'all';
   const shown = lensNow === 'in' ? open.filter((p) => p.inRange) : lensNow === 'out' ? open.filter((p) => p.inRange === false) : open;
 
   return (
-    <>
+    <GmgnProvider tokens={open.map((p) => baseTokenOf(p))}>
       {header}
       <PositionHistory id={hist} onClose={() => setHist(null)} />
       {error && <div className="mb-4"><Notice status="warning" title="Gagal memperbarui daftar posisi">{error} — {t('data di bawah dari pembaruan terakhir.')}</Notice></div>}
       <Panel title={t('Posisi terbuka ({n})', { n: open.length })} className="mb-4" bodyClass="p-0"
         action={<div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:justify-end">
-          {bisaSaring && (
+          {canFilter && (
             <Segmented size="sm" aria="Saring menurut rentang" value={lensNow} onChange={setLens}
               options={[['all', 'Semua', open.length], ['in', 'In-range', nIn], ['out', 'Di luar', nOut]]} />)}
           <Refresh at={d.syncedAt} busy={syncing} onPress={resync} />
@@ -223,13 +230,14 @@ export default function Positions({ param }) {
               <PriceRange position={p} lo={p.tick_lower} hi={p.tick_upper} cur={p.curTick}
                 dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1}
                 entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />) },
+            tokenColumn(pairOf),
             { key: 'val', label: 'Nilai', align: 'end', sort: (p) => p.valueUsd, render: (p) => (
               <div className="whitespace-nowrap">{usd(p.valueUsd)}<div className="text-xs text-muted">{t('modal {v}', { v: usd(p.costUsd) })}</div></div>) },
             { key: 'fee', label: 'Fee', align: 'end', sort: (p) => p.feeUsd, render: (p) => dash(p, <FeeCell p={p} />) },
             { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnlUsd, render: (p) => dash(p, (
               <div className={`whitespace-nowrap ${tone(p.pnlUsd)}`}>{usd(p.pnlUsd)}<div className="text-xs">{pct(p.pnlPct)}</div></div>)) },
             { key: 'il', label: 'IL', align: 'end', sort: (p) => p.ilUsd, render: (p) => <span className={`whitespace-nowrap ${tone(p.ilUsd)}`}>{p.ilUsd == null ? '—' : usd(p.ilUsd)}</span> },
-            // Ongkos jalan: gas + selisih swap. Di luar PnL, jadi kolomnya sendiri.
+            // Running cost: gas + swap slippage. Outside PnL, so its own column.
             { key: 'ong', label: 'Ongkos', align: 'end', sort: (p) => p.cost?.totalUsd ?? -1, render: (p) => (
               !p.cost?.txN ? <span className="text-muted">—</span> : (
                 <div className="whitespace-nowrap" title={t('gas {g} · slippage {s} · {n} tx', { g: usd(p.cost.gasUsd, 3), s: usd(p.cost.slipUsd), n: p.cost.txN })}>
@@ -239,10 +247,10 @@ export default function Positions({ param }) {
             { key: 'age', label: 'Umur', align: 'end', sort: (p) => p.ageHours, render: (p) => <span className="whitespace-nowrap text-muted">{age(p.ageHours)}</span> },
             { key: 'tgt', label: 'Sumber', sort: (p) => p.targetLabel || p.target,
               search: (p) => `${p.targetLabel || ''} ${p.target || ''}`, render: (p) => <Source p={p} /> },
-            // Empat tombol berlabel per baris melebarkan kolom ini sampai tabelnya harus
-            // digulir jauh ke kanan hanya untuk mencapainya. Jadi lambang saja, dalam satu
-            // baris yang tidak melipat: masing-masing bernama untuk pembaca layar, punya
-            // tooltip, dan tetap dijaga kotak konfirmasi sebelum mengirim transaksi.
+            // Four labelled buttons per row widen this column until the table has to be
+            // scrolled far right just to reach it. So icons only, in a single
+            // non-wrapping row: each named for screen readers, with a
+            // tooltip, and still guarded by the confirmation box before sending a transaction.
             { key: 'act', label: 'Aksi', sortable: false, className: 'text-end', render: (p) => (
               <div className="flex items-center justify-end gap-1">
                 <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} compact />
@@ -294,6 +302,6 @@ export default function Positions({ param }) {
             { key: 'at', label: 'Ditutup', align: 'end', sort: (c) => c.closed_ts, render: (c) => <span className="whitespace-nowrap text-muted">{ago(c.closed_ts)}</span> },
           ]} />
       </Panel>
-    </>
+    </GmgnProvider>
   );
 }

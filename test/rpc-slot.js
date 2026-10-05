@@ -1,19 +1,19 @@
 'use strict';
-// Uji: jatah panggilan bersamaan (max_inflight) tidak bocor saat endpoint gagal.
-// Dulu slot dilepas dua kali ketika semua endpoint istirahat (catch + finally) —
-// `inflight` jadi negatif dan pembatasnya mati tepat saat endpoint sedang marah.
-// Jalankan: node test/rpc-slot.js
+// Test: the concurrent-call quota (max_inflight) does not leak when an endpoint fails.
+// It used to release the slot twice when every endpoint was resting (catch + finally) —
+// `inflight` went negative and the limiter died exactly when the endpoint was angry.
+// Run: node test/rpc-slot.js
 const assert = require('node:assert');
 const { RpcPool } = require('../src/rpc');
 
 let pass = 0, fail = 0;
 async function t(name, fn) {
   try { await fn(); pass++; console.log(`  ok   ${name}`); }
-  catch (e) { fail++; console.log(`  GAGAL ${name}\n       ${e.message}`); }
+  catch (e) { fail++; console.log(`  FAILED ${name}\n       ${e.message}`); }
 }
 
 (async () => {
-  await t('satu endpoint gagal transport berulang: inflight kembali 0, bukan negatif', async () => {
+  await t('one endpoint with repeated transport failures: inflight returns to 0, not negative', async () => {
     const p = new RpcPool([{ url: 'https://a.example' }], () => {}, { max_inflight: 3, dns_over_https: false });
     p.post = async () => { throw new Error('connect ECONNREFUSED'); };
     for (let i = 0; i < 5; i++) {
@@ -24,7 +24,7 @@ async function t(name, fn) {
     assert.strictEqual(p.eps[0].inflight, 0);
   });
 
-  await t('dua endpoint: yang pertama gagal, yang kedua menjawab — slot tetap seimbang', async () => {
+  await t('two endpoints: the first fails, the second answers — slots stay balanced', async () => {
     const p = new RpcPool([{ url: 'https://a.example' }, { url: 'https://b.example' }], () => {}, { max_inflight: 2, dns_over_https: false });
     p.post = async (url, body) => {
       if (url.includes('a.example')) throw new Error('HTTP 429: too many requests');
@@ -37,7 +37,7 @@ async function t(name, fn) {
     assert.deepStrictEqual(p.eps.map((e) => e.inflight), [0, 0]);
   });
 
-  await t('pembatas masih bekerja setelah kegagalan: panggilan ke-(max+1) menunggu', async () => {
+  await t('the limiter still works after failures: the (max+1)th call waits', async () => {
     const p = new RpcPool([{ url: 'https://a.example' }], () => {}, { max_inflight: 2, dns_over_https: false });
     p.post = async () => { throw new Error('connect ECONNREFUSED'); };
     for (let i = 0; i < 3; i++) { await p.batch([{ method: 'eth_chainId' }]).catch(() => {}); p.eps[0].cooldownUntil = 0; }
@@ -55,6 +55,6 @@ async function t(name, fn) {
     assert.strictEqual(p.inflight, 0);
   });
 
-  console.log(`\n${pass} ok, ${fail} gagal`);
+  console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

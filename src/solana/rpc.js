@@ -27,7 +27,14 @@ class SolanaRpc {
       log(`endpoint Solana dilewati: variabel di ${e.url.replace(/\?.*$/, '')} belum diisi di .env`);
       return false;
     });
-    this.eps = usable.map((e) => ({
+    this.commitment = opts.commitment || 'confirmed';
+    this.eps = usable.map((e) => this.makeEp(e));
+    if (!this.eps.length) throw new Error('tidak ada endpoint RPC Solana');
+    this.rr = 0;
+  }
+
+  makeEp(e) {
+    return ({
       url: e.url, headers: e.headers || null, noGpa: !!e.no_gpa, noSend: !!e.no_send,
       // no_history: riwayat tanda tangan terpotong/kosong (publicnode) — tidak dipakai
       // untuk getSignaturesForAddress; jawaban kosongnya terbaca "target diam".
@@ -37,15 +44,27 @@ class SolanaRpc {
       // permintaan paralel meninggalkan promise tak tertangani. publicnode dikenal begitu.
       noIndexed: e.no_indexed ?? /publicnode\.com/.test(e.url),
       conn: new Connection(e.url, {
-        commitment: opts.commitment || 'confirmed',
+        commitment: this.commitment,
         httpHeaders: e.headers || undefined,
         disableRetryOnRateLimit: true,
         confirmTransactionInitialTimeout: 90_000,
       }),
       calls: 0, errors: 0, lastMs: 0, cooldownUntil: 0, streak: 0, inflight: 0,
-    }));
-    if (!this.eps.length) throw new Error('tidak ada endpoint RPC Solana');
-    this.rr = 0;
+    });
+  }
+
+  // Replace the endpoint list while running (Settings page). Stats of endpoints whose URL
+  // did not change are kept; flags learned at runtime (no_gpa, no_indexed) start over.
+  reconfigure(endpoints) {
+    const usable = (endpoints || []).filter((e) => !/\$\{/.test(e.url));
+    if (!usable.length) throw new Error('tidak ada endpoint RPC Solana');
+    const old = new Map(this.eps.map((e) => [e.url, e]));
+    this.eps = usable.map((e) => {
+      const n = this.makeEp(e);
+      const o = old.get(e.url);
+      if (o) Object.assign(n, { calls: o.calls, errors: o.errors, lastMs: o.lastMs });
+      return n;
+    });
   }
 
   // Connection utama (endpoint sehat pertama) — untuk SDK yang menyimpan Connection
@@ -114,3 +133,49 @@ class SolanaRpc {
 }
 
 module.exports = { SolanaRpc, TRANSIENT };
+
+// Test one endpoint for the Settings page / setup wizard and suggest its flags — the
+// Solana counterpart of settings.probeRpc. What the bot needs from an endpoint:
+//   slot / account reads  — always (unusable without them)
+//   getProgramAccounts    — listing a wallet's DLMM positions (no_gpa when refused)
+//   signature history     — noticing target moves (no_history when empty/refused)
+async function probeSolanaRpc({ url, headers }) {
+  const { PublicKey } = require('@solana/web3.js');
+  const conn = new Connection(url, { commitment: 'confirmed', httpHeaders: headers || undefined, disableRetryOnRateLimit: true });
+  const t = async (fn) => {
+    const t0 = Date.now();
+    try { const v = await Promise.race([fn(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout 20s')), 20_000))]); return { ok: true, ms: Date.now() - t0, v }; }
+    catch (e) { return { ok: false, ms: Date.now() - t0, error: String(e.message).slice(0, 140) }; }
+  };
+  const out = { url };
+  out.block = await t(() => conn.getSlot('confirmed'));
+  if (!out.block.ok) return { ...out, usable: false, summary: 'Tidak bisa dihubungi' };
+  // Mainnet check: the USDC mint must exist and be owned by the token program.
+  out.call = await t(async () => {
+    const a = await conn.getAccountInfo(new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'));
+    if (!a) throw new Error('bukan mainnet (mint USDC tidak ada)');
+    return true;
+  });
+  // getProgramAccounts on a small result set: Meteora DLMM positions of one fixed owner
+  // (the dataSize/memcmp shape the SDK sends; an empty answer still counts as served).
+  out.gpa = await t(() => conn.getProgramAccounts(new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo'), {
+    dataSlice: { offset: 0, length: 0 },
+    filters: [{ memcmp: { offset: 40, bytes: '11111111111111111111111111111111' } }, { dataSize: 8120 }],
+  }));
+  // History: the DLMM program always has fresh signatures; an endpoint without history
+  // answers empty or refuses.
+  out.history = await t(async () => {
+    const s = await conn.getSignaturesForAddress(new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo'), { limit: 1 });
+    if (!s.length) throw new Error('riwayat kosong');
+    return s.length;
+  });
+  // History can only be proven missing: an endpoint keeping just a day of signatures (publicnode)
+  // still answers for the busy DLMM program. So no_history is only ever suggested ON — a pass
+  // leaves whatever flag the endpoint already has.
+  const suggest = { no_gpa: !out.gpa.ok, ...(out.history.ok ? {} : { no_history: true }) };
+  const parts = [`${out.block.ms} ms`, out.call.ok ? 'baca akun ✓' : 'baca akun ✗',
+    out.gpa.ok ? 'getProgramAccounts ✓' : 'getProgramAccounts ✗', out.history.ok ? 'riwayat ✓' : 'riwayat ✗'];
+  return { ...out, usable: out.call.ok, suggest, summary: parts.join(' · ') };
+}
+
+module.exports.probeSolanaRpc = probeSolanaRpc;

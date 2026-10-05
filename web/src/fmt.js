@@ -1,59 +1,72 @@
 import { chainInfo, ETHERSCAN } from './chain';
 import { getLocale, translate as t } from './i18n';
+import { isHidden, MASK } from './privacy';
 
-// Semua format angka & waktu mengikuti bahasa yang sedang dipakai:
-// Indonesia memakai koma desimal (0,00201), Inggris memakai titik (0.00201).
+// All number & time formats follow the language in use:
+// Indonesian uses a decimal comma (0,00201), English uses a dot (0.00201).
 const loc = () => (getLocale() === 'en' ? 'en-US' : 'id-ID');
-export const locale = loc;   // dipakai halaman lain untuk memformat tanggal
+export const locale = loc;   // used by other pages to format dates
 
-export const usd = (v, d = 2) => (v == null || Number.isNaN(v)) ? '—'
+const rawUsd = (v, d = 2) => (v == null || Number.isNaN(v)) ? '—'
   : (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d });
-export const kUsd = (v) => (Math.abs(v) >= 1000 ? (v < 0 ? '−$' : '$') + (Math.abs(v) / 1000).toFixed(2) + 'k' : usd(v));
+// Value redaction (privacy.js): the minus sign is also covered — even a "loss" is already a leak.
+// Without redaction: only for sample figures that are not our money (the preview in Settings).
+export const plainUsd = rawUsd;
+export const usd = (v, d = 2) => (v == null || Number.isNaN(v) || !isHidden() ? rawUsd(v, d) : '$' + MASK);
+// Large figures that only need a glance (volume, liquidity, MCap). Above
+// a million, the 'k' unit stops helping — "$3200.00k" has to be computed before it
+// reads as three million.
+export const kUsd = (v) => {
+  const a = Math.abs(v);
+  if (!(a >= 1000)) return rawUsd(v);   // public figures: not subject to redaction (privacy.js)
+  const [d, unit] = a >= 1e9 ? [1e9, 'B'] : a >= 1e6 ? [1e6, 'M'] : [1e3, 'k'];
+  return (v < 0 ? '−$' : '$') + (a / d).toFixed(2) + unit;
+};
 export const pct = (v, d = 1) => (v == null ? '—'
   : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d }) + '%');
 export const num = (v, d = 0) => (v == null ? '—' : Number(v).toLocaleString(loc(), { maximumFractionDigits: d }));
 export const short = (a) => (a ? a.slice(0, 6) + '…' + a.slice(-4) : '—');
-// Penjelajah blok chain yang sedang ditampilkan (Blockscout / BscScan memakai jalur
-// /tx dan /address yang sama) — tautan transaksi di riwayat posisi dan aktivitas.
+// The block explorer of the chain being shown (Blockscout / BscScan use the same /tx
+// and /address paths) — the transaction links in the position history and activity.
 export const txHref = (hash) => (hash ? `${chainInfo().explorer}/tx/${hash}` : null);
-// Solscan menamai halaman alamat /account/, penjelajah EVM /address/.
+// Solscan calls the address page /account/, EVM explorers /address/.
 export const addrHref = (a) => (a ? `${chainInfo().explorer}/${chainInfo().kind === 'solana' ? 'account' : 'address'}/${a}` : null);
-// Portofolio LP wallet di LPAgent — pembanding luar untuk angka riset kita.
-// LPAgent aslinya alat analitik LP Solana (Meteora): tanpa parameter chain = Solana.
+// A wallet's LP portfolio on LPAgent — an external reference for our research figures.
+// LPAgent is originally a Solana (Meteora) LP analytics tool: no chain parameter = Solana.
 export const lpagentHref = (a) => (!a ? null : chainInfo().kind === 'solana' ? `https://app.lpagent.io/portfolio?address=${a}`
   : `https://app.lpagent.io/portfolio?address=${a}&chain=${chainInfo().key === 'bsc' ? 'BSC' : 'ROBINHOOD'}`);
-// Nama penjelajah blok chain ini untuk label tautan (Solscan / BscScan / Blockscout).
+// This chain's block explorer name for link labels (Solscan / BscScan / Blockscout).
 export const explorerName = () => { const e = chainInfo().explorer || ''; return /solscan/.test(e) ? 'Solscan' : /bscscan/.test(e) ? 'BscScan' : 'Blockscout'; };
-// Isi dompet lintas chain di DeBank: token, posisi DeFi, dan nilainya di semua chain
-// sekaligus — yang tidak bisa dilihat dari dasbor ini (satu chain pada satu waktu).
-// DeBank hanya EVM: di Solana tautannya tidak ditampilkan.
+// A wallet's holdings across chains on DeBank: tokens, DeFi positions, and their value on all chains
+// at once — what cannot be seen from this dashboard (one chain at a time).
+// DeBank is EVM-only: on Solana the link is not shown.
 export const debankHref = (a) => (a && chainInfo().kind !== 'solana' ? `https://debank.com/profile/${a}` : null);
-// Etherscan chain ini (robin.etherscan.io di Robinhood) — indeks tx/token/NFT-nya
-// berbeda dari Blockscout, jadi wallet yang di sana kosong sering terbaca di sini.
+// This chain's Etherscan (robin.etherscan.io on Robinhood) — its tx/token/NFT index
+// differs from Blockscout, so a wallet that is empty there often reads here.
 export const etherscanHref = (a) => (a && ETHERSCAN[chainInfo().key] ? `${ETHERSCAN[chainInfo().key]}/address/${a}` : null);
 export const tone = (v) => (v > 0.005 ? 'text-success' : v < -0.005 ? 'text-danger' : '');
 export const widthPct = (lo, hi) => (1.0001 ** (hi - lo) - 1) * 100;
 
-// --- imbal hasil fee -------------------------------------------------------
-// Pertanyaan yang tidak bisa dijawab kolom "Fee" sendirian: posisi $2.000 yang
-// sudah 5 hari menghasilkan $12, dan posisi $300 yang baru 6 jam menghasilkan
-// $1,40 — mana yang lebih baik? Fee disetahunkan terhadap modal menyamakan
-// keduanya, dan itulah angka yang dipakai LP untuk membandingkan posisi, pool,
-// dan lebar rentang.
+// --- fee yield -------------------------------------------------------
+// A question the "Fee" column cannot answer alone: a $2,000 position that has
+// earned $12 in 5 days, and a $300 position that has earned $1.40 in 6 hours —
+// which is better? Annualising the fee against capital equalises
+// the two, and that is the figure LPs use to compare positions, pools,
+// and range widths.
 //
-// Umur muda membuat angkanya meledak ($0,10 dalam 2 menit = puluhan ribu persen),
-// jadi di bawah dua jam tidak ada APR sama sekali — lebih baik diam daripada memberi
-// angka yang akan dibaca sebagai janji. Di atas 999% pun angkanya dipotong (aprText):
-// yang diberitahukan bukan "4.812%", melainkan "posisi ini masih terlalu muda".
+// A young age makes the figure explode ($0.10 in 2 minutes = tens of thousands of percent),
+// so under two hours there is no APR at all — better silent than giving a
+// figure that would be read as a promise. Above 999% the figure is also clipped (aprText):
+// what is told is not "4,812%", but "this position is still too young".
 export function apr(feeUsd, costUsd, ageHours) {
   if (!(costUsd > 0) || !(ageHours >= 2) || !(feeUsd > 0.005)) return null;
   return (feeUsd / costUsd) * (8760 / ageHours) * 100;
 }
-// Fee posisi = yang belum diklaim + yang sudah ditarik ke wallet. Hanya memakai
-// yang belum diklaim akan membuat posisi yang rajin panen tampak tidak produktif.
+// Position fee = unclaimed + already withdrawn to the wallet. Using only
+// the unclaimed would make a diligently harvesting position look unproductive.
 export const feeApr = (p) => (!p || p.syncing ? null : apr((p.feeUsd || 0) + (p.claimedUsd || 0), p.costUsd, p.ageHours));
-// APR gabungan beberapa posisi: tertimbang modal DAN umur (satu posisi besar yang
-// baru dibuka tidak boleh menarik turun rata-rata seolah ia sudah lama menganggur).
+// Combined APR of several positions: weighted by capital AND age (one large position
+// just opened must not pull the average down as if it had long sat idle).
 export function aprOf(rows) {
   let fee = 0, base = 0;
   for (const p of rows || []) {
@@ -63,16 +76,16 @@ export function aprOf(rows) {
   }
   return base > 0 ? (fee / base) * 100 : null;
 }
-// Tanpa tanda "+": APR bukan perubahan, jadi tidak perlu arah. Dibatasi seperti
-// jarak ke tepi rentang — "+4.812%" cuma berarti "posisi ini masih sangat muda".
+// Without a "+" sign: APR is not a change, so no direction is needed. Clipped like
+// the distance to the range edge — "+4,812%" only means "this position is still very young".
 export const aprText = (v) => (v == null ? '—' : v >= 1000 ? '999+%' : `${num(v, Math.abs(v) < 10 ? 1 : 0)}%`);
 
-// Harga token bisa 0,00000032 sampai 4.200 — jadi pakai angka penting, bukan
-// jumlah desimal tetap (0,00 tidak memberi tahu apa pun).
+// A token price can be 0.00000032 up to 4,200 — so use significant digits, not
+// a fixed number of decimals (0.00 tells nothing).
 export function price(p) {
   if (p == null || !Number.isFinite(p) || p <= 0) return '—';
-  // Di atas satu miliar angka penuhnya (337.815.857.900.711…) cuma merusak lebar
-  // kolom tabel; notasi ilmiah lebih jujur untuk harga token sampah semacam itu.
+  // Above one billion the full figure (337,815,857,900,711…) only breaks the width of
+  // the table column; scientific notation is more honest for a junk token price like that.
   if (p >= 1e9) return p.toExponential(2).replace('.', loc() === 'id-ID' ? ',' : '.');
   if (p >= 1e6) return p.toLocaleString(loc(), { maximumFractionDigits: 0 });
   if (p >= 1) return p.toLocaleString(loc(), { maximumSignificantDigits: 6 });
@@ -80,14 +93,15 @@ export function price(p) {
   return p.toExponential(2).replace('.', loc() === 'id-ID' ? ',' : '.');
 }
 
-// Jumlah token: dari satuan terkecil di chain ke satuan tampilan, lalu diformat
-// dengan angka penting — token bisa 6 desimal (USDG) atau 18 (kebanyakan sisanya).
+// Token amount: from the smallest unit on chain to the display unit, then formatted
+// with significant digits — a token can have 6 decimals (USDG) or 18 (most of the rest).
 export const qty = (raw, dec) => (raw == null ? null : Number(BigInt(String(raw))) / 10 ** (dec ?? 18));
 export const fmtQty = (v) => (v == null || !Number.isFinite(v) ? '—'
+  : isHidden() ? MASK
   : v >= 1e6 ? v.toLocaleString(loc(), { maximumFractionDigits: 0 })
     : v.toLocaleString(loc(), { maximumSignificantDigits: v >= 1000 ? 6 : 4 }));
 
-// Harga dari sqrtPriceX96 (state pool yang tersimpan per kejadian).
+// Price from sqrtPriceX96 (the pool state stored per event).
 export function sqrtPrice(sqrtX96, dec0, dec1, quoteSide) {
   if (!sqrtX96) return null;
   const r = Number(sqrtX96) / 2 ** 96;
@@ -96,8 +110,8 @@ export function sqrtPrice(sqrtX96, dec0, dec1, quoteSide) {
   return quoteSide === 0 ? 1 / p1per0 : p1per0;
 }
 
-// Harga token spekulatif dalam aset kuotasi pool, dari nomor tick.
-// quoteSide 0 = token0 yang jadi kuotasi -> harga token1 adalah kebalikan tick.
+// Price of the speculative token in the pool's quote asset, from the tick number.
+// quoteSide 0 = token0 is the quote -> token1's price is the inverse of the tick.
 export function tickPrice(tick, dec0, dec1, quoteSide) {
   const p1per0 = 1.0001 ** tick * 10 ** ((dec0 ?? 18) - (dec1 ?? 18));
   return quoteSide === 0 ? 1 / p1per0 : p1per0;
@@ -119,15 +133,15 @@ export const dur = (ms) => {
   return s < 60 ? t('{n} dtk', { n: s }) : t('{n} mnt {s} dtk', { n: Math.floor(s / 60), s: s % 60 });
 };
 
-// Label yang dipakai berulang di beberapa tabel. Nilai kedua = warna chip.
-export const AKSI = {
+// Labels used repeatedly in several tables. The second value = chip colour.
+export const ACTIONS = {
   increase: ['Tambah likuiditas', 'accent'], decrease: ['Kurangi likuiditas', 'warning'], claim_fees: ['Klaim fee', 'success'], compound: ['Auto-compound', 'success'],
   custody_out: ['Titip ke otomasi', 'default'], custody_in: ['Kembali dari otomasi', 'default'],
   transfer_in: ['Terima posisi', 'default'], transfer_out: ['Kirim posisi', 'warning'],
   mint: ['Buka posisi', 'accent'], collect: ['Klaim fee', 'success'], claim: ['Target panen fee', 'default'],
   reentry: ['Buka lagi (harga mendekat)', 'accent'],
 };
-export const KEPUTUSAN = {
+export const DECISIONS = {
   copy: ['Disalin', 'success'], dry: ['Simulasi', 'accent'], skip: ['Dilewati', 'default'], error: ['Gagal', 'danger'],
 };
 export const TXKIND = {

@@ -1,8 +1,8 @@
-// Chain yang sedang ditampilkan dasbor. Diisi dari /api/overview (status.chain) setiap
-// poll, dibaca oleh pembantu non-React (fmt.js: tautan penjelajah) dan komponen.
+// The chain the dashboard is currently showing. Filled from /api/overview (status.chain) on every
+// poll, read by non-React helpers (fmt.js: explorer links) and components.
 //
-// Satu dasbor = satu chain pada satu waktu: server memilih chain dari cookie
-// lpcopy_chain (lihat ChainSwitcher), jadi setiap /api/* sudah otomatis milik chain ini.
+// One dashboard = one chain at a time: the server picks the chain from the
+// lpcopy_chain cookie (see ChainSwitcher), so every /api/* already belongs to this chain.
 const DEFAULT = {
   key: 'robinhood', label: 'Robinhood Chain', chainId: 4663, nativeSymbol: 'ETH',
   usdgSymbol: 'USDG', wethSymbol: 'WETH', explorer: 'https://robinhoodchain.blockscout.com',
@@ -20,24 +20,24 @@ export const isAddr = (a) => (isSolana() ? BASE58.test(String(a || '')) : /^0x[0
 // Rujukan pool: EVM alamat v3 atau poolId v4 (32 byte); Solana alamat akun pool.
 export const isPoolRef = (r) => (isSolana() ? BASE58.test(String(r || '')) : /^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(String(r || '')));
 export const chainInfo = () => current;
-// Simbol yang dinilai lewat harga native (ETH/WETH di Robinhood, BNB/WBNB di BSC).
+// Symbols valued through the native price (ETH/WETH on Robinhood, BNB/WBNB on BSC).
 export const isEthLike = (sym) => sym === current.nativeSymbol || sym === current.wethSymbol;
-// Ikon kecil per chain di pemilih & header (public/*.png|jpg, logo resmi masing-masing chain).
+// Small icon per chain in the picker & header (public/*.png|jpg, each chain's official logo).
 export const CHAIN_ICON = {
   robinhood: '/robinhood-chain.jpg',
   bsc: '/bnb-chain.png',
   solana: '/solana.svg',
 };
-// Nama penjelajah blok chain ini — dipakai sebagai label tombol wallet (fmt.js/ui.jsx),
-// karena "Blockscout" dan "BscScan" lebih dikenal daripada nama host-nya.
+// Name of this chain's block explorer — used as the wallet button label (fmt.js/ui.jsx),
+// because "Blockscout" and "BscScan" are better known than the host name.
 export const EXPLORER_NAME = {
   robinhood: 'Blockscout',
   bsc: 'BscScan',
   solana: 'Solscan',
 };
-// Etherscan chain ini, kalau ada — indeks tx/token yang berbeda dari Blockscout, jadi
-// keduanya berguna berdampingan. Di BSC penjelajahnya SUDAH BscScan (keluarga Etherscan),
-// jadi tidak ada entri kedua: satu tombol untuk satu situs.
+// This chain's Etherscan, if any — its tx/token index differs from Blockscout, so
+// the two are useful side by side. On BSC the explorer IS already BscScan (Etherscan family),
+// so there is no second entry: one button for one site.
 export const ETHERSCAN = {
   robinhood: 'https://robin.etherscan.io',
 };

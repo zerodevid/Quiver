@@ -1,45 +1,45 @@
 'use strict';
-// Kartu bagikan (share card): gambar PnL siap tempel ke X/Telegram, seperti yang
-// dipunyai Based bot atau GMGN. Tiga jenis kartu dengan bingkai yang sama:
-//   position  satu posisi LP: pasangan, PnL, harga masuk/keluar, fee, umur
-//   total     seluruh portofolio: total PnL, win rate, fee, posisi terbaik
-//   daily     satu hari: PnL terealisasi hari itu, posisi yang ditutup
+// Share card: a PnL image ready to paste into X/Telegram, like the ones
+// Based bot or GMGN have. Three kinds of card with the same frame:
+//   position  one LP position: pair, PnL, entry/exit price, fee, age
+//   total     the whole portfolio: total PnL, win rate, fee, best position
+//   daily     one day: the realized PnL of that day, the positions closed
 //
-// Tiap kartu bisa digambar dalam tiga ukuran (opts.size) dan tujuh tema warna
-// (opts.theme), lihat SIZES dan THEMES. Tata letaknya satu: kepala (logo + konteks),
-// judul + chip, angka besar, strip grafik (opts.chart: harga posisi / kurva PnL / batang
-// harian), maskot, kisi statistik, kaki (tanggal + chain) — cuma
-// koordinatnya yang berbeda per ukuran (geometry()).
+// Each card can be drawn in three sizes (opts.size) and seven colour themes
+// (opts.theme), see SIZES and THEMES. One layout: header (logo + context),
+// title + chip, big number, chart strip (opts.chart: position price / PnL curve / daily
+// bars), mascot, stats grid, footer (date + chain) — only the
+// coordinates differ per size (geometry()).
 //
-// Digambar di server sebagai SVG lalu dirasterkan resvg — bukan di browser — supaya
-// dasbor dan bot Telegram mengirim gambar yang persis sama dari satu sumber desain.
-// Huruf dibawa sendiri (public/fonts/*.ttf: Urbanist untuk kartu, Pixelify Sans untuk tema
-// piksel — empat bobot statis yang dibuat dari berkas variabel Google Fonts dengan
-// fontTools) karena VPS tidak punya font sistem; lebar teks untuk chip dan judul
-// dihitung dari tabel advance glyph (src/*-advances.json, dibuat dari font yang sama) —
-// resvg tidak punya API pengukur teks, dan SVG tidak punya tata letak mengalir.
+// Drawn on the server as SVG then rasterised by resvg — not in the browser — so the
+// dashboard and the Telegram bot send exactly the same image from one design source.
+// The fonts are bundled (public/fonts/*.ttf: Urbanist for the card, Pixelify Sans for the
+// pixel theme — four static weights made from the Google Fonts variable files with
+// fontTools) because the VPS has no system fonts; text widths for chips and titles
+// are computed from the glyph advance table (src/*-advances.json, made from the same font) —
+// resvg has no text-measuring API, and SVG has no flowing layout.
 const fs = require('node:fs');
 const path = require('node:path');
 const { Resvg } = require('@resvg/resvg-js');
-// Huruf dasar kartu dan tabel lebar glyph-nya (dibuat dari berkas font yang sama,
-// lihat catatan di atas measure()). Tema boleh mengganti lewat font/adv (piksel).
+// The card's base font and its glyph width table (made from the same font file,
+// see the note above measure()). A theme may override via font/adv (pixel).
 const BASE_FONT = { family: 'Urbanist', adv: require('./urbanist-advances.json') };
 const ADV_PIXEL = require('./pixelify-advances.json');
 const { tr, localeContext } = require('./telegram-i18n');
 
 const PAD = 56, SCALE = 2;
-// Ukuran kartu. wide = kartu tautan X/Telegram; square = umpan Instagram/Threads;
-// story = Instagram Story / status WhatsApp (isi dijauhkan dari tepi atas-bawah yang
-// tertutup UI aplikasi).
+// Card sizes. wide = X/Telegram link card; square = Instagram/Threads feed;
+// story = Instagram Story / WhatsApp status (content kept away from the top/bottom edges that are
+// covered by the app UI).
 const SIZES = {
   wide: { W: 1200, H: 630, label: 'Lebar' },
   square: { W: 1080, H: 1080, label: 'Persegi' },
   story: { W: 1080, H: 1920, label: 'Story' },
 };
-// Tema warna. bg = gradien latar (kiri-atas → kanan-bawah); up/down/flat = warna PnL;
-// accent = warna dekorasi latar (deco: kisi/titik/lingkaran/garis miring/papan catur);
-// logo = warna wordmark (tema terang butuh logo gelap); font/adv = huruf lain beserta
-// tabel lebarnya (piksel); sq = sudut kotak & garis tebal ala UI 8-bit.
+// Colour themes. bg = background gradient (top-left → bottom-right); up/down/flat = PnL colours;
+// accent = background decoration colour (deco: grid/dots/circles/diagonal lines/checkerboard);
+// logo = wordmark colour (a light theme needs a dark logo); font/adv = another font along with
+// its width table (pixel); sq = square corners & thick lines in 8-bit UI style.
 const THEMES = {
   dark: {
     label: 'Grafit', bg: ['#191F22', '#101416'], text: '#F4F6F5', muted: '#A0AAA9', faint: '#84908F',
@@ -80,43 +80,43 @@ const THEMES = {
 };
 const HIDDEN = '••••';
 const FONT_DIR = path.join(__dirname, '..', 'public', 'fonts');
-// Semua .ttf di public/fonts dimuat; resvg memilih keluarga & bobot dari nama di dalam berkas.
+// Every .ttf in public/fonts is loaded; resvg picks the family & weight from the name inside the file.
 const FONTS = fs.readdirSync(FONT_DIR).filter((f) => f.endsWith('.ttf')).map((f) => path.join(FONT_DIR, f));
 const MARK = fs.readFileSync(path.join(__dirname, '..', 'public', 'logo-white.svg'), 'utf8')
   .replace(/<!--[\s\S]*?-->/g, '').replace(/<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
-// Ikon & nama chain di kaki kartu (logo resmi tiap chain di public/). Diset per render
-// lewat opts.chain.
+// Chain icon & name in the card footer (each chain's official logo in public/). Set per render
+// via opts.chain.
 const CHAIN_BADGE = {
   robinhood: { label: 'Robinhood Chain', href: `data:image/jpeg;base64,${fs.readFileSync(path.join(__dirname, '..', 'public', 'robinhood-chain.jpg')).toString('base64')}` },
   bsc: { label: 'BNB Smart Chain', href: `data:image/png;base64,${fs.readFileSync(path.join(__dirname, '..', 'public', 'bnb-chain.png')).toString('base64')}` },
 };
 let chainNow = CHAIN_BADGE.robinhood;
 const chainName = () => chainNow.label;
-// Maskot rubah, ekspresinya mengikuti PnL (public/mascots/*.png, PNG transparan,
-// tinggi 900 px). Dimuat sekali per proses.
+// Fox mascot, its expression follows the PnL (public/mascots/*.png, transparent PNG,
+// 900 px tall). Loaded once per process.
 const MASCOT = Object.fromEntries(['flex', 'profit', 'loss', 'neutral'].map((m) => {
   const png = fs.readFileSync(path.join(__dirname, '..', 'public', 'mascots', `${m}.png`));
   const w = png.readUInt32BE(16), h = png.readUInt32BE(20);
   return [m, { href: `data:image/png;base64,${png.toString('base64')}`, w, h }];
 }));
-// flex: untung besar (≥ FLEX_PCT% dari modal); profit/loss: arah PnL; neutral: nol / belum ada data.
+// flex: a big profit (≥ FLEX_PCT% of capital); profit/loss: PnL direction; neutral: zero / no data yet.
 const FLEX_PCT = 20;
 const mood = (pnl, pnlPct) => (pnl > 0.005 ? (pnlPct >= FLEX_PCT ? 'flex' : 'profit') : pnl < -0.005 ? 'loss' : 'neutral');
 const QUOTE = new Set(['USDG', 'WETH', 'ETH', 'USDC', 'USDT']);
 
-// Keadaan satu render: tema, geometri, zona waktu. Diset svgOf(), dipulihkan setelahnya.
+// State of one render: theme, geometry, time zone. Set by svgOf(), restored afterwards.
 let T = THEMES.dark;
 let G = null;
 let tz = null;
 const TZ = () => tz || undefined;
-// Warna PnL menurut tema.
+// PnL colours per theme.
 const sign = (v) => (v > 0.005 ? T.up : v < -0.005 ? T.down : T.flat);
 const rgba = (hex, a) => `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)},${a})`;
 
-// Koordinat tiap ukuran. k = skala teks; hero.right = batas kanan teks angka besar
-// (kolom maskot mulai di sana); mascot.right / mascot.cx = rata kanan atau di tengah;
-// stats.perRow = jumlah ubin statistik per baris; footY = garis kaki (tanggal + chain);
-// chart = strip grafik di bawah angka besar (dari PAD sampai chart.x1, bawaan hero.right).
+// Coordinates per size. k = text scale; hero.right = right bound of the big number text
+// (the mascot column starts there); mascot.right / mascot.cx = right-aligned or centred;
+// stats.perRow = number of stat tiles per row; footY = footer line (date + chain);
+// chart = chart strip under the big number (from PAD to chart.x1, default hero.right).
 function geometry(size) {
   const { W, H } = SIZES[size] || SIZES.wide;
   if (size === 'story') {
@@ -134,7 +134,7 @@ function geometry(size) {
     mascot: { h: 312, y: 104, right: W - PAD + 8 }, stats: { y: 448, h: 108, perRow: 4 }, footY: 588 };
 }
 
-// ---- format angka, sama persis dengan web/src/fmt.js ----------------------------
+// ---- number formats, exactly the same as web/src/fmt.js ----------------------------
 const loc = () => (localeContext.getStore() === 'en' ? 'en-US' : 'id-ID');
 const usd = (v, d = 2) => (v == null || Number.isNaN(v) ? '—'
   : (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d }));
@@ -157,7 +157,7 @@ const age = (h) => (h == null ? '—'
 const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString(loc(), { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: TZ() }) : '—');
 const fmtDayOnly = (ts) => new Date(ts).toLocaleDateString(loc(), { day: 'numeric', month: 'short', year: 'numeric', timeZone: TZ() });
 const fmtDay = (ts) => new Date(ts).toLocaleDateString(loc(), { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: TZ() });
-// Harga dari sqrtPriceX96 / tick — salinan fmt.js.
+// Price from sqrtPriceX96 / tick — a copy of fmt.js.
 function sqrtPrice(sqrtX96, dec0, dec1, quoteSide) {
   if (!sqrtX96) return null;
   const r = Number(sqrtX96) / 2 ** 96;
@@ -170,9 +170,9 @@ function tickPrice(tick, dec0, dec1, quoteSide) {
   return quoteSide === 0 ? 1 / p1per0 : p1per0;
 }
 
-// ---- primitif SVG ---------------------------------------------------------------
+// ---- SVG primitives ---------------------------------------------------------------
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-// Lebar teks dari tabel advance font tema (bobot 500 & 600 tersedia; bobot lain memakai 600).
+// Text width from the theme font's advance table (weights 500 & 600 are available; other weights use 600).
 function measure(s, size, weight = 500) {
   const adv = T.adv || BASE_FONT.adv;
   const tab = adv[String(weight)] || adv['600'];
@@ -180,18 +180,18 @@ function measure(s, size, weight = 500) {
   for (const ch of String(s)) w += tab[ch] ?? 0.6;
   return w * size;
 }
-// `base` 'middle' meniru textBaseline canvas: garis dasar diturunkan ~0,36 em.
+// `base` 'middle' imitates the canvas textBaseline: the baseline is lowered ~0.36 em.
 function txt(s, x, y, { size = 16, weight = 400, color = T.text, anchor = 'start', base = 'alphabetic', spans = '' } = {}) {
   const yy = base === 'middle' ? y + size * 0.36 : y;
   return `<text x="${x}" y="${yy}" font-size="${size}" font-weight="${weight}" fill="${color}" text-anchor="${anchor}">${esc(s)}${spans}</text>`;
 }
-// Sudut membulat — nol di tema piksel.
+// Rounded corners — zero in the pixel theme.
 const rx = (n) => (T.sq ? 0 : n);
 function chip(s, x, y, { color = T.muted, fill = T.chip } = {}) {
   const size = 17 * G.k, w = measure(s, size, 500) + 24 * G.k, h = 32 * G.k;
   return { w, svg: `<rect x="${x}" y="${y - h / 2}" width="${w.toFixed(1)}" height="${h}" rx="${rx(8 * G.k)}" fill="${fill}"/>` + txt(s, x + 12 * G.k, y, { size, weight: 500, color, base: 'middle' }) };
 }
-// Chip status berwarna: warna teks dari tema, latar warna yang sama tapi transparan.
+// Coloured status chip: text colour from the theme, background the same colour but transparent.
 const tone = (color) => ({ color, fill: rgba(color, 0.13) });
 
 // Layout uses bounded text widths so large values and long labels stay within the card.
@@ -206,7 +206,7 @@ function fitted(s, x, y, width, options = {}) {
   return txt(fit(s, width, size, weight), x, y, { ...options, size, weight });
 }
 
-// Dekorasi latar per tema: pola tipis di seluruh kartu, atau lingkaran di belakang maskot.
+// Background decoration per theme: a thin pattern over the whole card, or circles behind the mascot.
 function deco(cx, cy, r) {
   const a = T.accent;
   if (T.deco === 'grid') {
@@ -225,7 +225,7 @@ function deco(cx, cy, r) {
     return [0.58, 0.82, 1.06, 1.3].map((m, i) => `<circle cx="${cx}" cy="${cy}" r="${(r * m).toFixed(0)}" fill="none" stroke="${a}" stroke-opacity="${(0.16 - i * 0.035).toFixed(3)}" stroke-width="1.5"/>`).join('');
   }
   if (T.deco === 'pixels') {
-    // Papan catur halus + blok-blok acak (deterministik) seperti bintang 8-bit.
+    // A subtle checkerboard + random blocks (deterministic) like an 8-bit star.
     let blocks = '';
     for (let i = 0; i < 40; i++) {
       const s = (i * 7919) % 1000, x = ((s * 37) % (G.W / 16)) * 16, y = ((s * 53) % (G.H / 16)) * 16;
@@ -236,7 +236,7 @@ function deco(cx, cy, r) {
   }
   return '';
 }
-// Stempel miring di atas maskot ("UNTUNG BESAR" saat flex).
+// Tilted stamp above the mascot ("BIG WIN" when flex).
 function stamp(s, cx, cy, color) {
   const size = 24 * G.k, w = measure(s, size, 600) + 48 * G.k, h = 52 * G.k;
   return `<g transform="translate(${cx} ${cy}) rotate(-12)" opacity="0.94">`
@@ -245,10 +245,10 @@ function stamp(s, cx, cy, color) {
     + txt(s, 0, 0, { size, weight: 700, color, anchor: 'middle', base: 'middle' }) + '</g>';
 }
 
-// Strip grafik di bawah angka besar: garis harga / kurva PnL (kind 'line') atau batang
-// PnL harian sebulan (kind 'bars').
-//   line: pts [[t, v]], band [lo, hi] (rentang LP), marks [{t, v}] (masuk/keluar), zero (garis nol)
-//   bars: bars [{ v, on }] — `on` = hari yang dibagikan
+// Chart strip under the big number: price line / PnL curve (kind 'line') or bars of the
+// daily PnL of a month (kind 'bars').
+//   line: pts [[t, v]], band [lo, hi] (LP range), marks [{t, v}] (entry/exit), zero (zero line)
+//   bars: bars [{ v, on }] — `on` = the day being shared
 function chartSvg(c, tint) {
   if (!c) return '';
   const x0 = PAD, { y0, y1 } = G.chart, x1 = G.chart.x1 ?? G.hero.right, w = x1 - x0, h = y1 - y0;
@@ -268,13 +268,13 @@ function chartSvg(c, tint) {
   }
   let pts = (c.pts || []).filter(([t, v]) => Number.isFinite(t) && Number.isFinite(v));
   if (pts.length < 2) return '';
-  // Paling banyak ~160 titik: riwayat portofolio tiap 5 menit bisa ribuan.
+  // At most ~160 points: the portfolio history every 5 minutes can be thousands.
   if (pts.length > 160) { const step = Math.ceil(pts.length / 160); pts = pts.filter((_, i) => i % step === 0 || i === pts.length - 1); }
   const marks = (c.marks || []).filter((m) => Number.isFinite(m.t) && Number.isFinite(m.v));
   const vals = [...pts.map(([, v]) => v), ...marks.map((m) => m.v)];
   let vMin = Math.min(...vals), vMax = Math.max(...vals);
   if (c.zero) { vMin = Math.min(vMin, 0); vMax = Math.max(vMax, 0); }
-  // Rentang LP ikut kalau tidak terlalu jauh dari harga; kalau jauh, dipotong di tepi.
+  // The LP range is included if not too far from the price; if far, it is cut at the edge.
   const span0 = Math.max(vMax - vMin, Math.abs(vMax) * 1e-6, 1e-12);
   if (c.band) {
     vMin = Math.min(vMin, Math.max(c.band[0], vMin - span0 * 0.6));
@@ -284,7 +284,7 @@ function chartSvg(c, tint) {
   vMin -= span * 0.08; vMax += span * 0.08;
   const t0 = Math.min(pts[0][0], ...marks.map((m) => m.t)), t1 = Math.max(pts[pts.length - 1][0], ...marks.map((m) => m.t));
   const xOf = (t) => x0 + ((t - t0) / Math.max(t1 - t0, 1)) * w, yOf = (v) => y1 - ((v - vMin) / (vMax - vMin)) * h;
-  // Tema piksel: garis bertangga (langkah), bukan diagonal.
+  // Pixel theme: stepped line (steps), not diagonal.
   let d = '';
   pts.forEach(([t, v], i) => {
     const x = xOf(t).toFixed(1), y = yOf(v).toFixed(1);
@@ -294,7 +294,7 @@ function chartSvg(c, tint) {
   let out = `<defs><linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1"><stop stop-color="${tint}" stop-opacity="0.32"/><stop offset="1" stop-color="${tint}" stop-opacity="0.02"/></linearGradient></defs>`;
   if (c.band) {
     const [lo, hi] = c.band, yLo = Math.min(y1, yOf(lo)), yHi = Math.max(y0, yOf(hi));
-    // Isian pita hanya kalau rentangnya tidak memenuhi hampir seluruh pita (kalau ya, cukup garisnya).
+    // The band fill only if the range does not fill almost the whole band (if it does, the line alone suffices).
     if (yLo - yHi < h * 0.85) out += `<rect x="${x0}" y="${yHi.toFixed(1)}" width="${w}" height="${Math.max(0, yLo - yHi).toFixed(1)}" fill="${T.up}" fill-opacity="0.05"/>`;
     for (const v of [lo, hi]) if (v >= vMin && v <= vMax) out += `<line x1="${x0}" y1="${yOf(v).toFixed(1)}" x2="${x1}" y2="${yOf(v).toFixed(1)}" stroke="${T.up}" stroke-opacity="0.4" stroke-dasharray="${px ? '8 8' : '6 6'}"/>`;
   }
@@ -317,7 +317,7 @@ function frame(tint, right, body, mascotKey, stampText, chart) {
   const mx = G.mascot.cx != null ? Math.round(G.mascot.cx - mw / 2) : G.mascot.right - mw, my = G.mascot.y;
   const gcx = mx + mw / 2, gcy = my + mh / 2;
   const stops = T.bg.map((c, i) => `<stop offset="${(i / (T.bg.length - 1)).toFixed(2)}" stop-color="${c}"/>`).join('');
-  // Lencana chain di kaki kanan: ikon bulat + nama, rata kanan.
+  // Chain badge at the bottom right: round icon + name, right-aligned.
   const badgeSize = 17 * k, badgeW = measure(chainName(), badgeSize, 500), iconR = 10 * k;
   const badge = (chainNow.href ? `<image x="${W - PAD - badgeW - 12 * k - iconR * 2}" y="${G.footY - 6 * k - iconR}" width="${iconR * 2}" height="${iconR * 2}" clip-path="url(#chain-icon)" href="${chainNow.href}"/>` : '')
     + txt(chainName(), W - PAD, G.footY - 5 * k, { size: badgeSize, weight: 500, color: T.muted, anchor: 'end', base: 'middle' });
@@ -340,7 +340,7 @@ ${body}
 </svg>`;
 }
 
-// Judul + chip; berhenti sebelum `right` (kolom maskot di ukuran lebar/persegi).
+// Title + chip; stops before `right` (the mascot column in wide/square sizes).
 function title(s, chips, x0 = PAD, right = G.hero.right) {
   const y = G.titleY, k = G.k, size = 32 * k;
   const active = chips.filter(([label]) => label);
@@ -354,8 +354,8 @@ function title(s, chips, x0 = PAD, right = G.hero.right) {
   }
   return out;
 }
-// Angka besar lalu angka kedua di sebelahnya (dolar ↔ persen), keduanya berhenti sebelum
-// kolom maskot; ukuran menyusut kalau angkanya panjang.
+// The big number then a second number beside it (dollar ↔ percent), both stopping before
+// the mascot column; the size shrinks if the number is long.
 function hero({ label, big, bigColor, side, sub, subColor = T.muted }) {
   const { labelY, bigY, subY, right, maxBig } = G.hero, k = G.k;
   const room = right - PAD;
@@ -368,7 +368,7 @@ function hero({ label, big, bigColor, side, sub, subColor = T.muted }) {
   if (sub) out += fitted(sub, PAD, subY, room, { size: 19 * k, color: subColor });
   return out;
 }
-// Kisi ubin statistik (perRow per baris) lalu teks kaki di kiri bawah.
+// Grid of stat tiles (perRow per row) then footer text at the bottom left.
 function statsRow(cols, footer) {
   const { W, k } = G, { y, h, perRow } = G.stats, gap = 12;
   const cw = (W - PAD * 2 - gap * (perRow - 1)) / perRow;
@@ -386,9 +386,9 @@ function statsRow(cols, footer) {
   if (footer) out += fitted(footer, PAD, G.footY, W - PAD * 2 - measure(chainName(), 17 * k, 500) - 60 * k, { size: 15 * k, color: T.faint });
   return out;
 }
-// Lambang token: logo bulat (PNG/JPEG/GIF yang tersimpan di server — resvg tidak bisa
-// WebP, lihat ACCEPT di src/icons.js), atau lingkaran
-// berwarna dengan inisial — rona dari alamat, sama dengan TokenIcon di dasbor.
+// Token icon: a round logo (PNG/JPEG/GIF stored on the server — resvg cannot read
+// WebP, see ACCEPT in src/icons.js), or a coloured
+// circle with an initial — the hue from the address, the same as TokenIcon on the dashboard.
 function hue(addr = '') {
   let h = 0;
   for (let i = 2; i < addr.length; i++) h = (h * 31 + addr.charCodeAt(i)) % 360;
@@ -405,11 +405,11 @@ function token(icon, { address, symbol }, x, y, r, id) {
   return `<circle cx="${x}" cy="${y}" r="${r}" fill="hsl(${hue((address || '').toLowerCase())}, 45%, 55%)"/>`
     + txt(initials, x, y + 1, { size: Math.round(r * 0.8), weight: 600, color: '#fff', anchor: 'middle', base: 'middle' }) + ring;
 }
-// Stempel hanya untuk untung besar; kartu rugi tidak perlu ditertawakan.
+// The stamp is only for a big profit; a loss card need not be laughed at.
 const stampFor = (m) => (m === 'flex' ? tr('UNTUNG BESAR') : null);
 
-// ---- kartu posisi -----------------------------------------------------------------
-// p: baris dari GET /api/position; icons: { token0, token1 } hasil icons.read().
+// ---- position card -----------------------------------------------------------------
+// p: row from GET /api/position; icons: { token0, token1 } result of icons.read().
 function positionSvg(p, { hideAmounts = false, icons = {}, chart = null } = {}) {
   const closed = p.status === 'closed';
   const pEntry = sqrtPrice(p.entrySqrt, p.dec0, p.dec1, p.quoteSide);
@@ -419,7 +419,7 @@ function positionSvg(p, { hideAmounts = false, icons = {}, chart = null } = {}) 
   const quote = p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null;
   const base = p.quoteSide === 0 ? p.symbol1 : p.symbol0;
   const move = pEntry != null && pNow != null ? (pNow / pEntry - 1) * 100 : null;
-  // Fee yang benar-benar diperoleh: sudah diklaim + (kalau masih terbuka) yang belum.
+  // Fee actually earned: already claimed + (if still open) the unclaimed.
   const feeUsd = (p.claimedUsd || 0) + (closed ? 0 : (p.feeUsd || 0));
   const status = closed ? tr('Ditutup') : p.empty ? tr('Likuiditas kosong') : p.inRange == null ? tr('belum tersinkron') : p.inRange ? 'in-range' : tr('di luar rentang');
   const pair = `${p.symbol0 || '?'} / ${p.symbol1 || '?'}`;
@@ -437,7 +437,7 @@ function positionSvg(p, { hideAmounts = false, icons = {}, chart = null } = {}) 
       : tr('{0} modal › {1} {2}', [usd(p.costUsd), usd(closed ? p.outUsd : (p.valueUsd || 0) + (p.feeUsd || 0)), tr(closed ? 'hasil keluar' : 'nilai + fee')]),
     subColor: hideAmounts ? T.faint : T.muted,
   });
-  // Harga dinyatakan sebagai pasangan (OPAI/USDG), bukan dolar: itu satuan pool-nya.
+  // The price is stated as the pair (OPAI/USDG), not dollars: that is the pool's unit.
   const unit = quote ? ` · ${base}/${quote}` : '';
   body += statsRow([
     [tr('Harga masuk') + unit, price(pEntry)],
@@ -449,10 +449,10 @@ function positionSvg(p, { hideAmounts = false, icons = {}, chart = null } = {}) 
   return frame(sign(p.pnlUsd), `${venueName(p.venue)} · ${chainName()}`, body, m, stampFor(m), chart);
 }
 
-// ---- kartu total portofolio -------------------------------------------------------
-// now/stats: bentuk yang sama dengan /api/portfolio; since: posisi pertama dibuka.
-// Angka utamanya sama dengan kartu "PnL bersih" di dasbor: nilai wallet dikurangi modal
-// nyata (memuat gas, zap, swap) kalau modal terlacak; kalau tidak, jumlah PnL per posisi.
+// ---- portfolio total card -------------------------------------------------------
+// now/stats: the same shape as /api/portfolio; since: when the first position was opened.
+// The main figure is the same as the "Net PnL" card on the dashboard: wallet value minus the real
+// capital (including gas, zap, swap) if capital is tracked; otherwise, the sum of per-position PnL.
 const totalPnl = (now) => (now.netPnl != null && now.capitalNet != null
   ? { net: true, pnl: now.netPnl, cap: now.capitalNet }
   : { net: false, pnl: now.pnl, cap: now.capital });
@@ -482,9 +482,9 @@ function totalSvg({ now, stats, since }, { hideAmounts = false, chart = null } =
   return frame(sign(pnl), tr('Seluruh portofolio') + ` · ${chainName()}`, body, m, stampFor(m), chart);
 }
 
-// ---- kartu PnL harian ---------------------------------------------------------------
-// day 'YYYY-MM-DD'; rows: posisi yang ditutup hari itu [{symbol0,symbol1,pnl,cost}];
-// total/count dari kalender (daftar posisi tertutup bisa terpotong); monthTotal: PnL bulan itu.
+// ---- daily PnL card ---------------------------------------------------------------
+// day 'YYYY-MM-DD'; rows: positions closed that day [{symbol0,symbol1,pnl,cost}];
+// total/count from the calendar (the closed positions list can be truncated); monthTotal: that month's PnL.
 function dailySvg({ day, rows, total: totalIn, count, monthTotal }, { hideAmounts = false, chart = null } = {}) {
   const total = totalIn ?? rows.reduce((a, r) => a + r.pnl, 0);
   const ts = new Date(day + 'T12:00:00').getTime();
@@ -493,7 +493,7 @@ function dailySvg({ day, rows, total: totalIn, count, monthTotal }, { hideAmount
   const dayPct = cost > 0 ? (total / cost) * 100 : null;
   const best = rows.reduce((a, r) => (a == null || r.pnl > a.pnl ? r : a), null);
   const worst = rows.reduce((a, r) => (a == null || r.pnl < a.pnl ? r : a), null);
-  // Cukup token spekulatifnya: "USDG/OPAI" terlalu panjang untuk satu kolom.
+  // Just the speculative token: "USDG/OPAI" is too long for a single column.
   const nameOf = (r) => (r ? ` · ${QUOTE.has(r.symbol0) ? r.symbol1 || '?' : r.symbol0 || '?'}` : '');
   const val = (r) => (r ? (hideAmounts ? (r.cost > 0 ? pct((r.pnl / r.cost) * 100, 1) : HIDDEN) : usd(r.pnl)) : '—');
   const body = title(fmtDay(ts), [[tr('{0} posisi ditutup', [count ?? rows.length])]]) + hero({
@@ -511,8 +511,8 @@ function dailySvg({ day, rows, total: totalIn, count, monthTotal }, { hideAmount
   return frame(sign(total), tr('PnL harian') + ` · ${chainName()}`, body, m, stampFor(m), chart);
 }
 
-// Pilih kartu dan gambar. lang 'id'|'en'; timeZone nama IANA (mis. 'Asia/Jakarta');
-// size/theme salah satu kunci SIZES/THEMES (yang tidak dikenal jatuh ke bawaan).
+// Pick the card and draw. lang 'id'|'en'; timeZone an IANA name (e.g. 'Asia/Jakarta');
+// size/theme one of the SIZES/THEMES keys (unknown ones fall back to the default).
 const sizeKey = (s) => (SIZES[s] ? s : 'wide');
 const themeKey = (t) => (THEMES[t] ? t : 'dark');
 function svgOf(kind, data, opts = {}) {
@@ -529,8 +529,8 @@ function svgOf(kind, data, opts = {}) {
     } finally { tz = null; T = THEMES.dark; G = null; chainNow = CHAIN_BADGE.robinhood; }
   });
 }
-// Nama venue untuk kartu: v4/v3 = Uniswap, pancakev3 = PancakeSwap, venue Solana dengan
-// nama programnya.
+// Venue name for the card: v4/v3 = Uniswap, pancakev3 = PancakeSwap, Solana venues by
+// their program name.
 const VENUE_NAME = { pancakev3: 'PancakeSwap V3', meteora: 'Meteora DLMM', orca: 'Orca Whirlpools', raydium: 'Raydium CLMM' };
 const venueName = (v) => VENUE_NAME[v] || `Uniswap ${String(v || '').toUpperCase()}`;
 function renderPng(svg, size) {
@@ -542,7 +542,7 @@ function renderPng(svg, size) {
 }
 const render = (kind, data, opts = {}) => renderPng(svgOf(kind, data, opts), opts.size);
 
-// Teks pendamping (caption Telegram / teks Web Share) — angka mengikuti bahasa.
+// Companion text (Telegram caption / Web Share text) — figures follow the language.
 function caption(kind, data, lang) {
   return localeContext.run(lang === 'en' ? 'en' : 'id', () => {
     if (kind === 'position') return `${data.symbol0 || '?'} / ${data.symbol1 || '?'} ${data.pnlPct == null ? '' : pct(data.pnlPct, 2)} · Quiver`;

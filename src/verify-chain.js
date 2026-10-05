@@ -1,10 +1,10 @@
 'use strict';
-// Verifikasi profil chain (networks.js) langsung ke chain-nya:
+// Verify a chain profile (networks.js) directly against the chain:
 //   node src/verify-chain.js bsc [https://rpc-url]
-// Memastikan chain id cocok, tiap alamat kontrak punya bytecode, dan relasi antar
-// kontrak konsisten (NPM.factory() == factory yang dicatat, posmV4.poolManager() ==
-// PoolManager, simbol/desimal aset kuotasi). Jalankan sebelum mematikan dry_run di
-// chain baru — alamat yang salah satu digit pun berarti transaksi ke kontrak yang salah.
+// Checks that the chain id matches, every contract address has bytecode, and the relations
+// between contracts are consistent (NPM.factory() == the recorded factory, posmV4.poolManager() ==
+// PoolManager, quote asset symbol/decimals). Run before switching off dry_run on a
+// new chain — a single wrong digit in an address means a transaction to the wrong contract.
 const { ethers } = require('ethers');
 const { RpcPool } = require('./rpc');
 const { build, NETWORKS } = require('./networks');
@@ -35,13 +35,13 @@ async function verify(key, urls, log = console.log) {
   }
   const call = async (to, data) => { try { const [w] = await pool.ethCallMany([{ to, data }], 'latest', { strict: true }); return w; } catch (e) { return null; } };
 
-  // v3: NPM.factory() harus sama dengan factory yang dicatat untuk venue itu
+  // v3: NPM.factory() must equal the factory recorded for that venue
   for (const v of p.venues) {
     const f = addrOf(await call(v.npmV3, IF_NPM.encodeFunctionData('factory')));
     if (v.factory) check(`venue ${v.key}: NPM.factory() == factory`, f === v.factory, `${f} vs ${v.factory}`);
     else check(`venue ${v.key}: NPM.factory() terbaca`, !!f, String(f));
     if (f) {
-      // Tier 500 (tick spacing 10) ada di Uniswap v3 maupun PancakeSwap v3 (yang tidak punya tier 3000).
+      // Tier 500 (tick spacing 10) exists on Uniswap v3 and PancakeSwap v3 (which has no 3000 tier).
       const ts = await call(f, IF_FACT.encodeFunctionData('feeAmountTickSpacing', [500]));
       check(`venue ${v.key}: factory.feeAmountTickSpacing(500) == 10`, ts != null && Number(BigInt(ts)) === 10, ts != null ? String(Number(BigInt(ts))) : 'tidak terbaca');
     }
@@ -51,7 +51,7 @@ async function verify(key, urls, log = console.log) {
   check('posmV4.poolManager() == poolManager', pm === p.ADDR.poolManager, `${pm} vs ${p.ADDR.poolManager}`);
   const next = await call(p.ADDR.posmV4, IF_POSM.encodeFunctionData('nextTokenId'));
   check('posmV4.nextTokenId() terbaca', next != null, next != null ? `${BigInt(next)} posisi v4 pernah dibuat` : '');
-  // aset kuotasi: simbol & desimal
+  // quote asset: symbol & decimals
   for (const [slot, meta] of Object.entries(NETWORKS[key].quoteMeta)) {
     if (slot === 'native') continue;
     const a = p.ADDR[slot];

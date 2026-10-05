@@ -23,23 +23,23 @@ SWAPS = {"swaps":[
   {"hash":"0x"+"ab"*32,"ts":1760000000000,"status":"sukses","error":None,"detail":{"tokenIn":"0x5fc5360d0400a0fd4f2af552add042d716f1d168",
    "tokenOut":"0x0000000000000000000000000000000000000000","symbolIn":"USDG","symbolOut":"ETH","amountIn":50,"amountOut":0.02}},
   {"hash":"0x"+"cd"*32,"ts":1759990000000,"status":"gagal","error":"revert","detail":{"usdIn":20,"usdOut":19.8}}]}
-# overview dipalsukan LIVE hanya untuk satu kasus, supaya konfirmasi dua langkah ikut teruji
+# overview is faked as LIVE for one case only, so the two-step confirmation gets tested too
 LIVE = {"mode":{"dry_run":False,"paused":False,"wallet":"0x"+"11"*20},
  "chain":{"head":1,"cursor":1,"lag":0,"ethUsd":2500,"headSpread":0},
  "stats":{"startedAt":0,"uptimeSec":10},"totals":{"actions":0,"copied":0,"would":0,"skipped":0,"errors":0},
  "summary":{"openCount":0,"exposureUsd":0,"costUsd":0,"feeUsd":0,"unrealizedUsd":0,"realizedUsd":0,"inRange":0},
  "equity":[],"decisionsTotal":0,"skipReasons":[],"rpc":[],"unsupportedSenders":[],"lastSync":0}
 
-KATA = {
- 'id': {'pool':'Pilih pool','nominal':'Nominal','rentang':'Rentang harga','ganti':'Ganti',
-        'dari':'Dari','ke':'Ke','biaya':'Biaya rute','buka':'Buka posisi','konfirm':'sungguhan','tukar':'Tukar','live':'Nyalakan LIVE','cari':'Cari pool untuk token ini'},
- 'en': {'pool':'Pick a pool','nominal':'Amount','rentang':'Price range','ganti':'Change',
-        'dari':'From','ke':'To','biaya':'Route cost','buka':'Open ','konfirm':'real transaction','tukar':'Swap','live':'Switch to LIVE','cari':'Find pools for this token'},
+WORDS = {
+ 'id': {'pool':'Pilih pool','amount':'Nominal','range':'Rentang harga','change':'Ganti',
+        'from_':'Dari','to':'Ke','cost':'Biaya rute','open':'Buka posisi','confirm':'sungguhan','swap':'Tukar','live':'Nyalakan LIVE','find':'Cari pool untuk token ini'},
+ 'en': {'pool':'Pick a pool','amount':'Amount','range':'Price range','change':'Change',
+        'from_':'From','to':'To','cost':'Route cost','open':'Open ','confirm':'real transaction','swap':'Swap','live':'Switch to LIVE','find':'Find pools for this token'},
 }
 errs=[]
 
 def cek(pg, lbl, lang, mode, live):
-    K = KATA[lang]
+    K = WORDS[lang]
     pg.route('**/api/manual/lp/plan', lambda r: r.fulfill(status=200, content_type='application/json', body=json.dumps(PLAN)))
     pg.route('**/api/manual/swap/quote', lambda r: r.fulfill(status=200, content_type='application/json',
              body=json.dumps(QUOTE_BAD if mode=='bad' else QUOTE)))
@@ -57,74 +57,74 @@ def cek(pg, lbl, lang, mode, live):
     # ---- LP manual ----
     pg.goto(B+'/#lp-manual', wait_until='domcontentloaded'); pg.wait_for_timeout(2300)
     body = pg.inner_text('body')
-    for k in ('pool','nominal','rentang'):
-        if K[k] not in body: errs.append(f'{lbl} LP: tidak ada "{K[k]}"')
-    # ---- cari pool dari alamat token (dilakukan lebih dulu: belum ada yang dipilih,
-    # jadi pemilihnya masih terbuka dan halaman tidak perlu dimuat ulang) ----
+    for k in ('pool','amount','range'):
+        if K[k] not in body: errs.append(f'{lbl} LP: missing "{K[k]}"')
+    # ---- find pools from a token address (done first: nothing is chosen yet,
+    # so the picker is still open and the page need not be reloaded) ----
     pg.locator('input[placeholder]').first.fill(ALAMAT); pg.wait_for_timeout(300)
-    tombol = pg.locator('button').filter(has_text=K['cari'])
-    if tombol.count()==0:
-        errs.append(f'{lbl} LP: tombol cari pool tidak muncul untuk alamat token')
+    button = pg.locator('button').filter(has_text=K['find'])
+    if button.count()==0:
+        errs.append(f'{lbl} LP: find-pool button not shown for a token address')
     else:
-        tombol.first.click(); pg.wait_for_timeout(2200)
+        button.first.click(); pg.wait_for_timeout(2200)
         b3 = pg.inner_text('body')
-        if 'FATCOIN/USDG' not in b3: errs.append(f'{lbl} LP: hasil pindai tidak tampil')
-        if '287' not in b3: errs.append(f'{lbl} LP: jumlah pool yang ada tidak disebut')
-        hasilp = pg.locator('div.max-h-80 button')
-        if hasilp.count() != 2: errs.append(f'{lbl} LP: hasil pindai harusnya 2 baris, ada {hasilp.count()}')
-    # kotak cari dikosongkan -> kembali ke daftar pool yang dikenal
+        if 'FATCOIN/USDG' not in b3: errs.append(f'{lbl} LP: scan result not shown')
+        if '287' not in b3: errs.append(f'{lbl} LP: pool count not mentioned')
+        scanRows = pg.locator('div.max-h-80 button')
+        if scanRows.count() != 2: errs.append(f'{lbl} LP: scan result should have 2 rows, got {scanRows.count()}')
+    # search box emptied -> back to the list of known pools
     pg.locator('input[placeholder]').first.fill(''); pg.wait_for_timeout(400)
     if 'FATCOIN/USDG' in pg.inner_text('body') and pg.locator('div.max-h-80 button').count() == 2:
-        errs.append(f'{lbl} LP: hasil pindai tidak hilang saat kotak cari dikosongkan')
+        errs.append(f'{lbl} LP: scan result did not go away when the search box was emptied')
 
     pools = pg.locator('div.max-h-80 button')
     if pools.count() == 0:
-        errs.append(f'{lbl} LP: daftar pool kosong'); return
+        errs.append(f'{lbl} LP: pool list empty'); return
     pools.first.click(); pg.wait_for_timeout(300)
-    if K['ganti'] not in pg.inner_text('body'):
-        errs.append(f'{lbl} LP: tombol ganti pool tidak muncul setelah dipilih')
-    pg.get_by_label(KATA[lang]['nominal'] if lang=='id' else 'Position amount').fill('50')
+    if K['change'] not in pg.inner_text('body'):
+        errs.append(f'{lbl} LP: change-pool button not shown after selecting')
+    pg.get_by_label(WORDS[lang]['amount'] if lang=='id' else 'Position amount').fill('50')
     pg.wait_for_timeout(1000)
     b2 = pg.inner_text('body')
     for must in [('50,00' if lang=='id' else '50.00'), 'HOOKR', 'USDG']:
-        if must not in b2: errs.append(f'{lbl} LP: pratinjau tidak memuat "{must}"')
-    if 'rentangnya sempit' not in b2: errs.append(f'{lbl} LP: peringatan dari server tidak ditampilkan')
+        if must not in b2: errs.append(f'{lbl} LP: preview does not contain "{must}"')
+    if 'rentangnya sempit' not in b2: errs.append(f'{lbl} LP: server warning not shown')
     if live:
-        tombol = pg.locator('button').filter(has_text=K['buka'])
-        if tombol.count()==0: errs.append(f'{lbl} LP: tombol buka tidak ada')
-        elif tombol.first.is_disabled(): errs.append(f'{lbl} LP: mode LIVE tapi tombol buka mati')
+        button = pg.locator('button').filter(has_text=K['open'])
+        if button.count()==0: errs.append(f'{lbl} LP: open button missing')
+        elif button.first.is_disabled(): errs.append(f'{lbl} LP: LIVE mode but open button disabled')
         else:
-            tombol.first.click(); pg.wait_for_timeout(300)
-            if K['konfirm'] not in pg.inner_text('body'):
-                errs.append(f'{lbl} LP: konfirmasi dua langkah tidak muncul')
+            button.first.click(); pg.wait_for_timeout(300)
+            if K['confirm'] not in pg.inner_text('body'):
+                errs.append(f'{lbl} LP: two-step confirmation not shown')
     else:
-        # mode simulasi: bukan tombol mati, tapi jalan keluar ke Pengaturan
-        jalan = pg.locator('button').filter(has_text=K['live'])
-        if jalan.count()==0 or jalan.first.is_disabled():
-            errs.append(f'{lbl} LP: mode simulasi tidak menawarkan jalan ke Pengaturan')
+        # simulation mode: not a dead button, but a way out to Settings
+        settingsLink = pg.locator('button').filter(has_text=K['live'])
+        if settingsLink.count()==0 or settingsLink.first.is_disabled():
+            errs.append(f'{lbl} LP: simulation mode does not offer a way to Settings')
         else:
-            jalan.first.click(); pg.wait_for_timeout(400)
-            if 'settings' not in pg.url: errs.append(f'{lbl} LP: tombol simulasi tidak membawa ke Pengaturan')
+            settingsLink.first.click(); pg.wait_for_timeout(400)
+            if 'settings' not in pg.url: errs.append(f'{lbl} LP: simulation button does not lead to Settings')
 
     # ---- Swap ----
     pg.goto(B+'/#swap', wait_until='domcontentloaded'); pg.wait_for_timeout(1900)
     sb = pg.inner_text('body')
-    for k in ('dari','ke'):
-        if K[k] not in sb: errs.append(f'{lbl} Swap: tidak ada "{K[k]}"')
+    for k in ('from_','to'):
+        if K[k] not in sb: errs.append(f'{lbl} Swap: missing "{K[k]}"')
     pg.get_by_label('Jumlah yang ditukar' if lang=='id' else 'Amount to swap').fill('50')
     pg.wait_for_timeout(1200)
     sb = pg.inner_text('body')
-    if '0,0201' not in sb and '0.0201' not in sb: errs.append(f'{lbl} Swap: hasil kutipan tidak tampil')
-    if K['biaya'] not in sb: errs.append(f'{lbl} Swap: rincian kutipan tidak tampil')
-    tukar = pg.locator('button').filter(has_text=K['tukar'])
-    hidup = [i for i in range(tukar.count()) if not tukar.nth(i).is_disabled()]
+    if '0,0201' not in sb and '0.0201' not in sb: errs.append(f'{lbl} Swap: quote result not shown')
+    if K['cost'] not in sb: errs.append(f'{lbl} Swap: quote breakdown not shown')
+    swapBtn = pg.locator('button').filter(has_text=K['swap'])
+    enabled = [i for i in range(swapBtn.count()) if not swapBtn.nth(i).is_disabled()]
     if mode=='bad':
-        if hidup: errs.append(f'{lbl} Swap: rute rugi 32% tapi tombol tukar masih bisa ditekan')
-        if '32' not in sb: errs.append(f'{lbl} Swap: peringatan rugi tidak menyebut angkanya')
-    elif live and not hidup:
-        errs.append(f'{lbl} Swap: mode LIVE, kutipan bagus, tapi tombol tukar mati')
+        if enabled: errs.append(f'{lbl} Swap: route loses 32% but the swap button is still pressable')
+        if '32' not in sb: errs.append(f'{lbl} Swap: loss warning does not state the figure')
+    elif live and not enabled:
+        errs.append(f'{lbl} Swap: LIVE mode, good quote, but swap button disabled')
     if pg.evaluate('document.documentElement.scrollWidth > document.documentElement.clientWidth+1'):
-        errs.append(f'{lbl} Swap: halaman melebar ke samping')
+        errs.append(f'{lbl} Swap: page overflows sideways')
 
 KASUS = [(1440,900,'desktop','id','ok',False), (1440,900,'desktop','en','ok',False),
          (1440,900,'desktop','id','bad',False), (1440,900,'desktop','id','ok',True),
@@ -137,13 +137,13 @@ with sync_playwright() as p:
             pg.add_init_script(f"try{{localStorage.setItem('lpcopy-lang','{lang}')}}catch(e){{}}")
             lbl=f'{nama}/{dv}/{lang}/{mode}{"/LIVE" if live else ""}'
             pg.on('pageerror', lambda e, l=lbl: errs.append(f'{l} pageerror: {e}'))
-            # Logo token yang memang tidak ada menjawab 404 — itu jalur normal
-            # (lambang cadangan dibangkitkan dari alamat), bukan galat halaman.
+            # A token logo that really does not exist answers 404 — that is the normal path
+            # (the fallback icon is generated from the address), not a page error.
             pg.on('console', lambda mm, l=lbl: errs.append(f'{l} console: {mm.text[:160]}')
                   if mm.type=='error' and '/api/icon' not in mm.location.get('url','') and 'api/icon' not in mm.text else None)
             try: cek(pg, lbl, lang, mode, live)
-            except Exception as e: errs.append(f'{lbl} GAGAL: {str(e)[:160]}')
+            except Exception as e: errs.append(f'{lbl} FAILED: {str(e)[:160]}')
             pg.close()
         b.close()
-print('\n'.join(dict.fromkeys(errs)) if errs else 'semua pemeriksaan tampilan lolos')
+print('\n'.join(dict.fromkeys(errs)) if errs else 'all UI checks passed')
 sys.exit(1 if errs else 0)

@@ -16,11 +16,11 @@ const OPEN_KEY = 'lpcopy-depth-open';
 export default function LiquidityRisk({ pool, focus }) {
   const { t } = useI18n();
   const [owner, setOwner] = useState(''), [salePct, setSalePct] = useState(100), [wallet, setWallet] = useState(false), [sellUsd, setSellUsd] = useState(100);
-  // Panelnya panjang dan menuhin layar, jadi default tertutup; pilihan pengguna diingat.
+  // The panel is long and fills the screen, so it defaults to collapsed; the user's choice is remembered.
   const [open, setOpen] = useState(false);
   useEffect(() => { try { setOpen(localStorage.getItem(OPEN_KEY) === '1'); } catch { /* abaikan */ } }, []);
   const toggle = () => setOpen((v) => { const next = !v; try { localStorage.setItem(OPEN_KEY, next ? '1' : '0'); } catch { /* abaikan */ } return next; });
-  // Tidak menembak /api/pool-depth selama panel tertutup.
+  // Does not hit /api/pool-depth while the panel is collapsed.
   const { data, error, loading, reload } = usePoll(open ? `/api/pool-depth?ref=${encodeURIComponent(pool.pool_ref)}` : null, 60000);
   useTick(30000);
   const d = !error && data?.ref === pool.pool_ref && Date.now() - data.fetchedAt < 120000 ? data : null;

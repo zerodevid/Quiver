@@ -1,26 +1,26 @@
 'use strict';
 const crypto = require('node:crypto');
-// Data pasar pihak ketiga untuk halaman detail posisi: statistik pool dari
-// DexScreener dan lilin OHLCV dari GeckoTerminal. Dua sumber karena masing-masing
-// unggul di satu hal — DexScreener punya volume/transaksi/likuiditas terkini yang
-// rapi, GeckoTerminal punya OHLCV per pool (DexScreener tidak membuka API lilin).
+// Third-party market data for the position detail page: pool stats from
+// DexScreener and OHLCV candles from GeckoTerminal. Two sources because each
+// excels at one thing — DexScreener has neat current volume/transactions/liquidity,
+// GeckoTerminal has OHLCV per pool (DexScreener does not expose a candle API).
 //
-// Keduanya membatasi panggilan per IP (GeckoTerminal ~30/menit), jadi jawabannya
-// disimpan sebentar di memori: dasbor yang dibuka di dua tab, atau poll berkala
-// halaman detail, tidak boleh menggandakan panggilan ke luar.
-// Slug chain di tiap layanan diambil dari profil chain (networks.js: dexscreener,
-// geckoterminal) — satu instance Market per chain.
+// Both limit calls per IP (GeckoTerminal ~30/minute), so the answers
+// are kept briefly in memory: a dashboard open in two tabs, or the periodic poll of the
+// detail page, must not double the outbound calls.
+// The chain slug at each service comes from the chain profile (networks.js: dexscreener,
+// geckoterminal) — one Market instance per chain.
 const dsBase = (slug) => `https://api.dexscreener.com/latest/dex/pairs/${slug}/`;
-// Semua pool yang memuat token (maks. 30) — /tokens/v1 hanya memberi satu per token.
+// All pools containing the token (max 30) — /tokens/v1 only gives one per token.
 const dsTokenBase = (slug) => `https://api.dexscreener.com/token-pairs/v1/${slug}/`;
 const gtBase = (slug) => `https://api.geckoterminal.com/api/v2/networks/${slug}/pools/`;
 const { gtTradesUrl, normalizeTrades } = require('./trades.mjs');
-// OpenAPI resmi GMGN (butuh API key dari gmgn.ai/ai): lilin harga versi GMGN — data
-// yang sama dengan chart di gmgn.ai, tapi digambar di chart kita sendiri supaya
-// rentang posisi bisa ditumpangkan. Baca-saja cukup header X-APIKEY; paket gratis
-// ~1 permintaan/detik per key.
+// The official GMGN OpenAPI (needs an API key from gmgn.ai/ai): GMGN's price candles — the same
+// data as the chart on gmgn.ai, but drawn on our own chart so the position
+// range can be overlaid. For read-only, the X-APIKEY header is enough; the free plan is
+// ~1 request/second per key.
 const GMGN_API = 'https://openapi.gmgn.ai';
-// Bobot tiap rute pada bucket jatah GMGN (docs: gmgn-skills, "Rate Limit Handling").
+// Weight of each route on the GMGN quota bucket (docs: gmgn-skills, "Rate Limit Handling").
 const GMGN_WEIGHT = {
   '/v1/token/info': 1, '/v1/token/security': 1, '/v1/token/pool_info': 1,
   '/v1/market/token_top_holders': 5, '/v1/market/token_top_traders': 5,
@@ -28,23 +28,23 @@ const GMGN_WEIGHT = {
 };
 const gmgnNorm = require('./gmgn');
 
-// Rentang waktu lilin yang ditawarkan UI -> (timeframe, aggregate) GeckoTerminal.
+// Candle time ranges offered by the UI -> GeckoTerminal (timeframe, aggregate).
 const TF = {
   '1m': ['minute', 1, 60], '5m': ['minute', 5, 300], '15m': ['minute', 15, 900],
   '1h': ['hour', 1, 3600], '4h': ['hour', 4, 14400], '1d': ['day', 1, 86400],
 };
 
 class Market {
-  // gmgnKey: fungsi yang mengembalikan API key GMGN saat ini (bisa berubah dari
-  // halaman Pengaturan tanpa restart), atau null kalau belum diisi.
+  // gmgnKey: a function that returns the current GMGN API key (it can change from the
+  // Settings page without a restart), or null if not yet set.
   constructor({ log, fetch: fetchImpl, chain = null, gmgnKey = null } = {}) {
     this.log = log || (() => {});
     this.fetch = fetchImpl || globalThis.fetch;
     this.gmgnKey = typeof gmgnKey === 'function' ? gmgnKey : () => gmgnKey;
     this.gmgnSlug = chain?.gmgn || chain?.network || 'robinhood';
-    this.gmgnCooldown = 0;    // ms — OpenAPI GMGN tidak dipanggil sebelum ini (habis kena limit)
-    this.gmgnNext = 0;        // ms — panggilan GMGN berikutnya paling cepat (jarak antar panggilan)
-    this.gmgnQueue = null;    // rantai promise antrean GMGN
+    this.gmgnCooldown = 0;    // ms — the GMGN OpenAPI is not called before this (just hit the limit)
+    this.gmgnNext = 0;        // ms — the earliest the next GMGN call may go (spacing between calls)
+    this.gmgnQueue = null;    // promise chain of the GMGN queue
     this.network = chain?.network || 'robinhood';
     // Alamat EVM dibandingkan dalam huruf kecil; alamat Solana (base58) peka huruf.
     this.lc = chain?.kind === 'solana' ? (x) => String(x || '') : (x) => String(x || '').toLowerCase();
@@ -53,19 +53,19 @@ class Market {
     this.gtSlug = chain?.geckoterminal || 'robinhood';
     this.GT = gtBase(this.gtSlug);
     this.cache = new Map();   // key -> { until, value: Promise }
-    this.good = new Map();    // key -> { at, value } — jawaban baik terakhir (cadangan)
-    this.gtCooldown = 0;      // ms — GeckoTerminal tidak dipanggil sebelum ini (habis kena 429)
+    this.good = new Map();    // key -> { at, value } — the last good answer (fallback)
+    this.gtCooldown = 0;      // ms — GeckoTerminal is not called before this (just hit 429)
   }
 
-  // Satu permintaan yang sama dalam jendela `ttl` ms dijawab dari cache — termasuk
-  // yang masih berjalan, supaya dua tab yang membuka detail bersamaan berbagi satu
-  // panggilan. Jawaban gagal tidak disimpan lama: coba lagi 10 detik kemudian.
+  // The same request within a `ttl` ms window is answered from the cache — including
+  // one still in flight, so two tabs opening the detail at the same time share a single
+  // call. A failed answer is not stored for long: retry 10 seconds later.
   //
-  // Kalau panggilannya GAGAL tetapi kita pernah punya jawaban baik yang belum terlalu
-  // tua, jawaban lama itu yang dikembalikan dengan tanda `stale`. GeckoTerminal
-  // membatasi panggilan per IP (429) dan satu VPS ini dipakai beberapa instance
-  // sekaligus: tanpa cadangan ini, grafik yang tadi tampil mendadak berganti pesan
-  // galat hanya karena tetangganya kebetulan menarik data di detik yang sama.
+  // If the call FAILS but we once had a good answer that is not too old,
+  // that old answer is returned with a `stale` flag. GeckoTerminal
+  // limits calls per IP (429) and this one VPS is used by several instances
+  // at once: without this fallback, a chart that was just shown would suddenly be replaced by an error
+  // message only because its neighbour happened to pull data in the same second.
   memo(key, ttl, fn, { staleMs = 15 * 60_000 } = {}) {
     const now = Date.now();
     const hit = this.cache.get(key);
@@ -95,14 +95,14 @@ class Market {
     return value;
   }
 
-  // `tries` > 1 hanya untuk pemanggil yang memang butuh jawabannya sekarang (kartu
-  // grafik Telegram): dari VPS, GeckoTerminal bisa menjawab 10+ detik, dan sekali
-  // kena batas waktu tombolnya berbalas galat padahal percobaan kedua lolos.
-  // Yang dipoll dasbor tetap sekali coba supaya halaman tidak menunggu dua kali.
+  // `tries` > 1 only for callers that really need the answer now (the Telegram chart
+  // card): from the VPS, GeckoTerminal can take 10+ seconds to answer, and once
+  // the timeout hits, the button replies with an error although the second attempt would have passed.
+  // What the dashboard polls stays at a single try so the page does not wait twice.
   //
-  // Sekali GeckoTerminal menjawab 429, SEMUA panggilan ke sana ditahan 20 detik
-  // (memo lalu menyajikan cadangan/stale): terus menembak saat jatah habis hanya
-  // memperpanjang blokirnya untuk ketiga instance di IP ini.
+  // Once GeckoTerminal answers 429, ALL calls to it are held for 20 seconds
+  // (the memo then serves the fallback/stale): continuing to hit it when the quota is exhausted only
+  // prolongs the block for all three instances on this IP.
   async json(url, { timeoutMs = 12_000, tries = 1 } = {}) {
     const gt = url.startsWith('https://api.geckoterminal.com/');
     if (gt && this.gtCooldown > Date.now()) throw new Error('batas panggilan (429) — coba lagi sebentar');
@@ -119,9 +119,9 @@ class Market {
         return r.json();
       } catch (e) {
         last = e;
-        // Yang layak diulang: batas waktu, koneksi putus, dan galat sisi server
-        // (502/503/504 — GeckoTerminal sesekali menjawab itu beberapa detik).
-        // 429 TIDAK diulang: itu justru minta kita berhenti sebentar.
+        // What is worth retrying: timeouts, dropped connections, and server-side errors
+        // (502/503/504 — GeckoTerminal occasionally answers those for a few seconds).
+        // 429 is NOT retried: it is precisely asking us to stop for a moment.
         const layak = /abort|timeout|timed out|fetch failed|network|ECONN|socket/i.test(String(e.message))
           || /^HTTP 5\d\d$/.test(String(e.message));
         if (!layak || i === tries - 1) throw e;
@@ -131,7 +131,7 @@ class Market {
     throw last;
   }
 
-  // Statistik pool dari DexScreener. pool v4 = poolId (bytes32), v3 = alamat pool.
+  // Pool stats from DexScreener. v4 pool = poolId (bytes32), v3 = pool address.
   pair(ref) {
     const key = `ds:${this.lc(ref)}`;
     return this.memo(key, 30_000, async () => {
@@ -154,8 +154,8 @@ class Market {
     });
   }
 
-  // Semua pool satu token dari DexScreener, likuiditas terbesar di depan — bahan
-  // halaman detail token. Pool pertama jadi sumber grafik harganya.
+  // All of a token's pools from DexScreener, the largest liquidity first — the material for
+  // the token detail page. The first pool becomes the source of its price chart.
   token(address) {
     const a = this.lc(address);
     return this.memo(`dst:${a}`, 30_000, async () => {
@@ -177,21 +177,21 @@ class Market {
     });
   }
 
-  // Lilin OHLCV dari GeckoTerminal, urut naik menurut waktu.
-  //  - token: alamat token yang jadi dasar harga (token spekulatif), supaya arah
-  //    harganya sama dengan rentang posisi di UI — bukan terserah GeckoTerminal.
-  //  - currency 'token': harga dalam aset kuotasi pool (USDG/ETH), bukan USD, supaya
-  //    sejajar dengan rentang tick posisi.
-  //  - before: batas akhir (ms) — posisi yang sudah ditutup dilihat di sekitar masa
-  //    hidupnya, bukan sampai sekarang. Dibulatkan ke lilin supaya cache-nya kena.
+  // OHLCV candles from GeckoTerminal, ascending by time.
+  //  - token: the token address that is the price base (the speculative token), so the direction
+  //    of the price is the same as the position range in the UI — not up to GeckoTerminal.
+  //  - currency 'token': price in the pool's quote asset (USDG/ETH), not USD, so it is
+  //    aligned with the position's tick range.
+  //  - before: end bound (ms) — a closed position is viewed around its
+  //    lifetime, not up to now. Rounded to a candle so the cache gets hits.
   candles(ref, tf = '1h', { limit = 300, token = null, currency = 'token', before = null, patient = false } = {}) {
     const [frame, agg, secs] = TF[tf] || TF['1h'];
     const n = Math.max(10, Math.min(1000, Number(limit) || 300));
     const beforeS = before ? Math.ceil(before / 1000 / secs) * secs : null;
     const key = `gt:${this.lc(ref)}:${tf}:${n}:${token || ''}:${currency}:${beforeS || ''}`;
-    // Cache selama setengah lilin, maksimum 60 detik: lilin yang sedang berjalan
-    // tetap terlihat bergerak tanpa membanjiri GeckoTerminal. Riwayat yang sudah
-    // lewat (before) tidak berubah lagi — simpan lebih lama.
+    // Cache for half a candle, at most 60 seconds: the running candle
+    // still visibly moves without flooding GeckoTerminal. History that has already
+    // passed (before) no longer changes — store it longer.
     return this.memo(key, beforeS ? 10 * 60_000 : Math.min(60_000, Math.max(15_000, (secs * 1000) / 2)), async () => {
       const q = new URLSearchParams({ aggregate: String(agg), limit: String(n), currency });
       if (token) q.set('token', token);
@@ -199,7 +199,7 @@ class Market {
       const j = await this.json(`${this.GT}${ref}/ohlcv/${frame}?${q}`, patient ? { timeoutMs: 25_000, tries: 2 } : {});
       if (!j) return { error: 'pool ini belum terindeks di GeckoTerminal' };
       const list = j?.data?.attributes?.ohlcv_list || [];
-      // Sesekali ada dua lilin berwaktu sama: yang muncul belakangan menang.
+      // Occasionally there are two candles with the same time: the later one wins.
       const byT = new Map(list.map(([t, o, h, l, c, v]) => [t, { t: t * 1000, o, h, l, c, v }]));
       const candles = [...byT.values()].sort((a, b) => a.t - b.t);
       return {
@@ -211,9 +211,9 @@ class Market {
     });
   }
 
-  // Antrean panggilan GMGN: satu per satu, dengan jeda sebesar bobot/5 detik
-  // setelah tiap panggilan (bucket 5 poin/detik) supaya proses ini sendiri tidak
-  // pernah melampaui jatah — instance lain di IP yang sama tetap di luar kendali.
+  // GMGN call queue: one at a time, with a gap of weight/5 seconds
+  // after each call (a 5 points/second bucket) so this process itself never
+  // exceeds the quota — other instances on the same IP remain outside our control.
   gmgnSlot(weight, fn) {
     const run = async () => {
       const wait = this.gmgnNext - Date.now();
@@ -226,11 +226,11 @@ class Market {
     return p;
   }
 
-  // Lilin OHLCV dari OpenAPI GMGN untuk satu token (harga USD, bukan aset kuotasi
-  // pool — GMGN menghargai token, bukan pool). Bentuk jawabannya disamakan dengan
-  // candles() supaya UI memakai jalur yang sama; `source: 'gmgn'` dan
-  // `currency: 'usd'` memberi tahu UI bahwa rentang posisi perlu dikonversi ke USD.
-  // Tanpa key: { error } supaya UI kembali ke GeckoTerminal.
+  // OHLCV candles from the GMGN OpenAPI for one token (USD price, not the pool's quote asset
+  // — GMGN prices tokens, not pools). The shape of the answer is aligned with
+  // candles() so the UI uses the same path; `source: 'gmgn'` and
+  // `currency: 'usd'` tell the UI that the position range needs converting to USD.
+  // Without a key: { error } so the UI falls back to GeckoTerminal.
   gmgnEnabled() { return !!this.gmgnKey(); }
   candlesGmgn(token, tf = '1h', { limit = 300, before = null } = {}) {
     const key = this.gmgnKey();
@@ -247,7 +247,7 @@ class Market {
       for (const c of j?.list || []) {
         const t = Number(c.time), o = Number(c.open), h = Number(c.high), l = Number(c.low), cl = Number(c.close);
         if (!(t > 0) || !(o > 0) || !(h > 0) || !(l > 0) || !(cl > 0)) continue;
-        // volume = jumlah token, amount = nilai USD — UI memakai nilai USD sebagai volume.
+        // volume = token amount, amount = USD value — the UI uses the USD value as the volume.
         byT.set(t, { t: t * 1000, o, h, l, c: cl, v: Number(c.amount) || 0 });
       }
       const candles = [...byT.values()].sort((a, b) => a.t - b.t);
@@ -255,8 +255,8 @@ class Market {
     });
   }
 
-  // Profil token menurut GMGN: info + security (bobot 1 + 1), sekali per menit per
-  // token. Salah satu boleh gagal — yang lain tetap dipakai dan galatnya dibawa.
+  // Token profile per GMGN: info + security (weight 1 + 1), once per minute per
+  // token. One may fail — the other is still used and the error carried along.
   gmgnToken(address) {
     const a = this.lc(address);
     if (!this.gmgnKey()) return Promise.resolve({ enabled: false });
@@ -276,8 +276,8 @@ class Market {
     });
   }
 
-  // Pemegang / trader teratas satu token (bobot 5 — sekali panggil menghabiskan
-  // bucket paket gratis), jadi disimpan 3 menit dan hanya ditarik saat panelnya dibuka.
+  // Top holders / traders of a token (weight 5 — a single call exhausts the free plan's
+  // bucket), so stored for 3 minutes and only pulled when its panel is opened.
   gmgnWallets(address, { kind = 'holders', limit = 50, orderBy = null } = {}) {
     const a = this.lc(address);
     if (!this.gmgnKey()) return Promise.resolve({ enabled: false });
@@ -290,7 +290,7 @@ class Market {
     });
   }
 
-  // Statistik trading satu wallet menurut GMGN (bobot 3), 5 menit.
+  // Trading stats of one wallet per GMGN (weight 3), 5 minutes.
   gmgnWallet(address, { period = '7d' } = {}) {
     const a = this.lc(address);
     if (!this.gmgnKey()) return Promise.resolve({ enabled: false });
@@ -302,15 +302,15 @@ class Market {
     });
   }
 
-  // Satu panggilan baca ke OpenAPI GMGN. Jawaban dibungkus { code, data, error,
-  // message }: code 0 = sukses.
+  // One read call to the GMGN OpenAPI. The answer is wrapped { code, data, error,
+  // message }: code 0 = success.
   //
-  // Jatah paket gratis adalah leaky bucket 5 poin / 5 poin per detik PER IP — dan
-  // satu IP VPS dipakai tiga instance bot. Panggilan berbobot 5 (holders/traders)
-  // hampir pasti bertabrakan dengan panggilan lain, jadi: (1) panggilan diantrekan
-  // dan diberi jarak sesuai bobotnya, (2) kena limit dicoba ulang sekali setelah
-  // 1,5 detik, (3) masih limit -> semua panggilan ditahan 10 detik supaya memo
-  // menyajikan cadangan, bukan menembak terus.
+  // The free plan's quota is a leaky bucket of 5 points / 5 points per second PER IP — and
+  // one VPS IP is used by three bot instances. A weight-5 call (holders/traders)
+  // almost certainly collides with other calls, so: (1) calls are queued
+  // and spaced by their weight, (2) hitting the limit is retried once after
+  // 1.5 seconds, (3) still limited -> all calls are held for 10 seconds so the memo
+  // serves the fallback, instead of continuing to hit it.
   async gmgn(subPath, params = {}, { timeoutMs = 12_000, weight = GMGN_WEIGHT[subPath] || 1 } = {}) {
     const key = this.gmgnKey();
     if (!key) return { error: 'API key GMGN belum diisi' };
@@ -338,10 +338,10 @@ class Market {
     return j.data ?? {};
   }
 
-  // Transaksi swap terakhir di satu pool dari GeckoTerminal (maks. 300 dalam 24 jam
-  // terakhir), terbaru di depan — cadangan pita "running trade" kalau browser tidak
-  // bisa memanggil GeckoTerminal sendiri (lihat trades.mjs). Cache 15 detik: IP VPS
-  // ini dipakai tiga instance sekaligus dan jatahnya ~30 panggilan/menit.
+  // The latest swap transactions in one pool from GeckoTerminal (max. 300 in the last
+  // 24 hours), newest first — the fallback of the "running trade" tape if the browser
+  // cannot call GeckoTerminal itself (see trades.mjs). 15-second cache: this VPS's IP
+  // is used by three instances at once and its quota is ~30 calls/minute.
   trades(ref, { token = null, limit = 80 } = {}) {
     const t = this.lc(token || '');
     return this.memo(`gtt:${this.lc(ref)}:${t}:${limit}`, 15_000, async () => {

@@ -1,8 +1,8 @@
-// Komponen kecil yang dipakai berulang. Semuanya dirakit dari komponen HeroUI;
-// tidak ada gaya visual baru di luar token tema HeroUI.
+// Small components used repeatedly. All assembled from HeroUI components;
+// no new visual style outside the HeroUI theme tokens.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Card, Chip, EmptyState, Label, Description, TextField, Input, Select, ListBox,
+  Card, Chip, EmptyState, Label, Description, FieldError, TextField, Input, Select, ListBox,
   Switch, Table, Spinner, Alert, Pagination, AlertDialog, Button,
 } from '@heroui/react';
 import { Inbox, Search, ArrowLeft, ArrowUpRight, Copy, Check, ExternalLink, RefreshCw } from 'lucide-react';
@@ -25,10 +25,10 @@ export function PageHeader({ group, title, desc, children }) {
   );
 }
 
-// Angka utama. Label kecil di atas, nilai besar, keterangan di bawah — tanpa
-// HURUF BESAR SEMUA, yang pada empat kartu berjajar berubah jadi teriakan.
-// `badge` = satu penanda kecil di samping label (mis. APR, status in-range):
-// sifat angkanya, bukan angka kedua yang bersaing dengan yang utama.
+// The main figure. A small label on top, a large value, a note below — without
+// ALL CAPS, which on four cards side by side turns into shouting.
+// `badge` = a small marker beside the label (e.g. APR, in-range status):
+// a property of the figure, not a second figure competing with the main one.
 export function Stat({ label, value, sub, fx = null, valueClass = '', badge = null, className = '' }) {
   return (
     <Card className={`min-w-0 gap-1.5! p-3.5! ${className}`}>
@@ -37,18 +37,32 @@ export function Stat({ label, value, sub, fx = null, valueClass = '', badge = nu
         {badge}
       </div>
       <div className={`num break-words text-lg sm:text-[1.375rem] leading-tight font-semibold tracking-tight ${valueClass}`}>{value}<Fx v={fx} /></div>
-      {/* Di HP ubinnya selebar setengah layar: keterangan yang dipotong satu baris
-          ("$851,40 di luar rentang — ti…") membuang justru bagian yang menjelaskan.
-          Dua baris; tinggi kartu tetap rata karena semuanya satu baris kisi. */}
+      {/* On mobile the tile is half the screen wide: a caption cut to one line
+          ("$851,40 out of range — ti…") drops exactly the part that explains it.
+          Two lines; the card height stays even because everything shares one grid row. */}
       {sub && <div className="line-clamp-2 text-xs text-muted">{typeof sub === 'string' ? t(sub) : sub}</div>}
     </Card>
   );
 }
 
-// Pita angka utama. Empat ubin seukuran sama membuat "total portofolio" dan
-// "win rate" tampak sama pentingnya; padahal dua angka pertama yang dicari mata
-// setiap kali halaman dibuka. Keduanya dinaikkan ke kartu selebar halaman dengan
-// ukuran huruf yang jelas lebih besar, sisanya turun jadi ubin di bawahnya.
+// A small figure inside a panel: label, value, note — three tight rows, without its
+// own card. Used in pairs inside the position drawer, where our figure and the
+// target's figure stand side by side; a `Stat` tile there would compete with
+// the main figure at the drawer's head.
+export function Fig({ label, value, sub, cls = '' }) {
+  return (
+    <div className="min-w-0">
+      <div className="truncate text-xs text-muted">{t(label)}</div>
+      <div className={`num truncate text-sm font-semibold ${cls}`}>{value}</div>
+      {sub && <div className="truncate text-xs text-muted">{sub}</div>}
+    </div>
+  );
+}
+
+// The main figure strip. Four equal-sized tiles make "portfolio total" and
+// "win rate" look equally important; yet the first two figures are what the eye looks for
+// every time the page opens. Both are raised to a page-wide card with a
+// clearly larger font size, the rest drop to tiles below.
 export function Hero({ children, className = '' }) {
   return (
     <Card className={`min-w-0 gap-0! p-0! ${className}`}>
@@ -69,7 +83,7 @@ export function HeroFigure({ label, value, sub, fx = null, valueClass = '', asid
   );
 }
 
-// Baris label/nilai — dipakai di semua panel ringkasan.
+// Label/value row — used in all summary panels.
 export function KV({ label, children, fx = null, className = '' }) {
   return (
     <div className={`kv-row flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 text-sm ${className}`}>
@@ -79,10 +93,10 @@ export function KV({ label, children, fx = null, className = '' }) {
   );
 }
 
-// Nilai yang sama dalam mata uang kedua (Pengaturan -> Tampilan), menempel di kanan
-// angka dolarnya. Sengaja kecil dan kelabu: yang dibaca tetap dolarnya, ini cuma
-// rasa besaran. Tanpa mata uang kedua — atau untuk nilai yang membulat jadi nol —
-// tidak ada apa-apa yang digambar, jadi tata letaknya sama persis seperti sebelumnya.
+// The same value in the secondary currency (Settings -> Display), attached to the right of
+// its dollar figure. Deliberately small and grey: what is read is still the dollars, this is only
+// a sense of scale. Without a secondary currency — or for a value that rounds to zero —
+// nothing is drawn, so the layout is exactly the same as before.
 export function Fx({ v, className = '' }) {
   const fx = useFx();
   const s = fx ? fxText(v) : null;
@@ -95,17 +109,17 @@ export function Fx({ v, className = '' }) {
   );
 }
 
-// Titik status: lebih tenang daripada chip berwarna yang diulang tiap baris.
+// Status dot: calmer than a coloured chip repeated on every row.
 export function Dot({ tone = 'default', title }) {
   const c = { success: 'bg-success', danger: 'bg-danger', warning: 'bg-warning', accent: 'bg-accent', default: 'bg-muted' }[tone] || 'bg-muted';
   return <span className={`inline-block size-1.5 shrink-0 rounded-full ${c}`} title={title ? t(title) : undefined} />;
 }
 
-// Kotak kartu dengan judul — pola yang paling sering dipakai.
+// Card box with a title — the most frequently used pattern.
 export function Panel({ title, desc, action, children, className = '', bodyClass = '' }) {
   return (
-    // min-w-0: item grid default-nya min-width:auto, sehingga teks panjang di dalamnya
-    // memaksa kartu melebar melewati layar HP.
+    // min-w-0: a grid item defaults to min-width:auto, so long text inside it
+    // forces the card wider than a phone screen.
     <Card className={`min-w-0 gap-0! p-0! ${className}`}>
       {(title || action) && (
         <div className="flex flex-row flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-border px-4 py-3">
@@ -113,7 +127,7 @@ export function Panel({ title, desc, action, children, className = '', bodyClass
             {title && <h2 className="text-sm font-semibold tracking-tight">{t(title)}</h2>}
             {desc && <p className="mt-0.5 text-xs text-muted">{t(desc)}</p>}
           </div>
-          {/* max-w-full: di HP isi action (mis. dua Segmented) boleh membungkus, bukan menjebol kartu */}
+          {/* max-w-full: on mobile the action content (e.g. two Segmented) may wrap instead of breaking out of the card */}
           {action && <div className="max-w-full shrink-0">{action}</div>}
         </div>
       )}
@@ -137,13 +151,13 @@ export function Empty({ title, sub }) {
   );
 }
 
-// Kerangka muat: bentuk halaman/panel yang akan datang, bukan roda berputar di ruang
-// kosong — mata sudah tahu ke mana harus melihat begitu datanya tiba, dan tata letak
-// tidak melompat. Muncul setelah 150 ms (kelas loading-in) supaya muatan yang cepat
-// tidak berkedip. `page` = kerangka satu halaman (judul, ubin angka, dua panel);
-// tanpa itu = beberapa baris untuk isi panel. Teks hanya tampil kalau diberikan
-// (mis. "Membaca isi wallet dari chain…" untuk proses yang memang lama); selebihnya
-// cukup untuk pembaca layar.
+// Loading skeleton: the shape of the page/panel to come, not a spinning wheel in empty
+// space — the eye already knows where to look once the data arrives, and the layout
+// does not jump. Appears after 150 ms (the loading-in class) so a fast load
+// does not flicker. `page` = the skeleton of a whole page (title, figure tiles, two panels);
+// without it = a few rows for panel contents. Text only shows if given
+// (e.g. "Reading wallet contents from the chain…" for a process that really is slow); otherwise it
+// is only for screen readers.
 const Bone = ({ w = '100%', h = '0.75rem', className = '' }) => (
   <div className={`skel ${className}`} style={{ width: w, height: h }} aria-hidden="true" />
 );
@@ -201,10 +215,10 @@ export function Loading({ text = null, page = false }) {
   );
 }
 
-// Penanda "sedang mengambil data baru" untuk kepala panel. Tabel TIDAK pernah
-// dikosongkan selama memuat ulang — data lama tetap terbaca sampai yang baru tiba,
-// dan penanda ini yang memberi tahu bahwa angkanya sebentar lagi berganti. Kosong
-// saat tidak memuat, supaya tidak jadi perabot yang selalu ada.
+// "Fetching new data" marker for the panel head. The table is NEVER
+// emptied while reloading — old data stays readable until the new arrives,
+// and this marker tells that the figures are about to change. Empty
+// when not loading, so it does not become furniture that is always there.
 export function Refreshing({ loading, text = 'Memperbarui…' }) {
   if (!loading) return null;
   return (
@@ -214,18 +228,18 @@ export function Refreshing({ loading, text = 'Memperbarui…' }) {
   );
 }
 
-// Tombol perbarui + jam "terakhir dibaca". Satu paket dengan sengaja: tombol tanpa
-// jam tidak bisa dipercaya — ditekan, angkanya sama, dan tidak ada cara tahu apakah
-// memang belum berubah atau permintaannya hilang; jam tanpa tombol cuma memberi
-// kabar basi tanpa jalan keluar.
+// Refresh button + "last read" clock. One package on purpose: a button without a
+// clock cannot be trusted — pressed, the figures are the same, and there is no way to know whether
+// they really had not changed or the request was lost; a clock without a button only gives
+// stale news with no way out.
 //
-// `at` adalah waktu server membaca chain, BUKAN waktu halaman mengambil data:
-// memuat ulang halaman tiap detik tidak membuat angkanya lebih baru. Lewat 90 detik
-// jamnya berubah kuning — di situ umur data sudah cukup untuk mengubah keputusan
-// (harga bergerak, fee bertambah, posisi keluar rentang).
+// `at` is the time the server read the chain, NOT the time the page fetched the data:
+// reloading the page every second does not make the figures newer. Past 90 seconds
+// the clock turns yellow — by then the age of the data is enough to change decisions
+// (the price moved, fees grew, the position left the range).
 //
-// `at` tidak dioper sama sekali = tabelnya tidak punya jam semacam itu (isinya dari
-// basis data, bukan dari sinkron chain): tombol saja, tanpa jam yang mengaku-aku.
+// `at` not passed at all = the table has no such clock (its contents come from the
+// database, not from a chain sync): the button only, without a clock pretending to be there.
 export function Refresh({ at, busy, onPress, label = 'Perbarui', stale = 90_000 }) {
   useTick(1000);
   const old = at ? Date.now() - at > stale : false;
@@ -256,26 +270,26 @@ export function Notice({ status = 'default', title, children }) {
   );
 }
 
-// Rentang harga posisi LP.
+// Price range of an LP position.
 //
-// Menampilkan HARGA sebenarnya, bukan lebar dalam persen: "lebar 530%" tidak
-// memberi tahu di harga berapa posisi ini bekerja, apakah harga sekarang masih di
-// dalamnya, dan seberapa dekat dengan tepi. Sumbu digambar logaritmik karena
-// tick Uniswap linear terhadap log harga — jarak yang sama di layar berarti
-// perubahan harga persen yang sama.
+// Shows the actual PRICE, not the width in percent: "width 530%" does not
+// tell at which price this position works, whether the current price is still inside
+// it, and how close it is to the edge. The axis is drawn logarithmically because
+// Uniswap ticks are linear in log price — the same distance on screen means the
+// same percent price change.
 export function PriceRange({
   lo, hi, cur, entrySqrt, exitSqrt, dec0, dec1, quoteSide, symbol0, symbol1, showPrices = true, position = null,
 }) {
   if (lo == null || hi == null) return <span className="text-muted">—</span>;
-  // Rentang penuh (tick ±887272, dibulatkan ke tick spacing): harganya 3e-39 … 3e+38,
-  // angka yang benar tapi tidak berarti apa-apa. Posisi seperti ini selalu in-range.
+  // Full range (tick ±887272, rounded to tick spacing): the price is 3e-39 … 3e+38,
+  // a correct figure but meaningless. A position like this is always in-range.
   if (lo <= -880000 && hi >= 880000) {
     const pE = sqrtPrice(entrySqrt, dec0, dec1, quoteSide), pX = sqrtPrice(exitSqrt, dec0, dec1, quoteSide);
     const mv = pE != null && pX != null ? (pX / pE - 1) * 100 : null;
     return (
       <div className="w-44 min-w-40 text-xs">
         <div className="font-medium">{t('Seluruh rentang')}</div>
-        {/* tanpa tepi: pita memudar ke kedua sisi, bukan berhenti di satu harga */}
+        {/* no edge: the band fades on both sides instead of stopping at one price */}
         <div className="relative mt-0.5 h-3.5">
           <div className="absolute inset-x-0 top-1/2 h-2 -translate-y-1/2 rounded-full bg-linear-to-r from-transparent via-accent/40 to-transparent" />
         </div>
@@ -295,13 +309,13 @@ export function PriceRange({
 
   const pEntry = sqrtPrice(entrySqrt, dec0, dec1, quoteSide);
   const pExit = sqrtPrice(exitSqrt, dec0, dec1, quoteSide);
-  const pNow = pExit ?? (cur != null ? at(cur) : null);   // posisi tertutup: harga saat keluar
+  const pNow = pExit ?? (cur != null ? at(cur) : null);   // closed position: the price at exit
   const closed = pExit != null;
   const bep = position ? breakEven(position) : null;
   const bepPrice = bep?.price > 0 && Number.isFinite(bep.price) ? bep.price : null;
 
-  // Sumbu logaritmik: rentang + bantalan, diperlebar bila harga masuk/kini ada di luar
-  // rentang supaya penandanya tetap terlihat, bukan menempel di tepi.
+  // Logarithmic axis: range + padding, widened if the entry/current price is outside the
+  // range so the marker stays visible, not stuck to the edge.
   const L = Math.log;
   const pts = [pLo, pHi, pEntry, pNow, bepPrice].filter((x) => x != null && x > 0);
   const dataLo = Math.min(...pts), dataHi = Math.max(...pts);
@@ -312,12 +326,12 @@ export function PriceRange({
 
   const inRange = pNow != null && pNow >= pLo && pNow <= pHi;
   const move = pEntry != null && pNow != null ? (pNow / pEntry - 1) * 100 : null;
-  // Posisi tertutup atau tanpa harga kini: status in/out tidak berlaku, pita netral.
+  // Closed position or without a current price: the in/out status does not apply, neutral band.
   const band = closed || pNow == null ? 'bg-accent/25 border-accent'
     : inRange ? 'bg-success/25 border-success' : 'bg-warning/20 border-warning';
 
-  // Jarak ke tepi terdekat = berapa persen harga harus bergerak sebelum posisi
-  // berhenti menghasilkan fee.
+  // Distance to the nearest edge = how many percent the price must move before the position
+  // stops earning fees.
   let edge = null;
   const cap = (x) => (x >= 1000 ? '999+' : x.toFixed(0));
   if (!closed && pNow != null) {
@@ -346,9 +360,9 @@ export function PriceRange({
           {quote && <span className="ml-1 text-muted">{quote}</span>}
         </div>
       )}
-      {/* Jalur tipis = seluruh sumbu; pita tebal bertepi = rentang posisi, diwarnai
-          statusnya supaya in/out terbaca sebelum teksnya. Penanda dipusatkan pada
-          harganya (-translate-x-1/2), bukan menempel dengan tepi kirinya. */}
+      {/* Thin track = the whole axis; thick edged band = the position range, coloured by
+          its status so in/out reads before the text. The marker is centred on its price
+          (-translate-x-1/2), not attached by its left edge. */}
       <div className="relative h-3.5">
         <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-default" />
         <div className={`absolute top-1/2 h-2 -translate-y-1/2 rounded-[1px] border-x-2 ${band}`}
@@ -363,8 +377,8 @@ export function PriceRange({
           {t('masuk {p}', { p: price(pEntry) })}
           {move != null && <>
             <span className="mx-1 text-muted">·</span>
-            {/* pool yang disapu kosong bisa menaruh harga di tick maksimum — +1e19% tidak
-                memberi tahu apa-apa selain "jauh"; dibatasi seperti jarak ke tepi */}
+            {/* a swept-empty pool can put the price at the max tick — +1e19% says nothing
+                beyond "far"; capped like the distance to the edge */}
             <span className={move > 0.05 ? 'text-success' : move < -0.05 ? 'text-danger' : ''}>
               {closed ? t('keluar ') : ''}{move >= 1000 ? '+999+%' : pct(move, 1)}</span>
           </>}
@@ -378,15 +392,15 @@ export function PriceRange({
   );
 }
 
-// Tabel data: menyortir, mencari, dan membagi halaman sendiri.
+// Data table: sorts, searches, and paginates by itself.
 //
-// Kolom: { key, label, align, className, render, sort, search, sortable:false }
-//  - sort   : (row) => nilai pembanding (angka/teks). Default: pakai row[key].
-//  - search : (row) => teks yang ikut dicari. Default: hasil sort kalau berupa teks.
-// Semua tabel memakai komponen ini, jadi perilakunya seragam di seluruh dasbor.
+// Columns: { key, label, align, className, render, sort, search, sortable:false }
+//  - sort   : (row) => comparison value (number/text). Default: uses row[key].
+//  - search : (row) => text that is searched. Default: the sort result if it is text.
+// All tables use this component, so behaviour is uniform across the dashboard.
 const cmp = (a, b) => {
   if (a == null && b == null) return 0;
-  if (a == null) return 1;              // kosong selalu di bawah, di kedua arah
+  if (a == null) return 1;              // empty always at the bottom, in both directions
   if (b == null) return -1;
   if (typeof a === 'number' && typeof b === 'number') return a - b;
   return String(a).localeCompare(String(b), undefined, { numeric: true });
@@ -400,8 +414,8 @@ export function DataTable({
   const [sort, setSort] = useState(defaultSort || null);
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
-  // Jumlah baris per halaman bisa diubah pembaca; pilihannya diingat per tabel
-  // (kunci = label) di peramban. pageSize dari pemanggil hanya nilai awal.
+  // The number of rows per page can be changed by the reader; the choice is remembered per table
+  // (key = label) in the browser. The caller's pageSize is only the initial value.
   const sizes = useMemo(() => (pageSize > 0 ? [...new Set([4, 10, 25, 50, 100, pageSize])].sort((a, b) => a - b) : []), [pageSize]);
   const [size, setSizeRaw] = useState(() => {
     if (!pageSize) return 0;
@@ -425,7 +439,7 @@ export function DataTable({
     if (!col && !pinTop) return filtered;
     const dir = sort?.direction === 'descending' ? -1 : 1;
     const byCol = col ? (a, b) => cmp(valOf(col, a), valOf(col, b)) * dir : () => 0;
-    // pinTop: baris yang lolos predikat selalu di atas (mis. posisi yang masih terbuka), apa pun kolom/arah sortirnya.
+    // pinTop: rows that pass the predicate are always on top (e.g. still-open positions), whatever the sort column/direction.
     const order = pinTop ? (a, b) => (pinTop(b) ? 1 : 0) - (pinTop(a) ? 1 : 0) || byCol(a, b) : byCol;
     return [...filtered].sort(order);
   }, [filtered, sort, columns, pinTop]);
@@ -434,13 +448,13 @@ export function DataTable({
   const cur = Math.min(page, pages);
   const view = size ? sorted.slice((cur - 1) * size, cur * size) : sorted;
 
-  // Menyaring atau menyortir mengubah isi halaman — kembali ke halaman pertama.
+  // Filtering or sorting changes the page contents — go back to the first page.
   useEffect(() => { setPage(1); }, [q, sort?.column, sort?.direction, rows.length]);
 
-  // jumpTo {key, n}: pemanggil minta satu baris ditunjukkan (mis. posisi asli yang
-  // disalin bot). Saringan dikosongkan, halaman yang memuat baris itu dibuka, lalu
-  // barisnya digulir ke tengah layar dan disorot sebentar. n naik tiap permintaan
-  // supaya menekan tombol yang sama dua kali tetap menggulir lagi.
+  // jumpTo {key, n}: the caller asks for one row to be pointed out (e.g. the original position
+  // copied by the bot). Filters are cleared, the page containing that row is opened, then
+  // the row is scrolled to the middle of the screen and briefly highlighted. n rises on every request
+  // so pressing the same button twice still scrolls again.
   const root = useRef(null);
   const [pending, setPending] = useState(null);
   const [flash, setFlash] = useState(null);
@@ -461,13 +475,13 @@ export function DataTable({
     return () => clearTimeout(timer);
   }, [flash]);
 
-  // Kotak cari di atas tabel berisi 2 baris cuma perabot kosong; muncul setelah
-  // daftarnya cukup panjang untuk benar-benar perlu disaring.
-  const bisaCari = searchable && rows.length >= 8;
-  const head = rows.length > 0 && (bisaCari || (size > 0 && rows.length > size));
-  // Kolom pertama (nama pasangan/wallet) menempel saat tabel digulir mendatar — di
-  // ponsel, tabel lebar cuma memperlihatkan satu-dua kolom; tanpa ini angka yang
-  // digulir kehilangan barisnya. Bayangan di tepi kolom hanya saat sudah bergeser.
+  // A search box above a table of 2 rows is just empty furniture; it appears once
+  // the list is long enough to really need filtering.
+  const canSearch = searchable && rows.length >= 8;
+  const head = rows.length > 0 && (canSearch || (size > 0 && rows.length > size));
+  // The first column (pair/wallet name) sticks when the table is scrolled horizontally — on a
+  // phone, a wide table shows only one or two columns; without this the scrolled figures
+  // lose their row. The shadow at the column edge only when it has shifted.
   useEffect(() => {
     const sc = root.current?.querySelector('.table__scroll-container');
     if (!sc) return;
@@ -479,7 +493,7 @@ export function DataTable({
     <div ref={root} className="table-sticky">
       {head && (
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2.5">
-          {bisaCari ? (
+          {canSearch ? (
             <div className="relative w-full max-w-64">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
               <Input variant="secondary" className="pl-8" value={q} aria-label={t('Cari')}
@@ -493,17 +507,17 @@ export function DataTable({
       )}
       <Table variant="secondary">
         <Table.ScrollContainer className="max-w-full">
-          {/* onRow: seluruh baris bisa diklik (mis. membuka laci riwayat). Tombol dan
-              tautan di dalam sel tetap bekerja sendiri — react-aria menghentikan
-              tekanan bersarang sebelum sampai ke baris. */}
+          {/* onRow: the whole row is clickable (e.g. opens the history drawer). Buttons and
+              links inside a cell still work on their own — react-aria stops nested
+              presses before they reach the row. */}
           <Table.Content aria-label={t(label)} className="min-w-[640px]"
             sortDescriptor={sort || undefined} onSortChange={setSort}
             onRowAction={onRow ? (key) => { const r = rows.find((x, i) => String(rowKey ? rowKey(x, i) : i) === String(key)); if (r) onRow(r); } : undefined}>
             <Table.Header>
               {columns.map((c, i) => {
                 const canSort = c.sortable !== false && !!c.key;
-                // Kepala kolom sortable bawaan HeroUI adalah flex space-between, jadi
-                // text-end di <th> tidak berpengaruh; rata kanan diatur di span-nya.
+                // HeroUI's built-in sortable column header is flex space-between, so
+                // text-end on the <th> has no effect; right alignment is set on its span.
                 return (
                   <Table.Column key={c.key} id={c.key} isRowHeader={i === 0} allowsSorting={canSort}
                     className={c.align === 'end' ? 'text-end' : ''}>
@@ -536,8 +550,8 @@ export function DataTable({
       {footer && rows.length > 0 && (
         <div className="border-t border-border px-4 py-2.5 text-sm">{footer}</div>
       )}
-      {/* Kaki tabel tampil begitu daftarnya lebih panjang dari pilihan terkecil, supaya
-          jumlah baris tetap bisa dikecilkan meski semuanya sedang muat di satu halaman. */}
+      {/* The table footer shows as soon as the list is longer than the smallest option, so
+          the row count can still be reduced even when everything fits on one page. */}
       {size > 0 && sorted.length > sizes[0] && (
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 border-t border-border px-4 py-3">
           <span className="flex items-center gap-2 text-xs text-muted">
@@ -591,22 +605,23 @@ function Pager({ page, pages, total, pageSize, onChange }) {
   );
 }
 
-// ---- field form ----
+// ---- form fields ----
 export function Text({ label, value, onChange, placeholder, hint, type = 'text', mono, isInvalid, isDisabled, error, autoComplete, className = '', aria, step }) {
   return (
     <TextField value={value ?? ''} onChange={onChange} type={type} isInvalid={isInvalid} isDisabled={isDisabled} aria-label={aria ? t(aria) : undefined} className={`flex flex-col gap-1 ${className}`}>
       {label && <Label>{t(label)}</Label>}
-      {/* variant="secondary": varian HeroUI untuk field di dalam Card/Surface. Varian bawaan
-          (primary) berwarna sama persis dengan kartu dan tanpa garis tepi — tidak terlihat. */}
+      {/* variant="secondary": the HeroUI variant for fields inside a Card/Surface. The default
+          (primary) is exactly the card's colour and has no border — invisible. */}
       <Input step={type === 'number' ? (step ?? 'any') : undefined} variant="secondary" placeholder={placeholder && t(placeholder)} autoComplete={autoComplete} className={mono ? 'mono' : type === 'number' ? 'num' : ''} />
-      {isInvalid && error ? <Description className="text-danger">{t(error)}</Description> : hint && <Description>{t(hint)}</Description>}
+      {/* HeroUI hides every Description while the field is invalid; FieldError is the slot that stays visible. */}
+      {isInvalid && error ? <FieldError>{t(error)}</FieldError> : hint && <Description>{t(hint)}</Description>}
     </TextField>
   );
 }
 
-// `aria` dipakai saat field sengaja tanpa label terlihat (mis. pemilih token di
-// kartu swap, yang labelnya sudah dibawa judul kotaknya) — pembaca layar tetap
-// butuh nama.
+// `aria` is used when a field deliberately has no visible label (e.g. the token picker in the
+// swap card, whose label is already carried by the box title) — screen readers
+// still need a name.
 export function Pick({ label, value, onChange, options, hint, className = '', aria, isDisabled }) {
   return (
     <Select variant="secondary" isDisabled={isDisabled} value={value} onChange={(v) => onChange(v)} aria-label={aria ? t(aria) : undefined}
@@ -627,9 +642,9 @@ export function Pick({ label, value, onChange, options, hint, className = '', ar
 
 export function Toggle({ label, desc, value, onChange, isDisabled }) {
   return (
-    // Switch.Content-lah elemen yang bisa diklik (ia yang membawa <input>); Switch
-    // sendiri cuma pembungkus. Kalau Switch.Control ditaruh di luar Content, sakelarnya
-    // tampak normal tapi mati. Description harus jadi saudara Content, bukan isinya.
+    // Switch.Content is the element that can be clicked (it carries the <input>); Switch
+    // itself is only a wrapper. If Switch.Control is placed outside Content, the switch
+    // looks normal but is dead. Description must be a sibling of Content, not its content.
     <Switch isSelected={!!value} onChange={onChange} isDisabled={isDisabled}>
       <Switch.Content>
         <Switch.Control><Switch.Thumb /></Switch.Control>
@@ -640,11 +655,11 @@ export function Toggle({ label, desc, value, onChange, isDisabled }) {
   );
 }
 
-// ---- konfirmasi ----
-// Pengganti window.confirm(): dialog bawaan browser tidak bisa diberi gaya, memuat
-// nama domain di judulnya, dan di Safari menghentikan seluruh halaman. Pemakaian
-// tetap satu baris: `if (!(await ask({ title, body, confirm, danger }))) return;`
-// Teks sudah diterjemahkan oleh pemanggil.
+// ---- confirmation ----
+// A replacement for window.confirm(): the browser's built-in dialog cannot be styled, carries
+// the domain name in its title, and in Safari halts the whole page. Usage
+// stays one line: `if (!(await ask({ title, body, confirm, danger }))) return;`
+// The text is already translated by the caller.
 let pushAsk = null;
 export function ask(opts) {
   return new Promise((resolve) => {
@@ -655,7 +670,7 @@ export function ask(opts) {
 
 export function ConfirmHost() {
   const [q, setQ] = useState(null);
-  const last = useRef(null);        // isi tetap tampil selama animasi menutup
+  const last = useRef(null);        // the content stays shown during the close animation
   useEffect(() => { pushAsk = setQ; return () => { pushAsk = null; }; }, []);
   if (q) last.current = q;
   const v = q || last.current || {};
@@ -681,8 +696,8 @@ export function ConfirmHost() {
   );
 }
 
-// Pilihan saling-eksklusif yang sedikit (2–6): semuanya terlihat sekaligus, satu
-// klik, dan bisa membawa jumlah per pilihan — lebih cepat dibaca daripada dropdown.
+// A few mutually exclusive choices (2–6): all visible at once, one
+// click, and can carry a count per choice — faster to read than a dropdown.
 // options: [[id, label, count?], ...]
 export function Segmented({ value, onChange, options, aria, size = 'md' }) {
   const h = size === 'sm' ? 'h-7 text-xs' : 'h-8 text-[0.8125rem]';
@@ -704,7 +719,7 @@ export function Segmented({ value, onChange, options, aria, size = 'md' }) {
   );
 }
 
-// Alamat pendek yang bisa diklik untuk disalin utuh.
+// A short address that can be clicked to copy in full.
 export function CopyAddr({ address }) {
   const [done, setDone] = useState(false);
   useEffect(() => { if (!done) return undefined; const id = setTimeout(() => setDone(false), 1500); return () => clearTimeout(id); }, [done]);
@@ -717,8 +732,8 @@ export function CopyAddr({ address }) {
   );
 }
 
-// Hash transaksi: tautan ke penjelajah blok + tombol salin. Dipakai laci riwayat
-// posisi bot maupun laci riwayat posisi wallet yang diriset.
+// Transaction hash: a link to the block explorer + a copy button. Used by the bot
+// position history drawer and the researched wallet position history drawer alike.
 export function TxHash({ hash }) {
   const [done, setDone] = useState(false);
   useEffect(() => { if (!done) return undefined; const id = setTimeout(() => setDone(false), 1500); return () => clearTimeout(id); }, [done]);
@@ -736,7 +751,7 @@ export function TxHash({ hash }) {
   );
 }
 
-// "← Kembali" ke halaman sebelumnya; dibuka langsung dari tautan: ke `fallback`.
+// "← Back" to the previous page; opened directly from a link: to `fallback`.
 export function BackLink({ fallback = 'positions' }) {
   const back = (e) => {
     e.preventDefault();
@@ -749,7 +764,7 @@ export function BackLink({ fallback = 'positions' }) {
   );
 }
 
-// Tautan ke situs luar (DexScreener, GeckoTerminal, situs token), tab baru.
+// Link to an external site (DexScreener, GeckoTerminal, token site), new tab.
 export function ExtLink({ href, muted, children }) {
   return (
     <a href={href} target="_blank" rel="noreferrer"
@@ -757,27 +772,27 @@ export function ExtLink({ href, muted, children }) {
   );
 }
 
-// Tombol lompat ke terminal trading untuk satu token: GMGN, fomo, Uniswap (web) dan
-// Based Bot (Telegram). Dipasang di mana pun token itu tampil — header pool/token, panel
-// pasar, baris posisi, token di wallet, sisa yang macet — supaya dari mana pun
-// dilihat, tokennya sekali klik untuk dibeli/dijual. Logonya jadi penanda, bukan
-// teks, karena ketiganya sudah akrab bagi pengguna. Based Bot membaca chain dari
-// alamatnya; GMGN, fomo, dan Uniswap perlu slug chain (chain.js).
-// `kinds`: jenis chain tempat aplikasinya berlaku (bawaan: EVM saja). Solana: GMGN +
-// Jupiter; Based Bot, fomo, dan Uniswap tidak melayani Solana.
+// Jump buttons to a trading terminal for one token: GMGN, fomo, Uniswap (web) and
+// Based Bot (Telegram). Placed wherever the token shows — pool/token header, market
+// panel, position row, token in a wallet, stuck leftover — so that from wherever
+// it is seen, the token is one click from buying/selling. The logo becomes the marker, not
+// text, because all three are already familiar to users. Based Bot reads the chain from
+// the address; GMGN, fomo, and Uniswap need the chain slug (chain.js).
+// `kinds`: the chain kinds an app applies to (default: EVM only). Solana: GMGN +
+// Jupiter; Based Bot, fomo and Uniswap do not serve Solana.
 export const TRADE_APPS = [
   { key: 'jupiter', label: 'Jupiter', icon: '/jupiter.svg', brand: '#c7f284', kinds: ['solana'], href: (a) => `https://jup.ag/swap/SOL-${a}` },
   { key: 'gmgn', kinds: ['evm', 'solana'], label: 'GMGN', icon: '/gmgn.png', brand: '#5ec26a', href: (a) => `https://gmgn.ai/${chainInfo().gmgn || chainInfo().key}/token/${a}` },
   { key: 'basedbot', label: 'Based', icon: '/basedbot.jpg', brand: '#3b82f6', href: (a) => `https://t.me/based_eth_bot?start=b_${a}` },
   { key: 'fomo', label: 'fomo', icon: '/fomo.png', brand: '#8b7cf6', href: (a) => `https://fomo.family/tokens/${chainInfo().gmgn || chainInfo().key}/${a}` },
-  // Uniswap: halaman pool-nya sendiri kalau pool diketahui (grafik, likuiditas, tombol
-  // swap & tambah LP di sana); kalau cuma tokennya, layar swap dengan token itu.
+  // Uniswap: the pool's own page if the pool is known (chart, liquidity, swap
+  // & add LP buttons there); if only the token, the swap screen with that token.
   { key: 'uniswap', label: 'Uniswap', icon: '/uniswap.png', brand: '#ff007a',
     href: (a) => `https://app.uniswap.org/swap?chain=${chainInfo().uniswap || chainInfo().key}&outputCurrency=${a}`,
     poolHref: (pool) => `https://app.uniswap.org/explore/pools/${chainInfo().uniswap || chainInfo().key}/${pool}` },
 ];
-// Token spekulatif dari satu baris posisi/pool: yang bukan aset kuotasi. Baris yang
-// tidak membawa quoteSide (mis. riwayat posisi) ditebak dari simbol kuotasi chain.
+// The speculative token of a position/pool row: the one that is not a quote asset. A row that
+// does not carry quoteSide (e.g. position history) is guessed from the chain's quote symbols.
 const isQuoteSym = (sym) => { const c = chainInfo(); return sym === c.usdgSymbol || sym === c.wethSymbol || sym === c.nativeSymbol; };
 export const baseTokenOf = (p) => {
   if (!p) return null;
@@ -788,9 +803,9 @@ export const baseTokenOf = (p) => {
   if (isQuoteSym(p.symbol1) && !isQuoteSym(p.symbol0)) return p.token0;
   return null;
 };
-// Bilah tautan berlogo (gaya di index.css: .trade-bar / .trade-stack). links:
-// [{ key, label, icon, brand, href }]. compact: tumpukan logo untuk baris tabel;
-// klik tidak merambat ke baris yang bisa diklik.
+// Logo link bar (style in index.css: .trade-bar / .trade-stack). links:
+// [{ key, label, icon, brand, href }]. compact: a logo stack for table rows;
+// the click does not propagate to the clickable row.
 function LinkBar({ tag, links, compact = false, className = '' }) {
   return (
     <span className={`${compact ? 'trade-stack' : 'trade-bar'} ${className}`} onClick={(e) => e.stopPropagation()}>
@@ -804,25 +819,25 @@ function LinkBar({ tag, links, compact = false, className = '' }) {
     </span>
   );
 }
-// Tombol lompat ke luar untuk satu WALLET — dipasang di mana pun alamat 0x… tampil
-// (daftar target, detail target, halaman riset wallet, wallet bot sendiri). Tiga
-// pertanyaan yang tidak bisa dijawab dasbor ini sendirian: apa saja isi dompetnya di
-// chain lain (DeBank), bagaimana posisi LP-nya menurut pihak ketiga (LPAgent), dan
-// setiap transaksinya (Etherscan + penjelajah chain). Logonya jadi penanda, bukan teks,
-// seperti bilah trading token di atas.
+// Jump-out buttons for one WALLET — placed wherever a 0x… address shows
+// (target list, target detail, wallet research page, the bot's own wallet). Three
+// questions this dashboard cannot answer alone: what is in its wallet on
+// other chains (DeBank), how its LP positions look per a third party (LPAgent), and
+// each of its transactions (Etherscan + chain explorer). The logo becomes the marker, not text,
+// like the token trading bar above.
 export const WALLET_APPS = [
   { key: 'debank', label: 'DeBank', icon: '/debank.png', brand: '#ff6238', href: debankHref },
   { key: 'lpagent', label: 'LPAgent', icon: '/lpagent.png', brand: '#e3f35b', href: lpagentHref },
   { key: 'etherscan', label: 'Etherscan', icon: '/etherscan.png', brand: '#3b6fd4', href: etherscanHref },
 ];
-// explorer: bilah penuh ikut membawa penjelajah blok; tumpukan ringkas di baris tabel
-// cukup tiga situs luar supaya logonya tidak menutupi kolom sebelahnya.
+// explorer: the full bar also carries the block explorer; the compact stack in table rows
+// only needs the three external sites so the logos do not cover the neighbouring column.
 export function WalletLinks({ address, compact = false, explorer = !compact, className = '' }) {
   if (!address) return null;
   const c = chainInfo();
   const links = WALLET_APPS.map((app) => ({ ...app, href: app.href(address) }));
-  // Penjelajah blok chain yang sedang ditampilkan, berlogo chain-nya. Di BSC penjelajahnya
-  // BscScan — etherscanHref kosong di sana, jadi situsnya tidak muncul dua kali.
+  // The block explorer of the chain being shown, with the chain's logo. On BSC the explorer is
+  // BscScan — etherscanHref is empty there, so the site does not appear twice.
   if (explorer) {
     links.push({ key: 'explorer', label: EXPLORER_NAME[c.key] || t('Penjelajah'), icon: CHAIN_ICON[c.key] || '/favicon.svg',
       brand: 'var(--accent)', href: addrHref(address) });
@@ -836,9 +851,9 @@ export function TradeLinks({ token, pool = null, compact = false, className = ''
     .map((app) => ({ ...app, href: pool && app.poolHref ? app.poolHref(pool) : app.href(token) }));
   return <LinkBar tag="Trade" links={links} compact={compact} className={className} />;
 }
-// Data pasar pihak ketiga (DexScreener, GeckoTerminal) — halaman pool kalau pool
-// diketahui, halaman token kalau cuma tokennya. dexUrl: URL DexScreener yang sudah
-// diberikan API pasangan, lebih tepat daripada menebak dari alamat.
+// Third-party market data (DexScreener, GeckoTerminal) — the pool page if the pool
+// is known, the token page if only the token. dexUrl: the DexScreener URL already
+// provided by the pair API, more precise than guessing from the address.
 export function DataLinks({ pool = null, token = null, dexUrl = null, compact = false, className = '' }) {
   const ref = pool || token;
   if (!ref) return null;

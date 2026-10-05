@@ -101,6 +101,9 @@ class OrcaVenue {
       lower: p.tickLowerIndex, upper: p.tickUpperIndex, tickLower: p.tickLowerIndex, tickUpper: p.tickUpperIndex,
       liquidity: L.toString(), amount0, amount1,
       fee0: fees ? fees.fee0 : big(p.feeOwedA), fee1: fees ? fees.fee1 : big(p.feeOwedB),
+      // Fee growth checkpoint: moves whenever the position's fees are settled (claim,
+      // add/remove). With the liquidity unchanged that means the owner claimed.
+      feeMark: `${big(p.feeGrowthCheckpointA ?? p.fee_growth_checkpoint_a)}:${big(p.feeGrowthCheckpointB ?? p.fee_growth_checkpoint_b)}`,
       ext: { positionMint: b58(p.positionMint) },
     };
   }

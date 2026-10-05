@@ -1,8 +1,8 @@
-// Detail satu token: harga & grafik lilin (dari pool yang dipilih, default yang
-// paling likuid), semua pool-nya menurut DexScreener, posisi bot yang memakainya,
-// posisi wallet yang pernah diriset, dan gerakan target di token ini.
+// Detail of a single token: price & candlestick chart (from the selected pool, by default the
+// most liquid), all its pools according to DexScreener, bot positions that use it,
+// researched wallet positions, and target moves in this token.
 //
-// Dibuka dari lambang atau simbol token di mana pun di dasbor: #token/0x….
+// Opened from the icon or symbol of a token anywhere in the dashboard: #token/0x….
 import { useEffect, useState } from 'react';
 import { Button } from '@heroui/react';
 import AdvancedChart from '../components/AdvancedChart';
@@ -19,12 +19,12 @@ import { useI18n } from '../i18n';
 import { canonAddr } from '../chain';
 
 const TFS = [['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam'], ['1d', '1 hari']];
-// Kira-kira satu hari per 5 menit, sepuluh hari per jam, sebulan per 4 jam.
+// Roughly one day at 5 minutes, ten days at 1 hour, a month at 4 hours.
 const LIMIT = { '5m': 288, '15m': 288, '1h': 240, '4h': 180, '1d': 180 };
 
-// Harga USD token ini di satu pool. DexScreener memberi harga token DASAR; kalau
-// token ini justru sisi kuotasinya (mis. USDG), harganya = harga dasar ÷ harga
-// dasar dalam kuotasi.
+// USD price of this token in one pool. DexScreener gives the BASE token's price; if
+// this token is actually the quote side (e.g. USDG), its price = base price ÷ base
+// price in quote.
 const priceIn = (p, a) => (!p ? null : p.base.address === a ? p.priceUsd
   : p.priceUsd && p.priceNative ? p.priceUsd / p.priceNative : null);
 const venueOf = (p) => (p.labels?.length ? p.labels.join(' ') : p.dexId || '');
@@ -34,8 +34,8 @@ const fmtAmt = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleStri
 function TokenChart({ m, tf, poolRef }) {
   if (m?.ohlcv?.error) return <Empty title="Grafik harga tidak tersedia" sub={m.ohlcv.error} />;
   if (!m?.ohlcv?.candles?.length) return <Empty title="Belum ada lilin harga" sub="GeckoTerminal belum punya riwayat harga untuk pool ini." />;
-  // key={tf}: ganti rentang lilin memuat ulang grafik dari awal (KLineChart mengulang
-  // seluruh riwayat saat periode berganti) — gambar & indikator tetap karena disimpan per pool, bukan per instance.
+  // key={tf}: changing the candle range reloads the chart from scratch (KLineChart replays
+  // the whole history when the period changes) — drawings & indicators persist because they are stored per pool, not per instance.
   return <AdvancedChart key={tf} candles={m.ohlcv.candles} tf={tf} quote="USD" poolRef={poolRef} />;
 }
 
@@ -45,17 +45,17 @@ export default function TokenDetail({ param }) {
   const { data: d, loading, reload } = usePoll(`/api/token?a=${encodeURIComponent(a)}`, 30000);
   const [poolPick, setPool] = useState(null);
   const [tf, setTf] = useState('1h');
-  // Klik baris tabel posisi bot -> laci riwayat, sama seperti halaman Posisi.
+  // Click a bot position table row -> history drawer, same as the Positions page.
   const [hist, setHist] = useState(null);
-  // Klik baris posisi wallet yang diriset -> laci kejadian on-chain-nya. Yang disimpan
-  // kuncinya, supaya angka di laci ikut segar saat tabelnya dipoll ulang.
+  // Click a researched wallet position row -> its on-chain events drawer. What is stored is
+  // the key, so the numbers in the drawer stay fresh when the table is re-polled.
   const [whistKey, setWhist] = useState(null);
-  // Tombol "Posisi asli" di tabel bot: baris tabel riset yang diminta ditunjukkan.
+  // The "Original position" button in the bot table: the requested research table row is pointed out.
   const [jump, setJump] = useState(null);
   const jumpToSource = (w) => setJump((j) => ({ key: wkey(w), n: (j?.n || 0) + 1 }));
   const pairs = d?.market?.pairs || [];
   const sel = pairs.find((p) => p.pool === poolPick) || pairs[0] || null;
-  // Dibuka dari baris tabel yang sudah digulir jauh: mulai dari atas.
+  // Opened from a table row scrolled far down: start from the top.
   useEffect(() => { window.scrollTo(0, 0); }, []);
   const { data: m } = usePoll(sel ? `/api/market?pool=${sel.pool}&tf=${tf}&limit=${LIMIT[tf]}&token=${a}&currency=usd&pair=0` : null, 30000);
 
@@ -64,7 +64,7 @@ export default function TokenDetail({ param }) {
   const whist = whistKey ? d.wallets.find((p) => wkey(p) === whistKey) || null : null;
 
   const tk = d.token;
-  const main = pairs.find((p) => p.base.address === a) || null;   // pool terlikuid tempat token ini jadi dasar
+  const main = pairs.find((p) => p.base.address === a) || null;   // the most liquid pool where this token is the base
   const px = priceIn(main || pairs[0], a);
   const ch24 = main?.priceChange?.h24;
   const liq = sum(pairs, (p) => p.liquidityUsd);

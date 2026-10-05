@@ -9,6 +9,7 @@
 //        L naik                 -> 'increase'
 //        L turun                -> 'decrease' (liquidityBefore = L lama → porsi sebanding)
 //        posisi hilang          -> 'decrease' penuh
+//        fee dipanen, L tetap   -> 'claim' (lihat claimed())
 //
 // Potret disimpan per target di state (bertahan restart). Pemindaian pertama sebuah
 // target hanya membuat potret — posisi yang SUDAH ada sebelum target ditambahkan tidak
@@ -103,8 +104,23 @@ class SolanaWatcher {
       venue: p.venue, pool: p.pool, token0: p.token0, token1: p.token1,
       lower: p.lower, upper: p.upper, tickLower: p.tickLower, tickUpper: p.tickUpper,
       liquidity: String(p.liquidity), amount0: String(p.amount0 ?? 0), amount1: String(p.amount1 ?? 0),
+      fee0: String(p.fee0 ?? 0), fee1: String(p.fee1 ?? 0), feeMark: p.feeMark ?? null,
       ext: p.ext || null,
     };
+  }
+
+  // Did the owner harvest this position's fees between two reads (liquidity unchanged)?
+  //   Orca/Raydium: the fee growth checkpoint moved AND the owed fees are back to zero —
+  //     the permissionless update_fees_and_rewards also moves the checkpoint but leaves
+  //     the fees owed, so it does not count.
+  //   Meteora: the claimable fees (computed by the SDK) fell to a fifth or less on both
+  //     sides, from something non-zero.
+  static claimed(o, p) {
+    if (!o || o.fee0 == null || o.fee1 == null) return false;
+    const f0 = BigInt(p.fee0 || '0'), f1 = BigInt(p.fee1 || '0'), o0 = BigInt(o.fee0 || '0'), o1 = BigInt(o.fee1 || '0');
+    if (p.feeMark != null && o.feeMark != null) return p.feeMark !== o.feeMark && f0 === 0n && f1 === 0n;
+    if (o0 === 0n && o1 === 0n) return false;
+    return f0 * 5n <= o0 && f1 * 5n <= o1;
   }
 
   // Bandingkan potret lama dan daftar baru -> aksi mentah (belum bernilai).
@@ -118,6 +134,10 @@ class SolanaWatcher {
     for (const [id, p] of Object.entries(now)) {
       const o = prev[id];
       const L = BigInt(p.liquidity), L0 = o ? BigInt(o.liquidity) : 0n;
+      if (o && L > 0n && (L === L0 || SolanaWatcher.tiny(L0, L)) && SolanaWatcher.claimed(o, p)) {
+        acts.push({ target, id, kind: 'claim', delta: 0n, before: L0, pos: p, prev: o });
+        continue;
+      }
       if (o && SolanaWatcher.tiny(L0, L)) continue;
       if (!o || L > L0) {
         if (L === 0n) continue;   // akun posisi kosong baru dibuat: belum ada likuiditas
@@ -213,14 +233,17 @@ class SolanaWatcher {
       // posisi hilang: isi terakhirnya.
       const dL = a.delta < 0n ? -a.delta : a.delta;
       const Lnow = BigInt(p.liquidity || '0');
-      if (a.gone && a.prev) { amt0 = BigInt(a.prev.amount0 || '0'); amt1 = BigInt(a.prev.amount1 || '0'); }
+      if (a.kind === 'claim') { amt0 = BigInt(a.prev.fee0 || '0'); amt1 = BigInt(a.prev.fee1 || '0'); }
+      else if (a.gone && a.prev) { amt0 = BigInt(a.prev.amount0 || '0'); amt1 = BigInt(a.prev.amount1 || '0'); }
       else if (a.before > 0n && Lnow > 0n) { amt0 = (amt0 * dL) / Lnow; amt1 = (amt1 * dL) / Lnow; }
       const v = st && dec0 != null && dec1 != null
         ? this.chain.valueInQuote({ sqrtPriceX96: st.sqrtX96, amount0: amt0, amount1: amt1, dec0, dec1, token0: p.token0, token1: p.token1 })
         : null;
       // Kunci unik per gerakan: tanda tangan yang sama bisa membawa lebih dari satu
       // gerakan pada posisi yang sama (terbaca di jendela baca-ulang).
-      const hash = `${a.sig || 'snap'}:${a.id}:${a.kind}:${a.delta}`;
+      const hash = a.kind === 'claim'
+        ? `${a.sig || 'snap'}:${a.id}:claim:${a.prev.fee0}:${a.prev.fee1}:${a.prev.feeMark || ''}`
+        : `${a.sig || 'snap'}:${a.id}:${a.kind}:${a.delta}`;
       const ext = { lower: p.lower, upper: p.upper, liquidityBefore: a.before.toString(), ...(p.ext || {}), gone: !!a.gone };
       const r = this.store.run(`INSERT OR IGNORE INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_spacing,
           tick_lower,tick_upper,liquidity,amount0,amount1,value_quote,quote_symbol,ext) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,

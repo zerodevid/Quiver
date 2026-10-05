@@ -1,14 +1,14 @@
-// Data OpenAPI GMGN di dasbor — hanya tampil kalau API key sudah diisi
-// (Pengaturan → GMGN); tanpa key server menjawab { enabled: false } dan
-// komponen-komponen ini tidak menggambar apa pun.
+// GMGN OpenAPI data on the dashboard — only shown when the API key has been set
+// (Settings → GMGN); without a key the server answers { enabled: false } and
+// these components draw nothing.
 //
-//  - GmgnTokenPanel   : profil token (harga/MCap/ATH, komposisi wallet, volume
-//                       per jendela, dev, tautan) — halaman token.
-//  - GmgnSecurity     : ringkasan keamanan kontrak — kartu kesehatan pool.
-//  - GmgnWallets      : pemegang / trader teratas dengan PnL per wallet —
-//                       halaman token (holders) dan pool (traders).
-//  - GmgnWalletCard   : identitas satu wallet (tag, X, umur, sumber dana) —
-//                       halaman wallet / target. Tanpa PnL: lihat catatannya.
+//  - GmgnTokenPanel   : token profile (price/MCap/ATH, wallet composition, volume
+//                       per window, dev, links) — token page.
+//  - GmgnSecurity     : contract security summary — pool health card.
+//  - GmgnWallets      : top holders / traders with per-wallet PnL —
+//                       token page (holders) and pool page (traders).
+//  - GmgnWalletCard   : identity of one wallet (tag, X, age, funding source) —
+//                       wallet / target page. No PnL: see the note there.
 import { useState } from 'react';
 import { Chip } from '@heroui/react';
 import { ExternalLink } from 'lucide-react';
@@ -18,7 +18,7 @@ import { Panel, KV, DataTable, Empty, Loading, Segmented, ExtLink } from './ui';
 import { usd, pct, num, ago, age, short, tone, addrHref } from '../fmt';
 import { isAddr, canonAddr } from '../chain';
 
-// Angka besar: $1.2M / $340.0k / $12.34 — sama dengan kUsd halaman posisi.
+// Large numbers: $1.2M / $340.0k / $12.34 — same as kUsd on the positions page.
 const kUsd = (v) => (v == null ? '—' : Math.abs(v) >= 1e6 ? usd(v / 1e6, 2) + 'M' : Math.abs(v) >= 1e4 ? usd(v / 1e3, 1) + 'k' : usd(v));
 
 const W = ['1m', '5m', '1h', '6h', '24h'];
@@ -26,7 +26,7 @@ const WL = { '1m': '1 mnt', '5m': '5 mnt', '1h': '1 jam', '6h': '6 jam', '24h': 
 const fmtPx = (v) => (v == null ? '—' : usd(v, v < 0.01 ? 6 : 4));
 const okAddr = (a) => isAddr(canonAddr(a));
 
-// Tag wallet versi GMGN -> label pendek + warna.
+// Wallet tags per GMGN -> short label + colour.
 const TAG = {
   smart_degen: ['smart money', 'success'], smart_money: ['smart money', 'success'], renowned: ['KOL', 'accent'], kol: ['KOL', 'accent'],
   fresh_wallet: ['wallet baru', 'default'], sniper: ['sniper', 'warning'], rat_trader: ['rat trader', 'danger'], bundler: ['bundler', 'danger'],
@@ -34,8 +34,8 @@ const TAG = {
   whale: ['whale', 'accent'], top_holder: ['top holder', 'default'], paper_hands: ['paper hands', 'default'], diamond_hands: ['diamond hands', 'success'],
   sandwich_bot: ['bot sandwich', 'danger'], gmgn: ['GMGN', 'default'], fomo: ['fomo', 'default'], axiom: ['Axiom', 'default'], photon: ['Photon', 'default'],
 };
-// Urutan tampil: yang berarti untuk risiko dulu; "transfer masuk" hampir semua
-// wallet punya, jadi paling belakang.
+// Display order: what matters for risk first; "transfer in" almost every
+// wallet has, so it goes last.
 const TAG_RANK = ['sandwich_bot', 'bundler', 'rat_trader', 'smart_degen', 'smart_money', 'renowned', 'kol', 'whale', 'sniper', 'dev', 'fresh_wallet', 'paper_hands', 'diamond_hands', 'top_holder', 'bluechip_owner', 'dex_bot', 'gmgn', 'fomo', 'axiom', 'photon', 'transfer_in'];
 const rank = (k) => { const i = TAG_RANK.indexOf(k); return i < 0 ? TAG_RANK.length - 1 : i; };
 function Tags({ tags = [], max = 3 }) {
@@ -49,7 +49,7 @@ function Tags({ tags = [], max = 3 }) {
   );
 }
 
-// Nama wallet: bot sendiri, target yang disalin, nama GMGN, atau alamat pendek.
+// Wallet name: the bot itself, a copied target, the GMGN name, or a short address.
 function WalletName({ r }) {
   const { t } = useI18n();
   const href = r.target ? `#targets/${r.address}` : `#wallet/${r.address}`;
@@ -70,7 +70,7 @@ const Src = ({ at }) => {
   return <span className="text-xs text-muted">GMGN{at ? ` · ${ago(at)}` : ''}{!at && ` · ${t('memuat')}`}</span>;
 };
 
-// ---------------- profil token ----------------
+// ---------------- token profile ----------------
 export function GmgnTokenPanel({ address }) {
   const { t } = useI18n();
   const { data: g } = usePoll(okAddr(address) ? `/api/gmgn/token?address=${address}` : null, 60000);
@@ -147,18 +147,18 @@ export function GmgnTokenPanel({ address }) {
   );
 }
 
-// ---------------- keamanan kontrak (di kartu kesehatan pool) ----------------
-// Daftar chip: nilai yang aman hijau, yang perlu waspada kuning/merah, yang tidak
-// diketahui abu-abu — supaya "tidak ada data" tidak tertukar dengan "aman".
+// ---------------- contract security (on the pool health card) ----------------
+// Chip list: safe values green, ones needing caution yellow/red, unknown
+// ones grey — so "no data" is not mistaken for "safe".
 export function GmgnSecurity({ g }) {
   const { t } = useI18n();
   if (!g || g.enabled === false || g.error) return null;
   const s = g.security;
   if (!s) return <p className="text-xs text-muted">{t('Keamanan kontrak menurut GMGN belum tersedia.')}{g.securityError ? ` (${t(g.securityError)})` : ''}</p>;
-  // Status dev: dari security kalau ada, kalau tidak dari token/info.
+  // Dev status: from security if present, otherwise from token/info.
   const devSold = s.creatorSold ?? (g.dev?.status === 'sell' ? true : g.dev?.status === 'hold' ? false : null);
-  // Kolom yang GMGN tidak isi untuk chain ini disembunyikan — kecuali honeypot,
-  // pajak, dan verifikasi kode, yang "tidak diketahui"-nya justru perlu terlihat.
+  // Columns that GMGN does not fill for this chain are hidden — except honeypot,
+  // tax, and code verification, whose "unknown" state needs to be visible.
   const chip = (label, value, level, keep = false) => (level === 'na' && !keep ? null :
     <span key={label} className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs ${level === 'ok' ? 'border-success/30 bg-success/10 text-success' : level === 'bad' ? 'border-danger/30 bg-danger/10 text-danger' : level === 'warn' ? 'border-warning/30 bg-warning/10 text-warning' : 'border-border text-muted'}`}>
       <span>{t(label)}</span><span className="num font-medium">{value}</span>
@@ -188,7 +188,7 @@ export function GmgnSecurity({ g }) {
   );
 }
 
-// ---------------- pemegang / trader teratas ----------------
+// ---------------- top holders / traders ----------------
 const ORDERS = { holders: [['amount_percentage', 'Suplai'], ['profit', 'Profit'], ['unrealized_profit', 'Belum terealisasi']], traders: [['profit', 'Profit'], ['buy_volume_cur', 'Beli terbanyak'], ['sell_volume_cur', 'Jual terbanyak'], ['unrealized_profit', 'Belum terealisasi']] };
 export function GmgnWallets({ address, kind = 'holders', symbol, className = '' }) {
   const { t } = useI18n();
@@ -230,12 +230,12 @@ export function GmgnWallets({ address, kind = 'holders', symbol, className = '' 
   );
 }
 
-// ---------------- identitas satu wallet ----------------
-// Sengaja TANPA angka PnL/winrate GMGN: wallet target hidup di LP, sedangkan GMGN
-// menghitung swap saja (beli token untuk di-LP, jual sisa saat keluar) — hasil LP
-// (fee, penarikan likuiditas) tidak terlihat olehnya, sehingga wallet yang untung
-// bisa tampak rugi. Angka kinerja LP ada di kartu di bawahnya (hitungan kita).
-// Yang dipakai hanya identitas: tag GMGN, akun X, umur wallet, sumber dana awal.
+// ---------------- identity of one wallet ----------------
+// Deliberately WITHOUT GMGN's PnL/winrate numbers: target wallets live in LPs, while GMGN
+// counts swaps only (buying a token to LP, selling leftovers on exit) — LP results
+// (fees, liquidity withdrawals) are invisible to it, so a profitable wallet
+// can look like a loser. LP performance figures are on the card below (our own calculation).
+// Only identity is used: GMGN tag, X account, wallet age, initial funding source.
 export function GmgnWalletCard({ address }) {
   const { t } = useI18n();
   const { data: g } = usePoll(okAddr(address) ? `/api/gmgn/wallet?address=${address}&period=30d` : null, 300000);

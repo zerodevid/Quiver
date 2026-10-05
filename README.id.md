@@ -98,9 +98,69 @@ Periksa profil Solana ke mainnet sebelum LIVE: `node src/solana/verify.js [url-r
 
 ```
 ./lp                       # jalankan mesin + dashboard (http://127.0.0.1:8799)
+./lp setup                 # ulangi pemasangan (wizard di peramban)
 ./lp scout 0xABC… [blok]   # periksa sebuah wallet sebelum dicopy
 ./lp add 0xABC… "label"    # tambah target dari terminal
 ./lp list                  # daftar target
+```
+
+## Pemasangan awal
+
+Di mesin yang belum punya `config.json`, `npm start` tidak menyalakan bot — ia membuka
+**wizard pemasangan**: satu kode sekali pakai tercetak di terminal, dan halaman tujuh
+langkah disajikan di alamat dasbor (bawaan `http://127.0.0.1:8799`).
+
+```bash
+npm ci
+npm ci --prefix web
+npm run build --prefix web
+npm start                  # -> wizard pemasangan
+```
+
+Langkahnya: **kode pemasangan** → **token akses dasbor** (dibuatkan acak, plus URL
+tunnel dan mata uang pendamping) → **wallet bot** (buat baru / impor kunci privat /
+nanti saja) → **chain & RPC** (tiap endpoint bisa diuji dari halaman itu; hasil ujinya
+langsung mengisi bendera `no_logs`, `max_log_blocks`, `archive`, dan kunci Alchemy
+opsional menambahkan endpointnya sendiri) → **pemberitahuan** (Telegram, ntfy, GMGN —
+boleh dilewati) → **batas modal & target** (simulasi/LIVE, nilai per entry, exposure,
+budget harian, wallet target pertama) → **periksa & simpan**.
+
+Begitu disimpan: `config.json` dan `.env` ditulis mode 600, kunci privat ke
+`~/.lpcopy/key` mode 600, lalu mesin menyala **di proses yang sama** — tanpa restart,
+dan halamannya pindah sendiri ke dasbor.
+
+Halamannya dwibahasa dan **bawaannya Inggris**, dengan tombol EN/ID di pojok kanan
+atas. Pilihannya disimpan di kunci `lpcopy-lang` yang sama dengan dasbor, jadi dasbor
+melanjutkan dengan bahasa yang dipilih di wizard; bahasa yang sudah pernah disimpan di
+peramban itu mengalahkan bawaan Inggris.
+
+Rahasia tidak pernah masuk `config.json`: token dasbor, token bot, topik ntfy, dan
+kunci GMGN/Alchemy ditulis ke `.env`, dan URL Alchemy di config cuma memuat
+`${ALCHEMY_KEY}`. Kunci privat sengaja ke berkas kunci, bukan `LPCOPY_PRIVATE_KEY` —
+supaya tombol ganti/lepas wallet di dasbor tetap hidup.
+
+Kode pemasangan tercetak di stdout dan tersimpan di `data/setup-code.txt` sampai
+pemasangan selesai (`pm2 logs` atau `cat data/setup-code.txt` kalau jalan di bawah
+pm2). Kodenya diminta di setiap permintaan, bukan cuma kalau server terikat ke publik:
+alamat dasbor sering diekspos lewat tunnel walau server-nya sendiri di loopback.
+
+Ulangi kapan saja dengan `npm run setup` / `./lp setup` (atau `LPCOPY_SETUP=1 npm start`).
+Wizard berangkat dari config yang ada, **menambah** target alih-alih menimpanya, dan
+kunci lama dipindah ke berkas cadangan bertanggal — tidak ada yang terhapus diam-diam.
+Config yang sudah ada tidak pernah memicu wizard dengan sendirinya, jadi instance lama
+aman saat deploy.
+
+Kalau `config.json` hilang tapi `data/lpcopy.db` sudah berisi riwayat instance itu, wizard
+**menolak jalan** dan prosesnya berhenti dengan galat: itu config yang hilang, bukan pemasangan
+baru, dan menulis config baru di atas database yang sudah terisi lebih buruk daripada berhenti.
+Paksa dengan `LPCOPY_SETUP=1 npm start` kalau memang disengaja. Di bawah pm2, wizard juga
+mencatat satu baris bahwa bot BELUM jalan — pm2 sendiri tetap melaporkan prosesnya "online".
+
+Mau menyiapkan sendiri tanpa wizard? Salin contohnya, dan wizard-nya tidak akan muncul:
+
+```bash
+cp config.example.json config.json
+cp .env.example .env && chmod 600 .env
 ```
 
 ## Di mana jalannya
@@ -206,7 +266,7 @@ keputusan yang memicunya. Di bawahnya **catatan bot**: keputusan atas aksi targe
 menaut ke posisi ini dan baris log yang menyebut `#<id>`. Sumbernya tabel `txs`
 (detail JSON menyimpan nomor posisi/pool), `decisions`, dan `logs`
 (`GET /api/position/history?id=`); posisi yang diadopsi tanpa tx tetap punya kejadian
-buka/tutup dari baris posisinya. Uji: `node test/riwayat.js`.
+buka/tutup dari baris posisinya. Uji: `node test/position-history.js`.
 
 ## Isi wallet target (halaman detail target)
 
@@ -315,7 +375,7 @@ jumlah NFT yang pernah dipegangnya.
 **Kenapa ini ada:** wallet yang hanya ber-LP di v3 dulu tampil KOSONG di halaman
 riset, walaupun aktif. Dua sebabnya: modul riset cuma membaca v4, dan `scan()` keluar
 lebih awal begitu daftar posisi v4-nya kosong sehingga jalur v3 tidak pernah
-dijalankan. Keduanya ada uji regresinya di `test/riset.js`.
+dijalankan. Keduanya ada uji regresinya di `test/research.js`.
 
 
 ## Yang bisa disetel
@@ -432,6 +492,40 @@ bisa berbeda 10–20 blok; kalau kursor dimajukan ke kepala endpoint tercepat se
 `getLogs` dilayani endpoint yang tertinggal, blok di antaranya hilang selamanya karena
 kursor sudah terlanjur lewat.
 
+### Cache jawaban yang sudah pasti
+
+Sebagian besar beban RPC bukan data hidup, melainkan data mati yang dibaca berulang:
+receipt transaksi yang sama dibaca lagi tiap sinkron, header blok lampau dibaca lagi
+tiap riwayat dihitung ulang, saldo di blok lampau dibaca lagi tiap pelacak modal
+membelah rentang, dan `getLogs` untuk rentang blok yang sama diminta lagi tiap wallet
+dipindai ulang. Jawabannya tidak mungkin berbeda — blok yang sudah lewat tidak berubah
+— tapi tiap pembacaan tetap memakan jatah endpoint.
+
+`src/rpccache.js` menyimpan jawaban panggilan yang **terikat pada satu blok lampau**:
+`eth_getTransactionReceipt`, `eth_getTransactionByHash`, `eth_getBlockByNumber` /
+`ByHash`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_call` dan
+`eth_getLogs` dengan blok/rentang berupa angka, plus `eth_chainId`. Simpanannya di
+tabel `rpc_cache` pada database yang sama (bertahan lintas restart dan deploy) dengan
+satu lapis Map di memori di depannya. Kuncinya memuat chain, jadi satu database yang
+dipakai Robinhood dan BSC tidak tertukar.
+
+Yang **tidak pernah** disimpan: `eth_blockNumber`, gas, dan apa pun di `latest` /
+`pending` — itu justru data yang harus selalu baru. Satu blok baru dianggap pasti
+setelah tertinggal `confirmations` blok (bawaan 64) dari kepala rantai yang terakhir
+terlihat; selama tinggi rantai belum diketahui, tidak ada yang disimpan. Galat, hasil
+`null` (receipt yang masih pending), dan jawaban raksasa juga dilewati.
+
+Satu jebakan yang sengaja dihindari: `_getLogs` memeriksa "node tertinggal" dengan
+meminta blok ujung rentang di batch yang sama. Pemeriksaan itu menguji ENDPOINT-nya,
+jadi panggilan itu ditandai `nocache` dan daftar log baru disimpan setelah
+pemeriksaannya lewat — daftar kosong dari node yang tertinggal tidak boleh diabadikan.
+
+Batas dan kedalaman bisa disetel di `chains.<nama>.chain.cache`
+(`enabled`, `confirmations`, `ttl_days`, `max_rows`, `max_mb`, `max_entry_kb`);
+entri kedaluwarsa dan kelebihan batas dibuang tiap jam. Hasilnya terlihat di
+**Pengaturan → RPC** (berapa tersimpan, berapa MB, berapa persen pembacaan yang tidak
+menyentuh jaringan). Uji: `node test/rpc-cache.js`.
+
 ## Catatan teknis yang mahal ditemukan
 
 - **DNS `rpc.mainnet.chain.robinhood.com` dibajak ISP** (Telkomsel) ke portal
@@ -528,6 +622,41 @@ saat hidup — jadi memasang lewat SSH saja pun bisa:
 ```
 telegram: belum ada chat terhubung. Kirim ke bot →  /start 3F9A21C0   (berlaku 15 menit)
 ```
+
+### Mini app
+
+Tombol **📱 Buka mini app** di menu utama — dan tombol di sebelah kolom ketik —
+membuka `‹dasbor›/mini`: tiga layar (Ringkasan, Posisi, Aktivitas) yang dirancang
+untuk layar HP di dalam Telegram, bukan dasbor desktop yang dikecilkan. Kulitnya sama
+dengan dasbor — token warna, Inter 15px, kartu bergaris, chip, lencana mode, dan
+susunan angka yang sama dengan `web/src/pages/*.jsx`, termasuk lambang token dan
+lencana APR. Yang diambil dari Telegram cuma terang/gelapnya, supaya mini app tidak
+menyala putih di aplikasi bertema gelap. Tombol kembali dan getaran memakai yang
+bawaan, dan dari layar posisi fee bisa diklaim atau posisi ditutup — lewat rute API
+yang sama dengan dasbor dan bot.
+
+Lambang token dipasang lewat `<img>`, yang tidak bisa membawa header `Authorization`;
+jadi khusus `/api/icon` tiketnya boleh ikut sebagai `?t=`. Tiket di URL itu tidak
+membuka rute lain — rute gambar itu saja.
+
+Halaman itu bundel tersendiri (`web/mini.html` + `web/src/mini/`, ±14 KB, tanpa React)
+supaya terbuka seketika di jaringan seluler; karena itu ia sengaja tidak mengimpor apa
+pun dari `web/src/`.
+
+**Masuknya** tanpa token: Telegram menandatangani `initData` dengan `bot_token`, server
+memeriksa tanda tangan itu (`checkInitData` di `src/server.js`), menolak yang basi atau
+yang diubah, lalu menuntut syarat yang sama dengan bot — pengguna harus ada di
+`telegram.chat_ids`. Yang lolos menerima tiket acak berumur 12 jam, bukan token dasbor
+itu sendiri; tiket itu dikirim sebagai `Authorization: Bearer` karena di Telegram Web
+halamannya hidup dalam iframe milik `web.telegram.org`, tempat cookie `SameSite=Lax`
+memang tidak ikut terkirim. Hanya `/mini` dan potongan `mini-*` yang boleh dimuat
+sebelum ada sesi; dasbor dan seluruh `/api/*` tetap di balik gerbang token.
+
+**Menyalakan:** isi alamat https dasbor di `server.public_url` (atau
+`LPCOPY_DASHBOARD_URL` di `.env`; satu VPS beberapa instance boleh memakai akhiran nama
+foldernya, `LPCOPY_DASHBOARD_URL_LPCOPY2`). Tanpa itu tombolnya tidak muncul — Telegram
+hanya mau membuka https, dan instance yang cuma mendengar di `127.0.0.1` memang tidak
+punya alamat yang bisa dibuka.
 
 **Menu**
 
@@ -797,18 +926,18 @@ penitipan ke kontrak otomasi, pool berhook, semua batas (jumlah posisi,
 eksposur, jeda, minimum), posisi satu sisi, saldo kurang, aksi ganda, dan
 antrean jual memecoin sisa.
 
-`node test/riset.js` (11 uji) menguji riset wallet v3 dengan chain dipalsukan:
+`node test/research.js` (11 uji) menguji riset wallet v3 dengan chain dipalsukan:
 pemisahan fee dari pokok, klaim fee tanpa penarikan, NFT yang berpindah tangan lalu
 kembali, penilaian pada harga blok kejadian vs penandaan taksiran — dan dua uji
 regresi untuk bug yang membuat wallet v3 tampil kosong.
 
-`node test/sisa.js` (9 uji) menguji pembukuan sisa memecoin posisi bot: tutup mencatat
+`node test/leftover.js` (9 uji) menguji pembukuan sisa memecoin posisi bot: tutup mencatat
 sisa beserta taksiran harga tutupnya, penjualan (USDG, ETH native, manual FIFO, melebihi
 sisa) mengganti taksiran dengan hasil nyata, ekuitas menilai sisa yang belum terjual di
 harga pool kini (harga tutup kalau tak terbaca), dan token yang hilang dari wallet
 direalisasi di harga kini.
 
-`node test/hasil.js` (10 uji) menguji pelacakan terealisasi/belum setelah tutup: token
+`node test/proceeds.js` (10 uji) menguji pelacakan terealisasi/belum setelah tutup: token
 dipegang dinilai ulang harga pool sekarang, hasil jual USDG & ETH native sesungguhnya,
 FIFO antar-posisi dan saldo lama, zap-out, kirim tanpa hasil, pembaruan lanjutan, dan
 gangguan RPC sesaat yang membiarkan posisi belum terlacak alih-alih tercatat salah.

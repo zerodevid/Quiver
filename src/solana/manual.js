@@ -135,17 +135,17 @@ class SolanaManual extends Manual {
       || (b.liquidityUsd || 0) - (a.liquidityUsd || 0));
   }
 
-  // Pasar lain (AMM biasa Raydium/Pump/Meteora DAMM…) kalau tidak ada pool CLMM/DLMM.
-  async pasarLain(token, fetchImpl = globalThis.fetch) {
+  // Other markets (plain Raydium/Pump/Meteora DAMM AMMs…) when there is no CLMM/DLMM pool.
+  async otherMarket(token, fetchImpl = globalThis.fetch) {
     try {
       const r = await fetchImpl(`https://api.geckoterminal.com/api/v2/networks/solana/tokens/${str(token)}/pools?page=1`,
         { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
       if (!r.ok) return null;
       const j = await r.json();
-      const nama = (id) => String(id || '?').replace(/-solana$/, '').split('-')
+      const dexName = (id) => String(id || '?').replace(/-solana$/, '').split('-')
         .map((w) => (/^v\d$/i.test(w) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
       return (j.data || []).slice(0, 5).map((d) => ({
-        dex: nama(d.relationships?.dex?.data?.id), dexId: d.relationships?.dex?.data?.id || null,
+        dex: dexName(d.relationships?.dex?.data?.id), dexId: d.relationships?.dex?.data?.id || null,
         name: d.attributes?.name || '?', address: d.attributes?.address || null,
         reserveUsd: Number(d.attributes?.reserve_in_usd) || 0,
       }));
@@ -266,15 +266,15 @@ class SolanaManual extends Manual {
     if (p.venue === 'meteora' && upper - lower + 1 > 70) warnings.push(`rentang ${upper - lower + 1} bin — posisi DLMM lebar butuh sewa akun lebih besar (dikembalikan saat ditutup)`);
 
     const bal = await eng.exec.balances();
-    const px = await this.hargaUsd(st);
-    const { kasUsd } = this.saldoDari(bal, st, px);
+    const px = await this.usdPrices(st);
+    const { walletCashUsd } = this.fromBalance(bal, st, px);
     const avail = (t) => eng.availOf(bal, t);
     const funded = avail(st.token0) >= amount0 && avail(st.token1) >= amount1;
-    if (!funded && kasUsd < valueUsd) return { error: `kas cuma $${kasUsd.toFixed(2)}, butuh ~$${valueUsd.toFixed(2)}` };
-    if (!funded && kasUsd < valueUsd * 1.02) warnings.push('kas nyaris pas — sisakan sedikit untuk biaya dan slippage');
+    if (!funded && walletCashUsd < valueUsd) return { error: `kas cuma $${walletCashUsd.toFixed(2)}, butuh ~$${valueUsd.toFixed(2)}` };
+    if (!funded && walletCashUsd < valueUsd * 1.02) warnings.push('kas nyaris pas — sisakan sedikit untuk biaya dan slippage');
 
-    const sim = this.simulasiSwap({ st, plan, bal, rules, px });
-    warnings.push(...sim.masalah);
+    const sim = this.simulateSwap({ st, plan, bal, rules, px });
+    warnings.push(...sim.problems);
 
     const rasio = (t) => (p.quoteSide === 1 ? 1.0001 ** (t - cur) : 1.0001 ** (cur - t));
     const [tHargaBawah, tHargaAtas] = p.quoteSide === 1 ? [tl, tu] : [tu, tl];
@@ -290,10 +290,10 @@ class SolanaManual extends Manual {
         strategy: shape,
         distribution: shape ? this.distribution(lower, upper, st.current, st.binStep, shape) : null,
         valueUsd, amount0: amount0.toString(), amount1: amount1.toString(),
-        side, hasHooks: false, kasUsd,
-        swaps: sim.langkah, router: 'Jupiter',
+        side, hasHooks: false, walletCashUsd,
+        swaps: sim.step, router: 'Jupiter',
         swapOn: !!rules.swap.enabled, slippageBps: rules.swap.max_slippage_bps,
-        saldo: this.saldoDari(bal, st, px, sim.sesudah),
+        saldo: this.fromBalance(bal, st, px, sim.after),
       },
     };
   }
@@ -309,16 +309,16 @@ class SolanaManual extends Manual {
     return { binStep, active, bins: bins.map(([b, w]) => [b, w / max]) };
   }
 
-  // ---- saldo & simulasi tukar ---------------------------------------------------------
+  // ---- balances & swap simulation -----------------------------------------------------
   gasReserve() { return this.engine.exec.gasReserveCached(); }
 
-  // Harga USD per satu token: Jupiter untuk token pool, kuotasi dari aturannya sendiri.
-  async hargaUsd(st) {
+  // USD price per one token: Jupiter for pool tokens, quote assets from their own rule.
+  async usdPrices(st) {
     const mints = [...new Set([WSOL, this.chain.ADDR.usdg, this.chain.ADDR.usdt, ...(st ? [st.token0, st.token1] : [])])];
     const px = await this.chain.jup.prices(mints).catch(() => new Map());
     const out = new Map(px);
     for (const [a, q] of Object.entries(this.chain.QUOTES)) out.set(a, q.kind === 'eth' ? this.engine.ethUsd : 1);
-    // Token pool yang tidak dikenal Jupiter: dari harga pool terhadap aset kuotasinya.
+    // Pool tokens Jupiter does not know: from the pool price against its quote asset.
     if (st) {
       const qs = this.chain.quoteSideOf(st.token0, st.token1);
       if (qs) {
@@ -331,11 +331,11 @@ class SolanaManual extends Manual {
     return out;
   }
 
-  daftarSaldo(st) {
+  balanceList(st) {
     return [...new Set([WSOL, this.chain.ADDR.usdg, this.chain.ADDR.usdt, ...(st ? [st.token0, st.token1] : [])])];
   }
 
-  // Jumlah mentah yang dipegang untuk satu mint; SOL = native + wSOL (satu uang).
+  // Raw amount held for one mint; SOL = native + wSOL (one money).
   rawOf(bal, t) { return t === WSOL ? (bal.get('SOL') || 0n) + (bal.get(WSOL) || 0n) : bal.get(t) || 0n; }
 
   kaki(tok, raw, st, px) {
@@ -348,18 +348,18 @@ class SolanaManual extends Manual {
     return { token: tok, symbol, amount, usd: usdPer != null ? amount * usdPer : null };
   }
 
-  saldoDari(bal, st, px, sesudah = null) {
-    const tokens = this.daftarSaldo(st).map((t) => {
+  fromBalance(bal, st, px, after = null) {
+    const tokens = this.balanceList(st).map((t) => {
       const row = { ...this.kaki(t, this.rawOf(bal, t), st, px), isQuote: !!this.chain.QUOTES[t], native: t === WSOL };
-      if (sesudah) {
-        const s = this.kaki(t, this.rawOf(sesudah, t), st, px);
-        row.sesudah = s.amount; row.sesudahUsd = s.usd;
+      if (after) {
+        const s = this.kaki(t, this.rawOf(after, t), st, px);
+        row.after = s.amount; row.afterUsd = s.usd;
       }
       return row;
     });
-    const kasUsd = tokens.filter((x) => x.isQuote).reduce((a, x) => a + (x.usd || 0), 0);
+    const walletCashUsd = tokens.filter((x) => x.isQuote).reduce((a, x) => a + (x.usd || 0), 0);
     const reserve = Number(this.gasReserve()) / 1e9;
-    return { tokens, kasUsd, gasReserveEth: reserve, gasReserve: reserve, nativeSymbol: 'SOL' };
+    return { tokens, walletCashUsd, gasReserveEth: reserve, gasReserve: reserve, nativeSymbol: 'SOL' };
   }
 
   async saldo(poolRef) {
@@ -367,45 +367,45 @@ class SolanaManual extends Manual {
     const p = poolRef ? await this.poolByRef(poolRef) : null;
     const raw = p ? await this.chain.pool(p.venue, p.poolRef).catch(() => null) : null;
     const st = raw ? { ...raw, symbol0: p.symbol0, symbol1: p.symbol1 } : null;
-    const [bal, px] = await Promise.all([eng.exec.balances(), this.hargaUsd(st)]);
-    return { ...this.saldoDari(bal, st, px), wallet: !!eng.exec.address() };
+    const [bal, px] = await Promise.all([eng.exec.balances(), this.usdPrices(st)]);
+    return { ...this.fromBalance(bal, st, px), wallet: !!eng.exec.address() };
   }
 
   /**
-   * Menirukan langkah tukar SolanaEngine.executeEntry di atas saldo sekarang, tanpa
-   * mengirim apa pun: isi gas (USDC→SOL kalau SOL di bawah separuh cadangan), lalu beli
-   * kekurangan tiap sisi lewat Jupiter dari aset kuotasi pool dulu, lalu kas lain.
-   * Rumusnya disalin dari sana — kalau executeEntry berubah, ini ikut diubah.
+   * Imitates the swap steps of SolanaEngine.executeEntry on top of the current balances,
+   * WITHOUT sending anything: top up gas (USDC→SOL when SOL is below half the reserve), then
+   * buy each side's shortfall through Jupiter, from the pool's quote asset first, then other cash.
+   * The formulas are copied from there — if executeEntry changes, this must change too.
    */
-  simulasiSwap({ st, plan, bal, rules, px }) {
+  simulateSwap({ st, plan, bal, rules, px }) {
     const eng = this.engine;
     const s = new Map(bal);
     const get = (t) => this.rawOf(s, t);
-    // Mengurangi/menambah SOL lewat kunci native: availOf menjumlahkan keduanya.
+    // SOL is added/removed through the native key: availOf sums both.
     const add = (t, x) => {
       if (t === WSOL) s.set('SOL', (s.get('SOL') || 0n) + x);
       else s.set(t, (s.get(t) || 0n) + x);
     };
-    const langkah = [], masalah = [];
-    const catat = (jenis, a, x, b, y, extra = {}) => {
-      langkah.push({ jenis, dari: this.kaki(a, x, st, px), ke: this.kaki(b, y, st, px), router: 'Jupiter', ...extra });
+    const step = [], problems = [];
+    const record = (kind, a, x, b, y, extra = {}) => {
+      step.push({ jenis: kind, dari: this.kaki(a, x, st, px), ke: this.kaki(b, y, st, px), router: 'Jupiter', ...extra });
       add(a, -x); add(b, y);
     };
     const fmt = (t, raw) => { const k = this.kaki(t, raw, st, px); return `${k.amount.toPrecision(4)} ${k.symbol}`; };
     const slip = rules.swap.max_slippage_bps;
 
-    // 0. isi gas (engine.topUpGas)
+    // 0. top up gas (engine.topUpGas)
     const reserve = this.gasReserve();
     const sol = s.get('SOL') || 0n;
     if (sol * 2n < reserve) {
       const wantUsd = Math.min(Number(eng.cfg.gas?.topup_max_usd ?? 25), (Number(reserve - sol) / 1e9) * eng.ethUsd * 1.03);
       const pay = BigInt(Math.ceil(wantUsd * 1e6));
       if (pay >= 1_000_000n && get(this.chain.ADDR.usdg) >= pay) {
-        catat('jembatan', this.chain.ADDR.usdg, pay, WSOL, BigInt(Math.floor((wantUsd / eng.ethUsd) * 1e9)), { gas: true, taksiran: true, maxLossBps: 300 });
+        record('jembatan', this.chain.ADDR.usdg, pay, WSOL, BigInt(Math.floor((wantUsd / eng.ethUsd) * 1e9)), { gas: true, estimate: true, maxLossBps: 300 });
       }
     }
 
-    // 1. beli kekurangan tiap sisi
+    // 1. buy each side's shortfall
     const q = this.chain.quoteSideOf(plan.token0, plan.token1);
     const quoteMint = q.side === 0 ? plan.token0 : plan.token1;
     for (const [mint, want] of [[plan.token0, BigInt(plan.amount0)], [plan.token1, BigInt(plan.amount1)]]) {
@@ -413,21 +413,21 @@ class SolanaManual extends Manual {
       if (want <= have) continue;
       const short = want - have;
       const p = px.get(mint);
-      if (!rules.swap.enabled) { masalah.push(`kurang ${fmt(mint, short)} dan tukar otomatis dimatikan — pembukaan akan berhenti`); continue; }
-      if (!p) { masalah.push(`harga ${fmt(mint, short).split(' ').pop()} tidak diketahui Jupiter — tidak bisa dibeli otomatis`); continue; }
+      if (!rules.swap.enabled) { problems.push(`kurang ${fmt(mint, short)} dan tukar otomatis dimatikan — pembukaan akan berhenti`); continue; }
+      if (!p) { problems.push(`harga ${fmt(mint, short).split(' ').pop()} tidak diketahui Jupiter — tidak bisa dibeli otomatis`); continue; }
       const dec = mint === st.token0 ? st.dec0 : st.dec1;
       const usd = (Number(short) / 10 ** dec) * p * (1 + (slip + 50) / 10_000);
       const src = eng.fundSource(s, usd, mint === quoteMint ? null : quoteMint);
-      if (!src) { masalah.push(`kas tidak cukup untuk membeli ${fmt(mint, short)} (~$${usd.toFixed(2)})`); continue; }
+      if (!src) { problems.push(`kas tidak cukup untuk membeli ${fmt(mint, short)} (~$${usd.toFixed(2)})`); continue; }
       const zap = src[0] === plan.token0 || src[0] === plan.token1;
-      catat(zap ? 'zap' : 'jembatan', src[0], src[1], mint, short, { maxLossBps: rules.swap.max_price_impact_bps, taksiran: true });
+      record(zap ? 'zap' : 'jembatan', src[0], src[1], mint, short, { maxLossBps: rules.swap.max_price_impact_bps, estimate: true });
     }
 
-    // 2. setor ke posisi
+    // 2. deposit into the position
     add(plan.token0, -BigInt(plan.amount0));
     add(plan.token1, -BigInt(plan.amount1));
     for (const [t, v] of s) if (typeof v === 'bigint' && v < 0n) s.set(t, 0n);
-    return { langkah, masalah, sesudah: s };
+    return { step, problems, after: s };
   }
 
   // ---- ikuti aksi -----------------------------------------------------------------------
@@ -508,27 +508,50 @@ class SolanaManual extends Manual {
       .sort((x, y) => (y.isQuote ? 1 : 0) - (x.isQuote ? 1 : 0) || y.amount - x.amount);
   }
 
-  async amountRaw(token, input) {
+  // The same parse as amountRaw WITHOUT the balance check (the swap page still quotes an
+  // amount above the balance, with the button disabled). SOL = native + wSOL minus the reserve.
+  async amountInfo(token, input) {
     const tok = str(token);
     const h = (await this.held()).find((x) => x.address === tok);
     const dec = h?.decimals ?? 9;
     const bal = BigInt(h?.raw || '0');
     const reserve = this.gasReserve();
-    const maks = tok === WSOL ? (bal > reserve ? bal - reserve : 0n) : bal;
+    const maxVal = tok === WSOL ? (bal > reserve ? bal - reserve : 0n) : bal;
+    const symbol = h?.symbol || '';
+    const out = (raw) => ({ raw, maxVal, dec, symbol });
     const t = String(input).trim().toLowerCase();
-    if (t === 'semua' || t === 'all' || t === 'max') return maks;
-    const persen = t.match(/^([\d.,]+)\s*%$/);
-    if (persen) {
-      const f = Number(persen[1].replace(',', '.'));
+    if (t === 'semua' || t === 'all' || t === 'max') return out(maxVal);
+    const percent = t.match(/^([\d.,]+)\s*%$/);
+    if (percent) {
+      const f = Number(percent[1].replace(',', '.'));
       if (!Number.isFinite(f) || f <= 0 || f > 100) throw new Error('persen harus antara 0 dan 100');
-      return (maks * BigInt(Math.round(f * 100))) / 10000n;
+      return out((maxVal * BigInt(Math.round(f * 100))) / 10000n);
     }
     const n = Number(t.replace(/[^\d.,-]/g, '').replace(',', '.'));
     if (!Number.isFinite(n) || n <= 0) throw new Error('jumlah harus angka, "semua", atau persen (mis. 50%)');
     const [ip, fp = ''] = n.toFixed(Math.min(dec, 12)).split('.');
-    const raw = BigInt(ip) * 10n ** BigInt(dec) + BigInt((fp + '0'.repeat(dec)).slice(0, dec) || '0');
-    if (raw > maks) throw new Error(`saldo cuma ${(Number(maks) / 10 ** dec).toPrecision(6)} ${h?.symbol || ''}`.trim());
+    return out(BigInt(ip) * 10n ** BigInt(dec) + BigInt((fp + '0'.repeat(dec)).slice(0, dec) || '0'));
+  }
+
+  async amountRaw(token, input) {
+    const { raw, maxVal, dec, symbol } = await this.amountInfo(token, input);
+    if (raw > maxVal) throw new Error(`saldo cuma ${(Number(maxVal) / 10 ** dec).toPrecision(6)} ${symbol}`.trim());
     return raw;
+  }
+
+  // Manual.doSwap with the mint as-is for the lock (base58 is case-sensitive): the automatic
+  // leftover sale locks the same key, so the two never sell the same balance at once.
+  async doSwap({ tokenIn, tokenOut, amountRaw }) {
+    const eng = this.engine;
+    if (!eng.exec.address()) throw new Error('belum ada wallet');
+    if (eng.dryRun()) throw new Error('mode simulasi: tidak mengirim transaksi');
+    if (eng.stopping) throw new Error('bot sedang berhenti (restart) — coba lagi sebentar');
+    eng.selling = eng.selling || new Set();
+    const lockKey = str(tokenIn);
+    if (eng.selling.has(lockKey)) throw new Error('token ini sedang dijual otomatis — tunggu sebentar');
+    eng.selling.add(lockKey);
+    try { return await this.doSwapLocked({ tokenIn, tokenOut, amountRaw }); }
+    finally { eng.selling.delete(lockKey); }
   }
 
   async quoteSwap({ tokenIn, tokenOut, amountRaw }) {
@@ -554,6 +577,10 @@ class SolanaManual extends Manual {
       priceImpactPct: q.priceImpactPct != null ? Number(q.priceImpactPct) * 100 : null,
       maxLossBps: rules.exit.sell_max_loss_bps, slippageBps: rules.swap.max_slippage_bps,
       tooLossy: loss != null && loss > rules.exit.sell_max_loss_bps,
+      // Same shape as the EVM multi-aggregator quote; Solana has one aggregator (Jupiter).
+      aggregator: 'auto', chosen: 'jupiter', chosenLabel: 'Jupiter',
+      routes: [{ id: 'jupiter', label: 'Jupiter', state: 'ok', blocker: null, ms: null, dex, amountOut, usdIn, usdOut,
+        lossBps: loss, tooLossy: loss != null && loss > rules.exit.sell_max_loss_bps, best: true }],
     };
   }
 

@@ -1,13 +1,13 @@
 'use strict';
-// Grafik posisi sebagai GAMBAR: lilin harga + indikator + pita rentang LP + garis BEP.
+// Position chart as an IMAGE: price candles + indicators + LP range band + BEP line.
 //
-// Kenapa digambar di server: Telegram tidak bisa menjalankan KLineChart seperti dasbor,
-// padahal pertanyaan "harga sekarang di mana terhadap rentang dan BEP saya" justru
-// muncul saat sedang di jalan, bukan saat di depan browser. SVG dirasterkan resvg —
-// pipa yang sama dengan kartu bagikan (src/share-card.js), termasuk fontnya — jadi
-// gambar ini dan dasbor berbicara dengan bahasa visual yang sama.
+// Why it is drawn on the server: Telegram cannot run KLineChart like the dashboard,
+// yet the question "where is the price now relative to my range and BEP" comes
+// up precisely when on the go, not when in front of a browser. The SVG is rasterised by resvg —
+// the same pipeline as the share card (src/share-card.js), including its fonts — so
+// this image and the dashboard speak the same visual language.
 //
-// Indikator memakai parameter bawaan yang sama dengan dasbor (KLineChart):
+// Indicators use the same default parameters as the dashboard (KLineChart):
 //   MA 5/10/30/60 · EMA 6/12/20 · BOLL 20,2 · VOL + MA5/MA10 · RSI 6/12/24 · MACD 12/26/9
 const { Resvg } = require('@resvg/resvg-js');
 const fs = require('node:fs');
@@ -17,13 +17,13 @@ const { tr, localeContext } = require('./telegram-i18n');
 const FONT_DIR = path.join(__dirname, '..', 'public', 'fonts');
 const FONTS = ['Regular', 'Medium', 'SemiBold', 'Bold'].map((w) => path.join(FONT_DIR, `Inter-${w}.ttf`));
 const W = 1200, SCALE = 2;
-const PAD = 28;                 // tepi kiri/kanan
-const AXIS_W = 104;             // kolom label harga di kanan
-const HEAD_H = 104;             // judul + baris harga
-const LEGEND_H = 26;            // baris legenda indikator di atas lilin
-const MAIN_H = 392;             // tinggi panel lilin
-const SUB_H = 116;              // tinggi tiap panel bawah (VOL/RSI/MACD)
-const FOOT_H = 74;              // sumbu waktu + catatan kaki
+const PAD = 28;                 // left/right edge
+const AXIS_W = 104;             // price label column on the right
+const HEAD_H = 104;             // title + price row
+const LEGEND_H = 26;            // indicator legend row above the candles
+const MAIN_H = 392;             // candle panel height
+const SUB_H = 116;              // height of each lower panel (VOL/RSI/MACD)
+const FOOT_H = 74;              // time axis + footnote
 
 const C = {
   bg0: '#101416', bg1: '#191F22', text: '#F4F6F5', muted: '#A0AAA9', faint: '#7C8786',
@@ -33,8 +33,8 @@ const C = {
   ind: ['#FF9600', '#935EBD', '#2196F3', '#E11D74'],
 };
 
-// Urutan bit = urutan tombol di Telegram. Nilainya ikut tersimpan di callback data,
-// jadi JANGAN diubah-ubah urutannya: tombol lama di chat akan berarti indikator lain.
+// Bit order = the order of the buttons in Telegram. The value is also stored in callback data,
+// so do NOT reorder it: an old button in a chat would mean a different indicator.
 const INDICATORS = [
   { key: 'ma', bit: 1, label: 'MA', pane: 'main' },
   { key: 'ema', bit: 2, label: 'EMA', pane: 'main' },
@@ -43,10 +43,10 @@ const INDICATORS = [
   { key: 'rsi', bit: 16, label: 'RSI', pane: 'sub' },
   { key: 'macd', bit: 32, label: 'MACD', pane: 'sub' },
 ];
-const DEFAULT_MASK = 2 | 8;      // EMA + VOL, sama seperti bawaan dasbor ditambah EMA
+const DEFAULT_MASK = 2 | 8;      // EMA + VOL, the same as the dashboard default plus EMA
 const has = (mask, key) => !!(mask & (INDICATORS.find((i) => i.key === key)?.bit || 0));
 
-// ---- format angka (salinan perilaku web/src/fmt.js) ------------------------------
+// ---- number formats (a copy of web/src/fmt.js's behaviour) ------------------------------
 const loc = () => (localeContext.getStore() === 'en' ? 'en-US' : 'id-ID');
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const usd = (v, d = 2) => (v == null || !Number.isFinite(v) ? '—'
@@ -70,10 +70,10 @@ let tz = null;
 const clock = (ts) => new Date(ts).toLocaleString(loc(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: tz || undefined });
 const hhmm = (ts) => new Date(ts).toLocaleString(loc(), { hour: '2-digit', minute: '2-digit', timeZone: tz || undefined });
 const dayShort = (ts) => new Date(ts).toLocaleDateString(loc(), { day: 'numeric', month: 'short', timeZone: tz || undefined });
-// Cap waktu penanda: pada lilin harian cukup tanggalnya, selain itu sampai menit.
+// Marker time stamp: on daily candles the date is enough, otherwise down to the minute.
 const stamp = (ts, secs) => (!ts ? '—' : secs >= 86400 ? dayShort(ts) : `${dayShort(ts)} ${hhmm(ts)}`);
 
-// ---- indikator -------------------------------------------------------------------
+// ---- indicators -------------------------------------------------------------------
 const sma = (xs, n) => xs.map((_, i) => (i + 1 < n ? null : xs.slice(i - n + 1, i + 1).reduce((a, b) => a + b, 0) / n));
 function ema(xs, n) {
   const k = 2 / (n + 1); const out = []; let prev = null;
@@ -91,7 +91,7 @@ function boll(xs, n = 20, mult = 2) {
   });
   return { mid, up, low };
 }
-// RSI Wilder, seperti yang dipakai KLineChart.
+// Wilder's RSI, as used by KLineChart.
 function rsi(xs, n) {
   const out = new Array(xs.length).fill(null);
   let gain = 0, loss = 0;
@@ -114,7 +114,7 @@ function macd(xs, fast = 12, slow = 26, signal = 9) {
   return { diff, dea, bar };
 }
 
-// ---- primitif gambar -------------------------------------------------------------
+// ---- drawing primitives -------------------------------------------------------------
 const txt = (s, x, y, { size = 15, weight = 400, color = C.text, anchor = 'start' } = {}) =>
   `<text x="${x}" y="${y}" font-family="Inter" font-size="${size}" font-weight="${weight}" fill="${color}" text-anchor="${anchor}">${esc(s)}</text>`;
 const line = (x1, y1, x2, y2, color, width = 1, dash = null) =>
@@ -122,7 +122,7 @@ const line = (x1, y1, x2, y2, color, width = 1, dash = null) =>
 const rect = (x, y, w, h, fill, extra = '') =>
   `<rect x="${x}" y="${y}" width="${Math.max(0, w)}" height="${Math.max(0, h)}" fill="${fill}" ${extra} />`;
 const poly = (pts, color, width = 1.6) => {
-  // Titik kosong (indikator yang belum matang) memutus garis, bukan menariknya ke nol.
+  // An empty point (an indicator not yet mature) breaks the line, rather than pulling it to zero.
   const segs = [];
   let cur = [];
   for (const p of pts) {
@@ -132,26 +132,26 @@ const poly = (pts, color, width = 1.6) => {
   if (cur.length > 1) segs.push(cur);
   return segs.map((s) => `<polyline points="${s.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ')}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" />`).join('');
 };
-// Nama panel (VOL/RSI/MACD) berlatar gelap: garis indikator lewat persis di situ,
-// dan tanpa latar teksnya tenggelam di antara garis.
+// The panel name (VOL/RSI/MACD) has a dark background: indicator lines pass right there,
+// and without a background the text drowns among the lines.
 const panelLabel = (s, x, y) =>
   rect(x - 4, y - 4, 8 + String(s).length * 6.6, 17, 'rgba(16,20,22,0.82)', 'rx="3"') + txt(s, x, y + 9, { size: 12, color: C.muted });
 
-// Label harga di kolom kanan, dengan latar supaya tetap terbaca di atas lilin.
+// Price label in the right column, with a background so it stays readable above the candles.
 const tag = (s, x, y, color, { bg = C.bg0 } = {}) => {
   const w = 8 + String(s).length * 7.6;
   return rect(x, y - 11, w, 22, bg, `rx="4" stroke="${color}" stroke-opacity="0.5"`) + txt(s, x + 5, y + 4, { size: 13, weight: 600, color });
 };
 
-// ---- gambar utama ----------------------------------------------------------------
+// ---- main image ----------------------------------------------------------------
 function chartSvg(d) {
   const cs = d.candles || [];
   const subs = INDICATORS.filter((i) => i.pane === 'sub' && has(d.mask, i.key));
   const H = HEAD_H + MAIN_H + subs.length * SUB_H + FOOT_H;
   const x0 = PAD, x1 = W - PAD - AXIS_W;
   const plotW = x1 - x0;
-  // Tinggi ruang legenda mengikuti jumlah baris yang akan terpakai (MA 4 garis +
-  // EMA 3 + BOLL = 8 entri → dua baris).
+  // The legend space height follows the number of rows that will be used (MA 4 lines +
+  // EMA 3 + BOLL = 8 entries → two rows).
   const legendN = (has(d.mask, 'ma') ? 4 : 0) + (has(d.mask, 'ema') ? 3 : 0) + (has(d.mask, 'boll') ? 1 : 0);
   const legendH = legendN > 5 ? LEGEND_H + 17 : legendN ? LEGEND_H : 10;
   const mainY0 = HEAD_H + legendH, mainY1 = HEAD_H + MAIN_H;
@@ -162,8 +162,8 @@ function chartSvg(d) {
   const step = n ? plotW / n : plotW;
   const cx = (i) => x0 + step * (i + 0.5);
 
-  // Skala harga: lilin + rentang posisi + BEP harus semuanya muat, kalau tidak
-  // gambar ini menjawab pertanyaan yang salah ("harga saja", tanpa rentangnya).
+  // Price scale: the candles + the position range + BEP must all fit, otherwise
+  // this image answers the wrong question ("price only", without its range).
   const want = [...cs.map((c) => Number(c.h)), ...cs.map((c) => Number(c.l))].filter((v) => v > 0);
   for (const v of [d.lo, d.hi, d.now, d.entry, d.exit, d.bepPrice]) if (v > 0) want.push(v);
   let min = want.length ? Math.min(...want) : 0, max = want.length ? Math.max(...want) : 1;
@@ -173,25 +173,25 @@ function chartSvg(d) {
   const py = (p) => mainY1 - ((p - min) / (max - min)) * (mainY1 - mainY0);
 
   const parts = [];
-  // Isi tiap panel dipotong pada batasnya (clipPath). Bollinger dan MA60 bisa jauh
-  // di luar rentang harga lilin; tanpa ini garisnya menerobos ke panel VOL di bawah.
+  // Each panel's content is clipped at its bounds (clipPath). Bollinger and MA60 can be far
+  // outside the candle price range; without this the lines would break through into the VOL panel below.
   parts.push(`<defs><clipPath id="cMain"><rect x="${x0}" y="${HEAD_H}" width="${plotW}" height="${mainY1 - HEAD_H}" /></clipPath></defs>`);
   parts.push(rect(0, 0, W, H, C.bg0));
   parts.push(rect(0, 0, W, HEAD_H, C.bg1));
   parts.push(line(0, HEAD_H, W, HEAD_H, C.line));
 
-  // ---- kepala: pasangan, status, harga kini ----
+  // ---- header: pair, status, current price ----
   const st = d.closed ? tr("ditutup") : d.inRange == null ? tr("belum tersinkron") : d.inRange ? tr("in-range") : tr("di luar rentang");
   const stColor = d.closed ? C.muted : d.inRange == null ? C.muted : d.inRange ? C.up : C.amber;
   parts.push(txt(d.pair, PAD, 42, { size: 27, weight: 700 }));
   parts.push(txt(`#${d.positionId}${d.tokenId ? ` · NFT #${d.tokenId}` : ''}`, PAD, 72, { size: 14, color: C.faint }));
-  // Lebar jendela yang benar-benar tergambar (jumlah lilin × ukurannya): pilihan
-  // "30 hari" pada lilin 5 menit dipangkas ke batas lilin, dan itu harus terbaca.
-  const jamJendela = n && d.secs ? (n * d.secs) / 3600 : 0;
+  // Width of the window actually drawn (candle count × size): a "30 days" choice
+  // on 5-minute candles is cut to the candle limit, and that must be readable.
+  const windowHours = n && d.secs ? (n * d.secs) / 3600 : 0;
   const d1 = (v) => v.toLocaleString(loc(), { maximumFractionDigits: 1 });
-  const jendela = !jamJendela ? null : jamJendela < 48 ? tr("{0} jam", [Math.round(jamJendela)]) : tr("{0} hari", [d1(jamJendela / 24)]);
+  const windowSpan = !windowHours ? null : windowHours < 48 ? tr("{0} jam", [Math.round(windowHours)]) : tr("{0} hari", [d1(windowHours / 24)]);
   const headMeta = [d.venue, d.fee != null ? `fee ${(d.fee / 10000).toFixed(2)}%` : null,
-    jendela ? `${d.tf} × ${n} (${jendela})` : d.tf, st].filter(Boolean).join(' · ');
+    windowSpan ? `${d.tf} × ${n} (${windowSpan})` : d.tf, st].filter(Boolean).join(' · ');
   parts.push(txt(headMeta, PAD, 92, { size: 14, color: stColor }));
   parts.push(txt(price(d.now), W - PAD, 42, { size: 27, weight: 700, anchor: 'end' }));
   parts.push(txt(`${d.quoteSymbol || ''} · ${d.change == null ? '—' : pct(d.change, 2)}`, W - PAD, 68, {
@@ -199,9 +199,9 @@ function chartSvg(d) {
   parts.push(txt(tr("PnL {0} · {1}", [usd(d.pnlUsd), pct(d.pnlPct, 2)]), W - PAD, 92, {
     size: 14, anchor: 'end', color: d.pnlUsd > 0 ? C.up : d.pnlUsd < 0 ? C.down : C.muted }));
 
-  // ---- kisi + label harga ----
-  // Label yang berimpit dengan penanda di kolom kanan (BEP, masuk, harga kini)
-  // dilewati: dua teks di tempat yang sama saling menimpa dan keduanya jadi sampah.
+  // ---- grid + price labels ----
+  // Labels that coincide with a marker in the right column (BEP, entry, current price)
+  // are skipped: two texts in the same place overwrite each other and both become garbage.
   const marksY = [d.entry, d.exit, d.bepPrice, d.now]
     .filter((v) => v > 0 && v >= min && v <= max).map((v) => py(v));
   for (let i = 0; i <= 4; i++) {
@@ -211,39 +211,39 @@ function chartSvg(d) {
     if (!marksY.some((my) => Math.abs(my - y) < 14)) parts.push(txt(price(p), x1 + 10, y + 5, { size: 13, color: C.faint }));
   }
 
-  const main = [];   // isi panel lilin (dipotong clipPath), label tepi ditaruh di luar
+  const main = [];   // candle panel content (clipped by clipPath), the edge labels are placed outside
 
-  // Posisi sebuah waktu di sumbu lilin. `before`/`after`: di luar jendela lilin.
+  // Position of a time on the candle axis. `before`/`after`: outside the candle window.
   const tsX = (ts) => {
     if (!ts || !n || !d.secs) return null;
     const idx = (ts - cs[0].t) / (d.secs * 1000);
     return { x: cx(Math.max(0, Math.min(n - 1, idx))), before: idx < -0.5, after: idx > n - 0.5 };
   };
 
-  // ---- pita rentang posisi LP ----
-  // Pitanya dimulai di lilin saat posisi DIBUKA (dan berhenti di lilin saat ditutup),
-  // bukan membentang seluruh grafik: rentang itu baru ada sejak kita masuk, dan
-  // lilin sebelum masuk memang tidak "di dalam" maupun "di luar" rentang apa pun.
+  // ---- LP position range band ----
+  // The band starts at the candle when the position was OPENED (and stops at the candle when closed),
+  // not stretching across the whole chart: that range only exists since we entered, and
+  // candles before entry are neither "inside" nor "outside" any range.
   if (d.lo > 0 && d.hi > d.lo) {
     const yHi = py(Math.min(d.hi, max)), yLo = py(Math.max(d.lo, min));
-    const mulai = tsX(d.openedTs);
-    const selesai = tsX(d.closedTs);
-    const bx0 = mulai && !mulai.before ? mulai.x - step / 2 : x0;
-    const bx1 = selesai && !selesai.after ? selesai.x + step / 2 : x1;
+    const start = tsX(d.openedTs);
+    const finished = tsX(d.closedTs);
+    const bx0 = start && !start.before ? start.x - step / 2 : x0;
+    const bx1 = finished && !finished.after ? finished.x + step / 2 : x1;
     main.push(rect(bx0, yHi, bx1 - bx0, yLo - yHi, C.range));
     main.push(line(bx0, yHi, bx1, yHi, C.rangeLine, 1.4, '6 5'));
     main.push(line(bx0, yLo, bx1, yLo, C.rangeLine, 1.4, '6 5'));
-    // Label ikut di awal pita; kalau pitanya sempit di ujung kanan, label ditaruh di
-    // kirinya supaya tidak keluar dari panel.
+    // The label goes at the start of the band; if the band is narrow at the right end, the label is placed to
+    // its left so it does not leave the panel.
     const lx = bx1 - bx0 < 220 && bx0 > x0 + 220 ? bx0 - 8 : bx0 + 8;
     const anchor = lx < bx0 ? 'end' : 'start';
     main.push(txt(tr("batas atas {0}", [price(d.hi)]), lx, yHi - 8, { size: 12, color: C.accent, anchor }));
-    // Batas bawah yang mepet dasar panel ditulis DI ATAS garisnya — kalau tidak,
-    // teksnya jatuh ke panel volume di bawahnya.
+    // A lower bound pressed against the panel base is written ABOVE its line — otherwise
+    // the text falls into the volume panel below it.
     main.push(txt(tr("batas bawah {0}", [price(d.lo)]), lx, yLo + 17 > mainY1 - 6 ? yLo - 8 : yLo + 17, { size: 12, color: C.accent, anchor }));
   }
 
-  // ---- lilin ----
+  // ---- candles ----
   const bw = Math.max(1.5, Math.min(14, step * 0.66));
   cs.forEach((c, i) => {
     const o = Number(c.o), h = Number(c.h), l = Number(c.l), cl = Number(c.c);
@@ -254,7 +254,7 @@ function chartSvg(d) {
     main.push(rect(x - bw / 2, Math.min(yo, yc), bw, Math.max(1.2, Math.abs(yc - yo)), col));
   });
 
-  // ---- indikator di panel lilin ----
+  // ---- indicators in the candle panel ----
   const legend = [];
   const at = (arr) => arr.map((v, i) => (v == null ? null : [cx(i), py(v)]));
   if (has(d.mask, 'ma')) {
@@ -278,9 +278,9 @@ function chartSvg(d) {
     main.push(poly(at(b.low), C.ind[1], 1.3));
     legend.push(['BOLL 20,2', C.ind[1], price(b.up[b.up.length - 1])]);
   }
-  // Legenda indikator di atas lilin. Dengan semua indikator menyala isinya delapan
-  // entri — satu baris tidak muat, jadi dibungkus ke baris berikutnya alih-alih
-  // dipotong diam-diam (dulu BOLL hilang begitu MA dan EMA sama-sama menyala).
+  // Indicator legend above the candles. With all indicators on it holds eight
+  // entries — one row does not fit, so it wraps to the next row instead of
+  // being silently cut (BOLL used to vanish when MA and EMA were both on).
   const legendSvg = [];
   {
     let lx = PAD, ly = HEAD_H + 21;
@@ -295,19 +295,19 @@ function chartSvg(d) {
     }
   }
 
-  // ---- KAPAN posisi dibuka/ditutup: garis tegak di lilin yang bersangkutan ----
-  // Harga masuk saja tidak menjawab "saya masuk di bagian grafik yang mana" — dan
-  // itu yang menentukan apakah rentangnya dipasang sebelum atau sesudah gerakan.
+  // ---- WHEN the position opened/closed: vertical lines on the relevant candle ----
+  // The entry price alone does not answer "which part of the chart did I enter at" — and
+  // that is what decides whether the range was placed before or after the move.
   const whenMark = (ts, p, color, label) => {
     const pos = tsX(ts);
     if (!pos) return;
     main.push(line(pos.x, mainY0, pos.x, mainY1, color, 1.4, '5 6'));
-    // Di luar jendela lilin: garisnya menempel di tepi, tanda panah yang menjelaskan.
-    const teks = pos.before ? `▸ ${label}` : pos.after ? `◂ ${label}` : label;
+    // Outside the candle window: the line sticks to the edge, an arrow explains it.
+    const body = pos.before ? `▸ ${label}` : pos.after ? `◂ ${label}` : label;
     const anchorRight = pos.x > x1 - 160;
-    main.push(rect(anchorRight ? pos.x - (teks.length * 6.6 + 12) : pos.x + 4, mainY0 + 2, teks.length * 6.6 + 8, 17, 'rgba(16,20,22,0.85)', 'rx="3"'));
-    main.push(txt(teks, anchorRight ? pos.x - 8 : pos.x + 8, mainY0 + 15, { size: 12, color, anchor: anchorRight ? 'end' : 'start' }));
-    // Titik di perpotongan waktu × harga: "masuk di sini, di harga segini".
+    main.push(rect(anchorRight ? pos.x - (body.length * 6.6 + 12) : pos.x + 4, mainY0 + 2, body.length * 6.6 + 8, 17, 'rgba(16,20,22,0.85)', 'rx="3"'));
+    main.push(txt(body, anchorRight ? pos.x - 8 : pos.x + 8, mainY0 + 15, { size: 12, color, anchor: anchorRight ? 'end' : 'start' }));
+    // A point at the intersection of time × price: "entered here, at this price".
     if (p > 0 && p >= min && p <= max) {
       main.push(`<circle cx="${pos.x.toFixed(1)}" cy="${py(p).toFixed(1)}" r="5" fill="${color}" stroke="${C.bg0}" stroke-width="1.5" />`);
     }
@@ -315,9 +315,9 @@ function chartSvg(d) {
   whenMark(d.openedTs, d.entry, C.gold, tr("masuk {0}", [stamp(d.openedTs, d.secs)]));
   whenMark(d.closedTs, d.exit, C.muted, tr("keluar {0}", [stamp(d.closedTs, d.secs)]));
 
-  // ---- garis penting: masuk, keluar, BEP, harga kini ----
-  // Label di kolom kanan dikumpulkan dulu, baru digambar: harga masuk dan BEP sering
-  // berdekatan, dan dua label di titik yang sama saling menimpa jadi sampah.
+  // ---- key lines: entry, exit, BEP, current price ----
+  // Labels in the right column are collected first, then drawn: entry price and BEP are often
+  // close together, and two labels at the same point overwrite each other into garbage.
   const tags = [];
   const mark = (p, color, label, dash) => {
     if (!(p > 0) || p < min || p > max) return;
@@ -331,7 +331,7 @@ function chartSvg(d) {
     main.push(line(x0, py(d.now), x1, py(d.now), C.text, 1, '2 3'));
     tags.push({ y: py(d.now), label: price(d.now), color: C.text, bg: C.bg1 });
   }
-  // Harga kini selalu di tempatnya; yang lain digeser kalau berimpit dengannya.
+  // The current price always stays in place; the others are shifted if they coincide with it.
   tags.sort((a, b) => a.y - b.y);
   let prevY = -99;
   for (const tg of tags) {
@@ -342,7 +342,7 @@ function chartSvg(d) {
   parts.push(`<g clip-path="url(#cMain)">${main.join('')}</g>`);
   parts.push(legendSvg.join(''));
 
-  // ---- panel bawah ----
+  // ---- bottom panels ----
   let y = mainY1;
   for (const ind of subs) {
     const top = y + 10, bot = y + SUB_H - 18;
@@ -386,7 +386,7 @@ function chartSvg(d) {
     y += SUB_H;
   }
 
-  // ---- sumbu waktu + kaki ----
+  // ---- time axis + footer ----
   const axisY = y + 20;
   const ticks = Math.min(6, Math.max(2, Math.floor(plotW / 190)));
   for (let i = 0; i < ticks; i++) {
@@ -406,11 +406,11 @@ function chartSvg(d) {
     d.cost?.totalUsd ? tr("ongkos {0}", [usd(d.cost.totalUsd)]) : null,
   ].filter(Boolean).join('   ·   ');
   parts.push(txt(kaki, PAD, y + 56, { size: 14, color: C.muted }));
-  // Lilin dari cadangan (GeckoTerminal sedang membatasi panggilan): katakan umurnya,
-  // jangan biarkan gambar lama tampak seperti harga detik ini.
-  const jam = d.staleAt ? tr("harga {0}", [clock(d.staleAt)]) : null;
-  parts.push(txt(`${jam ? `${jam} · ` : ''}Quiver · ${clock(d.at || Date.now())}`, W - PAD, y + 56,
-    { size: 13, color: jam ? C.amber : C.faint, anchor: 'end' }));
+  // Candles from the fallback (GeckoTerminal is rate limiting): state their age,
+  // do not let an old image look like the price of this second.
+  const hours = d.staleAt ? tr("harga {0}", [clock(d.staleAt)]) : null;
+  parts.push(txt(`${hours ? `${hours} · ` : ''}Quiver · ${clock(d.at || Date.now())}`, W - PAD, y + 56,
+    { size: 13, color: hours ? C.amber : C.faint, anchor: 'end' }));
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${parts.join('')}</svg>`;
 }
@@ -438,7 +438,7 @@ function caption(d, lang = 'id') {
   ].filter(Boolean).join(' · '));
 }
 
-// Primitif gambar, palet, dan format angka dibagi ke kartu lain (grafik portofolio)
-// supaya semua gambar dari bot memakai bahasa visual yang sama.
+// Drawing primitives, palette, and number formats are shared with the other card
+// (portfolio chart) so every image from the bot uses the same visual language.
 const prims = { W, SCALE, PAD, AXIS_W, C, FONTS, esc, txt, line, rect, poly, tag, usd, pct, clock, hhmm, dayShort, setTz: (v) => { tz = v; } };
 module.exports = { render, caption, chartSvg, INDICATORS, DEFAULT_MASK, has, prims };

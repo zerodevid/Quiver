@@ -1,38 +1,38 @@
 'use strict';
-// Logo token dari GeckoTerminal (cadangan: DexScreener) — diambil SERVER, disimpan di data/icons/, lalu
-// disajikan dari origin dasbor sendiri lewat GET /api/icon?a=0x….
+// Token logos from GeckoTerminal (fallback: DexScreener) — fetched by the SERVER, stored in data/icons/, then
+// served from the dashboard's own origin via GET /api/icon?a=0x….
 //
-// Kenapa tidak <img src="https://coin-images.coingecko.com/…"> langsung di browser:
-//  - browser jadi memberi tahu pihak ketiga token apa saja yang sedang dilihat;
-//  - GeckoTerminal membatasi ~30 panggilan/menit per IP — dasbor yang dibuka di
-//    beberapa perangkat cepat habis jatahnya, sedangkan server cukup sekali per token;
-//  - logo yang sudah tersimpan tetap tampil saat GeckoTerminal sedang down.
+// Why not <img src="https://coin-images.coingecko.com/…"> directly in the browser:
+//  - the browser would tell a third party which tokens are being viewed;
+//  - GeckoTerminal limits ~30 calls/minute per IP — a dashboard open on
+//    several devices quickly exhausts the quota, whereas the server needs only one call per token;
+//  - an already stored logo still shows while GeckoTerminal is down.
 //
-// Keamanan: gambar disajikan dari origin yang sama dengan dasbor (yang memegang
-// cookie login). Jadi tipe berkas ditentukan dari BYTE-nya, bukan dari header
-// server asal, dan SVG ditolak — SVG bisa membawa skrip yang akan jalan kalau
-// URL-nya dibuka langsung.
+// Security: images are served from the same origin as the dashboard (which holds the
+// login cookie). So the file type is determined from its BYTES, not from the origin
+// server's header, and SVG is rejected — an SVG can carry a script that would run if the
+// URL is opened directly.
 const fs = require('node:fs');
 const path = require('node:path');
 
 const apiFor = (slug) => `https://api.geckoterminal.com/api/v2/networks/${slug}/tokens/multi/`;
-// Cadangan: DexScreener menyimpan logo yang diunggah pembuat token lewat profilnya —
-// menutup sebagian token yang di GeckoTerminal masih "missing.png".
+// Fallback: DexScreener stores the logo uploaded by the token's creator via its profile —
+// covering some tokens that GeckoTerminal still has as "missing.png".
 const dsApiFor = (slug) => `https://api.dexscreener.com/tokens/v1/${slug}/`;
-const BATCH = 30;                    // batas alamat per panggilan /tokens/multi
-const GAP_MS = 2500;                 // ~24 panggilan/menit, di bawah batas 30
+const BATCH = 30;                    // address limit per /tokens/multi call
+const GAP_MS = 2500;                 // ~24 calls/minute, under the limit of 30
 const MAX_BYTES = 1_000_000;
-const RETRY_NONE_MS = 12 * 3600e3;   // token baru sering baru diberi logo belakangan
+const RETRY_NONE_MS = 12 * 3600e3;   // new tokens are often only given a logo later
 const RETRY_ERR_MS = 10 * 60e3;
-// Format yang diminta ke CDN. WebP sengaja tidak disebut: resvg (kartu bagikan,
-// src/share-card.js) tidak bisa membacanya, jadi logo WebP tampil di dasbor tapi jadi
-// inisial di kartu. GeckoTerminal & DexScreener mengirim PNG/JPEG kalau WebP tidak
-// diminta; CDN yang tetap mengirim WebP (CoinGecko) disimpan apa adanya dan dicoba
-// lagi tiap RETRY_NONE_MS siapa tahu sudah berubah.
+// Format requested from the CDN. WebP is deliberately not named: resvg (share card,
+// src/share-card.js) cannot read it, so a WebP logo shows on the dashboard but becomes an
+// initial on the card. GeckoTerminal & DexScreener send PNG/JPEG if WebP is not
+// requested; a CDN that still sends WebP (CoinGecko) is stored as-is and retried
+// every RETRY_NONE_MS in case it has changed.
 const ACCEPT = 'image/png,image/jpeg,image/gif';
 const ZERO = '0x0000000000000000000000000000000000000000';
 
-// Tanda tangan berkas gambar yang diterima.
+// Signatures of accepted image files.
 function sniff(b) {
   if (b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return ['png', 'image/png'];
   if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return ['jpg', 'image/jpeg'];
@@ -56,7 +56,7 @@ class Icons {
     this.DS_API = dsApiFor(chain?.dexscreener || 'robinhood');
     this.gapMs = gapMs; this.collectMs = collectMs; this.now = now;
     this.want = new Set();
-    this.waiters = new Map();          // alamat -> [resolve]
+    this.waiters = new Map();          // address -> [resolve]
     this.running = false;
     this.lastCall = 0;
     this.stats = { calls: 0, ok: 0, none: 0, errors: 0 };
@@ -65,10 +65,10 @@ class Icons {
 
   row(a) { return this.store.get('SELECT * FROM icons WHERE chain=? AND address=?', this.network, a); }
 
-  // Catat kegagalan/ketiadaan — tapi logo yang sudah tersimpan (mis. WebP yang sedang
-  // dicoba ganti ke PNG) jangan hilang cuma karena percobaan ulangnya gagal.
-  // Logo WebP yang gagal diperbarui dicoba lagi selang RETRY_ERR_MS, bukan menunggu
-  // RETRY_NONE_MS penuh seperti WebP yang baru saja diunduh.
+  // Record the failure/absence — but an already stored logo (e.g. a WebP being
+  // replaced by a PNG) must not vanish just because its retry failed.
+  // A WebP logo that failed to update is retried after RETRY_ERR_MS, instead of waiting
+  // the full RETRY_NONE_MS like a WebP that was just downloaded.
   keep(a, status, src = null) {
     const prev = this.row(a);
     if (prev?.status === 'ok' && prev.file && fs.existsSync(path.join(this.dir, prev.file))) {
@@ -81,7 +81,7 @@ class Icons {
       src=excluded.src, checked_ts=excluded.checked_ts`, this.network, a, status, file, ctype, src, ts);
   }
 
-  // Masih perlu ditanyakan ke GeckoTerminal?
+  // Does GeckoTerminal still need to be asked?
   stale(r) {
     if (!r) return true;
     if (r.status === 'ok') {
@@ -97,7 +97,7 @@ class Icons {
     try { return { buf: fs.readFileSync(path.join(this.dir, r.file)), ctype: r.ctype }; } catch { return null; }
   }
 
-  // Logo satu token. `wait` = berapa lama boleh menunggu pengambilan pertama.
+  // The logo of one token. `wait` = how long the first fetch may be waited for.
   async get(addr, { wait = 0 } = {}) {
     const a = this.lc(addr);
     if (!this.isAddr(a) || a === ZERO) return null;
@@ -121,8 +121,8 @@ class Icons {
     if (this.want.size && !this.running) this.loop().catch((e) => this.log(`logo: ${e.message}`));
   }
 
-  // Pemanasan: semua token yang dikenal database, supaya halaman pertama kali
-  // dibuka sudah langsung berlogo.
+  // Warm-up: every token the database knows, so the first time a page
+  // is opened it already has logos.
   warm() {
     const rows = this.store.all(`SELECT address a FROM tokens WHERE chain=?
       UNION SELECT token0 FROM wpositions WHERE chain=? UNION SELECT token1 FROM wpositions WHERE chain=?`, this.network, this.network, this.network);
@@ -138,15 +138,15 @@ class Icons {
   async loop() {
     this.running = true;
     try {
-      // Halaman berisi 60 baris meminta 60 logo dalam hitungan milidetik. Tanpa jeda
-      // pengumpulan ini, permintaan pertama berangkat sendirian dan menghabiskan satu
-      // jatah panggilan untuk satu token.
+      // A page of 60 rows requests 60 logos within milliseconds. Without this collection
+      // delay, the first request would go out alone and spend one call of the
+      // quota on a single token.
       await new Promise((r) => setTimeout(r, this.collectMs));
       while (this.want.size) {
         const batch = [...this.want].slice(0, BATCH);
         batch.forEach((a) => this.want.delete(a));
-        const tunggu = this.lastCall + this.gapMs - this.now();
-        if (tunggu > 0) await new Promise((r) => setTimeout(r, tunggu));
+        const delay = this.lastCall + this.gapMs - this.now();
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
         this.lastCall = this.now();
         await this.lookup(batch);
         batch.forEach((a) => this.wake(a));
@@ -171,20 +171,20 @@ class Icons {
     const url = new Map();
     for (const d of data) {
       const u = d.attributes?.image_url;
-      // "missing.png" = GeckoTerminal tahu tokennya tapi tidak punya logonya.
+      // "missing.png" = GeckoTerminal knows the token but has no logo for it.
       if (u && !/missing/i.test(u) && /^https:\/\//.test(u)) url.set(this.lc(d.attributes.address), u);
     }
-    const kurang = batch.filter((a) => !url.has(a));
-    if (kurang.length) {
+    const short = batch.filter((a) => !url.has(a));
+    if (short.length) {
       try {
-        const r = await this.fetch(this.DS_API + kurang.join(','), { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+        const r = await this.fetch(this.DS_API + short.join(','), { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
         const pairs = r.ok ? await r.json() : [];
         for (const p of Array.isArray(pairs) ? pairs : []) {
           const a = this.lc(p.baseToken?.address);
           const u = p.info?.imageUrl;
-          if (kurang.includes(a) && !url.has(a) && /^https:\/\//.test(u || '')) url.set(a, u);
+          if (short.includes(a) && !url.has(a) && /^https:\/\//.test(u || '')) url.set(a, u);
         }
-      } catch { /* cadangan saja — GeckoTerminal sudah menjawab */ }
+      } catch { /* fallback only: GeckoTerminal already answered */ }
     }
     // Solana: Jupiter mengenal logo hampir semua token SPL (termasuk memecoin baru yang
     // belum terindeks GeckoTerminal/DexScreener).
@@ -200,8 +200,8 @@ class Icons {
       const u = url.get(a);
       if (!u) { this.keep(a, 'none'); this.stats.none++; continue; }
       try {
-        // Minta format yang bisa dikenali sniff(); CDN yang "format=auto" bisa
-        // mengirim AVIF ke klien yang tidak menyebut pilihannya.
+        // Request a format sniff() can recognise; a CDN with "format=auto" may
+        // send AVIF to a client that did not state its preference.
         const g = await this.fetch(u, { headers: { accept: ACCEPT }, signal: AbortSignal.timeout(15_000) });
         if (!g.ok) throw new Error(`HTTP ${g.status}`);
         const buf = Buffer.from(await g.arrayBuffer());

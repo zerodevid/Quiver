@@ -5,9 +5,9 @@ import { get, post } from '../api';
 import { ask } from './ui';
 import { useI18n, reason } from '../i18n';
 
-// Kendali manual posisi cermin. "Ambil alih": bot berhenti mengelola posisi ini (tidak
-// ikut keluar/tambah target, tanpa SL/TP/umur/luar rentang). "Kembalikan": ikut target
-// lagi — hanya selama posisi target itu masih terbuka di chain, diperiksa sebelum konfirmasi.
+// Manual control of a mirror position. "Take over": the bot stops managing this position (does not
+// follow the target's exits/adds, no SL/TP/age/out-of-range). "Give back": follow the target
+// again — only while the target's position is still open on chain, checked before confirmation.
 export default function TakeoverButton({ p, reload, disabled = false, size = 'sm', compact = false }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
@@ -88,8 +88,8 @@ export default function TakeoverButton({ p, reload, disabled = false, size = 'sm
   const label = manual ? t('Kembalikan ke otomatis') : t('Ambil alih posisi');
   const Icon = manual ? Undo2 : Hand;
   const run = manual ? handBack : takeover;
-  // Ringkas = lambang saja (lihat AutoCompoundButton); di laci & halaman detail
-  // tombolnya tetap berlabel, karena di sana ruangnya ada dan konteksnya perlu.
+  // Compact = icon only (see AutoCompoundButton); in the drawer & detail page
+  // the button keeps its label, because there is room and the context needs it.
   return compact
     ? <Button size={size} variant="tertiary" isIconOnly isPending={busy} isDisabled={disabled || busy} onPress={run}
       aria-label={label} title={label}><Icon className="size-4" /></Button>

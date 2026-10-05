@@ -5,10 +5,10 @@ import { I18nProvider, initLocale } from './i18n';
 import { hideSplash, armSplashTimeout } from './splash';
 import './index.css';
 
-// Halaman dimuat per potongan (chunk) dengan nama ber-hash. Sesudah deploy, tab
-// yang masih terbuka memegang nama lama yang sudah dihapus dari server: pindah
-// halaman → import gagal → layar putih. Muat ulang sekali supaya dapat daftar baru;
-// paling cepat sekali per 15 detik, supaya tidak berputar kalau penyebabnya lain.
+// Pages are loaded per chunk with hashed names. After a deploy, a tab
+// that is still open holds an old name that has been removed from the server: navigating
+// to a page → import fails → white screen. Reload once to get the new list;
+// at most once per 15 seconds, so it does not loop if the cause is something else.
 window.addEventListener('vite:preloadError', (e) => {
   let last = 0;
   try { last = Number(sessionStorage.getItem('quiver-reloaded') || 0); } catch { /* abaikan */ }
@@ -18,7 +18,7 @@ window.addEventListener('vite:preloadError', (e) => {
   window.location.reload();
 });
 
-// Entry termuat: galat sesudah titik ini bukan "aplikasi gagal dimuat" (lihat index.html).
+// Entry loaded: an error after this point is not "app failed to load" (see index.html).
 window.__quiverBooted = true;
 initLocale();
 armSplashTimeout();

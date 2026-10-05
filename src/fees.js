@@ -1,10 +1,10 @@
 'use strict';
 const { ensureChain } = require('./networks');
-// Hitung fee yang belum diklaim untuk posisi Uniswap v4, langsung dari storage
-// PoolManager lewat extsload. Layout diverifikasi di Robinhood Chain: L hasil baca
-// storage identik dengan getPositionLiquidity(tokenId).
+// Compute unclaimed fees for Uniswap v4 positions, straight from the PoolManager
+// storage via extsload. The layout was verified on Robinhood Chain: L read from
+// storage is identical to getPositionLiquidity(tokenId).
 //
-// Tata letak Pool.State di dalam mapping _pools (slot 6):
+// Layout of Pool.State inside the _pools mapping (slot 6):
 //   +0 slot0 | +1 feeGrowthGlobal0 | +2 feeGrowthGlobal1 | +3 liquidity
 //   +4 ticks | +5 tickBitmap | +6 positions
 const { ethers } = require('ethers');
@@ -16,7 +16,7 @@ const IF_NPM = new ethers.Interface(ABI.npmV3);
 const Q128 = 1n << 128n;
 const MOD = 1n << 256n;
 const PIN_LAG = 3;
-const sub = (a, b) => ((a - b) % MOD + MOD) % MOD;   // pengurangan yang membungkus, seperti Solidity
+const sub = (a, b) => ((a - b) % MOD + MOD) % MOD;   // wrapping subtraction, like Solidity
 
 const slotHex = (n) => '0x' + n.toString(16).padStart(64, '0');
 const poolBase = (poolId) => BigInt(ethers.keccak256(coder.encode(['bytes32', 'uint256'], [poolId, 6n])));
@@ -28,10 +28,10 @@ function positionSlot(base, owner, tickLower, tickUpper, salt) {
 }
 
 /**
- * Fee belum diklaim untuk sekumpulan posisi v4.
+ * Unclaimed fees for a batch of v4 positions.
  * items: [{poolId, tickLower, tickUpper, tokenId}]
- * curTickByPool: Map poolId -> tick sekarang
- * Balikan sejajar: [{fee0, fee1, liquidity}]
+ * curTickByPool: Map poolId -> current tick
+ * Returned in parallel: [{fee0, fee1, liquidity}]
  */
 async function unclaimedV4(chain, items, curTickByPool, rpc = null) {
   if (!items.length) return [];
@@ -47,36 +47,36 @@ async function unclaimedV4(chain, items, curTickByPool, rpc = null) {
     const tl = tickSlot(base, it.tickLower), tu = tickSlot(base, it.tickUpper);
     const slots = [
       base + 1n, base + 2n,          // fgGlobal0, fgGlobal1
-      tl + 1n, tl + 2n,              // fgOutside di tickLower
-      tu + 1n, tu + 2n,              // fgOutside di tickUpper
+      tl + 1n, tl + 2n,              // fgOutside at tickLower
+      tu + 1n, tu + 2n,              // fgOutside at tickUpper
       ps, ps + 1n, ps + 2n,          // L, fgInside0Last, fgInside1Last
-      base,                          // slot0 → tick, dibaca di blok yang sama
+      base,                          // slot0 → tick, read at the same block
     ];
     idx.push([calls.length, slots.length]);
     for (const s of slots) calls.push({ to: ADDR.poolManager, data: IF_EXT.encodeFunctionData('extsload', [slotHex(s)]) });
   }
-  // Semua slot dibaca di SATU blok. Dengan 'latest', potongan batch / ulangan bisa
-  // mendarat di endpoint lain pada blok berbeda: L sesudah mint tapi fgInsideLast atau
-  // fgOutside dari sebelum mint (nol) → fee = L × seluruh riwayat fee pool. Pernah
-  // masuk ekuitas lp3 sebagai +$591 sesaat (2026-09-22). Mundur beberapa blok supaya
-  // endpoint yang sedikit tertinggal masih punya state-nya (publicnode menolak >~50).
+  // All slots are read at ONE block. With 'latest', batch chunks / retries can
+  // land on another endpoint at a different block: L after the mint but fgInsideLast or
+  // fgOutside from before the mint (zero) → fee = L × the pool's entire fee history. Once
+  // it went into lp3's equity as a momentary +$591 (2026-09-22). Step back a few blocks so
+  // a slightly lagging endpoint still has the state (publicnode refuses >~50).
   const head = typeof rpc.blockNumber === 'function' ? await rpc.blockNumber().catch(() => null) : null;
   const block = Number.isFinite(head) && head > PIN_LAG ? '0x' + (head - PIN_LAG).toString(16) : 'latest';
   const res = await rpc.ethCallMany(calls, block);
   const out = [];
   items.forEach((it, i) => {
     const [off, n] = idx[i];
-    // Satu slot saja gagal terbaca → fee-nya tidak bisa dihitung. Kalau dipaksa nol,
-    // sub() membungkus mod 2^256 dan hasilnya fee 10^47 (pernah masuk ke ekuitas).
-    // `unknown` supaya pemanggil memakai angka terakhir yang diketahui, bukan nol.
+    // A single slot failing to read → the fee cannot be computed. If forced to zero,
+    // sub() wraps mod 2^256 and the result is a fee of 10^47 (this once went into equity).
+    // `unknown` so the caller uses the last known figure, not zero.
     if (res.slice(off, off + n).some((x) => !x || x === '0x')) { out.push({ fee0: 0n, fee1: 0n, liquidity: 0n, unknown: true }); return; }
     const v = (k) => BigInt(res[off + k]);
     const fg0 = v(0), fg1 = v(1);
     const lo0 = v(2), lo1 = v(3), hi0 = v(4), hi1 = v(5);
     const L = v(6) & ((1n << 128n) - 1n);
     const last0 = v(7), last1 = v(8);
-    // Tick dari slot0 di blok yang sama; tick dari panggilan lain (blok lain) yang
-    // melompati batas rentang membuat below/above salah sisi.
+    // The tick from slot0 at the same block; a tick from another call (another block) that
+    // jumped across the range boundary makes below/above land on the wrong side.
     const s0 = v(9);
     let cur = s0 ? Number((s0 >> 160n) & 0xffffffn) : curTickByPool?.get(it.poolId);
     if (s0 && cur >= 0x800000) cur -= 0x1000000;
@@ -96,8 +96,8 @@ async function unclaimedV4(chain, items, curTickByPool, rpc = null) {
   return out;
 }
 
-/** v3: tokensOwed hanya diperbarui saat "poke", jadi kita simulasikan collect lewat eth_call. */
-// npmAddr: NPM venue yang dimaksud (default venue 'v3' utama; BSC juga punya 'pancakev3').
+/** v3: tokensOwed is only updated on a "poke", so we simulate collect via eth_call. */
+// npmAddr: the NPM of the venue in question (default the main 'v3' venue; BSC also has 'pancakev3').
 async function unclaimedV3(chain, tokenIds, owner, npmAddr = null, rpc = null) {
   if (!tokenIds.length) return [];
   chain = ensureChain(chain);
@@ -121,19 +121,19 @@ async function unclaimedV3(chain, tokenIds, owner, npmAddr = null, rpc = null) {
 module.exports = { unclaimedV4, unclaimedV3, poolBase, positionSlot, tickSlot };
 
 /**
- * Fee yang terkumpul pada sebuah posisi v4 TEPAT sebelum blok `block`, dibaca dari
- * storage PoolManager lewat node arsip (state di block-1).
+ * Fees accumulated on a v4 position EXACTLY before block `block`, read from the
+ * PoolManager storage via an archive node (state at block-1).
  *
- * Inilah jumlah yang dibayarkan ke pemilik saat modifyLiquidity di blok itu — di v4,
- * setiap modifyLiquidity (tambah, kurangi, atau delta nol) menyelesaikan fee yang
- * terutang. Diverifikasi: hasilnya identik sampai digit terakhir dengan
- * "token keluar dikurangi pokok" pada transaksi yang tidak ter-netting.
+ * This is the amount paid to the owner on modifyLiquidity in that block — in v4,
+ * every modifyLiquidity (add, decrease, or zero delta) settles the fees
+ * owed. Verified: the result is identical down to the last digit with
+ * "tokens out minus principal" on a transaction that is not netted.
  *
- * Kenapa perlu: rebalance otomatis menutup posisi lama dan membuka yang baru dalam
- * satu unlock. Flash accounting me-netting dananya, jadi TIDAK ADA Transfer ERC20 —
- * metode berbasis Transfer melihat nol dan fee-nya hilang.
+ * Why it is needed: an automatic rebalance closes the old position and opens a new one in
+ * a single unlock. Flash accounting nets the funds, so there is NO ERC20 Transfer —
+ * Transfer-based methods see zero and the fee is lost.
  *
- * Balikan: { fee0, fee1, sqrtPriceX96, tick, liquidity } atau null.
+ * Returns: { fee0, fee1, sqrtPriceX96, tick, liquidity } or null.
  */
 async function feesAtBlock(chain, { poolId, tickLower, tickUpper, tokenId, block }, rpc = null) {
   chain = ensureChain(chain);

@@ -1,9 +1,9 @@
-// Perekam frame lewat CDP screencast + perakit frame -> MP4 berkecepatan tetap.
+// Frame recorder via CDP screencast + frame assembler -> constant-rate MP4.
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-// Chromium dari cache Playwright (`npx playwright install chromium`); atau tunjuk biner lain lewat QCHROME.
+// Chromium from the Playwright cache (`npx playwright install chromium`); or point to another binary via QCHROME.
 export const EXE = process.env.QCHROME
   || process.env.HOME + '/Library/Caches/ms-playwright/chromium-1223/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -26,8 +26,8 @@ export async function startCapture(page, dir, { width = 1920, height = 1080 } = 
   };
 }
 
-// Frame beserta timestamp -> video 60fps. `start` (epoch dtk) jadi t=0 video;
-// frame sebelum start dibuang, frame terakhir sebelum start dipakai sebagai frame awal.
+// Frames with timestamps -> 60fps video. `start` (epoch seconds) becomes t=0 of the video;
+// frames before start are dropped, the last frame before start is used as the first frame.
 export function framesToMp4({ frames, end }, out, { start, fps = 60 } = {}) {
   if (!frames.length) throw new Error('tidak ada frame');
   start ??= frames[0][1];

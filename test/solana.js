@@ -603,6 +603,59 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(swaps[0].amt, 10n ** 9n);
   });
 
+  // ---- target fee harvests (exit.follow_claim) ---------------------------------------------
+  await t('target harvest detected: DLMM claimable fees drop with L unchanged; CLMM checkpoint moves and owed fees reset', () => {
+    const D = (fee0, fee1, L = 100) => ({ venue: 'meteora', pool: POOL, token0: MEME, token1: WSOL, lower: -5, upper: 5, tickLower: -500, tickUpper: 600, liquidity: String(L), amount0: '1', amount1: '1', fee0: String(fee0), fee1: String(fee1), feeMark: null });
+    const C = (mark, fee0, fee1, L = 100) => ({ ...D(fee0, fee1, L), venue: 'orca', feeMark: mark });
+    const acts = SolanaWatcher.diff(TARGET, {
+      A: D(1000, 500), B: D(1000, 500), N: D(0, 0), X: D(1000, 500),
+      O: C('1:1', 0, 0), U: C('1:1', 0, 0),
+    }, {
+      A: D(10, 0),          // harvested
+      B: D(1200, 600),      // fees keep growing — nothing
+      N: D(0, 0),           // nothing to harvest
+      X: D(5, 0, 40),       // fees gone but L dropped: a withdrawal, not a claim
+      O: C('9:9', 0, 0),    // checkpoint moved, owed reset to zero: claimed
+      U: C('9:9', 70, 30),  // update_fees_and_rewards: checkpoint moved, fees now owed — not a claim
+    });
+    const by = Object.fromEntries(acts.map((a) => [a.id, a.kind]));
+    assert.deepStrictEqual(by, { A: 'claim', X: 'decrease', O: 'claim' });
+  });
+
+  await t('target harvest: skipped by default; with exit.follow_claim the mirror claims too (dry run = "dry")', async () => {
+    const pos = { ...POSV, fee0: 10n ** 9n, fee1: 5n * 10n ** 8n };
+    const insertClaim = (store, n) => {
+      store.run(`INSERT INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,liquidity,amount0,amount1,ext)
+        VALUES('solana',?,1,?,0,?,'meteora','claim','TPos',?,?,?,'0','1000','500','{}')`, Date.now(), `s:claim${n}`, TARGET, POOL, MEME, WSOL);
+      return SolanaWatcher.actFromRow(store.get('SELECT * FROM actions WHERE tx_hash=?', `s:claim${n}`));
+    };
+    // off (default)
+    let h = engineHarness({ position: pos });
+    openRow(h.store);
+    await h.eng.handle(insertClaim(h.store, 1));
+    assert.match(h.store.get('SELECT verdict, reason FROM decisions').reason, /klaim tidak dicermin/);
+    // on: the mirror's fees are claimed
+    h = engineHarness({ position: pos });
+    let claimed = null;
+    h.eng.claimFees = async (id, opts) => { claimed = { id, opts }; return { ok: true, tx: 'ClaimTx', claimedUsd: 150 }; };
+    h.eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { exit: { follow_claim: true } }));
+    const row = openRow(h.store);
+    await h.eng.handle(insertClaim(h.store, 2));
+    const d = h.store.get('SELECT verdict, reason, tx_hash FROM decisions');
+    assert.strictEqual(d.verdict, 'copy', d.reason);
+    assert.strictEqual(claimed.id, row.id);
+    assert.strictEqual(d.tx_hash, 'ClaimTx');
+    // dry run: decided "dry", nothing claimed
+    h = engineHarness({ position: pos, dry: true });
+    claimed = null;
+    h.eng.claimFees = async () => { claimed = true; return { ok: true }; };
+    h.eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { exit: { follow_claim: true } }));
+    openRow(h.store);
+    await h.eng.handle(insertClaim(h.store, 3));
+    assert.strictEqual(h.store.get('SELECT verdict FROM decisions').verdict, 'dry');
+    assert.strictEqual(claimed, null);
+  });
+
   await t('compound: fee diklaim lalu dimasukkan lagi; yang masuk = compound_runs, sisanya = klaim fee', async () => {
     let reads = 0;
     const before = { ...POSV, fee0: 10n ** 9n, fee1: 10n ** 9n };
@@ -707,8 +760,8 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(r.preview.swaps[0].dari.token, USDC);
     assert.strictEqual(r.preview.swaps[0].ke.token, MEME);
     assert.strictEqual(r.preview.swaps[0].router, 'Jupiter');
-    const usdcAfter = r.preview.saldo.tokens.find((x) => x.token === USDC).sesudah;
-    assert.ok(usdcAfter > 790 && usdcAfter < 810, `USDC sesudah ≈ 800, dapat ${usdcAfter}`);
+    const usdcAfter = r.preview.saldo.tokens.find((x) => x.token === USDC).after;
+    assert.ok(usdcAfter > 790 && usdcAfter < 810, `USDC after ≈ 800, dapat ${usdcAfter}`);
   });
 
   await t('swap manual: token kustom base58 disimpan apa adanya; SOL = native + wSOL dikurangi cadangan; swap lewat engine.swap', async () => {

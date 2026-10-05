@@ -1,21 +1,21 @@
-// Monitor: semua posisi terbuka dalam satu layar, satu kartu per POOL — grafik
-// lilin dengan semua rentang posisi di pool itu sebagai pita berwarna (bisa diklik
-// untuk memilih posisinya), harga live dari chain, PnL, dan seberapa dekat posisi
-// yang dipilih ke tiap aturan keluar otomatis. Pertanyaan yang dijawab halaman ini adalah
-// "masih bertahan atau tidak?": halaman Posisi memberi angkanya, halaman detail
-// memberi satu grafik; di sini semuanya berdampingan supaya lima posisi bisa
-// dipantau tanpa berpindah halaman.
+// Monitor: all open positions on one screen, one card per POOL — a candlestick
+// chart with every position range in that pool as a coloured band (clickable
+// to select its position), live price from the chain, PnL, and how close the selected
+// position is to each automatic exit rule. The question this page answers is
+// "is it holding up or not?": the Positions page gives the figures, the detail page
+// gives a single chart; here everything is side by side so five positions can be
+// watched without switching pages.
 //
-// Sumber data dan iramanya:
-//   /api/positions  5 dtk  — daftar, nilai, fee, PnL (hasil sinkron mesin)
-//   /api/monitor   10 dtk  — aturan keluar yang berlaku per posisi + pencatat di-luar-rentang
-//   /api/prices     3 dtk  — harga semua pool dalam SATU batch eth_call
-//   /api/market    45 dtk  — lilin GeckoTerminal per pool, dimulai bergiliran supaya
-//                            sepuluh kartu tidak menembak GeckoTerminal serentak
+// Data sources and their rhythm:
+//   /api/positions  5 s   — list, value, fee, PnL (the engine's sync result)
+//   /api/monitor   10 s   — the exit rules in effect per position + the out-of-range recorder
+//   /api/prices     3 s   — prices of all pools in ONE eth_call batch
+//   /api/market    45 s   — GeckoTerminal candles per pool, started in turn so
+//                            ten cards do not hit GeckoTerminal simultaneously
 //
-// Satu pool = satu sumbu harga, jadi lima posisi di pool yang sama muat di satu
-// grafik; dua pool berbeda untuk token yang sama (fee lain / kuotasi lain) tetap
-// jadi dua kartu karena harganya tidak sebanding.
+// One pool = one price axis, so five positions in the same pool fit on a single
+// chart; two different pools for the same token (another fee / another quote) still
+// become two cards because their prices are not comparable.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, toast } from '@heroui/react';
 import { Activity, ArrowUpRight, LayoutGrid, Rows3 } from 'lucide-react';
@@ -29,6 +29,7 @@ import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
 import { PageHeader, Panel, Empty, Loading, Notice, PriceRange, Refresh, Segmented, Dot, TradeLinks, DataLinks, baseTokenOf } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
+import { GmgnDot, GmgnProvider } from '../components/GmgnDot';
 import { useAlertPrefs, alarm, bumpTitle } from '../components/TargetAlerts';
 import { orientCandles, tfFor, SECS, LiveBadge, kUsd } from './PositionDetail';
 import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice } from '../fmt';
@@ -41,17 +42,17 @@ const PREF_KEY = 'lpcopy-monitor';
 const readPrefs = () => { try { return { tf: 'auto', dense: false, sort: 'risk', ...JSON.parse(localStorage.getItem(PREF_KEY) || '{}') }; } catch { return { tf: 'auto', dense: false, sort: 'risk' }; } };
 const writePrefs = (p) => { try { localStorage.setItem(PREF_KEY, JSON.stringify(p)); } catch { /* abaikan */ } };
 
-// Jarak harga ke rentang dalam persen, di ruang tick — rumus yang sama dengan
-// distanceFromRangePct di src/v3math.js, supaya angka di bar "jarak keluar" sama
-// dengan yang dipakai mesin saat memutuskan menutup.
+// Price distance to the range in percent, in tick space — the same formula as
+// distanceFromRangePct in src/v3math.js, so the figure in the "exit distance" bar is the same
+// as what the engine uses when deciding to close.
 const farPct = (tick, lo, hi) => {
   const d = tick < lo ? lo - tick : tick >= hi ? tick - hi + 1 : 0;
   return d > 0 ? (1.0001 ** d - 1) * 100 : 0;
 };
 
-// Pemicu keluar otomatis untuk satu posisi: tiap aturan yang menyala jadi satu bar
-// kemajuan 0…1 ke ambangnya. Mengikuti urutan penilaian di Positions.exitTriggers:
-// stop loss, take profit, umur, jauh dari rentang, lama di luar rentang.
+// Automatic exit triggers for one position: each rule that is on becomes a
+// progress bar 0…1 to its threshold. Follows the evaluation order in Positions.exitTriggers:
+// stop loss, take profit, age, far from the range, time out of range.
 function triggersOf(p, mon, liveTick, now, t) {
   if (!mon?.exit) return [];
   const e = mon.exit;
@@ -68,8 +69,8 @@ function triggersOf(p, mon, liveTick, now, t) {
       note: far > e.out_of_range_pct && mon.farStreak < 2 ? 'menunggu sinkron kedua' : null });
   }
   if (e.out_of_range_minutes > 0) {
-    // Pencatat milik mesin (oor:<id>) baru diisi saat sinkron; kalau harga live
-    // baru saja keluar rentang, hitung dari sekarang supaya barnya tidak diam.
+    // The engine's own recorder (oor:<id>) is only filled on sync; if the live price
+    // has just left the range, count from now so the bar does not stand still.
     const since = p.inRange === false ? mon.oorSince : null;
     const mins = outside ? (now - (since || now)) / 60000 : 0;
     out.push({ key: 'oor', label: 'Lama di luar rentang', good: false, ratio: mins / e.out_of_range_minutes, now: outside ? `${num(mins, 0)} ${t('mnt')}` : '—', limit: `${num(e.out_of_range_minutes, 0)} ${t('mnt')}` });
@@ -77,9 +78,9 @@ function triggersOf(p, mon, liveTick, now, t) {
   return out;
 }
 
-// Tingkat risiko kartu: merah = di luar rentang atau pemicu keluar ≥ 80 %; kuning =
-// hampir menyentuh tepi (< 5 %) atau PnL < −5 %; hijau = sisanya. Skor dipakai untuk
-// urutan "paling berisiko dulu": yang butuh perhatian ada di atas.
+// Card risk level: red = out of range or exit trigger ≥ 80 %; yellow =
+// nearly touching an edge (< 5 %) or PnL < −5 %; green = the rest. The score is used for
+// the "most at-risk first" order: what needs attention is on top.
 function riskOf(p, trig, edge) {
   const worst = Math.max(0, ...trig.filter((x) => !x.good).map((x) => x.ratio));
   let level = 'ok', score = worst;
@@ -90,11 +91,11 @@ function riskOf(p, trig, edge) {
 }
 
 const EDGE_CLS = { danger: 'border-l-danger', warning: 'border-l-warning', ok: 'border-l-success' };
-// Warna pita per posisi di satu pool: dipilih supaya tetap bisa dibedakan di tema
-// gelap maupun terang, dan tidak memakai hijau/merah yang sudah berarti untung/rugi.
+// Band colour per position in one pool: chosen so they can still be told apart in the dark
+// and light themes, and do not use the green/red that already mean profit/loss.
 const LEVEL_RANK = { danger: 2, warning: 1, ok: 0 };
 
-// Satu bar pemicu keluar: label kiri, angka kini/ambang kanan, batang di bawah.
+// One exit trigger bar: label on the left, current/threshold figure on the right, the bar below.
 function TriggerBar({ x }) {
   const { t } = useI18n();
   const r = Math.min(1, Math.max(0, x.ratio));
@@ -114,19 +115,19 @@ function TriggerBar({ x }) {
   );
 }
 
-// Grafik lilin satu kartu (satu pool): lilin GeckoTerminal dipoll jarang, lilin
-// terakhirnya digerakkan harga live. Semua posisi di pool ini jadi pita rentang
-// berwarna; garis masuk & BEP hanya untuk posisi yang dipilih supaya tidak ramai.
-// Mulai polling setelah `delay` ms supaya kartu-kartu tidak menembak GeckoTerminal
-// serentak (jatah ~30 panggilan/menit per IP).
+// Candlestick chart of one card (one pool): the GeckoTerminal candles are polled rarely, the
+// last candle is moved by the live price. Every position in this pool becomes a coloured
+// range band; the entry & BEP lines only for the selected position so it is not cluttered.
+// Starts polling after `delay` ms so the cards do not hit GeckoTerminal
+// simultaneously (quota ~30 calls/minute per IP).
 function CardChart({ g, sel, onPick, tf, live, delay, height }) {
   const { t } = useI18n();
   const p0 = g.p0;
   const [go, setGo] = useState(delay === 0);
   useEffect(() => { if (go) return undefined; const id = setTimeout(() => setGo(true), delay); return () => clearTimeout(id); }, [go, delay]);
-  // Cukup lilin supaya posisi tertua di pool ini terlihat titik masuknya. Dibulatkan
-  // ke kelipatan 50: umur bertambah tiap poll, dan URL yang berubah tiap 5 detik
-  // akan memaksa lilin diambil ulang tiap 5 detik.
+  // Enough candles that the oldest position in this pool shows its entry point. Rounded
+  // to a multiple of 50: the age grows on every poll, and a URL that changes every 5 seconds
+  // would force the candles to be refetched every 5 seconds.
   const span = Math.max(...g.items.map((x) => x.p.ageHours || 0)) * 3600;
   const limit = Math.min(500, Math.max(150, Math.ceil((span / SECS[tf] + 40) / 50) * 50));
   const { data: m } = usePoll(go ? `/api/market?pool=${p0.pool_ref}&tf=${tf}&limit=${limit}&token=${p0.baseToken || ''}&pair=0` : null, 45000);
@@ -157,7 +158,7 @@ function CardChart({ g, sel, onPick, tf, live, delay, height }) {
   );
 }
 
-// Perubahan harga DexScreener sebagai chip kecil: 5 mnt / 1 jam / 24 jam.
+// DexScreener price change as small chips: 5 min / 1 hour / 24 hours.
 function MarketStrip({ pair }) {
   const { t } = useI18n();
   if (!pair || pair.error) return null;
@@ -174,8 +175,8 @@ function MarketStrip({ pair }) {
   );
 }
 
-// Legenda posisi di satu pool: satu chip per posisi, warnanya sama dengan pitanya
-// di grafik; klik chip = pilih posisi (sama seperti klik pitanya).
+// Position legend in one pool: one chip per position, its colour the same as its band
+// on the chart; click a chip = select the position (the same as clicking its band).
 function PositionChips({ items, selId, onPick }) {
   const { t } = useI18n();
   return (
@@ -203,8 +204,8 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
   const { t } = useI18n();
   const { close, closeAll, closing, claim, claiming, reload } = actions;
   const p0 = g.p0;
-  // Posisi yang dipilih: pilihan pengguna kalau masih ada, kalau tidak yang paling
-  // berisiko di pool ini (urutan g.items sudah begitu).
+  // The selected position: the user's choice if it still exists, otherwise the most
+  // at-risk in this pool (the order of g.items is already like that).
   const [pick, setPick] = useState(null);
   const sel = g.items.find((x) => x.p.id === pick) || g.items[0];
   const p = sel.p;
@@ -220,21 +221,23 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
   const sum = (f) => g.items.reduce((a, x) => a + (f(x.p) || 0), 0);
   const gPnl = sum((x) => x.pnlUsd), gCost = sum((x) => x.costUsd), gFee = sum((x) => x.feeUsd);
   const gIn = g.items.filter((x) => (x.edge ? x.edge.ok : x.p.inRange) === true).length;
-  const h = g.hist;   // riwayat posisi tertutup di pool ini (null sampai /api/monitor tiba)
+  const h = g.hist;   // history of closed positions in this pool (null until /api/monitor arrives)
   const pairName = `${p0.symbol0}/${p0.symbol1}`;
 
   return (
     <article className={`flex min-w-0 flex-col rounded-lg border border-border border-l-[3px] bg-surface ${EDGE_CLS[g.risk.level]}`} aria-label={`${p0.symbol0}/${p0.symbol1}`}>
-      {/* kepala: pasangan & pool di kiri, status posisi terpilih di kanan */}
+      {/* header: pair & pool on the left, selected position status on the right */}
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 px-4 pt-3 pb-2">
         <div className="flex min-w-0 items-center gap-2.5">
           <TokenPair token0={p0.token0} token1={p0.token1} symbol0={p0.symbol0} symbol1={p0.symbol1} size={dense ? 22 : 26} />
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <PairName token0={p0.token0} token1={p0.token1} symbol0={p0.symbol0} symbol1={p0.symbol1} pool={p0.pool_ref} sep="/" className="text-sm font-semibold" />
+              {/* Token safety per GMGN — a small shield, its caption on touch. */}
+              <GmgnDot token={baseTokenOf(p0)} />
               <a href={'#positions/' + p.id} className="text-muted hover:text-foreground" title={t('Buka detail posisi {tag}', { tag: sel.tag })} aria-label={t('Buka detail posisi {tag}', { tag: sel.tag })}><ArrowUpRight className="size-3.5" /></a>
-              {/* Tumpukan logo: GMGN / Based / fomo / Uniswap, lalu DexScreener / GeckoTerminal —
-                  satu klik dari kartu ke terminal luar untuk token & pool ini. */}
+              {/* Logo stack: GMGN / Based / fomo / Uniswap, then DexScreener / GeckoTerminal —
+                  one click from the card to an outside terminal for this token & pool. */}
               <TradeLinks token={baseTokenOf(p0)} pool={p0.pool_ref} compact className="ml-2" />
               <DataLinks pool={p0.pool_ref} dexUrl={g.pair?.url} className="ml-1.5" compact />
             </div>
@@ -256,18 +259,18 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
         </div>
       </div>
 
-      {/* Total pool: PnL gabungan dibuat besar — inilah angka yang dilihat pertama
-          saat memutuskan bertahan atau tidak di pool ini, sebelum turun ke posisi satu
-          per satu. Tampil juga untuk pool berposisi tunggal supaya semua kartu punya
-          angka besar di tempat yang sama. */}
+      {/* Pool total: the combined PnL is made big — it is the number seen first when
+          deciding whether to stay in this pool, before going down to the positions one by
+          one. Shown for single-position pools too so every card has a big number in
+          the same place. */}
       <div className="mx-4 mb-2 flex flex-wrap items-center justify-between gap-x-5 gap-y-1.5 rounded-md bg-default/50 px-3 py-2">
         <div>
           <div className="text-[0.6875rem] text-muted">{t('PnL seluruh pool')} · {t('{n} posisi', { n: g.items.length })}</div>
           <div className={`num text-xl leading-tight font-semibold tracking-tight ${tone(gPnl)}`}>
             {usd(gPnl)}{gCost > 0 && <span className="ml-1.5 text-sm font-medium">({pct((gPnl / gCost) * 100, 2)})</span>}
           </div>
-          {/* Sejak awal: posisi terbuka + semua yang pernah ditutup di pool ini. Pool
-              yang tampak untung sekarang bisa saja sudah beberapa kali merugikan. */}
+          {/* Since the start: the open position + everything ever closed in this pool. A pool
+              that looks profitable now may have lost money several times. */}
           {h && h.closedCount > 0 && (
             <div className="num mt-0.5 text-[0.6875rem] text-muted">
               {t('sejak awal')} <span className={`font-semibold ${tone(gPnl + h.realizedUsd)}`}>{usd(gPnl + h.realizedUsd)}</span>
@@ -287,10 +290,10 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
           </div>
         </dl>
       </div>
-      {/* legenda posisi (hanya kalau lebih dari satu) */}
+      {/* position legend (only when there is more than one) */}
       {many && <div className="px-4 pb-2"><PositionChips items={g.items} selId={p.id} onPick={setPick} /></div>}
 
-      {/* harga kini + rentang posisi terpilih, lalu grafik */}
+      {/* current price + selected position range, then the chart */}
       <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-1 px-4 pb-1">
         <div className="num text-lg leading-tight font-semibold tracking-tight">
           {price(pNow)}{quote && <span className="ml-1 text-xs font-medium text-muted">{quote}</span>}
@@ -306,7 +309,7 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
         <CardChart g={g} sel={sel} onPick={setPick} tf={tf} live={g.live} delay={delay} height={dense ? 170 : 250} />
       </div>
 
-      {/* posisi terpilih: sumber & umur (kalau banyak), pita rentang linear, angka kunci */}
+      {/* selected position: source & age (when many), linear range band, key numbers */}
       <div className="px-4 pt-2 pb-3">
         {many && <div className="mb-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.6875rem] text-muted">
           <span className="mono font-medium text-foreground">{sel.tag}</span><span>·</span>
@@ -326,7 +329,7 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
         </div>
       </div>
 
-      {/* pemicu keluar otomatis posisi terpilih */}
+      {/* automatic exit triggers of the selected position */}
       <div className="border-t border-border px-4 py-3">
         <div className="mb-2 flex items-center justify-between text-[0.6875rem]">
           <span className="font-medium">{t('Pemicu keluar otomatis')}{many && <span className="mono ml-1.5 font-medium text-muted">{sel.tag}</span>}</span>
@@ -338,7 +341,7 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
           : <div className={`grid gap-x-4 gap-y-2.5 ${dense ? 'sm:grid-cols-2' : 'sm:grid-cols-2 xl:grid-cols-3'}`}>{sel.trig.map((x) => <TriggerBar key={x.key} x={x} />)}</div>}
       </div>
 
-      {/* pasar + aksi untuk posisi terpilih */}
+      {/* market + actions for the selected position */}
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-border px-4 py-2.5">
         <MarketStrip pair={g.pair} />
         {!p.empty && (
@@ -347,7 +350,7 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
             <TakeoverButton p={p} reload={reload} disabled={busy} />
             <Button size="sm" variant="secondary" isPending={claiming === p.id} isDisabled={busy} onPress={() => claim(p)}>{t('Claim fee')}{many && <span className="mono ml-1 opacity-70">{sel.tag}</span>}</Button>
             <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={busy} onPress={() => close(p)}>{t('Tutup')}{many && <span className="mono ml-1 opacity-70">{sel.tag}</span>}</Button>
-            {/* Tutup semua posisi di pool ini: satu konfirmasi, ditutup berurutan. */}
+            {/* Close every position in this pool: one confirmation, closed in sequence. */}
             {many && <Button size="sm" variant="danger" isPending={closing != null && closing !== p.id} isDisabled={busy}
               onPress={() => closeAll(g.items.filter((x) => !x.p.empty).map((x) => x.p), { pair: pairName })}>
               {t('Tutup semua')} <span className="num ml-1 opacity-80">({g.items.length})</span>
@@ -360,10 +363,10 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
   );
 }
 
-// Peringatan saat sebuah posisi berubah status: masuk → keluar rentang, atau pemicu
-// keluar melewati 80 %. Hanya perubahan yang dibunyikan — bukan setiap poll — dan
-// status pertama yang terbaca tidak dianggap perubahan (membuka halaman dengan tiga
-// posisi di luar rentang tidak boleh langsung meraung).
+// Alert when a position changes status: in → out of range, or an exit trigger
+// passing 80 %. Only the change is sounded — not every poll — and the
+// first status read is not counted as a change (opening the page with three
+// out-of-range positions must not roar right away).
 function useMonitorAlerts(items) {
   const { t } = useI18n();
   const prefs = useAlertPrefs();
@@ -373,8 +376,8 @@ function useMonitorAlerts(items) {
     const news = [];
     for (const c of items) {
       const key = c.p.id;
-      // Garis dasar baru dicatat setelah aturan keluarnya tiba: sebelum itu semua
-      // bar kosong, dan "muncul"-nya bar saat /api/monitor mendarat bukan perubahan.
+      // The new baseline is recorded after its exit rules arrive: before that all
+      // bars are empty, and a bar "appearing" when /api/monitor lands is not a change.
       if (!c.mon) continue;
       const worst = Math.max(0, ...c.trig.filter((x) => !x.good).map((x) => x.ratio));
       const cur = { out: c.edge ? !c.edge.ok : c.p.inRange === false, hot: worst >= 0.8 };
@@ -404,17 +407,17 @@ export default function Monitor() {
   const [resync, syncing] = useResync(reload);
   const { close, closeAll, closing } = useClosePosition(reload);
   const { claim, claiming } = useClaimFees(reload);
-  useTick(1000);   // bar "lama di luar rentang" dan jam kesegaran berdetak
+  useTick(1000);   // the "time out of range" bar and the freshness clock tick
 
   const open = useMemo(() => d?.positions || [], [d]);
   const pools = useMemo(() => [...new Set(open.map((p) => canonAddr(p.pool_ref)).filter(Boolean))].sort(), [open]);
   const { data: px } = usePoll(pools.length ? `/api/prices?pools=${pools.join(',')}` : null, 3000);
-  // Statistik pasar per pool (DexScreener) — jarang, karena hanya untuk chip Δ/volume.
+  // Market statistics per pool (DexScreener) — rarely, because only for the Δ/volume chips.
   const { data: mk } = usePoll(pools.length ? `/api/monitor/market?pools=${pools.join(',')}` : null, 60000);
   const fresh = px && Date.now() - px.ts < 30_000 ? px : null;
 
   const now = Date.now();
-  // Satu butir per posisi: harga live pool-nya, jarak ke tepi, pemicu, risiko.
+  // One item per position: its pool's live price, distance to the edge, trigger, risk.
   const items = useMemo(() => open.map((p) => {
     const ref = canonAddr(p.pool_ref);
     const s = fresh?.prices?.[ref];
@@ -439,14 +442,14 @@ export default function Monitor() {
     }
     const m = mon?.positions?.[p.id] || null;
     const trig = triggersOf(p, m, live?.tick ?? null, now, t);
-    // Nama pendek posisi: nomor NFT-nya kalau ada (itu yang tampil di Uniswap), kalau tidak id bot.
+    // Short position name: its NFT number if present (that is what shows on Uniswap), otherwise the bot id.
     const tag = p.token_id ? `#${p.token_id}` : `#${p.id}`;
     return { p, ref, mon: m, live, edge, full, lo, hi, tag, trig, risk: riskOf(p, trig, edge) };
   }), [open, fresh, mon, now, t]);
 
-  // Kelompokkan per pool; di dalam pool urut paling berisiko dulu (posisi terpilih
-  // awal), warna pita mengikuti urutan id supaya tidak berganti saat urutan risiko
-  // berubah. Risiko kartu = posisi terburuk di pool itu.
+  // Group per pool; within a pool the most at-risk first (the selected
+  // position initially), band colours follow id order so they do not change when the risk
+  // order changes. The card's risk = the worst position in that pool.
   const groups = useMemo(() => {
     const by = new Map();
     for (const x of items) { if (!by.has(x.ref)) by.set(x.ref, []); by.get(x.ref).push(x); }
@@ -472,8 +475,8 @@ export default function Monitor() {
   }, [groups, prefs.sort]);
   useMonitorAlerts(items);
 
-  // Jarak mulai poll lilin per kartu: urutan tetap per pool (bukan per urutan
-  // tampil) supaya mengubah urutan tidak memulai ulang polling.
+  // Start offset of each card's candle poll: a fixed order per pool (not per display
+  // order) so changing the order does not restart the polling.
   const delayOf = useMemo(() => new Map(pools.map((ref, i) => [ref, i * 600])), [pools]);
 
   const header = (
@@ -507,10 +510,10 @@ export default function Monitor() {
   const tfOf = (g) => (prefs.tf === 'auto' ? tfFor(g.ageHours) : prefs.tf);
 
   return (
-    <>
+    <GmgnProvider tokens={open.map((p) => baseTokenOf(p))}>
       {header}
       {error && <div className="mb-4"><Notice status="warning" title="Gagal memperbarui daftar posisi">{error} — {t('data di bawah dari pembaruan terakhir.')}</Notice></div>}
-      {/* pita ringkasan: angka yang dicari sebelum membaca kartu satu per satu */}
+      {/* summary band: the numbers looked for before reading the cards one by one */}
       <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-border bg-surface px-4 py-2.5 text-xs">
         <span className="inline-flex items-center gap-1.5 font-medium"><Activity className="size-3.5 text-muted" />{t('{n} posisi terbuka', { n: open.length })}{groups.length !== open.length && <span className="font-normal text-muted">· {t('{n} pool', { n: groups.length })}</span>}</span>
         <span><Dot tone="success" /> <span className="num">{inN}</span> {t('in-range')}</span>
@@ -532,6 +535,6 @@ export default function Monitor() {
       <p className="mt-4 text-[0.6875rem] text-muted">
         {t('Harga dibaca langsung dari pool tiap 3 detik; nilai, fee, dan PnL dari sinkron mesin tiap ~30 detik; lilin dari GeckoTerminal. Bar pemicu memakai aturan keluar yang berlaku untuk tiap posisi (aturan per-target menimpa aturan global).')}
       </p>
-    </>
+    </GmgnProvider>
   );
 }

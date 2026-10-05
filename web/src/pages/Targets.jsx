@@ -11,7 +11,7 @@ import { usd, kUsd, tone, ago, short } from '../fmt';
 import { useI18n } from '../i18n';
 import { isAddr, canonAddr, isSolana } from '../chain';
 
-// Editor aturan per-target — dipakai di kartu (dilipat) dan di halaman detail.
+// Per-target rules editor — used in the card (collapsed) and on the detail page.
 function TargetRules({ tg, onChanged }) {
   const { t } = useI18n();
   const [rules, setRules] = useState(tg.rulesResolved);
@@ -37,7 +37,7 @@ function TargetRules({ tg, onChanged }) {
   );
 }
 
-// Ringkasan PnL dari hasil riset yang tersimpan (tanpa memanggil chain).
+// PnL summary from the stored research result (without calling the chain).
 function Research({ r }) {
   const { t } = useI18n();
   if (!r) return <span className="text-xs text-muted">{t('Belum dipindai')}</span>;
@@ -50,27 +50,30 @@ function Research({ r }) {
 }
 
 const signed = (v) => (v > 0.005 ? '+' : '') + usd(v);
-const oursTotal = (o) => (o ? o.realized + o.upnl : 0);
+// Net of gas and swap slippage (the server's `net`), the same basis as the wallet's net PnL.
+const oursTotal = (o) => (o ? o.net ?? o.realized + o.upnl : 0);
+// "realised · running · costs" under a net figure: the three parts that add up to it.
+const oursSub = (t, o) => t('terealisasi {r} · berjalan {u} · biaya {c}', { r: usd(o.realized), u: usd(o.upnl), c: usd(-((o.costUsd || 0) + (o.failedUsd || 0))) });
 
-// Uang TARGET sendiri: kas di walletnya + nilai posisi LP-nya yang masih terbuka.
-// Wallet yang sisanya tinggal beberapa puluh dolar praktis sudah berhenti nge-LP,
-// jadi angkanya diberi warna — wallet mati terlihat tanpa membuka detailnya satu
-// per satu, dan aksinya (matikan / hapus) bisa langsung diambil dari daftar.
-const DEAD_USD = 50;    // sudah habis: hampir pasti tidak nge-LP lagi
-const LOW_USD = 100;    // tipis: masih mungkin, tapi ukurannya sudah kecil
+// The TARGET's own money: cash in its wallet + the value of its still-open LP positions.
+// A wallet with only a few tens of dollars left has practically stopped LPing,
+// so the figure is coloured — a dead wallet is visible without opening each detail
+// one by one, and the action (disable / delete) can be taken straight from the list.
+const DEAD_USD = 50;    // used up: almost certainly no longer LPing
+const LOW_USD = 100;    // thin: still possible, but the size is already small
 const balKnown = (b) => !!b && (b.cashUsd != null || b.lpUsd != null);
-// Sisi yang belum terbaca ditulis "—": "$0" akan terbaca sebagai wallet kosong.
+// A side not yet read is written "—": "$0" would read as an empty wallet.
 const money = (v) => (v == null ? '—' : usd(v, 0));
 const balTotal = (b) => (b ? (b.cashUsd || 0) + (b.lpUsd || 0) : 0);
-// Diwarnai hanya kalau KEDUA sisinya sudah terbaca — wallet yang belum diriset
-// LP-nya tidak diketahui, bukan nol, dan tidak boleh tampil seolah modalnya habis.
+// Coloured only if BOTH sides have been read — a wallet whose LP has not been researched
+// is unknown, not zero, and must not appear as if its capital is gone.
 const balTone = (b) => {
   if (!b || b.cashUsd == null || b.lpUsd == null) return '';
   const v = balTotal(b);
   return v < DEAD_USD ? 'text-danger' : v < LOW_USD ? 'text-warning' : '';
 };
 
-function Saldo({ b }) {
+function Balance({ b }) {
   const { t } = useI18n();
   if (!balKnown(b)) return <span className="text-xs text-muted">{t('Belum terbaca')}</span>;
   const tip = [
@@ -85,9 +88,9 @@ function Saldo({ b }) {
   );
 }
 
-// Hasil posisi KITA yang disalin dari wallet ini: terealisasi (sudah ditutup) +
-// berjalan (posisi yang masih terbuka). Diletakkan di samping PnL wallet supaya
-// "dia dapat berapa" dan "kita dapat berapa" terbaca berdampingan.
+// The result of OUR positions copied from this wallet: realized (already closed) +
+// running (positions still open). Placed beside the wallet PnL so
+// "what they got" and "what we got" read side by side.
 function Ours({ o }) {
   const { t } = useI18n();
   if (!o) return <span className="text-xs text-muted">{t('Belum ada posisi')}</span>;
@@ -97,24 +100,26 @@ function Ours({ o }) {
   return (
     <div className="num" title={tip}>
       <div className={`font-medium ${tone(tot)}`}>{signed(tot)}</div>
-      <div className="truncate text-xs text-muted">{t('terealisasi {r} · berjalan {u}', { r: usd(o.realized), u: usd(o.upnl) })}</div>
+      <div className="truncate text-xs text-muted">{oursSub(t, o)}</div>
     </div>
   );
 }
 
-// Rekap di atas daftar: total yang kita dapat dari semua wallet yang diikuti.
+// Recap above the list: the total we got from all the wallets being followed.
 function Recap({ list }) {
   const { t } = useI18n();
   const rows = list.filter((x) => x.ours);
   const sum = (f) => rows.reduce((a, x) => a + f(x.ours), 0);
   const realized = sum((o) => o.realized), upnl = sum((o) => o.upnl);
+  const total = rows.reduce((a, x) => a + oursTotal(x.ours), 0);
+  const costs = sum((o) => (o.costUsd || 0) + (o.failedUsd || 0));
   const closed = sum((o) => o.closed), wins = sum((o) => o.wins), losses = sum((o) => o.losses || 0);
   const open = sum((o) => o.open), value = sum((o) => o.value);
   const best = rows.length ? rows.reduce((a, b) => (oursTotal(b.ours) > oursTotal(a.ours) ? b : a)) : null;
   return (
     <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
-      <Stat label="Hasil dari semua target" value={signed(realized + upnl)} fx={realized + upnl} valueClass={tone(realized + upnl)}
-        sub={t('terealisasi {r} · berjalan {u}', { r: usd(realized), u: usd(upnl) })} />
+      <Stat label="Hasil dari semua target" value={signed(total)} fx={total} valueClass={tone(total)}
+        sub={oursSub(t, { realized, upnl, costUsd: costs })} />
       <Stat label="Posisi ditutup" value={closed}
         sub={closed ? t(closed - wins - losses ? '{w} menang · {l} kalah · {f} impas' : '{w} menang · {l} kalah', { w: wins, l: losses, f: closed - wins - losses }) : t('belum ada')} />
       <Stat label="Posisi berjalan" value={open} sub={t('nilai {v}', { v: usd(value) })} />
@@ -124,10 +129,10 @@ function Recap({ list }) {
   );
 }
 
-// Sakelar dibuat optimistis. /api/targets ikut menghitung riset tiap wallet, jadi
-// balasannya bisa beberapa detik saat RPC sedang kena 429; tanpa ini sakelar diam di
-// posisi lama sampai balasan datang — persis seperti tidak bisa diklik. Nilai lokal
-// dipakai sampai server menyetujuinya.
+// The switch is optimistic. /api/targets also computes the research of every wallet, so
+// its reply can take a few seconds when the RPC is being hit with 429; without this the switch stays in the
+// old position until the reply arrives — exactly like it could not be clicked. The local value
+// is used until the server agrees.
 function useToggles(targets, reload) {
   const [pending, setPending] = useState({});
   useEffect(() => {
@@ -136,7 +141,7 @@ function useToggles(targets, reload) {
       const next = {}; let changed = false;
       for (const [addr, want] of Object.entries(p)) {
         const srv = targets.find((x) => x.address === addr);
-        if (srv && !!srv.enabled === want) { changed = true; continue; }   // server sudah setuju
+        if (srv && !!srv.enabled === want) { changed = true; continue; }   // the server has agreed
         next[addr] = want;
       }
       return changed ? next : p;
@@ -155,8 +160,8 @@ function useToggles(targets, reload) {
   return { enabledOf, toggle };
 }
 
-// Satu baris daftar target. Kolomnya sejajar antarbaris (grid yang sama) supaya
-// PnL, aktivitas, dan posisi bisa dibandingkan menurun seperti tabel.
+// One row of the target list. The columns align across rows (the same grid) so
+// PnL, activity, and positions can be compared downward like a table.
 const ROW = 'grid items-center gap-x-4 gap-y-2 grid-cols-[auto_minmax(0,1fr)_auto] md:grid-cols-[auto_minmax(0,1.15fr)_minmax(0,0.85fr)_minmax(0,0.8fr)_minmax(0,0.95fr)_minmax(0,0.65fr)_minmax(0,0.9fr)_auto]';
 
 function TargetRow({ tg, enabled, onToggle, onChanged }) {
@@ -178,8 +183,8 @@ function TargetRow({ tg, enabled, onToggle, onChanged }) {
         <Switch isSelected={enabled} onChange={(on) => onToggle(tg, on)} aria-label={t('Aktifkan target')} size="sm">
           <Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
         </Switch>
-        {/* Nama bisa diklik: membuka PnL, posisi, dan riwayat wallet ini. Tombol ke
-            situs luar berdiri di luar tautan itu — tautan tidak boleh bersarang. */}
+        {/* The name is clickable: opens this wallet's PnL, positions and history. The button to
+            the outside site stands outside that link — links must not nest. */}
         <div className="min-w-0">
           <a href={href} className="group block min-w-0 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent">
             <div className="flex items-center gap-2">
@@ -195,7 +200,7 @@ function TargetRow({ tg, enabled, onToggle, onChanged }) {
             <WalletLinks address={tg.address} compact className="ml-2" />
           </div>
         </div>
-        <div className="hidden min-w-0 md:block"><Saldo b={tg.balance} /></div>
+        <div className="hidden min-w-0 md:block"><Balance b={tg.balance} /></div>
         <div className="hidden md:block"><Research r={tg.research} /></div>
         <div className="hidden min-w-0 md:block"><Ours o={tg.ours} /></div>
         <div className="num hidden text-sm md:block">
@@ -213,7 +218,7 @@ function TargetRow({ tg, enabled, onToggle, onChanged }) {
           <a href={href} aria-label={t('Buka detail')} className="flex size-8 items-center justify-center rounded-md text-muted hover:bg-default hover:text-foreground">
             <ChevronRight className="size-4" /></a>
         </div>
-        {/* HP: ringkasan dalam satu baris di bawah nama */}
+        {/* mobile: summary on one line under the name */}
         <div className="col-span-3 flex flex-wrap gap-x-4 gap-y-1 pl-12 text-xs text-muted md:hidden">
           {balKnown(tg.balance) && <span className={`num font-medium ${balTone(tg.balance)}`}>{t('saldo {v}', { v: kUsd(balTotal(tg.balance)) })}</span>}
           {tg.research && <span className={`num font-medium ${tone(tg.research.totalProfitUsd)}`}>{kUsd(tg.research.totalProfitUsd || 0)} PnL</span>}
@@ -227,7 +232,7 @@ function TargetRow({ tg, enabled, onToggle, onChanged }) {
   );
 }
 
-// Nama target bisa diubah langsung di tempat — alamat 0x… sulit dibedakan satu sama lain.
+// A target's name can be edited in place — 0x… addresses are hard to tell apart.
 function EditableLabel({ tg, onChanged }) {
   const { t } = useI18n();
   const [editing, setEditing] = useState(false);
@@ -258,7 +263,7 @@ function EditableLabel({ tg, onChanged }) {
   );
 }
 
-// Halaman detail satu target: status copy + riset wallet lengkap (sama dengan menu Wallet).
+// Detail page of a single target: copy status + full wallet research (same as the Wallet menu).
 function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
   const { t } = useI18n();
   const tg = targets.find((x) => x.address === canonAddr(address));
@@ -298,9 +303,9 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
         </div>
       </div>
 
-      {/* aktivitas copy untuk target ini */}
+      {/* copy activity for this target */}
       <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-5">
-        {/* Uang dia sendiri — kalau tinggal puluhan dolar, mengikutinya sudah tidak ada gunanya. */}
+        {/* Their own money — when only tens of dollars are left, following them is pointless. */}
         <Stat label="Saldo dia" value={balKnown(tg.balance) ? kUsd(balTotal(tg.balance)) : '—'} fx={balKnown(tg.balance) ? balTotal(tg.balance) : null} valueClass={balTone(tg.balance)}
           sub={balKnown(tg.balance)
             ? t('kas {c} · LP {l} ({n} posisi)', { c: money(tg.balance.cashUsd), l: money(tg.balance.lpUsd), n: tg.balance.lpOpenN })
@@ -309,12 +314,12 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
         <Stat label="Disalin / simulasi" value={tg.copied} />
         <Stat label="Posisi kita terbuka" value={tg.openPositions} sub={t('modal {v}', { v: usd(tg.openCostQuote) })} />
         <Stat label="Hasil kita" value={signed(oursTotal(tg.ours))} fx={oursTotal(tg.ours)} valueClass={tone(oursTotal(tg.ours))}
-          sub={tg.ours ? t('terealisasi {r} · berjalan {u}', { r: usd(tg.ours.realized), u: usd(tg.ours.upnl) }) : t('Belum ada posisi')} />
+          sub={tg.ours ? oursSub(t, tg.ours) : t('Belum ada posisi')} />
       </div>
 
       {rulesOpen && <Panel title="Aturan wallet ini" className="mb-4"><TargetRules tg={tg} onChanged={reload} /></Panel>}
 
-      {/* apa yang sedang dia pegang di luar posisi LP: kas, hasil tutup yang belum dijual, token yang ditimbun */}
+      {/* what they hold outside LP positions: cash, closed proceeds not yet sold, hoarded tokens */}
       <WalletHoldings address={tg.address} />
 
       <h2 className="mb-3 mt-6 text-base font-semibold tracking-tight">{t('Kinerja LP wallet ini')}</h2>
@@ -332,6 +337,7 @@ export default function Targets({ param }) {
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const valid = isAddr(canonAddr(addr));
+  const existing = valid ? d?.targets?.find((x) => canonAddr(x.address) === canonAddr(addr)) : null;
 
   if (param) return !d ? <Loading page /> : <TargetDetail address={param} targets={d.targets} reload={reload} enabledOf={enabledOf} onToggle={toggle} />;
 
@@ -345,7 +351,7 @@ export default function Targets({ param }) {
 
   const list = d?.targets || [];
   const on = list.filter((x) => enabledOf(x)).length;
-  // Yang aktif ditaruh di atas supaya langsung terlihat, tanpa mengubah urutan sesama status.
+  // Active ones go on top so they are visible right away, without changing the order among equal statuses.
   const sorted = [...list].sort((a, b) => (enabledOf(b) ? 1 : 0) - (enabledOf(a) ? 1 : 0));
   return (
     <>
@@ -359,9 +365,11 @@ export default function Targets({ param }) {
         <Panel className="mb-4">
           <div className="grid items-start gap-3 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]">
             <Text label="Alamat" mono placeholder={isSolana() ? 'base58…' : '0x…'} value={addr} onChange={setAddr}
-              isInvalid={addr !== '' && !valid} error={isSolana() ? 'Alamat Solana harus base58, 32–44 karakter.' : 'Alamat harus 0x diikuti 40 karakter hex.'} />
+              isInvalid={addr !== '' && (!valid || !!existing)}
+              error={existing ? t('Sudah tersimpan sebagai "{name}".', { name: existing.label || short(existing.address) })
+                : isSolana() ? 'Alamat Solana harus base58, 32–44 karakter.' : 'Alamat harus 0x diikuti 40 karakter hex.'} />
             <Text label="Label (opsional)" placeholder="mis. LP pro #1" value={label} onChange={setLabel} />
-            <Button className="md:mt-[1.6rem]" onPress={add} isDisabled={!valid} isPending={busy}><Plus className="size-4" />{t('Tambah')}</Button>
+            <Button className="md:mt-[1.6rem]" onPress={add} isDisabled={!valid || !!existing} isPending={busy}><Plus className="size-4" />{t('Tambah')}</Button>
           </div>
           <p className="mt-3 text-xs text-muted">{t('Aturan default dipakai sampai kamu setel sendiri per wallet.')}</p>
         </Panel>

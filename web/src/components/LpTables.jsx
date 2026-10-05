@@ -1,19 +1,21 @@
-// Tabel yang dipakai bersama halaman detail token dan detail pool: posisi bot,
-// posisi wallet hasil riset, dan gerakan target. Datanya dari lpRows di server.
+// Tables shared by the token detail and pool detail pages: bot positions,
+// researched wallet positions, and target moves. The data comes from lpRows on the server.
 import { chainInfo, isEthLike } from '../chain';
 import { Button } from '@heroui/react';
 import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing, TradeLinks, WalletLinks, baseTokenOf } from './ui';
 import { TokenPair, PairName } from './TokenIcon';
 import { Pair } from '../pages/Positions';
-import { usd, pct, tone, ago, short, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
+import { GmgnProvider } from './GmgnDot';
+import { usePairs, tokenColumn } from './TokenCell';
+import { usd, pct, tone, ago, short, locale as fmtLocale, ACTIONS, DECISIONS } from '../fmt';
 import { useI18n, reason } from '../i18n';
 import { useClosePosition } from '../useClosePosition';
 
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
 
-// Posisi yang masih terbuka selalu ditampilkan di atas yang sudah ditutup.
+// Still-open positions are always shown above closed ones.
 const isOpen = (p) => p.status === 'open';
-// Kunci baris posisi wallet — dipakai tabel riset dan tombol lompat dari tabel bot.
+// Wallet position row key — used by the research table and the jump button from the bot table.
 export const wkey = (p) => `${p.wallet}:${p.venue}:${p.token_id}`;
 
 function Status({ open }) {
@@ -30,10 +32,10 @@ function When({ p }) {
   );
 }
 
-// Dari wallet mana posisi bot ini disalin. Versi ringkas kolom Sumber di halaman
-// Posisi: hanya label dan alamat target (plus nomor NFT aslinya), tanpa nasib
-// posisi aslinya — lpRows tidak menghitung itu, dan di halaman token/pool yang
-// ditanya pembaca adalah "ini ikut siapa", bukan "target untung berapa".
+// Which wallet this bot position was copied from. A compact version of the Source column on the
+// Positions page: only the label and the target address (plus its original NFT number), without the fate of the
+// original position — lpRows does not compute that, and on the token/pool page what the
+// reader asks is "who is this following", not "how much did the target make".
 function CopiedFrom({ p }) {
   const { t } = useI18n();
   if (!p.target) {
@@ -44,28 +46,32 @@ function CopiedFrom({ p }) {
     );
   }
   return (
-    <a href={'#targets/' + p.target} className="group block max-w-40" title={p.target}>
-      {p.targetLabel && <div className="truncate font-medium group-hover:underline">{p.targetLabel}</div>}
-      <div className="mono text-xs whitespace-nowrap text-muted group-hover:text-foreground">
-        {short(p.target)}{p.mirror_of ? ` · #${p.mirror_of}` : ''}
-      </div>
-    </a>
+    <div className="max-w-40">
+      <a href={'#targets/' + p.target} className="group block" title={p.target}>
+        {p.targetLabel && <div className="truncate font-medium group-hover:underline">{p.targetLabel}</div>}
+        <div className="mono text-xs whitespace-nowrap text-muted group-hover:text-foreground">
+          {short(p.target)}{p.mirror_of ? ` · #${p.mirror_of}` : ''}
+        </div>
+      </a>
+      <WalletLinks address={p.target} compact className="mt-0.5" />
+    </div>
   );
 }
 
-// Semua posisi bot (terbuka + tertutup) dengan modal, nilai/hasil, dan PnL.
-// onFocus: tombol "Grafik" per baris untuk menggambar posisi itu di grafik halaman.
-// onHist: klik baris -> laci riwayat posisi, sama seperti tabel di halaman Posisi.
-// reload: dipanggil setelah posisi ditutup dari tabel ini; tanpa itu tombol tutup
-// tidak ditampilkan (halaman yang datanya tidak bisa dimuat ulang).
-// wallets + onSource: tombol "Posisi asli" per baris yang disalin dari target —
-// melompat ke baris posisi targetnya di tabel riset (WalletPositions) di halaman
-// yang sama, supaya jelas posisi mana yang ditiru bot. Hanya tampil kalau posisi
-// aslinya memang ada di tabel itu.
+// All bot positions (open + closed) with capital, value/proceeds, and PnL.
+// onFocus: a per-row "Chart" button to draw that position on the page's chart.
+// onHist: click a row -> position history drawer, same as the table on the Positions page.
+// reload: called after a position is closed from this table; without it the close button
+// is not shown (a page whose data cannot be reloaded).
+// wallets + onSource: a per-row "Original position" button for rows copied from a target —
+// jumps to the target's position row in the research table (WalletPositions) on the same
+// page, so it is clear which position the bot copied. Only shown if the
+// original position really exists in that table.
 export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, wallets, onSource, loading = false, className = '' }) {
   const { t } = useI18n();
   const { close, closeAll, closing } = useClosePosition(reload);
   const rows = [...open.map((p) => ({ ...p, status: 'open' })), ...closed];
+  const pairOf = usePairs(rows);
   const pnl = sum(rows, (p) => p.pnlUsd);
   const canClose = !!reload;
   const sourceOf = (p) => (onSource && p.target && p.mirror_of
@@ -73,6 +79,7 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, w
     : null);
   const canSource = !!onSource && rows.some(sourceOf);
   return (
+    <GmgnProvider tokens={open.map((p) => baseTokenOf(p))}>
     <Panel title={t('Posisi bot ({n})', { n: rows.length })} className={className} bodyClass="p-0"
       desc={onHist && rows.length > 0 ? 'Klik baris untuk riwayat transaksi dan catatan bot.' : undefined}
       action={<div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:justify-end">
@@ -95,6 +102,7 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, w
             <PriceRange position={p} lo={p.tick_lower} hi={p.tick_upper} cur={p.status === 'open' ? p.curTick : null}
               dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1}
               entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />) },
+          tokenColumn(pairOf),
           { key: 'cost', label: 'Modal', align: 'end', sort: (p) => p.costUsd, render: (p) => usd(p.costUsd) },
           { key: 'val', label: 'Nilai / hasil', align: 'end', sort: (p) => (p.status === 'open' ? p.valueUsd + (p.feeUsd || 0) : p.outUsd), render: (p) => (
             p.status === 'open'
@@ -118,15 +126,17 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, w
             </div>) }] : []),
         ]} />
     </Panel>
+    </GmgnProvider>
   );
 }
 
-// Posisi wallet yang pernah dipindai (halaman Wallet / Target).
-// onHist(baris): klik baris -> laci kejadian on-chain posisi itu (WalletPositionHistory).
-// jumpTo: {key, n} — baris yang diminta ditunjukkan (dari tombol "Posisi asli" di
-// tabel posisi bot); kuncinya sama dengan rowKey di bawah.
+// Wallet positions that have been scanned (Wallet / Target page).
+// onHist(row): click a row -> the on-chain events drawer of that position (WalletPositionHistory).
+// jumpTo: {key, n} — the row requested to be pointed out (from the "Original position" button in the
+// bot positions table); its key is the same as rowKey below.
 export function WalletPositions({ rows, onHist, jumpTo, loading = false, className = '' }) {
   const { t } = useI18n();
+  const pairOf = usePairs(rows);
   if (!rows.length) return null;
   return (
     <Panel title={t('Posisi wallet yang diriset ({n})', { n: rows.length })}
@@ -159,9 +169,9 @@ export function WalletPositions({ rows, onHist, jumpTo, loading = false, classNa
           { key: 'st', label: 'Status', sort: (p) => p.status, render: (p) => <Status open={p.status === 'open'} /> },
           { key: 'inv', label: 'Modal', align: 'end', sort: (p) => p.invested_q, render: (p) => usd(p.invested_q) },
           { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnl_q, render: (p) => {
-            // Posisi terbuka yang harga kininya gagal dibaca tetap ditampilkan, tapi
-            // angkanya dari pemindaian terakhir — katakan begitu, jangan sodorkan
-            // sebagai nilai sekarang.
+            // An open position whose current price failed to be read is still shown, but
+            // its figures are from the last scan — say so, do not present
+            // them as the current value.
             const stored = p.status === 'open' && !p.liveTs;
             return (
               <div className={tone(p.pnl_q)}
@@ -173,6 +183,7 @@ export function WalletPositions({ rows, onHist, jumpTo, loading = false, classNa
                 </div>
               </div>);
           } },
+          tokenColumn(pairOf),
           { key: 'rng', label: 'Rentang harga', sortable: false, render: (p) => (
             <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={p.curTick ?? null} dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1} />) },
           { key: 'when', label: 'Waktu', align: 'end', sort: (p) => p.closed_ts || p.opened_ts, render: (p) => <When p={p} /> },
@@ -181,7 +192,7 @@ export function WalletPositions({ rows, onHist, jumpTo, loading = false, classNa
   );
 }
 
-// Gerakan LP target dan keputusan bot atasnya.
+// Target LP moves and the bot's decisions on them.
 export function TargetMoves({ rows, className = '' }) {
   const { t } = useI18n();
   if (!rows.length) return null;
@@ -201,7 +212,7 @@ export function TargetMoves({ rows, className = '' }) {
               <WalletLinks address={x.target} compact className="mt-0.5" />
             </div>) },
           { key: 'kind', label: 'Aksi', sort: (x) => x.kind, render: (x) => (
-            <span className="whitespace-nowrap">{t(AKSI[x.kind]?.[0] || x.kind)} <span className="text-[0.6875rem] text-muted uppercase">{x.venue}</span></span>) },
+            <span className="whitespace-nowrap">{t(ACTIONS[x.kind]?.[0] || x.kind)} <span className="text-[0.6875rem] text-muted uppercase">{x.venue}</span></span>) },
           { key: 'pair', label: 'Pasangan', sort: (x) => `${x.symbol0}/${x.symbol1}`, render: (x) => (
             <div>
               <PairName token0={x.token0} token1={x.token1} symbol0={x.symbol0} symbol1={x.symbol1} pool={x.pool_ref} sep="/" className="block font-medium" />
@@ -211,7 +222,7 @@ export function TargetMoves({ rows, className = '' }) {
             x.value_quote == null ? <span className="text-muted">—</span>
               : isEthLike(x.quote_symbol) ? `${x.value_quote.toFixed(4)} ${chainInfo().nativeSymbol}` : usd(x.value_quote)) },
           { key: 'dec', label: 'Keputusan', sort: (x) => x.verdict, render: (x) => {
-            const k = KEPUTUSAN[x.verdict];
+            const k = DECISIONS[x.verdict];
             return (
               <div className="max-w-xs">
                 <div className="flex items-center gap-1.5 font-medium">

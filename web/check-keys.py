@@ -1,19 +1,19 @@
 import re, glob, json, sys
-# ambil semua literal di dalam t(...) / tt(...) dari sumber
+# collect every literal inside t(...) / tt(...) from the source
 lits=set()
 for f in glob.glob('src/**/*.jsx', recursive=True)+glob.glob('src/*.js'):
     if f.endswith('i18n.jsx'): continue
     s=open(f).read()
     for m in re.finditer(r"\btt?\(\s*'((?:[^'\\]|\\.)*)'", s): lits.add(m.group(1).replace("\\'","'"))
     for m in re.finditer(r'\btt?\(\s*"((?:[^"\\]|\\.)*)"', s): lits.add(m.group(1))
-# label/hint/title/desc/sub/placeholder yang diteruskan sebagai prop string
+# label/hint/title/desc/sub/placeholder passed as string props
 for f in glob.glob('src/**/*.jsx', recursive=True)+glob.glob('src/*.js'):
     if f.endswith('i18n.jsx'): continue
     s=open(f).read()
     for a in ['label','hint','help','title','desc','sub','placeholder','text','okText']:
         for m in re.finditer(rf'\b{a}[:=]\s*[\'"]([^\'"]{{3,}})[\'"]', s): lits.add(m.group(1))
-    for m in re.finditer(r"\['[a-z_0-9]+', '([^']{3,})'\]", s): lits.add(m.group(1))   # opsi select & label aksi
-# kamus
+    for m in re.finditer(r"\['[a-z_0-9]+', '([^']{3,})'\]", s): lits.add(m.group(1))   # select options & action labels
+# dictionary
 d=open('src/i18n.jsx').read()
 keys=set(m.group(1).replace("\\'","'") for m in re.finditer(r"^\s*'((?:[^'\\]|\\.)+)':", d, re.M))
 keys |= set(m.group(1) for m in re.finditer(r'^\s*"([^"]+)":', d, re.M))

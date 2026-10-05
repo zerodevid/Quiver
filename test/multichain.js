@@ -1,10 +1,10 @@
 'use strict';
-// Uji: dua chain (Robinhood + BSC) dalam satu proses & satu database.
-//   - config lama dinormalkan ke chains.<nama>, tampilan per chain (Proxy) baca/tulis benar
-//   - profil BSC: USDT 18 desimal sebagai slot usdg, BNB/WBNB dianggap "eth-like", dua venue v3
-//   - migrasi DB: baris lama = robinhood, kunci state dinamai ulang, alamat sama boleh di dua chain
-//   - dua mesin di satu Store tidak saling menimpa kursor/jeda, dan posisinya terpisah
-// Jalankan: node test/multichain.js
+// Test: two chains (Robinhood + BSC) in one process & one database.
+//   - old config normalised into chains.<name>, per-chain view (Proxy) reads/writes correctly
+//   - BSC profile: USDT with 18 decimals as the usdg slot, BNB/WBNB treated as "eth-like", two v3 venues
+//   - DB migration: old rows = robinhood, state keys renamed, the same address allowed on two chains
+//   - two engines on one Store do not overwrite each other's cursor/pause, and their positions are separate
+// Run: node test/multichain.js
 const assert = require('node:assert');
 const { Store } = require('../src/db');
 const { normalizeCfg, chainView, enabledChains } = require('../src/multichain');
@@ -24,7 +24,7 @@ const rpcStub = { blockNumber: async () => 100, ethCallMany: async (c) => c.map(
 (async () => {
   console.log('Multi-chain:');
 
-  await t('config lama dinormalkan: kolom per-chain pindah ke chains.robinhood, blok bsc dibuat (simulasi, tanpa target)', () => {
+  await t('old config normalised: per-chain fields move to chains.robinhood, a bsc block is created (simulation, no targets)', () => {
     const cfg = { chain: { endpoints: [{ url: 'https://a' }] }, targets: [{ address: '0xabc' }], rules: { sizing: { pct: 10 } }, mode: { dry_run: false }, wallet: { key_file: '~/k' }, server: { port: 1 } };
     const notes = normalizeCfg(cfg);
     assert.ok(notes.length >= 2);
@@ -35,22 +35,22 @@ const rpcStub = { blockNumber: async () => 100, ethCallMany: async (c) => c.map(
     assert.deepStrictEqual(cfg.chains.bsc.targets, []);
     assert.ok(cfg.chains.bsc.chain.endpoints.length >= 2);
     assert.deepStrictEqual(enabledChains(cfg), ['robinhood', 'bsc']);
-    assert.strictEqual(cfg.wallet.key_file, '~/k', 'wallet tetap global');
-    // idempoten
+    assert.strictEqual(cfg.wallet.key_file, '~/k', 'wallet stays global');
+    // idempotent
     assert.deepStrictEqual(normalizeCfg(cfg), []);
   });
 
-  await t('chainView: baca/tulis kolom per-chain ke chains.<nama>, kolom lain ke induk; JSON = config induk utuh', () => {
+  await t('chainView: read/write per-chain fields to chains.<name>, other fields to the parent; JSON = the whole parent config', () => {
     const cfg = { chains: { robinhood: { chain: { endpoints: [] }, rules: { a: 1 }, mode: { dry_run: true } }, bsc: { chain: { endpoints: [] }, rules: { b: 2 }, mode: { dry_run: true } } }, server: { port: 7 } };
     normalizeCfg(cfg);
     const rh = chainView(cfg, 'robinhood'), bsc = chainView(cfg, 'bsc');
     assert.strictEqual(rh.network, 'robinhood'); assert.strictEqual(bsc.network, 'bsc');
     assert.strictEqual(rh.rules.a, 1); assert.strictEqual(bsc.rules.b, 2);
     assert.strictEqual(rh.server.port, 7); assert.strictEqual(bsc.server.port, 7);
-    bsc.mode.dry_run = false;                     // mutasi lewat tampilan
+    bsc.mode.dry_run = false;                     // mutation through the view
     assert.strictEqual(cfg.chains.bsc.mode.dry_run, false);
-    assert.strictEqual(cfg.chains.robinhood.mode.dry_run, true, 'chain lain tidak ikut berubah');
-    bsc.rules = { c: 3 };                         // penggantian seluruh bagian
+    assert.strictEqual(cfg.chains.robinhood.mode.dry_run, true, 'other chains are not changed');
+    bsc.rules = { c: 3 };                         // replacing a whole section
     assert.deepStrictEqual(cfg.chains.bsc.rules, { c: 3 });
     rh.server = { port: 9 };
     assert.strictEqual(cfg.server.port, 9);
@@ -59,7 +59,7 @@ const rpcStub = { blockNumber: async () => 100, ethCallMany: async (c) => c.map(
     assert.strictEqual(disk.chain, undefined);
   });
 
-  await t('profil BSC: slot usdg = USDT 18 desimal, BNB/WBNB eth-like, venue v3 + pancakev3 dengan NPM berbeda', () => {
+  await t('BSC profile: usdg slot = USDT 18 decimals, BNB/WBNB eth-like, v3 venue + pancakev3 with a different NPM', () => {
     const c = new Chain(rpcStub, new Store(':memory:'), () => {}, 'bsc');
     assert.strictEqual(c.CHAIN_ID, 56);
     assert.strictEqual(c.usdgSymbol, 'USDT'); assert.strictEqual(c.usdgDecimals, 18);
@@ -70,30 +70,30 @@ const rpcStub = { blockNumber: async () => 100, ethCallMany: async (c) => c.map(
     assert.strictEqual(c.npmFor('v3'), c.ADDR.npmV3);
     assert.strictEqual(c.legacyGasPricing, true);
     assert.strictEqual(c.QUOTES[c.ADDR.usdg].kind, 'usd');
-    // Robinhood tidak berubah
+    // Robinhood unchanged
     const r = new Chain(rpcStub, new Store(':memory:'), () => {}, 'robinhood');
     assert.strictEqual(r.usdgDecimals, 6); assert.strictEqual(r.nativeSymbol, 'ETH');
     assert.ok(r.isEthLike('ETH') && r.isEthLike('WETH') && !r.isEthLike('BNB'));
     assert.ok(!r.isV3Venue('pancakev3'));
   });
 
-  await t('usdPerQuote & validasi aturan mengikuti chain: WBNB dikonversi di BSC, pancakev3 venue sah', () => {
+  await t('usdPerQuote & rule validation follow the chain: WBNB converted on BSC, pancakev3 a valid venue', () => {
     const bsc = build('bsc'); const chain = ensureChain({ ...bsc });
     assert.strictEqual(usdPerQuote('WBNB', 600, chain), 600);
     assert.strictEqual(usdPerQuote('USDT', 600, chain), 1);
-    assert.strictEqual(usdPerQuote('WETH', 2500), 2500, 'tanpa chain: perilaku lama');
+    assert.strictEqual(usdPerQuote('WETH', 2500), 2500, 'without a chain: old behaviour');
     assert.strictEqual(validateRules({ filters: { venues: ['v4', 'pancakev3'] } }).error, undefined);
     assert.ok(validateRules({ filters: { venues: ['v5'] } }).error);
   });
 
-  await t('migrasi DB: baris lama = robinhood, kunci state dinamai ulang, alamat target sama boleh di dua chain', () => {
+  await t('DB migration: old rows = robinhood, state keys renamed, the same target address allowed on two chains', () => {
     const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(':memory:');
     db.exec(`CREATE TABLE targets (address TEXT PRIMARY KEY, label TEXT, enabled INTEGER NOT NULL DEFAULT 1, rules TEXT, added_ts INTEGER NOT NULL, notes TEXT);
       CREATE TABLE state (k TEXT PRIMARY KEY, v TEXT);
       INSERT INTO targets(address,label,enabled,added_ts) VALUES('0xabc','lama',1,1);
       INSERT INTO state(k,v) VALUES('cursor','123'),('paused','1'),('tg_offset','5');`);
-    // Store membuka path; pakai berkas sementara
+    // Store opens a path; use a temp file
     const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
     const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lpcopy-mc-')), 'x.db');
     db.exec(`VACUUM INTO '${p}'`); db.close();
@@ -101,14 +101,14 @@ const rpcStub = { blockNumber: async () => 100, ethCallMany: async (c) => c.map(
     assert.deepStrictEqual(s.all('SELECT chain,address,label FROM targets').map((r) => ({ ...r })), [{ chain: 'robinhood', address: '0xabc', label: 'lama' }]);
     assert.strictEqual(s.getState('cursor:robinhood'), '123');
     assert.strictEqual(s.getState('paused:robinhood'), '1');
-    assert.strictEqual(s.getState('tg_offset'), '5', 'kunci global tidak disentuh');
+    assert.strictEqual(s.getState('tg_offset'), '5', 'global keys are not touched');
     s.run("INSERT INTO targets(chain,address,enabled,added_ts) VALUES('bsc','0xabc',1,2)");
     assert.strictEqual(s.get('SELECT COUNT(*) n FROM targets').n, 2);
-    const s2 = new Store(p);                      // buka ulang: idempoten
+    const s2 = new Store(p);                      // reopen: idempotent
     assert.strictEqual(s2.get('SELECT COUNT(*) n FROM targets').n, 2);
   });
 
-  await t('dua mesin, satu Store: kursor, jeda, target, dan posisi terpisah per chain', () => {
+  await t('two engines, one Store: cursor, pause, targets, and positions separate per chain', () => {
     const store = new Store(':memory:');
     const mk = (key) => new Engine({ rpc: rpcStub, store, chain: new Chain(rpcStub, store, () => {}, key), cfg: { mode: { dry_run: true }, rules: {}, loop: {}, gas: {}, prices: {} }, log: () => {} });
     const rh = mk('robinhood'), bsc = mk('bsc');
@@ -118,7 +118,7 @@ const rpcStub = { blockNumber: async () => 100, ethCallMany: async (c) => c.map(
     rh.setPaused(true);
     assert.ok(rh.paused() && !bsc.paused(), 'jeda per chain');
     store.setState('paused', '1');
-    assert.ok(bsc.paused(), "kunci 'paused' lama = saklar global");
+    assert.ok(bsc.paused(), "old 'paused' key = global switch");
     store.setState('paused', '0'); rh.setPaused(false);
     store.run("INSERT INTO targets(chain,address,enabled,added_ts) VALUES('robinhood','0xt',1,1)");
     assert.strictEqual(rh.watcher.enabledSet().size, 1);
@@ -126,22 +126,22 @@ const rpcStub = { blockNumber: async () => 100, ethCallMany: async (c) => c.map(
     const id = bsc.positions.record({ venue: 'pancakev3', poolRef: '0xpool', token0: '0xa', token1: '0xb', tickLower: 0, tickUpper: 10, liquidity: '5', amount0: '1', amount1: '1', valueQuote: 1, quoteSymbol: 'USDT' }, { tokenId: '7' });
     assert.strictEqual(store.get('SELECT chain, venue FROM positions WHERE id=?', id).chain, 'bsc');
     assert.strictEqual(bsc.positions.open().length, 1);
-    assert.strictEqual(rh.positions.open().length, 0, 'posisi BSC tidak bocor ke Robinhood');
+    assert.strictEqual(rh.positions.open().length, 0, 'BSC positions do not leak into Robinhood');
     assert.strictEqual(rh.positions.summary(2500).openCount, 0);
     assert.strictEqual(bsc.positions.summary(600).openCount, 1);
   });
 
-  await t('ensureChain: objek tiruan dilengkapi profil Robinhood; instance Chain dikembalikan apa adanya', () => {
+  await t('ensureChain: a mock object is completed with the Robinhood profile; a Chain instance is returned as it is', () => {
     const mock = { tokens: async () => [] };
     const c = ensureChain(mock);
     assert.strictEqual(c, mock); assert.strictEqual(c.network, 'robinhood'); assert.ok(c.ADDR.posmV4);
     assert.strictEqual(typeof c.isV3Venue, 'function');
     const real = new Chain(rpcStub, new Store(':memory:'), () => {}, 'bsc');
     assert.strictEqual(ensureChain(real), real);
-    assert.strictEqual(ensureChain(rpcStub).rpc, rpcStub, 'RpcPool lama dibungkus jadi chain');
+    assert.strictEqual(ensureChain(rpcStub).rpc, rpcStub, 'an old RpcPool is wrapped into a chain');
   });
 
-  await t('Telegram: /chain mengganti chain per chat; API & mesin yang dipakai layar mengikuti pilihannya', async () => {
+  await t('Telegram: /chain switches the chain per chat; the API & engine used by the screens follow its choice', async () => {
     const { Telegram } = require('../src/telegram');
     const store = new Store(':memory:');
     const cfg = { telegram: { bot_token: '1:x', chat_ids: ['7'], language: 'id' }, chains: {} };
@@ -161,26 +161,26 @@ const rpcStub = { blockNumber: async () => 100, ethCallMany: async (c) => c.map(
     });
     const out = [];
     bot.tg = async (method, params) => { out.push([method, params]); return { message_id: 1 }; };
-    // layar pemilih chain
+    // chain picker screen
     await bot.handle({ callback_query: { id: '1', data: 'ch', message: { chat: { id: 7 }, message_id: 1 } } });
-    const pilih = out.find(([m, p]) => m === 'editMessageText' || m === 'sendMessage')[1];
-    assert.ok(/Pilih chain/.test(pilih.text));
-    assert.ok(JSON.stringify(pilih.reply_markup).includes('chSet:bsc'));
-    // pilih BSC: tersimpan per chat, layar berikutnya memakai chain itu
+    const pick = out.find(([m, p]) => m === 'editMessageText' || m === 'sendMessage')[1];
+    assert.ok(/Pilih chain/.test(pick.text));
+    assert.ok(JSON.stringify(pick.reply_markup).includes('chSet:bsc'));
+    // pick BSC: stored per chat, the next screen uses that chain
     await bot.handle({ callback_query: { id: '2', data: 'chSet:bsc', message: { chat: { id: 7 }, message_id: 1 } } });
     assert.strictEqual(bot.chatChain('7'), 'bsc');
     calls.length = 0;
     await bot.handle({ message: { chat: { id: 7, type: 'private' }, text: '/menu' } });
     assert.ok(calls.length && calls.every(([, k]) => k === 'bsc'), JSON.stringify(calls));
-    const teks = out[out.length - 1][1].text;
-    assert.ok(teks.includes('BNB Smart Chain'), teks.slice(0, 120));
-    // chat lain tetap di chain utama
+    const caption = out[out.length - 1][1].text;
+    assert.ok(caption.includes('BNB Smart Chain'), caption.slice(0, 120));
+    // another chat stays on the main chain
     calls.length = 0;
     await bot.handle({ message: { chat: { id: 8, type: 'private' }, text: '/menu' } });
     assert.ok(calls.length === 0 || calls.every(([, k]) => k === 'robinhood'));
   });
 
-  await t('setiap jaringan di NETWORKS bisa dibangun; alamat EVM huruf kecil, Solana base58 utuh', () => {
+  await t('every network in NETWORKS can be built; EVM addresses lower-case, Solana base58 kept intact', () => {
     const { isSolana, normAddr } = require('../src/networks');
     for (const key of Object.keys(NETWORKS)) {
       const p = build(key);
@@ -192,6 +192,6 @@ const rpcStub = { blockNumber: async () => 100, ethCallMany: async (c) => c.map(
     }
   });
 
-  console.log(`\n${pass} ok, ${fail} gagal`);
+  console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

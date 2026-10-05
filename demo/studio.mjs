@@ -1,8 +1,8 @@
-// Aset komposisi: latar, bingkai, kartu intro/outro.
+// Composition assets: background, frame, intro/outro cards.
 //   QLANG=en node studio.mjs  -> out/studio/{bg,shadow,mask}.png, out/{intro,outro}-<lang>.mp4
 //
-// Gaya mengikuti dasbornya sendiri: hitam datar #0c0c0e, garis 1px, Inter,
-// logo panah dari layar pembuka. Tanpa gradien, glow, atau hiasan.
+// The style follows the dashboard itself: flat black #0c0c0e, 1px lines, Inter,
+// the arrow logo from the splash screen. No gradients, glow, or decoration.
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
@@ -15,7 +15,7 @@ const OUT = path.resolve('out'); const ST = path.join(OUT, 'studio');
 fs.mkdirSync(ST, { recursive: true });
 const FONT = new URL('../web/public/fonts/inter-var-latin.woff2', import.meta.url);
 export const FRAME = { x: 128, y: 72, w: 1664, h: 936, r: 12 };
-// token warna dasbor (index.css, mode gelap)
+// dashboard colour tokens (index.css, dark mode)
 export const TOK = { bg: '#08080a', app: '#0c0c0e', surface: '#121215', border: '#33333a', muted: '#8a8a93', accent: '#6096ff' };
 
 const MARK = `<svg class="mark" viewBox="0 0 73 48"><path class="arrow" d="M0 19H26L16 8L24 0L46 24L24 48L16 40L26 30H0Z"/><path class="chev" d="M43 11L51 3L73 24L51 46L43 38L56 24Z"/></svg>`;

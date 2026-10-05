@@ -19,7 +19,7 @@ function fixture({ quoteSide = 0, tick = 17, venue = 'v4', native = false } = {}
   const slot = { tick, sqrtPriceX96: m.getSqrtRatioAtTick(tick) + 1n };
   const chain = {
     slot0V4: async () => slot, slot0V3: async () => slot,
-    poolLiquidity: async () => 1n,   // pool hidup: harga pool sendiri yang dipakai menilai
+    poolLiquidity: async () => 1n,   // live pool: the pool's own price is what gets used for valuation
     tokens: async (list) => list.map((address) => ({ address, symbol: address === ADDR.usdg ? 'USDG' : 'TOKEN', decimals: address === ADDR.native ? 18 : 6 })),
     token: async (address) => (await chain.tokens([address]))[0],
     quoteSideOf: () => ({ side: quoteSide, kind: 'usd', symbol: 'USDG', decimals: 6 }),
@@ -64,8 +64,8 @@ function fixture({ quoteSide = 0, tick = 17, venue = 'v4', native = false } = {}
   return { eng, store, manual, pool, slot, balances, sent, rpc, id, receipt };
 }
 
-// [25, 0] / [0, 25] menempel di harga kini; [30, -10] / [-10, 30] bergeser menjauh
-// (seluruhnya di bawah / di atas harga) dan tetap hanya butuh satu token.
+// [25, 0] / [0, 25] stick to the current price; [30, -10] / [-10, 30] shift away
+// (entirely below / above the price) and still need only one token.
 for (const quoteSide of [0, 1]) for (const tick of [-121, 0, 17, 120]) for (const [lowerPct, upperPct] of [[25, 0], [0, 25], [30, -10], [-10, 30], [0.1, -0.05]]) {
   test(`single-sided q${quoteSide}, tick ${tick}, range ${lowerPct}/${upperPct}`, async () => {
     const f = fixture({ quoteSide, tick });

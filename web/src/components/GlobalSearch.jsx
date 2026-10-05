@@ -1,6 +1,6 @@
-// Pencarian global: Cmd/Ctrl+K (atau "/" saat tidak sedang mengetik) membuka satu
-// kotak yang melompat langsung ke target, token, pool, atau wallet yang pernah
-// diriset — tanpa harus mengeklik lewat tabel. Hasilnya dari /api/search (DB lokal).
+// Global search: Cmd/Ctrl+K (or "/" when not typing) opens a single
+// box that jumps straight to a target, token, pool, or researched
+// wallet — without clicking through tables. Results come from /api/search (local DB).
 import { useEffect, useRef, useState } from 'react';
 import { Button, Modal } from '@heroui/react';
 import { Search, User, Coins, Waves, Wallet as WalletIcon } from 'lucide-react';
@@ -8,9 +8,9 @@ import { get } from '../api';
 import { short } from '../fmt';
 import { useI18n } from '../i18n';
 
-// Tombol pemicu ditaruh di dua tempat (sidebar desktop, header HP) tapi modalnya cuma
-// satu instance (<SearchModal/>, dipasang sekali di App.jsx) — pola yang sama dengan
-// ask()/ConfirmHost: setter modul dipakai lintas komponen tanpa mengangkat state ke atas.
+// The trigger button is placed in two spots (desktop sidebar, mobile header) but the modal is a single
+// instance (<SearchModal/>, mounted once in App.jsx) — the same pattern as
+// ask()/ConfirmHost: a module setter is used across components without lifting state up.
 let openSetter = null;
 export const openSearch = () => openSetter?.();
 
@@ -54,8 +54,8 @@ export default function SearchModal() {
 
   useEffect(() => { openSetter = () => setOpen(true); return () => { openSetter = null; }; }, []);
 
-  // Cmd/Ctrl+K di mana saja; "/" hanya kalau fokus sedang tidak di kotak isian —
-  // supaya tidak mencuri karakter "/" dari label, alamat, atau pencarian lain.
+  // Cmd/Ctrl+K anywhere; "/" only when focus is not in an input field —
+  // so it does not steal the "/" character from labels, addresses, or other searches.
   useEffect(() => {
     const onKey = (e) => {
       const mod = e.metaKey || e.ctrlKey;

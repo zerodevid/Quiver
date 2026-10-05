@@ -1,6 +1,6 @@
-// Belajar LP: buku singkat tentang concentrated liquidity yang dikaitkan dengan angka
-// di dasbor Quiver. Tiga tampilan — materi, simulator, glosarium — berbagi satu URL:
-// #learn/<bab>, #learn/lab, #learn/glossary. Progres disimpan di browser saja.
+// Learn LP: a short book on concentrated liquidity tied to the numbers
+// on the Quiver dashboard. Three views — material, simulator, glossary — share one URL:
+// #learn/<chapter>, #learn/lab, #learn/glossary. Progress is stored in the browser only.
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Chip, Input, ProgressBar } from '@heroui/react';
 import {
@@ -23,7 +23,7 @@ const write = (key, value) => {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* progres tetap ada di memori */ }
 };
 
-// Modul diturunkan dari urutan bab, jadi menambah bab cukup di content.js.
+// Modules are derived from the chapter order, so adding a chapter only takes content.js.
 const MODULES = chapters.reduce((out, c, i) => {
   const last = out[out.length - 1];
   if (last && last.name[0] === c.module[0]) last.items.push(i);
@@ -38,7 +38,7 @@ const minutes = (c, locale) => {
   return Math.max(1, Math.round(words / 200));
 };
 
-// Rute awal dari parameter hash; bab yang tidak dikenal jatuh ke bab terakhir dibuka.
+// Initial route from the hash parameter; an unknown chapter falls back to the last opened one.
 function initialRoute(param) {
   if (param === 'lab' || param === 'glossary') return { view: param, chapter: read(LAST_KEY, chapters[0].id) };
   const known = chapters.some((c) => c.id === param);
@@ -93,8 +93,8 @@ function Progress({ pick, done }) {
   );
 }
 
-// Satu pertanyaan per bab. Jawaban benar menandai bab selesai; jawaban salah
-// menunjukkan penjelasan tanpa membuka jawaban yang benar.
+// One question per chapter. A correct answer marks the chapter done; a wrong answer
+// shows the explanation without revealing the correct answer.
 function CheckQuestion({ pick, check, onCorrect }) {
   const [picked, setPicked] = useState(null);
   const correct = picked === check.answer;
@@ -300,8 +300,8 @@ export default function Learn({ param }) {
   const [lab, setLab] = useState(LAB_DEFAULT);
   const index = Math.max(0, chapters.findIndex((c) => c.id === route.chapter));
 
-  // replaceState tidak memicu hashchange, jadi halaman tidak dipasang ulang dan
-  // parameter simulator tetap ada saat berpindah tampilan.
+  // replaceState does not fire hashchange, so the page is not remounted and the
+  // simulator parameters stay when switching views.
   useEffect(() => {
     const hash = `#learn/${route.view === 'book' ? route.chapter : route.view}`;
     if (location.hash !== hash) history.replaceState(null, '', hash);

@@ -1,15 +1,15 @@
 'use strict';
 const { ensureChain } = require('./networks');
-// Deteksi aksi LP wallet target.
+// Detect LP actions of the target wallet.
 //
-// Kenapa lewat event, bukan decode transaksi: target contoh (0xe1d7…3e79) memakai
-// V4UtilsRouter (layanan otomasi berperan AUTOMATION_OPERATOR) untuk sebagian besar
-// posisinya, plus PositionManager langsung, plus UniversalRouter. Decode calldata
-// berarti mengejar setiap router baru selamanya. Event PoolManager/NPM adalah
-// muara yang sama untuk semuanya.
+// Why via events, not decoding transactions: the example target (0xe1d7…3e79) uses
+// V4UtilsRouter (an automation service in the AUTOMATION_OPERATOR role) for most of its
+// positions, plus the PositionManager directly, plus the UniversalRouter. Decoding calldata
+// means chasing every new router forever. PoolManager/NPM events are the
+// same common outlet for all of them.
 //
-// Rantai identifikasi v4: ModifyLiquidity.salt == tokenId PositionManager,
-// lalu tokenId -> pemilik lewat ownerOf/Transfer. Diverifikasi di chain.
+// v4 identification chain: ModifyLiquidity.salt == PositionManager tokenId,
+// then tokenId -> owner via ownerOf/Transfer. Verified on chain.
 const { ethers } = require('ethers');
 const { TOPIC, ABI } = require('./chain');
 const { computePoolId } = require('./pools');
@@ -27,26 +27,26 @@ class Watcher {
     this.rpc = rpc; this.store = store; this.chain = chain; this.log = log || console.log;
     this.cfg = cfg;
     this.network = chain.network;
-    // Router yang hanya menukar token; tx target ke sini bukan aksi LP.
+    // Routers that only swap tokens; a target tx to these is not an LP action.
     this.swapRouters = new Set([chain.ADDR.dexRouter, chain.ADDR.universalRouter].filter(Boolean).map((a) => a.toLowerCase()));
-    // Alamat NPM -> kunci venue v3 ('v3', 'pancakev3', …) — satu chain bisa punya lebih dari satu.
+    // NPM address -> v3 venue key ('v3', 'pancakev3', …) — one chain can have more than one.
     this.npmVenue = new Map(chain.venues.map((v) => [String(v.npmV3).toLowerCase(), v.key]));
     this.owners = new Map();   // `${venue}:${tokenId}` -> owner
     this.v4Info = new Map();   // tokenId -> {poolKey, poolId, tickLower, tickUpper}
-    this.unsupported = new Map(); // sender -> jumlah, untuk transparansi di dashboard
-    this.unsupportedSender = new Map(); // txHash -> sender ModifyLiquidity di rentang ini, untuk pesan peringatan
-    this.isContract = new Map();  // alamat -> punya bytecode?
+    this.unsupported = new Map(); // sender -> count, for transparency on the dashboard
+    this.unsupportedSender = new Map(); // txHash -> ModifyLiquidity sender in this range, for the warning message
+    this.isContract = new Map();  // address -> has bytecode?
   }
 
-  // Apakah alamat ini kontrak? Dipakai untuk membedakan "dititipkan ke router otomasi"
-  // dari "benar-benar dilepas ke orang lain".
+  // Is this address a contract? Used to distinguish "deposited to an automation router"
+  // from "really released to someone else".
   async contractCheck(addrs) {
     const need = [...new Set(addrs)].filter((a) => a && !this.isContract.has(a));
     if (!need.length) return;
     const res = await this.rpc.batch(need.map((a) => ({ method: 'eth_getCode', params: [a, 'latest'] })));
-    // Tidak terbaca ≠ "bukan kontrak". Dulu galat RPC dibaca '0x' dan DISIMPAN selamanya:
-    // titipan NFT target ke router otomasi terbaca "target melepas posisi", dan bot
-    // menutup cermin dari posisi yang masih hidup. Lempar — rentang blok diulang.
+    // Unreadable ≠ "not a contract". An RPC error used to be read as '0x' and STORED forever:
+    // the target's NFT deposit into an automation router read as "target released the position", and the bot
+    // closed the mirror of a position that was still alive. Throw — the block range is repeated.
     const bad = need.find((a, i) => !res[i] || res[i].error || typeof res[i].result !== 'string');
     if (bad) throw new Error(`eth_getCode ${bad} tidak terbaca dari RPC`);
     need.forEach((a, i) => this.isContract.set(a, res[i].result !== '0x'));
@@ -59,16 +59,16 @@ class Watcher {
     return new Set(this.targets().filter((t) => t.enabled).map((t) => t.address.toLowerCase()));
   }
 
-  // Peringatan sekali per (target, router): target memakai router LP yang posisinya
-  // bukan NFT, sehingga tidak bisa dicermin. Tanpa ini, bot terlihat "sehat" padahal buta.
+  // Warn once per (target, router): the target uses an LP router whose positions
+  // are not NFTs, so they cannot be mirrored. Without this, the bot looks "healthy" while blind.
   //
-  // Tx ke router SWAP dilewati: agregator bisa merutekan swap lewat pool v4 berhook yang
-  // menyeimbangkan likuiditasnya sendiri, dan ModifyLiquidity milik hook itu ikut
-  // tercatat di tx target. Itu swap biasa, bukan target pindah ke router LP lain —
-  // terjadi pada 0x2debd4c6…4bf7 (target menjual sisa token lewat dagSwapTo).
+  // Txs to a SWAP router are skipped: an aggregator can route a swap through a hooked v4 pool that
+  // rebalances its own liquidity, and that hook's ModifyLiquidity is also
+  // recorded in the target's tx. That is an ordinary swap, not the target moving to another LP router —
+  // it happened on 0x2debd4c6…4bf7 (the target sold leftover tokens via dagSwapTo).
   async warnIfTargetUnsupported(txHashes, targets) {
     this.warnedUnsupported = this.warnedUnsupported || new Set();
-    const ask = txHashes.slice(0, 8);   // cukup sampel; ini jalur langka
+    const ask = txHashes.slice(0, 8);   // enough of a sample; this is a rare path
     const res = await this.rpc.batch(ask.map((h) => ({ method: 'eth_getTransactionByHash', params: [h] })));
     for (const r of res) {
       const tx = r && !r.error ? r.result : null;
@@ -88,10 +88,10 @@ class Watcher {
 
   ownerKey(venue, tokenId) { return `${venue}:${tokenId}`; }
 
-  // Cache ini menampung pemilik SEMUA tokenId yang muncul di log PositionManager seluruh
-  // chain, bukan hanya milik target — tanpa batas ia tumbuh sepanjang umur proses menuju
-  // max_memory_restart pm2 (restart di tengah transaksi). Yang tertua dibuang; pemilik
-  // yang terbuang dibaca ulang lewat ownerOf bila muncul lagi.
+  // This cache holds the owner of ALL tokenIds that appear in PositionManager logs across the
+  // whole chain, not just the target's — without a bound it grows over the process lifetime toward
+  // pm2's max_memory_restart (a restart in the middle of a transaction). The oldest is dropped; a dropped
+  // owner is re-read via ownerOf if it appears again.
   cacheOwner(venue, tokenId, owner) {
     const k = this.ownerKey(venue, tokenId);
     this.owners.delete(k);
@@ -103,39 +103,39 @@ class Watcher {
   }
   knownOwner(venue, tokenId) { return this.owners.get(this.ownerKey(venue, tokenId)) || null; }
 
-  // Selesaikan tokenId -> pemilik untuk banyak id sekaligus (dengan cache).
+  // Resolve tokenId -> owner for many ids at once (with a cache).
   async resolveOwners(venue, tokenIds) {
     const need = [...new Set(tokenIds.map(String))].filter((id) => !this.owners.has(this.ownerKey(venue, id)));
     if (!need.length) return;
     const to = venue === 'v4' ? this.chain.ADDR.posmV4 : this.chain.npmFor(venue);
     const iface = venue === 'v4' ? IF_POSM : IF_NPM;
-    // strict: ownerOf yang tidak terbaca (kuota) ≠ revert (NFT dibakar). Tanpa ini aksi
-    // likuiditas target tersaring sebagai "bukan milik target" dan hilang selamanya.
+    // strict: an unreadable ownerOf (quota) ≠ a revert (NFT burned). Without this the target's
+    // liquidity action is filtered out as "not the target's" and lost forever.
     const res = await this.rpc.ethCallMany(need.map((id) => ({ to, data: iface.encodeFunctionData('ownerOf', [BigInt(id)]) })), 'latest', { strict: true });
     need.forEach((id, i) => {
       const w = res[i];
       if (w && w !== '0x' && !/^0x0*$/.test(w)) { this.cacheOwner(venue, id, asAddr(w)); return; }
-      // ownerOf revert = NFT sudah dibakar. Kalau burn-nya ada di rentang yang sama, log
-      // Transfer sudah mengisi pemiliknya. Kalau burn terjadi SESUDAH rentang ini (target
-      // menarik di satu tx lalu membakar di tx berikutnya, sebelum kita sempat membaca),
-      // pemilik terakhir yang kita catat dipakai — tanpa ini penarikannya tersaring sebagai
-      // "bukan milik target" dan cermin kita baru ditutup belakangan oleh rekonsiliasi.
+      // ownerOf revert = the NFT has been burned. If the burn is in the same range, the Transfer
+      // log has already filled in the owner. If the burn happens AFTER this range (the target
+      // withdraws in one tx then burns in the next, before we got to read),
+      // the last owner we recorded is used — without this the withdrawal is filtered out as
+      // "not the target's" and our mirror is only closed later by reconciliation.
       const row = this.store.get('SELECT target FROM actions WHERE chain=? AND venue=? AND token_id=? ORDER BY id DESC LIMIT 1', this.network, venue, id);
       if (row?.target) this.cacheOwner(venue, id, String(row.target).toLowerCase());
     });
   }
 
-  // ---- ambil semua log yang relevan di satu rentang blok ------------------
+  // ---- fetch all relevant logs in one block range ------------------
   async fetchRange(fromBlock, toBlock) {
     const hex = (n) => '0x' + n.toString(16);
     const range = { fromBlock: hex(fromBlock), toBlock: hex(toBlock) };
-    // SATU query untuk ketiga sumber (alamat & topik boleh berupa daftar; hasilnya
-    // dipilah lagi per alamat+topik di bawah). Dulu tiga query terpisah tiap 1,5 detik
-    // — dikali dua instance — menghabiskan kuota endpoint gratisan (429 beruntun).
-    // Failover antar-endpoint tetap ada di rpc.getLogs, per query.
+    // ONE query for all three sources (addresses & topics may be lists; the result
+    // is sorted again per address+topic below). It used to be three separate queries every 1.5 seconds
+    // — times two instances — exhausting the free endpoint quota (consecutive 429s).
+    // Failover between endpoints still exists in rpc.getLogs, per query.
     //
-    // Hanya topik yang kita butuhkan yang diminta. Mengambil SEMUA log NPM ikut
-    // menyeret Collect dan Approval (>50% volume) dan itu yang memicu 429 saat mengejar.
+    // Only the topics we need are requested. Fetching ALL NPM logs
+    // also drags in Collect and Approval (>50% of the volume) and that is what triggers 429 when catching up.
     const { ADDR } = this.chain;
     const logs = await this.rpc.getLogs({
       address: [ADDR.poolManager, ADDR.posmV4, ...this.npmVenue.keys()],
@@ -152,16 +152,16 @@ class Watcher {
     return { modLiq: modLiq || [], xferV4: xferV4 || [], npm: npm || [] };
   }
 
-  // ---- olah satu rentang -> daftar aksi ----------------------------------
+  // ---- process one range -> list of actions ----------------------------------
   async scan(fromBlock, toBlock) {
-    // Hanya target yang menyala. Aksi target yang dimatikan tidak dicatat sama sekali —
-    // tidak menambah daftar aktivitas dan tidak memicu peringatan di dasbor. Bot memang
-    // tidak menyalin apa pun dari target mati, jadi tidak ada sinyal yang hilang.
+    // Only targets that are on. Actions of a disabled target are not recorded at all —
+    // they do not add to the activity list and do not trigger a dashboard warning. The bot really
+    // copies nothing from a disabled target, so no signal is lost.
     //
-    // Satu pengecualian: target yang dimatikan tapi masih punya cermin terbuka. Sinyal
-    // KELUAR-nya untuk cermin itu tetap diambil (dan hanya itu, disaring di bawah) —
-    // mematikan target berarti berhenti menyalin, bukan meninggalkan posisi yang sudah
-    // dibuka tanpa diikuti saat target menariknya.
+    // One exception: a target that is disabled but still has an open mirror. Its
+    // EXIT signal for that mirror is still taken (and only that, filtered below) —
+    // disabling a target means stopping copying, not abandoning an already
+    // opened position without following it when the target withdraws.
     const enabled = this.enabledSet();
     const exitOnly = this.disabledWithMirrors(enabled);
     const targets = new Set([...enabled, ...exitOnly.keys()]);
@@ -169,7 +169,7 @@ class Watcher {
     const { modLiq, xferV4, npm } = await this.fetchRange(fromBlock, toBlock);
     const actions = [];
 
-    // 1. Transfer NFT: perbarui peta kepemilikan lebih dulu supaya mint di tx yang sama terbaca.
+    // 1. NFT Transfer: update the ownership map first so a mint in the same tx is read.
     const noteTransfer = (venue, l) => {
       const from = asAddr(l.topics[1]), to = asAddr(l.topics[2]);
       const tokenId = BigInt(l.topics[3]).toString();
@@ -179,16 +179,16 @@ class Watcher {
       } else if (targets.has(from) && to !== '0x0000000000000000000000000000000000000000') {
         actions.push({ kind: 'transfer_out', venue, tokenId, target: from, counterparty: to, log: l });
       }
-      // untuk burn (to = 0x0) simpan pemilik sebelumnya supaya aksi burn tetap terhubung
+      // for a burn (to = 0x0) keep the previous owner so the burn action stays linked
       if (to === '0x0000000000000000000000000000000000000000') this.cacheOwner(venue, tokenId, from);
     };
     for (const l of xferV4) if (l.topics.length === 4) noteTransfer('v4', l);
     for (const l of npm) if (l.topics[0] === TOPIC.transfer && l.topics.length === 4) noteTransfer(l.venue, l);
 
-    // Target contoh memakai layanan otomasi yang MENITIP NFT posisi ke routernya lalu
-    // mengembalikannya di transaksi yang sama. Kalau perpindahan itu dibaca sebagai
-    // "target keluar", bot akan menutup posisi yang sebenarnya masih hidup.
-    // Aturannya: perpindahan ke/dari sebuah KONTRAK = penitipan, bukan pelepasan.
+    // The example target uses an automation service that DEPOSITS the position NFT with its router then
+    // returns it in the same transaction. If that move were read as
+    // "target exits", the bot would close a position that is actually still alive.
+    // The rule: a move to/from a CONTRACT = a deposit, not a release.
     if (actions.length) {
       await this.contractCheck(actions.map((a) => a.counterparty));
       for (const a of actions) {
@@ -204,9 +204,9 @@ class Watcher {
       const sender = asAddr(l.topics[2]);
       if (sender !== this.chain.ADDR.posmV4) {
         this.unsupported.set(sender, (this.unsupported.get(sender) || 0) + 1);
-        // Kepemilikannya tidak lewat NFT PositionManager, jadi tidak bisa dicermin.
-        // Kalau yang memakainya ternyata TARGET kita, itu harus berbunyi: artinya
-        // target pindah ke router jenis lain dan bot berhenti menyalinnya diam-diam.
+        // Its ownership does not go through the PositionManager NFT, so it cannot be mirrored.
+        // If the one using it turns out to be our TARGET, that must sound an alarm: it means the
+        // target moved to another kind of router and the bot silently stopped copying it.
         unsupportedTx.add(l.transactionHash);
         this.unsupportedSender.set(l.transactionHash, [...(this.unsupportedSender.get(l.transactionHash) || []), sender]);
         continue;
@@ -217,31 +217,31 @@ class Watcher {
       const liqDelta = i256(w(2));
       const tokenId = w(3).toString();
       if (liqDelta === 0n) {
-        // Delta nol = target cuma memanen fee. Tidak ada yang bisa dicermin (posisi
-        // kita punya fee sendiri, dan menirunya cuma membakar gas), tapi POLANYA
-        // berguna: target yang tiba-tiba rajin panen sering sedang bersiap keluar.
-        // Dicatat sebagai aksi 'claim'; engine memutuskannya 'skip' dan hanya berbunyi
-        // kalau berulang pada posisi yang cerminnya kita pegang.
+        // Zero delta = the target is only harvesting fees. There is nothing to mirror (our position
+        // has its own fees, and imitating it would only burn gas), but the PATTERN is
+        // useful: a target that suddenly harvests diligently is often preparing to exit.
+        // Recorded as a 'claim' action; the engine decides 'skip' and only sounds
+        // if it repeats on a position whose mirror we hold.
         claimRows.push({ l, poolId: l.topics[1], tickLower, tickUpper, tokenId });
         continue;
       }
       v4Rows.push({ l, poolId: l.topics[1], tickLower, tickUpper, liqDelta, tokenId });
     }
-    // 2b. Jaring pengaman silang. Aksi transfer/penitipan dan aksi likuiditas datang
-    // dari DUA query getLogs terpisah atas rentang yang sama. Kalau query PoolManager
-    // gagal sebagian sementara query PositionManager berhasil, perubahan likuiditas
-    // hilang diam-diam sementara penitipannya tercatat — persis yang terjadi pada
-    // penutupan #2339460 (blok 59601918): custody_out + custody_in tercatat, decrease
-    // tidak, sehingga posisi cermin kita tidak akan pernah ikut ditutup.
-    // Untuk tiap transaksi yang SUDAH kita ketahui menyangkut target, log
-    // ModifyLiquidity-nya diambil langsung dari receipt.
+    // 2b. Cross safety net. Transfer/deposit actions and liquidity actions come
+    // from TWO separate getLogs queries over the same range. If the PoolManager query
+    // partially fails while the PositionManager query succeeds, the liquidity change
+    // is silently lost while the deposit is recorded — exactly what happened on
+    // the close of #2339460 (block 59601918): custody_out + custody_in recorded, decrease
+    // not, so our mirror position would never have been closed.
+    // For every transaction we ALREADY know concerns the target, its
+    // ModifyLiquidity log is taken directly from the receipt.
     const seenTx = new Set(v4Rows.map((r) => r.l.transactionHash));
     const needTx = [...new Set(actions.filter((a) => a.venue === 'v4').map((a) => a.log.transactionHash))]
       .filter((h) => !seenTx.has(h));
     if (needTx.length) {
       const rcs = await this.rpc.batch(needTx.map((h) => ({ method: 'eth_getTransactionReceipt', params: [h] })));
-      // Jaring pengaman yang bolong kalau receipt-nya tidak terbaca: aksi likuiditas
-      // target hilang diam-diam sementara kursor maju. Lempar — rentang diulang.
+      // A safety net with a hole if the receipt is unreadable: the target's liquidity action
+      // is silently lost while the cursor advances. Throw — the range is repeated.
       const miss = rcs.findIndex((r) => !r || r.error || !r.result);
       if (miss >= 0) throw new Error(`receipt ${needTx[miss].slice(0, 12)}… tidak terbaca dari RPC`);
       for (const r of rcs) {
@@ -259,8 +259,8 @@ class Watcher {
       }
     }
 
-    // Siapa pengirim transaksi LP yang tidak didukung itu? Kalau target, beri
-    // peringatan keras — sekali per target, supaya log tidak banjir.
+    // Who sent that unsupported LP transaction? If the target, give a
+    // loud warning — once per target, so the log does not flood.
     if (unsupportedTx.size) await this.warnIfTargetUnsupported([...unsupportedTx], enabled);
 
     await this.resolveOwners('v4', [...v4Rows, ...claimRows].map((r) => r.tokenId));
@@ -281,14 +281,14 @@ class Watcher {
       await this.resolveOwners(venue, v3Rows.filter((r) => r.venue === venue).map((r) => r.tokenId));
     }
 
-    // 4. saring yang milik target lalu lengkapi detailnya
+    // 4. filter those owned by the target then complete the details
     const mineV4 = v4Rows.filter((r) => targets.has(this.knownOwner('v4', r.tokenId) || ''));
     const mineV3 = v3Rows.filter((r) => targets.has(this.knownOwner(r.venue, r.tokenId) || ''));
 
     const out = [];
     if (mineV4.length) out.push(...await this.enrichV4(mineV4));
-    // Panen fee target: dicatat apa adanya (tanpa harga/nilai — tidak ada yang
-    // dihitung darinya, jadi tidak perlu RPC tambahan).
+    // Target fee harvest: recorded as it is (without price/value — nothing is
+    // computed from it, so no extra RPC is needed).
     for (const r of claimRows.filter((x) => targets.has(this.knownOwner('v4', x.tokenId) || ''))) {
       out.push({
         ts: await this.chain.blockTs(parseInt(r.l.blockNumber, 16)),
@@ -318,7 +318,7 @@ class Watcher {
     });
   }
 
-  // target dimatikan -> Set(tokenId posisi target yang masih kita cermin)
+  // target disabled -> Set(tokenId of target positions we still mirror)
   disabledWithMirrors(enabled) {
     const out = new Map();
     const rows = this.store.all(`SELECT p.target, p.mirror_of FROM positions p JOIN targets t ON t.address = p.target AND t.chain = p.chain
@@ -333,7 +333,7 @@ class Watcher {
   }
 
   async enrichV4(rows) {
-    // ambil poolKey per tokenId (sekali saja, di-cache)
+    // fetch the poolKey per tokenId (only once, cached)
     const need = rows.filter((r) => !this.v4Info.has(r.tokenId)).map((r) => r.tokenId);
     if (need.length) {
       const res = await this.rpc.ethCallMany(need.map((id) => ({
@@ -347,16 +347,16 @@ class Watcher {
             currency0: d[0].currency0.toLowerCase(), currency1: d[0].currency1.toLowerCase(),
             fee: Number(d[0].fee), tickSpacing: Number(d[0].tickSpacing), hooks: d[0].hooks.toLowerCase(),
           };
-          // NFT yang sudah dibakar TIDAK revert — ia mengembalikan poolKey serba nol.
-          // Jangan disimpan: poolKey nol membuat aksi tampak sebagai pool 0x0/0x0.
+          // A burned NFT does NOT revert — it returns an all-zero poolKey.
+          // Do not store it: a zero poolKey makes the action look like a 0x0/0x0 pool.
           if (/^0x0+$/.test(pk.currency1) && pk.fee === 0) return;
           this.v4Info.set(id, { poolKey: pk, poolId: computePoolId(d[0]) });
-        } catch { /* tidak terbaca: diisi jalur cadangan di bawah */ }
+        } catch { /* unreadable: filled by the fallback path below */ }
       });
     }
-    // Cadangan untuk NFT yang sudah dibakar saat dibaca — target buka-tutup cepat,
-    // atau rebalance mint+burn dalam satu tx. poolId ada di event ModifyLiquidity;
-    // poolKey-nya dicari dari calldata tx mint atau event Initialize.
+    // Fallback for an NFT that was already burned when read — a target that opens-closes fast,
+    // or a rebalance mint+burn in one tx. The poolId is in the ModifyLiquidity event;
+    // its poolKey is looked up from the mint tx calldata or the Initialize event.
     for (const r of rows) {
       if (this.v4Info.has(r.tokenId)) continue;
       try {
@@ -467,7 +467,7 @@ class Watcher {
     return outs;
   }
 
-  // Simpan aksi ke DB; kembalikan yang benar-benar baru (belum pernah tercatat).
+  // Save actions to the DB; return the ones that are really new (never recorded before).
   persist(actions) {
     const fresh = [];
     for (const a of actions) {

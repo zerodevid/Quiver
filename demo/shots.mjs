@@ -1,4 +1,4 @@
-// Cuplikan cepat beberapa halaman dengan sensor aktif — untuk memeriksa hasil sensor.
+// Quick captures of a few pages with redaction on — to check the redaction result.
 //   QBASE=… QTOKEN=… QLANG=en node shots.mjs summary,positions,targets
 import { chromium } from 'playwright-core';
 import { BASE, buildMask, attach, censorScript, leakCheck } from './privacy.mjs';

@@ -1,7 +1,7 @@
 import { breakEven } from '../breakeven.js';
 
-// Model edukasi satu posisi concentrated liquidity. Harga dalam satuan manusia:
-// quote per 1 base. Entry dan modal tetap supaya contoh di teks bisa dicocokkan.
+// Educational model of a single concentrated liquidity position. Prices in human units:
+// quote per 1 base. Entry and capital are fixed so the examples in the text can be matched.
 export const ENTRY = 100;
 export const CAPITAL = 100;
 
@@ -11,8 +11,8 @@ export function simulation({ lo, hi, current, fees = 0, costs = 0, capital = CAP
   if (!valid) throw new Error('Invalid simulation inputs');
 
   const a = Math.sqrt(lo), b = Math.sqrt(hi);
-  // Jumlah token untuk likuiditas L pada harga tertentu; di luar range harga dijepit
-  // ke tepi sehingga posisi berisi satu token saja.
+  // Token amounts for liquidity L at a given price; outside the range the price is clamped
+  // to the edge so the position holds just one token.
   const amounts = (price, L) => {
     const s = Math.sqrt(Math.max(lo, Math.min(hi, price)));
     return { base: L * (1 / s - 1 / b), quote: L * (s - a) };
@@ -29,8 +29,8 @@ export function simulation({ lo, hi, current, fees = 0, costs = 0, capital = CAP
     return { price, ...inventory, principal, hold, lp, pnl: lp - capital, il: principal - hold };
   };
 
-  // BEP memakai rumus yang sama dengan dasbor: desimal 0, token1 sebagai quote, tick
-  // diturunkan dari harga. Biaya dimasukkan ke modal yang harus kembali.
+  // BEP uses the same formula as the dashboard: 0 decimals, token1 as quote, tick
+  // derived from the price. Costs are added to the capital that has to come back.
   const tick = (p) => Math.log(p) / Math.log(1.0001);
   const bep = breakEven({
     status: 'open', inRange: false, quoteSide: 1, dec0: 0, dec1: 0,

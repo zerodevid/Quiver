@@ -1,24 +1,24 @@
 'use strict';
 const { ensureChain } = require('./networks');
-// Riset wallet: rekonstruksi seluruh riwayat posisi LP sebuah wallet dari chain,
-// lengkap dengan modal, fee, dan PnL — untuk posisi yang masih hidup MAUPUN yang
-// sudah ditutup.
+// Wallet research: reconstruct a wallet's entire LP position history from the chain,
+// with capital, fees, and PnL — for positions still alive AND those
+// already closed.
 //
-// Kenapa dari chain, bukan API pihak ketiga: api.lpagent.io dijaga Cloudflare
-// (403 bahkan untuk browser sungguhan), dan server kita juga tidak bisa menembus
-// Blockscout. Jalur on-chain justru lebih akurat — lihat catatan pemisahan fee.
+// Why from the chain, not a third-party API: api.lpagent.io is guarded by Cloudflare
+// (403 even for a real browser), and our server cannot get through to
+// Blockscout either. The on-chain path is actually more accurate — see the note on separating fees.
 //
-// Cara kerja, empat tahap:
-//   1. Transfer NFT PositionManager (from/to terindeks) -> daftar tokenId + jendela hidupnya
-//   2. poolId tiap tokenId: dari getPoolAndPositionInfo (masih hidup) atau dari receipt mint
-//   3. ModifyLiquidity disaring per poolId (poolId terindeks, jadi murah) -> semua kejadian
-//   4. receipt tiap tx -> jumlah token PERSIS yang berpindah antara wallet dan PoolManager
+// How it works, four stages:
+//   1. PositionManager NFT Transfers (from/to indexed) -> list of tokenIds + their live windows
+//   2. poolId of each tokenId: from getPoolAndPositionInfo (still alive) or from the mint receipt
+//   3. ModifyLiquidity filtered per poolId (poolId is indexed, so cheap) -> all events
+//   4. receipt of each tx -> the EXACT token amounts moved between the wallet and the PoolManager
 //
-// Pemisahan pokok vs fee: penarikan mengembalikan pokok + fee tercampur dalam satu
-// Transfer. Pokok dihitung dari (L, rentang, harga pool saat itu); sisanya fee.
-// Menurunkan harga dari jumlah token TIDAK BISA dipakai di penarikan karena jumlahnya
-// sudah tercemar fee — harganya harus diambil dari event Swap (yang membawa sqrtPriceX96,
-// dan tick-nya cocok 100% saat diverifikasi silang).
+// Separating principal vs fee: a withdrawal returns principal + fee mixed in a single
+// Transfer. Principal is computed from (L, range, pool price at that time); the rest is fee.
+// Deriving the price from token amounts CANNOT be used on a withdrawal because the amounts
+// are already contaminated with fees — the price must be taken from the Swap event (which carries sqrtPriceX96,
+// and whose tick matched 100% when cross-verified).
 const { ethers } = require('ethers');
 const { TOPIC, ABI } = require('./chain');
 const { computePoolId, priceUsable, sqrtClampedToRange } = require('./pools');
@@ -43,28 +43,28 @@ class WalletResearch {
     this.rpc = rpc; this.store = store; this.chain = chain; this.log = log || (() => {});
     this.network = chain.network;
     this.priceCache = new Map();
-    // Uniswap v3 punya jalur sendiri: event NPM-nya membawa jumlah token langsung,
-    // jadi rekonstruksinya tidak sama dengan v4. Wallet yang ber-LP di v3 dulu
-    // tampil KOSONG di halaman riset karena modul ini cuma membaca v4.
-    // Satu pemindai per venue v3 (BSC: Uniswap v3 dan PancakeSwap v3).
+    // Uniswap v3 has its own path: its NPM events carry the token amounts directly,
+    // so its reconstruction differs from v4. A wallet that LPs on v3 used to
+    // show EMPTY on the research page because this module only read v4.
+    // One scanner per v3 venue (BSC: Uniswap v3 and PancakeSwap v3).
     this.v3s = chain.venues.map((v) => new WalletV3({ rpc, store, chain, log, venue: v.key }));
     this.v3 = this.v3s[0];
-    // Mengikuti token non-kuotasi hasil tutup posisi sampai benar-benar dijual.
+    // Follows the non-quote tokens from closing a position until they are really sold.
     this.proceeds = new Proceeds({ rpc, store, chain, research: this, log });
-    // Nilai posisi terbuka yang baru dibaca, per baris — lihat refreshOpen().
+    // The value of an open position just read, per row — see refreshOpen().
     this.liveCache = new Map();
   }
 
-  // ---- harga pool pada blok tertentu --------------------------------------
-  // Jalur utama: baca Slot0 pool LANGSUNG di blok sebelum kejadian lewat node arsip.
-  // Ini eksak — diverifikasi dengan menghitung fee dua cara independen (dari
-  // feeGrowthInside di storage vs dari "keluar dikurangi pokok"): hasilnya identik
-  // sampai digit terakhir.
+  // ---- pool price at a given block --------------------------------------
+  // Main path: read the pool's Slot0 DIRECTLY at the block before the event via an archive node.
+  // This is exact — verified by computing the fee two independent ways (from
+  // feeGrowthInside in storage vs from "out minus principal"): the result is identical
+  // down to the last digit.
   //
-  // Cadangan: harga dari event Swap terdekat. Untuk memecoin ini bisa meleset jauh —
-  // harga bergerak beberapa persen dalam hitungan blok, dan pokok hasil hitung bisa
-  // melebihi token yang benar-benar diterima (mustahil), jadi hasilnya diapit ke
-  // rentang yang konsisten dengan jumlah yang diterima.
+  // Fallback: the price from the nearest Swap event. For a memecoin this can be far off —
+  // the price moves several percent within a few blocks, and the computed principal can
+  // exceed the tokens actually received (impossible), so the result is clamped to a
+  // range consistent with the amount received.
   async priceAt(poolId, block) {
     const key = `${poolId}:${block}`;
     if (this.priceCache.has(key)) return this.priceCache.get(key);
@@ -87,10 +87,10 @@ class WalletResearch {
       } catch (e) { this.log(`harga arsip ${poolId.slice(0, 10)} @${block} gagal: ${e.message}`); }
     }
 
-    // Harga pool hanya berubah oleh Swap, jadi Swap TERAKHIR sebelum blok kejadian
-    // memberi harga yang tepat; Swap sesudahnya cuma taksiran, dipakai kalau tidak
-    // ada yang sebelumnya di dalam jendela. Dulu yang dipilih Swap terdekat ke arah
-    // mana pun.
+    // A pool price only changes through a Swap, so the LAST Swap before the event block
+    // gives the exact price; a Swap after it is only an estimate, used if there is
+    // none before within the window. It used to pick the nearest Swap in either
+    // direction.
     let before = null, after = null, init;
     for (const win of [400, 4000, 40000, 400000]) {
       const lo = Math.max(0, block - win);
@@ -108,12 +108,12 @@ class WalletResearch {
         else if (!after || bn < after.bn) after = { bn, sqrt };
       }
       if (before) break;
-      // Tidak ada Swap sebelum kejadian di jendela ini. Kalau pool-nya LAHIR di dalam
-      // jendela yang sama, berarti memang belum pernah di-swap sampai blok kejadian —
-      // harganya persis harga Initialize. Kasus nyata: 5 posisi target di pool yang
-      // ia buat sendiri (Initialize + mint satu blok, tanpa Swap sama sekali) tercatat
-      // bermodal $0 dan "untung" sebesar seluruh pokoknya, dan tidak pernah sembuh
-      // karena memang tidak ada Swap yang bisa ditemukan.
+      // There is no Swap before the event in this window. If the pool was BORN inside the same
+      // window, it means it had never been swapped up to the event block —
+      // the price is exactly the Initialize price. Real case: 5 target positions in a pool
+      // it created itself (Initialize + mint in one block, without a single Swap) were recorded
+      // with $0 capital and "profit" equal to their entire principal, and never healed
+      // because there really is no Swap that can be found.
       if (init === undefined) init = await this.chain.poolInitOf(poolId, block);
       if (init && init.block >= lo && init.block <= block) {
         before = { bn: init.block, sqrt: init.sqrt };
@@ -121,9 +121,9 @@ class WalletResearch {
       }
     }
     const best = before || after;
-    // Kegagalan TIDAK di-cache: biasanya RPC sedang 429, bukan pool tanpa Swap.
-    // Dulu null-nya diingat seumur proses, sehingga pembaruan berikutnya untuk
-    // pool:blok yang sama ikut gagal walau RPC sudah pulih.
+    // A failure is NOT cached: usually the RPC is at 429, not a pool without a Swap.
+    // Its null used to be remembered for the process lifetime, so later updates for the
+    // same pool:block also failed even though the RPC had recovered.
     if (!best) return null;
     this.store.run('INSERT OR REPLACE INTO wprices(chain,pool_ref,block,sqrt_price,src_block) VALUES(?,?,?,?,?)',
       this.network, poolId, block, best.sqrt.toString(), best.bn);
@@ -131,18 +131,18 @@ class WalletResearch {
     return best.sqrt;
   }
 
-  // ---- tahap 1: tokenId yang pernah dipegang -------------------------------
+  // ---- stage 1: tokenIds ever held -------------------------------
   async enumerate(wallet, fromBlock, toBlock, onProgress) {
     const p = pad32(wallet);
     const held = new Map();   // tokenId -> {first, last, mintTx, acquiredByMint}
-    // Query Transfer yang disaring alamat wallet itu murah: endpoint resmi menjawab
-    // 900rb blok dalam 0,34 detik. Potongan kecil (dulu 40rb) cuma memperbanyak
-    // panggilan dan memicu 429; kalau sebuah potongan gagal, getLogsSafe memecahnya.
+    // A Transfer query filtered by that wallet's address is cheap: the official endpoint answers
+    // 900k blocks in 0.34 seconds. Small chunks (formerly 40k) only multiply
+    // calls and trigger 429; if a chunk fails, getLogsSafe splits it.
     const chunk = 1_000_000;
     for (let hi = toBlock; hi > fromBlock;) {
       const lo = Math.max(fromBlock, hi - chunk);
-      // Arah masuk & keluar dipindai bersamaan — dulu berurutan dan itu yang membuat
-      // enumerasi 1 hari makan >14 menit saat RPC sedang sibuk.
+      // The in & out directions are scanned together — it used to be sequential and that is what made
+      // enumerating 1 day take >14 minutes when the RPC was busy.
       const [logsTo, logsFrom] = await Promise.all([
         getLogsSafe(this.rpc, { address: this.chain.ADDR.posmV4, topics: [TOPIC.transfer, null, p] }, lo, hi),
         getLogsSafe(this.rpc, { address: this.chain.ADDR.posmV4, topics: [TOPIC.transfer, p] }, lo, hi),
@@ -155,7 +155,7 @@ class WalletResearch {
           const li = parseInt(l.logIndex, 16);
           const e = held.get(id) || { first: bn, last: bn, mintTx: null, acquiredByMint: false, heldNow: false, lastPos: -1 };
           e.first = Math.min(e.first, bn); e.last = Math.max(e.last, bn);
-          // Arah Transfer TERAKHIR menentukan apakah NFT masih di tangan wallet ini.
+          // The direction of the LAST Transfer determines whether the NFT is still in this wallet's hands.
           const pos = bn * 1e5 + li;
           if (pos > e.lastPos) { e.lastPos = pos; e.heldNow = asAddr(l.topics[2]) === wallet; }
           if (from === ZERO && asAddr(l.topics[2]) === wallet) { e.mintTx = l.transactionHash; e.acquiredByMint = true; e.first = bn; }
@@ -168,10 +168,10 @@ class WalletResearch {
     return held;
   }
 
-  // ---- tahap 2: poolKey tiap tokenId --------------------------------------
+  // ---- stage 2: poolKey of each tokenId ------------------------------
   async poolKeys(ids, held) {
     const out = new Map();
-    // hidup: langsung dari PositionManager
+    // alive: straight from the PositionManager
     const res = await this.rpc.ethCallMany(ids.map((id) => ({
       to: this.chain.ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPoolAndPositionInfo', [BigInt(id)]),
     })));
@@ -184,7 +184,7 @@ class WalletResearch {
           currency0: d[0].currency0.toLowerCase(), currency1: d[0].currency1.toLowerCase(),
           fee: Number(d[0].fee), tickSpacing: Number(d[0].tickSpacing), hooks: d[0].hooks.toLowerCase(),
         };
-        // posisi yang sudah dibakar mengembalikan poolKey nol
+        // a burned position returns a zero poolKey
         if (/^0x0+$/.test(pk.currency1) && pk.fee === 0) { needMint.push(id); return; }
         out.set(id, {
           poolKey: pk, poolId: computePoolId(d[0]),
@@ -194,7 +194,7 @@ class WalletResearch {
       } catch { needMint.push(id); }
     });
 
-    // sudah dibakar: ambil dari receipt tx mint-nya
+    // already burned: take it from its mint tx receipt
     const txs = [...new Set(needMint.map((id) => held.get(id)?.mintTx).filter(Boolean))];
     if (txs.length) {
       const rcs = await this.rpc.batch(txs.map((h) => ({ method: 'eth_getTransactionReceipt', params: [h] })));
@@ -218,7 +218,7 @@ class WalletResearch {
     return out;
   }
 
-  // ---- tahap 3+4: kejadian tiap posisi ------------------------------------
+  // ---- stage 3+4: events of each position --------------------------
   async positionEvents(wallet, id, info, span) {
     const logs = await getLogsSafe(this.rpc,
       { address: this.chain.ADDR.poolManager, topics: [TOPIC.modifyLiquidity, info.poolId] },
@@ -228,8 +228,8 @@ class WalletResearch {
       const b = ethers.getBytes(l.data);
       if (w32(b, 3).toString() !== id) continue;
       const delta = BigInt.asIntN(256, w32(b, 2));
-      // delta nol = klaim fee tanpa mengubah likuiditas. Dulu dilewati, padahal fee
-      // yang diklaim di situ adalah bagian dari hasil posisi.
+      // zero delta = a fee claim without changing liquidity. It used to be skipped, although the fee
+      // claimed there is part of the position's result.
       if (delta === 0n && !this.rpc.hasArchive()) continue;
       mine.push({
         block: parseInt(l.blockNumber, 16), tx: l.transactionHash,
@@ -239,7 +239,7 @@ class WalletResearch {
     }
     if (!mine.length) return [];
 
-    // receipt per tx (satu tx bisa memuat beberapa kejadian)
+    // receipt per tx (one tx can contain several events)
     const txs = [...new Set(mine.map((e) => e.tx))];
     const rcs = await this.rpc.batch(txs.map((h) => ({ method: 'eth_getTransactionReceipt', params: [h] })));
     const byTx = new Map(txs.map((h, i) => [h, rcs[i] && !rcs[i].error ? rcs[i].result : null]));
@@ -248,13 +248,13 @@ class WalletResearch {
       const rc = byTx.get(ev.tx);
       ev.moved = { in0: 0n, in1: 0n, out0: 0n, out1: 0n };
       if (!rc) continue;
-      // Satu tx yang membuka/menutup BEBERAPA posisi (target yang menyebar modal ke
-      // 3 rentang sekaligus) hanya punya satu arus Transfer untuk semuanya. Kalau
-      // tetap dipakai, tiap posisi tampak bermodal seluruh tx — posisi 1.120 USDG
-      // tercatat 5.600 dan "rugi" 4.480 saat kembali utuh. Untuk tx seperti itu
-      // Transfer tidak bisa dipilah, jadi dibiarkan kosong dan jalur cadangan
-      // memakai pokok dari L & harga (fee yang ikut ditarik tak terbaca di sana;
-      // jalur arsip tidak terpengaruh karena tidak bergantung pada Transfer).
+      // A single tx that opens/closes SEVERAL positions (a target that spreads capital across
+      // 3 ranges at once) has only one Transfer flow for all of them. If it is
+      // still used, each position looks like it had the capital of the entire tx — a 1,120 USDG position
+      // recorded as 5,600 and a "loss" of 4,480 when it came back whole. For such a tx the
+      // Transfers cannot be separated, so they are left empty and the fallback path
+      // uses principal from L & price (the fee withdrawn along with it is unreadable there;
+      // the archive path is unaffected because it does not depend on Transfers).
       const nLiq = (rc.logs || []).filter((l) => l.address.toLowerCase() === this.chain.ADDR.poolManager
         && l.topics[0] === TOPIC.modifyLiquidity && BigInt.asIntN(256, w32(ethers.getBytes(l.data), 2)) !== 0n).length;
       ev.shared = nLiq > 1;
@@ -267,11 +267,11 @@ class WalletResearch {
         const amt = BigInt(l.data);
         const side = tok === c0 ? 0 : tok === c1 ? 1 : null;
         if (side === null) continue;
-        // arus antara wallet (atau routernya) dan PoolManager
+        // flow between the wallet (or its router) and the PoolManager
         if (to === this.chain.ADDR.poolManager) ev.moved[side === 0 ? 'in0' : 'in1'] += amt;
         else if (from === this.chain.ADDR.poolManager) ev.moved[side === 0 ? 'out0' : 'out1'] += amt;
       }
-      // ETH native tidak punya Transfer ERC20 — pakai nilai tx-nya
+      // native ETH has no ERC20 Transfer — use the tx's value
       if (c0 === this.chain.ADDR.native) {
         const tx = await this.rpc.call('eth_getTransactionByHash', [ev.tx]).catch(() => null);
         if (tx && BigInt(tx.value || 0) > 0n && ev.delta > 0n) ev.moved.in0 += BigInt(tx.value);
@@ -280,13 +280,13 @@ class WalletResearch {
     return mine;
   }
 
-  // ---- gabungkan jadi satu posisi -----------------------------------------
+  // ---- combine into one position -----------------------------------
   async buildPosition(wallet, id, info, span, ethUsd) {
-    // poolKey HARUS diselesaikan LEBIH DULU. Pencocokan Transfer ERC20 di
-    // positionEvents membutuhkan alamat kedua token; kalau urutannya terbalik,
-    // sisi "keluar" tidak pernah cocok dan SETIAP posisi tertutup terlihat rugi
-    // sebesar seluruh modalnya — sisi masuk tetap benar karena punya cadangan
-    // hitungan pokok, jadi bugnya menyamar sebagai "semua posisi merah".
+    // The poolKey MUST be resolved FIRST. Matching ERC20 Transfers in
+    // positionEvents needs both token addresses; if the order is reversed,
+    // the "out" side never matches and EVERY closed position looks like it lost
+    // its entire capital — the in side stays correct because it has a fallback
+    // principal computation, so the bug disguised itself as "all positions red".
     if (!info.poolKey) {
       info.poolKey = await this.chain.poolKeyOfId(info.poolId, info.hintBlock || span.first, info.hintTx);
     }
@@ -303,15 +303,15 @@ class WalletResearch {
     let investedQ = 0, returnedQ = 0, feesQ = 0;
     const rows = [];
     let liq = 0n;
-    let tanpaHarga = false;   // ada kejadian yang harganya tidak terbaca (lihat jalur cadangan)
+    let withoutPrice = false;   // there is an event whose price is unreadable (see the fallback path)
 
     for (const ev of events.sort((a, b) => a.block - b.block || a.logIndex - b.logIndex)) {
       const abs = ev.delta < 0n ? -ev.delta : ev.delta;
       const sa = m.getSqrtRatioAtTick(ev.tickLower), sb = m.getSqrtRatioAtTick(ev.tickUpper);
 
-      // ---- jalur eksak: state pool & posisi di blok sebelum kejadian (node arsip) ----
-      // Tidak bergantung pada Transfer, jadi kebal terhadap netting flash accounting
-      // pada rebalance otomatis (tutup + buka dalam satu transaksi).
+      // ---- exact path: pool & position state at the block before the event (archive node) ----
+      // Does not depend on Transfers, so it is immune to the flash accounting netting
+      // on automatic rebalances (close + open in one transaction).
       let exact = null;
       if (this.rpc.hasArchive()) {
         try {
@@ -321,8 +321,8 @@ class WalletResearch {
         } catch (e) { this.log(`fee arsip #${id} @${ev.block} gagal: ${e.message}`); }
       }
       if (exact) {
-        // Pool yang disapu kosong menaruh harga di tick min/maks — diapit ke tepi
-        // rentang, kalau tidak fee memecoin dinilai "$1e55" (kasus nyata 4 posisi target).
+        // A pool swept empty puts the price at the min/max tick — clamped to the range
+        // edge, otherwise the memecoin fee is valued at "$1e55" (a real case of 4 target positions).
         const sqrtE = sqrtClampedToRange(exact.sqrtPriceX96, sa, sb);
         const pr = m.amountsForLiquidity(sqrtE, sa, sb, abs);
         const valE = (a0, a1) => {
@@ -341,7 +341,7 @@ class WalletResearch {
           kindE = liq === 0n ? 'mint' : 'increase';
           agg.in0 += pr.amount0; agg.in1 += pr.amount1;
           investedQ += valE(pr.amount0, pr.amount1);
-          returnedQ += fv;                    // fee yang terutang ikut dibayarkan saat menambah
+          returnedQ += fv;                    // fees owed are also paid out when adding
         } else if (ev.delta < 0n) {
           kindE = 'decrease';
           agg.out0 += pr.amount0 + exact.fee0; agg.out1 += pr.amount1 + exact.fee1;
@@ -361,24 +361,24 @@ class WalletResearch {
         });
         continue;
       }
-      if (ev.delta === 0n) continue;           // cadangan tidak bisa menilai klaim fee
+      if (ev.delta === 0n) continue;           // the fallback cannot value fee claims
 
-      // ---- jalur cadangan: harga dari Swap terdekat + jumlah dari Transfer ----
+      // ---- fallback path: price from the nearest Swap + amounts from Transfers ----
       let sqrt = sqrtClampedToRange(await this.priceAt(info.poolId, ev.block), sa, sb);
-      // Tanpa harga, kejadian ini tidak bisa dinilai sama sekali. Dulu dicatat nol,
-      // sehingga mint yang kebetulan dibaca saat RPC 429 tampak bermodal $0 dan
-      // penarikannya jadi "untung" sebesar seluruh pokok. Ditandai supaya tidak
-      // ikut ringkasan dan dibaca ulang pada pembaruan berikutnya.
-      if (!sqrt) tanpaHarga = true;
+      // Without a price, this event cannot be valued at all. It used to be recorded as zero,
+      // so a mint that happened to be read while the RPC was at 429 looked like it had $0 capital and
+      // its withdrawal became "profit" equal to the entire principal. Flagged so it is not
+      // included in the summary and is re-read on the next update.
+      if (!sqrt) withoutPrice = true;
       let princ = { amount0: 0n, amount1: 0n };
       if (sqrt) {
         princ = m.amountsForLiquidity(sqrt, sa, sb, abs);
-        // Pengaman: pokok tidak mungkin melebihi yang benar-benar keluar. Kalau itu
-        // terjadi, harganya salah (biasanya harga cadangan dari Swap yang jauh) —
-        // geser ke harga batas yang membuat pokok = yang diterima di sisi itu.
+        // Safeguard: principal cannot exceed what really came out. If that
+        // happens, the price is wrong (usually a fallback price from a distant Swap) —
+        // shift to the bound price that makes principal = what was received on that side.
         if (ev.delta < 0n && (ev.moved.out0 > 0n || ev.moved.out1 > 0n)) {
           if (princ.amount0 > ev.moved.out0 && ev.moved.out0 > 0n) {
-            // token0 kebanyakan -> harga terlalu rendah; naikkan sampai a0 = out0
+            // too much token0 -> the price is too low; raise it until a0 = out0
             const s2 = (abs * m.Q96 * sb) / (ev.moved.out0 * sb + abs * m.Q96);
             if (s2 > sa && s2 < sb) sqrt = s2;
           } else if (princ.amount1 > ev.moved.out1 && ev.moved.out1 > 0n) {
@@ -403,10 +403,10 @@ class WalletResearch {
         agg.in0 += ev.moved.in0; agg.in1 += ev.moved.in1;
         investedQ += val(ev.moved.in0 || princ.amount0, ev.moved.in1 || princ.amount1);
       } else {
-        // Yang keluar = pokok + fee. Pokok dihitung dari L & harga; sisanya fee.
-        // Cadangan: kalau Transfer tidak terbaca, setidaknya pokoknya diketahui
-        // dari L + harga — lebih baik daripada mencatat nol dan menampilkan posisi
-        // seolah rugi total.
+        // What comes out = principal + fee. Principal is computed from L & price; the rest is fee.
+        // Fallback: if Transfers are unreadable, at least the principal is known
+        // from L + price — better than recording zero and showing the position
+        // as a total loss.
         const got0 = ev.moved.out0 > 0n ? ev.moved.out0 : princ.amount0;
         const got1 = ev.moved.out1 > 0n ? ev.moved.out1 : princ.amount1;
         f0 = got0 > princ.amount0 ? got0 - princ.amount0 : 0n;
@@ -431,9 +431,9 @@ class WalletResearch {
     const first = rows[0], last = rows[rows.length - 1];
     const closed = liq === 0n;
 
-    // Posisi yang masih terbuka belum mengembalikan apa pun, jadi "returned" dari
-    // riwayat = 0. PnL-nya bukan minus seluruh modal — melainkan nilai posisi
-    // SEKARANG plus fee yang belum diklaim, dikurangi modal.
+    // A still-open position has not returned anything yet, so "returned" from
+    // history = 0. Its PnL is not minus the entire capital — it is the position value
+    // NOW plus unclaimed fees, minus capital.
     let liveValueQ = 0, liveFeeQ = 0, inRange = null, curTick = null;
     if (!closed && info.poolKey) {
       const s0 = await this.chain.slot0V4(info.poolId);
@@ -443,8 +443,8 @@ class WalletResearch {
         const sa0 = m.getSqrtRatioAtTick(tl), sb0 = m.getSqrtRatioAtTick(tu);
         inRange = m.sideOfRange(s0.tick, tl, tu) === 'both';
         const amt = m.amountsForLiquidity(s0.sqrtPriceX96, sa0, sb0, liq);
-        // Harga penilai: pool sendiri kalau likuiditas aktifnya > 0 dan tidak di
-        // batas; kalau tidak, pool lain pasangan yang sama; terakhir tepi rentang.
+        // Marking price: the pool's own if its active liquidity is > 0 and not at the
+        // bound; otherwise another pool of the same pair; last, the range edge.
         let mark = s0.sqrtPriceX96;
         if (!priceUsable(s0, await this.chain.poolLiquidity(info.poolId).catch(() => 0n))) {
           const alt = await this.chain.markSqrtForPair(info.poolKey.currency0, info.poolKey.currency1, info.poolId);
@@ -463,23 +463,23 @@ class WalletResearch {
             [{ poolId: info.poolId, tickLower: tl, tickUpper: tu, tokenId: id }],
             new Map([[info.poolId, s0.tick]]), this.rpc);
           if (f) liveFeeQ = vq(f.fee0, f.fee1);
-        } catch { /* fee tidak terbaca: biarkan 0 */ }
+        } catch { /* fee unreadable: leave 0 */ }
       }
     }
-    // Posisi terbuka yang sudah pernah menarik sebagian: hasil penarikan itu (returnedQ)
-    // sudah masuk kantong dan harus ikut dihitung — kalau tidak, keuntungan yang sudah
-    // diklaim jadi tak terlihat selama posisinya masih berjalan.
+    // An open position that has already partially withdrawn: that withdrawal result (returnedQ)
+    // is already in the pocket and must be counted — otherwise profit that was already
+    // claimed becomes invisible while the position is still running.
     const pnlQ = closed ? (returnedQ - investedQ) : (liveValueQ + liveFeeQ + returnedQ - investedQ);
-    // Riwayat bisa terpotong kalau posisi sudah ada sebelum jendela pindai:
-    // kejadian pertama yang terlihat bukan mint -> modal awalnya tidak diketahui (1).
-    // Atau harga salah satu kejadiannya tidak terbaca saat dipindai (2) — yang ini
-    // sembuh sendiri: refresh() membacanya ulang.
-    const incomplete = first.kind !== 'mint' ? 1 : tanpaHarga ? 2 : 0;
-    // Modal yang tidak diketahui bukan nol. Dulu tetap dihitung apa adanya: mint tanpa
-    // harga tercatat bermodal $0 dan penutupannya tampil "untung" sebesar seluruh
-    // pokok ($1.000 masuk, $1.000 keluar, PnL +$1.000). Sekarang modal & PnL-nya
-    // kosong (NULL, tampil "—") sampai riwayatnya lengkap; ringkasan wallet sudah
-    // mengabaikannya sejak dulu lewat `incomplete`.
+    // History can be truncated if the position existed before the scan window:
+    // the first event seen is not a mint -> its initial capital is unknown (1).
+    // Or the price of one of its events was not readable at scan time (2) — this one
+    // heals itself: refresh() reads it again.
+    const incomplete = first.kind !== 'mint' ? 1 : withoutPrice ? 2 : 0;
+    // Unknown capital is not zero. It used to be counted as it was: a mint without a
+    // price recorded $0 capital and its closing showed "profit" equal to the entire
+    // principal ($1,000 in, $1,000 out, PnL +$1,000). Now its capital & PnL are
+    // empty (NULL, shown "—") until its history is complete; the wallet summary has
+    // long ignored it via `incomplete`.
 
     return {
       wallet, venue: 'v4', tokenId: id, poolId: info.poolId, poolKey: info.poolKey,
@@ -498,12 +498,12 @@ class WalletResearch {
     };
   }
 
-  // ---- pemindaian penuh ---------------------------------------------------
-  // Posisi yang sudah TERTUTUP dan lengkap (NFT-nya sudah tidak dipegang, semua
-  // kejadiannya ternilai) tidak akan berubah lagi — membacanya ulang dari chain
-  // hanya menghasilkan angka yang sama dengan biaya ratusan panggilan RPC. Pindai
-  // penuh memakai baris tersimpannya; `force` memaksa semuanya dibangun ulang
-  // (dipakai setelah perbaikan rumus, lewat API).
+  // ---- full scan ---------------------------------------------------
+  // A position that is already CLOSED and complete (its NFT no longer held, all
+  // its events valued) will not change again — re-reading it from the chain
+  // only produces the same figures at the cost of hundreds of RPC calls. A full
+  // scan uses its stored row; `force` forces everything to be rebuilt
+  // (used after a formula fix, via the API).
   async scan(wallet, { blocks = 900_000, ethUsd = 2500, onProgress, force = false } = {}) {
     wallet = wallet.toLowerCase();
     const head = await this.rpc.blockNumber();
@@ -521,9 +521,9 @@ class WalletResearch {
     }
     const ids = [...held.keys()].filter((id) => !reuse.has(id));
     const out = [];
-    // Tidak ada posisi v4 BUKAN berarti wallet ini tidak ber-LP: banyak yang hanya
-    // main di v3. Dulu di sini ada return lebih awal, sehingga jalur v3 tidak pernah
-    // dijalankan dan halaman risetnya kosong walau wallet-nya aktif.
+    // No v4 positions does NOT mean this wallet does not LP: many play
+    // only v3. There used to be an early return here, so the v3 path was never
+    // run and its research page was empty although the wallet was active.
     const infos = ids.length ? await this.poolKeys(ids, held) : new Map();
     let done = 0;
     for (const id of ids) {
@@ -533,10 +533,10 @@ class WalletResearch {
       if (!info) continue;
       const span = held.get(id);
       try {
-        // Posisi yang masih dipegang dibaca sampai head. Dulu berhenti di Transfer
-        // terakhir + 5 blok, sehingga penambahan, penarikan sebagian, dan klaim fee
-        // SETELAH mint tidak pernah terbaca — Transfer hanya muncul saat mint/burn/pindah
-        // tangan, sedangkan ModifyLiquidity bisa terjadi kapan saja di antaranya.
+        // A position still held is read up to the head. It used to stop at the last Transfer
+        // + 5 blocks, so additions, partial withdrawals, and fee claims
+        // AFTER the mint were never read — Transfers only appear on mint/burn/change of
+        // hands, whereas ModifyLiquidity can happen any time in between.
         const last = span.heldNow ? head : Math.min(head, span.last + 5);
         const pos = await this.buildPosition(wallet, id, info, { first: span.first, last }, ethUsd);
         if (pos) out.push(pos);
@@ -547,7 +547,7 @@ class WalletResearch {
     return { wallet, positions: out, head, from, reused: reuse.size };
   }
 
-  // Kegagalan di jalur v3 tidak boleh menjatuhkan hasil v4 yang sudah terkumpul.
+  // A failure in the v3 path must not bring down the v4 result already collected.
   async scanV3(wallet, opts) {
     const out = [];
     for (const v3 of this.v3s) {
@@ -557,18 +557,18 @@ class WalletResearch {
     return out;
   }
 
-  // ---- pembaruan lanjutan ---------------------------------------------------
-  // Pindai penuh membangun ulang SEMUA posisi di jendela — untuk wallet aktif itu
-  // ratusan posisi dan beberapa menit. Padahal sejak pindai terakhir yang berubah
-  // hanya dua jenis: posisi yang tersentuh Transfer sejak blok terakhir (baru dibuka,
-  // dibakar, pindah tangan) dan posisi yang masih terbuka (nilai & fee berjalan,
-  // atau ditutup tanpa burn yang tidak memunculkan Transfer). Hanya itu yang dibaca.
+  // ---- incremental update ---------------------------------------------------
+  // A full scan rebuilds ALL positions in the window — for an active wallet that is
+  // hundreds of positions and a few minutes. Yet since the last scan only two kinds
+  // have changed: positions touched by a Transfer since the last block (newly opened,
+  // burned, changed hands) and positions still open (running value & fee,
+  // or closed without a burn, which produces no Transfer). Only those are read.
   async refresh(wallet, { ethUsd = 2500, onProgress } = {}) {
     wallet = wallet.toLowerCase();
     const w = this.store.get('SELECT first_block, scanned_to FROM wallets WHERE chain=? AND address=?', this.network, wallet);
     if (!w || w.scanned_to == null) return this.scan(wallet, { ethUsd, onProgress });
     const head = await this.rpc.blockNumber();
-    // Tumpang tindih 2.000 blok (~3 menit): aman terhadap blok yang telat terindeks.
+    // Overlap of 2,000 blocks (~3 minutes): safe against blocks that were indexed late.
     const from = Math.max(w.first_block || 0, w.scanned_to - 2000);
     const held = await this.enumerate(wallet, from, head, onProgress);
 
@@ -579,8 +579,8 @@ class WalletResearch {
       if (r.status === 'open' && !held.has(id)) {
         held.set(id, { first: r.opened_block ?? from, last: head, mintTx: null, acquiredByMint: false, heldNow: true });
       }
-      // Posisi yang harganya tidak terbaca saat dipindai (RPC 429) dibaca ulang
-      // sampai nilainya terisi — kalau tidak, modal $0-nya tinggal selamanya.
+      // A position whose price was unreadable at scan time (RPC 429) is re-read
+      // until its value is filled — otherwise its $0 capital would stay forever.
       if (r.incomplete === 2 && !held.has(id) && r.opened_block != null) {
         held.set(id, {
           first: r.opened_block, last: r.closed_block != null ? Math.min(head, r.closed_block + 5) : head,
@@ -588,16 +588,16 @@ class WalletResearch {
         });
       }
     }
-    // Posisi lama yang tersentuh lagi dibaca sejak pembukaannya, bukan sejak jendela
-    // ini — kalau tidak, modalnya hilang dan posisinya jadi "tidak lengkap".
+    // An old position touched again is read from its opening, not from the start of this
+    // window — otherwise its capital is lost and the position becomes "incomplete".
     for (const [id, e] of held) {
       const r = known.get(id);
       if (r?.opened_block != null) e.first = Math.min(e.first, r.opened_block);
     }
     const ids = [...held.keys()];
     const infos = ids.length ? await this.poolKeys(ids, held) : new Map();
-    // NFT yang sudah dibakar tidak bisa ditanya ke PositionManager, dan tx mint-nya
-    // mungkin di luar jendela ini — poolKey-nya sudah tersimpan dari pindai sebelumnya.
+    // A burned NFT cannot be asked of the PositionManager, and its mint tx
+    // may be outside this window — its poolKey was already stored from the earlier scan.
     for (const id of ids) {
       const r = known.get(id);
       if (infos.has(id) || !r?.pool_ref || !r.token0) continue;
@@ -620,38 +620,38 @@ class WalletResearch {
         if (pos) out.push(pos);
       } catch (e) { this.log(`posisi ${id} gagal: ${e.message}`); }
     }
-    // Riset v3 murah (beberapa kueri saja), jadi pembaruan lanjutan pun membacanya
-    // dari awal riwayat — tidak ada keadaan sebagian yang perlu dijaga di sana.
+    // v3 research is cheap (only a few queries), so even the incremental update reads it
+    // from the start of history — there is no partial state to maintain there.
     out.push(...await this.scanV3(wallet, { from: w.first_block || 0, head, ethUsd, onProgress }));
     await this.persist(wallet, out, { from, head, ethUsd, partial: true });
     return { wallet, positions: out, head, from, refreshed: out.length };
   }
 
-  // ---- nilai posisi terbuka, di harga sekarang -------------------------------
-  // Baris wpositions hanya ditulis ulang saat wallet-nya dipindai, dan pemindaian
-  // cuma dipicu oleh halaman Wallet/Target atau aksi baru si target. Posisi yang
-  // masih terbuka karena itu bisa tampil dengan nilai dari pemindaian terakhir —
-  // untuk target yang diam berjam-jam, itu foto dari beberapa detik setelah dia mint.
-  // Di halaman Pool/Token angka itu berdampingan dengan posisi bot yang dihitung
-  // ulang tiap 30 detik, jadi pool yang SAMA dengan rentang yang SAMA bisa terbaca
-  // untung di satu tabel dan rugi di tabel sebelahnya.
+  // ---- value of open positions, at the current price -----------------------
+  // A wpositions row is only rewritten when its wallet is scanned, and scanning is
+  // only triggered by the Wallet/Target page or a new action of the target. A position
+  // still open can therefore show a value from the last scan —
+  // for a target that stays quiet for hours, that is a photo from a few seconds after it minted.
+  // On the Pool/Token page that figure sits beside the bot position, recomputed
+  // every 30 seconds, so the SAME pool with the SAME range can read
+  // profit in one table and loss in the neighbouring table.
   //
-  // Yang basi hanya nilai pasar dan fee berjalan; modal dan hasil yang sudah ditarik
-  // tidak berubah tanpa kejadian on-chain baru. Jadi cukup dua hal itu yang dibaca
-  // ulang di sini. `rows` dimutasi di tempat (live_value_q, live_fee_q, pnl_q,
-  // in_range, curTick, liveTs) dan hasilnya ikut ditulis ke DB supaya ringkasan
-  // wallet tidak berbeda dengan isi tabelnya.
+  // What is stale is only the market value and the running fee; the capital and already withdrawn
+  // proceeds do not change without a new on-chain event. So only those two are re-read
+  // here. `rows` is mutated in place (live_value_q, live_fee_q, pnl_q,
+  // in_range, curTick, liveTs) and the result is also written to the DB so the wallet
+  // summary does not differ from the table contents.
   //
-  // Cache pendek per baris menjaga halaman yang dipoll tiap beberapa detik tetap
-  // hemat: satu pembacaan dipakai bersama semua halaman sampai kedaluwarsa.
+  // A short per-row cache keeps a page polled every few seconds
+  // frugal: one read is shared by all pages until it expires.
   async refreshOpen(rows, ethUsd, { ttlMs = 15_000 } = {}) {
     const open = rows.filter((r) => r.status === 'open' && r.pool_ref && r.token0 && r.token1);
     if (!open.length) return;
     const now = Date.now();
     const fresh = open.filter((r) => now - (this.liveCache.get(rowKey(r))?.ts || 0) >= ttlMs);
 
-    // Desimal menentukan harga; baris yang datang tanpa desimal (pemanggil yang tidak
-    // menghiasnya) dinilai dengan angka yang salah pangkat sepuluh kalau dibiarkan.
+    // Decimals determine the price; a row that arrives without decimals (a caller that did not
+    // decorate it) would be valued with a figure wrong by a power of ten if left alone.
     const need = fresh.filter((r) => r.dec0 == null || r.dec1 == null);
     if (need.length) {
       const toks = new Map(this.store.all('SELECT address,decimals FROM tokens WHERE chain=?', this.network).map((t) => [t.address, t.decimals]));
@@ -661,8 +661,8 @@ class WalletResearch {
       }
     }
 
-    // Harga pool: v4 satu batch (pool_ref = poolId di storage PoolManager), v3 satu per
-    // satu (pool_ref = alamat kontrak pool-nya).
+    // Pool price: v4 one batch (pool_ref = poolId in PoolManager storage), v3 one by
+    // one (pool_ref = its pool contract address).
     const slotBy = new Map(), poolLiqBy = new Map();
     const idV4 = [...new Set(fresh.filter((r) => !this.chain.isV3Venue(r.venue)).map((r) => r.pool_ref))];
     if (idV4.length) {
@@ -675,11 +675,11 @@ class WalletResearch {
       try {
         const s = await this.chain.slot0V3(a);
         if (s) slotBy.set(a, s);
-      } catch { /* satu pool gagal tidak menjatuhkan sisanya */ }
+      } catch { /* one failing pool does not take down the rest */ }
     }
 
-    // Fee berjalan: v4 dari storage PoolManager (satu batch, sekalian membawa L
-    // terkini), v3 disimulasikan lewat collect dan harus per pemilik.
+    // Running fee: v4 from PoolManager storage (one batch, also carrying the current
+    // L), v3 simulated via collect and must be per owner.
     const feeBy = new Map();
     const v4 = fresh.filter((r) => !this.chain.isV3Venue(r.venue) && slotBy.has(r.pool_ref));
     if (v4.length) {
@@ -691,7 +691,7 @@ class WalletResearch {
         v4.forEach((r, i) => { if (f[i]) feeBy.set(rowKey(r), f[i]); });
       } catch (e) { this.log(`nilai posisi terbuka: fee v4 gagal: ${e.message}`); }
     }
-    const byOwner = new Map();   // `${owner}|${venue}` -> baris (tiap venue v3 punya NPM sendiri)
+    const byOwner = new Map();   // `${owner}|${venue}` -> row (each v3 venue has its own NPM)
     for (const r of fresh) {
       if (!this.chain.isV3Venue(r.venue) || !slotBy.has(r.pool_ref)) continue;
       const k = `${r.wallet}|${r.venue}`;
@@ -703,31 +703,31 @@ class WalletResearch {
       try {
         const f = await unclaimedV3(this.chain, list.map((r) => BigInt(r.token_id)), owner, this.chain.npmFor(venue), this.rpc);
         list.forEach((r, i) => { if (f[i]) feeBy.set(rowKey(r), f[i]); });
-      } catch { /* fee tidak terbaca: pakai yang tersimpan */ }
+      } catch { /* fee unreadable: use the stored one */ }
     }
 
     for (const r of fresh) {
       const s = slotBy.get(r.pool_ref);
       if (!s) continue;
       const f = feeBy.get(rowKey(r));
-      // L dari storage lebih baru daripada L hasil pindai. Kalau sudah nol, posisinya
-      // ditutup setelah pemindaian terakhir: nilainya memang 0, tapi hasil tutupnya
-      // belum terbaca — menuliskannya sekarang membuat posisi itu terlihat rugi total.
-      // Biarkan angka lama sampai pemindai membetulkannya.
+      // The L from storage is newer than the L from the scan. If already zero, the position was
+      // closed after the last scan: its value really is 0, but its close proceeds
+      // have not been read yet — writing it now makes the position look like a total loss.
+      // Leave the old figure until the scanner corrects it.
       const L = f?.liquidity != null ? f.liquidity : big(r.liquidity);
       if (L <= 0n) continue;
       const sa = m.getSqrtRatioAtTick(r.tick_lower), sb = m.getSqrtRatioAtTick(r.tick_upper);
       const amt = m.amountsForLiquidity(s.sqrtPriceX96, sa, sb, L);
-      // Harga penilai: pool sendiri kalau layak (v3 tidak dibaca likuiditasnya — harga
-      // di batas tetap tertangkap lewat apitan); kalau tidak, pool lain pasangan yang
-      // sama; terakhir tepi rentang posisi.
+      // Marking price: the pool's own if fit (v3's liquidity is not read — a price
+      // at the bound is still caught via the clamp); otherwise another pool of the
+      // same pair; last, the position's range edge.
       let mark = s.sqrtPriceX96;
       if (!priceUsable(s, this.chain.isV3Venue(r.venue) ? 1n : (poolLiqBy.get(r.pool_ref) ?? 0n))) {
         const alt = await this.chain.markSqrtForPair(r.token0, r.token1, r.pool_ref);
         mark = alt ? alt.sqrtPriceX96 : sqrtClampedToRange(s.sqrtPriceX96, sa, sb);
       }
-      // Nilai di wpositions selalu USD (lihat persist), jadi sisi kuotasi ETH dikalikan
-      // harga ETH di sini juga.
+      // Values in wpositions are always USD (see persist), so the ETH quote side is multiplied by
+      // the ETH price here too.
       const vq = (a0, a1) => {
         const v = this.chain.valueInQuote({
           sqrtPriceX96: mark, amount0: a0, amount1: a1,
@@ -736,7 +736,7 @@ class WalletResearch {
         return v ? v.value * (v.kind === 'eth' ? ethUsd : 1) : null;
       };
       const value = vq(amt.amount0, amt.amount1);
-      if (value == null) continue;                       // pool tanpa sisi kuotasi: tak bisa dinilai
+      if (value == null) continue;                       // a pool without a quote side: cannot be valued
       const fee = f ? (vq(f.fee0, f.fee1) ?? 0) : (r.live_fee_q || 0);
       const inRange = m.sideOfRange(s.tick, r.tick_lower, r.tick_upper) === 'both';
       this.liveCache.set(rowKey(r), { ts: now, value, fee, tick: s.tick, inRange });
@@ -746,8 +746,8 @@ class WalletResearch {
         this.network, r.wallet, r.venue, r.token_id);
     }
 
-    // Baris yang masih tercakup cache ikut memakai angka yang sama — termasuk yang
-    // pembacaannya barusan gagal, yang tetap memegang nilai tersimpan tanpa liveTs.
+    // Rows still covered by the cache also use the same figures — including ones whose
+    // read just failed, which still hold the stored value without liveTs.
     for (const r of open) {
       const c = this.liveCache.get(rowKey(r));
       if (!c) continue;
@@ -760,14 +760,14 @@ class WalletResearch {
     }
   }
 
-  // Ringkasan dihitung dari SELURUH baris tersimpan, bukan hanya posisi yang baru
-  // dibaca: setelah pembaruan lanjutan yang dibaca cuma segelintir posisi, dan pindai
-  // ulang dengan jendela lebih pendek tidak menghapus posisi di luar jendelanya.
-  // Dengan begini angka ringkasan selalu sama dengan isi tabel.
+  // The summary is computed from ALL stored rows, not just the positions just
+  // read: after an incremental update only a handful of positions are read, and a
+  // rescan with a shorter window does not delete positions outside its window.
+  // This way the summary figures always equal the table contents.
   statsFromDb(wallet) {
     const rows = this.store.all(
       'SELECT status, incomplete, pnl_q, invested_q, fees_q, live_value_q, live_fee_q, held_tok, unrealized_q FROM wpositions WHERE chain=? AND wallet=?', this.network, wallet);
-    // Nilai di DB sudah dalam USD saat disimpan, jadi quoteKind 'usd'.
+    // The values in the DB are already in USD when stored, so quoteKind 'usd'.
     return summarize(rows.map((r) => ({
       status: r.status, incomplete: !!r.incomplete, quoteKind: 'usd',
       pnlQ: r.pnl_q || 0, investedQ: r.invested_q || 0, feesQ: r.fees_q || 0,
@@ -776,31 +776,31 @@ class WalletResearch {
     })));
   }
 
-  // ---- simpan -------------------------------------------------------------
+  // ---- persist ------------------------------------------------------
   async persist(wallet, positions, { from, head, ethUsd, partial = false, keep: reuse = null }) {
-    // NULL = tidak diketahui (modal posisi yang riwayatnya tidak lengkap) — bukan 0.
+    // NULL = unknown (capital of a position whose history is incomplete) — not 0.
     const usd = (v, kind) => (v == null ? null : kind === 'eth' ? v * ethUsd : v);
-    // Buang sisa pindai lama di dalam jendela ini yang tidak muncul lagi (mis. hasil
-    // pindai yang gagal di tengah jalan: posisi tanpa pasangan token dan serba nol).
-    // Posisi di luar jendela ini dibiarkan — pindai yang lebih pendek tidak boleh
-    // menghapus hasil pindai yang lebih panjang. `keep` = posisi tertutup yang
-    // sengaja tidak dibaca ulang (scan) — barisnya tetap.
+    // Drop old scan leftovers inside this window that no longer appear (e.g. the result of a
+    // scan that failed midway: positions with no token pair and all zeros).
+    // Positions outside this window are left — a shorter scan must not
+    // delete the result of a longer scan. `keep` = closed positions that were
+    // deliberately not re-read (scan) — their rows stay.
     const keep = new Set([...positions.map((p) => p.tokenId), ...(reuse || [])]);
-    // Pembaruan lanjutan hanya membaca sebagian posisi — "tidak muncul lagi" di situ
-    // bukan berarti basi.
+    // An incremental update only reads some positions — "no longer appears" there
+    // does not mean stale.
     const stale = partial ? [] : this.store.all(
       'SELECT token_id FROM wpositions WHERE chain=? AND wallet=? AND (opened_block IS NULL OR opened_block >= ?)', this.network, wallet, from)
       .map((r) => r.token_id).filter((id) => !keep.has(id));
-    // Baris tanpa pasangan token = sisa pindai yang gagal di tengah jalan; tidak
-    // bisa dinilai dan cuma tampil sebagai "?/?" bernilai nol di mana pun letaknya.
+    // A row without a token pair = a scan leftover that failed midway; it cannot
+    // be valued and only shows as "?/?" worth zero wherever it sits.
     const broken = this.store.all('SELECT token_id FROM wpositions WHERE chain=? AND wallet=? AND token0 IS NULL', this.network, wallet)
       .map((r) => r.token_id).filter((id) => !keep.has(id));
     for (const id of [...stale, ...broken]) {
       this.store.run('DELETE FROM wpositions WHERE chain=? AND wallet=? AND token_id=?', this.network, wallet, id);
       this.store.run('DELETE FROM wevents WHERE chain=? AND wallet=? AND token_id=?', this.network, wallet, id);
     }
-    // Waktu ditaksir dari nomor blok (blok RH chain ~0,101 detik) — dipakai untuk
-    // mengelompokkan profit per hari di kalender.
+    // Time estimated from the block number (RH chain blocks ~0.101 seconds) — used to
+    // group profit per day in the calendar.
     const tsOf = async (b) => (b == null ? null : await this.chain.blockTs(b));
     for (const p of positions) {
       const openedTs = await tsOf(p.openedBlock);
@@ -838,8 +838,8 @@ class WalletResearch {
           e.sqrt ? e.sqrt.toString() : null, usd(e.valueQ, p.quoteKind));
       }
     }
-    // Posisi yang baru tutup: pisahkan yang sudah jadi uang dari token yang masih
-    // dipegang. Kegagalan di sini tidak boleh membatalkan hasil pindai.
+    // A freshly closed position: separate what has become money from tokens still
+    // held. A failure here must not cancel the scan result.
     try { await this.proceeds.track(wallet, { head, ethUsd }); }
     catch (e) { this.log(`lacak hasil ${wallet.slice(0, 10)}…: ${e.message}`); }
     const stats = this.statsFromDb(wallet);
@@ -853,17 +853,17 @@ class WalletResearch {
   }
 }
 
-// PnL berjalan posisi terbuka. Modal NULL = tidak diketahui (riwayat tidak lengkap),
-// dan PnL-nya ikut tidak diketahui — bukan "nilai sekarang dikurangi nol".
+// Running PnL of an open position. NULL capital = unknown (incomplete history),
+// and its PnL is also unknown — not "current value minus zero".
 const livePnl = (r, value, fee) => (r.invested_q == null ? null : value + fee + (r.returned_q || 0) - r.invested_q);
 
-// ---- ringkasan ------------------------------------------------------------
+// ---- summary ------------------------------------------------------
 function summarize(positions, ethUsd = 2500) {
   const usd = (v, kind) => (kind === 'eth' ? v * ethUsd : v);
   const closed = positions.filter((p) => p.status === 'closed' && !p.incomplete);
   const open = positions.filter((p) => p.status === 'open');
   const pnls = closed.map((p) => usd(p.pnlQ, p.quoteKind));
-  // Ambang 1 sen: PnL -0,0000001 akibat pembulatan float bukan kekalahan.
+  // 1 cent threshold: a PnL of -0.0000001 from float rounding is not a loss.
   const wins = pnls.filter((x) => x > 0.01).length;
   const decided = pnls.filter((x) => Math.abs(x) > 0.01).length;
   const invested = closed.reduce((s, p) => s + usd(p.investedQ, p.quoteKind), 0);
@@ -873,8 +873,8 @@ function summarize(positions, ethUsd = 2500) {
     closedCount: closed.length,
     incompleteCount: positions.filter((p) => p.incomplete).length,
     totalProfitUsd: pnls.reduce((s, x) => s + x, 0),
-    // Bagian dari total profit yang masih berupa token hasil tutup posisi yang belum
-    // dijual — ikut bergerak dengan harga sampai wallet menukarnya.
+    // The part of total profit that is still tokens from closing a position not yet
+    // sold — moves with the price until the wallet swaps them.
     heldUnrealizedUsd: closed.reduce((s, p) => s + usd(p.heldUnrealizedQ || 0, p.quoteKind), 0),
     unrealizedUsd: open.reduce((s, p) => s + usd(p.pnlQ || 0, p.quoteKind), 0),
     openValueUsd: open.reduce((s, p) => s + usd(p.liveValueQ || 0, p.quoteKind), 0),

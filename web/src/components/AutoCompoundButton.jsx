@@ -5,18 +5,18 @@ import { get, post } from '../api';
 import { useI18n } from '../i18n';
 import { usd, ago } from '../fmt';
 
-// Panen fee otomatis untuk satu posisi. Dua mode yang saling menggantikan:
-//   compound — fee dikembalikan jadi likuiditas di posisi yang sama (v3 & v4)
-//   klaim    — fee ditarik ke wallet; sisi memecoin-nya dijual ke aset kuotasi pool
-// Tombolnya tetap satu: yang dipilih di dalam modal menentukan apa yang dijalankan.
+// Automatic fee harvesting for one position. Two mutually exclusive modes:
+//   compound — fees go back in as liquidity in the same position (v3 & v4)
+//   claim    — fees are withdrawn to the wallet; the memecoin side is sold into the pool's quote asset
+// There is still one button: what is chosen inside the modal decides what runs.
 export default function AutoCompoundButton({ p, reload, disabled = false, compact = false }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false);
   const [data, setData] = useState(null), [error, setError] = useState('');
   const [enabled, setEnabled] = useState(false), [minimum, setMinimum] = useState('5'), [interval, setInterval] = useState('30');
   const [mode, setMode] = useState('compound'), [sellFee, setSellFee] = useState(true);
-  // Venue tanpa NFT posisi tidak bisa dipanen otomatis. Posisi lama yang belum
-  // disinkron ulang belum punya blok compound: jatuhkan ke aturan v4 yang dulu.
+  // Venues without a position NFT cannot be harvested automatically. Old positions that have not
+  // been re-synced yet have no compound block: fall back to the old v4 rule.
   if (!(p.compound?.supported ?? p.venue === 'v4')) return null;
   const quoteSym = p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null;
   const show = async () => {
@@ -43,25 +43,25 @@ export default function AutoCompoundButton({ p, reload, disabled = false, compac
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
-  // Status ON/OFF jadi titik warna + label kecil, bukan bagian dari teks tombol:
-  // tombolnya tetap bentuk tombol biasa, statusnya terbaca sekilas.
+  // ON/OFF status becomes a colour dot + a small label, not part of the button text:
+  // the button keeps the shape of a normal button, and the status reads at a glance.
   const on = !!(p.compound?.enabled ?? data?.enabled);
   const modeNow = data?.mode ?? p.compound?.mode ?? 'compound';
   const valid = Number(minimum) >= 0.01 && Number(minimum) <= 1000000
     && Number.isInteger(Number(interval)) && Number(interval) >= 1 && Number(interval) <= 10080;
-  const Pilihan = ({ value, judul, ket }) => <label className="flex min-h-11 items-start gap-3 rounded-md border border-border p-3">
+  const Pilihan = ({ value, heading, ket }) => <label className="flex min-h-11 items-start gap-3 rounded-md border border-border p-3">
     <input type="radio" name={`panen-${p.id}`} className="mt-1" checked={mode === value} disabled={busy}
       onChange={() => setMode(value)} />
     <span className="flex flex-col gap-0.5">
-      <span className="text-sm font-medium">{judul}</span>
+      <span className="text-sm font-medium">{heading}</span>
       <span className="text-xs text-muted">{ket}</span>
     </span>
   </label>;
   const modeLabel = on ? (modeNow === 'claim' ? t('KLAIM') : t('COMPOUND')) : 'OFF';
   return <>
-    {/* Di baris tabel tombolnya menyusut jadi lambang: empat tombol berlabel penuh per
-        baris melebarkan kolom aksi melewati layar dan membuat tabel terbaca seperti
-        formulir. Statusnya tetap terlihat — titik hijau di sudut saat panen menyala. */}
+    {/* In a table row the button shrinks to an icon: four fully labelled buttons per
+        row stretch the action column past the screen and make the table read like a
+        form. The status stays visible — a green dot in the corner while harvesting is on. */}
     {compact ? (
       <Button size="sm" variant="tertiary" isIconOnly className="relative" isDisabled={disabled || p.empty} onPress={show}
         aria-label={`${t('Panen fee otomatis')} · ${modeLabel}`} title={`${t('Panen fee otomatis')} · ${modeLabel}`}>
@@ -85,9 +85,9 @@ export default function AutoCompoundButton({ p, reload, disabled = false, compac
               <p className="text-sm text-muted">{t('Fee posisi dipanen sendiri menurut minimum dan interval di bawah — bukan mengikuti kapan target memanen fee-nya.')}</p>
               {data && <>
                 <div className="flex flex-col gap-2">
-                  <Pilihan value="compound" judul={t('Compound — fee jadi likuiditas lagi')}
+                  <Pilihan value="compound" heading={t('Compound — fee jadi likuiditas lagi')}
                     ket={t('Hanya fee yang dipakai; tidak ada swap. Sisa token yang tidak cocok dengan rasio LP masuk ke wallet.')} />
-                  <Pilihan value="claim" judul={t('Klaim — fee ditarik ke wallet')}
+                  <Pilihan value="claim" heading={t('Klaim — fee ditarik ke wallet')}
                     ket={t('Sisi aset kuotasi langsung jadi uang; sisi memecoin-nya dijual lewat antrean jual yang sama dengan sisa penutupan.')} />
                 </div>
                 {mode === 'claim' && <label className="flex min-h-11 items-center gap-3">

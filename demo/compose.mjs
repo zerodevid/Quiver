@@ -1,5 +1,5 @@
-// Perakit akhir: intro + adegan (dalam bingkai) + outro, transisi silang, narasi,
-// efek suara dari timeline, subtitle SRT.
+// Final assembler: intro + scenes (in a frame) + outro, cross transitions, narration,
+// sound effects from the timeline, SRT subtitles.
 //   QLANG=en node compose.mjs  -> out/quiver-demo-en.mp4 + out/quiver-demo-en.srt
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,13 +12,13 @@ const OUT = path.resolve('out'); const SFX = path.join(OUT, 'sfx'); fs.mkdirSync
 const f = (n) => path.join(OUT, n);
 const tl = JSON.parse(fs.readFileSync(f(`timeline-${LANG}.json`), 'utf8'));
 const dIntro = probeDur(f(`intro-${LANG}.mp4`)), dApp = probeDur(f(`app-${LANG}.mp4`)), dOutro = probeDur(f(`outro-${LANG}.mp4`));
-const X1 = 0.7, X2 = 0.8;                       // durasi transisi silang
-const appStart = dIntro - X1;                   // t video saat adegan mulai
+const X1 = 0.7, X2 = 0.8;                       // cross-transition duration
+const appStart = dIntro - X1;                   // video t when the scene starts
 const outroStart = appStart + dApp - X2;
 const total = outroStart + dOutro;
 const ff = (args) => execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], { stdio: 'inherit' });
 
-// ── efek suara sintetis (pelan, "UI", bukan film aksi) ──
+// ── synthetic sound effects (soft, "UI", not an action film) ──
 const sfx = {
   click: ["aevalsrc=(random(0)-0.5)*exp(-t*700)*0.9:s=48000:d=0.06", 'highpass=f=1200,lowpass=f=6500,volume=0.55'],
   whoosh: ["aevalsrc=(random(0)-0.5)*sin(PI*t/0.6):s=48000:d=0.6", 'lowpass=f=1100,highpass=f=180,volume=0.32'],
@@ -26,7 +26,7 @@ const sfx = {
 };
 for (const [k, [src, filt]] of Object.entries(sfx)) ff(['-f', 'lavfi', '-i', src, '-af', filt, path.join(SFX, k + '.wav')]);
 
-// ── daftar klip audio: [file, t mulai, volume] ──
+// ── audio clip list: [file, start t, volume] ──
 const cues = [];
 const voDir = path.join(OUT, 'vo', LANG);
 const vo = (key, t) => { const p = path.join(voDir, key + '.wav'); if (fs.existsSync(p)) cues.push([p, t, 1.0]); };
@@ -38,7 +38,7 @@ for (const t of tl.whoosh) cues.push([path.join(SFX, 'whoosh.wav'), appStart + t
 for (const t of tl.pops) cues.push([path.join(SFX, 'pop.wav'), appStart + t, 1]);
 cues.push([path.join(SFX, 'whoosh.wav'), appStart - 0.2, 0.8], [path.join(SFX, 'whoosh.wav'), outroStart - 0.2, 0.8]);
 
-// ── pass 1: adegan dalam bingkai ──
+// ── pass 1: scenes in a frame ──
 const framed = f(`framed-${LANG}.mp4`);
 ff(['-i', f(`app-${LANG}.mp4`), '-framerate', '60', '-loop', '1', '-i', path.join(OUT, 'studio', 'bg.png'),
   '-framerate', '60', '-loop', '1', '-i', path.join(OUT, 'studio', 'shadow.png'), '-framerate', '60', '-loop', '1', '-i', path.join(OUT, 'studio', 'mask.png'),
@@ -47,7 +47,7 @@ ff(['-i', f(`app-${LANG}.mp4`), '-framerate', '60', '-loop', '1', '-i', path.joi
     '[1:v][2:v]overlay=0:0:format=auto[bgsh]', `[bgsh][app]overlay=${FRAME.x}:${FRAME.y}:format=auto:shortest=1,format=yuv420p[v]`].join(';'),
   '-map', '[v]', '-t', dApp.toFixed(3), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '14', framed]);
 
-// ── pass 2: audio dicampur dulu (banyak klip) ──
+// ── pass 2: mix the audio first (many clips) ──
 const mix = f(`mix-${LANG}.wav`);
 {
   const inputs = []; for (const [file] of cues) inputs.push('-i', file);
@@ -56,7 +56,7 @@ const mix = f(`mix-${LANG}.wav`);
   ff([...inputs, '-filter_complex', af.join(';'), '-map', '[a]', '-c:a', 'pcm_s16le', mix]);
 }
 
-// ── pass 3: transisi silang + audio ──
+// ── pass 3: cross transitions + audio ──
 ff(['-i', f(`intro-${LANG}.mp4`), '-i', framed, '-i', f(`outro-${LANG}.mp4`), '-i', mix,
   '-filter_complex', [
     '[0:v]format=yuv420p,fps=60[in]', '[1:v]format=yuv420p,fps=60[mid]', '[2:v]format=yuv420p,fps=60[out]',

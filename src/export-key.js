@@ -1,17 +1,17 @@
 'use strict';
-// Alat offline: buka keystore V3 terenkripsi (hasil unduhan tombol "Ekspor wallet" di
-// dasbor) jadi kunci privat mentah, buat diimpor ke wallet yang tidak menerima format
-// keystore JSON (mis. OKX Wallet — cuma terima kunci privat/frasa pemulihan).
+// Offline tool: open the encrypted V3 keystore (downloaded via the "Ekspor wallet" button in
+// the dashboard) into a raw private key, to import into wallets that do not accept the
+// JSON keystore format (e.g. OKX Wallet — only accepts a private key/recovery phrase).
 //
-// Sengaja TIDAK ada di jalur dasbor: kunci privat mentah cuma pernah muncul di terminal
-// lokal ini, tidak pernah lewat jaringan. Jalankan: npm run export-key -- <keystore.json>
+// Deliberately NOT on the dashboard path: the raw private key only ever appears in this local
+// terminal and never goes over the network. Run: npm run export-key -- <keystore.json>
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
 const { ethers } = require('ethers');
 
-// Prompt password tanpa menggemakan ketikan ke layar (readline biasa menampilkan apa
-// yang diketik; di sini _writeToOutput dibungkam kecuali untuk prompt & baris baru).
+// Password prompt that does not echo keystrokes to the screen (a plain readline shows what is
+// typed; here _writeToOutput is muted except for the prompt & newlines).
 function askHidden(question) {
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });

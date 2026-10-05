@@ -34,7 +34,7 @@ function fixture({ venue = 'v4', ticks = [-323405], enabled = true, singleSide, 
         m.getSqrtRatioAtTick(plan.tickLower), m.getSqrtRatioAtTick(plan.tickUpper), BigInt(tx.plan.liquidity));
       for (const [i, tok] of [[0, TOKEN], [1, ADDR.usdg]]) {
         assert.ok(amounts['amount' + i] <= balances.get(tok), 'mint has enough token' + i);
-        // v3: amountDesired DISETOR apa adanya — di atas saldo = revert "STF" di chain.
+        // v3: amountDesired is DEPOSITED as-is — above the balance = revert "STF" on chain.
         assert.ok(BigInt(tx.plan['amount' + i + 'Max']) <= balances.get(tok), 'token maximum never exceeds wallet balance (v3 STF)');
         assert.ok(amounts['amount' + i] <= BigInt(tx.plan['amount' + i + 'Max']), 'mint respects token maximum');
       }
@@ -91,12 +91,12 @@ test('moving price during zaps: opens what the balance fits instead of selling t
   assert.ok(BigInt(f.stats().mint.liquidity) > 0n);
 });
 test('zaps are capped across retries and a hopeless entry stops (no endless buy/sell)', async () => {
-  // Harga lari terus: setiap zap cuma memberi 10% dari yang dibutuhkan.
+  // The price keeps running: each zap only supplies 10% of what is needed.
   const f = fixture({ ticks: [-323405], loss: 0.9, complete: true });
   const state = new Map();
   f.e.store = { getState: (k, d) => state.get(k) ?? d, setState: (k, v) => state.set(k, v), log: () => {}, get: () => null };
   await assert.rejects(f.e.executeEntry(f.plan, {}), /harga berubah setelah swap|saldo kurang untuk zap/);
-  assert.ok(f.stats().swaps <= 3, `zap ${f.stats().swaps}× — harus berhenti`);
+  assert.ok(f.stats().swaps <= 3, `zap ${f.stats().swaps}× — must stop`);
   assert.equal(f.stats().mint, undefined);
 });
 test('RPC failure is not a zero balance; genuine zero remains valid', async () => {
@@ -124,19 +124,19 @@ test('full simulated execution: historical BOW tick path and fee/slippage matrix
 });
 
 test('price crossing range during approvals: never mints without the token; the retry buys it and opens', async () => {
-  // Belum ada zap (rencana USDG saja), lalu harga masuk rentang saat approval: butuh BOW
-  // yang tidak dimiliki. Percobaan pertama berhenti sebelum mint; percobaan ulang menilai
-  // dari harga baru, membeli BOW, dan membuka posisinya (dulu: entry hilang begitu saja).
+  // No zap yet (USDG-only plan), then the price enters the range during approval: needs BOW
+  // which is not held. The first attempt stops before the mint; the retry values
+  // from the new price, buys BOW, and opens the position (it used to: the entry just vanished).
   const f = fixture({ ticks: [-323399], approvalTick: -323458, complete: true });
   const r = await f.e.executeEntry(f.plan, {});
   assert.equal(r.txHash, 'SIMULATED');
   assert.equal(f.stats().swaps, 1);
-  assert.equal(f.stats().bridge, 1, 'jembatan tidak diulang');
+  assert.equal(f.stats().bridge, 1, 'bridge not repeated');
 });
 
 test('price drift during approvals after a zap refits the size instead of stranding the token', async () => {
-  // Kasus lpcopy2 (12 Sep): zap $26 USDG→PAIREX sukses, harga bergeser selama approval,
-  // mint dibatalkan "harga berubah sebelum mint" — PAIREX ditinggal telanjang di wallet.
+  // lpcopy2 case (12 Sep): the $26 USDG→PAIREX zap succeeded, the price shifted during approval,
+  // the mint was cancelled "price changed before mint" — PAIREX left naked in the wallet.
   for (const drift of [-323412, -323458, -324000, -323401]) {
     const f = fixture({ ticks: [-323405], approvalTick: drift, complete: true });
     const result = await f.e.executeEntry(f.plan, {});
@@ -159,7 +159,7 @@ test('mint failing after a zap queues the bought token for sale instead of stran
   const q = JSON.parse(state.get('leftovers:robinhood'));
   assert.equal(q.length, 1);
   assert.equal(q[0].token, TOKEN); assert.equal(q[0].quote, ADDR.usdg); assert.equal(q[0].source, 'zap');
-  assert.equal(BigInt(q[0].amount), f.balances.get(TOKEN));   // persis yang terbeli (saldo awal 0)
+  assert.equal(BigInt(q[0].amount), f.balances.get(TOKEN));   // exactly what was bought (starting balance 0)
   assert.match(q[0].why, /MINT_BOOM/);
   assert.ok(logs.some((m) => /masuk antrean jual/.test(m)));
 });
@@ -180,11 +180,11 @@ test('bridge runs at most once per entry even when the attempt after it fails an
   f.e.exec.send = async (tx) => { if (tx.simulatedMint && first) { first = false; throw new Error('estimasi gas gagal (transaksi kemungkinan akan revert): execution reverted: STF'); } return send(tx); };
   const r = await f.e.executeEntry(f.plan, {});
   assert.equal(r.txHash, 'SIMULATED');
-  assert.equal(calls, 1, 'jembatan tidak diulang');
+  assert.equal(calls, 1, 'bridge not repeated');
 });
 
-// Node yang tertinggal: saldo sesudah zap terbaca seperti sebelum zap. Receipt (amountOut)
-// sudah membuktikan token masuk, jadi bot tidak boleh zap kedua kalinya.
+// A lagging node: the balance after the zap reads as it did before the zap. The receipt (amountOut)
+// already proves the token arrived, so the bot must not zap a second time.
 test('stale balance after a confirmed zap (lagging node): no second zap, mint proceeds with receipt-proven amount', async () => {
   const f = fixture({ complete: true });
   f.e.ensureQuoteAsset = async () => { f.balances.set(ADDR.usdg, 212_259_831n); return []; };
@@ -193,14 +193,14 @@ test('stale balance after a confirmed zap (lagging node): no second zap, mint pr
   f.e.exec.balances = async (toks) => { if (stale && staleReads-- > 0) return new Map(stale); return realBalances(toks); };
   const kyberSwap = f.e.kyber.swap;
   f.e.kyber.swap = async (pay, buy, amount) => {
-    stale = new Map(f.balances); staleReads = 3;   // tiga pembacaan berikutnya "sebelum zap"
+    stale = new Map(f.balances); staleReads = 3;   // the next three reads are "before the zap"
     const before = f.balances.get(buy);
     await kyberSwap(pay, buy, amount);
     return { hash: '0xzap', amountOut: f.balances.get(buy) - before };
   };
   const r = await f.e.executeEntry(f.plan, {});
   assert.equal(r.txHash, 'SIMULATED');
-  assert.equal(f.stats().swaps, 1, 'hanya satu zap');
+  assert.equal(f.stats().swaps, 1, 'only one zap');
 });
 
 test('stale balance and no receipt amount (unknown): retries reads, then continues with what it sees', async () => {
@@ -211,11 +211,11 @@ test('stale balance and no receipt amount (unknown): retries reads, then continu
   let n = 0;
   f.e.exec.balances = async () => { n++; return new Map([[TOKEN, 5n]]); };
   const b2 = await f.e.balancesAfterSwap([TOKEN], TOKEN, 0n, 100n, { tries: 3, waitMs: 0 });
-  assert.equal(n, 3); assert.equal(b2.get(TOKEN), 100n, 'angka receipt dipakai setelah percobaan habis');
+  assert.equal(n, 3); assert.equal(b2.get(TOKEN), 100n, 'the receipt figure is used after attempts run out');
 });
 test('v3: booked from the IncreaseLiquidity event, not the planned amounts', async () => {
-  // Di v3 NPM menyetor amountDesired (rencana + ruang slippage) apa adanya, jadi posisi
-  // nyata ~1% lebih besar dari rencana. lp2 #2/#3: modal tercatat 1,2% di bawah chain.
+  // On v3 the NPM deposits amountDesired (plan + slippage room) as-is, so the real
+  // position is ~1% larger than the plan. lp2 #2/#3: capital recorded 1.2% below the chain.
   const { TOPIC } = require('../src/chain');
   const f = fixture({ venue: 'v3', complete: true });
   let booked;

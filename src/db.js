@@ -7,23 +7,23 @@ const SCHEMA = `
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 
--- Satu database dipakai SEMUA chain (wallet yang sama di Robinhood Chain dan BSC).
--- Kolom chain ('robinhood' | 'bsc' | ...) memisahkan datanya; kunci yang bisa
--- bertabrakan antar chain (alamat token, pool_ref, tokenId) memuat chain di PK.
+-- One database is shared by ALL chains (the same wallet on Robinhood Chain and BSC).
+-- The chain column ('robinhood' | 'bsc' | ...) separates the data; keys that can
+-- collide across chains (token address, pool_ref, tokenId) carry chain in the PK.
 
--- wallet yang dicopy
+-- wallets being copied
 CREATE TABLE IF NOT EXISTS targets (
   chain       TEXT NOT NULL DEFAULT 'robinhood',
   address     TEXT NOT NULL,
   label       TEXT,
   enabled     INTEGER NOT NULL DEFAULT 1,
-  rules       TEXT,                 -- JSON: override aturan per target (null = pakai default)
+  rules       TEXT,                 -- JSON: per-target rules override (null = use defaults)
   added_ts    INTEGER NOT NULL,
   notes       TEXT,
   PRIMARY KEY (chain, address)
 );
 
--- setiap aksi LP yang terdeteksi dari target
+-- every LP action detected from a target
 CREATE TABLE IF NOT EXISTS actions (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   chain         TEXT NOT NULL DEFAULT 'robinhood',
@@ -35,39 +35,39 @@ CREATE TABLE IF NOT EXISTS actions (
   venue         TEXT NOT NULL,      -- v4 | v3 | v3pool
   kind          TEXT NOT NULL,      -- mint | increase | decrease | burn | collect | transfer_in | transfer_out
   token_id      TEXT,
-  pool_ref      TEXT,               -- poolId (v4) atau alamat pool (v3)
+  pool_ref      TEXT,               -- poolId (v4) or pool address (v3)
   token0        TEXT, token1 TEXT, fee INTEGER, tick_spacing INTEGER, hooks TEXT,
   tick_lower    INTEGER, tick_upper INTEGER,
-  liquidity     TEXT,               -- delta L (positif = tambah)
+  liquidity     TEXT,               -- delta L (positive = add)
   amount0       TEXT, amount1 TEXT,
-  value_quote   REAL,               -- nilai posisi dalam aset kuotasi
+  value_quote   REAL,               -- position value in the quote asset
   quote_symbol  TEXT,
   UNIQUE(tx_hash, log_index)
 );
 CREATE INDEX IF NOT EXISTS idx_actions_ts ON actions(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_actions_target ON actions(target, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_actions_chain_ts ON actions(chain, ts DESC);
--- riwayat satu posisi target (kartu Telegram: dia masuk/tarik berapa di NFT itu)
+-- history of one target position (Telegram card: how much they entered/withdrew on that NFT)
 CREATE INDEX IF NOT EXISTS idx_actions_pos ON actions(chain, target, venue, token_id, ts);
 
--- keputusan bot atas setiap aksi (disalin / dilewat + alasannya)
+-- the bot's decision on every action (copied / skipped + its reason)
 CREATE TABLE IF NOT EXISTS decisions (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   action_id  INTEGER NOT NULL,
   ts         INTEGER NOT NULL,
   verdict    TEXT NOT NULL,        -- copy | skip | error | dry
   reason     TEXT,
-  plan       TEXT,                 -- JSON rencana eksekusi
+  plan       TEXT,                 -- JSON execution plan
   tx_hash    TEXT,
   position_id INTEGER,
   FOREIGN KEY(action_id) REFERENCES actions(id)
 );
 CREATE INDEX IF NOT EXISTS idx_dec_ts ON decisions(ts DESC);
--- handle() menanyakan "sudah diputuskan?" untuk SETIAP aksi, dan backfill menggabungkan
--- actions dengan decisions: tanpa indeks keduanya memindai seluruh tabel (O(n²) saat start).
+-- handle() asks "already decided?" for EVERY action, and backfill joins
+-- actions with decisions: without an index both scan the whole table (O(n²) at start).
 CREATE INDEX IF NOT EXISTS idx_dec_action ON decisions(action_id);
 
--- posisi milik kita
+-- our own positions
 CREATE TABLE IF NOT EXISTS positions (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   chain         TEXT NOT NULL DEFAULT 'robinhood',
@@ -78,23 +78,23 @@ CREATE TABLE IF NOT EXISTS positions (
   tick_lower    INTEGER, tick_upper INTEGER,
   liquidity     TEXT NOT NULL DEFAULT '0',
   target        TEXT,
-  mirror_of     TEXT,              -- token_id posisi target yang dicermin
+  mirror_of     TEXT,              -- token_id of the target position being mirrored
   status        TEXT NOT NULL,     -- open | closed | pending | failed
   opened_ts     INTEGER, closed_ts INTEGER,
   cost0         TEXT DEFAULT '0', cost1 TEXT DEFAULT '0',
   cost_quote    REAL DEFAULT 0,
   out0          TEXT DEFAULT '0', out1 TEXT DEFAULT '0',
   out_quote     REAL DEFAULT 0,
-  -- Memecoin yang ikut keluar saat posisi tutup dan BELUM dijual. out_quote sudah
-  -- memuat nilainya di harga tutup (left_quote); begitu terjual, out_quote dikoreksi
-  -- ke hasil jual sesungguhnya. Selama masih dipegang, ekuitas menilainya di harga kini.
+  -- Memecoin that also came out when the position closed and is NOT yet sold. out_quote already
+  -- includes its value at the close price (left_quote); once sold, out_quote is corrected
+  -- to the actual sale result. While still held, equity values it at the current price.
   left_token    TEXT,
   left_amount   TEXT DEFAULT '0',
   left_quote    REAL DEFAULT 0,
   fees_quote    REAL DEFAULT 0,
   quote_symbol  TEXT,
   tx_open       TEXT, tx_close TEXT,
-  entry_sqrt    TEXT, exit_sqrt TEXT,  -- harga pool (sqrtPriceX96) saat masuk & keluar
+  entry_sqrt    TEXT, exit_sqrt TEXT,  -- pool price (sqrtPriceX96) at entry & exit
   last_sync     INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pos_status ON positions(status);
@@ -102,7 +102,7 @@ CREATE INDEX IF NOT EXISTS idx_pos_chain_status ON positions(chain, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pos_token_chain ON positions(chain, venue, token_id) WHERE token_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_pos_mirror ON positions(mirror_of, target);
 
--- cache metadata pool
+-- pool metadata cache
 CREATE TABLE IF NOT EXISTS pools (
   chain        TEXT NOT NULL DEFAULT 'robinhood',
   pool_ref     TEXT NOT NULL,
@@ -111,8 +111,8 @@ CREATE TABLE IF NOT EXISTS pools (
   pool_addr    TEXT,
   first_block  INTEGER,
   first_ts     INTEGER,
-  -- harga lahir pool v4 dari event Initialize (blok + sqrtPriceX96): harga di blok
-  -- kejadian yang belum pernah didahului Swap. Lihat Chain.poolInitOf.
+  -- birth price of a v4 pool from the Initialize event (block + sqrtPriceX96): the price at the
+  -- event block that was never preceded by a Swap. See Chain.poolInitOf.
   init_block   INTEGER,
   init_sqrt    TEXT,
   PRIMARY KEY (chain, pool_ref)
@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS tokens (
   PRIMARY KEY (chain, address)
 );
 
--- logo token (GeckoTerminal), berkasnya di data/icons/. status: ok | none | err
+-- token logos (GeckoTerminal), files in data/icons/. status: ok | none | err
 CREATE TABLE IF NOT EXISTS icons (
   chain      TEXT NOT NULL DEFAULT 'robinhood',
   address    TEXT NOT NULL,
@@ -144,10 +144,10 @@ CREATE TABLE IF NOT EXISTS txs (
 );
 CREATE INDEX IF NOT EXISTS idx_txs_kind_ts ON txs(kind, ts);
 
--- wallet_quote: kas di wallet (USDG + ETH + WETH, USD); NULL = tidak terbaca.
--- total_quote = kas + nilai posisi + fee belum diklaim.
--- pnl_quote   = PnL kumulatif (terealisasi + belum terealisasi) — kurva pertumbuhan
---               yang tidak ikut melonjak saat dana disetor/ditarik.
+-- wallet_quote: cash in the wallet (USDG + ETH + WETH, USD); NULL = unreadable.
+-- total_quote = cash + position value + unclaimed fees.
+-- pnl_quote   = cumulative PnL (realized + unrealized) — a growth curve
+--               that does not spike when funds are deposited/withdrawn.
 CREATE TABLE IF NOT EXISTS equity (
   chain          TEXT NOT NULL DEFAULT 'robinhood',
   ts             INTEGER NOT NULL,
@@ -157,17 +157,17 @@ CREATE TABLE IF NOT EXISTS equity (
   PRIMARY KEY (chain, ts)
 );
 
--- ---- riset wallet: posisi & PnL wallet mana pun (bukan cuma milik kita) ----
--- Semua diturunkan dari chain: ModifyLiquidity + Transfer ERC20 di dalam tx yang sama,
--- lalu pokok dipisahkan dari fee memakai harga pool saat itu (dari event Swap).
+-- ---- wallet research: positions & PnL of any wallet (not just ours) ----
+-- Everything is derived from the chain: ModifyLiquidity + ERC20 Transfer inside the same tx,
+-- then principal is separated from fees using the pool price at that time (from the Swap event).
 CREATE TABLE IF NOT EXISTS wallets (
   chain          TEXT NOT NULL DEFAULT 'robinhood',
   address        TEXT NOT NULL,
   label          TEXT,
-  first_block    INTEGER,      -- awal jendela yang pernah dipindai
-  scanned_to     INTEGER,      -- pemindaian sudah sampai blok ini
+  first_block    INTEGER,      -- start of the window ever scanned
+  scanned_to     INTEGER,      -- scanning has reached this block
   last_scan_ts   INTEGER,
-  stats          TEXT,         -- JSON ringkasan (cache)
+  stats          TEXT,         -- JSON summary (cache)
   positions_n    INTEGER DEFAULT 0,
   PRIMARY KEY (chain, address)
 );
@@ -180,14 +180,14 @@ CREATE TABLE IF NOT EXISTS wpositions (
   pool_ref     TEXT,
   token0 TEXT, token1 TEXT, fee INTEGER, tick_spacing INTEGER, hooks TEXT,
   tick_lower   INTEGER, tick_upper INTEGER,
-  liquidity    TEXT DEFAULT '0',      -- L sekarang (0 = tertutup)
-  in0 TEXT DEFAULT '0',  in1 TEXT DEFAULT '0',   -- total token masuk (modal)
-  out0 TEXT DEFAULT '0', out1 TEXT DEFAULT '0',  -- total token keluar (pokok + fee)
-  fee0 TEXT DEFAULT '0', fee1 TEXT DEFAULT '0',  -- bagian fee dari yang keluar
-  live_value_q REAL DEFAULT 0,        -- nilai posisi sekarang (hanya yang masih terbuka)
-  live_fee_q   REAL DEFAULT 0,        -- fee terkumpul tapi belum diklaim
+  liquidity    TEXT DEFAULT '0',      -- current L (0 = closed)
+  in0 TEXT DEFAULT '0',  in1 TEXT DEFAULT '0',   -- total tokens in (capital)
+  out0 TEXT DEFAULT '0', out1 TEXT DEFAULT '0',  -- total tokens out (principal + fee)
+  fee0 TEXT DEFAULT '0', fee1 TEXT DEFAULT '0',  -- the fee part of what came out
+  live_value_q REAL DEFAULT 0,        -- current position value (only those still open)
+  live_fee_q   REAL DEFAULT 0,        -- fees collected but not yet claimed
   in_range     INTEGER,
-  invested_q   REAL DEFAULT 0,        -- modal dalam aset kuotasi, dinilai saat kejadian
+  invested_q   REAL DEFAULT 0,        -- capital in the quote asset, valued at the event
   returned_q   REAL DEFAULT 0,
   fees_q       REAL DEFAULT 0,
   pnl_q        REAL DEFAULT 0,
@@ -196,15 +196,15 @@ CREATE TABLE IF NOT EXISTS wpositions (
   closed_block INTEGER, closed_ts INTEGER,
   status       TEXT NOT NULL,         -- open | closed
   events_n     INTEGER DEFAULT 0,
-  incomplete   INTEGER DEFAULT 0,     -- 1 = sebagian riwayat di luar jendela pindai
-  -- Posisi tertutup yang mengembalikan token non-kuotasi: yang sudah ditukar jadi
-  -- USDG/ETH = terealisasi (hasil tukar sesungguhnya), sisanya masih dipegang wallet
-  -- dan dinilai harga sekarang = belum terealisasi. pnl_q = keduanya - modal.
-  held_tok     TEXT DEFAULT '0',      -- token non-kuotasi yang masih dipegang (mentah)
-  sold_tok     TEXT DEFAULT '0',      -- yang sudah ditukar / dikirim keluar
-  realized_q   REAL,                  -- USD yang benar-benar di tangan
-  unrealized_q REAL,                  -- nilai held_tok pada harga pool sekarang
-  tracked_to   INTEGER,               -- pelacakan penjualan sudah sampai blok ini
+  incomplete   INTEGER DEFAULT 0,     -- 1 = part of the history is outside the scan window
+  -- A closed position that returned non-quote tokens: what has been swapped into
+  -- USDG/ETH = realized (actual swap proceeds), the rest is still held by the wallet
+  -- and valued at the current price = unrealized. pnl_q = both - capital.
+  held_tok     TEXT DEFAULT '0',      -- non-quote token still held (raw)
+  sold_tok     TEXT DEFAULT '0',      -- what has been swapped / sent out
+  realized_q   REAL,                  -- USD actually in hand
+  unrealized_q REAL,                  -- value of held_tok at the current pool price
+  tracked_to   INTEGER,               -- sale tracking has reached this block
   PRIMARY KEY (chain, wallet, venue, token_id)
 );
 CREATE INDEX IF NOT EXISTS idx_wpos_wallet ON wpositions(chain, wallet, status);
@@ -220,19 +220,19 @@ CREATE TABLE IF NOT EXISTS wevents (
   log_index  INTEGER NOT NULL,
   kind       TEXT NOT NULL,          -- mint | increase | decrease | close
   liq_delta  TEXT,
-  amount0 TEXT, amount1 TEXT,        -- yang benar-benar berpindah (dari ERC20 Transfer)
-  princ0 TEXT, princ1 TEXT,          -- bagian pokok
-  fee0 TEXT, fee1 TEXT,              -- bagian fee (hanya pada penarikan)
-  sqrt_price TEXT,                   -- harga pool saat itu
+  amount0 TEXT, amount1 TEXT,        -- what actually moved (from ERC20 Transfer)
+  princ0 TEXT, princ1 TEXT,          -- the principal part
+  fee0 TEXT, fee1 TEXT,              -- the fee part (only on withdrawals)
+  sqrt_price TEXT,                   -- pool price at that time
   value_q    REAL,
   PRIMARY KEY (tx_hash, log_index)
 );
 CREATE INDEX IF NOT EXISTS idx_wev_pos ON wevents(chain, wallet, token_id, block);
 
--- Tiap tx yang MENGELUARKAN token non-kuotasi dari wallet setelah posisi ditutup:
--- berapa token yang pergi dan berapa aset kuotasi (USDG/ETH/WETH) yang masuk di tx
--- yang sama. Dibaca sekali dari receipt, lalu dialokasikan FIFO ke posisi-posisi
--- yang pernah menerima token itu (lihat proceeds.js).
+-- Every tx that TAKES non-quote tokens OUT of the wallet after a position is closed:
+-- how many tokens left and how much quote asset (USDG/ETH/WETH) came in in the same
+-- tx. Read once from the receipt, then allocated FIFO to the positions that
+-- ever received that token (see proceeds.js).
 CREATE TABLE IF NOT EXISTS wsales (
   chain      TEXT NOT NULL DEFAULT 'robinhood',
   wallet     TEXT NOT NULL,
@@ -240,17 +240,17 @@ CREATE TABLE IF NOT EXISTS wsales (
   tx_hash    TEXT NOT NULL,
   block      INTEGER NOT NULL,
   ts         INTEGER,
-  tok_out    TEXT NOT NULL,           -- token yang keluar dari wallet (mentah)
-  quote_usd  REAL,                    -- aset kuotasi yang masuk, dalam USD (NULL = tidak ada)
-  kind       TEXT,                    -- sell (ada kuotasi masuk) | send (tidak ada)
+  tok_out    TEXT NOT NULL,           -- token that left the wallet (raw)
+  quote_usd  REAL,                    -- quote asset that came in, in USD (NULL = none)
+  kind       TEXT,                    -- sell (quote came in) | send (none)
   PRIMARY KEY (chain, wallet, token, tx_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_wsales ON wsales(chain, wallet, token, block);
 
--- Token non-kuotasi yang MASUK ke wallet dari luar posisi yang kita lacak: dibeli di
--- pasar, dikirim dari wallet lain, atau sisa dari LP di luar jendela pindai. Tanpa ini
--- antrean FIFO kehabisan stok dan penjualan tumpah ke posisi yang belum ada — satu
--- penjualan murah bisa tercatat sebagai hasil posisi yang ditutup sehari sesudahnya.
+-- Non-quote tokens that CAME INTO the wallet from outside the positions we track: bought on the
+-- market, sent from another wallet, or leftovers of an LP outside the scan window. Without this the
+-- FIFO queue runs out of stock and a sale spills onto a position that does not exist yet — one
+-- cheap sale can be recorded as the proceeds of a position closed the day after.
 CREATE TABLE IF NOT EXISTS wflows (
   chain    TEXT NOT NULL DEFAULT 'robinhood',
   wallet   TEXT NOT NULL,
@@ -258,12 +258,12 @@ CREATE TABLE IF NOT EXISTS wflows (
   tx_hash  TEXT NOT NULL,
   block    INTEGER NOT NULL,
   ts       INTEGER,
-  tok_in   TEXT NOT NULL,             -- token yang masuk ke wallet di tx ini (mentah, bersih)
+  tok_in   TEXT NOT NULL,             -- token that came into the wallet in this tx (raw, net)
   PRIMARY KEY (chain, wallet, token, tx_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_wflows ON wflows(chain, wallet, token, block);
 
--- harga pool pada suatu blok, dari event Swap terdekat (mahal dicari, murah disimpan)
+-- pool price at a block, from the nearest Swap event (expensive to look up, cheap to store)
 CREATE TABLE IF NOT EXISTS wprices (
   chain      TEXT NOT NULL DEFAULT 'robinhood',
   pool_ref   TEXT NOT NULL,
@@ -272,6 +272,22 @@ CREATE TABLE IF NOT EXISTS wprices (
   src_block  INTEGER,
   PRIMARY KEY (chain, pool_ref, block)
 );
+
+-- RPC answers that can no longer change: calls tied to a single past block
+-- (receipt, block header, balance/eth_call/getLogs at a block that is already deep).
+-- Its contents may disappear at any time — at worst one more RPC call. The rules for
+-- what may enter and when it is dropped: src/rpccache.js.
+CREATE TABLE IF NOT EXISTS rpc_cache (
+  chain   TEXT NOT NULL,
+  k       TEXT NOT NULL,
+  method  TEXT NOT NULL,
+  block   INTEGER,
+  res     TEXT NOT NULL,
+  bytes   INTEGER NOT NULL,
+  ts      INTEGER NOT NULL,
+  PRIMARY KEY (chain, k)
+);
+CREATE INDEX IF NOT EXISTS idx_rpccache_ts ON rpc_cache(ts);
 
 CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT);
 
@@ -282,15 +298,15 @@ CREATE TABLE IF NOT EXISTS logs (
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts DESC);
 `;
 
-// Migrasi multi-chain untuk database yang dibuat sebelum kolom `chain` ada. Semua
-// baris lama = Robinhood Chain. Tabel yang kunci utamanya harus ikut memuat chain
-// dibangun ulang (SQLite tidak bisa mengubah PRIMARY KEY lewat ALTER TABLE); yang
-// lain cukup ADD COLUMN. Idempoten: tabel yang sudah punya kolom chain dilewati.
+// Multi-chain migration for a database created before the `chain` column existed. All
+// old rows = Robinhood Chain. Tables whose primary key must now include chain are
+// rebuilt (SQLite cannot change a PRIMARY KEY via ALTER TABLE); the
+// others just get ADD COLUMN. Idempotent: tables that already have the chain column are skipped.
 const LEGACY = 'robinhood';
 function migrateChain(db) {
   const cols = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
   const exists = (t) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t);
-  // Tabel dengan PK komposit baru: dibangun ulang dari definisi di SCHEMA.
+  // Tables with a new composite PK: rebuilt from the definition in SCHEMA.
   const rebuild = ['targets', 'pools', 'tokens', 'icons', 'equity', 'wallets', 'wpositions', 'wsales', 'wflows', 'wprices'];
   const create = (t) => {
     const m = SCHEMA.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${t} \\(([\\s\\S]*?)\\n\\);`));
@@ -309,13 +325,13 @@ function migrateChain(db) {
       db.exec('COMMIT');
     } catch (e) { db.exec('ROLLBACK'); throw new Error(`migrasi tabel ${t}: ${e.message}`); }
   }
-  // Tabel dengan PK yang sudah unik lintas chain (id autoincrement / hash tx): cukup kolom.
+  // Tables whose PK is already unique across chains (autoincrement id / tx hash): just the column.
   for (const t of ['actions', 'positions', 'txs', 'wevents']) {
     if (exists(t) && !cols(t).includes('chain')) db.exec(`ALTER TABLE ${t} ADD COLUMN chain TEXT NOT NULL DEFAULT '${LEGACY}'`);
   }
-  // Indeks unik lama positions(venue, token_id) tidak lagi berlaku lintas chain.
+  // The old unique index positions(venue, token_id) no longer applies across chains.
   db.exec('DROP INDEX IF EXISTS idx_pos_token');
-  // Kunci state yang dulu global kini per chain (engine.js sk()).
+  // State keys that used to be global are now per chain (engine.js sk()).
   if (exists('state') && !db.prepare("SELECT 1 FROM state WHERE k='schema_chain'").get()) {
     const keys = ['cursor', 'paused', 'adopt_scanned_to', 'dd_peak', 'dd_day', 'dd_tripped', 'leftovers', 'swap_seen', 'swap_tokens',
       'equity_pnl_backfill', 'capital_baseline', 'deposits_scanned_to', 'eth_usdg_pools', 'v3_factory'];
@@ -327,16 +343,16 @@ function migrateChain(db) {
 function open(dbPath) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
-  // Migrasi chain DULU (tabel lama dibangun ulang / diberi kolom), baru skema: indeks
-  // baru di SCHEMA merujuk kolom chain dan akan gagal pada tabel yang belum punya.
+  // Chain migration FIRST (old tables rebuilt / given the column), then the schema: the new
+  // indexes in SCHEMA refer to the chain column and would fail on tables that do not have it yet.
   migrateChain(db);
   db.exec(SCHEMA);
-  // CREATE TABLE IF NOT EXISTS tidak menambah kolom ke tabel yang sudah ada.
+  // CREATE TABLE IF NOT EXISTS does not add columns to an already existing table.
   const eqCols = new Set(db.prepare('PRAGMA table_info(equity)').all().map((c) => c.name));
   if (!eqCols.has('pnl_quote')) {
     db.exec('ALTER TABLE equity ADD COLUMN pnl_quote REAL');
-    // Sebelum kolom ini ada, wallet_quote selalu ditulis 0 tanpa pernah diukur —
-    // itu "tidak diketahui", bukan "kas kosong".
+    // Before this column existed, wallet_quote was always written as 0 without ever being measured —
+    // that is "unknown", not "cash empty".
     db.exec('UPDATE equity SET wallet_quote = NULL');
   }
   const posCols = new Set(db.prepare('PRAGMA table_info(positions)').all().map((c) => c.name));
@@ -345,11 +361,11 @@ function open(dbPath) {
     tx_hash TEXT PRIMARY KEY, position_id INTEGER NOT NULL, ts INTEGER NOT NULL,
     amount0 TEXT NOT NULL, amount1 TEXT NOT NULL, value_quote REAL NOT NULL
   )`);
-  // Memecoin dari fee yang sudah diklaim tapi BELUM terjual. claimed_quote sudah memuat
-  // nilainya di harga pool saat klaim (est_quote); begitu terjual, taksiran itu diganti
-  // hasil jual sesungguhnya — persis pola left_token/left_quote untuk sisa penutupan,
-  // hanya saja kolom yang dikoreksi claimed_quote (dan out_quote kalau posisinya sudah
-  // ditutup, karena markClosed melipat claimed_quote ke sana).
+  // Memecoin from fees that were claimed but NOT yet sold. claimed_quote already holds
+  // its value at the pool price at claim time (est_quote); once sold, that estimate is replaced by the
+  // actual sale result — exactly the pattern of left_token/left_quote for close leftovers,
+  // except the column that is corrected is claimed_quote (and out_quote if the position is already
+  // closed, because markClosed folds claimed_quote into it).
   db.exec(`CREATE TABLE IF NOT EXISTS fee_leftovers (
     id INTEGER PRIMARY KEY AUTOINCREMENT, chain TEXT NOT NULL, position_id INTEGER NOT NULL,
     ts INTEGER NOT NULL, token TEXT NOT NULL, amount TEXT NOT NULL, est_quote REAL NOT NULL,
@@ -360,10 +376,10 @@ function open(dbPath) {
     position_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
     min_usd REAL NOT NULL DEFAULT 5, interval_minutes INTEGER NOT NULL DEFAULT 30,
     last_check INTEGER, last_tx TEXT, last_note TEXT,
-    -- Panen fee otomatis punya dua rasa: 'compound' (fee dikembalikan jadi likuiditas
-    -- di posisi yang sama) dan 'claim' (fee ditarik ke wallet; sisi memecoin-nya dijual
-    -- ke aset kuotasi pool kalau sell_fee menyala). Baris lama = compound, satu-satunya
-    -- mode yang pernah ada sebelum kolom ini.
+    -- Automatic fee harvesting comes in two flavours: 'compound' (fees go back in as liquidity
+    -- in the same position) and 'claim' (fees are withdrawn to the wallet; the memecoin side is sold
+    -- into the pool's quote asset if sell_fee is on). Old rows = compound, the only
+    -- mode that existed before this column.
     mode TEXT NOT NULL DEFAULT 'compound', sell_fee INTEGER NOT NULL DEFAULT 1
   );
   CREATE TABLE IF NOT EXISTS compound_runs (
@@ -384,8 +400,8 @@ function open(dbPath) {
     db.exec(`ALTER TABLE positions ADD COLUMN left_amount TEXT DEFAULT '0'`);
     db.exec('ALTER TABLE positions ADD COLUMN left_quote REAL DEFAULT 0');
   }
-  // Kendali manual ("ambil alih"): waktu posisi cermin dilepas dari target. NULL =
-  // otomatis. Lihat Manual.takeover.
+  // Manual control ("take over"): the time a mirror position was released from its target. NULL =
+  // automatic. See Manual.takeover.
   if (!posCols.has('takeover_ts')) db.exec('ALTER TABLE positions ADD COLUMN takeover_ts INTEGER');
   // Data khusus venue non-EVM (JSON): rentang asli (bin DLMM / tick Orca-Raydium),
   // binStep, mint NFT posisi, dan L target sebelum aksi. tick_lower/tick_upper tetap
@@ -397,10 +413,10 @@ function open(dbPath) {
   if (!poolCols.has('init_sqrt')) {
     db.exec('ALTER TABLE pools ADD COLUMN init_block INTEGER');
     db.exec('ALTER TABLE pools ADD COLUMN init_sqrt TEXT');
-    // Sebelum ini, posisi riset yang riwayatnya tidak lengkap tetap menyimpan modal
-    // parsial (mint tanpa harga: $0) dan PnL dari modal itu — tampil "+$1.000" untuk
-    // posisi yang cuma kembali utuh. Sekarang keduanya NULL = tidak diketahui; yang
-    // harganya belum terbaca (incomplete=2) dibaca ulang pada pembaruan berikutnya.
+    // Before this, a research position with incomplete history still stored a partial
+    // capital (a mint without a price: $0) and the PnL from that capital — showing "+$1,000" for a
+    // position that merely came back whole. Now both are NULL = unknown; ones whose
+    // price has not been read yet (incomplete=2) are re-read on the next update.
     db.exec('UPDATE wpositions SET invested_q=NULL, pnl_q=NULL WHERE incomplete<>0');
   }
   const wpCols = new Set(db.prepare('PRAGMA table_info(wpositions)').all().map((c) => c.name));
@@ -434,15 +450,15 @@ class Store {
   setState(k, v) {
     this.run('INSERT INTO state(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', k, String(v));
   }
-  // `meta` hanya untuk pendengar, tidak disimpan: {quiet} = masalah yang sedang
-  // ditangani jalan cadangan (tetap tercatat, tidak didorong ke chat); {recovered} =
-  // kabar pulih yang menutup peringatan sebelumnya.
+  // `meta` is only for listeners, not stored: {quiet} = a problem being
+  // handled by the fallback path (still recorded, not pushed to the chat); {recovered} =
+  // recovery news that closes an earlier alert.
   log(level, msg, meta = null) {
     this.run('INSERT INTO logs(ts,level,msg) VALUES(?,?,?)', Date.now(), level, String(msg).slice(0, 2000));
-    // Pendengar opsional (bot Telegram) — kegagalannya tidak boleh menjatuhkan penulis log.
+    // Optional listener (Telegram bot) — its failure must not bring down the log writer.
     if (this.onLog) { try { this.onLog(level, String(msg), meta); } catch { /* abaikan */ } }
   }
-  // buang log lama supaya file tidak membengkak
+  // drop old logs so the file does not bloat
   prune(days = 30) {
     const cut = Date.now() - days * 86400_000;
     this.run('DELETE FROM logs WHERE ts < ?', cut);

@@ -1,18 +1,18 @@
 'use strict';
-// Profil per jaringan: satu-satunya tempat yang beda antar chain (alamat kontrak,
-// chain id, aset kuotasi). Konstanta level-protokol (topic event, ABI, opcode
-// UniversalRouter) tetap di chain.js — sama persis di semua deployment Uniswap
-// v3/v4 standar dan fork verbatim seperti PancakeSwap v3.
+// Per-network profile: the only place that differs between chains (contract addresses,
+// chain id, quote assets). Protocol-level constants (event topics, ABI, UniversalRouter
+// opcodes) stay in chain.js — exactly the same on every standard Uniswap
+// v3/v4 deployment and verbatim forks such as PancakeSwap v3.
 //
-// Nama slot ADDR (poolManager/posmV4/npmV3/universalRouter/dexRouter/permit2/
-// weth/usdg/native) dipertahankan sama di semua network meski asetnya beda —
-// mis. di BSC `weth` = alamat WBNB dan `usdg` = alamat USDT — supaya kode yang
-// sudah ada (`chain.ADDR.weth`, dst.) tidak perlu tahu nama aset per chain.
+// The ADDR slot names (poolManager/posmV4/npmV3/universalRouter/dexRouter/permit2/
+// weth/usdg/native) are kept the same on all networks even though the assets differ —
+// e.g. on BSC `weth` = the WBNB address and `usdg` = the USDT address — so existing code
+// (`chain.ADDR.weth`, etc.) does not need to know the asset name per chain.
 //
-// `venues`: daftar deployment v3 yang dipindai di chain ini. Robinhood Chain
-// cuma satu (Uniswap v3 fork bawaan chain itu). BSC punya dua: Uniswap v3 resmi
-// DAN PancakeSwap v3 (fork v3 dengan ABI/event identik) — keduanya dipindai
-// sebagai venue terpisah tapi lewat jalur kode v3 yang sama.
+// `venues`: the list of v3 deployments scanned on this chain. Robinhood Chain has
+// only one (that chain's built-in Uniswap v3 fork). BSC has two: official Uniswap v3
+// AND PancakeSwap v3 (a v3 fork with identical ABI/events) — both are scanned
+// as separate venues but through the same v3 code path.
 
 const NATIVE = '0x0000000000000000000000000000000000000000';
 
@@ -22,7 +22,7 @@ const ROBINHOOD = {
   chainId: 4663,
   nativeSymbol: 'ETH',
   kyberPath: 'robinhood',
-  blockMs: 101,   // ~0,1 detik per blok
+  blockMs: 101,   // ~0.1 second per block
   addr: {
     poolManager: '0x8366a39cc670b4001a1121b8f6a443a643e40951',
     posmV4: '0x58daec3116aae6d93017baaea7749052e8a04fa7',
@@ -30,7 +30,7 @@ const ROBINHOOD = {
     universalRouter: '0x8876789976decbfcbbbe364623c63652db8c0904',
     dexRouter: '0x6e2a35a7ad683cf634d91492d73bb7ff774c6919',
     permit2: '0x000000000022d473030f116ddee9f6b43ac78ba3',
-    usdg: '0x5fc5360d0400a0fd4f2af552add042d716f1d168', // USDG, 6 desimal
+    usdg: '0x5fc5360d0400a0fd4f2af552add042d716f1d168', // USDG, 6 decimals
     weth: '0x0bd7d308f8e1639fab988df18a8011f41eacad73', // WETH9
     native: NATIVE,
   },
@@ -42,16 +42,16 @@ const ROBINHOOD = {
   venues: [
     { key: 'v3', npmV3Slot: 'npmV3', factory: null },
   ],
-  nativeUsd: { mode: 'v4pool' }, // cari pool native/usdg v4 terdalam (pools.js Chain#ethUsd)
-  verified: true, // alamat diverifikasi langsung dari chain + Blockscout (lihat git log)
+  nativeUsd: { mode: 'global' }, // global spot price (Coinbase/Binance/CoinGecko median); falls back to the native/usdg v4 pools (pools.js Chain#ethUsd)
+  verified: true, // addresses verified directly from the chain + Blockscout (see git log)
   explorerApiV2: 'https://robinhoodchain.blockscout.com/api/v2',
   explorerTokenUrl: (a) => `https://robinhoodchain.blockscout.com/token/${a}?tab=holders`,
   alchemyHost: 'robinhood-mainnet.g.alchemy.com',
   explorer: 'https://robinhoodchain.blockscout.com',
-  dexscreener: 'robinhood',   // slug chain di DexScreener
-  geckoterminal: 'robinhood', // slug network di GeckoTerminal
-  gmgn: 'robinhood',          // slug chain di GMGN (gmgn.ai/<slug>/token/<alamat>) & fomo
-  uniswap: 'robinhood',       // slug chain di app.uniswap.org (?chain=<slug>)
+  dexscreener: 'robinhood',   // chain slug on DexScreener
+  geckoterminal: 'robinhood', // network slug on GeckoTerminal
+  gmgn: 'robinhood',          // chain slug on GMGN (gmgn.ai/<slug>/token/<address>) & fomo
+  uniswap: 'robinhood',       // chain slug on app.uniswap.org (?chain=<slug>)
 };
 
 const BSC = {
@@ -60,23 +60,23 @@ const BSC = {
   chainId: 56,
   nativeSymbol: 'BNB',
   kyberPath: 'bsc',
-  blockMs: 750,   // ~0,75 detik per blok (Maxwell hardfork 2025)
+  blockMs: 750,   // ~0.75 second per block (Maxwell hardfork 2025)
   addr: {
-    // Uniswap v4 di BSC
+    // Uniswap v4 on BSC
     poolManager: '0x28e2ea090877bf75740558f6bfb36a5ffee9e9df',
     posmV4: '0x7a4a5c919ae2541aed11041a1aeee68f1287f95b',
     universalRouter: '0x1906c1d672b88cd1b9ac7593301ca990f94eae07',
-    // Uniswap v3 di BSC (venue utama 'v3')
+    // Uniswap v3 on BSC (main venue 'v3')
     npmV3: '0x7b8a01b39d58278b5de7e48c8449c9f4f5170613',
-    // KyberSwap MetaAggregationRouterV2 — alamat sama di semua chain yang didukung
+    // KyberSwap MetaAggregationRouterV2 — same address on every supported chain
     dexRouter: '0x6131b5fae19ea4f9d964eac0408e4408b66337b5',
     permit2: '0x000000000022d473030f116ddee9f6b43ac78ba3',
-    // Slot generik "stablecoin kuotasi utama" / "wrapped native" — dipakai apa
-    // adanya oleh kode yang sudah ada (chain.ADDR.usdg / chain.ADDR.weth).
-    usdg: '0x55d398326f99059ff775485246999027b3197955', // USDT (BEP-20), 18 desimal
+    // Generic slots "main quote stablecoin" / "wrapped native" — used as
+    // they are by existing code (chain.ADDR.usdg / chain.ADDR.weth).
+    usdg: '0x55d398326f99059ff775485246999027b3197955', // USDT (BEP-20), 18 decimals
     weth: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c', // WBNB
     native: NATIVE,
-    // Venue kedua: PancakeSwap v3 (fork v3, factory & NPM berbeda dari Uniswap)
+    // Second venue: PancakeSwap v3 (a v3 fork, factory & NPM differ from Uniswap)
     pancakeNpmV3: '0x46a15b0b27311cedf172ab29e4f4766fbe7f4364',
     pancakeFactoryV3: '0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865',
     uniswapFactoryV3: '0xdb1d10011ad0ff90774d0c6bb92e5c5c8b4461f7',
@@ -90,19 +90,19 @@ const BSC = {
     { key: 'v3', npmV3Slot: 'npmV3', factory: 'uniswapFactoryV3' },
     { key: 'pancakev3', npmV3Slot: 'pancakeNpmV3', factory: 'pancakeFactoryV3' },
   ],
-  // Harga BNB dari pool PancakeSwap v3 USDT/WBNB terdalam (0,01% dan 0,05%), dibaca
-  // lewat slot0 + liquidity — diverifikasi 2026-09-19: token0 USDT, token1 WBNB,
-  // keduanya sepakat ±0,01%. Yang terdalam dipakai, kecuali menyimpang dari yang lain.
+  // BNB price from the deepest PancakeSwap v3 USDT/WBNB pool (0.01% and 0.05%), read
+  // via slot0 + liquidity — verified 2026-09-19: token0 USDT, token1 WBNB,
+  // both agree ±0.01%. The deepest is used, unless it deviates from the others.
   nativeUsd: { mode: 'v3pools', pools: ['0x172fcd41e0913e95784454622d1c3724f546f849', '0x36696169c63e42cd08ce11f5deebbcebae652050'] },
-  // BSC: baseFeePerGas selalu 0, jadi tip tx tipe-2 = harga gas efektif (executor.js gasFees).
+  // BSC: baseFeePerGas is always 0, so the tip of a type-2 tx = the effective gas price (executor.js gasFees).
   legacyGasPricing: true,
-  // Alamat dari dokumentasi resmi Uniswap/PancakeSwap/KyberSwap, DIVERIFIKASI
-  // on-chain 2026-09-18 lewat `node src/verify-chain.js bsc` (chain id, bytecode tiap
-  // kontrak, NPM.factory() == factory, posmV4.poolManager() == PoolManager, simbol &
-  // desimal USDT/WBNB — 23 pemeriksaan lolos). Ulangi kalau ada alamat yang diubah.
+  // Addresses from the official Uniswap/PancakeSwap/KyberSwap documentation, VERIFIED
+  // on-chain 2026-09-18 via `node src/verify-chain.js bsc` (chain id, bytecode of each
+  // contract, NPM.factory() == factory, posmV4.poolManager() == PoolManager, USDT/WBNB
+  // symbol & decimals — 23 checks passed). Repeat if any address is changed.
   verified: true,
-  // Belum ada instance Blockscout BSC yang dipasangkan proyek ini — fitur "holders"
-  // (distribusi pemegang token lewat Blockscout) belum didukung di BSC, cuma dilewati.
+  // No BSC Blockscout instance has been paired with this project yet — the "holders" feature
+  // (token holder distribution via Blockscout) is not yet supported on BSC, it is just skipped.
   explorerApiV2: null,
   explorerTokenUrl: null,
   alchemyHost: 'bnb-mainnet.g.alchemy.com',
@@ -185,7 +185,7 @@ function profile(key) {
   return p;
 }
 
-// Bangun ADDR/QUOTES/venues dari profil — dipakai oleh pools.js Chain.
+// Build ADDR/QUOTES/venues from a profile — used by pools.js Chain.
 function build(key) {
   const p = profile(key);
   const ADDR = { ...p.addr };
@@ -210,10 +210,10 @@ function build(key) {
   };
 }
 
-// Lengkapi objek chain yang bukan instance pools.js Chain (mock di uji, objek lama)
-// dengan profil Robinhood: ADDR/QUOTES/venues dan pembantu isEthLike/isV3Venue/npmFor.
-// Instance Chain sungguhan dikembalikan apa adanya. Kalau yang diberikan justru RpcPool
-// (tanda tangan lama unclaimedV4(rpc, …)), dibungkus jadi chain dengan rpc itu.
+// Complete a chain object that is not a pools.js Chain instance (a mock in tests, an old object)
+// with the Robinhood profile: ADDR/QUOTES/venues and the helpers isEthLike/isV3Venue/npmFor.
+// A real Chain instance is returned as it is. If what is passed is actually an RpcPool
+// (the old signature unclaimedV4(rpc, …)), it is wrapped into a chain with that rpc.
 function ensureChain(x) {
   if (x && x.ADDR && typeof x.isV3Venue === 'function') return x;
   const isRpc = x && typeof x.ethCallMany === 'function' && !x.ADDR;
@@ -228,8 +228,8 @@ function ensureChain(x) {
   if (target.wethSymbol === undefined) target.wethSymbol = target.QUOTES[target.ADDR.weth]?.symbol || 'WETH';
   if (typeof target.isEthLike !== 'function') target.isEthLike = (sym) => sym === target.nativeSymbol || sym === target.wethSymbol;
   if (typeof target.isV3Venue !== 'function') target.isV3Venue = (v) => target.venues.some((x) => x.key === v);
-  // Sisi aset kuotasi sebuah pasangan — fungsi murni atas QUOTES, sama persis dengan
-  // Pools.quoteSideOf. Dipakai jalur fee/sisa untuk memisahkan "uang" dari memecoin.
+  // The quote-asset side of a pair — a pure function over QUOTES, exactly the same as
+  // Pools.quoteSideOf. Used by the fee/leftover path to separate "money" from memecoin.
   if (typeof target.quoteSideOf !== 'function') {
     target.quoteSideOf = (t0, t1) => {
       const q0 = target.QUOTES[(t0 || '').toLowerCase()], q1 = target.QUOTES[(t1 || '').toLowerCase()];

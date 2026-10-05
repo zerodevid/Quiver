@@ -1,6 +1,6 @@
-# Rahasia dan state — JANGAN pernah masuk repo.
-# config.json berisi token akses dasbor dan API key RPC;
-# data/ berisi kursor blok, posisi, dan hasil riset wallet.
+# Secrets and state — NEVER commit these.
+# config.json holds the dashboard access token and RPC API keys;
+# data/ holds the block cursor, positions and wallet research results.
 config.json
 .env
 .env.*
@@ -9,7 +9,7 @@ data/
 logs/
 *.pid
 
-# Kunci privat wallet hidup di ~/.lpcopy/, di luar repo — dicantumkan sebagai jaring pengaman.
+# The wallet private key lives in ~/.lpcopy/, outside the repo — listed here as a safety net.
 key
 key.*
 *.mnemonic
@@ -19,5 +19,5 @@ node_modules/
 web/dist/
 .DS_Store
 
-# Video demo: hasil render, cache respons, model TTS, frame mentah
+# Demo video: rendered output, response cache, TTS model, raw frames
 demo/out/

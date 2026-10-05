@@ -1,10 +1,10 @@
-// Peringatan ala terminal trading: toast di dasbor, bunyi singkat, dan notifikasi
-// desktop kalau tab ini sedang tidak dilihat. Dua kejadian: target membuka posisi
-// (bot menyalin) dan posisi salinan ditutup — yang kedua selalu membawa PnL-nya,
-// dan bunyinya beda supaya tanpa melihat layar pun tahu itu buka atau tutup.
+// Trading-terminal-style alerts: a toast on the dashboard, a short sound, and a desktop
+// notification when this tab is not being looked at. Two events: a target opens a position
+// (the bot copies) and a copy position is closed — the second always carries its PnL,
+// and sounds different so you can tell open from close without looking at the screen.
 //
-// Preferensinya per browser (localStorage), bukan di config server: bunyi dan izin
-// notifikasi memang milik perangkat — laptop di meja boleh berbunyi, HP jangan.
+// Preferences are per browser (localStorage), not in the server config: sound and notification
+// permission belong to the device — a laptop on the desk may sound, a phone should not.
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button, Popover, toast } from '@heroui/react';
 import { Bell, BellOff } from 'lucide-react';
@@ -13,7 +13,7 @@ import { usd, pct, age, short } from '../fmt';
 import { useI18n, reason as reasonText, translate } from '../i18n';
 import { Toggle } from './ui';
 
-// ---- preferensi -----------------------------------------------------------
+// ---- preferences -----------------------------------------------------------
 const KEY = 'quiver.alerts';
 const DEF = { enabled: true, sound: true, desktop: false };
 const load = () => {
@@ -23,17 +23,17 @@ let prefs = load();
 const subs = new Set();
 export function setAlertPrefs(patch) {
   prefs = { ...prefs, ...patch };
-  try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch { /* mode privat: cukup di memori */ }
+  try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch { /* private mode: memory alone is enough */ }
   subs.forEach((f) => f());
 }
 export const useAlertPrefs = () => useSyncExternalStore((f) => { subs.add(f); return () => subs.delete(f); }, () => prefs);
 
-// ---- bunyi ----------------------------------------------------------------
-// Nada-nada pendek disintesis lewat WebAudio — tanpa berkas audio yang perlu diunduh.
-// Tiga suara: chime (buka: dua nada sine naik), cashout (tutup untung: tiga nada
-// triangle naik cepat, "ka-ching") dan loss (tutup rugi: dua nada rendah turun).
-// Browser baru mengizinkan audio setelah ada interaksi pengguna, jadi konteksnya
-// dibuka pada klik/ketikan pertama di halaman; sebelum itu bunyi diam-diam gagal.
+// ---- sound ----------------------------------------------------------------
+// Short tones are synthesised via WebAudio — no audio files to download.
+// Three sounds: chime (open: two rising sine tones), cashout (close in profit: three quickly
+// rising triangle tones, "ka-ching") and loss (close at a loss: two low falling tones).
+// Browsers only allow audio after a user interaction, so the context is
+// opened on the first click/keystroke on the page; before that the sound silently fails.
 let ctx = null;
 function audio() {
   if (!ctx) {
@@ -66,9 +66,9 @@ export function chime() {
   }
 }
 
-// Tutup posisi: untung = tiga nada triangle naik cepat lalu nada panjang di atas;
-// rugi = dua nada rendah menurun, lebih lambat. Timbre (triangle) beda dari chime
-// buka (sine) supaya bisa dibedakan tanpa melihat layar.
+// Close position: profit = three quickly rising triangle tones then a long tone above;
+// loss = two low falling tones, slower. The timbre (triangle) differs from the open
+// chime (sine) so they can be told apart without looking at the screen.
 export function cashout(pnl = 0) {
   const c = audio();
   if (!c) return;
@@ -89,8 +89,8 @@ export function cashout(pnl = 0) {
   }
 }
 
-// Alarm: tiga nada persegi menurun, lebih kasar dan lebih lama dari chime — untuk
-// hal yang butuh tindakan (uang tersangkut), bukan sekadar kabar.
+// Alarm: three falling square tones, harsher and longer than the chime — for
+// things that need action (stuck money), not just news.
 export function alarm() {
   const c = audio();
   if (!c) return;
@@ -108,14 +108,14 @@ export function alarm() {
   }
 }
 
-// ---- judul tab: "(3) Quiver · $1.234,56 · +$56,78" -------------------------
-// Satu tempat yang menulis document.title: judul dasar (total portofolio & PnL,
-// diperbarui App tiap poll) dan awalan jumlah peringatan yang belum dilihat selama
-// tab tidak dilihat. Kalau ditulis terpisah, angka yang berubah saat tab
-// tersembunyi menghapus awalan "(3)"-nya, atau sebaliknya.
-// Tab sempit cuma memuat belasan huruf, jadi judul yang panjang digulir pelan
-// (satu huruf tiap ~0,4 detik) seperti papan berjalan: angka dan nama merek
-// bergantian lewat. Awalan "(3)" tidak ikut bergulir.
+// ---- tab title: "(3) Quiver · $1,234.56 · +$56.78" -------------------------
+// The one place that writes document.title: the base title (portfolio total & PnL,
+// updated by App on every poll) and the prefix with the count of unseen alerts while the
+// tab is not being looked at. If written separately, a figure that changes while the tab is
+// hidden erases the "(3)" prefix, or the other way around.
+// A narrow tab only holds a dozen letters, so a long title is scrolled slowly
+// (one letter every ~0.4 seconds) like a ticker: the figure and the brand name
+// alternate past. The "(3)" prefix does not scroll.
 let unseen = 0, baseTitle = 'Quiver', shift = 0, ticker = null;
 const renderTitle = () => {
   let body = baseTitle;
@@ -125,7 +125,7 @@ const renderTitle = () => {
 export function setBaseTitle(title) {
   if (title === baseTitle) return;
   baseTitle = title;
-  // hanya bergulir kalau ada yang perlu digulir (judul polos "Quiver" diam)
+  // only scrolls if there is something to scroll (a plain "Quiver" title stays still)
   if (title.length > 12 && !ticker) {
     ticker = setInterval(() => { shift = (shift + 1) % (baseTitle.length + 3); renderTitle(); }, 400);
   } else if (title.length <= 12 && ticker) { clearInterval(ticker); ticker = null; shift = 0; }
@@ -145,19 +145,19 @@ if (typeof document !== 'undefined') {
 
 export const canDesktop = () => typeof Notification !== 'undefined' && window.isSecureContext;
 
-// ---- menampilkan satu kelompok peringatan ----------------------------------
+// ---- showing a group of alerts ----------------------------------------------
 const who = (it) => it.targetLabel || short(it.target);
 const pairOf = (it) => `${it.symbol0 || short(it.token0)}/${it.symbol1 || short(it.token1)}`;
 const titleOf = (it) => (it.kind === 'close' ? closeTitle(it)
   : translate(it.adding ? '{who} menambah likuiditas {pair}' : '{who} membuka posisi {pair}', { who: who(it), pair: pairOf(it) }));
-// Judul tutup langsung memuat PnL-nya: "PEPE/USDG ditutup · +$12,34 (+5,6%)".
+// The close title carries its PnL directly: "PEPE/USDG closed · +$12.34 (+5.6%)".
 const signed = (v) => (v >= 0 ? '+' : '') + usd(v);
-// Hasil = modal setelah slippage (selisihnya cuma gas) bukan untung maupun rugi;
-// minus karena slippage tetap rugi.
-const hasilBersih = (it) => (it.pnlUsd || 0) - (it.slipUsd || 0);
-const breakEven = (it) => Math.abs(hasilBersih(it)) < 0.01;
+// Proceeds = capital after slippage (the difference is only gas) is neither profit nor loss;
+// a minus because of slippage is still a loss.
+const netResult = (it) => (it.pnlUsd || 0) - (it.slipUsd || 0);
+const breakEven = (it) => Math.abs(netResult(it)) < 0.01;
 const closeTitle = (it) => (breakEven(it) ? translate('{pair} ditutup · impas', { pair: pairOf(it) })
-  : translate(hasilBersih(it) >= 0 ? '{pair} ditutup · untung {pnl}' : '{pair} ditutup · rugi {pnl}',
+  : translate(netResult(it) >= 0 ? '{pair} ditutup · untung {pnl}' : '{pair} ditutup · rugi {pnl}',
     { pair: pairOf(it), pnl: `${signed(it.pnlUsd)}${it.pnlPct != null ? ` (${pct(it.pnlPct)})` : ''}` }));
 const closeDesc = (it) => [
   translate('hasil {out} · modal {cost}', { out: usd(it.outUsd), cost: usd(it.costUsd) }),
@@ -165,8 +165,8 @@ const closeDesc = (it) => [
   it.mirrored ? translate('ikut target keluar{who}', { who: it.target ? ` (${who(it)})` : '' }) : translate('keluar mandiri / manual'),
 ].filter(Boolean).join(' · ');
 
-// Posisi yang ditutup manual dari dasbor sudah diberi toast oleh alur tutupnya
-// sendiri; umpan tidak perlu mengulanginya beberapa detik kemudian.
+// A position closed manually from the dashboard was already given a toast by its own close
+// flow; the feed does not need to repeat it a few seconds later.
 const mutedClose = new Set();
 export function muteClose(positionId) { mutedClose.add(Number(positionId)); }
 const verdictOf = (it) => (
@@ -189,7 +189,7 @@ function announce(all, { sound, desktop, preview = false }) {
   const opens = items.filter((it) => it.kind !== 'close');
   const closes = items.filter((it) => it.kind === 'close');
   if (sound) {
-    // Buka dan tutup dalam satu putaran: bunyikan berurutan, bukan tumpang tindih.
+    // Open and close in one round: sound them in sequence, not overlapping.
     if (opens.length) chime();
     if (closes.length) {
       const net = closes.reduce((a, it) => a + (it.pnlUsd || 0), 0);
@@ -197,7 +197,7 @@ function announce(all, { sound, desktop, preview = false }) {
     }
   }
   bumpTitle(items.length);
-  // Banjir aksi (mis. satu target membuka banyak posisi sekaligus) jadi satu ringkasan.
+  // A flood of actions (e.g. one target opening many positions at once) becomes one summary.
   if (opens.length > 3) {
     toast(translate('{n} posisi baru dari target', { n: opens.length }), {
       variant: 'accent', timeout: 10000,
@@ -219,7 +219,7 @@ function announce(all, { sound, desktop, preview = false }) {
     const close = it.kind === 'close';
     let key = null;
     key = toast(titleOf(it), {
-      variant: close ? (breakEven(it) ? 'default' : hasilBersih(it) >= 0 ? 'success' : 'danger') : 'accent',
+      variant: close ? (breakEven(it) ? 'default' : netResult(it) >= 0 ? 'success' : 'danger') : 'accent',
       timeout: close ? 15000 : 10000,
       description: close ? closeDesc(it) : descOf(it),
       actionProps: go ? { children: translate('Lihat'), onPress: () => { go(); if (key) toast.close(key); } } : undefined,
@@ -239,14 +239,14 @@ function announce(all, { sound, desktop, preview = false }) {
   }
 }
 
-// ---- poller: dipasang SEKALI di App --------------------------------------
-// Tetap berjalan saat tab tersembunyi (lebih jarang) — justru saat itulah bunyi dan
-// notifikasi desktop berguna. Usai dimatikan lalu dinyalakan lagi, titik awalnya
-// diambil ulang supaya aksi selama mati tidak dibunyikan belakangan.
+// ---- poller: mounted ONCE in App --------------------------------------
+// Keeps running while the tab is hidden (less often) — that is exactly when sound and
+// desktop notifications are useful. After being switched off then on again, the starting point
+// is fetched again so actions during the off period are not sounded later.
 export function useTargetAlerts() {
   const p = useAlertPrefs();
-  const last = useRef(null);          // id aksi terakhir yang sudah diumumkan
-  const lastClosed = useRef(0);       // waktu tutup terakhir yang sudah diumumkan
+  const last = useRef(null);          // id of the last action already announced
+  const lastClosed = useRef(0);       // the last close time already announced
   useEffect(() => {
     if (!p.enabled) return undefined;
     last.current = null;
@@ -259,7 +259,7 @@ export function useTargetAlerts() {
         if (!first && r.items?.length) announce(r.items, prefs);
         last.current = Math.max(last.current ?? 0, r.lastId ?? 0);
         lastClosed.current = Math.max(lastClosed.current, r.lastClosed ?? 0, ...(r.items || []).map((it) => (it.kind === 'close' ? it.ts : 0)));
-      } catch { /* jaringan putus: coba lagi di putaran berikutnya */ }
+      } catch { /* network down: retry on the next round */ }
       finally { if (alive) timer = setTimeout(tick, document.hidden ? 8000 : 4000); }
     };
     tick();
@@ -267,7 +267,7 @@ export function useTargetAlerts() {
   }, [p.enabled]);
 }
 
-// ---- tombol lonceng + pengaturannya ----------------------------------------
+// ---- bell button + its settings ----------------------------------------
 export function AlertBell({ placement = 'top', variant = 'outline', iconClass = 'size-3.5' }) {
   const { t } = useI18n();
   const p = useAlertPrefs();
@@ -283,13 +283,13 @@ export function AlertBell({ placement = 'top', variant = 'outline', iconClass = 
   const desktopHint = perm === 'unsupported' ? 'Butuh dasbor lewat HTTPS atau localhost.'
     : perm === 'denied' ? 'Diblokir browser — izinkan notifikasi dari pengaturan situs.'
       : 'Muncul saat tab ini sedang tidak dibuka.';
-  // Contoh peringatan, per jenis, supaya bunyi dan bentuk toast tiap kejadian bisa
-  // dicoba sendiri-sendiri: buka (chime), tutup untung dan tutup rugi (cashout).
-  const CONTOH = { target: '0x0000000000000000000000000000000000000000', targetLabel: t('Contoh target'), symbol0: 'PEPE', symbol1: 'USDG', venue: 'v4', fee: 10000 };
-  const sample = (jenis) => announce([
-    jenis === 'open' ? { ...CONTOH, kind: 'open', id: 0, valueUsd: 1250, verdict: null }
-      : jenis === 'profit' ? { ...CONTOH, kind: 'close', id: 'c0', mirrored: true, costUsd: 1250, outUsd: 1318.75, pnlUsd: 68.75, pnlPct: 5.5, ageHours: 6.2 }
-        : { ...CONTOH, kind: 'close', id: 'c1', mirrored: false, costUsd: 1250, outUsd: 1102.5, pnlUsd: -147.5, pnlPct: -11.8, ageHours: 0.7 },
+  // Sample alerts, per kind, so the sound and toast shape of each event can be
+  // tried individually: open (chime), close in profit and close at a loss (cashout).
+  const EXAMPLE = { target: '0x0000000000000000000000000000000000000000', targetLabel: t('Contoh target'), symbol0: 'PEPE', symbol1: 'USDG', venue: 'v4', fee: 10000 };
+  const sample = (kindName) => announce([
+    kindName === 'open' ? { ...EXAMPLE, kind: 'open', id: 0, valueUsd: 1250, verdict: null }
+      : kindName === 'profit' ? { ...EXAMPLE, kind: 'close', id: 'c0', mirrored: true, costUsd: 1250, outUsd: 1318.75, pnlUsd: 68.75, pnlPct: 5.5, ageHours: 6.2 }
+        : { ...EXAMPLE, kind: 'close', id: 'c1', mirrored: false, costUsd: 1250, outUsd: 1102.5, pnlUsd: -147.5, pnlPct: -11.8, ageHours: 0.7 },
   ], { sound: true, desktop: false, preview: true });
   const Icon = p.enabled ? Bell : BellOff;
   return (

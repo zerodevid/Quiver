@@ -11,9 +11,11 @@ const { scoutWallet } = require('./scout');
 const { Telegram } = require('./telegram');
 const { loadDotEnv, applyEnv, defaultEnvPath, writeCfg } = require('./env');
 const { normalizeCfg, chainView, enabledChains, PRIMARY } = require('./multichain');
+const { setupNeeded, runSetup } = require('./setup');
+const { applyPendingRestore } = require('./backup');
 const { NETWORKS, isSolana, normAddr, addrHint } = require('./networks');
-// Mesin Solana dimuat hanya kalau chain Solana aktif: SDK-nya (Meteora/Orca/Raydium)
-// berat dan tidak perlu ikut dimuat instance yang cuma memakai EVM.
+// The Solana engine is loaded only when a Solana chain is enabled: its SDKs (Meteora/Orca/
+// Raydium) are heavy and an EVM-only instance does not need them.
 const solanaStack = () => ({
   SolanaRpc: require('./solana/rpc').SolanaRpc,
   SolanaChain: require('./solana/chain').SolanaChain,
@@ -21,7 +23,7 @@ const solanaStack = () => ({
 });
 
 const ROOT = path.join(__dirname, '..');
-// .env dimuat PALING AWAL: ia juga boleh berisi LPCOPY_CONFIG.
+// .env is loaded FIRST: it may also contain LPCOPY_CONFIG.
 let DOTENV;
 try { DOTENV = loadDotEnv(defaultEnvPath(ROOT)); }
 catch (e) { console.error(`.env: ${e.message}`); process.exit(1); }
@@ -32,26 +34,50 @@ function loadCfg() {
   cfg.db = cfg.db || {}; cfg.db.path = path.isAbsolute(cfg.db.path || '') ? cfg.db.path : path.join(ROOT, cfg.db.path || 'data/lpcopy.db');
   return cfg;
 }
+// Single-instance lock: the pid of another Quiver process that is still alive, or 0.
+const PID_FILE = path.join(ROOT, 'data', 'lpcopy.pid');
+function otherInstanceAlive() {
+  if (!fs.existsSync(PID_FILE)) return 0;
+  const pid = Number(fs.readFileSync(PID_FILE, 'utf8').trim());
+  if (!pid || pid === process.pid) return 0;
+  try { process.kill(pid, 0); return pid; } catch { return 0; }
+}
 const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
-// Label singkat chain di depan baris log, supaya log dua mesin di satu proses terbaca.
+// Short chain label before the log line, so logs of several engines in one process are readable.
 const TAG = { robinhood: 'RH', bsc: 'BSC', solana: 'SOL' };
 const tagOf = (key) => TAG[key] || key.toUpperCase().slice(0, 4);
 
 async function main() {
+  // Initial setup. Without config.json nothing can be started, so the wizard comes
+  // first (a small server on the same port), then the normal boot — in the same process,
+  // without a restart. An existing config never triggers this by itself; repeat
+  // with `lp setup` or LPCOPY_SETUP=1.
+  if (setupNeeded({ cfgPath: CFG_PATH, cmd: process.argv[2] })) {
+    const requested = process.argv[2] === 'setup' || process.env.LPCOPY_SETUP === '1';
+    await runSetup({ root: ROOT, cfgPath: CFG_PATH, envPath: defaultEnvPath(ROOT), requested, log: console.log });
+    try { DOTENV = loadDotEnv(defaultEnvPath(ROOT)); } catch (e) { console.error(`.env: ${e.message}`); process.exit(1); }
+  }
+  // Restore from a backup (Settings → Backup): config & database are swapped here,
+  // before anything opens them. Only by the bot process itself, not CLI commands
+  // (`lp scout` etc.) that can run alongside a live bot.
+  if ((process.argv[2] || 'run') === 'run' && !otherInstanceAlive()) {
+    applyPendingRestore(CFG_PATH, console.log);
+    applyPendingRestore(loadCfg().db.path, console.log);
+  }
   const cfg = loadCfg();
-  // Bentuk multi-chain (chains.<nama>.*). Config lama dinormalkan di memori; ditulis
-  // balik ke disk supaya bentuk barunya terlihat & bisa disunting (writeCfg menjaga
-  // rahasia dari .env tidak ikut tertulis).
+  // Multi-chain shape (chains.<name>.*). An old config is normalised in memory; written
+  // back to disk so the new shape is visible & editable (writeCfg keeps
+  // secrets from .env from being written).
   const normNotes = normalizeCfg(cfg);
   const envMeta = applyEnv(cfg);
   const cmd = process.argv[2] || 'run';
   const store = new Store(cfg.db.path);
   const logFile = path.join(ROOT, 'logs', 'lpcopy.log');
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
-  // Di bawah pm2 stdout sudah ditulis ke logs/<nama>.log (ecosystem.config.cjs) — untuk
-  // instance "lpcopy" itu berkas yang SAMA, jadi setiap baris dulu tercatat dua kali dan
-  // berkasnya tumbuh tanpa batas. Di bawah pm2 cukup stdout (rotasi: pm2-logrotate).
-  // Tanpa pm2 (npm start) tetap ditulis ke berkas, diputar di 20 MB.
+  // Under pm2 stdout is already written to logs/<name>.log (ecosystem.config.cjs) — for the
+  // "lpcopy" instance that is the SAME file, so every line used to be recorded twice and the
+  // file grew without bound. Under pm2 stdout is enough (rotation: pm2-logrotate).
+  // Without pm2 (npm start) it is still written to a file, rotated at 20 MB.
   const underPm2 = process.env.pm_id !== undefined;
   const LOG_MAX = 20 * 1024 * 1024;
   let logBytes = (() => { try { return fs.statSync(logFile).size; } catch { return 0; } })();
@@ -66,7 +92,7 @@ async function main() {
     } catch { /* abaikan */ }
   };
   const logFor = (key) => (msg) => log(`[${tagOf(key)}] ${msg}`);
-  // Hanya NAMA variabel yang dicatat — nilainya tidak pernah masuk log.
+  // Only the variable NAMES are recorded — their values never enter the log.
   if (DOTENV.file) {
     const ext = DOTENV.external.length ? ` · ${DOTENV.external.join(', ')} memakai nilai dari luar .env` : '';
     log(`.env dimuat: ${DOTENV.keys.length ? DOTENV.keys.join(', ') : 'belum ada yang diisi'}${ext}`);
@@ -79,8 +105,8 @@ async function main() {
     catch (e) { log(`config: gagal menyimpan bentuk baru (${e.message}) — dipakai di memori saja`); }
   }
 
-  // Satu set {rpc, chain, engine} per chain yang aktif. Semua berbagi Store (satu
-  // database, kolom chain memisahkan datanya) dan kunci wallet yang sama.
+  // One {rpc, chain, engine} set per active chain. All share the Store (one
+  // database, the chain column separates its data) and the same wallet key.
   const keys = enabledChains(cfg);
   if (!keys.length) { console.error('tidak ada chain yang aktif di config (chains.<nama>.enabled)'); process.exit(1); }
   const primaryKey = keys.includes(PRIMARY) ? PRIMARY : keys[0];
@@ -99,11 +125,14 @@ async function main() {
       rpc = new RpcPool(view.chain.endpoints, clog, {
         max_inflight: view.chain.max_inflight || 3,
         dns_over_https: view.chain.dns_over_https !== false,
+        // Answers that are already final (past blocks) are stored in the same database —
+        // the limits & depth can be tuned via chains.<name>.chain.cache.
+        cache: { ...(view.chain.cache || {}), store, chain: key },
       });
       chain = new Chain(rpc, store, clog, key);
     }
     nets[key] = { key, label: chain.label, cfg: view, rpc, chain, log: clog };
-    // seed target dari config (hanya kalau belum ada). Alamat Solana peka huruf.
+    // seed targets from the config (only if not present yet). Solana addresses are case-sensitive.
     for (const t of view.targets || []) {
       const a = normAddr(key, t.address);
       if (!a) { clog(`target ${t.address} dilewati: bukan ${addrHint(key)}`); continue; }
@@ -114,7 +143,7 @@ async function main() {
   }
   if (!nets[primaryKey]) { console.error(`chain utama ${primaryKey} tidak bisa dinyalakan (tidak ada RPC?)`); process.exit(1); }
 
-  // ---- perintah CLI (memakai chain lewat --chain=<nama>, bawaan chain utama) ----
+  // ---- CLI commands (using a chain via --chain=<name>, default the main chain) ----
   const cliChain = (process.argv.find((a) => a.startsWith('--chain=')) || '').slice(8) || primaryKey;
   const argv = process.argv.filter((a) => !a.startsWith('--chain='));
   if (cmd === 'scout') {
@@ -161,17 +190,12 @@ async function main() {
     return process.exit(0);
   }
 
-  // ---- mode jalan --------------------------------------------------------
-  // Kunci satu instance: dua proses berbagi DB yang sama akan saling menimpa kursor.
-  const pidFile = path.join(ROOT, 'data', 'lpcopy.pid');
-  if (fs.existsSync(pidFile)) {
-    const old = Number(fs.readFileSync(pidFile, 'utf8').trim());
-    let alive = false;
-    try { process.kill(old, 0); alive = true; } catch { alive = false; }
-    if (alive) { console.error(`Quiver sudah jalan (pid ${old}). Hentikan dulu: kill ${old}`); process.exit(1); }
-  }
-  fs.writeFileSync(pidFile, String(process.pid));
-  const cleanup = () => { try { fs.unlinkSync(pidFile); } catch { /* sudah hilang */ } };
+  // ---- run mode --------------------------------------------------------
+  // Single-instance lock: two processes sharing the same DB would overwrite each other's cursor.
+  const old = otherInstanceAlive();
+  if (old) { console.error(`Quiver sudah jalan (pid ${old}). Hentikan dulu: kill ${old}`); process.exit(1); }
+  fs.writeFileSync(PID_FILE, String(process.pid));
+  const cleanup = () => { try { fs.unlinkSync(PID_FILE); } catch { /* already gone */ } };
   process.on('exit', cleanup);
 
   for (const net of Object.values(nets)) {
@@ -180,12 +204,12 @@ async function main() {
   }
   const engines = Object.values(nets).map((n) => n.engine);
 
-  // Berhenti dengan tertib. pm2 restart (setiap deploy) mengirim SIGINT; dulu proses
-  // langsung keluar — entry yang sudah zap tapi belum mint meninggalkan token telanjang,
-  // tx keluar yang belum dibukukan menunggu sinkron berikutnya. Sekarang tidak ada
-  // pekerjaan baru yang dimulai, dan pekerjaan yang sedang jalan ditunggu (maks 100 dtk;
-  // kill_timeout pm2 di ecosystem.config.cjs 120 dtk). Sinyal kedua = keluar paksa.
-  // (Didaftarkan sebelum init: backfill & sinkron awal juga bisa mengirim transaksi.)
+  // Stop in an orderly way. pm2 restart (every deploy) sends SIGINT; the process used to
+  // exit right away — an entry that had zapped but not minted left a naked token,
+  // an exit tx not yet booked waited for the next sync. Now no new
+  // work is started, and work in progress is waited for (max 100 s;
+  // pm2's kill_timeout in ecosystem.config.cjs is 120 s). A second signal = forced exit.
+  // (Registered before init: backfill & the initial sync can also send transactions.)
   const timers = [];
   let stopping = false;
   const shutdown = async (sig) => {
@@ -202,24 +226,24 @@ async function main() {
   };
   process.on('SIGINT', () => { shutdown('SIGINT'); });
   process.on('SIGTERM', () => { shutdown('SIGTERM'); });
-  // Node mematikan proses pada promise rejection yang tak tertangani — satu janji "lepas"
-  // yang gagal akan membunuh bot seketika, di tengah zap atau mint, tanpa berhenti tertib.
-  // Dicatat saja; alur yang benar-benar penting punya penanganannya sendiri.
+  // Node kills the process on an unhandled promise rejection — a single "loose" promise
+  // that fails would kill the bot instantly, in the middle of a zap or mint, without stopping in an orderly way.
+  // Just recorded; flows that truly matter have their own handling.
   process.on('unhandledRejection', (e) => {
     log(`PERINGATAN: promise tak tertangani — ${e?.stack || e}`);
     try { store.log('error', `promise tak tertangani: ${String(e?.message || e).slice(0, 300)}`); } catch { /* abaikan */ }
   });
-  // Galat sinkron tak tertangkap: state proses tidak lagi bisa dipercaya — berhenti tertib
-  // (menunggu transaksi berjalan), pm2 menyalakan ulang.
+  // An uncaught synchronous error: the process state can no longer be trusted — stop in an orderly way
+  // (waiting for running transactions), pm2 restarts it.
   process.on('uncaughtException', (e) => {
     log(`GALAT TAK TERTANGKAP: ${e?.stack || e}`);
     try { store.log('error', `galat tak tertangkap: ${String(e?.message || e).slice(0, 300)}`); } catch { /* abaikan */ }
     shutdown('uncaughtException');
   });
 
-  // Satu server API per chain (tidak listen sendiri) + satu pintu depan yang memilih
-  // chain dari ?chain= / cookie lpcopy_chain, bawaan chain utama. Bot Telegram memakai
-  // pintu API yang sama lewat servers[<chain>].api.
+  // One API server per chain (does not listen by itself) + one front door that picks the
+  // chain from ?chain= / the lpcopy_chain cookie, defaulting to the main chain. The Telegram bot uses the
+  // same API door via servers[<chain>].api.
   const servers = {};
   const serverFor = (key) => servers[key] || servers[primaryKey];
   const telegram = new Telegram({
@@ -230,8 +254,8 @@ async function main() {
     portfolioCard: (opts, chainKey) => serverFor(chainKey).portfolioCard(opts),
   });
 
-  // Server dinyalakan LEBIH DULU: inisialisasi bisa memakan puluhan detik kalau RPC
-  // sedang lambat, dan dashboard harus tetap bisa dibuka selama pemanasan.
+  // The server is started FIRST: initialisation can take tens of seconds if the RPC
+  // is slow, and the dashboard must stay openable during warm-up.
   for (const net of Object.values(nets)) {
     servers[net.key] = createServer({ engine: net.engine, store, cfg: net.cfg, cfgPath: CFG_PATH, chain: net.chain, rpc: net.rpc, log: net.log, telegram, nets });
   }
@@ -258,15 +282,15 @@ async function main() {
 
   telegram.start().catch((e) => log(`telegram: ${e.message}`));
 
-  // Mesin dinyalakan bersamaan — tiap chain punya kolam RPC sendiri, dan pemanasan
-  // chain yang RPC-nya lambat tidak boleh menahan chain lain. Masing-masing gagal
-  // sendiri-sendiri tanpa menjatuhkan yang lain.
+  // The engines are started together — each chain has its own RPC pool, and warming up a
+  // chain whose RPC is slow must not hold up the other chains. Each fails
+  // on its own without bringing down the others.
   await Promise.all(Object.values(nets).map(async (net) => {
     const { engine, cfg: view, log: clog } = net;
     clog('menyiapkan mesin…');
-    // init() gagal (RPC chain itu sedang tumbang) tidak boleh menjatuhkan chain lain,
-    // dan tick TIDAK boleh jalan sebelum kursor terbaca — kursor 0 berarti memindai
-    // dari genesis. Dicoba lagi tiap menit sampai berhasil.
+    // init() failing (that chain's RPC is down) must not bring down other chains,
+    // and the tick must NOT run before the cursor is read — a cursor of 0 means scanning
+    // from genesis. Retried every minute until it succeeds.
     net.ready = false;
     const boot = async () => {
       try {
@@ -289,12 +313,18 @@ async function main() {
       setInterval(when(() => engine.tick(), 'tick'), pollMs),
       setInterval(when(() => engine.syncPositions(), 'sync'), syncMs),
       setInterval(when(() => engine.snapshotEquity(), 'equity'), eqMs),
-      // Memecoin sisa yang ditolak dijual diburu terus: tiap detik dilihat apakah
-      // jadwalnya (aturan `leftover_retry_sec`) sudah tiba; kalau ya, dikutip ulang.
+      // Leftover memecoins whose sale was rejected are pursued continuously: every second we check whether
+      // the schedule (the `leftover_retry_sec` rule) has arrived; if so, it is re-quoted.
       setInterval(when(() => engine.retryLeftovers(), 'jual sisa'), 1000),
     );
   }));
-  timers.push(setInterval(() => store.prune(30), 3600_000));
+  timers.push(setInterval(() => {
+    store.prune(30);
+    // RPC cache: drop expired entries and those past the size limit.
+    for (const net of Object.values(nets)) {
+      try { net.rpc.cache?.sweep(); } catch (e) { net.log(`cache rpc: ${e.message}`); }
+    }
+  }, 3600_000));
 }
 
 main().catch((e) => { console.error('fatal:', e); process.exit(1); });

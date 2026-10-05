@@ -9,7 +9,7 @@ import { useI18n } from '../i18n';
 import { isAddr, canonAddr } from '../chain';
 
 
-// Halaman riset: cari wallet mana pun. #wallet/0x… langsung membuka alamat itu.
+// Research page: look up any wallet. #wallet/0x… opens that address directly.
 export default function WalletPage({ param }) {
   const { t } = useI18n();
   const initial = param && isAddr(canonAddr(param)) ? canonAddr(param) : null;
@@ -24,22 +24,22 @@ export default function WalletPage({ param }) {
   const open = (a = canonAddr(addr)) => {
     if (!isAddr(a)) return;
     setAddr(a); setCurrent(a);
-    history.replaceState(null, '', '#wallet/' + a);   // bisa di-bookmark / dibagikan
+    history.replaceState(null, '', '#wallet/' + a);   // can be bookmarked / shared
   };
 
   return (
     <>
       <PageHeader group="Riset" title="Wallet"
         desc="PnL, fee, gaya ber-LP, dan seluruh riwayat posisi wallet mana pun — dihitung langsung dari chain. Klik baris posisi untuk melihat tiap kejadian on-chain-nya." />
-      {/* Selebar alamat yang diketik, bukan selebar halaman: kotak isian sepanjang kartu
-          di bawahnya terbaca seperti ruang kosong. */}
+      {/* As wide as the typed address, not the page: a field as long as the card
+          below reads like empty space. */}
       <form className="mb-4 flex max-w-2xl items-start gap-2" onSubmit={(e) => { e.preventDefault(); open(); }}>
         <Text className="min-w-0 flex-1" aria="Alamat wallet" mono placeholder="0x… alamat wallet" value={addr} onChange={setAddr}
           isInvalid={addr !== '' && !valid} error="Alamat harus 0x diikuti 40 karakter hex." />
         <Button type="submit" isDisabled={!valid}><Search className="size-4" />{t('Buka')}</Button>
       </form>
-      {/* Wallet yang sedang dibuka: alamat penuh + tombol ke situs luar, supaya riset
-          di sini bisa langsung diadu dengan DeBank/LPAgent/penjelajah blok. */}
+      {/* The wallet being opened: full address + buttons to outside sites, so research
+          here can be checked right away against DeBank/LPAgent/the block explorer. */}
       {current && (
         <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
           <span className="mono break-all text-sm text-muted">{current}</span>
@@ -53,9 +53,9 @@ export default function WalletPage({ param }) {
             <DataTable label="Pernah dipindai" rows={recent} rowKey={(w) => w.address} searchable
               defaultSort={{ column: 'pnl', direction: 'descending' }}
               columns={[
-                // Nama + alamat jadi satu tombol; penanda target dan logo situs luar berdiri
-                // di sampingnya dengan jarak sendiri — dulu tumpukan logo mengalir inline di
-                // belakang tombol sehingga menempel ke chip dan melebarkan kolom.
+                // Name + address become a single button; the target marker and the external site logo stand
+                // next to it with their own spacing — previously the stack of logos flowed inline
+                // behind the button so it stuck to the chip and widened the column.
                 { key: 'a', label: 'Wallet', sort: (w) => w.label || w.address, search: (w) => `${w.label || ''} ${w.address}`, render: (w) => (
                   <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                     <button type="button" onClick={() => open(w.address)} className="group min-w-0 max-w-56 text-start sm:w-56 sm:shrink-0" title={w.address}>

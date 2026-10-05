@@ -1,14 +1,14 @@
-// Lapisan sensor untuk rekaman demo Quiver.
+// Redaction layer for the Quiver demo recording.
 //
-// 1. Data: setiap respons /api/* ditulis ulang SEBELUM sampai ke browser —
-//    alamat wallet target / wallet riset / wallet bot diganti alamat palsu,
-//    label target diganti "Trader A/B/C…", catatan target (notes teks) dikosongkan. Karena yang
-//    asli tidak pernah masuk DOM, blur tidak bisa "dibalik" untuk membongkarnya.
-// 2. Keamanan: semua request non-GET ke /api diblokir — rekaman tidak bisa
-//    menutup posisi, klaim fee, atau menyalakan LIVE di bot produksi.
-// 3. Visual: alamat (0x…) dan label samaran diberi blur (lihat CENSOR_CSS).
-// 4. Audit: leakCheck() memindai seluruh HTML (teks + atribut) dari halaman
-//    untuk alamat/label asli; recorder berhenti kalau ada yang lolos.
+// 1. Data: every /api/* response is rewritten BEFORE it reaches the browser —
+//    target wallet / research wallet / bot wallet addresses are replaced with fake addresses,
+//    target labels are replaced with "Trader A/B/C…", target notes (text) are emptied. Because the
+//    real ones never enter the DOM, the blur cannot be "reversed" to uncover them.
+// 2. Safety: all non-GET requests to /api are blocked — the recording cannot
+//    close positions, claim fees, or switch on LIVE on the production bot.
+// 3. Visual: addresses (0x…) and pseudonymous labels get a blur (see CENSOR_CSS).
+// 4. Audit: leakCheck() scans the whole HTML (text + attributes) of the page
+//    for real addresses/labels; the recorder stops if any slipped through.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -39,7 +39,7 @@ export async function buildMask() {
   const [tg, ws, ov] = await Promise.all([api('/api/targets'), api('/api/wallets'), api('/api/overview')]);
   const targets = tg.targets || [];
   const addrs = new Set();
-  const labels = new Map();   // label asli -> samaran
+  const labels = new Map();   // real label -> pseudonym
   targets.forEach((t, i) => {
     addrs.add(t.address.toLowerCase());
     if (t.label) labels.set(t.label, 'Trader ' + String.fromCharCode(65 + i));
@@ -49,18 +49,18 @@ export async function buildMask() {
     addrs.add(w.address.toLowerCase());
     if (w.label && !labels.has(w.label)) labels.set(w.label, 'Wallet ' + String.fromCharCode(65 + n++));
   }
-  // wallet bot sendiri juga disamarkan — tidak diminta, tapi murah dan lebih aman
+  // the bot's own wallet is also disguised — not requested, but cheap and safer
   const own = JSON.stringify(ov.mode || {}).match(/0x[0-9a-fA-F]{40}/g) || [];
   own.forEach((a) => addrs.add(a.toLowerCase()));
 
   const toFake = new Map([...addrs].map((a) => [a, fakeAddr(a)]));
   const toReal = new Map([...toFake].map(([r, f]) => [f, r]));
-  // label pendek (≤3 huruf) terlalu gampang menabrak simbol token; lewati di penggantian
+  // short labels (≤3 letters) collide too easily with token symbols; skip them in the replacement
   const labelList = [...labels].filter(([l]) => l.length >= 4).sort((a, b) => b[0].length - a[0].length);
   const labelRe = labelList.length ? new RegExp(labelList.map(([l]) => esc(JSON.stringify(l).slice(1, -1))).join('|'), 'g') : null;
 
   const addrRe = /0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g;
-  // bentuk pendek yang mungkin dirakit server di pesan log: 0xabcd…1234 / 0xabcdef...1234
+  // short forms the server may assemble in log messages: 0xabcd…1234 / 0xabcdef...1234
   const shortRe = /0x([0-9a-fA-F]{4,6})(…|\.\.\.|\\u2026)([0-9a-fA-F]{4})(?![0-9a-fA-F])/g;
   const shortMap = new Map();
   for (const [r, f] of toFake) for (const k of [4, 5, 6]) shortMap.set(r.slice(2, 2 + k) + '|' + r.slice(-4), [f.slice(2, 2 + k), f.slice(-4)]);
@@ -87,15 +87,15 @@ export async function buildMask() {
   return { scrub, unscrubUrl, secrets, pseudonyms: [...new Set(labels.values())], counts: { addrs: addrs.size, labels: labels.size } };
 }
 
-// Penyamaran angka: semua nilai uang & jumlah token dikalikan faktor rahasia (QSCALE,
-// default diturunkan dari token akses) — saldo, PnL, fee, grafik tetap konsisten satu
-// sama lain dan persennya tidak berubah, tapi bukan angka aslinya. Harga, tick, sqrt,
-// dan harga ETH tidak disentuh (itu data publik pool, bukan data wallet).
+// Number disguise: all money values & token amounts are multiplied by a secret factor (QSCALE,
+// by default derived from the access token) — balances, PnL, fees, charts stay consistent with
+// each other and the percentages do not change, but they are not the real figures. Price, tick, sqrt,
+// and the ETH price are left alone (that is public pool data, not wallet data).
 const SCALE = Number(process.env.QSCALE) || (0.45 + (parseInt(crypto.createHash('sha256').update('scale:' + TOKEN).digest('hex').slice(0, 4), 16) % 40) / 100);
-// Kunci uang tanpa akhiran usd/quote, dibatasi konteks induknya (diinventarisasi dari
-// respons API: series/baseline/extremes/now/wallet/byTarget/stats/cash/deposits).
+// Money keys without a usd/quote suffix, limited by their parent context (inventoried from the
+// API responses: series/baseline/extremes/now/wallet/byTarget/stats/cash/deposits).
 const MONEY_SUFFIX = /(Usd|_usd|_quote|Quote)$/;
-const PRICE_KEY = /^(eth|bnb|native)Usd$|^liquidityUsd$/;          // harga & data pool: publik, jangan diubah
+const PRICE_KEY = /^(eth|bnb|native)Usd$|^liquidityUsd$/;          // price & pool data: public, do not change
 const CTX = {
   series: /^(cash|pos|fee|total|pnl|net)$/, baseline: /^(cash|pos|fee|total|pnl|net)$/,
   now: /^(pnl|net|netPnl|value|capital|capitalNet)$/, wallet: /^(pnl|net|netPnl|value)$/,
@@ -104,7 +104,7 @@ const CTX = {
   stats: /^(best|worst|avgPnl)$/, cash: /^(usd|usdg|usdt|stable|native|eth|weth|bnb|wbnb)$/,
   deposits: /^amount$/, withdrawals: /^amount$/,
 };
-// jumlah token mentah (string BigInt): amount0/1, cost0/1, fee0/1, out0/1, liquidity, sisa token
+// raw token amounts (BigInt strings): amount0/1, cost0/1, fee0/1, out0/1, liquidity, leftover tokens
 const RAW_KEY = /^(amount|cost|fee|out|liquidity)[01]?$|^(left_amount|amountIn|amountOut)$/;
 const scaleRaw = (v) => { try { return (BigInt(String(v)) * BigInt(Math.round(SCALE * 1e6)) / 1000000n).toString(); } catch { return v; } };
 const fakeIds = new Map();
@@ -113,7 +113,7 @@ const disguise = (v, key = '', parentKey = '') => {
   if (Array.isArray(v)) {
     // portfolio.closed = [[ts, pnl], …]
     if (parentKey === 'closed' && v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'number' && v[0] > 1e12) return [v[0], v[1] * SCALE];
-    return v.map((x) => disguise(x, key, key));   // elemen array mewarisi kunci array-nya sebagai konteks
+    return v.map((x) => disguise(x, key, key));   // array elements inherit their array's key as context
   }
   if (v && typeof v === 'object') { for (const k of Object.keys(v)) v[k] = disguise(v[k], k, key || parentKey); return v; }
   if (typeof v === 'number' && Number.isFinite(v)) {
@@ -136,14 +136,14 @@ export const secretIds = () => [...fakeIds.keys()];
 const stripNotes = (v) => {
   if (Array.isArray(v)) return v.map(stripNotes);
   if (v && typeof v === 'object') {
-    for (const k of Object.keys(v)) v[k] = k === 'notes' && typeof v[k] === 'string' ? '' : stripNotes(v[k]);   // catatan target (teks); array log di riwayat posisi dibiarkan
+    for (const k of Object.keys(v)) v[k] = k === 'notes' && typeof v[k] === 'string' ? '' : stripNotes(v[k]);   // target notes (text); log arrays in the position history are left alone
   }
   return v;
 };
 
-// Cache respons: setiap URL (asli, sebelum disamarkan) disimpan sekali di out/cache,
-// rekaman berikutnya dilayani dari disk — kebal jaringan putus dan deterministik.
-// QREFRESH=1 mengabaikan cache (ambil ulang semuanya).
+// Response cache: every URL (real, before disguise) is stored once in out/cache,
+// later recordings are served from disk — immune to network drops and deterministic.
+// QREFRESH=1 ignores the cache (refetch everything).
 const CACHE = path.resolve('out/cache');
 fs.mkdirSync(CACHE, { recursive: true });
 const cacheKey = (url) => path.join(CACHE, crypto.createHash('sha1').update(url).digest('hex') + '.json');
@@ -168,7 +168,7 @@ export async function attach(context, mask, { hold } = {}) {
         try { resp = await route.fetch({ url: realUrl, timeout: 25000 }); } catch (e) { lastErr = e; await new Promise((r) => setTimeout(r, 800)); }
       }
       if (!resp) {
-        // pesan error Playwright memuat header (termasuk token) — jangan dicetak utuh
+        // Playwright error messages contain headers (including the token) — do not print them whole
         console.warn('  fetch gagal:', url.pathname, String(lastErr?.message).split('\n')[0].replace(/Bearer\s+\S+/g, 'Bearer ***'));
         return route.abort().catch(() => {});
       }
@@ -186,8 +186,8 @@ export async function attach(context, mask, { hold } = {}) {
   });
 }
 
-// Blur untuk alamat & label samaran. Dipasang lewat MutationObserver supaya
-// tabel yang dipoll ulang tetap tertutup.
+// Blur for addresses & pseudonymous labels. Installed via a MutationObserver so
+// tables that are re-polled stay covered.
 export const censorScript = (pseudonyms) => `(() => {
   const PSEUDO = ${JSON.stringify(pseudonyms)};
   const RE = /0x[0-9a-fA-F]{4,}(…|\\.\\.\\.)?[0-9a-fA-F]{0,}/;
@@ -207,16 +207,16 @@ export const censorScript = (pseudonyms) => `(() => {
       el.classList.add('q-censor');
     }
   };
-  // ── Sensor modal: angka uang yang menyingkap besar dana (bukan PnL/fee/persen) ──
-  // 1) potongan teks "capital $X", "cash $X", "in positions $X", "value $X"
-  // 2) nilai uang/angka yang labelnya (baris KV, kartu Stat) berbau modal/kas/nilai/saldo
-  // 3) sel tabel di kolom "Value"/"Nilai"
+  // ── Capital redaction: money figures that reveal the fund size (not PnL/fee/percent) ──
+  // 1) text fragments "capital $X", "cash $X", "in positions $X", "value $X"
+  // 2) money/number values whose label (KV row, Stat card) smells of capital/cash/value/balance
+  // 3) table cells in the "Value"/"Nilai" column
   const MONEY = /[−-]?\\$\\s?[\\d.,]+k?/g;
   const FRAG = /\\b(capital|modal|cash|kas|in positions|di posisi|proceeds|hasil|value|nilai|balance|saldo|lp|deposits?|setoran|withdrawals?|penarikan|idle in cash|menganggur di kas)\\s*[−-]?\\$\\s?[\\d.,]+k?|[−-]?\\$\\s?[\\d.,]+k?\\s+(now|sekarang)\\b|\\b(positions?|posisi)\\s*·\\s*[−-]?\\$\\s?[\\d.,]+k?/gi;
   const LABEL = /^(total portfolio|total portofolio|capital|modal|net capital|modal bersih|capital in positions|modal di posisi|liquidity value|nilai likuiditas|proceeds|hasil|value|nilai|holdings now|saldo|balance|cash|kas|in positions|di posisi|idle in cash|menganggur di kas|capital deposited|modal disetor|usdg|usdt|weth|eth|bnb|wbnb|lp positions|posisi lp|live positions|posisi terbuka|room left|sisa ruang|their balance|saldo mereka|deposits|setoran|withdrawals|penarikan|equity|ekuitas|wallet value|nilai wallet)/i;
   const NOT = /pnl|fee|win|realis|gas|price|harga|rate|drawdown|high|puncak|\\bvs\\b/i;
-  // Veil: kotak blur di atas potongan teks (koordinat Range), tanpa memecah text node
-  // milik React — memecahnya membuat React gagal saat re-render tabel yang dipoll.
+  // Veil: a blur box over a text fragment (Range coordinates), without splitting the text node
+  // owned by React — splitting it makes React fail when re-rendering the polled table.
   const veils = new Map();   // text node -> [ [start,end], ... ]
   let veilBox;
   const veilLayer = () => {
@@ -232,7 +232,7 @@ export const censorScript = (pseudonyms) => `(() => {
         try { r.setStart(node, a); r.setEnd(node, b); } catch { continue; }
         for (const q of r.getClientRects()) {
           if (!(q.width > 0 && q.height > 0)) continue;
-          // teks yang tertutup laci/modal tidak perlu diveil (veil-nya akan melayang di atas laci)
+          // text covered by a drawer/modal does not need a veil (the veil would float above the drawer)
           const top = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2);
           const host = node.parentElement;
           if (!top || !(host.contains(top) || top.contains(host))) continue;
@@ -254,8 +254,8 @@ export const censorScript = (pseudonyms) => `(() => {
     if (spans.length) veils.set(node, spans);
   };
   const labelOf = (el) => {
-    // label langsung: saudara sebelumnya dari elemen ini atau leluhurnya (≤4 tingkat) —
-    // "Value" di samping "$1,095.84", judul kartu Stat, kolom kiri baris KV.
+    // direct label: the previous sibling of this element or its ancestors (≤4 levels) —
+    // "Value" beside "$1,095.84", the Stat card title, the left column of a KV row.
     const txt = (n) => (n.innerText ?? n.textContent ?? '').trim();
     const cands = [];
     let anc = el;
@@ -273,7 +273,7 @@ export const censorScript = (pseudonyms) => `(() => {
   };
   const markMoney = (root) => {
     if (!root || root.nodeType !== 1) return;
-    // 3) kolom Value/Nilai
+    // 3) Value/Nilai column
     for (const table of root.querySelectorAll('table')) {
       const heads = [...table.querySelectorAll('thead th')].map((h) => (h.innerText || '').trim().toLowerCase());
       heads.forEach((h, i) => {
@@ -293,17 +293,17 @@ export const censorScript = (pseudonyms) => `(() => {
       if (FRAG.test(s)) { FRAG.lastIndex = 0; addVeils(n, FRAG); continue; }
       FRAG.lastIndex = 0;
       const own = s.trim();
-      // uang, angka polos, atau angka + simbol token (110 USDG, 0.00125 ETH)
+      // money, plain number, or number + token symbol (110 USDG, 0.00125 ETH)
       const isMoney = /^[−-]?\\$\\s?[\\d.,]+k?$/.test(own) || /^[\\d.,]+(\\s+\\S{1,12})?$/.test(own);
       if (!isMoney) continue;
       const lab = labelOf(el);
       if (!LABEL.test(lab) || NOT.test(lab)) continue;
-      // teks "110 " di samping <a>USDG</a>: elemennya punya anak, jadi angkanya diveil, bukan diblur utuh
+      // the text "110 " beside <a>USDG</a>: the element has children, so the number is veiled, not blurred whole
       if (el.children.length === 0) el.classList.add('q-censor');
       else if (!veils.has(n)) addVeils(n, /[−-]?\\$?\\s?[\\d.,]+k?/g);
     }
   };
-  const BLUR_MONEY = ${!!process.env.QMONEY_BLUR};   // angka sudah disamarkan di data; blur hanya kalau diminta
+  const BLUR_MONEY = ${!!process.env.QMONEY_BLUR};   // numbers are already disguised in the data; blur only if requested
   const start = () => {
     document.head.appendChild(css);
     mark(document.body); if (BLUR_MONEY) markMoney(document.body);
@@ -311,7 +311,7 @@ export const censorScript = (pseudonyms) => `(() => {
     new MutationObserver((ms) => {
       for (const m of ms) for (const x of m.addedNodes) mark(x.nodeType === 3 ? x.parentNode || document.body : x);
       if (ms.some((m) => m.type === 'characterData')) mark(document.body);
-      // sensor modal dijalankan sekali per frame (bukan per mutasi): mengubah DOM di dalam observer memicu observer lagi
+      // capital redaction runs once per frame (not per mutation): changing the DOM inside an observer triggers the observer again
       if (BLUR_MONEY && !pending) { pending = true; requestAnimationFrame(() => { pending = false; markMoney(document.body); }); }
     }).observe(document.body, { childList: true, subtree: true, characterData: true });
   };

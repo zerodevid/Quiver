@@ -1,34 +1,34 @@
 'use strict';
 const { ensureChain } = require('./networks');
-// Modal wallet yang sesungguhnya: berapa yang pernah disetor (dan ditarik), supaya
-// dasbor bisa menunjukkan PnL BERSIH = nilai wallet sekarang − modal.
+// The wallet's real capital: how much was ever deposited (and withdrawn), so the
+// dashboard can show NET PnL = current wallet value − capital.
 //
-// "Total PnL" per-posisi (out − cost) sengaja tidak memuat biaya di luar posisi:
-// fee + slippage zap swap saat masuk, gas ~200 tx, swap bolak-balik ETH↔USDG. Pemilik
-// wallet menghitungnya dari sisi lain: "modal 400, sekarang 520, berarti untung 120".
-// Angka itu yang dilacak di sini.
+// Per-position "Total PnL" (out − cost) deliberately does not include costs outside the position:
+// fee + zap swap slippage on entry, gas of ~200 txs, back-and-forth ETH↔USDG swaps. The wallet
+// owner counts from the other side: "capital 400, now 520, so profit 120".
+// That is the figure tracked here.
 //
-//   modal(t) = nilai wallet saat bot mulai mencatat (baseline)
-//            + setoran eksternal setelahnya − penarikan eksternal setelahnya
+//   capital(t) = wallet value when the bot started recording (baseline)
+//              + external deposits after it − external withdrawals after it
 //
-// Setoran/penarikan dibaca dari RPC publik biasa — dulu lewat alchemy_getAssetTransfers,
-// yang berhenti begitu kuota bulanan Alchemy habis (dua hari setoran tak tercatat,
-// PnL bersih melonjak sebesar setoran). Dua jalur:
-//   - USDG/WETH: log Transfer ke/dari wallet (eth_getLogs, rentang panjang boleh —
-//     endpoint resmi menjawab 1,4 jt blok dalam 0,3 detik). Transfer dari transaksi
-//     bot sendiri atau transaksi yang kita kirim (swap manual) bukan setoran; keluar
-//     ke kontrak (router, pool) bukan penarikan.
-//   - ETH: transfer ETH polos tidak punya log. Yang dipakai selisih saldo: saldo di
-//     ujung jendela − saldo di awal − perubahan saldo oleh transaksi bot (saldo blok
-//     tx dikurangi saldo blok sebelumnya, dari node arsip). Sisa yang tidak dijelaskan
-//     transaksi bot = setoran (positif) atau penarikan (negatif). Butuh endpoint
-//     `archive: true`; tanpa itu hanya USDG/WETH yang terlacak.
+// Deposits/withdrawals are read from ordinary public RPC — it used to go through alchemy_getAssetTransfers,
+// which stopped as soon as Alchemy's monthly quota ran out (two days of deposits were not recorded,
+// net PnL jumped by the deposit amount). Two paths:
+//   - USDG/WETH: Transfer logs to/from the wallet (eth_getLogs, a long range is fine —
+//     the official endpoint answers 1.4m blocks in 0.3 seconds). Transfers from the
+//     bot's own transactions or transactions we sent (manual swaps) are not deposits; going out
+//     to a contract (router, pool) is not a withdrawal.
+//   - ETH: a plain ETH transfer has no log. What is used is the balance difference: balance at
+//     the window end − balance at the start − balance change from bot transactions (the tx
+//     block's balance minus the previous block's, from an archive node). The remainder that bot
+//     transactions do not explain = a deposit (positive) or a withdrawal (negative). Needs an
+//     `archive: true` endpoint; without it only USDG/WETH is tracked.
 const { ethers } = require('ethers');
 const { getLogsSafe } = require('./scout');
 
-const MIN_USD = 0.05;   // di bawah ini debu (refund gas, airdrop iseng), bukan setoran
-const ETH_TX_BLOCKS = 25; // blok tx bot per sync untuk selisih saldo ETH (2 getBalance arsip per blok)
-const ETH_EVENTS = 3;     // titik perubahan tak dijelaskan yang ditelusuri per sync (~20 getBalance arsip tiap titik)
+const MIN_USD = 0.05;   // below this is dust (gas refund, prank airdrop), not a deposit
+const ETH_TX_BLOCKS = 25; // bot tx blocks per sync for the ETH balance difference (2 archive getBalance per block)
+const ETH_EVENTS = 3;     // unexplained change points traced per sync (~20 archive getBalance per point)
 const TRANSFER = ethers.id('Transfer(address,address,uint256)');
 const hex = (n) => '0x' + BigInt(n).toString(16);
 const topicOf = (addr) => '0x' + String(addr).toLowerCase().slice(2).padStart(64, '0');
@@ -46,15 +46,15 @@ class Capital {
       [ADDR.usdg]: { symbol: chain.QUOTES[ADDR.usdg]?.symbol, decimals: chain.QUOTES[ADDR.usdg]?.decimals ?? 6, token: ADDR.usdg, kind: 'usd' },
       [ADDR.weth]: { symbol: chain.QUOTES[ADDR.weth]?.symbol, decimals: 18, token: ADDR.weth, kind: 'eth' },
     };
-    // Lawan transaksi yang pasti bukan orang: uang yang ke sini bukan penarikan.
-    // Kontrak lain (router Kyber, dsb.) ketahuan lewat eth_getCode dan diingat.
-    // Alamat nol ikut: WETH yang di-unwrap manual tercatat sebagai Transfer ke 0x0 —
-    // ETH-nya tetap di wallet, bukan penarikan.
+    // Counterparties that are certainly not a person: money going here is not a withdrawal.
+    // Other contracts (Kyber router, etc.) are detected via eth_getCode and remembered.
+    // The zero address too: a manually unwrapped WETH is recorded as a Transfer to 0x0 —
+    // the ETH stays in the wallet, not a withdrawal.
     this.KNOWN = new Set([ADDR.poolManager, ADDR.posmV4, ADDR.permit2, ADDR.weth, ADDR.npmV3, '0x' + '0'.repeat(40),
       ...chain.venues.map((v) => v.npmV3)].filter(Boolean).map((a) => String(a).toLowerCase()));
-    // deposits: berbagi satu tabel/DB antar chain (wallet sama) — chain jadi bagian
-    // dari kuncinya supaya setoran/penarikan di satu chain tidak mencampuri baseline
-    // modal chain yang lain.
+    // deposits: shares one table/DB between chains (same wallet) — the chain becomes part
+    // of its key so a deposit/withdrawal on one chain does not interfere with the other chain's
+    // capital baseline.
     store.db.exec(`CREATE TABLE IF NOT EXISTS deposits (
       chain        TEXT NOT NULL DEFAULT 'robinhood',
       tx_hash      TEXT NOT NULL,
@@ -73,8 +73,8 @@ class Capital {
   available() { return true; }
   sk(k) { return `${k}:${this.chain.network}`; }
 
-  // Beberapa panggilan sekaligus, hasilnya urut; satu item galat = seluruhnya gagal
-  // (jendela dipindai ulang nanti — tidak ada yang dicatat setengah).
+  // Several calls at once, results in order; one item erroring = the whole thing failed
+  // (the window is rescanned later — nothing is recorded half-done).
   async many(calls, opts = {}) {
     if (!calls.length) return [];
     const res = await this.rpc.batch(calls, opts);
@@ -84,8 +84,8 @@ class Capital {
       return r.result;
     });
   }
-  // Saldo di blok lampau hanya ke endpoint arsip. Tanpa arsip di kolam: endpoint biasa
-  // masih menjawab untuk blok baru (baseline dihitung di blok saat bot mulai).
+  // Balance at a past block only to an archive endpoint. Without an archive in the pool: an ordinary endpoint
+  // still answers for a recent block (the baseline is computed at the block when the bot starts).
   archiveOpt() { return { archive: !!this.rpc.hasArchive?.() }; }
   async balanceAt(wallet, block) {
     const r = await this.rpc.call('eth_getBalance', [wallet, hex(block)], this.archiveOpt());
@@ -98,7 +98,7 @@ class Capital {
     return parseInt(b.timestamp, 16) * 1000;
   }
 
-  // Alamat punya kode? (kontrak → bukan tujuan penarikan). Disimpan: jawabannya tetap.
+  // Does the address have code? (a contract → not a withdrawal destination). Stored: the answer stays the same.
   async isContract(addr) {
     const a = String(addr || '').toLowerCase();
     if (!a || a === '0x') return false;
@@ -112,7 +112,7 @@ class Capital {
     return yes;
   }
 
-  // Blok terakhir yang timestamp-nya ≤ ts (pencarian biner, ~26 panggilan; sekali saja).
+  // The last block whose timestamp is ≤ ts (binary search, ~26 calls; only once).
   async blockAt(ts) {
     const sec = Math.floor(ts / 1000);
     const at = async (n) => parseInt((await this.rpc.call('eth_getBlockByNumber', ['0x' + n.toString(16), false]))?.timestamp || '0', 16);
@@ -125,8 +125,8 @@ class Capital {
     return lo;
   }
 
-  // Baseline: nilai wallet saat bot mulai mencatat ekuitas — kas di blok itu (arsip)
-  // + modal posisi yang sudah ada (diadopsi). Dihitung sekali, disimpan di state.
+  // Baseline: the wallet value when the bot started recording equity — cash at that block (archive)
+  // + the capital of positions that already exist (adopted). Computed once, stored in state.
   async baseline(wallet) {
     const bKey = this.sk('capital_baseline');
     const saved = this.store.getState(bKey);
@@ -144,7 +144,7 @@ class Capital {
     const weth = Number(BigInt(wethW && wethW !== '0x' ? wethW : 0)) / 1e18;
     const eth = Number(ethRaw) / 1e18;
     const ethUsd = await this.chain.ethUsdAt(block);
-    // posisi yang sudah terbuka sebelum titik ini: modalnya bagian dari baseline
+    // positions already open before this point: their capital is part of the baseline
     const ethLike = new Set([this.chain.nativeSymbol, this.chain.QUOTES[this.chain.ADDR.weth]?.symbol].filter(Boolean));
     const pos = this.store.all("SELECT cost_quote, quote_symbol FROM positions WHERE chain=? AND status IN ('open','closed') AND opened_ts IS NOT NULL AND opened_ts <= ?", this.chain.network, ts);
     const positionsUsd = pos.reduce((a, p) => a + (p.cost_quote || 0) * (ethLike.has(p.quote_symbol) ? ethUsd : 1), 0);
@@ -152,28 +152,28 @@ class Capital {
     const b = { ts, block, usd: cashUsd + positionsUsd, cashUsd, positionsUsd, ethUsd, usdg, eth, weth };
     this.store.setState(bKey, JSON.stringify(b));
     this.store.setState(this.sk('deposits_scanned_to'), String(block));
-    // titik awal selisih saldo ETH: saldo yang sama dengan baseline
+    // starting point of the ETH balance difference: the same balance as the baseline
     this.store.setState(this.sk('capital_eth_checkpoint'), JSON.stringify({ block, wei: ethRaw.toString(), ts }));
     this.log(`modal dasar (${this.chain.label}): $${b.usd.toFixed(2)} (kas $${cashUsd.toFixed(2)} + posisi $${positionsUsd.toFixed(2)}) pada blok ${block}`);
     return b;
   }
 
-  // Pindai setoran/penarikan baru. Dipanggil berkala; murah kalau tidak ada yang baru.
-  // Dua kursor terpisah (log token; selisih saldo ETH) supaya gangguan node arsip
-  // tidak ikut menahan pencatatan setoran USDG.
+  // Scan for new deposits/withdrawals. Called periodically; cheap if nothing is new.
+  // Two separate cursors (token logs; ETH balance difference) so a disturbance in the archive node
+  // does not also hold up recording USDG deposits.
   async sync(wallet) {
     if (!wallet) return null;
-    this.lastSync = Date.now();   // juga saat gagal: jangan dihajar tiap tick
+    this.lastSync = Date.now();   // also on failure: do not hammer it every tick
     const me = String(wallet).toLowerCase();
     const base = await this.baseline(me);
-    // Beberapa blok di belakang ujung: endpoint yang menjawab getLogs/getBalance bisa
-    // tertinggal dari yang menjawab blockNumber (blok 100 ms) — tidak perlu gagal-ulang.
+    // A few blocks behind the tip: an endpoint that answers getLogs/getBalance can
+    // lag behind the one that answers blockNumber (100 ms blocks) — no need to fail and retry.
     const head = (await this.rpc.blockNumber()) - 5;
-    // Kursor log dibaca SEBELUM dimajukan: titik awal selisih saldo ETH (basis data
-    // dari versi Alchemy belum punya) harus blok terakhir yang sudah dipindai, bukan head.
+    // The log cursor is read BEFORE being advanced: the starting point of the ETH balance difference (a database
+    // from the Alchemy version does not have it yet) must be the last block already scanned, not the head.
     const scannedTo = Number(this.store.getState(this.sk('deposits_scanned_to'), base.block));
     await this.ethCheckpoint(me, scannedTo);
-    // transaksi bot sendiri (swap, mint, tutup): transfernya bukan setoran/penarikan
+    // the bot's own transactions (swap, mint, close): their transfers are not deposits/withdrawals
     const ours = new Set(this.store.all('SELECT hash FROM txs WHERE chain=?', this.chain.network).map((r) => r.hash.toLowerCase()));
     let added = 0;
     added += await this.syncTokens(me, scannedTo, head, ours);
@@ -194,7 +194,7 @@ class Capital {
       .map((l) => ({ ...l, hash: String(l.transactionHash).toLowerCase() }))
       .filter((l) => !ours.has(l.hash) && this.ASSETS[String(l.address).toLowerCase()] && BigInt(l.data) > 0n);
     if (!logs.length) { this.store.setState(this.sk('deposits_scanned_to'), String(head)); return 0; }
-    // pengirim tiap tx + waktu tiap blok, sekali per hash/blok
+    // sender of each tx + time of each block, once per hash/block
     const hashes = [...new Set(logs.map((l) => l.hash))];
     const blocks = [...new Set(logs.map((l) => parseInt(l.blockNumber, 16)))];
     const [txs, hdrs] = await Promise.all([
@@ -209,10 +209,10 @@ class Capital {
       const cp = addrOf(l.dir === 'in' ? l.topics[1] : l.topics[2]);
       const from = senderOf.get(l.hash);
       if (l.dir === 'in') {
-        // uang masuk dari transaksi yang kita kirim sendiri = hasil swap/tutup, bukan setoran
+        // money coming in from a transaction we sent ourselves = swap/close proceeds, not a deposit
         if (from === me) continue;
       } else {
-        // keluar: hanya kalau kita yang mengirim, ke alamat yang bukan kontrak
+        // going out: only if we are the sender, to an address that is not a contract
         if (from !== me) continue;
         if (await this.isContract(cp)) continue;
       }
@@ -223,9 +223,9 @@ class Capital {
     return added;
   }
 
-  // Titik awal selisih saldo. Basis data dari versi Alchemy belum punya: mulai dari
-  // blok terakhir yang sudah dipindai — dibuat SEBELUM kursor log maju, supaya
-  // setoran ETH di antara keduanya tidak hilang.
+  // Starting point of the balance difference. A database from the Alchemy version does not have it: start from
+  // the last block already scanned — created BEFORE the log cursor advances, so an
+  // ETH deposit between the two is not lost.
   async ethCheckpoint(me, scannedTo) {
     const ckKey = this.sk('capital_eth_checkpoint');
     const saved = JSON.parse(this.store.getState(ckKey) || 'null');
@@ -235,28 +235,28 @@ class Capital {
     return ck;
   }
 
-  // ETH polos: selisih saldo yang tidak dijelaskan transaksi bot. Kalau ada sisa,
-  // bloknya dicari (bisect atas "saldo − efek tx bot", ~20 panggilan arsip) lalu
-  // transaksi wallet di blok itu dibaca: kiriman dari luar = setoran; kiriman kita ke
-  // orang (bukan kontrak) = penarikan; kiriman kita ke kontrak (swap manual lewat
-  // router, unwrap WETH) = konversi/biaya, bukan penarikan — nilainya tetap di wallet
-  // atau memang hilang sebagai biaya, dua-duanya urusan PnL. Tanpa transaksi wallet di
-  // blok itu (kontrak mengirim ETH ke kita — jembatan): tanda sisanya yang menentukan.
-  // Setoran yang mendarat di blok yang sama dengan transaksi bot ikut terhitung sebagai
-  // efek transaksi itu (jarang: blok 100 ms).
+  // Plain ETH: the balance difference not explained by bot transactions. If there is a remainder,
+  // its block is searched (bisect on "balance − bot tx effect", ~20 archive calls) then the
+  // wallet's transactions in that block are read: sent from outside = deposit; sent by us to
+  // a person (not a contract) = withdrawal; sent by us to a contract (manual swap via
+  // the router, unwrap WETH) = conversion/cost, not a withdrawal — the value stays in the wallet
+  // or is really lost as a cost, both are PnL matters. Without a wallet transaction in
+  // that block (a contract sends ETH to us — a bridge): the sign of the remainder decides.
+  // A deposit that lands in the same block as a bot transaction is counted as
+  // an effect of that transaction (rare: 100 ms blocks).
   async syncEth(me, head, ours) {
     const ckKey = this.sk('capital_eth_checkpoint');
     const ck = JSON.parse(this.store.getState(ckKey));
     if (head <= ck.block) return 0;
-    // Transaksi bot yang mungkin mendarat di jendela ini (dikirim sejak titik awal,
-    // dengan kelonggaran: tx tertahan bisa masuk blok jauh setelah dikirim).
+    // Bot transactions that may have landed in this window (sent since the starting point,
+    // with slack: a held-back tx can land in a block long after it was sent).
     const sent = this.store.all('SELECT hash FROM txs WHERE chain=? AND ts >= ?', this.chain.network, ck.ts - 30 * 60_000).map((r) => r.hash);
     const rcs = await this.many(sent.map((h) => ({ method: 'eth_getTransactionReceipt', params: [h] })));
     let blocks = [...new Set(rcs.map((r) => (r?.blockNumber ? parseInt(r.blockNumber, 16) : 0)).filter((b) => b > ck.block && b <= head))].sort((a, b) => a - b);
-    // Node arsip publik membatasi panggilan per menit (blockmachine: 300 CU). Jendela
-    // yang menumpuk (dua hari tanpa pindai = ratusan tx bot) dicicil: paling banyak
-    // ETH_TX_BLOCKS blok tx per sync, titik akhirnya blok tx terakhir yang dihitung —
-    // saldonya sudah di tangan, tidak perlu panggilan tambahan.
+    // Public archive nodes limit calls per minute (blockmachine: 300 CU). A window
+    // that piles up (two days without a scan = hundreds of bot txs) is paid in instalments: at most
+    // ETH_TX_BLOCKS tx blocks per sync, its end point the last tx block counted —
+    // its balance is already in hand, no extra call needed.
     let end = head, partial = false;
     if (blocks.length > ETH_TX_BLOCKS) { blocks = blocks.slice(0, ETH_TX_BLOCKS); end = blocks[blocks.length - 1]; partial = true; }
     const bals = await this.many([
@@ -267,7 +267,7 @@ class Capital {
     const deltaAt = new Map(blocks.map((b, i) => [b, BigInt(bals[2 * i + 1]) - BigInt(bals[2 * i])]));
     const cache = new Map([[ck.block, BigInt(ck.wei)], [end, BigInt(bals[bals.length - 1])], ...blocks.flatMap((b, i) => [[b - 1, BigInt(bals[2 * i])], [b, BigInt(bals[2 * i + 1])]])]);
     const balAt = async (n) => { if (!cache.has(n)) cache.set(n, await this.balanceAt(me, n)); return cache.get(n); };
-    // f(n) = saldo di n − efek tx bot sampai n: datar, kecuali ada transfer dari luar.
+    // f(n) = balance at n − bot tx effect up to n: flat, unless there is an outside transfer.
     const f = async (n) => { let s = await balAt(n); for (const [b, d] of deltaAt) if (b <= n) s -= d; return s; };
     const fEnd = await f(end);
     let lo = ck.block, added = 0;
@@ -276,20 +276,47 @@ class Capital {
       if (flo === fEnd) break;
       let hi = end;
       while (hi - lo > 1) { const mid = (lo + hi) >> 1; if ((await f(mid)) === flo) lo = mid; else hi = mid; }
-      added += await this.ethEvent(me, hi, (await f(hi)) - flo, ours);
+      const residual = (await f(hi)) - flo;
+      // Re-read the two balances instead of trusting the bisect's cache: one inconsistent answer
+      // from an archive node made a $314 "deposit" at a block where the balance did not move.
+      // A real outside transfer shows as a jump at that block beyond the bot tx effect.
+      const jump = (await this.balanceAt(me, hi)) - (await this.balanceAt(me, hi - 1)) - (deltaAt.get(hi) || 0n);
+      if (jump === residual) {
+        // Independent of any archive read: a real deposit/withdrawal moves the wallet value the
+        // equity snapshots take from the live balance. Two false $300 deposits (blocks where the
+        // balance was flat) passed the re-read above, so the equity curve has the last word.
+        const seen = await this.equityConfirms(hi, residual);
+        if (seen === null) break;   // no snapshot after the block yet: look again next sync
+        if (seen) added += await this.ethEvent(me, hi, residual, ours);
+        else this.log(`selisih saldo ETH di blok ${hi} tidak terlihat di ekuitas, dilewati`);
+      } else this.log(`selisih saldo ETH di blok ${hi} tidak terbukti (lompatan ${jump} wei vs sisa ${residual} wei), dilewati`);
       lo = hi;
     }
-    // Masih ada sisa setelah ETH_EVENTS titik: berhenti di titik terakhir yang sudah
-    // dibaca; sisanya giliran sync berikutnya.
+    // There is still a remainder after ETH_EVENTS points: stop at the last point already
+    // read; the rest is for the next sync's turn.
     if ((await f(lo)) !== fEnd) { end = lo; partial = true; }
     const tsEnd = await this.blockTs(end);
     this.store.setState(ckKey, JSON.stringify({ block: end, wei: (await balAt(end)).toString(), ts: tsEnd }));
-    this.backlog = partial;   // mesin memanggil sync lebih rapat selama cicilan belum selesai
+    this.backlog = partial;   // the engine calls sync more closely while the instalments are not finished
     if (partial) this.log(`selisih saldo ETH: sampai blok ${end}, sisanya (${head - end} blok) di sync berikutnya`);
     return added;
   }
 
-  // Satu blok dengan perubahan saldo ETH yang bukan dari transaksi bot.
+  // Does the equity curve step by about the event's size across the block? true/false, or null when
+  // there is no snapshot after the block yet (cannot judge). Without any snapshot before it
+  // (very first rows) the event is let through.
+  async equityConfirms(block, residual) {
+    const ts = await this.blockTs(block);
+    const net = this.chain.network;
+    const before = this.store.get('SELECT total_quote q FROM equity WHERE chain=? AND ts <= ? ORDER BY ts DESC LIMIT 1', net, ts);
+    if (!before) return true;
+    const after = this.store.get('SELECT total_quote q FROM equity WHERE chain=? AND ts > ? ORDER BY ts LIMIT 1', net, ts);
+    if (!after) return null;
+    const usd = (Number(residual) / 1e18) * await this.chain.ethUsdAt(block);
+    return (after.q - before.q) * Math.sign(usd) >= Math.abs(usd) * 0.5;
+  }
+
+  // A block with an ETH balance change that is not from a bot transaction.
   async ethEvent(me, block, residual, ours) {
     const blk = await this.rpc.call('eth_getBlockByNumber', [hex(block), true]);
     if (!blk?.timestamp) throw new Error(`blok ${block} belum ada di endpoint`);
@@ -326,7 +353,7 @@ class Capital {
 
   rows() { return this.store.all('SELECT * FROM deposits WHERE chain=? ORDER BY ts', this.chain.network); }
 
-  // Modal pada waktu `ts` (default: sekarang). null kalau baseline belum ada.
+  // Capital at time `ts` (default: now). null if the baseline does not exist yet.
   capitalAt(ts = Date.now()) {
     const saved = this.store.getState(this.sk('capital_baseline'));
     if (!saved) return null;

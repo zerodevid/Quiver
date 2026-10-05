@@ -1,5 +1,5 @@
 'use strict';
-// Pembaca state pool + cache metadata token, untuk v4 (PoolManager.extsload) dan v3 (slot0).
+// Pool state reader + token metadata cache, for v4 (PoolManager.extsload) and v3 (slot0).
 const { ethers } = require('ethers');
 const { ABI } = require('./chain');
 const { build } = require('./networks');
@@ -11,8 +11,8 @@ const IF_ERC20 = new ethers.Interface(ABI.erc20);
 const IF_POOL3 = new ethers.Interface(ABI.poolV3);
 const IF_FACT = new ethers.Interface(ABI.v3Factory);
 
-// Slot mapping `_pools` di PoolManager v4 — diverifikasi di Robinhood Chain:
-// keccak256(abi.encode(poolId, uint256(6))) berisi Slot0 terpaket.
+// Slot of the `_pools` mapping in the v4 PoolManager — verified on Robinhood Chain:
+// keccak256(abi.encode(poolId, uint256(6))) holds the packed Slot0.
 const POOLS_SLOT = 6n;
 
 function computePoolId(pk) {
@@ -43,15 +43,15 @@ class Chain {
     this.legacyGasPricing = p.legacyGasPricing; this.blockMs = p.blockMs;
     this.dexscreener = p.dexscreener; this.geckoterminal = p.geckoterminal; this.explorer = p.explorer;
     this.explorerApiV2 = p.explorerApiV2; this.explorerTokenUrl = p.explorerTokenUrl; this.alchemyHost = p.alchemyHost;
-    // Slot generik "stablecoin kuotasi" (usdg) dan "wrapped native" (weth): simbol dan
-    // desimalnya beda per chain (USDG 6 desimal vs USDT BSC 18 desimal).
+    // Generic slots "quote stablecoin" (usdg) and "wrapped native" (weth): the symbol and
+    // decimals differ per chain (USDG 6 decimals vs BSC USDT 18 decimals).
     this.usdgSymbol = this.QUOTES[this.ADDR.usdg]?.symbol || 'USDG';
     this.usdgDecimals = this.QUOTES[this.ADDR.usdg]?.decimals ?? 6;
     this.wethSymbol = this.QUOTES[this.ADDR.weth]?.symbol || 'WETH';
     this.tokenCache = new Map();
     this.poolCache = new Map();
     this.v3Factory = null;
-    this.v3FactoryByNpm = new Map(); // npmV3 addr -> factory addr (venue lain, mis. pancakev3)
+    this.v3FactoryByNpm = new Map(); // npmV3 addr -> factory addr (other venues, e.g. pancakev3)
     this.blockTimeCache = { block: 0, ts: 0 };
   }
 
@@ -73,11 +73,11 @@ class Chain {
         calls.push({ to: a, data: IF_ERC20.encodeFunctionData('decimals') });
         calls.push({ to: a, data: IF_ERC20.encodeFunctionData('name') });
       }
-      // strict: galat RPC sementara (kuota) melempar, BUKAN jadi "decimals 18". Dulu
-      // pembacaan yang gagal disimpan permanen ke tabel tokens — token 9 desimal (NUKE)
-      // yang sempat terbaca 18 akan dinilai 10⁹× salah selamanya: ukuran posisi, batas
-      // $ per posisi, dan PnL ikut ngawur. decimals() yang benar-benar revert (token
-      // non-standar) tetap jatuh ke 18, tapi hasil yang tidak terbaca tidak disimpan.
+      // strict: a temporary RPC error (quota) throws, NOT treated as "decimals 18". A failed
+      // read used to be stored permanently in the tokens table — a 9-decimal token (NUKE)
+      // that was once read as 18 would be valued 10⁹× wrong forever: position size, the
+      // $ per position limit, and PnL all go haywire. A decimals() that truly reverts (a
+      // non-standard token) still falls back to 18, but a result that was unreadable is not stored.
       const res = await this.rpc.ethCallMany(calls, 'latest', { strict: true });
       miss.forEach((a, i) => {
         const dec = (h) => { try { return IF_ERC20.decodeFunctionResult('decimals', h)[0]; } catch { return null; } };
@@ -89,8 +89,8 @@ class Chain {
           decimals: d != null ? Number(d) : 18,
           name: res[i * 3 + 2] ? String(str(res[i * 3 + 2], 'name')).slice(0, 64) : '',
         };
-        // Tanpa symbol DAN decimals: kemungkinan besar bukan jawaban sah (node tertinggal
-        // belum mengenal kontraknya) — dipakai sekali, tidak disimpan, dibaca ulang nanti.
+        // Without symbol AND decimals: most likely not a legitimate answer (a lagging node
+        // does not know the contract yet) — used once, not stored, re-read later.
         if (d == null && t.symbol === '?') return this.tokenCache.set(a, { ...t, unverified: true });
         this.tokenCache.set(a, t);
         this.store.run('INSERT OR REPLACE INTO tokens(chain,address,symbol,name,decimals,seen_ts) VALUES(?,?,?,?,?,?)',
@@ -103,7 +103,7 @@ class Chain {
   }
   async token(a) { return (await this.tokens([a]))[0]; }
 
-  // ---- state pool v4 ------------------------------------------------------
+  // ---- v4 pool state ------------------------------------------------------
   async slot0V4(poolId) {
     const slot = ethers.keccak256(coder.encode(['bytes32', 'uint256'], [poolId, POOLS_SLOT]));
     const [w] = await this.rpc.ethCallMany([{ to: this.ADDR.poolManager, data: IF_EXT.encodeFunctionData('extsload', [slot]) }]);
@@ -120,7 +120,7 @@ class Chain {
     return res.map((w) => (w && !/^0x0*$/.test(w) ? unpackSlot0(w) : null));
   }
 
-  // ---- state pool v3 ------------------------------------------------------
+  // ---- v3 pool state ------------------------------------------------------
   async slot0V3(poolAddr) {
     const [w] = await this.rpc.ethCallMany([{ to: poolAddr, data: IF_POOL3.encodeFunctionData('slot0') }]);
     if (!w || w === '0x') return null;
@@ -130,9 +130,9 @@ class Chain {
     } catch { return null; }
   }
 
-  // npmAddr: alamat NonfungiblePositionManager venue yang dimaksud (default: venue
-  // 'v3' utama). Dipakai untuk venue v3 kedua di chain yang punya lebih dari satu
-  // deployment v3 (mis. BSC: Uniswap v3 dan PancakeSwap v3).
+  // npmAddr: the NonfungiblePositionManager address of the venue in question (default: the main
+  // 'v3' venue). Used for the second v3 venue on a chain that has more than one
+  // v3 deployment (e.g. BSC: Uniswap v3 and PancakeSwap v3).
   async factoryV3(npmAddr = this.ADDR.npmV3) {
     if (npmAddr === this.ADDR.npmV3 && this.v3Factory) return this.v3Factory;
     if (this.v3FactoryByNpm.has(npmAddr)) return this.v3FactoryByNpm.get(npmAddr);
@@ -158,19 +158,19 @@ class Chain {
     return addr;
   }
 
-  // ---- penilaian ----------------------------------------------------------
-  // Nilai posisi dalam aset kuotasi pool. Kalau tidak ada sisi kuotasi yang dikenal,
-  // nilai ditaksir lewat sisi kuotasi saja (token spekulatif dihargai dari harga pool).
-  // Simbol yang dikonversi lewat harga native chain (chain.ethUsd()) — native coin-nya
-  // sendiri dan bentuk wrapped-nya. Nama field/metode ini dipertahankan "eth" karena
-  // konsepnya sama persis di semua chain EVM (BNB/WBNB di BSC, dst).
+  // ---- valuation ----------------------------------------------------------
+  // Position value in the pool's quote asset. If no quote side is known,
+  // the value is estimated via the quote side only (the speculative token valued from the pool price).
+  // Symbols converted via the chain's native price (chain.ethUsd()) — the native coin
+  // itself and its wrapped form. This field/method name stays "eth" because
+  // the concept is exactly the same on every EVM chain (BNB/WBNB on BSC, etc).
   isEthLike(symbol) {
     return symbol === this.nativeSymbol || symbol === this.QUOTES[this.ADDR.weth]?.symbol;
   }
 
-  // Venue v3 (posisi NFT lewat NonfungiblePositionManager): 'v3' di semua chain, plus
-  // deployment v3 lain di chain yang punya lebih dari satu (BSC: 'pancakev3'). Semua
-  // berjalan lewat jalur kode v3 yang sama, cuma alamat NPM/factory-nya berbeda.
+  // v3 venues (NFT positions via the NonfungiblePositionManager): 'v3' on every chain, plus
+  // other v3 deployments on chains that have more than one (BSC: 'pancakev3'). All
+  // run through the same v3 code path, only the NPM/factory address differs.
   isV3Venue(venue) { return this.venues.some((v) => v.key === venue); }
   venueOf(venue) { return this.venues.find((v) => v.key === venue) || null; }
   npmFor(venue) { return this.venueOf(venue)?.npmV3 || this.ADDR.npmV3; }
@@ -183,7 +183,7 @@ class Chain {
     return null;
   }
 
-  // Nilai total posisi (kedua sisi) dalam satuan aset kuotasi.
+  // Total position value (both sides) in quote asset units.
   valueInQuote({ sqrtPriceX96, amount0, amount1, dec0, dec1, token0, token1 }) {
     const q = this.quoteSideOf(token0, token1);
     if (!q) return null;
@@ -194,8 +194,8 @@ class Chain {
     return { value: val, symbol: q.symbol, side: q.side, kind: q.kind };
   }
 
-  // Perkiraan timestamp blok — blok RH chain ~0,101 detik, tapi kita tetap ambil
-  // acuan asli sesekali supaya tidak melenceng jauh.
+  // Estimated block timestamp — RH chain blocks are ~0.101 seconds, but we still take
+  // a real reference occasionally so it does not drift far.
   async blockTs(block) {
     const now = Date.now();
     if (!this.blockTimeCache.block || now - this.blockTimeCache.at > 300_000) {
@@ -209,15 +209,33 @@ class Chain {
 
 module.exports = { Chain, computePoolId, unpackSlot0, POOLS_SLOT };
 
-// ---- harga ETH dalam USDG -------------------------------------------------
-// Diturunkan sendiri dari pool ETH-native/USDG di chain ini (tidak perlu sumber luar).
-// Pool-nya ditemukan lewat event Initialize yang mengindeks currency0 & currency1.
+// ---- ETH price in USDG -------------------------------------------------
+// Derived ourselves from the native-ETH/USDG pools on this chain (no external source needed).
+// The pools are found via the Initialize event that indexes currency0 & currency1.
 const { TOPIC } = require('./chain');
 
 Chain.prototype.findEthUsdgPools = async function findEthUsdgPools(headBlock, blocks = 4_000_000) {
   const stateKey = `eth_usdg_pools:${this.network}`;
+  // This list used to be cached FOREVER: once filled, an ETH/USDG pool born
+  // later was never seen — including pools without a hook, the only kind whose
+  // direct swap the router surely accepts. Now rescanned once a day.
+  // A failed scan KEEPS the old list (getLogs on this chain often goes down),
+  // and within one process is not repeated more often than hourly so the RPC is not hammered.
+  const TTL = 24 * 3600_000;
+  let old = null;
   const cached = this.store.getState(stateKey);
-  if (cached) { try { return JSON.parse(cached); } catch { /* lanjut pindai */ } }
+  if (cached) {
+    try {
+      const j = JSON.parse(cached);
+      const pools = Array.isArray(j) ? j : j.pools;      // old shape: a bare array
+      if (Array.isArray(pools) && pools.length) {
+        if (Date.now() - (Array.isArray(j) ? 0 : j.ts || 0) < TTL) return pools;
+        old = pools;
+      }
+    } catch { /* lanjut pindai */ }
+  }
+  if (old && this._ethUsdgScanAt && Date.now() - this._ethUsdgScanAt < 3600_000) return old;
+  this._ethUsdgScanAt = Date.now();
   const pad = (a) => '0x' + a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
   const found = [];
   const chunk = 400_000;
@@ -230,7 +248,7 @@ Chain.prototype.findEthUsdgPools = async function findEthUsdgPools(headBlock, bl
         topics: [TOPIC.initializeV4, null, pad(this.ADDR.native), pad(this.ADDR.usdg)],
         fromBlock: '0x' + lo.toString(16), toBlock: '0x' + hi.toString(16),
       });
-    } catch { /* rentang terlalu besar: lewati potongan ini */ }
+    } catch { /* range too large: skip this chunk */ }
     for (const l of logs) {
       const b = ethers.getBytes(l.data);
       const w = (i) => BigInt(ethers.hexlify(b.slice(i * 32, i * 32 + 32)));
@@ -243,25 +261,67 @@ Chain.prototype.findEthUsdgPools = async function findEthUsdgPools(headBlock, bl
     if (lo === 0) break;
     hi = lo - 1;
   }
-  if (found.length) this.store.setState(stateKey, JSON.stringify(found));
-  return found;
+  if (found.length) {
+    // The scan result is MERGED with the old list, not overwriting it. A block chunk whose
+    // getLogs failed is silently skipped above, so one unlucky scan gives a
+    // shorter list — yet a v4 pool that has been born never disappears from the
+    // chain, so a shrinking list ALWAYS means the scan fell short. The first
+    // rescan (25 Sep 2026) did return only 9 of the 12 recorded pools.
+    const exists = new Set(found.map((p) => String(p.poolId).toLowerCase()));
+    const gabung = [...found, ...(old || []).filter((p) => !exists.has(String(p.poolId).toLowerCase()))];
+    this.store.setState(stateKey, JSON.stringify({ ts: Date.now(), pools: gabung }));
+    return gabung;
+  }
+  // An empty scan is not time-stamped: the hourly guard above holds back repetition,
+  // so the old list is not locked for 24 hours because of an RPC that happens to be down.
+  return old || found;
+};
+
+// Global spot ETH/USD sources, queried in parallel; the median of the answers is the price.
+const GLOBAL_ETH_SOURCES = [
+  ['https://api.coinbase.com/v2/prices/ETH-USD/spot', (j) => j?.data?.amount],
+  ['https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT', (j) => j?.price],
+  ['https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd', (j) => j?.ethereum?.usd],
+];
+
+// Median of the sane prices the global sources return; null if none answered.
+Chain.globalEthPrice = async function globalEthPrice(fetchImpl = globalThis.fetch) {
+  const got = await Promise.all(GLOBAL_ETH_SOURCES.map(async ([url, pick]) => {
+    try {
+      const r = await fetchImpl(url, { signal: AbortSignal.timeout(5000) });
+      if (!r.ok) return null;
+      const v = Number(pick(await r.json()));
+      return v > 100 && v < 100_000 ? v : null;
+    } catch { return null; }
+  }));
+  const ok = got.filter((v) => v != null).sort((a, b) => a - b);
+  if (!ok.length) return null;
+  return ok.length % 2 ? ok[(ok.length - 1) / 2] : (ok[ok.length / 2 - 1] + ok[ok.length / 2]) / 2;
 };
 
 Chain.prototype.ethUsd = async function ethUsd(fallback = 2500) {
   const now = Date.now();
   if (this._ethUsd && now - this._ethUsdAt < 60_000) return this._ethUsd;
-  // Chain yang harga native-nya dibaca dari pool v3 tertentu (BSC: PancakeSwap v3
-  // USDT/WBNB) — lihat ethUsdFromV3Pools. Mode 'manual': harga dari config saja.
+  // 'global' mode: the market price from public APIs; if none answers, fall through to the
+  // on-chain pools below so the price never goes missing.
+  if (this.nativeUsdMode === 'global') {
+    const g = await Chain.globalEthPrice();
+    if (g) { this._ethUsd = g; this._ethUsdAt = now; return g; }
+  }
+  // Chains whose native price is read from specific v3 pools (BSC: PancakeSwap v3
+  // USDT/WBNB) — see ethUsdFromV3Pools. 'manual' mode: price from the config only.
   if (this.nativeUsdMode === 'v3pools') return this.ethUsdFromV3Pools(fallback, now);
-  if (this.nativeUsdMode !== 'v4pool') return this._ethUsd ?? fallback;
+  if (this.nativeUsdMode !== 'v4pool' && this.nativeUsdMode !== 'global') return this._ethUsd ?? fallback;
   try {
     const head = await this.rpc.blockNumber();
     const pools = await this.findEthUsdgPools(head);
     const noHook = pools.filter((p) => /^0x0+$/.test(p.hooks));
-    const list = (noHook.length ? noHook : pools).slice(0, 8);
+    // Every hookless pool is read (one batch each for slot0 and liquidity): a cap of 8
+    // in scan order used to drop the low-fee pools that carry the most reliable price.
+    const list = (noHook.length ? noHook : pools).slice(0, 24);
     if (!list.length) return fallback;
     const slots = await this.slot0V4Many(list.map((p) => p.poolId));
-    // pilih pool dengan likuiditas terbesar
+    // pick the pool with the largest liquidity
     const liqCalls = list.map((p) => ({
       to: this.ADDR.poolManager,
       data: IF_EXT.encodeFunctionData('extsload', [
@@ -269,8 +329,8 @@ Chain.prototype.ethUsd = async function ethUsd(fallback = 2500) {
       ]),
     }));
     const liqs = await this.rpc.ethCallMany(liqCalls);
-    // Kandidat: pool berlikuiditas aktif > 0 dan harga wajar (tick tidak menempel di
-    // batas). currency0 = ETH(18), currency1 = USDG(6) -> harga = USDG per ETH.
+    // Candidates: pools with active liquidity > 0 and a sane price (tick not stuck at the
+    // bound). currency0 = ETH(18), currency1 = USDG(6) -> price = USDG per ETH.
     const cands = [];
     list.forEach((p, i) => {
       const s = slots[i]; if (!s || s.sqrtPriceX96 === 0n) return;
@@ -281,15 +341,15 @@ Chain.prototype.ethUsd = async function ethUsd(fallback = 2500) {
     });
     const pick = Chain.pickEthPrice(cands);
     if (!pick) return fallback;
-    if (pick.outlier) this.log(`harga ETH: pool terdalam $${pick.outlier.toFixed(0)} menyimpang dari pool lain — dipakai median $${pick.price.toFixed(0)}`);
+    if (pick.outlier) this.log(`harga ETH: pool acuan $${pick.outlier.toFixed(0)} menyimpang dari pool lain — dipakai median $${pick.price.toFixed(0)}`);
     this._ethUsd = pick.price; this._ethUsdAt = now; this._ethPoolId = pick.poolId;
     return pick.price;
   } catch { return fallback; }
 };
 
-// Harga native dari pool v3 yang ditetapkan di profil (nativeUsd.pools): slot0 +
-// liquidity tiap pool dalam satu batch, dinyatakan sebagai USD per native menurut sisi
-// mana yang stablecoin (slot usdg). Pemilihan & pagar outlier sama dengan jalur v4.
+// Native price from the v3 pools set in the profile (nativeUsd.pools): slot0 +
+// liquidity of each pool in one batch, expressed as USD per native according to which side
+// is the stablecoin (usdg slot). Selection & the outlier fence are the same as the v4 path.
 Chain.prototype.ethUsdFromV3Pools = async function ethUsdFromV3Pools(fallback, now = Date.now()) {
   const pools = this.nativeUsdPools;
   if (!pools.length) return this._ethUsd ?? fallback;
@@ -310,7 +370,7 @@ Chain.prototype.ethUsdFromV3Pools = async function ethUsdFromV3Pools(fallback, n
       if (!priceUsable(s, L)) return;
       const t0 = ('0x' + w0.slice(-40)).toLowerCase();
       const usdIs0 = t0 === this.ADDR.usdg;
-      // priceFromSqrt = token1 per token0. USD per native = token0 per token1 kalau token0 stablecoin.
+      // priceFromSqrt = token1 per token0. USD per native = token0 per token1 if token0 is the stablecoin.
       const p1per0 = m.priceFromSqrt(s.sqrtPriceX96, usdIs0 ? usdDec : natDec, usdIs0 ? natDec : usdDec);
       const price = usdIs0 ? 1 / p1per0 : p1per0;
       if (Number.isFinite(price) && price > 1 && price < 1_000_000) cands.push({ p: { poolId: a }, s, L, price });
@@ -323,23 +383,44 @@ Chain.prototype.ethUsdFromV3Pools = async function ethUsdFromV3Pools(fallback, n
   } catch { return this._ethUsd ?? fallback; }
 };
 
-// Harga ETH dari daftar pool kandidat: pool terdalam, KECUALI harganya menyimpang > 3%
-// dari median tiga pool terdalam — satu pool yang baru saja disapu (atau salah baca dari
-// node tertinggal) tidak boleh menggeser semua batas dolar, ukuran posisi, dan PnL.
-// Balikan { price, poolId, outlier } — outlier = harga pool terdalam yang ditolak.
+// ETH price from the list of candidate pools.
+//
+// A pool's price is only pinned to the market within its own fee: arbitrage pays only once the
+// price is more than `fee` away, so a 2.5%-fee pool can sit 2.5% off for hours. On 2026-10-01 the
+// deepest hookless ETH/USDG pool (2.5% fee) read $2,751 while the market and the 0.0021%-fee pool
+// read ~$2,690 — every ETH balance, ETH-quoted position and dollar limit was ~2% too high.
+// So among the pools with real liquidity (at least MIN_DEPTH_SHARE of the deepest), the one with
+// the LOWEST fee sets the price; depth breaks ties. Candidates without a known fee (BSC v3pools
+// mode) all tie on fee, which keeps the old deepest-first rule there.
+//
+// The outlier fence stays: if the chosen pool is > 3% away from the median of the three
+// deepest pools (just swept, or misread from a lagging node), that median is used instead.
+// Returns { price, poolId, outlier } — outlier = the price of the chosen pool that was rejected.
+const MIN_DEPTH_SHARE = 100n;   // 1/100 of the deepest pool's active liquidity
+const feeOf = (c) => {
+  const f = Number(c.p?.fee);
+  return Number.isFinite(f) && f >= 0 && f < 1_000_000 ? f : null;   // 0x800000 = dynamic: unknown
+};
 Chain.pickEthPrice = function pickEthPrice(cands) {
   if (!cands.length) return null;
-  const top = [...cands].sort((a, b) => (a.L > b.L ? -1 : a.L < b.L ? 1 : 0)).slice(0, 3);
-  const best = top[0];
+  const byDepth = [...cands].sort((a, b) => (a.L > b.L ? -1 : a.L < b.L ? 1 : 0));
+  const maxL = byDepth[0].L;
+  const deep = byDepth.filter((c) => c.L * MIN_DEPTH_SHARE >= maxL);
+  const best = [...deep].sort((a, b) => {
+    const fa = feeOf(a), fb = feeOf(b);
+    if (fa !== fb) return fa == null ? 1 : fb == null ? -1 : fa - fb;
+    return a.L > b.L ? -1 : a.L < b.L ? 1 : 0;
+  })[0];
+  const top = byDepth.slice(0, 3);
   if (top.length < 3) return { price: best.price, poolId: best.p.poolId, outlier: null };
   const median = [...top].sort((a, b) => a.price - b.price)[1];
   if (Math.abs(best.price - median.price) / median.price <= 0.03) return { price: best.price, poolId: best.p.poolId, outlier: null };
   return { price: median.price, poolId: median.p.poolId, outlier: best.price };
 };
 
-// Harga ETH pada blok lampau, dari pool ETH/USDG yang sama (butuh node arsip).
-// Dipakai menilai hasil jual ke ETH pada waktunya — memakai harga ETH sekarang untuk
-// penjualan kemarin bisa meleset beberapa persen. Tanpa arsip: harga sekarang.
+// ETH price at a past block, from the same ETH/USDG pools (needs an archive node).
+// Used to value the proceeds of a sale to ETH at its time — using today's ETH price for
+// yesterday's sale can be off by a few percent. Without an archive: the current price.
 Chain.prototype.ethUsdAt = async function ethUsdAt(block, fallback = 2500) {
   const now = await this.ethUsd(fallback);
   if (!this._ethPoolId || !this.rpc.hasArchive()) return now;
@@ -356,23 +437,23 @@ Chain.prototype.ethUsdAt = async function ethUsdAt(block, fallback = 2500) {
   return now;
 };
 
-// ---- poolKey dari poolId --------------------------------------------------
-// Posisi yang NFT-nya sudah dibakar tidak lagi mengembalikan poolKey dari
-// PositionManager — yang tersisa cuma poolId dari event ModifyLiquidity. Tanpa
-// pasangan tokennya, posisi itu tidak bisa dinilai sama sekali (semua jadi nol).
-// Event Initialize mengindeks poolId, jadi pencarian mundurnya murah, dan hasilnya
-// disimpan supaya cukup sekali per pool.
+// ---- poolKey from poolId --------------------------------------------------
+// A position whose NFT has been burned no longer returns a poolKey from the
+// PositionManager — all that is left is the poolId from the ModifyLiquidity event. Without
+// its token pair, that position cannot be valued at all (everything becomes zero).
+// The Initialize event indexes poolId, so the backward lookup is cheap, and the result is
+// stored so it is needed only once per pool.
 Chain.prototype.poolKeyOfId = async function poolKeyOfId(poolId, hintBlock = null, hintTx = null) {
   const row = this.store.get('SELECT token0,token1,fee,tick_spacing,hooks FROM pools WHERE chain=? AND pool_ref=?', this.network, poolId);
   if (row && row.token0) {
     return { currency0: row.token0, currency1: row.token1, fee: row.fee, tickSpacing: row.tick_spacing, hooks: row.hooks };
   }
 
-  // Jalur cepat: poolKey biasanya tertulis apa adanya di dalam calldata tx mint
-  // (MINT_POSITION mengoper struct-nya utuh). Geser jendela 5 word di sepanjang
-  // calldata dan cocokkan hash-nya dengan poolId — murni hitungan lokal, tanpa RPC.
-  // Kombinasi fee/tickSpacing di chain ini terlalu beragam untuk ditebak, jadi
-  // mencocokkan hash jauh lebih andal daripada menerka tier.
+  // Fast path: the poolKey is usually written as it is inside the mint tx calldata
+  // (MINT_POSITION passes its struct whole). Slide a 5-word window along the
+  // calldata and match its hash against the poolId — purely local computation, no RPC.
+  // The fee/tickSpacing combinations on this chain are too varied to guess, so
+  // matching the hash is far more reliable than guessing the tier.
   if (hintTx) {
     const pk = await this.poolKeyFromCalldata(poolId, hintTx);
     if (pk) return pk;
@@ -380,7 +461,7 @@ Chain.prototype.poolKeyOfId = async function poolKeyOfId(poolId, hintBlock = nul
 
   const head = await this.rpc.blockNumber();
   const anchor = hintBlock || head;
-  // Pool selalu dibuat SEBELUM posisinya, jadi cari mundur dari blok petunjuk.
+  // A pool is always created BEFORE its position, so search backward from the hint block.
   const spans = [50_000, 500_000, 3_000_000, 12_000_000];
   for (const span of spans) {
     const lo = Math.max(0, anchor - span);
@@ -416,12 +497,12 @@ Chain.prototype.poolKeyOfId = async function poolKeyOfId(poolId, hintBlock = nul
   return null;
 };
 
-// Harga lahir pool v4: blok dan sqrtPriceX96 dari event Initialize-nya. Selama belum
-// ada Swap, harga pool = harga ini — dan pool yang dibuat lalu langsung di-mint dalam
-// satu tx (kebiasaan wallet yang meluncurkan tokennya sendiri) belum punya state di
-// blok sebelumnya maupun Swap untuk ditumpangi, jadi inilah satu-satunya sumber harga
-// mint-nya. Dicari mundur dari blok petunjuk (pool selalu lahir sebelum kejadiannya)
-// dan disimpan supaya cukup sekali per pool. null = tidak ketemu (atau RPC gagal).
+// The birth price of a v4 pool: the block and sqrtPriceX96 from its Initialize event. As long as there
+// has been no Swap, the pool price = this price — and a pool created then minted right away in
+// one tx (the habit of wallets that launch their own token) has no state at the
+// previous block nor a Swap to lean on, so this is the only source of its
+// mint price. Searched backward from the hint block (a pool is always born before its event)
+// and stored so it is needed only once per pool. null = not found (or the RPC failed).
 Chain.prototype.poolInitOf = async function poolInitOf(poolId, hintBlock = null) {
   const row = this.store.get('SELECT init_block, init_sqrt FROM pools WHERE chain=? AND pool_ref=?', this.network, poolId);
   if (row && row.init_sqrt) return { block: row.init_block, sqrt: BigInt(row.init_sqrt) };
@@ -453,13 +534,13 @@ Chain.prototype.poolKeyFromCalldata = async function poolKeyFromCalldata(poolId,
   let tx;
   try { tx = await this.rpc.call('eth_getTransactionByHash', [txHash]); } catch { return null; }
   if (!tx || !tx.input || tx.input.length < 10 + 64 * 5) return null;
-  const body = tx.input.slice(10);                 // buang selector
-  const words = body.length >> 6;                  // jumlah word 32-byte
+  const body = tx.input.slice(10);                 // drop the selector
+  const words = body.length >> 6;                  // number of 32-byte words
   const wordAt = (i) => '0x' + body.slice(i * 64, i * 64 + 64);
   const addrOf = (w) => '0x' + w.slice(-40);
   for (let i = 0; i + 5 <= words; i++) {
     const c0 = wordAt(i), c1 = wordAt(i + 1), fe = wordAt(i + 2), ts = wordAt(i + 3), hk = wordAt(i + 4);
-    // dua word pertama harus berbentuk alamat (12 byte teratas nol)
+    // the first two words must look like addresses (the top 12 bytes zero)
     if (!/^0x0{24}/.test(c0) || !/^0x0{24}/.test(c1) || !/^0x0{24}/.test(hk)) continue;
     const fee = Number(BigInt(fe));
     if (!Number.isFinite(fee) || fee > 0xffffff) continue;
@@ -481,15 +562,15 @@ Chain.prototype.poolKeyFromCalldata = async function poolKeyFromCalldata(poolId,
   return null;
 };
 
-// ---- umur pool ------------------------------------------------------------
-// Umur hanya menulis blok/waktu lahir. Dulu barisnya ditulis INSERT OR REPLACE:
-// kolom yang tidak disebut (token0/token1/fee/tick_spacing/hooks) ikut jadi NULL,
-// jadi pool yang metadatanya sudah dikenal berubah jadi "?/?" di halaman pool.
+// ---- pool age ------------------------------------------------------------
+// The age only writes the birth block/time. The row used to be written INSERT OR REPLACE:
+// columns not mentioned (token0/token1/fee/tick_spacing/hooks) also became NULL,
+// so a pool whose metadata was already known turned into "?/?" on the pool page.
 const AGE_UPSERT = `INSERT INTO pools(chain,pool_ref,venue,first_block,first_ts) VALUES(?,?,?,?,?)
   ON CONFLICT(chain,pool_ref) DO UPDATE SET first_block=excluded.first_block, first_ts=excluded.first_ts`;
 
-// Event Initialize mengindeks poolId, jadi pencarian per-pool murah. Kalau tidak
-// ketemu di jendela pindai, pool itu lebih tua dari jendela (dan itu aman).
+// The Initialize event indexes poolId, so the per-pool search is cheap. If it is not
+// found in the scan window, that pool is older than the window (and that is safe).
 Chain.prototype.poolAgeMinutes = async function poolAgeMinutes(poolId, windowBlocks = 900_000) {
   const row = this.store.get('SELECT first_block, first_ts FROM pools WHERE chain=? AND pool_ref=?', this.network, poolId);
   if (row && row.first_ts) return (Date.now() - row.first_ts) / 60000;
@@ -503,7 +584,7 @@ Chain.prototype.poolAgeMinutes = async function poolAgeMinutes(poolId, windowBlo
     });
   } catch { return Infinity; }
   if (!logs.length) {
-    // lebih tua dari jendela: catat sebagai "sangat tua" supaya tidak dipindai ulang
+    // older than the window: record as "very old" so it is not rescanned
     this.store.run(AGE_UPSERT, this.network, poolId, 'v4', from, Date.now() - windowBlocks * this.blockMs);
     return (windowBlocks * this.blockMs) / 60000;
   }
@@ -513,7 +594,7 @@ Chain.prototype.poolAgeMinutes = async function poolAgeMinutes(poolId, windowBlo
   return (Date.now() - ts) / 60000;
 };
 
-// Likuiditas aktif pool v4 (slot +3), dipakai untuk menaksir dampak harga swap.
+// Active liquidity of a v4 pool (slot +3), used to estimate the swap price impact.
 Chain.prototype.poolLiquidityMany = async function poolLiquidityMany(poolIds) {
   if (!poolIds.length) return [];
   const words = await this.rpc.ethCallMany(poolIds.map((id) => {
@@ -528,41 +609,41 @@ Chain.prototype.poolLiquidity = async function poolLiquidity(poolId) {
   return L ?? 0n;
 };
 
-// ---- harga acuan pasangan ---------------------------------------------------
-// Harga pool tidak selalu layak dipakai menilai. Pool yang likuiditas aktifnya nol
-// (semua LP di luar rentang, atau satu swap menyapu habis) menyisakan sqrtPrice di
-// mana saja — pernah sampai tick maksimum, 1e17× harga wajar. Menilai fee/sisa
-// token dengan harga itu menghasilkan PnL "$4e52". Harga yang layak = likuiditas
-// aktif > 0 dan tick tidak menempel di batas.
+// ---- pair reference price ---------------------------------------------------
+// A pool's price is not always fit for valuation. A pool whose active liquidity is zero
+// (all LPs out of range, or one swap swept it empty) leaves sqrtPrice
+// anywhere — it has gone as far as the maximum tick, 1e17× the fair price. Valuing fees/leftover
+// tokens at that price produces a PnL of "$4e52". A fit price = active
+// liquidity > 0 and the tick not stuck at a bound.
 const TICK_EDGE = 887000;
 const SQRT_EDGE_LO = m.getSqrtRatioAtTick(-TICK_EDGE), SQRT_EDGE_HI = m.getSqrtRatioAtTick(TICK_EDGE);
 const sqrtSane = (s) => s != null && s > SQRT_EDGE_LO && s < SQRT_EDGE_HI;
 function priceUsable(slot, liquidity) {
   return !!slot && liquidity > 0n && sqrtSane(slot.sqrtPriceX96);
 }
-// Untuk harga historis (riset wallet) tidak ada pool acuan yang murah dibaca; harga
-// yang menempel di batas diapit ke tepi rentang posisi — harga terakhir yang benar-
-// benar dilalui posisi itu. Komposisi tokennya sama (semua di satu sisi), hanya
-// nilainya yang jadi masuk akal.
-// Diapit juga kalau harganya masih "di dalam batas tick" tapi >MARK_RATIO_MAX× di luar
-// tepi terdekat — pool sisa 1 wei sesudah rug menaruh harga 1e9× tanpa menyentuh batas.
+// For a historical price (wallet research) there is no cheap reference pool to read; a price
+// stuck at a bound is clamped to the edge of the position range — the last price the position
+// really passed through. The token composition is the same (all on one side), only the
+// value becomes sensible.
+// Also clamped if the price is still "within the tick bounds" but >MARK_RATIO_MAX× outside the
+// nearest edge — a pool left with 1 wei after a rug puts the price at 1e9× without touching the bound.
 const MARK_RATIO_MAX = 1000n;
 function sqrtClampedToRange(sqrt, sa, sb) {
   if (sqrt == null) return sqrt;
   const edge = sqrt < sa ? sa : sqrt > sb ? sb : null;
-  if (edge == null) return sqrt;                       // di dalam rentang: wajar
+  if (edge == null) return sqrt;                       // inside the range: sane
   if (!sqrtSane(sqrt)) return edge;
   const hi = sqrt > edge ? sqrt : edge, lo = sqrt > edge ? edge : sqrt;
-  return lo > 0n && hi * hi < lo * lo * MARK_RATIO_MAX ? sqrt : edge;   // rasio harga = (√hi/√lo)²
+  return lo > 0n && hi * hi < lo * lo * MARK_RATIO_MAX ? sqrt : edge;   // price ratio = (√hi/√lo)²
 }
 
-// Harga acuan untuk pasangan token: dari pool lain yang memuat pasangan yang sama
-// (tabel pools) dan harganya layak, yang likuiditasnya terdalam. null kalau tidak
-// ada — pemanggil memutuskan cadangannya. Hasil ditahan sebentar: sinkron posisi
-// bisa dipanggil beruntun dan pasangan yang sama tidak perlu dibaca ulang.
+// Reference price for a token pair: from another pool containing the same pair
+// (pools table) whose price is fit, with the deepest liquidity. null if there is
+// none — the caller decides the fallback. The result is held briefly: position syncs
+// can be called back to back and the same pair need not be re-read.
 Chain.prototype.markSqrtForPair = async function markSqrtForPair(token0, token1, skipRef) {
   const a = String(token0 || '').toLowerCase(), b = String(token1 || '').toLowerCase();
-  // pool yang dikecualikan ikut jadi kunci: pasangan sama, posisi di pool berbeda
+  // the excluded pool is also part of the key: same pair, position in a different pool
   const key = `${a}|${b}|${String(skipRef || '').toLowerCase()}`;
   const now = Date.now();
   this._markCache ??= new Map();
@@ -584,8 +665,8 @@ Chain.prototype.markSqrtForPair = async function markSqrtForPair(token0, token1,
     ]);
     let best = null;
     const consider = (row, slot, L) => {
-      // token0/token1 pool bisa terbalik terhadap pasangan yang diminta — harga harus
-      // dinyatakan dalam urutan pemanggil.
+      // the pool's token0/token1 can be inverted relative to the requested pair — the price must
+      // be expressed in the caller's order.
       if (!priceUsable(slot, L)) return;
       if (best && L <= best.L) return;
       const flipped = row.token0 !== a;
@@ -599,7 +680,7 @@ Chain.prototype.markSqrtForPair = async function markSqrtForPair(token0, token1,
       try {
         const d = IF_POOL3.decodeFunctionResult('slot0', w);
         consider(r, { sqrtPriceX96: BigInt(d[0]), tick: Number(d[1]) }, BigInt(wl));
-      } catch { /* pool tidak terbaca: lewati */ }
+      } catch { /* pool unreadable: skip */ }
     });
     val = best ? best.val : null;
   } catch (e) {
@@ -613,10 +694,10 @@ module.exports.priceUsable = priceUsable;
 module.exports.sqrtSane = sqrtSane;
 module.exports.sqrtClampedToRange = sqrtClampedToRange;
 
-// ---- pool jembatan ETH <-> USDG -------------------------------------------
-// Dipakai untuk memindahkan kas antar aset kuotasi: kalau target nge-LP di pool
-// berkuotasi ETH sedangkan kas kita USDG (atau sebaliknya), inilah jalannya.
-// Dipilih yang likuiditasnya terdalam supaya dampak harganya paling kecil.
+// ---- ETH <-> USDG bridge pools -------------------------------------------
+// Used to move cash between quote assets: if the target LPs in an ETH-quoted
+// pool while our cash is USDG (or vice versa), this is the way.
+// The one with the deepest liquidity is chosen so the price impact is smallest.
 Chain.prototype.bestEthUsdgPool = async function bestEthUsdgPool() {
   const now = Date.now();
   if (this._bridge && now - this._bridgeAt < 300_000) return this._bridge;
@@ -626,8 +707,8 @@ Chain.prototype.bestEthUsdgPool = async function bestEthUsdgPool() {
   const list = (noHook.length ? noHook : pools).slice(0, 8);
   if (!list.length) return null;
   const slots = await this.slot0V4Many(list.map((p) => p.poolId));
-  // Satu batch untuk semua likuiditas — versi sebelumnya menembak 8 kali berurutan
-  // dan itu yang bikin timeout saat indexer sedang sibuk.
+  // One batch for all the liquidity — the previous version fired 8 times in sequence
+  // and that is what caused timeouts when the indexer was busy.
   const liqWords = await this.rpc.ethCallMany(list.map((p) => ({
     to: this.ADDR.poolManager,
     data: IF_EXT.encodeFunctionData('extsload', [
@@ -635,22 +716,27 @@ Chain.prototype.bestEthUsdgPool = async function bestEthUsdgPool() {
         .toString(16).padStart(64, '0'),
     ]),
   })));
-  let best = null;
+  // ALL candidates are returned, not just the deepest: on this chain the ETH/USDG pools
+  // are almost always hooked and the hook can refuse a swap from the router, so the caller
+  // simulates them one by one and falls down to the next candidate. A single pool
+  // would kill this fallback entirely the moment the deepest pool happens to refuse.
+  const cands = [];
   for (let i = 0; i < list.length; i++) {
     const s = slots[i];
     if (!s || s.sqrtPriceX96 === 0n) continue;
     const L = liqWords[i] && liqWords[i] !== '0x' ? BigInt(liqWords[i]) & ((1n << 128n) - 1n) : 0n;
-    if (!best || L > best.liquidity) {
-      best = {
-        poolId: list[i].poolId,
-        poolKey: {
-          currency0: this.ADDR.native, currency1: this.ADDR.usdg,
-          fee: list[i].fee, tickSpacing: list[i].tickSpacing, hooks: list[i].hooks,
-        },
-        slot0: s, liquidity: L,
-      };
-    }
+    cands.push({
+      poolId: list[i].poolId,
+      poolKey: {
+        currency0: this.ADDR.native, currency1: this.ADDR.usdg,
+        fee: list[i].fee, tickSpacing: list[i].tickSpacing, hooks: list[i].hooks,
+      },
+      slot0: s, liquidity: L,
+    });
   }
+  // Deepest first: the smallest price impact.
+  cands.sort((a, b) => (a.liquidity < b.liquidity ? 1 : a.liquidity > b.liquidity ? -1 : 0));
+  const best = cands.length ? { ...cands[0], candidates: cands } : null;
   if (best) { this._bridge = best; this._bridgeAt = now; }
   return best;
 };

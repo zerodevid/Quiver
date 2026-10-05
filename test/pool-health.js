@@ -23,7 +23,7 @@ const token = '0x' + 'ab'.repeat(20), owner = '0x' + 'cd'.repeat(20), poolAddr =
   assert.ok(h24Signal.key.includes('{usd}'));
   assert.ok(Math.abs(h24Signal.values.usd - 0.002 * 0.74) < 1e-9);
   assert.equal(poolHealth({ ...input, pair: { ...pair, liquidityUsd: null } }).status, 'unknown');
-  // Sinyal GMGN: tanpa objek = tidak dinilai; galat = data kurang; honeypot/pajak/rug = risiko.
+  // GMGN signal: no object = not rated; error = insufficient data; honeypot/tax/rug = risk.
   assert.equal(poolHealth(input).gmgnOk, false);
   assert.equal(poolHealth({ ...input, gmgn: { error: 'x' } }).status, 'unknown');
   const gmOk = { enabled: true, address: token, security: { honeypot: false, sellTaxPct: 0, buyTaxPct: 0, rugPct: 5, washTrading: false, creatorSold: false, openSource: true, ownerRenounced: true }, stat: {}, dev: {} };
@@ -33,8 +33,8 @@ const token = '0x' + 'ab'.repeat(20), owner = '0x' + 'cd'.repeat(20), poolAddr =
   assert.equal(poolHealth({ ...input, gmgn: { ...gmOk, security: { ...gmOk.security, sellTaxPct: 12 } } }).status, 'risk');
   assert.equal(poolHealth({ ...input, gmgn: { ...gmOk, security: { ...gmOk.security, rugPct: 55 } } }).status, 'risk');
   assert.equal(poolHealth({ ...input, gmgn: { ...gmOk, dev: { status: 'sell' } } }).status, 'warn');
-  assert.equal(poolHealth({ ...input, gmgn: { ...gmOk, address: owner } }).status, 'unknown', 'profil token lain tidak dipakai');
-  // top-10 versi GMGN hanya dipakai saat daftar holder kita tidak ada.
+  assert.equal(poolHealth({ ...input, gmgn: { ...gmOk, address: owner } }).status, 'unknown', 'another token\'s profile is not used');
+  // GMGN's top-10 is only used when our own holder list is missing.
   assert.equal(poolHealth({ ...input, gmgn: { ...gmOk, security: { ...gmOk.security, top10Pct: 70 } } }).status, 'healthy');
   assert.equal(poolHealth({ ...input, holders: null, gmgn: { ...gmOk, security: { ...gmOk.security, top10Pct: 70 } } }).status, 'risk');
   assert.equal(poolHealth({ ...input, holders: { ...holders, items: [{ address: owner, percent: 30, kind: 'address' }, ...holders.items] } }).status, 'risk');

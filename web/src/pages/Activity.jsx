@@ -2,26 +2,26 @@ import { useState } from 'react';
 import { Plus, Minus, ArrowLeftRight, CircleDollarSign, UserPlus, ExternalLink } from 'lucide-react';
 import { Button } from '@heroui/react';
 import { usePoll } from '../hooks';
-import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Pick, Dot, TradeLinks, baseTokenOf } from '../components/ui';
+import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Pick, Dot, TradeLinks, WalletLinks, baseTokenOf } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
-import { usd, ago, short, txHref, locale as fmtLocale, AKSI, KEPUTUSAN } from '../fmt';
+import { usd, ago, short, txHref, locale as fmtLocale, ACTIONS, DECISIONS } from '../fmt';
 import { chainInfo, EXPLORER_NAME } from '../chain';
 import { useI18n, reason } from '../i18n';
 import FollowDialog from '../components/FollowDialog';
 
-// Ikon per jenis aksi: arah gerakan terbaca tanpa membaca labelnya.
-const IKON = { increase: Plus, mint: Plus, reentry: Plus, decrease: Minus, collect: CircleDollarSign };
-const WARNA = { increase: 'text-accent', mint: 'text-accent', reentry: 'text-accent', decrease: 'text-warning', collect: 'text-success' };
+// Icon per action type: the direction of the move reads without reading the label.
+const ICON = { increase: Plus, mint: Plus, reentry: Plus, decrease: Minus, collect: CircleDollarSign };
+const COLOR = { increase: 'text-accent', mint: 'text-accent', reentry: 'text-accent', decrease: 'text-warning', collect: 'text-success' };
 
-// Ukuran posisi kita dalam USD dari rencana keputusan (hanya rencana masuk yang punya).
-function ukuranKita(a) {
+// Our position size in USD from the decision plan (only entry plans have one).
+function ourSize(a) {
   if (!a.plan) return null;
   try { const v = JSON.parse(a.plan).valueUsd; return Number.isFinite(v) ? v : null; } catch { return null; }
 }
 
-// Transaksi di penjelajah blok: yang di kolom waktu adalah transaksi TARGET (aksi
-// yang terbaca dari chain), yang di kolom keputusan transaksi salinan KITA. Hash-nya
-// ditampilkan pendek — yang dicari orang biasanya cuma jalan ke penjelajahnya.
+// Transactions on the block explorer: the one in the time column is the TARGET's transaction (the action
+// read from the chain), the one in the decision column is OUR copy's transaction. The hash
+// is shown shortened — what people usually want is just to get to the explorer.
 function TxLink({ hash, label, className = '' }) {
   const { t } = useI18n();
   if (!hash) return null;
@@ -35,9 +35,9 @@ function TxLink({ hash, label, className = '' }) {
   );
 }
 
-// Alasan keputusan bisa panjang (tiga-empat kalimat); tampil dua baris supaya
-// tabelnya tetap padat, klik untuk membuka seluruhnya. Tombol, bukan div, supaya
-// bisa diraih keyboard — dan klik-nya tidak merambat ke baris.
+// The decision reason can be long (three or four sentences); it is shown as two lines so
+// the table stays compact, click to open it fully. A button, not a div, so
+// it is keyboard-reachable — and its click does not propagate to the row.
 function Reason({ text }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -54,12 +54,12 @@ function Reason({ text }) {
 export default function Activity() {
   const { t } = useI18n();
   const { data: d, reload } = usePoll('/api/activity?limit=200', 8000);
-  // Aksi yang sedang dipertimbangkan untuk diikuti manual (modal konfirmasi).
+  // An action being considered for manual following (confirmation modal).
   const [follow, setFollow] = useState(null);
   const [filter, setFilter] = useState('all');
-  // Saringan tambahan: jenis aksi (buka/tambah/kurangi/klaim) dan wallet target.
-  // Ketiganya saling mengiris; hitungan tiap tombol mengikuti dua saringan lainnya,
-  // jadi angkanya selalu = jumlah baris yang bakal tampil kalau tombol itu diklik.
+  // Extra filters: action type (open/add/decrease/claim) and target wallet.
+  // The three slice each other; each button's count follows the other two filters,
+  // so the number is always = the rows that would show if that button were clicked.
   const [kind, setKind] = useState('all');
   const [target, setTarget] = useState('all');
   if (!d) return <Loading page />;
@@ -72,8 +72,8 @@ export default function Activity() {
   const n = (v) => base.filter((a) => a.verdict === v).length;
   const opts = [['all', 'Semua', base.length], ['copy', 'Disalin', n('copy')], ['dry', 'Simulasi', n('dry')],
     ['skip', 'Dilewati', n('skip')], ['error', 'Gagal', n('error')]].filter(([id, , c]) => id === 'all' || c > 0 || id === filter);
-  // mint dan increase sama-sama "masuk" — di pemantauan v4 mint tercatat sebagai
-  // increase pertama, jadi keduanya dijadikan satu tombol.
+  // mint and increase are both "entry" — in v4 monitoring the mint is recorded as the first
+  // increase, so the two are merged into a single button.
   const baseK = all.filter((a) => byVerdict(a) && byTarget(a));
   const nk = (k) => baseK.filter((a) => (k === 'mint' ? (a.kind === 'mint' || a.kind === 'increase' || a.kind === 'reentry') : a.kind === k)).length;
   const kinds = [['all', 'Semua aksi', baseK.length], ['mint', 'Tambah / buka', nk('mint')], ['decrease', 'Kurangi', nk('decrease')],
@@ -103,17 +103,20 @@ export default function Activity() {
                 <TxLink hash={a.tx_hash} label="Transaksi target" className="mt-1" />
               </div>) },
             { key: 'tgt', label: 'Target', sort: (a) => a.targetLabel || a.target, search: (a) => `${a.targetLabel || ''} ${a.target}`, render: (a) => (
-              <a href={'#targets/' + a.target} className="group block w-44" title={a.target}>
-                {a.targetLabel && <div className="truncate font-medium group-hover:underline">{a.targetLabel}</div>}
-                <div className="mono mt-1 text-xs text-muted">{short(a.target)}</div>
-              </a>) },
+              <div className="w-44">
+                <a href={'#targets/' + a.target} className="group block" title={a.target}>
+                  {a.targetLabel && <div className="truncate font-medium group-hover:underline">{a.targetLabel}</div>}
+                  <div className="mono mt-1 text-xs text-muted">{short(a.target)}</div>
+                </a>
+                <WalletLinks address={a.target} compact className="mt-0.5" />
+              </div>) },
             { key: 'kind', label: 'Aksi', sort: (a) => a.kind, render: (a) => {
-              const I = IKON[a.kind] || ArrowLeftRight;
+              const I = ICON[a.kind] || ArrowLeftRight;
               return (
                 <div className="flex items-center gap-2.5 whitespace-nowrap">
-                  <span className={`flex size-7 shrink-0 items-center justify-center rounded-lg bg-default ${WARNA[a.kind] || 'text-muted'}`}><I className="size-3.5" strokeWidth={2.5} /></span>
+                  <span className={`flex size-7 shrink-0 items-center justify-center rounded-lg bg-default ${COLOR[a.kind] || 'text-muted'}`}><I className="size-3.5" strokeWidth={2.5} /></span>
                   <div>
-                    <div className="font-medium">{t(AKSI[a.kind]?.[0] || a.kind)}</div>
+                    <div className="font-medium">{t(ACTIONS[a.kind]?.[0] || a.kind)}</div>
                     <span className="mt-1 inline-flex rounded border border-border px-1.5 py-0.5 text-[0.625rem] leading-none text-muted uppercase">{a.venue}</span>
                   </div>
                 </div>);
@@ -131,18 +134,18 @@ export default function Activity() {
                   quoteSide={a.quoteSide} symbol0={a.symbol0} symbol1={a.symbol1} />
               : <span className="text-muted">—</span>) },
             { key: 'val', label: 'Nilai', align: 'end', sort: (a) => a.value_quote, render: (a) => {
-              // Nilai = posisi TARGET. Ukuran kita (setelah batas) di bawahnya — tanpa itu
-              // "$1.000 · Gagal: kas kurang" terbaca seolah bot mencoba masuk $1.000.
-              const kita = ukuranKita(a);
+              // Value = the TARGET's position. Our size (after caps) below it — without that
+              // "$1,000 · Failed: insufficient cash" reads as if the bot tried to enter with $1,000.
+              const ours = ourSize(a);
               return (
                 <div className="min-w-20 whitespace-nowrap font-medium tabular-nums">
                   {a.value_quote == null ? <span className="text-muted">—</span>
                     : (a.quote_symbol === 'ETH' || a.quote_symbol === 'WETH') ? `${a.value_quote.toFixed(4)} Ξ` : usd(a.value_quote)}
-                  {kita != null && <div className="mt-1 text-xs font-normal text-muted">{t('kita {v}', { v: usd(kita) })}</div>}
+                  {ours != null && <div className="mt-1 text-xs font-normal text-muted">{t('kita {v}', { v: usd(ours) })}</div>}
                 </div>);
             } },
             { key: 'dec', label: 'Keputusan', sort: (a) => a.verdict, search: (a) => `${a.verdict || ''} ${a.reason || ''} ${a.decision_tx || ''}`, render: (a) => {
-              const k = KEPUTUSAN[a.verdict];
+              const k = DECISIONS[a.verdict];
               return (
                 <div className="min-w-48 max-w-80">
                   <div className="flex flex-wrap items-center gap-2">

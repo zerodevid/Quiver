@@ -35,6 +35,8 @@ const BORROWED = [
   'spentTodayUsd', 'increasesUsdSince', 'leftoverRetrySec', 'leftovers', 'saveLeftovers', 'sameLeftover',
   'keepLeftover', 'dropLeftover', 'snapshotEquity', 'backfillEquityPnl', 'notify', 'freshCash',
   'reentryNearPct', 'reentryKey', 'watchReentry', 'reentryWatches', 'alertLeftover',
+  // target fee harvests: noted, and followed with a mirror claim when exit.follow_claim is on
+  'noteTargetClaim', 'followTargetClaim',
 ];
 
 class SolanaEngine {
@@ -148,8 +150,6 @@ class SolanaEngine {
       this.trouble('tick', `tick: ${e.message}`, { after: 5, afterMs: 3 * 60_000 });
     } finally { this.busy = false; }
   }
-
-  async noteTargetClaim(act) { return this.decide(act.id, 'skip', 'klaim fee target tidak dicermin'); }
 
   async staleEntry(act) {
     if (this.dryRun()) return null;

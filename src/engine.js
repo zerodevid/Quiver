@@ -1,51 +1,67 @@
 'use strict';
 const { ensureChain } = require('./networks');
-// Mesin utama: deteksi -> keputusan -> (swap) -> eksekusi -> pencatatan.
+// The main engine: detection -> decision -> (swap) -> execution -> recording.
 const { ethers } = require('ethers');
 const { TOPIC, ABI } = require('./chain');
 const { Watcher } = require('./watcher');
 const { Positions } = require('./positions');
 const { Executor, isNative } = require('./executor');
 const { Kyber } = require('./kyber');
+const { SwapRouter, aggLabel } = require('./swaprouter');
 const { pickSwapPool } = require('./swappool');
 const { Compound } = require('./compound');
 const { Capital } = require('./capital');
 const { rulesFor, planEntry, planExit, quoteToUsd, usdPerQuote } = require('./policy');
 const { enumerateV4, livePositions } = require('./scout');
+const { Market } = require('./market');
 const m = require('./v3math');
 
 const IF_POSM = new ethers.Interface(ABI.posmV4);
 const IF_NPM = new ethers.Interface(ABI.npmV3);
 const asAddr = (t) => ('0x' + t.slice(-40)).toLowerCase();
-// Jumlah mentah -> teks untuk pesan: 2 desimal di atas 1, 3 angka penting di bawahnya.
+// Raw amount -> text for messages: 2 decimals above 1, 3 significant digits below it.
 const fmtUnits = (raw, dec) => {
   const n = Number(raw) / 10 ** dec;
   return n >= 1 ? n.toFixed(2) : String(Number(n.toPrecision(3)));
 };
-// Asal sebuah sisa, untuk pesan. Antrean jual sekarang juga menampung token yang
-// disapu dari wallet (posId null) — bukan cuma yang keluar dari posisi.
-const asalSisa = (item) => (item.posId == null ? 'sisa di wallet' : `posisi #${item.posId}`);
+// The origin of a leftover, for messages. The sell queue now also holds tokens
+// swept from the wallet (posId null) — not just ones that came out of a position.
+const leftoverOrigin = (item) => (item.posId == null ? 'sisa di wallet' : `posisi #${item.posId}`);
+// The origin of a token sold by the leftover queue, recorded in the tx detail for the Swap history:
+// fee from a claim, a zap that did not become an LP (failed mint / surplus), a wallet sweep,
+// or the proceeds of closing a position.
+const leftoverSource = (item) => (item.kind === 'fee' ? 'fee' : item.source || (item.posId == null ? 'wallet' : 'exit'));
 
-// Kelebihan token zap di bawah nilai ini dibiarkan saja di wallet: satu penjualan
-// memakan gas (~$0,16) dan ruang slippage 1,5% pada zap yang mulus hampir selalu
-// menyisakan sedikit — tanpa lantai ini tiap entry menaruh satu item debu yang tidak
-// pernah terjual di antrean. Sama dengan bawaan sapu wallet.
+// A zap surplus below this value is simply left in the wallet: a single sale
+// costs gas (~$0.16) and the 1.5% slippage room on a smooth zap almost always
+// leaves a little — without this floor every entry would put a dust item in the queue that is never
+// sold. The same as the wallet sweep default.
 const MIN_ZAP_SURPLUS_USD = 0.5;
 
-// Persen jarak untuk kabar/alasan, dibulatkan seperti di dasbor ("999+" untuk yang ekstrem).
+// Large amounts for decision reasons: "$12.3k", "$1.45m". Pool liquidity written
+// in full ($1,234,567) is not readable at a glance in the decision list.
+const compactMoney = (v) => {
+  const a = Math.abs(Number(v) || 0);
+  if (a >= 1e9) return `$${(a / 1e9).toFixed(2)}m`;
+  if (a >= 1e6) return `$${(a / 1e6).toFixed(2)}jt`;
+  if (a >= 1000) return `$${(a / 1000).toFixed(1)}rb`;
+  return `$${a.toFixed(2)}`;
+};
+
+// Distance percent for news/reasons, rounded like the dashboard ("999+" for extreme ones).
 const fmtPct = (x) => (x >= 1000 ? '999+' : x.toFixed(0));
 
-// Durasi singkat untuk kabar: "45 dtk", "3 mnt", "1 jam 20 mnt".
-function lamanya(ms) {
+// Short duration for news: "45 s", "3 min", "1 h 20 min".
+function duration(ms) {
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s} dtk`;
   if (s < 3600) return `${Math.round(s / 60)} mnt`;
   const j = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
   return m ? `${j} jam ${m} mnt` : `${j} jam`;
 }
-// Kunci hari (YYYY-MM-DD) di suatu zona waktu — dipakai breaker drawdown harian
-// supaya "hari" mengikuti zona yang sama dengan kartu bagikan (telegram.timezone),
-// bukan UTC server.
+// Day key (YYYY-MM-DD) in a given time zone — used by the daily drawdown breaker
+// so the "day" follows the same zone as the share card (telegram.timezone),
+// not the server's UTC.
 function dayKeyIn(ts, timeZone) {
   try { return new Date(ts).toLocaleDateString('en-CA', { timeZone }); } catch { return new Date(ts).toLocaleDateString('en-CA'); }
 }
@@ -53,43 +69,54 @@ function dayKeyIn(ts, timeZone) {
 class Engine {
   constructor({ rpc, store, chain, cfg, log }) {
     this.rpc = rpc; this.store = store; this.chain = chain; this.cfg = cfg;
-    chain = this.chain;   // sudah dilengkapi profil (lihat setter di bawah)
+    chain = this.chain;   // already completed with a profile (see the setter below)
     this.log = log || console.log;
     this.watcher = new Watcher({ rpc, store, chain, log: this.log, cfg });
     this.positions = new Positions({ rpc, store, chain, log: this.log });
     this.exec = new Executor({ rpc, store, chain, cfg, log: this.log });
-    // Gas tiap transaksi dibukukan dalam USD di harga native (ETH/BNB) saat itu (lihat waitReceipt).
+    // Each transaction's gas is booked in USD at the native (ETH/BNB) price at that time (see waitReceipt).
     this.exec.ethUsd = () => this.ethUsd;
-    this.kyber = new Kyber({ exec: this.exec, rpc, cfg, chain, log: this.log });
+    // `kyber` is the swap entry point for the whole engine: every enabled aggregator (Kyber,
+    // OKX, LI.FI, 0x, 1inch, OpenOcean), best route or fallback order — see swaprouter.js.
+    this.kyber = new SwapRouter({ exec: this.exec, rpc, cfg, chain, log: this.log });
     this.ethUsd = cfg.prices?.eth_usd || 2500;
     this.cursor = 0;
     this.head = 0;
     this.busy = false;
-    this.exiting = new Set();      // id posisi yang transaksi keluarnya sedang berjalan
+    this.busySince = 0;            // when the running tick started (0 = none)
+    this.tickGen = 0;              // tick serial number; also rises when a stuck tick is force-released
+    this.tickStage = null;         // the tick stage being waited on — shows up in the stuck message
+    this.lastScanAt = 0;           // the LAST SUCCESSFUL tick, not merely the last tick
+    this.wedgeNotifiedAt = 0;      // when the last stuck state was reported (0 = nothing is hanging)
+    this.exiting = new Set();      // ids of positions whose exit transaction is in progress
     this.compound = new Compound(this);
     this.capital = new Capital({ rpc, store, chain, cfg, log: this.log });
-    this.troubles = new Map();     // kunci -> galat beruntun yang sedang ditangani cadangan
+    this.troubles = new Map();     // key -> consecutive errors being handled by the fallback
     this.lastCopyAt = new Map();   // poolRef -> ts (cooldown)
+    // Third-party pool statistics (DexScreener) for the liquidity/volume filter.
+    // The server injects its own instance (createServer) so its 30-second memo
+    // is shared with the dashboard; otherwise — CLI, tests — one is made on demand.
+    this.market = null;
     this.stats = { scanned: 0, actions: 0, copied: 0, skipped: 0, errors: 0, startedAt: Date.now() };
     this.lastError = null;
-    // Rentang pindai menyusut saat RPC mengeluh dan tumbuh lagi saat lancar.
-    // Tanpa ini, mengejar ketertinggalan besar memicu 429 beruntun.
+    // The scan range shrinks when the RPC complains and grows again when smooth.
+    // Without this, catching up on a big lag triggers consecutive 429s.
     this.span = cfg.loop?.max_block_span || 1500;
     this.failStreak = 0;
     this.headSpread = 0;
-    this.cash = null;              // saldo kas terakhir, lihat refreshCash()
-    this.cashSeq = -1;             // exec.txSeq saat kas terakhir dibaca — beda = basi
+    this.cash = null;              // last cash balance, see refreshCash()
+    this.cashSeq = -1;             // exec.txSeq when cash was last read — different = stale
   }
 
-  // Profil chain selalu lengkap (ADDR, venues, isV3Venue, …) walau yang diberikan objek
-  // tiruan (uji) atau belum diset sama sekali — bawaannya profil Robinhood Chain.
+  // The chain profile is always complete (ADDR, venues, isV3Venue, …) even if what is given is a
+  // mock object (tests) or not set at all — the default is the Robinhood Chain profile.
   get chain() { return this._chain || (this._chain = ensureChain(null)); }
   set chain(v) { this._chain = ensureChain(v); }
   get network() { return this.chain.network; }
   get label() { return this.chain.label; }
 
-  // Kunci state per chain: satu DB dipakai dua mesin (Robinhood + BSC), kursor dan
-  // penanda lain tidak boleh saling timpa. `wallet_address` tetap global.
+  // State keys per chain: one DB is used by two engines (Robinhood + BSC), the cursor and
+  // other markers must not overwrite each other. `wallet_address` stays global.
   sk(name) { return `${name}:${this.network}`; }
 
   rulesFrom(targetAddr) {
@@ -111,7 +138,7 @@ class Engine {
     await this.backfillDecisions();
   }
 
-  // Baris tabel actions -> objek aksi seperti yang dihasilkan pemindai.
+  // An actions table row -> an action object as the scanner produces it.
   actFromRow(r) {
     return {
       id: r.id, ts: r.ts, block: r.block, txHash: r.tx_hash, logIndex: r.log_index,
@@ -119,20 +146,20 @@ class Engine {
       token0: r.token0, token1: r.token1, fee: r.fee, tickSpacing: r.tick_spacing, hooks: r.hooks,
       tickLower: r.tick_lower, tickUpper: r.tick_upper, liquidity: r.liquidity,
       amount0: r.amount0, amount1: r.amount1, valueQuote: r.value_quote, quoteSymbol: r.quote_symbol,
-      // poolKey tidak disimpan di tabel actions, tapi semua bagiannya ada. Tanpa ini setiap
-      // entry v4 yang dinilai ulang (proses mati / berhenti di tengah daftar aksi) dilewati
-      // "data pool posisi target tidak terbaca".
+      // poolKey is not stored in the actions table, but all its parts are. Without this every
+      // v4 entry that is re-evaluated (process died / stopped midway through the action list) is skipped
+      // "target position pool data unreadable".
       poolKey: r.venue === 'v4' && r.token0 && r.token1 && r.fee != null && r.tick_spacing != null
         ? { currency0: r.token0, currency1: r.token1, fee: r.fee, tickSpacing: r.tick_spacing, hooks: r.hooks || this.chain.ADDR.native }
         : null,
     };
   }
 
-  // Aksi yang sempat tercatat tapi belum diputuskan (mis. proses mati di tengah jalan).
-  // Aturannya: di mode LIVE aksi lampau TIDAK BOLEH dieksekusi — sinyal LP yang sudah
-  // basah beberapa jam bukan lagi sinyal. Di mode simulasi tetap dievaluasi supaya
-  // terlihat "seandainya" -nya (entry yang basi tetap dilewati di handleEntry, sama
-  // seperti LIVE).
+  // Actions that were recorded but not yet decided (e.g. the process died midway).
+  // The rule: in LIVE mode a past action MUST NOT be executed — an LP signal that
+  // has been stale for hours is no longer a signal. In simulation mode it is still evaluated so the
+  // "what if" is visible (a stale entry is still skipped in handleEntry, the same
+  // as LIVE).
   async backfillDecisions() {
     const stale = (this.cfg.loop?.stale_action_seconds ?? 300) * 1000;
     const rows = this.store.all(`
@@ -157,14 +184,14 @@ class Engine {
     if (done) this.log(`menilai ulang ${done} aksi yang belum diputuskan`);
   }
 
-  // Rekonsiliasi dengan chain: posisi v4 milik wallet yang belum tercatat diadopsi —
-  // baik yang dibuka di luar bot (manual, bot lain di wallet yang sama) maupun yang
-  // mint-nya terkirim tapi proses mati sebelum sempat dicatat.
+  // Reconciliation with the chain: v4 positions owned by the wallet that are not yet recorded are adopted —
+  // both those opened outside the bot (manual, another bot on the same wallet) and those whose
+  // mint was sent but the process died before it could be recorded.
   //
-  // Pemindaian pertama mencakup SELURUH riwayat: Transfer NFT yang disaring alamat
-  // wallet itu murah (potongan 1 juta blok). Dulu jendelanya 600rb blok (~17 jam) dan
-  // hanya dijalankan saat start, sehingga posisi yang lebih tua tidak pernah tampil.
-  // Setelah itu cukup blok baru sejak pemindaian terakhir, dipanggil berkala.
+  // The first scan covers the WHOLE history: NFT Transfers filtered by that
+  // wallet's address are cheap (chunks of 1 million blocks). The window used to be 600k blocks (~17 hours) and
+  // only ran at start, so older positions never appeared.
+  // After that only new blocks since the last scan are needed, called periodically.
   async adoptOwnPositions(addr) {
     try {
       const me = addr.toLowerCase();
@@ -172,15 +199,15 @@ class Engine {
       const last = Number(this.store.getState(this.sk('adopt_scanned_to'), 0));
       const blocks = last ? head - last + 2000 : (this.cfg.loop?.adopt_blocks ?? head);
       const { held } = await enumerateV4(this.chain, me, head, blocks, 1_000_000, undefined, this.rpc);
-      // Penanda jendela pindai baru dimajukan kalau SEMUA kandidat terbaca. Dulu dimajukan
-      // sebelum posisinya dibaca: satu pembacaan RPC yang gagal membuat posisi wallet itu
-      // tidak diadopsi, dan pemindaian berikutnya tidak lagi mencakup bloknya — hilang.
+      // The scan window marker is only advanced if ALL candidates were read. It used to be advanced
+      // before the positions were read: one failed RPC read made that wallet's position
+      // not adopted, and the next scan no longer covered its block — lost.
       const done = () => this.store.setState(this.sk('adopt_scanned_to'), head);
       const known = new Set(this.store.all("SELECT token_id FROM positions WHERE chain=? AND venue='v4' AND token_id IS NOT NULL", this.network).map((r) => r.token_id));
       let missing = [...held.keys()].filter((id) => !known.has(id));
       if (!missing.length) return done();
-      // Transfer bisa menipu (urutan dalam satu blok); pastikan pemiliknya sekarang kita.
-      // strict: tidak terbaca melempar (dicoba lagi 10 menit lagi); revert = NFT dibakar.
+      // A Transfer can deceive (order within one block); make sure the owner is now us.
+      // strict: unreadable throws (retried in 10 minutes); revert = NFT burned.
       const owners = await this.rpc.ethCallMany(missing.map((id) => ({
         to: this.chain.ADDR.posmV4, data: new ethers.Interface(ABI.posmV4).encodeFunctionData('ownerOf', [BigInt(id)]),
       })), 'latest', { strict: true });
@@ -192,18 +219,18 @@ class Engine {
       for (const r of rows) {
         if (r.liqKnown === false) { incomplete = true; continue; }
         if (r.liquidity <= 0n) continue;
-        // Modal & waktu buka asli dari riset wallet (menu Wallet) kalau pernah dipindai;
-        // tanpa itu modal = nilai sekarang, sehingga PnL mulai dari nol saat diadopsi.
+        // The original capital & open time from wallet research (Wallet menu) if it was ever scanned;
+        // without that capital = current value, so PnL starts from zero when adopted.
         const w = this.store.get('SELECT invested_q, opened_ts FROM wpositions WHERE chain=? AND wallet=? AND token_id=?', this.network, me, r.tokenId);
-        // Harga pool saat posisi itu dibuka, kalau riset wallet sempat mencatat kejadiannya.
+        // The pool price when that position opened, if wallet research ever recorded its event.
         const ev0 = this.store.get('SELECT sqrt_price FROM wevents WHERE chain=? AND wallet=? AND token_id=? AND sqrt_price IS NOT NULL ORDER BY block LIMIT 1', this.network, me, r.tokenId);
         const isEth = this.chain.isEthLike(r.quoteSymbol);
         const cost = w?.invested_q > 0 ? (isEth ? w.invested_q / this.ethUsd : w.invested_q) : r.valueQuote;
-        // Posisi yatim: mint yang BERHASIL di chain tetapi gagal tercatat (jawaban RPC
-        // hilang, proses mati). Kalau ada rencana salinan yang gagal dengan pool dan
-        // rentang yang sama persis, posisi ini hampir pasti hasil rencana itu — pasangkan
-        // kembali ke targetnya supaya sinyal keluarnya tetap dicermin. Tanpa ini posisi
-        // menggantung sebagai "di luar bot" dan tidak pernah ditutup.
+        // Orphan position: a mint that SUCCEEDED on chain but failed to be recorded (RPC answer
+        // lost, process died). If there is a failed copy plan with exactly the same pool and
+        // range, this position is almost certainly the result of that plan — pair it
+        // back to its target so the exit signal is still mirrored. Without this the position
+        // hangs as "outside the bot" and is never closed.
         const link = this.linkOrphan(r);
         this.positions.record({
           venue: 'v4', poolRef: r.poolId, poolKey: r.poolKey,
@@ -220,11 +247,11 @@ class Engine {
       if (incomplete) throw new Error('sebagian posisi wallet belum terbaca dari RPC — dipindai ulang nanti');
       done();
       this.cleared('adopsi', 'adopsi posisi: berhasil lagi');
-    } catch (e) { this.trouble('adopsi', `adopsi posisi: ${e.message}`, { after: 3 }); }   // diulang tiap 10 menit
+    } catch (e) { this.trouble('adopsi', `adopsi posisi: ${e.message}`, { after: 3 }); }   // repeated every 10 minutes
   }
 
-  // Cari rencana salinan yang gagal yang cocok dengan posisi ini (pool + rentang).
-  // Hanya keputusan 24 jam terakhir yang dilihat, dan hanya yang belum punya posisi.
+  // Find a failed copy plan that matches this position (pool + range).
+  // Only decisions from the last 24 hours are looked at, and only those without a position yet.
   linkOrphan(r) {
     const rows = this.store.all(
       "SELECT d.id, d.plan, a.target FROM decisions d JOIN actions a ON a.id = d.action_id WHERE a.chain=? AND d.verdict='error' AND d.plan IS NOT NULL AND d.ts > ? ORDER BY d.id DESC LIMIT 50",
@@ -241,59 +268,59 @@ class Engine {
     return null;
   }
 
-  // ---- galat yang punya jalan cadangan -------------------------------------
-  // Banyak galat di sini sudah ditangani sendiri: tick yang gagal mengulang rentang
-  // blok yang sama (lebih kecil) di tick berikutnya, sinkron diulang tiap 30 detik,
-  // sisa memecoin masuk antrean coba-ulang. Galat seperti itu tetap dicatat, tetapi
-  // `quiet` — tidak didorong ke chat. Baru kalau cadangannya terus gagal (`after` kali
-  // berturut-turut DAN selama `afterMs`) satu peringatan dikirim, lalu satu kabar
-  // pulih begitu berhasil lagi.
+  // ---- errors that have a fallback path -----------------------------------
+  // Many errors here are already handled by themselves: a failed tick repeats the same
+  // (smaller) block range at the next tick, the sync repeats every 30 seconds,
+  // leftover memecoins go into the retry queue. Such errors are still recorded, but
+  // `quiet` — not pushed to the chat. Only if the fallback keeps failing (`after` times
+  // in a row AND for `afterMs`) is one warning sent, then one
+  // recovery notice as soon as it succeeds again.
   trouble(key, msg, { after = 3, afterMs = 0, level = 'error' } = {}) {
     const now = Date.now();
     let t = this.troubles.get(key);
-    // Galat lama yang tidak pernah "pulih" (mis. pemicu keluar yang hilang sendiri)
-    // tidak boleh ikut dihitung: jeda 15 menit tanpa galat = hitungan mulai dari nol.
+    // An old error that never "recovers" (e.g. an exit trigger that disappeared by itself)
+    // must not be counted: a 15-minute pause without errors = the count starts from zero.
     if (!t || now - t.last > 15 * 60_000) t = { n: 0, since: now, alerted: false };
     t.n++; t.last = now;
     this.troubles.set(key, t);
     if (!t.alerted && t.n >= after && now - t.since >= afterMs) {
       t.alerted = true;
-      this.store.log(level, `${msg} — sudah gagal ${t.n}× berturut-turut selama ${lamanya(now - t.since)}, jalan cadangan belum berhasil`);
+      this.store.log(level, `${msg} — sudah gagal ${t.n}× berturut-turut selama ${duration(now - t.since)}, jalan cadangan belum berhasil`);
     } else {
       this.store.log(level, msg, { quiet: true });
     }
   }
-  // Panggil setelah langkah yang sama berhasil. `okMsg` null = pulih tanpa kabar
-  // (mis. keluar mandiri: kartu penutupan posisi sudah jadi kabarnya).
+  // Call after the same step succeeds. `okMsg` null = recover without news
+  // (e.g. a standalone exit: the position close card is already its news).
   cleared(key, okMsg) {
     const t = this.troubles.get(key);
     if (!t) return;
     this.troubles.delete(key);
-    if (t.alerted && okMsg) this.store.log('info', `${okMsg} — pulih setelah ${t.n}× gagal (${lamanya(Date.now() - t.since)})`, { recovered: true });
+    if (t.alerted && okMsg) this.store.log('info', `${okMsg} — pulih setelah ${t.n}× gagal (${duration(Date.now() - t.since)})`, { recovered: true });
   }
 
   dryRun() { return this.cfg.mode?.dry_run !== false; }
-  // Jeda per chain (kunci paused:<chain>); kunci 'paused' lama tanpa chain masih dibaca
-  // sebagai saklar global — mematikan semua chain sekaligus.
+  // Pause per chain (key paused:<chain>); an old 'paused' key without a chain is still read
+  // as a global switch — pausing all chains at once.
   paused() {
     const v = this.store.getState(this.sk('paused')) ?? this.store.getState('paused') ?? (this.cfg.mode?.paused ? '1' : '0');
     return v === '1';
   }
   setPaused(on) { this.store.setState(this.sk('paused'), on ? '1' : '0'); }
 
-  // ---- breaker drawdown harian ---------------------------------------------
-  // Beda dari jeda manual: ini otomatis, dan cuma menghentikan ENTRY baru — posisi
-  // yang sudah terbuka tetap dikelola dan bisa keluar (stop loss, ikut target, dst).
-  // 0 = mati, sama seperti stop_loss_pct dkk.
+  // ---- daily drawdown breaker ----------------------------------------------
+  // Unlike the manual pause: this is automatic, and only stops new ENTRIES — positions
+  // already open are still managed and can exit (stop loss, follow target, etc.).
+  // 0 = off, the same as stop_loss_pct and the like.
   maxDailyDrawdownPct() { return Number(this.cfg.risk?.max_daily_drawdown_pct) || 0; }
   dayKey(ts = Date.now()) { return dayKeyIn(ts, this.cfg.telegram?.timezone || undefined); }
 
-  // Dipanggil dari snapshotEquity (bukan tiap tick) — butuh total ekuitas yang kasnya
-  // baru dibaca dari chain. Puncak hari ini disimpan di store supaya bertahan restart;
-  // begitu tersentuh sekali, entry baru dijeda sampai kunci hari berganti (bukan sampai
-  // ekuitas pulih — pemicunya kejadian sekali, bukan keadaan yang terus dipantau, jadi
-  // tidak akan "hidup lagi" beberapa detik lalu terpicu lagi kalau ekuitas naik-turun
-  // tipis di sekitar batas).
+  // Called from snapshotEquity (not every tick) — it needs the total equity whose cash was
+  // just read from the chain. Today's peak is stored in the store so it survives a restart;
+  // once touched, new entries are paused until the day key changes (not until
+  // equity recovers — the trigger is a one-time event, not a state continuously watched, so
+  // it will not "come alive again" a few seconds later and trip again if equity wobbles
+  // slightly around the limit).
   updateDrawdown(total) {
     const today = this.dayKey();
     let peak = Number(this.store.getState(this.sk('dd_peak')));
@@ -306,8 +333,8 @@ class Engine {
     }
     this.store.setState(this.sk('dd_peak'), String(peak));
     const pct = this.maxDailyDrawdownPct();
-    // Mati, atau portofolio terlalu kecil untuk persentasenya berarti (hindari
-    // "turun 50%" cuma karena puncaknya $0,02 debu sisa token).
+    // Off, or the portfolio is too small for the percentage to mean anything (avoid
+    // "down 50%" just because the peak was $0.02 of leftover token dust).
     if (!pct || peak < 1 || this.store.getState(this.sk('dd_tripped')) === '1') return;
     const ddPct = ((peak - total) / peak) * 100;
     if (ddPct >= pct) {
@@ -319,7 +346,7 @@ class Engine {
     if (!this.maxDailyDrawdownPct()) return false;
     return this.store.getState(this.sk('dd_day')) === this.dayKey() && this.store.getState(this.sk('dd_tripped')) === '1';
   }
-  // Untuk dasbor: status breaker walau belum tersentuh.
+  // For the dashboard: the breaker status even if not yet touched.
   drawdownStatus() {
     const peak = Number(this.store.getState(this.sk('dd_peak')));
     return {
@@ -330,10 +357,10 @@ class Engine {
     };
   }
 
-  // ---- satu siklus --------------------------------------------------------
-  // Proses sedang berhenti? Tunggu sampai tidak ada transaksi yang berjalan: entry di
-  // tengah zap, tx keluar yang belum dibukukan, penjualan sisa, compound. Dulu SIGINT
-  // langsung process.exit — token zap yang sudah terbeli tertinggal tanpa LP.
+  // ---- one cycle -----------------------------------------------------------
+  // Is the process stopping? Wait until there is no running transaction: an entry in the
+  // middle of a zap, an exit tx not yet booked, a leftover sale, a compound. SIGINT used to
+  // process.exit straight away — a zap token already bought was left without an LP.
   idle() {
     return !this.busy && !(this.activeEntries > 0) && !(this.exiting?.size > 0) && !this.leftoverBusy
       && !this.compound?.running && !(this.selling?.size > 0) && !this.syncBusy && !this.pumpingExit && !this.pumpingEntry;
@@ -345,34 +372,92 @@ class Engine {
     return this.idle();
   }
 
+  // Age of the running tick. 0 = nothing running.
+  tickStuckMs() { return this.busy && this.busySince ? Date.now() - this.busySince : 0; }
+
+  // A tick that hangs longer than the limit is considered DEAD: its flag is released so the
+  // next cycle runs again, and the old tick's result is discarded via `tickGen` (the cursor
+  // must not move back to the end of a stale range).
+  //
+  // Why it is needed: a single `await` that never finishes — an RPC socket that died
+  // silently, for example — freezes scanning FOREVER without a single error. Even worse,
+  // `head` is also only updated INSIDE the tick, so the dashboard keeps showing
+  // "lag 0" i.e. healthy while the bot has been blind for 15 hours (lpcopy3, 2026-09-25: 2 target
+  // positions missed). The limit is loose (default 3 minutes) — far above the RPC timeout of
+  // 45 seconds plus failover between endpoints — so a tick that is merely slow is not cut.
+  unwedge() {
+    const ms = this.tickStuckMs();
+    const limit = (this.cfg.loop?.tick_stuck_seconds || 180) * 1000;
+    if (ms < limit) return;
+    this.tickGen++;
+    this.busy = false; this.busySince = 0;
+    this.stats.errors++;
+    const msg = `pemindaian macet ${Math.round(ms / 1000)} dtk di tahap "${this.tickStage || '?'}" — dilepas paksa, dilanjutkan dari blok ${this.cursor}`;
+    this.tickStage = null;
+    this.lastError = msg;
+    this.log(msg);
+    // This is NEWS, not just a log line: while stuck the bot is completely blind — no
+    // entry, no follow-out — and there is no other symptom visible from
+    // outside. Sent to ntfy and Telegram via the same important-news path as the
+    // entry/exit cards. A consecutive stuck state is reported at most once every 15 minutes
+    // so the chat is not flooded; what is held back still goes into the log.
+    const now = Date.now();
+    if (!this.wedgeNotifiedAt || now - this.wedgeNotifiedAt > 15 * 60_000) {
+      this.wedgeNotifiedAt = now;
+      this.notify(msg, { cursor: this.cursor, stuckSec: Math.round(ms / 1000) }, 'warn');
+    } else {
+      this.store.log('warn', msg, { quiet: true, cursor: this.cursor });
+    }
+  }
+
   async tick() {
-    if (this.stopping || this.busy || this.compound?.running) return;
-    // Semua endpoint sedang istirahat: jangan menambah beban, tunggu saja.
+    if (this.stopping || this.compound?.running) return;
+    // There is still a running tick: usually just slow — but if it has gone on too
+    // long, release it by force (see unwedge) so scanning does not die silently.
+    if (this.busy) return this.unwedge();
+    // All endpoints are resting: do not add load, just wait.
     if (this.rpc.allCooling()) return;
     this.busy = true;
+    this.busySince = Date.now();
+    // This tick is stale if its serial number has been passed — it means unwedge considered it
+    // dead and another tick took over. A stale one must not touch anything.
+    const gen = ++this.tickGen;
+    const stale = () => gen !== this.tickGen;
     try {
-      // Pakai kepala TERENDAH di antara semua endpoint. Kalau kursor dimajukan ke
-      // kepala endpoint tercepat sementara getLogs dilayani endpoint yang tertinggal,
-      // blok di antaranya tidak akan pernah dipindai ulang.
+      // Use the LOWEST head among all endpoints. If the cursor is advanced to the
+      // head of the fastest endpoint while getLogs is served by a lagging endpoint,
+      // the blocks in between will never be rescanned.
+      this.tickStage = 'baca kepala blok';
       const h = await this.rpc.safeHead();
+      if (stale()) return;
       this.head = h.min;
       this.headSpread = h.spread;
       if (this.head <= this.cursor) return;
       const maxSpan = this.cfg.loop?.max_block_span || 1500;
       const to = Math.min(this.head, this.cursor + this.span);
+      this.tickStage = `pindai blok ${this.cursor + 1}-${to}`;
       const acts = await this.watcher.scan(this.cursor + 1, to);
+      if (stale()) return;
+      this.lastScanAt = Date.now();
+      // A stuck state that was reported must also have its report closed — otherwise a
+      // warning hangs in the chat without it ever being clear whether the bot has seen
+      // again.
+      if (this.wedgeNotifiedAt) {
+        this.wedgeNotifiedAt = 0;
+        this.notify(`pemindaian pulih — blok kembali terbaca, dilanjutkan dari ${to}`, null, 'info');
+      }
       this.stats.scanned += to - this.cursor;
       this.cursor = to;
       this.store.setState(this.sk('cursor'), this.cursor);
       const fresh = this.watcher.persist(acts);
       this.stats.actions += fresh.length;
-      // Aksi TIDAK ditangani di sini: pemindaian jalan terus sementara aksi diproses
-      // oleh dua antrean (lihat enqueue). Dulu tick menunggu tiap aksi selesai — satu
-      // entry (zap, approval, receipt 90 dtk, ulangan) menahan pemindaian beberapa menit,
-      // dan sinyal keluar target di blok-blok berikutnya baru terbaca setelahnya.
+      // Actions are NOT handled here: scanning keeps going while actions are processed
+      // by two queues (see enqueue). The tick used to wait for each action to finish — a single
+      // entry (zap, approval, 90 s receipt, retries) held up scanning for minutes,
+      // and the target's exit signals in the following blocks were only read afterwards.
       this.enqueue(fresh);
-      // Pendengar luar (dasbor) diberi tahu aksi baru — mis. untuk memperbarui riset
-      // wallet target. Galat pendengar tidak boleh mengganggu siklus copy.
+      // External listeners (the dashboard) are told of new actions — e.g. to update the
+      // target wallet's research. A listener error must not disturb the copy cycle.
       if (fresh.length && this.onFreshActions) {
         try { this.onFreshActions(fresh); } catch (e) { this.store.log('error', `onFreshActions: ${e.message}`); }
       }
@@ -380,24 +465,30 @@ class Engine {
       this.cleared('tick', `pemindaian blok: kembali normal, kursor di blok ${this.cursor}`);
       if (this.span < maxSpan) this.span = Math.min(maxSpan, Math.ceil(this.span * 1.5));
     } catch (e) {
+      // A tick that was force-released must not shrink the span or overwrite the
+      // lastError of the tick that is running now.
+      if (stale()) return;
       this.stats.errors++;
       this.failStreak++;
       this.span = Math.max(150, Math.floor(this.span / 2));
       this.lastError = `${String(e.message).slice(0, 250)} (rentang dikecilkan ke ${this.span} blok)`;
-      // Cadangan: kursor tidak maju, jadi rentang yang sama diulang (dikecilkan) di tick
-      // berikutnya dan RPC berpindah endpoint — tidak ada blok yang terlewat. Kabari
-      // hanya kalau pemindaian macet ≥ 5 kali dan ≥ 3 menit berturut-turut.
+      // Fallback: the cursor does not advance, so the same range is repeated (shrunk) at the
+      // next tick and the RPC switches endpoints — no block is missed. Report
+      // only if scanning is stuck ≥ 5 times and ≥ 3 minutes in a row.
       this.trouble('tick', `tick: ${e.message} — rentang -> ${this.span}`, { after: 5, afterMs: 3 * 60_000 });
-      // beri jeda tambahan supaya tidak menghajar endpoint yang sedang marah
+      // add an extra pause so we do not pound an endpoint that is angry
       if (this.failStreak > 2) await new Promise((r) => setTimeout(r, Math.min(15000, 1000 * this.failStreak)));
-    } finally { this.busy = false; }
+    } finally {
+      // A stale one does not release `busy`: that flag already belongs to the tick that replaced it.
+      if (!stale()) { this.busy = false; this.busySince = 0; this.tickStage = null; }
+    }
   }
 
-  // Dua antrean terpisah: KELUAR (tarik/tutup/pindah — melindungi dana, tidak boleh
-  // menunggu) dan MASUK (satu per satu, supaya kas tidak dipakai dua entry sekaligus).
-  // Keduanya berjalan bersamaan dengan pemindaian. Sedang berhenti (deploy/restart):
-  // yang belum ditangani tidak dimulai — sudah tersimpan tanpa keputusan,
-  // backfillDecisions menilainya saat proses hidup lagi (entry basi dilewati).
+  // Two separate queues: EXIT (withdraw/close/move — protects funds, must not
+  // wait) and ENTRY (one at a time, so cash is not used by two entries at once).
+  // Both run alongside scanning. While stopping (deploy/restart):
+  // what has not been handled is not started — it is already stored without a decision,
+  // backfillDecisions evaluates it when the process is alive again (a stale entry is skipped).
   static isExitKind(kind) { return kind === 'decrease' || kind === 'transfer_out'; }
   enqueue(actions) {
     this.exitQueue = this.exitQueue || []; this.entryQueue = this.entryQueue || [];
@@ -405,7 +496,7 @@ class Engine {
     this.pumps = this.pumps || {};
     for (const w of ['exit', 'entry']) if (!this.pumps[w]) this.pumps[w] = this.pump(w).finally(() => { this.pumps[w] = null; });
   }
-  // Menunggu kedua antrean kosong (uji & pemanggil yang perlu hasilnya).
+  // Wait for both queues to be empty (tests & callers that need the result).
   async settled() { while (this.pumps && (this.pumps.exit || this.pumps.entry)) await Promise.all([this.pumps.exit, this.pumps.entry].filter(Boolean)); }
   async pump(which) {
     const q = which === 'exit' ? this.exitQueue : this.entryQueue;
@@ -414,8 +505,8 @@ class Engine {
     try {
       while (q.length && !this.stopping) {
         const a = q.shift();
-        // Galat satu aksi tidak boleh memutus aksi lain: kursor sudah maju, jadi aksi yang
-        // tidak sempat ditangani baru dinilai saat restart. Dicatat sebagai keputusan galat.
+        // One action's error must not cut off other actions: the cursor has already advanced, so an action
+        // that was not handled is only evaluated at restart. Recorded as an error decision.
         try { await this.handle(a); }
         catch (e) {
           this.stats.errors++;
@@ -434,15 +525,15 @@ class Engine {
   }
 
   async handle(act) {
-    // Satu aksi hanya boleh diputuskan SEKALI. Tanpa ini, aksi yang sempat diproses
-    // lalu diproses lagi (mis. backfill setelah proses mati di tengah jalan) akan
-    // menambah modal untuk kedua kalinya ke posisi yang sama.
+    // An action may only be decided ONCE. Without this, an action that was processed
+    // then processed again (e.g. backfill after the process died midway) would
+    // add capital a second time to the same position.
     if (act.id != null && this.store.get('SELECT 1 FROM decisions WHERE action_id=?', act.id)) return;
     const t = this.store.get('SELECT * FROM targets WHERE chain=? AND address=?', this.network, act.target);
     if (!t) return;
-    // Jeda dan target yang dimatikan hanya menghentikan MASUK. Sinyal keluar target
-    // untuk posisi yang sudah kita pegang tetap diikuti: dulu keduanya diputuskan "skip"
-    // selamanya — keluar penuh baru tertolong rekonsiliasi, tarik sebagian hilang.
+    // A pause and a disabled target only stop ENTRY. The target's exit signals
+    // for positions we already hold are still followed: they were both decided "skip"
+    // forever — a full exit was only rescued by reconciliation, a partial withdrawal was lost.
     const exit = act.kind === 'decrease' || act.kind === 'transfer_out';
     if (!exit && !t.enabled) return this.decide(act.id, 'skip', 'target sedang dimatikan');
     if (!exit && this.paused()) return this.decide(act.id, 'skip', 'bot sedang dijeda');
@@ -454,28 +545,32 @@ class Engine {
     if (act.kind === 'custody_out') return this.decide(act.id, 'skip', 'posisi dititipkan ke kontrak otomasi — bukan sinyal keluar');
     if (act.kind === 'custody_in') return this.decide(act.id, 'skip', 'posisi dikembalikan dari kontrak otomasi');
     if (act.kind === 'transfer_in') return this.decide(act.id, 'skip', 'target menerima posisi dari wallet lain — tidak dicermin');
-    if (act.kind === 'claim') return this.noteTargetClaim(act);
+    if (act.kind === 'claim') return this.noteTargetClaim(act, rules);
     return this.decide(act.id, 'skip', `jenis aksi ${act.kind} tidak dicermin`);
   }
 
-  // Berapa kali target harus memanen fee dalam 24 jam sebelum dikabarkan, dan berapa
-  // lama kabar itu didiamkan sesudahnya. Bukan aturan uang — tidak ada transaksi yang
-  // bergantung padanya — jadi tidak dijadikan setelan.
+  // How many times a target must harvest fees within 24 hours before being reported, and how
+  // long the news is silenced afterwards. Not a money rule — no transaction
+  // depends on it — so it is not made a setting.
   static CLAIM_SIGNAL_MIN = 3;
   static CLAIM_SIGNAL_QUIET_MS = 6 * 3600_000;
 
-  // Target memanen fee. TIDAK dicermin: klaim bukan aksi pasar, tidak ada alpha yang
-  // hilang kalau kita telat, dan menirunya cuma membayar gas mengikuti kebiasaan orang
-  // lain (fee posisi kita dipanen dengan aturan sendiri — lihat Compound). Yang dipakai
-  // dari sini cuma polanya: panen berulang pada posisi yang kita cermin sering
-  // mendahului keluarnya target, dan itu layak dikabarkan sekali.
-  async noteTargetClaim(act) {
-    const sejak = Date.now() - 24 * 3600_000;
+  // The target harvests fees. By default NOT mirrored: a claim is not a market action, no
+  // alpha is lost if we are late, and imitating it only pays gas following
+  // someone else's habit (our position's fees are harvested by our own rules — see
+  // Compound). The exit.follow_claim rule switches it on: the mirror's fees are also claimed (and
+  // sold if that position's automatic harvest is claim+sell mode). Otherwise only the
+  // pattern is used: repeated harvesting on a position we mirror often precedes the
+  // target's exit, and that is worth reporting once.
+  async noteTargetClaim(act, rules = null) {
+    const sinceTs = Date.now() - 24 * 3600_000;
     const n = this.store.get(`SELECT COUNT(*) c FROM actions WHERE chain=? AND target=? AND kind='claim'
-      AND token_id=? AND ts>=?`, this.network, act.target, String(act.tokenId ?? ''), sejak)?.c || 0;
-    const mirror = this.store.get(`SELECT id FROM positions WHERE chain=? AND status='open' AND target=? AND mirror_of=?`,
+      AND token_id=? AND ts>=?`, this.network, act.target, String(act.tokenId ?? ''), sinceTs)?.c || 0;
+    const mirror = this.store.get(`SELECT id, takeover_ts FROM positions WHERE chain=? AND status='open' AND target=? AND mirror_of=?`,
       this.network, act.target, String(act.tokenId ?? ''));
-    this.decide(act.id, 'skip', `target panen fee${n > 1 ? ` (ke-${n} dalam 24 jam)` : ''}${mirror ? ` — cermin posisi #${mirror.id}` : ''} — klaim tidak dicermin`);
+    const what = `target panen fee${n > 1 ? ` (ke-${n} dalam 24 jam)` : ''}`;
+    if (mirror && rules?.exit?.follow_claim) await this.followTargetClaim(act, mirror, what);
+    else this.decide(act.id, 'skip', `${what}${mirror ? ` — cermin posisi #${mirror.id}` : ''} — klaim tidak dicermin`);
     if (!mirror || n < Engine.CLAIM_SIGNAL_MIN) return;
     const key = this.sk(`claim_signal:${act.tokenId}`);
     const last = Number(this.store.getState(key, '0')) || 0;
@@ -488,23 +583,50 @@ class Engine {
       { kind: 'target_claim', positionId: mirror.id, target: act.target, mirrorOf: act.tokenId, count: n, pair });
   }
 
+  // Also claim the mirror's fees. A failed claim is not retried: the fees do not go anywhere,
+  // the next automatic harvest / claim still picks them up.
+  async followTargetClaim(act, mirror, what) {
+    if (mirror.takeover_ts != null) return this.decide(act.id, 'skip', `${what} — posisi #${mirror.id} dalam kendali manual — klaim tidak diikuti`);
+    if (this.dryRun() || !this.exec.address()) return this.decide(act.id, 'dry', `${what} — ikut klaim fee posisi #${mirror.id}`, null, null, mirror.id);
+    try {
+      const r = await this.claimFees(mirror.id, { quiet: true });
+      const usd = r.claimedUsd != null ? ` $${r.claimedUsd.toFixed(2)}` : '';
+      const note = r.pending ? ' (menunggu konfirmasi)' : r.sold ? ` · ${r.sold}` : '';
+      this.decide(act.id, 'copy', `${what} — ikut klaim fee posisi #${mirror.id}${usd}${note}`, null, r.tx || null, mirror.id);
+    } catch (e) {
+      this.decide(act.id, 'skip', `${what} — klaim fee posisi #${mirror.id} gagal: ${String(e.message).slice(0, 200)}`, null, null, mirror.id);
+    }
+  }
+
+  // Pool liquidity & volume from DexScreener for the entry filter, or null if
+  // unreadable (pool not yet indexed, DexScreener down/slow). An entry
+  // signal must not wait long here: past 4 seconds it is treated as unreadable.
+  async poolStats(ref) {
+    if (!this.market) this.market = new Market({ log: this.log, chain: this.chain });
+    const pair = await Promise.race([
+      this.market.pair(ref).catch(() => null),
+      new Promise((r) => setTimeout(() => r(null), 4000)),
+    ]).catch(() => null);
+    return pair && !pair.error ? pair : null;
+  }
+
   async handleEntry(act, rules) {
-    // Sinyal masuk yang sudah basi tidak disalin. Kursor dilanjutkan dari blok tersimpan,
-    // jadi setelah VPS/RPC mati sejam pemindaian mengejar dan menemukan entry target dari
-    // sejam lalu — dulu langsung dibuka di harga sekarang, lalu ditutup lagi beberapa tick
-    // kemudian begitu sinyal keluarnya (yang juga sudah lama) terbaca: zap, fee pool, dan
-    // gas dibayar dua kali untuk posisi yang tidak ada gunanya. Sinyal KELUAR tetap diikuti
-    // berapa pun umurnya — itu melindungi dana.
+    // A stale entry signal is not copied. The cursor resumes from the stored block,
+    // so after the VPS/RPC is down for an hour the scan catches up and finds the target's entry from
+    // an hour ago — it used to open right away at the current price, then close again a few ticks
+    // later as soon as its exit signal (also long ago) was read: zap, pool fee, and
+    // gas paid twice for a position that served no purpose. An EXIT signal is still followed
+    // whatever its age — that protects funds.
     const stale = await this.staleEntry(act);
     if (stale) return this.decide(act.id, 'skip', stale);
     if (!act.token0 || !act.token1 || (act.venue === 'v4' && !act.poolKey)) {
       return this.decide(act.id, 'skip', 'data pool posisi target tidak terbaca (NFT sudah dibakar?)');
     }
-    // Harga pool / nilai posisi target yang gagal dibaca saat pemindaian (RPC sesaat) dulu
-    // berujung "state pool tidak terbaca" atau "posisi target cuma $0.00" — sinyal masuk
-    // hilang. Dibaca ulang di sini sebelum menilai.
+    // A pool price / target position value that failed to read at scan time (a momentary RPC) used to
+    // end in "pool state unreadable" or "target position only $0.00" — the entry signal was
+    // lost. Re-read here before evaluating.
     if ((!act.slot0 || act.valueQuote == null) && act.poolRef) await this.refreshActionState(act);
-    // sudah punya cermin posisi ini? berarti ini penambahan; ikut tambah lewat mint baru
+    // already have a mirror of this position? then this is an addition; follow by adding via a new mint
     const cd = rules.filters.cooldown_seconds * 1000;
     const last = this.lastCopyAt.get(act.poolRef) || 0;
     if (cd && Date.now() - last < cd) {
@@ -519,29 +641,49 @@ class Engine {
         if (age < rules.filters.min_pool_age_minutes) {
           return this.decide(act.id, 'skip', `pool baru ${age.toFixed(0)} menit (< ${rules.filters.min_pool_age_minutes})`);
         }
-      } catch { /* kalau tidak terbaca, jangan halangi */ }
+      } catch { /* unreadable: do not block */ }
     }
-    // Metadata token yang belum dikenal dibaca dari RPC; galat sementara diulang sebentar
-    // (sinyal masuk target tidak menunggu lama).
+    // Market filter: a pool whose liquidity or volume is thin does not produce fees
+    // however much the target does there — the capital only bears the token's risk
+    // without being paid. The figures come from DexScreener, the same source as the Volume
+    // column on the dashboard, so the threshold set in Rules is comparable to what is seen.
+    const fMin = rules.filters;
+    if ((fMin.min_liquidity_usd > 0 || fMin.min_volume24h_usd > 0) && act.poolRef) {
+      const pair = await this.poolStats(act.poolRef);
+      // A pool not yet indexed by DexScreener has no figures at all. It is let
+      // through — the same as the pool age that is unreadable above: this filter rejects
+      // a pool PROVEN quiet, not a pool that has not yet been recognised.
+      if (pair) {
+        const liq = pair.liquidityUsd, vol = pair.volume?.h24;
+        if (fMin.min_liquidity_usd > 0 && liq != null && liq < fMin.min_liquidity_usd) {
+          return this.decide(act.id, 'skip', `likuiditas pool ${compactMoney(liq)} (< ${compactMoney(fMin.min_liquidity_usd)})`);
+        }
+        if (fMin.min_volume24h_usd > 0 && vol != null && vol < fMin.min_volume24h_usd) {
+          return this.decide(act.id, 'skip', `volume 24 jam ${compactMoney(vol)} (< ${compactMoney(fMin.min_volume24h_usd)})`);
+        }
+      }
+    }
+    // The metadata of a token not yet known is read from RPC; a temporary error is retried briefly
+    // (the target's entry signal does not wait long).
     let toks;
     for (let i = 0; ; i++) {
       try { toks = await this.chain.tokens([act.token0, act.token1]); break; }
       catch (e) { if (i >= 2) throw e; await new Promise((r) => setTimeout(r, 1000 * (i + 1))); }
     }
-    // Mode live: ukuran juga dibatasi kas nyata, supaya posisi yang sedikit kelebihan
-    // dari saldo dibuka lebih kecil alih-alih gagal di tengah jembatan. Mode simulasi
-    // sengaja tidak — wallet uji sering kosong, dan simulasinya jadi tidak berguna.
+    // Live mode: the size is also limited by real cash, so a position slightly over
+    // the balance is opened smaller instead of failing midway through the bridge. Simulation mode
+    // deliberately not — the test wallet is often empty, and the simulation would become useless.
     const live = !this.dryRun() && this.exec.address();
     const cash = live ? await this.spendableCash().catch(() => null) : null;
-    // Kalau kita sudah punya cermin posisi ini, target sedang MENAMBAH — jadi kita
-    // menambah juga, bukan membuka posisi kedua. Dicari SEBELUM menilai: batas jumlah
-    // posisi tidak berlaku (tidak ada posisi baru) dan batas per posisi dihitung dari total.
-    // Bisa lebih dari satu cermin (mode rentang selain "exact"): yang menentukan adalah
-    // cermin dengan rentang yang SAMA dengan rencana; itu yang ditambah.
+    // If we already have a mirror of this position, the target is ADDING — so we
+    // add too, rather than opening a second position. Looked up BEFORE evaluating: the position count
+    // limit does not apply (no new position) and the per-position limit is computed from the total.
+    // There can be more than one mirror (range modes other than "exact"): what decides is the
+    // mirror whose range is the SAME as the plan; that is the one added to.
     const mirrors = this.store.all("SELECT * FROM positions WHERE chain=? AND status='open' AND mirror_of=? AND target=? AND token_id IS NOT NULL ORDER BY id",
       this.network, act.tokenId ?? '', act.target);
-    // Cermin yang sedang dalam kendali manual: tambahan target tidak diikuti — menambah
-    // modal ke posisi yang sengaja diambil alih adalah keputusan pemiliknya.
+    // A mirror under manual control: the target's additions are not followed — adding
+    // capital to a deliberately taken-over position is the owner's decision.
     const held = mirrors.find((mp) => mp.takeover_ts != null);
     if (held) return this.decide(act.id, 'skip', `posisi #${held.id} dalam kendali manual — tambahan target tidak diikuti`);
     const usdOfMirror = (mp) => {
@@ -555,8 +697,8 @@ class Engine {
       cash, existingUsd: mirror ? usdOfMirror(mirror) : null,
     };
     let d = planEntry(act, ctx);
-    // Rentang hasil aturan (recenter/scale/…) tidak sama dengan cermin pertama: cari cermin
-    // lain yang rentangnya sama; kalau tidak ada, ini posisi BARU dengan batas posisi baru.
+    // The range from the rules (recenter/scale/…) is not the same as the first mirror: look for another mirror
+    // with the same range; if none, this is a NEW position with the new-position limit.
     if (mirror && d.verdict === 'copy' && !(mirror.tick_lower === d.plan.tickLower && mirror.tick_upper === d.plan.tickUpper)) {
       const same = mirrors.find((mp) => mp.tick_lower === d.plan.tickLower && mp.tick_upper === d.plan.tickUpper) || null;
       mirror = same;
@@ -564,9 +706,9 @@ class Engine {
     }
     if (d.verdict !== 'copy') return this.decide(act.id, 'skip', d.reason);
 
-    // Rentang yang terlalu jauh dari harga tidak disalin sekarang: modalnya cuma menganggur
-    // (aturan keluar yang sama akan menutupnya lagi dalam semenit). Kalau buka-lagi menyala,
-    // posisi target dipantau dan cermin dibuka begitu harga mendekat.
+    // A range too far from the price is not copied now: its capital just sits idle
+    // (the same exit rule would close it again within a minute). If reopen is on,
+    // the target position is watched and the mirror opened once the price comes near.
     const far = rules.exit.out_of_range_pct > 0 ? m.distanceFromRangePct(act.slot0.tick, d.plan.tickLower, d.plan.tickUpper) : 0;
     if (far > rules.exit.out_of_range_pct) {
       const watch = this.watchReentry(act, rules, { why: 'ditunda', actionId: act.id });
@@ -595,8 +737,8 @@ class Engine {
         kind: 'entry', positionId: r.positionId, txHash: r.txHash, adding: !!r.adding, reentry: act.kind === 'reentry',
         pair: r.pair, valueUsd: r.valueUsd, curTick: r.curTick, steps: r.steps,
         target: act.target, mirrorOf: act.tokenId, reason: d.reason,
-        // Sisi target dari kejadian INI: berapa yang dia masukkan dan kapan. Kartu
-        // masuk menaruhnya di sebelah nominal kita supaya perbandingannya terbaca.
+        // The target's side of THIS event: how much it put in and when. The entry
+        // card places it beside our amount so the comparison reads.
         targetUsd: d.plan.targetValueUsd ?? null, targetTs: act.ts ?? null, targetRange: d.plan.targetRange ?? null,
       });
     } catch (e) {
@@ -606,8 +748,8 @@ class Engine {
     }
   }
 
-  // Anggaran harian = modal posisi yang DIBUKA 24 jam terakhir + TAMBAHAN ke posisi yang
-  // lebih tua (dulu tidak terhitung: menambah ke posisi berumur 2 hari lolos anggaran).
+  // Daily budget = capital of positions OPENED in the last 24 hours + ADDITIONS to positions
+  // older (these were not counted before: adding to a 2-day-old position passed the budget).
   spentTodayUsd() {
     const since = Date.now() - 86400_000;
     return (this.store.get(
@@ -615,11 +757,11 @@ class Engine {
       this.chain.nativeSymbol, this.chain.wethSymbol, this.ethUsd, this.network, since)?.s || 0) + this.increasesUsdSince(since);
   }
 
-  // Sisa jatah salin untuk dasbor: ruang yang masih tersisa di tiap plafon yang dipakai
-  // planEntry — anggaran harian, eksposur total, jumlah posisi, kas. Dihitung dari aturan
-  // UMUM; target dengan aturan khusus punya plafonnya sendiri, tapi kas dan posisi yang
-  // sudah terbuka sama untuk semuanya. Kas siap pakai = kas di atas cadangan gas, dari
-  // bacaan kas terakhir (bukan RPC baru — overview dipoll tiap 5 detik).
+  // Remaining copy quota for the dashboard: the room still left under each ceiling used by
+  // planEntry — daily budget, total exposure, position count, cash. Computed from the GENERAL
+  // rules; a target with special rules has its own ceilings, but cash and the positions
+  // already open are the same for everyone. Ready-to-use cash = cash above the gas reserve, from the
+  // last cash reading (not a new RPC — overview is polled every 5 seconds).
   copyRoom(cash) {
     const { sizing: s, filters: f } = rulesFor(this.cfg.rules);
     const sum = this.positions.summary(this.ethUsd);
@@ -638,8 +780,8 @@ class Engine {
     };
   }
 
-  // Nilai (USD) tambahan likuiditas yang berhasil disalin sejak `since`, ke posisi yang
-  // dibuka SEBELUM `since` (yang lebih baru sudah terhitung lewat cost_quote-nya).
+  // Value (USD) of liquidity additions copied since `since`, to positions
+  // opened BEFORE `since` (newer ones are already counted via their cost_quote).
   increasesUsdSince(since) {
     const rows = this.store.all(
       "SELECT d.plan FROM decisions d JOIN positions p ON p.id = d.position_id WHERE p.chain=? AND d.verdict='copy' AND d.ts > ? AND p.opened_ts <= ? AND d.plan IS NOT NULL",
@@ -652,16 +794,16 @@ class Engine {
   }
 
   async handleExit(act, rules) {
-    // SEMUA cermin posisi ini. Dengan mode rentang selain "exact" satu posisi target bisa
-    // punya dua cermin (target menambah di rentang yang dihitung ulang berbeda); dulu hanya
-    // satu yang ikut ditarik/ditutup.
+    // ALL mirrors of this position. With range modes other than "exact" one target position can
+    // have two mirrors (the target adds in a range recomputed differently); it used to be that only
+    // one was withdrawn/closed along with it.
     let mirrors = this.store.all(
       "SELECT * FROM positions WHERE chain=? AND status='open' AND mirror_of=? AND target=? ORDER BY id", this.network, act.tokenId ?? '', act.target);
     if (!mirrors.length && act.poolRef && act.tickLower != null && act.tickUpper != null) {
-      // Cadangan pool + rentang HANYA untuk posisi yang asal tokenId-nya tidak tercatat
-      // (mirror_of kosong). Dulu semua posisi ikut: target yang punya posisi A dan B
-      // identik — kita cuma mencermin A — menutup B, lalu cermin A ikut ditutup.
-      // (Aksi transfer_out tidak membawa info pool; mengikat undefined ke SQLite melempar.)
+      // Pool + range fallback ONLY for positions whose tokenId origin is not recorded
+      // (mirror_of empty). It used to apply to all positions: a target with positions A and B
+      // identical — we only mirror A — closes B, then our A mirror is closed too.
+      // (A transfer_out action carries no pool info; binding undefined to SQLite throws.)
       const pos = this.store.get(
         "SELECT * FROM positions WHERE chain=? AND status='open' AND pool_ref=? AND target=? AND tick_lower=? AND tick_upper=? AND mirror_of IS NULL AND takeover_ts IS NULL ORDER BY id ASC LIMIT 1",
         this.network, act.poolRef, act.target, act.tickLower, act.tickUpper);
@@ -671,24 +813,24 @@ class Engine {
       }
     }
     if (!mirrors.length) return this.decide(act.id, 'skip', 'tidak ada cermin posisi yang cocok');
-    // Kendali manual: sinyal keluar target tidak diikuti untuk cermin itu.
+    // Manual control: the target's exit signal is not followed for that mirror.
     const manualHeld = mirrors.filter((mp) => mp.takeover_ts != null);
     mirrors = mirrors.filter((mp) => mp.takeover_ts == null);
     if (!mirrors.length) {
       return this.decide(act.id, 'skip', `posisi #${manualHeld.map((mp) => mp.id).join(', #')} dalam kendali manual — keluar target tidak diikuti`);
     }
 
-    // berapa L target sebelum menarik? = L sesudah aksi + yang ditarik
+    // how much was the target's L before withdrawing? = L after the action + what was withdrawn
     //
-    // Gagal baca TIDAK boleh dianggap nol: nol berarti "target tutup penuh" dan cermin
-    // kita di-burn seluruhnya — padahal target mungkin cuma menarik 10%. Dicoba beberapa
-    // kali; kalau tetap tidak terbaca, aksi ini dilewati: kalau target memang keluar
-    // penuh, rekonsiliasi keluar (tiap sinkron) yang menutupnya.
+    // A failed read MUST NOT be taken as zero: zero means "target closed fully" and our mirror
+    // is burned entirely — although the target may have withdrawn only 10%. Tried several
+    // times; if still unreadable, this action is skipped: if the target really exited
+    // fully, exit reconciliation (every sync) is what closes it.
     //
-    // Dibaca DI BLOK AKSI itu (state sesudah blok), bukan `latest`: saat bot tertinggal,
-    // `latest` sudah memuat aksi target sesudahnya (tarik 50% lalu 50% lagi → aksi pertama
-    // terbaca tutup penuh), dan node yang tertinggal menjawab likuiditas SEBELUM aksi.
-    // Aksi lain pada NFT yang sama di blok yang sama (sesudah aksi ini) dikembalikan dulu.
+    // Read AT THAT ACTION'S BLOCK (state after the block), not `latest`: when the bot lags,
+    // `latest` already contains the target's later actions (withdraw 50% then 50% again → the first action
+    // reads as a full close), and a lagging node answers the liquidity BEFORE the action.
+    // Other actions on the same NFT in the same block (after this one) are added back first.
     let before = null;
     if (act.kind === 'decrease') {
       for (let i = 0; i < 3 && before == null; i++) {
@@ -713,18 +855,18 @@ class Engine {
       const o = outs[0];
       return this.decide(act.id, o.verdict, o.reason, o.plan, o.txHash ?? null, o.positionId ?? null);
     }
-    // Beberapa cermin, satu keputusan per aksi.
+    // Several mirrors, one decision per action.
     const pick = outs.find((o) => o.verdict === 'copy') || outs.find((o) => o.verdict === 'error')
       || outs.find((o) => o.verdict === 'dry') || outs[0];
     const reason = outs.map((o) => `#${o.posId}: ${o.reason}`).join(' · ');
     return this.decide(act.id, pick.verdict, reason.slice(0, 600), pick.plan, pick.txHash ?? null, pick.positionId ?? null);
   }
 
-  // Satu cermin untuk satu aksi keluar target. Tidak menulis keputusan — hasilnya
-  // dikembalikan ke handleExit: {verdict, reason, plan, txHash, positionId, posId}.
+  // One mirror for one target exit action. Writes no decision — its result
+  // is returned to handleExit: {verdict, reason, plan, txHash, positionId, posId}.
   async exitMirror(act, rules, pos, before) {
     const out = (verdict, reason, plan = null, extra = {}) => ({ verdict, reason, plan, posId: pos.id, ...extra });
-    // Target memindahkan/menjual NFT posisinya: buat kita itu sinyal keluar penuh.
+    // The target moves/sells its position NFT: for us that is a full exit signal.
     if (act.kind === 'transfer_out') {
       const poolKeyT = pos.venue === 'v4' ? await this.poolKeyOf(pos) : null;
       const planT = {
@@ -756,8 +898,8 @@ class Engine {
       this.notify(`LP ditutup: ${r.note}`, {
         kind: 'exit', positionId: pos.id, txHash: r.txHash, full: !!d.plan.full, sold: r.sold,
         target: act.target, mirrorOf: act.tokenId, reason: d.reason,
-        // Berapa yang TARGET tarik pada aksi ini, dan kapan — kartu tutup memakainya
-        // untuk menjawab "yang kita tiru keluar berapa" tanpa membuka dasbor.
+        // How much the TARGET withdrew in this action, and when — the close card uses it
+        // to answer "how much did the one we copy exit with" without opening the dashboard.
         targetUsd: (act.valueQuote || 0) * usdPerQuote(act.quoteSymbol, this.ethUsd, this.chain) || null,
         targetTs: act.ts ?? null,
       });
@@ -768,11 +910,11 @@ class Engine {
     }
   }
 
-  // Alasan lewati kalau aksi masuk ini lebih tua dari loop.stale_action_seconds (bawaan
-  // 300; 0 = mati), selain itu null. act.ts hanya taksiran (nomor blok × ~101 ms dari
-  // blok acuan), jadi sebelum sinyal dibuang umurnya dipastikan dari timestamp blok asli.
-  // Blok tidak terbaca: taksirannya dipakai — ia cenderung MENGECILKAN umur saat blok
-  // melambat, bukan membesarkannya.
+  // Skip reason if this entry action is older than loop.stale_action_seconds (default
+  // 300; 0 = off), otherwise null. act.ts is only an estimate (block number × ~101 ms from a
+  // reference block), so before a signal is discarded its age is confirmed from the real block timestamp.
+  // Block unreadable: the estimate is used — it tends to UNDERSTATE the age when blocks
+  // slow down, not overstate it.
   async staleEntry(act) {
     const limitMs = Number(this.cfg.loop?.stale_action_seconds ?? 300) * 1000;
     if (!(limitMs > 0) || act.ts == null) return null;
@@ -786,7 +928,7 @@ class Engine {
     }
     const age = Date.now() - ts;
     if (age <= limitMs) return null;
-    return `sinyal masuk basi — target masuk ${lamanya(age)} lalu (batas ${lamanya(limitMs)}); harga & pool sudah berubah, tidak disalin`;
+    return `sinyal masuk basi — target masuk ${duration(age)} lalu (batas ${duration(limitMs)}); harga & pool sudah berubah, tidak disalin`;
   }
 
   async refreshActionState(act) {
@@ -805,25 +947,25 @@ class Engine {
     }
   }
 
-  // Likuiditas sebuah posisi (milik target) di chain, sesuai venue-nya. null = tidak
-  // terbaca (galat RPC sementara) — pemanggil TIDAK boleh menganggapnya nol.
+  // The liquidity of a position (the target's) on chain, per its venue. null = unreadable
+  // (temporary RPC error) — the caller MUST NOT take it as zero.
   //
-  // v3: dulu ikut dibaca dari PositionManager v4 dengan tokenId v3 — angka posisi v4 lain
-  // (atau nol) — sehingga tarik sebagian 10% oleh target bisa jadi tutup penuh cermin
-  // kita. NPM v3 me-revert positions() untuk NFT yang sudah dibakar (decrease+collect+burn
-  // dalam satu multicall, pola keluar paling umum); revert sah itu = likuiditas nol.
+  // v3: it used to also be read from the v4 PositionManager with a v3 tokenId — the figure of another v4
+  // position (or zero) — so a 10% partial withdrawal by the target could become a full close of
+  // our mirror. The v3 NPM reverts positions() for a burned NFT (decrease+collect+burn
+  // in one multicall, the most common exit pattern); that legitimate revert = zero liquidity.
   async targetLiquidity(venue, tokenId, block = null) {
     const read = async (tag) => {
       if (this.chain.isV3Venue(venue)) {
         const [w] = await this.rpc.ethCallMany([{ to: this.chain.npmFor(venue), data: IF_NPM.encodeFunctionData('positions', [BigInt(tokenId)]) }], tag, { strict: true });
-        if (w == null) return 0n;   // revert sah (strict melempar untuk galat lain): NFT dibakar
+        if (w == null) return 0n;   // legitimate revert (strict throws for other errors): NFT burned
         if (w === '0x') return null;
         try { return BigInt(IF_NPM.decodeFunctionResult('positions', w)[7]); } catch { return null; }
       }
       const [w] = await this.rpc.ethCallMany([{ to: this.chain.ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(tokenId)]) }], tag, { strict: true });
       return w && w !== '0x' ? BigInt(w) : null;
     };
-    // Blok aksi dulu; node yang belum/tidak lagi punya state blok itu melempar → `latest`.
+    // The action's block first; a node that does not (or no longer) have that block's state throws → `latest`.
     if (block != null && Number.isSafeInteger(Number(block)) && Number(block) > 0) {
       try {
         const L = await read('0x' + Number(block).toString(16));
@@ -834,8 +976,8 @@ class Engine {
     return L == null ? null : { liquidity: L, atBlock: false };
   }
 
-  // Jumlah delta likuiditas aksi target lain pada NFT yang sama, di blok yang sama,
-  // SESUDAH aksi ini (urutan log). State "di blok" sudah memuat semuanya.
+  // The sum of liquidity deltas of the target's other actions on the same NFT, in the same block,
+  // AFTER this action (log order). The state "at the block" already contains all of them.
   laterDeltasInBlock(act) {
     if (act.block == null || act.logIndex == null || act.tokenId == null) return 0n;
     const rows = this.store.all(
@@ -844,12 +986,12 @@ class Engine {
     return rows.reduce((a, r) => { try { return a + BigInt(r.liquidity); } catch { return a; } }, 0n);
   }
 
-  // poolKey posisi kita. Sumber utamanya baris DB sendiri — itu dicatat saat mint dan
-  // tidak bisa hilang. Chain hanya cadangan, dan hasilnya WAJIB diperiksa: untuk NFT
-  // yang sudah dibakar atau belum ada, getPoolAndPositionInfo TIDAK revert melainkan
-  // mengembalikan poolKey serba nol. Nol itu lolos diam-diam ke TAKE_PAIR dan membuat
-  // burn gagal dengan CurrencyNotSettled() — pesan yang sama sekali tidak menunjuk
-  // ke sebabnya. Terlihat saat dry-run mencerminkan Bang GE.
+  // The poolKey of our position. The main source is our own DB row — it is recorded at mint and
+  // cannot be lost. The chain is only a fallback, and its result MUST be checked: for an NFT
+  // that has been burned or does not exist yet, getPoolAndPositionInfo does NOT revert but
+  // returns an all-zero poolKey. That zero slips silently into TAKE_PAIR and makes the
+  // burn fail with CurrencyNotSettled() — a message that does not point at all
+  // to the cause. Seen when a dry-run mirrored Bang GE.
   async poolKeyOf(pos) {
     if (pos.venue !== 'v4') return null;
     const ok = (pk) => pk && pk.currency1 && !/^0x0+$/i.test(pk.currency1);
@@ -869,7 +1011,7 @@ class Engine {
     return ok(pk) ? pk : null;
   }
 
-  // ---- eksekusi -----------------------------------------------------------
+  // ---- execution ----------------------------------------------------------
   async simulateEntry(plan) {
     const tx = this.chain.isV3Venue(plan.venue)
       ? this.exec.buildV3Mint(plan, this.exec.deadline())
@@ -878,19 +1020,19 @@ class Engine {
   }
 
   /**
-   * Pastikan kita memegang cukup ASET KUOTASI pool ini.
+   * Make sure we hold enough of this pool's QUOTE ASSET.
    *
-   * Ini yang membuat bot bisa mengikuti target ke pool berkuotasi apa pun. Di chain
-   * ini 50% pool berkuotasi ETH native dan hanya 27% USDG, jadi kas yang cuma ada di
-   * satu aset akan memblokir separuh peluang. Urutan yang dicoba:
-   *   1. ETH native <-> WETH  : bungkus/buka bungkus, 1:1, tanpa slippage
-   *   2. USDG <-> ETH         : swap lewat pool ETH/USDG terdalam
+   * This is what lets the bot follow a target to a pool quoted in any asset. On this chain
+   * 50% of pools are quoted in native ETH and only 27% in USDG, so cash that exists in
+   * just one asset would block half the opportunities. The order tried:
+   *   1. native ETH <-> WETH  : wrap/unwrap, 1:1, no slippage
+   *   2. USDG <-> ETH         : swap through the deepest ETH/USDG pool
    *
-   * Catatan soal hook: SEMUA pool ETH/USDG di chain ini memakai hook (dynamic fee).
-   * Untuk swap itu jauh lebih aman daripada untuk LP — swap bersifat atomik dan
-   * dilindungi amountOutMinimum, jadi hook tidak bisa menahan dana kita; hook pada
-   * pool LP-lah yang berbahaya karena bisa memblokir penarikan. Karena itu saringan
-   * "tolak hook" sengaja TIDAK diterapkan di sini.
+   * A note on hooks: ALL ETH/USDG pools on this chain use a hook (dynamic fee).
+   * For a swap that is far safer than for an LP — a swap is atomic and
+   * protected by amountOutMinimum, so the hook cannot hold our funds; a hook on an
+   * LP pool is what is dangerous because it can block withdrawals. So the
+   * "reject hook" filter is deliberately NOT applied here.
    */
   async ensureQuoteAsset(plan, rules, needQuoteRaw) {
     const gasReserve = await this.gasReserve();
@@ -906,13 +1048,13 @@ class Engine {
     let have = await balOf(quoteTok);
     if (have >= needQuoteRaw) return notes;
 
-    // 1. native <-> WETH (gratis, 1:1)
+    // 1. native <-> WETH (free, 1:1)
     if (quoteTok === this.chain.ADDR.weth) {
       const nat = await balOf(this.chain.ADDR.native);
       const want = needQuoteRaw - have;
       if (nat > 0n) {
         const amt = nat < want ? nat : want;
-        const h = await this.exec.send(this.exec.buildWrapEth(amt), { kind: 'wrap_eth' });
+        const h = await this.exec.send(this.exec.buildWrapEth(amt), { kind: 'wrap_eth', detail: { amountInRaw: String(amt) } });
         if (!(await this.exec.waitReceipt(h)).ok) throw new Error('bungkus ETH gagal');
         notes.push(`bungkus ${(Number(amt) / 1e18).toFixed(5)} ${this.chain.nativeSymbol}`);
         have = await balOf(quoteTok);
@@ -922,7 +1064,7 @@ class Engine {
       const want = needQuoteRaw - have;
       if (wr > 0n) {
         const amt = wr < want ? wr : want;
-        const h = await this.exec.send(this.exec.buildUnwrapWeth(amt), { kind: 'unwrap_weth' });
+        const h = await this.exec.send(this.exec.buildUnwrapWeth(amt), { kind: 'unwrap_weth', detail: { amountInRaw: String(amt) } });
         if (!(await this.exec.waitReceipt(h)).ok) throw new Error(`buka bungkus ${this.chain.wethSymbol} gagal`);
         notes.push(`buka bungkus ${(Number(amt) / 1e18).toFixed(5)} ${this.chain.wethSymbol}`);
         have = await balOf(quoteTok);
@@ -930,14 +1072,14 @@ class Engine {
     }
     if (have >= needQuoteRaw) return notes;
 
-    // 2. jembatan USDG <-> ETH
+    // 2. USDG <-> ETH bridge
     if (!rules.swap.enabled) throw new Error('kas ada di aset kuotasi lain dan auto-swap dimatikan');
     const wantEth = quoteTok === this.chain.ADDR.native || quoteTok === this.chain.ADDR.weth;
     const payTok = wantEth ? this.chain.ADDR.usdg : this.chain.ADDR.native;
-    // Kas ETH = ETH native di atas cadangan gas + WETH. WETH baru dibuka bungkusnya
-    // tepat sebelum swap (lihat unwrapFor). Dulu hanya ETH native yang dihitung, jadi
-    // wallet berisi 0,07 WETH dan ETH native di bawah cadangan gagal dengan
-    // "saldo ETH kosong" padahal kasnya ada.
+    // ETH cash = native ETH above the gas reserve + WETH. WETH is only unwrapped
+    // right before the swap (see unwrapFor). Only native ETH used to be counted, so a
+    // wallet holding 0.07 WETH and native ETH below the reserve failed with
+    // "ETH balance empty" although the cash existed.
     const payHave = wantEth ? await balOf(this.chain.ADDR.usdg) : (await balOf(this.chain.ADDR.native)) + (await balOf(this.chain.ADDR.weth));
     const { usdgSymbol, usdgDecimals, nativeSymbol, wethSymbol } = this.chain;
     const qSym = this.chain.QUOTES[quoteTok]?.symbol || '?';
@@ -955,83 +1097,138 @@ class Engine {
       const nat = await balOf(this.chain.ADDR.native);
       if (nat >= pay) return;
       const amt = pay - nat;
-      const h = await this.exec.send(this.exec.buildUnwrapWeth(amt), { kind: 'unwrap_weth' });
+      const h = await this.exec.send(this.exec.buildUnwrapWeth(amt), { kind: 'unwrap_weth', detail: { amountInRaw: String(amt) } });
       if (!(await this.exec.waitReceipt(h)).ok) throw new Error(`buka bungkus ${wethSymbol} gagal`);
       notes.push(`buka bungkus ${fmtUnits(amt, 18)} ${wethSymbol}`);
     };
-    // Butuh berapa? quoteTok WETH tetap dibeli sebagai ETH native lalu dibungkus.
+    // How much is needed? quoteTok WETH is still bought as native ETH then wrapped.
     const shortEthLike = needQuoteRaw - have;
     const slipBps = rules.swap.max_slippage_bps;
 
-    // Jalur utama: agregator Kyber. Kutipan arah BALIK (yang dibutuhkan -> yang dibayar)
-    // memberi taksiran berapa yang harus dibayar untuk mendapat shortEthLike.
+    // Main path: the Kyber aggregator. A REVERSE-direction quote (what is needed -> what is paid)
+    // gives an estimate of how much must be paid to get shortEthLike.
     const outTok = wantEth ? this.chain.ADDR.native : this.chain.ADDR.usdg;
-    const rev = await this.kyber.quote(outTok, payTok, shortEthLike);
+    const direction = wantEth ? `${usdgSymbol}→${nativeSymbol}` : `${nativeSymbol}→${usdgSymbol}`;
+    // Why EVERY cause of falling back is recorded, including an empty quote:
+    // if Kyber gives nothing, what fails is the direct pool below — and
+    // the message that reached the user used to be only that pool's revert, with no hint that
+    // the trigger was Kyber. On 25 Sep 2026 an entry on lp2 was cancelled exactly like that: Kyber's
+    // reverse quote null, zero log lines, then three entry attempts ran out with "gas
+    // estimation failed". `kyberNote` is carried into the fallback's error message so the chain stays intact.
+    const rev = await this.kyber.quoteRetry(outTok, payTok, shortEthLike);
+    let kyberNote;
     if (rev && rev.amountOut > 0n) {
       let payK = (rev.amountOut * BigInt(10_000 + slipBps)) / 10_000n;
       if (payK > payHave) throw tooShort(payK);
       await unwrapFor(payK);
-      let r = null, kyberGagal = false;
+      let r = null, kyberFailed = false;
       try {
         r = await this.kyber.swap(payTok, outTok, payK, {
           slippageBps: slipBps, maxLossBps: rules.swap.max_price_impact_bps, kind: 'bridge_swap', detail: { via: 'kyber', wantEth },
         });
       } catch (e) {
-        // Rute terlalu rugi atau tx ditolak chain berkali-kali — soal pasar, jadi pool
-        // langsung di bawah tetap dicoba (dampak harganya disaring batas yang sama).
-        // Pengaman yang gagal dan receipt yang belum terbaca tetap menghentikan entry.
+        // The route loses too much or the tx was rejected by the chain repeatedly — a market matter, so the direct
+        // pool below is still tried (its price impact is filtered by the same limit).
+        // A failed safeguard and an unread receipt still stop the entry.
         if (!(e.loss || e.reverted)) throw e;
-        kyberGagal = true;
+        kyberFailed = true;
+        kyberNote = `Kyber tidak jadi (${e.message})`;
         this.store.log('warn', `jembatan via Kyber tidak jadi (${e.message}) — mencoba pool langsung`, { quiet: true });
       }
       if (r) {
-        notes.push(`${wantEth ? `jembatan ${usdgSymbol}→${nativeSymbol}` : `jembatan ${nativeSymbol}→${usdgSymbol}`} via Kyber (${r.quote.dex})`);
+        notes.push(`jembatan ${direction} via ${aggLabel(r.quote)} (${r.quote.dex})`);
         return this.wrapIfWeth(quoteTok, needQuoteRaw, balOf, notes);
       }
-      if (!kyberGagal) this.store.log('warn', 'Kyber tidak bisa merutekan jembatan — mencoba pool langsung', { quiet: true });
+      if (!kyberFailed) {
+        kyberNote = 'Kyber tidak bisa merutekan';
+        this.store.log('warn', 'Kyber tidak bisa merutekan jembatan — mencoba pool langsung', { quiet: true });
+      }
+    } else {
+      kyberNote = 'Kyber tidak memberi kutipan';
+      this.store.log('warn', `Kyber tidak memberi kutipan jembatan ${direction} — mencoba pool langsung`, { quiet: true });
     }
 
-    // Cadangan: satu pool ETH/USDG langsung. Banyak pool ETH/USDG di chain ini menolak
-    // swap lewat hook-nya, jadi jalur ini hanya dipakai kalau Kyber tidak tersedia.
+    // Fallback: a single direct ETH/USDG pool, only used if Kyber is unavailable.
+    // This path is fragile and MUST be simulated first. Measured 25 Sep 2026 on Robinhood
+    // Chain: 12 of 12 registered ETH/USDG pools are hooked, and all 12 refuse the
+    // swap from the UniversalRouter with WrappedError (0x90bfb865) in beforeSwap. Sent
+    // blind, all that happens is the gas estimate reverting 3x per attempt then the entry dying
+    // with "gas estimation failed (probably revert)" — a message that accuses a stale node
+    // when it is the pool that refuses. Simulation = a single eth_call, and the right error.
     const br = await this.chain.bestEthUsdgPool();
     if (!br) throw new Error(`pool jembatan ${nativeSymbol}/${usdgSymbol} tidak ditemukan`);
-    const price = m.priceFromSqrt(br.slot0.sqrtPriceX96, 18, usdgDecimals); // stablecoin per native
     const slip = 1 + rules.swap.max_slippage_bps / 10000;
-    let payRaw;
-    if (wantEth) payRaw = BigInt(Math.ceil((Number(shortEthLike) / 1e18) * price * 10 ** usdgDecimals * slip));
-    else payRaw = BigInt(Math.ceil((Number(shortEthLike) / 10 ** usdgDecimals / price) * 1e18 * slip));
-    if (payRaw <= 0n) return notes;
-    if (payRaw > payHave) throw tooShort(payRaw);
-    const zeroForOne = !wantEth;   // jual ETH(currency0) -> beli USDG
-    if (rules.swap.max_price_impact_bps > 0) {
-      const impact = m.priceImpactBps(br.slot0.sqrtPriceX96, br.liquidity, payRaw, zeroForOne);
-      if (impact != null && impact > rules.swap.max_price_impact_bps) {
-        throw new Error(`jembatan menggeser harga ${impact.toFixed(0)} bps (batas ${rules.swap.max_price_impact_bps})`);
+    const zeroForOne = !wantEth;   // sell ETH(currency0) -> buy USDG
+    const minOut = (shortEthLike * (10000n - BigInt(rules.swap.max_slippage_bps))) / 10000n;
+
+    // Round 1 — filter by computation only, sending nothing. The cheap gates
+    // (price, cash, impact) run first so the router allowance and unwrap in
+    // round 2 are never sent for a bridge that is certain to be rejected anyway.
+    const layak = [];
+    let impactMin = null, payMin = null;
+    for (const c of br.candidates || [br]) {
+      const price = m.priceFromSqrt(c.slot0.sqrtPriceX96, 18, usdgDecimals); // stablecoin per native
+      const payRaw = wantEth
+        ? BigInt(Math.ceil((Number(shortEthLike) / 1e18) * price * 10 ** usdgDecimals * slip))
+        : BigInt(Math.ceil((Number(shortEthLike) / 10 ** usdgDecimals / price) * 1e18 * slip));
+      if (payRaw <= 0n) return notes;
+      // Insufficient cash in this pool is not necessarily insufficient in another pool (prices differ), so
+      // the candidate is skipped, not failing the whole bridge. The cheapest is kept
+      // for its error message.
+      if (payRaw > payHave) { if (payMin == null || payRaw < payMin) payMin = payRaw; continue; }
+      if (rules.swap.max_price_impact_bps > 0) {
+        const impact = m.priceImpactBps(c.slot0.sqrtPriceX96, c.liquidity, payRaw, zeroForOne);
+        if (impact != null && impact > rules.swap.max_price_impact_bps) {
+          if (impactMin == null || impact < impactMin) impactMin = impact;
+          continue;
+        }
       }
+      layak.push({ pool: c, payRaw });
     }
+    if (!layak.length) {
+      if (impactMin != null) throw new Error(`jembatan menggeser harga ${impactMin.toFixed(0)} bps (batas ${rules.swap.max_price_impact_bps})`);
+      throw tooShort(payMin ?? 0n);
+    }
+
+    // Round 2 — simulation. The router allowance is prepared first: without allowance, the USDG-side swap reverts
+    // because of its transfer and that would be misread as "the pool refuses".
     if (!zeroForOne) {
       for (const a of await this.exec.ensureRouterAllowance(this.chain.ADDR.usdg)) {
         const h = await this.exec.send(a, { kind: a.kind });
         await this.exec.waitReceipt(h);
       }
     }
-    await unwrapFor(payRaw);
-    const minOut = (shortEthLike * (10000n - BigInt(rules.swap.max_slippage_bps))) / 10000n;
-    const tx = this.exec.buildSwapV4(br.poolKey, zeroForOne, payRaw, minOut, this.exec.deadline());
-    const h = await this.exec.send(tx, { kind: 'bridge_swap', detail: { pool: br.poolId, wantEth } });
+    // Candidates are ordered from the deepest liquidity, but the one used is the one that PASSES
+    // simulation — on this chain even the deepest pool can refuse through its hook.
+    let choose = null, rejected = 0, rejectError = null;
+    for (const { pool, payRaw } of layak) {
+      // The simulation is only honest if the funds are already in native ETH form, the same as when
+      // sent. Unwrapping WETH is 1:1 with no slippage and was always done before sending
+      // anyway, so it adds no risk even if the swap is cancelled.
+      await unwrapFor(payRaw);
+      const tx = this.exec.buildSwapV4(pool.poolKey, zeroForOne, payRaw, minOut, this.exec.deadline());
+      const sim = await this.exec.simulate(tx);
+      if (sim.ok) { choose = { pool, tx, payRaw }; break; }
+      rejected++; rejectError = sim.error;
+    }
+    if (!choose) {
+      throw new Error(`jembatan ${direction} gagal: ${kyberNote}, dan ${rejected} pool ${nativeSymbol}/${usdgSymbol} langsung menolak swap${rejectError ? ` (${String(rejectError).slice(0, 120)})` : ''}`);
+    }
+    const h = await this.exec.send(choose.tx, { kind: 'bridge_swap', detail: { pool: choose.pool.poolId, wantEth, payRaw: choose.payRaw.toString(),
+      tokenIn: wantEth ? this.chain.ADDR.usdg : this.chain.ADDR.native, tokenOut: wantEth ? this.chain.ADDR.native : this.chain.ADDR.usdg } });
     if (!(await this.exec.waitReceipt(h)).ok) throw new Error(`swap jembatan gagal (${h})`);
-    notes.push(wantEth ? `jembatan ${usdgSymbol}→${nativeSymbol}` : `jembatan ${nativeSymbol}→${usdgSymbol}`);
+    notes.push(`jembatan ${direction}`);
     return this.wrapIfWeth(quoteTok, needQuoteRaw, balOf, notes);
   }
 
-  // Kalau yang dibutuhkan WETH, bungkus hasil ETH jembatan.
+  // If what is needed is WETH, wrap the ETH result of the bridge.
   async wrapIfWeth(quoteTok, needQuoteRaw, balOf, notes) {
     if (quoteTok === this.chain.ADDR.weth) {
       const nat = await balOf(this.chain.ADDR.native);
       const want = needQuoteRaw - (await balOf(quoteTok));
       const amt = nat < want ? nat : want;
       if (amt > 0n) {
-        const hw = await this.exec.send(this.exec.buildWrapEth(amt), { kind: 'wrap_eth' });
+        const hw = await this.exec.send(this.exec.buildWrapEth(amt), { kind: 'wrap_eth', detail: { amountInRaw: String(amt) } });
         if (!(await this.exec.waitReceipt(hw)).ok) throw new Error('bungkus ETH gagal');
         notes.push(`bungkus ke ${this.chain.wethSymbol}`);
       }
@@ -1039,7 +1236,7 @@ class Engine {
     return notes;
   }
 
-  // Sediakan token yang kurang dengan swap dari sisi kuotasi, lalu mint.
+  // Provide the missing token by swapping from the quote side, then mint.
   async executeEntry(plan, act) {
     if (this.stopping) throw new Error('bot sedang berhenti (restart) — coba lagi sebentar');
     if (this.compound?.running) throw new Error('auto-compound sedang diproses — coba lagi sebentar');
@@ -1047,35 +1244,35 @@ class Engine {
       throw new Error('posisi sedang diproses — tunggu konfirmasi transaksi');
     }
     this.activeEntries = (this.activeEntries || 0) + 1;
-    // Token pool ini sedang dikumpulkan untuk mint: antrean jual sisa (tiap detik), tombol
-    // jual, dan swap manual tidak boleh menjualnya di tengah jalan — dulu token hasil zap
-    // bisa terjual sebelum mint, lalu mint revert/mengecil dan zap-nya dibayar percuma.
+    // This pool's tokens are being collected for a mint: the leftover sell queue (every second), the sell
+    // button, and manual swaps must not sell them midway — zap tokens used to
+    // be sold before the mint, then the mint reverted/shrank and the zap was paid for in vain.
     const held = [plan.token0, plan.token1].filter(Boolean).map((x) => String(x).toLowerCase());
     this.entryTokens = this.entryTokens || new Map();
     for (const tk of held) this.entryTokens.set(tk, (this.entryTokens.get(tk) || 0) + 1);
     const trace = {};
     const waits = this.entryRetryWaits || [3000, 8000];
     try {
-      // Galat sementara (RPC tumbang, node tertinggal, kutipan basi, mint revert karena
-      // harga bergerak) dulu langsung membatalkan entry — dan kalau zap sudah jadi, token
-      // yang baru dibeli dijual balik: kena fee pool dua kali untuk posisi yang tidak
-      // pernah dibuka. Sekarang diulang dari saldo nyata. Setelah zap, langkah jembatan
-      // dilewati (kas kuotasi sudah sengaja dibelanjakan) dan jumlah zap dibatasi total.
+      // A temporary error (RPC down, lagging node, stale quote, mint reverting because the
+      // price moved) used to cancel the entry straight away — and if the zap was done, the token
+      // just bought was sold back: hit by the pool fee twice for a position that
+      // was never opened. Now repeated from the real balance. After a zap, the bridge step
+      // is skipped (the quote cash was deliberately spent) and the zap amount is capped in total.
       for (let i = 0; ; i++) {
         try { return await this.sendEntry(plan, act, trace, { resume: !!(trace.zapped || trace.bridged) }); }
         catch (e) {
           if (e.pendingMint || e.priorLanded || trace.minted || i >= waits.length || this.stopping || !Engine.retryableEntry(e)) throw e;
-          // Tx yang tadi dianggap tidak masuk ternyata masuk: jangan kirim ulang apa pun.
+          // A tx that was thought not to have landed actually landed: do not resend anything.
           if (e.txHash && this.exec.txLanded && await this.exec.txLanded(e.txHash, 2)) throw e;
           this.store?.log?.('warn', `entry ${plan.poolRef ? String(plan.poolRef).slice(0, 10) + '…' : ''} gagal (${String(e.message).slice(0, 160)}) — coba lagi dalam ${waits[i] / 1000} dtk (${i + 2}/${waits.length + 1})`, { quiet: true });
           await new Promise((r) => setTimeout(r, waits[i]));
         }
       }
     } catch (e) {
-      // Zap sudah jadi tapi LP-nya tetap gagal: token yang terbeli jangan ditinggal
-      // telanjang di wallet — masuk antrean jual, seperti sisa posisi. Rescue gagal tidak
-      // boleh menutupi galat aslinya. Mint yang mungkin masih masuk (pendingMint) atau tx
-      // lama yang ternyata masuk (priorLanded): tokennya mungkin sudah di dalam posisi.
+      // The zap is done but the LP still failed: the token bought must not be left
+      // naked in the wallet — it goes into the sell queue, like a position's leftovers. A failed rescue must not
+      // mask the original error. A mint that may still land (pendingMint) or an
+      // old tx that actually landed (priorLanded): the token may already be inside the position.
       if (trace.zapped && !e.pendingMint && !e.priorLanded && !trace.minted) await this.rescueZap(plan, trace.zapped, e).catch((x) => this.store?.log?.('warn', `antrekan token zap gagal: ${x.message}`, { quiet: true }));
       throw e;
     }
@@ -1088,28 +1285,28 @@ class Engine {
     }
   }
 
-  // Token ini sedang dipakai entry yang berjalan?
+  // Is this token being used by a running entry?
   tokenInEntry(token) { return !!this.entryTokens?.has(String(token || '').toLowerCase()); }
 
-  // Galat entry yang TIDAK layak diulang: keputusan/batas pengguna, kas yang memang
-  // kurang, pengaman Kyber, dan tx yang mungkin masih masuk. Selain itu (RPC, revert
-  // estimasi/mint, kutipan basi, harga bergerak) diulang.
+  // Entry errors that are NOT worth retrying: user decisions/limits, cash that really
+  // is insufficient, Kyber safeguards, and txs that may still land. Others (RPC, revert
+  // of estimate/mint, stale quote, moving price) are retried.
   static retryableEntry(e) {
     return !/dimatikan|kas kurang|saldo kurang|satu sisi|rugi|dampak harga|menggeser harga|sedang diproses|auto-compound|insufficient funds|tidak ditemukan|tidak cocok|janggal|menyimpang|simulasi|kunci privat|dibatalkan|belum terkonfirmasi|tidak cukup untuk membuka/i.test(String(e?.message || ''));
   }
 
   async rescueZap(plan, z, err) {
     const token = String(z.token).toLowerCase();
-    // Aset kuotasi (USDG/ETH/WETH) itu kas, bukan sisa — dan menjualnya "ke" memecoin
-    // pembayar zap justru membeli memecoin lagi.
+    // A quote asset (USDG/ETH/WETH) is cash, not leftover — and selling it "to" the zap-paying
+    // memecoin would buy the memecoin again.
     if (this.chain.QUOTES[token] || isNative(token)) return;
     const bal = (await this.exec.balances([token])).get(token) || 0n;
     const gained = bal > BigInt(z.before ?? 0) ? bal - BigInt(z.before ?? 0) : 0n;
     if (gained === 0n) return;
     const meta = await this.chain.token(token).catch(() => null);
-    // Item sapuan/zap lain untuk token yang sama (posId null) DITAMBAH, bukan ditimpa:
-    // dua entry gagal berturut-turut di token yang sama dulu menyisakan separuhnya.
-    // `before` sudah memuat saldo item lama, jadi yang ditambahkan hanya hasil zap ini.
+    // Another sweep/zap item for the same token (posId null) is ADDED to, not overwritten:
+    // two consecutive failed entries on the same token used to leave half of it.
+    // `before` already contains the old item's balance, so only this zap's result is added.
     const old = this.leftovers().find((x) => (x.posId ?? null) === null && x.token === token);
     const amount = gained + (old ? BigInt(old.amount || '0') : 0n);
     this.keepLeftover({ posId: null, target: plan.target ?? null, token, quote: z.quote, amount: amount.toString(), tries: 0,
@@ -1118,25 +1315,25 @@ class Engine {
     this.store.log('warn', `LP gagal setelah zap — ${fmtUnits(gained, meta?.decimals ?? 18)} ${meta?.symbol || token.slice(0, 8)} masuk antrean jual`);
   }
 
-  // Kelebihan zap pada entry yang BERHASIL. Zap membeli sebanyak kebutuhan pada harga
-  // pool saat itu; harga bergerak sebelum mint masuk (#417: 9 detik, 482 tick) dan di
-  // dekat tepi rentang komposisi posisi berubah drastis — mint cuma menyetor sebagian
-  // (371 dari 3.394 NOSH) dan sisanya tertinggal telanjang di wallet. rescueZap hanya
-  // jalan kalau LP-nya GAGAL, recoverStrandedZaps sengaja melewati zap yang mint-nya
-  // jadi, dan sapu wallet melewati token posisi yang masih terbuka: tanpa ini sisanya
-  // duduk di wallet selamanya.
+  // Zap surplus on an entry that SUCCEEDED. The zap buys as much as needed at the pool price
+  // at that moment; the price moved before the mint landed (#417: 9 seconds, 482 ticks) and near
+  // the range edge the position's composition changes drastically — the mint only deposited part
+  // (371 of 3,394 NOSH) and the rest was left naked in the wallet. rescueZap only
+  // runs if the LP FAILED, recoverStrandedZaps deliberately skips zaps whose mint
+  // succeeded, and the wallet sweep skips tokens of still-open positions: without this the remainder
+  // sits in the wallet forever.
   async sweepZapSurplus(plan, z, receipt, { sqrt = null, hash = null } = {}) {
     const token = String(z.token).toLowerCase();
-    // Aset kuotasi (USDG/ETH/WETH) itu kas, bukan sisa.
+    // A quote asset (USDG/ETH/WETH) is cash, not leftover.
     if (this.chain.QUOTES[token] || isNative(token)) return null;
-    // Sekali per mint: alur masuk dan bookPendingMints bisa sama-sama sampai ke sini
-    // (pembukuan yang gagal tidak menandai tx `recorded`), dan item antrean untuk token
-    // yang sama DITAMBAH — tanpa penanda ini kelebihannya terhitung dua kali.
+    // Once per mint: the entry flow and bookPendingMints can both reach here
+    // (a failed booking does not mark the tx `recorded`), and a queue item for the same token
+    // is ADDED to — without this marker the surplus would be counted twice.
     if (hash && this.txDetail(hash).zapSwept) return null;
-    // Yang dibeli dan yang disetor dibaca dari RECEIPT, bukan dari selisih saldo: kolam
-    // RPC bisa berpindah ke node yang tertinggal (masih melaporkan saldo sebelum mint),
-    // dan wallet ini bisa dipakai program lain yang memegang token yang sama —
-    // mengantre kelebihan hasil taksiran saldo bisa ikut menjual jatah mereka.
+    // What was bought and what was deposited are read from the RECEIPT, not from the balance difference: the RPC
+    // pool can switch to a lagging node (still reporting the balance before the mint),
+    // and this wallet can be used by other programs that hold the same token —
+    // queueing a surplus estimated from the balance could end up selling their share.
     if (z.gainedUnknown) {
       this.store.log('warn', `hasil zap ${token.slice(0, 10)}… tidak terbaca — kelebihannya (kalau ada) tidak diantrekan`, { quiet: true });
       return null;
@@ -1149,8 +1346,8 @@ class Engine {
     catch (e) { this.store.log('warn', `modal zap yang masuk LP tidak terukur: ${e.message}`, { quiet: true }); return null; }
     let surplus = bought > used ? bought - used : 0n;
     if (surplus <= 0n) return null;
-    // Jangan pernah mengantre lebih dari yang benar-benar bebas (saldo sekarang dikurangi
-    // saldo sebelum zap). Saldo tidak terbaca: angka receipt sudah terbukti milik kita.
+    // Never queue more than what is really free (current balance minus the
+    // balance before the zap). Balance unreadable: the receipt figure is already proven to be ours.
     try {
       const bal = (await this.exec.balances([token])).get(token) || 0n;
       const free = bal > BigInt(z.before ?? 0) ? bal - BigInt(z.before ?? 0) : 0n;
@@ -1165,13 +1362,13 @@ class Engine {
       this.store.log('info', `kelebihan zap ${label} (~$${usd.toFixed(2)}) dibiarkan di wallet — di bawah $${MIN_ZAP_SURPLUS_USD.toFixed(2)}`, { quiet: true });
       return null;
     }
-    // Ditandai SEBELUM diantrekan: kalau proses mati di antara keduanya, tokennya cuma
-    // tertinggal di wallet (keadaan yang sama seperti sebelum ada jalur ini) — lebih baik
-    // daripada satu kelebihan yang sama masuk antrean dua kali.
+    // Marked BEFORE being queued: if the process dies between the two, the token is merely
+    // left in the wallet (the same state as before this path existed) — better
+    // than the same surplus entering the queue twice.
     if (hash) this.markTxDetail(hash, { zapSwept: true });
-    // Item sapuan/zap lain untuk token yang sama (posId null) DITAMBAH, bukan ditimpa.
-    // posId tetap null: token ini tidak pernah masuk posisi, jadi hasil jualnya bukan
-    // hasil posisi itu (kalau dibukukan ke sana, untung posisinya jadi kelihatan besar).
+    // Another sweep/zap item for the same token (posId null) is ADDED to, not overwritten.
+    // posId stays null: this token never entered a position, so its sale proceeds are not
+    // that position's proceeds (if booked there, the position's profit would look large).
     const old = this.leftovers().find((x) => (x.posId ?? null) === null && x.token === token);
     const amount = surplus + (old ? BigInt(old.amount || '0') : 0n);
     this.keepLeftover({ posId: null, target: plan.target ?? null, token, quote: String(z.quote).toLowerCase(), amount: amount.toString(),
@@ -1180,8 +1377,8 @@ class Engine {
     return { token, amount: surplus.toString(), usd };
   }
 
-  // Nilai satu sisi pool (hanya token0 ATAU token1) dalam USD pada harga `sqrt`; tanpa
-  // `sqrt` harga pool dibaca sekarang. null = tidak diketahui, bukan nol.
+  // The value of one side of a pool (only token0 OR token1) in USD at price `sqrt`; without
+  // `sqrt` the pool price is read now. null = unknown, not zero.
   async valueOneSide(plan, token, amount, sqrt = null) {
     try {
       let s = sqrt?.sqrtPriceX96 ?? sqrt;
@@ -1201,13 +1398,13 @@ class Engine {
     } catch { return null; }
   }
 
-  // Tandai tx zap sudah ditangani supaya pemulihan zap yatim (recoverStrandedZaps) tidak
-  // mengantrekannya lagi.
+  // Mark the zap tx as handled so the orphan zap recovery (recoverStrandedZaps) does not
+  // queue it again.
   markZapsRescued(hashes) {
     for (const h of hashes || []) this.markTxDetail(h, { handled: true });
   }
 
-  // detail JSON satu tx (kosong kalau barisnya tidak ada / tidak terbaca).
+  // the JSON detail of one tx (empty if the row does not exist / is unreadable).
   txDetail(hash) {
     const row = this.store?.get?.('SELECT detail FROM txs WHERE hash=?', hash);
     if (!row) return {};
@@ -1220,10 +1417,10 @@ class Engine {
     this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify({ ...d, ...patch }), hash);
   }
 
-  // Zap yatim: token sudah dibeli untuk sebuah entry, tapi entry-nya tidak pernah sampai
-  // mint DAN tidak pernah diselamatkan — proses di-restart/mati di tengah (pm2 restart
-  // saat deploy memberi 1,6 detik sebelum SIGKILL), atau receipt zap baru terbaca setelah
-  // entry menyerah. Tanpa ini tokennya duduk di wallet selamanya. Dicek tiap sinkron.
+  // Orphan zap: a token was bought for an entry, but the entry never reached the
+  // mint AND was never rescued — the process was restarted/died midway (a pm2 restart
+  // on deploy gives 1.6 seconds before SIGKILL), or the zap receipt was only read after the
+  // entry gave up. Without this the token sits in the wallet forever. Checked on every sync.
   async recoverStrandedZaps({ minAgeMs = 5 * 60_000 } = {}) {
     if (!this.exec.address() || (this.activeEntries || 0) > 0) return 0;
     const me = this.exec.address().toLowerCase();
@@ -1235,9 +1432,9 @@ class Engine {
       if (d.handled || !d.buy || !d.pool) continue;
       const buy = String(d.buy).toLowerCase();
       if (this.chain.QUOTES[buy] || isNative(buy)) { this.markZapsRescued([r.hash]); continue; }
-      // Entry-nya sampai mint/increase di pool yang sama sesudah zap ini (yang revert tidak
-      // dihitung: token zap-nya diselamatkan alur masuk atau bookPendingMints — keduanya
-      // menandai zap ini `handled`; kalau prosesnya mati sebelum itu, di sinilah diurus).
+      // Its entry reached a mint/increase in the same pool after this zap (a reverted one is not
+      // counted: the zap token is rescued by the entry flow or bookPendingMints — both
+      // mark this zap `handled`; if the process died before that, it is taken care of here).
       const minted = this.store.all("SELECT detail FROM txs WHERE chain=? AND kind IN ('mint','increase') AND status != 'gagal' AND ts >= ?", this.network, r.ts)
         .some((x) => { try { return String(JSON.parse(x.detail || '{}').pool).toLowerCase() === String(d.pool).toLowerCase(); } catch { return false; } });
       if (minted) { this.markZapsRescued([r.hash]); continue; }
@@ -1282,18 +1479,18 @@ class Engine {
       return b;
     };
 
-    // 0. Pastikan kas sudah ada di aset kuotasi pool INI (bisa beda dari kas kita).
-    //    Dilewati saat mengulang SETELAH zap: kas kuotasi sudah sengaja dibelanjakan untuk
-    //    token pasangan, dan menjembatani lagi berarti menukar kas yang tidak dibutuhkan.
+    // 0. Make sure the cash is in THIS pool's quote asset (can differ from our cash).
+    //    Skipped when retrying AFTER a zap: the quote cash was deliberately spent on the
+    //    pair token, and bridging again means swapping cash that is not needed.
     if (!resume && plan.quoteSide != null && !(avail(plan.token0) >= need0 && avail(plan.token1) >= need1)) {
       const qTok = plan.quoteSide === 0 ? plan.token0 : plan.token1;
       const qMeta = await this.chain.token(qTok);
       const needQuoteRaw = BigInt(Math.ceil((plan.valueQuote || 0) * 1.05 * 10 ** (qMeta?.decimals ?? 18)));
       if (needQuoteRaw > 0n) {
         const bridged = await this.ensureQuoteAsset(plan, rules, needQuoteRaw);
-        // Jembatan hanya SEKALI per entry. Kalau percobaan ini gagal sesudahnya, percobaan
-        // ulang memakai kas yang sudah ada — tanpa ini, kas yang "hilang" ke dalam cadangan
-        // gas (cadangan dinamis melonjak) membuat setiap percobaan menukar USDG lagi.
+        // The bridge happens only ONCE per entry. If this attempt fails afterwards, the retry
+        // uses the cash already there — without this, cash that "vanished" into the gas reserve
+        // (the dynamic reserve spikes) makes every attempt swap USDG again.
         if (bridged.length) trace.bridged = true;
         notes.push(...bridged);
         bal = await this.exec.balances([plan.token0, plan.token1]);
@@ -1329,11 +1526,11 @@ class Engine {
       return amounts;
     };
 
-    // Hitung ulang setelah bridge DAN setiap zap. Maksimal dua swap per percobaan (tiga
-    // sepanjang semua percobaan) agar harga bergerak tidak membuat bot terus membeli/
-    // menjual bolak-balik. Kalau batas itu tercapai tapi saldo sudah cukup untuk
-    // setidaknya separuh ukuran, posisinya dibuka lebih kecil — menjual balik token zap
-    // berarti membayar fee pool dua kali untuk posisi yang tidak pernah ada.
+    // Recompute after the bridge AND every zap. At most two swaps per attempt (three
+    // across all attempts) so a moving price does not make the bot keep buying/
+    // selling back and forth. If that limit is reached but the balance is already enough for
+    // at least half the size, the position is opened smaller — selling the zap token back
+    // means paying the pool fee twice for a position that never exists.
     for (let swaps = 0; ; swaps++) {
       const needs = await refreshNeeds();
       const idx = avail(plan.token0) < needs.amount0 ? 0 : avail(plan.token1) < needs.amount1 ? 1 : null;
@@ -1352,41 +1549,41 @@ class Engine {
       if (!rules.swap.enabled) throw new Error(`kurang ${short} unit token${idx} dan auto-swap dimatikan`);
       const payTok = idx === 0 ? plan.token1 : plan.token0;
       const payHave = avail(payTok);
-      // taksir berapa yang harus dibayar, pakai harga pool + slippage
+      // estimate how much must be paid, using the pool price + slippage
       const s = s2;
-      const price1per0 = Number(s.sqrtPriceX96) ** 2 / Number(m.Q96) ** 2; // mentah, tanpa desimal
+      const price1per0 = Number(s.sqrtPriceX96) ** 2 / Number(m.Q96) ** 2; // raw, without decimals
       const payRaw = idx === 0
         ? BigInt(Math.ceil(Number(short) * price1per0 * (1 + rules.swap.max_slippage_bps / 10000)))
         : BigInt(Math.ceil((Number(short) / price1per0) * (1 + rules.swap.max_slippage_bps / 10000)));
       if (payRaw <= 0n) continue;
       if (payHave < payRaw) {
-        // Sesudah zap: sisa token pembayar habis karena fee/slippage zap sebelumnya. Kalau
-        // yang ada sudah cukup untuk separuh ukuran, buka sebesar itu (ukuran dipangkas di
-        // bawah) daripada membatalkan dan menjual balik.
+        // After a zap: the payer token remainder ran out because of the earlier zap's fee/slippage. If
+        // what is there is enough for half the size, open at that size (the size is trimmed
+        // below) rather than cancel and sell back.
         if (zapsSoFar > 0 && affordableNow * 2n >= desiredL) { notes.push('saldo pas-pasan setelah zap — dibuka sebesar saldo'); break; }
         throw new Error(`saldo kurang untuk zap: butuh ~${payRaw} unit ${payTok.slice(0, 8)}…, punya ${payHave}`);
       }
-      // Jalur utama: Kyber (rute terbaik lintas pool; banyak pool menolak swap langsung).
+      // Main path: Kyber (the best route across pools; many pools refuse direct swaps).
       const buyTok = idx === 0 ? plan.token0 : plan.token1;
-      // Batas rugi zap ikut memperhitungkan FEE POOL-nya sendiri. Pool memecoin di chain
-      // ini berfee 4–10%, jadi membeli tokennya memang tidak mungkin lebih murah dari
-      // fee itu; batas kaku 5% membuat pool berfee 4,2% selalu ditolak padahal wajar.
-      // Untuk pool fee dinamis (bendera 0x800000) besarannya tidak diketahui di muka,
-      // jadi tetap memakai batas yang disetel pengguna.
+      // The zap loss limit also accounts for the pool's OWN FEE. Memecoin pools on this chain
+      // have fees of 4–10%, so buying the token cannot possibly be cheaper than that
+      // fee; a rigid 5% limit makes a pool with a 4.2% fee always rejected although it is reasonable.
+      // For a dynamic-fee pool (flag 0x800000) the magnitude is not known up front,
+      // so the limit set by the user is still used.
       const feeBps = plan.fee != null && plan.fee < 1_000_000 ? plan.fee / 100 : null;
       const zapLossBps = feeBps != null
         ? Math.max(rules.swap.max_price_impact_bps, Math.round(feeBps) + 200)
         : rules.swap.max_price_impact_bps;
-      // Saldo token beli SEBELUM zap: kalau LP-nya gagal sesudah ini, hanya yang
-      // terbeli di sini yang diantrekan untuk dijual (rescueZap), bukan saldo lama.
+      // The balance of the token bought BEFORE the zap: if the LP fails after this, only what was
+      // bought here is queued for sale (rescueZap), not the old balance.
       const boughtBefore = bal.get(buyTok.toLowerCase()) || 0n;
-      // Jurnal zap di tabel txs: kalau proses mati sebelum mint, recoverStrandedZaps
-      // tahu token apa yang dibeli, dibayar dengan apa, dan untuk pool mana.
+      // Zap journal in the txs table: if the process dies before the mint, recoverStrandedZaps
+      // knows which token was bought, what it was paid with, and for which pool.
       const zapDetail = { pool: plan.poolRef, buy: buyTok.toLowerCase(), pay: payTok.toLowerCase(), target: plan.target ?? null };
-      // `got` = token yang benar-benar masuk dari zap ini (dari receipt/kutipan Kyber).
-      // Dipakai sweepZapSurplus untuk tahu berapa yang DIBELI tapi tidak jadi disetor ke
-      // LP. Disimpan sebagai string: trace.zapped ikut ditulis ke detail tx, dan JSON
-      // tidak bisa menulis BigInt. Tidak terbaca -> ditandai, bukan ditebak.
+      // `got` = the tokens that really arrived from this zap (from the receipt/Kyber quote).
+      // Used by sweepZapSurplus to know how much was BOUGHT but not deposited into the
+      // LP. Stored as a string: trace.zapped is also written to the tx detail, and JSON
+      // cannot write a BigInt. Unreadable -> flagged, not guessed.
       const noteZap = (hash, got = null) => {
         trace.zaps = (trace.zaps || 0) + 1;
         const z = trace.zapped || { token: buyTok.toLowerCase(), quote: payTok, before: boughtBefore, gained: '0', hashes: [] };
@@ -1402,20 +1599,20 @@ class Engine {
           kind: 'zap_swap', detail: { via: 'kyber', ...zapDetail },
         });
       } catch (e) {
-        // Receipt zap belum terbaca: tokennya mungkin tetap masuk — jangan zap lagi di
-        // percobaan berikutnya tanpa tahu; pemulihan zap yatim yang mengurusnya.
+        // The zap receipt is not yet readable: the token may still arrive — do not zap again in the
+        // next attempt without knowing; orphan zap recovery takes care of it.
         if (e.pending) { e.message = `${e.message} — entry dihentikan, zap diurus belakangan`; throw e; }
-        // Rute Kyber terlalu rugi (e.loss), atau tx-nya ditolak chain sampai percobaan
-        // ketiga karena harga basi (e.reverted): dua-duanya soal PASAR, bukan pengaman
-        // yang gagal — dan revert tidak memindahkan token apa pun. Pool langsung di
-        // bawah masih boleh dicoba, dengan batas rugi yang sama. Galat pengaman (router
-        // tidak cocok, calldata janggal) tetap menghentikan entry di sini.
+        // The Kyber route loses too much (e.loss), or its tx was rejected by the chain through the
+        // third attempt because of a stale price (e.reverted): both are MARKET matters, not a safeguard
+        // failing — and a revert does not move any tokens. The direct pool below
+        // may still be tried, with the same loss limit. A safeguard error (router
+        // mismatch, odd calldata) still stops the entry here.
         if (!(e.loss || e.reverted)) throw e;
         kyberErr = e;
         this.log(`zap via Kyber tidak jadi (${e.message}) — coba pool langsung`);
       }
       if (kz) {
-        notes.push(`zap ${idx === 0 ? 'beli token0' : 'beli token1'} via Kyber`);
+        notes.push(`zap ${idx === 0 ? 'beli token0' : 'beli token1'} via ${aggLabel(kz?.quote)}`);
         noteZap(kz.hash, kz.amountOut ?? null);
         bal = await this.balancesAfterSwap([plan.token0, plan.token1], buyTok, boughtBefore, kz.amountOut);
         continue;
@@ -1424,11 +1621,11 @@ class Engine {
         const h = await this.exec.send(a, { kind: a.kind });
         await this.exec.waitReceipt(h);
       }
-      // Cadangan: swap langsung ke pool. Pool posisi ini belum tentu tempat terbaik
-      // menukar — pemilihnya menilai semua pool berpasangan sama (fee + dampak harga)
-      // lalu menyimulasikannya, jadi pool tipis dan pool yang menolak swap tersingkir
-      // sebelum gas keluar. Batas dampak harga yang berlaku tetap yang di Aturan:
-      // itu yang menjaga "auto-swap" tidak berubah jadi menabrak pool tipis.
+      // Fallback: a direct swap into a pool. This position's pool is not necessarily the best place
+      // to swap — the picker evaluates all pools of the same pair (fee + price impact)
+      // then simulates them, so thin pools and pools that refuse swaps are eliminated
+      // before gas is spent. The price impact limit that applies is still the one in Rules:
+      // that is what keeps "auto-swap" from turning into hitting a thin pool.
       const minOut = (short * (10000n - BigInt(rules.swap.max_slippage_bps))) / 10000n;
       const info = {};
       const pick = await pickSwapPool({ store: this.store, chain: this.chain, rpc: this.rpc, exec: this.exec, log: this.log }, {
@@ -1441,10 +1638,10 @@ class Engine {
         }],
       });
       if (!pick) throw kyberErr || new Error(`zap lewat pool langsung tidak bisa: ${info.reason}`);
-      // Sampai di sini lewat rute Kyber yang ditolak batas rugi: pool langsung harus
-      // diukur dengan batas yang SAMA — fee pool + dampak harga, bukan dampak harga saja
-      // (pemilih pool hanya menyaring dampak). Tanpa ini cadangan berubah jadi pintu
-      // belakang yang melewati gerbang rugi dengan membayar fee pool 10% diam-diam.
+      // We got here via a Kyber route rejected by the loss limit: the direct pool must
+      // be measured by the SAME limit — pool fee + price impact, not price impact alone
+      // (the pool picker only filters impact). Without this the fallback becomes a
+      // back door that passes the loss gate by silently paying a 10% pool fee.
       if (kyberErr?.loss) {
         const lossBps = (pick.impactBps ?? 0) + (pick.feePpm ?? 0) / 100;
         if (lossBps > zapLossBps) {
@@ -1467,17 +1664,17 @@ class Engine {
       bal = await this.balancesAfterSwap([plan.token0, plan.token1], buyTok, boughtBefore, gotDirect);
     }
 
-    // 2. sesuaikan L dengan saldo nyata setelah swap (lebih aman dari slippage)
+    // 2. adjust L to the real balance after the swap (safer against slippage)
     const affordable = m.liquidityForAmounts(s2.sqrtPriceX96, sa, sb, avail(plan.token0), avail(plan.token1));
     let L = desiredL;
     if (affordable < L) { L = (affordable * 99n) / 100n; notes.push('ukuran dipangkas ke saldo nyata'); }
     if (L <= 0n) throw new Error('saldo token pool tidak mencukupi pada harga terbaru — LP belum dibuka, dana tetap di wallet');
     let amt = m.amountsForLiquidity(s2.sqrtPriceX96, sa, sb, L);
 
-    // Batas per posisi dikunci ULANG di harga terkini. Harga bergerak antara saat
-    // rencana dibuat dan saat mint — termasuk karena zap kita sendiri — sehingga
-    // likuiditas yang sama bisa bernilai lebih dari batas yang diminta (terlihat
-    // $204,96 untuk batas $200 saat dry-run). Batas nominal harus ditepati.
+    // The per-position limit is RE-locked at the current price. The price moves between when the
+    // plan is built and the mint — including because of our own zap — so the same
+    // liquidity can be worth more than the requested limit (seen as
+    // $204.96 for a $200 limit in a dry-run). The nominal limit must be honoured.
     if (plan.valueUsd > 0) {
       const toksNow = await this.chain.tokens([plan.token0, plan.token1]);
       const vNow = this.chain.valueInQuote({
@@ -1498,7 +1695,7 @@ class Engine {
       amount1Max: ((amt.amount1 * (10000n + slip)) / 10000n).toString(),
     };
 
-    // 3. izin + mint
+    // 3. allowance + mint
     for (const tok of [plan.token0, plan.token1]) {
       if (BigInt(tok === plan.token0 ? finalPlan.amount0Max : finalPlan.amount1Max) === 0n) continue;
       for (const a of await this.exec.ensureAllowance(tok, { forV4: !this.chain.isV3Venue(plan.venue), venue: plan.venue })) {
@@ -1506,15 +1703,15 @@ class Engine {
         await this.exec.waitReceipt(h);
       }
     }
-    // Approval bisa memakan beberapa blok. Jangan kirim mint dengan kebutuhan
-    // token lama setelah harga berubah selama menunggu receipt approval.
+    // Approval can take several blocks. Do not send a mint with the old token requirement
+    // after the price changed while waiting for the approval receipt.
     await refreshNeeds();
     bal = await this.exec.balances([plan.token0, plan.token1]);
-    // Harga bergerak selama menunggu approval (termasuk akibat zap kita sendiri).
-    // Dulu ini MEMBATALKAN mint — padahal token hasil zap sudah di wallet dan dibiarkan
-    // telanjang (lpcopy2: $26 PAIREX ditinggal, terpaksa dijual manual). Ukurannya
-    // disesuaikan ulang ke saldo nyata dan batas nilai pada harga saat mint (approval
-    // tak terbatas, jadi aman); batal hanya kalau memang tidak tersisa apa-apa.
+    // The price moved while waiting for approval (including because of our own zap).
+    // This used to CANCEL the mint — although the zap token was already in the wallet and left
+    // naked (lpcopy2: $26 of PAIREX left, had to be sold manually). The size
+    // is re-adjusted to the real balance and the value limit at the price at mint (unlimited
+    // approval, so it is safe); cancel only if nothing is actually left.
     const fitL = (m.liquidityForAmounts(s2.sqrtPriceX96, sa, sb, avail(plan.token0), avail(plan.token1)) * 99n) / 100n;
     if (fitL < L || desiredL < L) {
       L = fitL < desiredL ? fitL : desiredL;
@@ -1523,12 +1720,12 @@ class Engine {
     if (L <= 0n) throw new Error('saldo token pool tidak mencukupi pada harga saat mint — LP belum dibuka, token hasil zap tetap di wallet');
     amt = m.amountsForLiquidity(s2.sqrtPriceX96, sa, sb, L);
     finalPlan.liquidity = L.toString();
-    // Batas atas token TIDAK BOLEH melebihi saldo nyata. Di Uniswap v3 amountDesired
-    // bukan batas melainkan jumlah yang DISETOR: NPM menghitung likuiditas dari angka itu
-    // lalu menarik sebanyak itu. Dengan ukuran 99% saldo dan ruang slippage 1,5%, mint v3
-    // menarik 100,5% saldo → revert "STF" (empat entry v3 11–12 Sep, semuanya sesudah zap).
-    // Di v4 ini cuma batas, jadi mengapitnya ke saldo tidak mengubah apa pun selain
-    // menolak lebih awal kalau memang kurang.
+    // The token upper bound MUST NOT exceed the real balance. On Uniswap v3 amountDesired
+    // is not a bound but the amount DEPOSITED: the NPM computes liquidity from that figure
+    // then pulls that much. With a size of 99% of the balance and 1.5% slippage room, the v3 mint
+    // pulls 100.5% of the balance → revert "STF" (four v3 entries 11–12 Sep, all after a zap).
+    // On v4 it is only a bound, so clamping it to the balance changes nothing except
+    // rejecting earlier if there really is not enough.
     const capBal = (x, t) => { const a = avail(t); return x > a ? a : x; };
     finalPlan.amount0Max = capBal((amt.amount0 * (10000n + slip)) / 10000n, plan.token0).toString();
     finalPlan.amount1Max = capBal((amt.amount1 * (10000n + slip)) / 10000n, plan.token1).toString();
@@ -1540,9 +1737,9 @@ class Engine {
       : (this.chain.isV3Venue(plan.venue)
         ? this.exec.buildV3Mint({ ...finalPlan, amount0Min: 0, amount1Min: 0 }, this.exec.deadline())
         : this.exec.buildV4Mint(finalPlan, this.exec.deadline()));
-    // Rencana ikut disimpan di tabel txs: kalau receipt-nya gagal dibaca (RPC tumbang,
-    // lewat batas tunggu), bookPendingMints membukukan posisinya belakangan dari receipt —
-    // lengkap dengan tautan ke target, bukan cuma "diadopsi" tanpa asal-usul.
+    // The plan is also stored in the txs table: if its receipt fails to be read (RPC down,
+    // past the wait limit), bookPendingMints books the position later from the receipt —
+    // complete with its link to the target, not just "adopted" with no origin.
     const hash = await this.exec.send(tx, { kind: adding ? 'increase' : 'mint', detail: {
       pool: plan.poolRef, target: plan.target, venue: plan.venue,
       plan: Engine.planForBooking(finalPlan), zapped: trace.zapped ? { ...trace.zapped, before: String(trace.zapped.before) } : null,
@@ -1551,16 +1748,16 @@ class Engine {
     const rc = await this.exec.waitReceipt(hash, 90_000);
     if (rc.timeout) {
       const e = new Error(`mint ${hash} belum terkonfirmasi setelah 90 detik — posisinya dibukukan otomatis begitu receipt terbaca`);
-      e.pendingMint = true;   // jangan jual token zap: mint-nya mungkin sedang masuk
+      e.pendingMint = true;   // do not sell the zap token: its mint may be landing
       throw e;
     }
     if (!rc.ok) throw new Error(`mint gagal (${hash})`);
-    // Mint SUDAH jadi di chain: galat apa pun sesudah ini (pembukuan) tidak boleh memicu
-    // mint kedua atau penjualan token zap — bookPendingMints membukukannya belakangan.
+    // The mint HAS been created on chain: any error after this (bookkeeping) must not trigger a
+    // second mint or a sale of the zap token — bookPendingMints books it later.
     trace.minted = hash;
-    // Token zap yang dibeli tapi tidak jadi disetor (harga pool bergerak antara zap dan
-    // mint) tidak boleh ditinggal telanjang: masuk antrean jual, sama seperti sisa
-    // posisi. Gagal di sini tidak boleh menjatuhkan pembukuan mint yang sudah jadi.
+    // A zap token that was bought but not deposited (the pool price moved between the zap and
+    // the mint) must not be left naked: it goes into the sell queue, the same as a position's
+    // leftovers. A failure here must not bring down the booking of the mint that is already done.
     if (trace.zapped) {
       await this.sweepZapSurplus(finalPlan, trace.zapped, rc.receipt, { sqrt: s2, hash })
         .catch((e) => this.store?.log?.('warn', `kelebihan zap tidak terantre: ${e.message}`, { quiet: true }));
@@ -1569,11 +1766,11 @@ class Engine {
     catch (e) { e.pendingMint = true; e.message = `mint ${hash} berhasil tetapi pembukuan tertunda: ${e.message}`; throw e; }
   }
 
-  // Saldo sesudah swap yang SUDAH terkonfirmasi. Kolam RPC bisa berpindah ke node yang
-  // tertinggal beberapa blok: saldo yang dibaca masih sebelum swap, bot mengira token
-  // belum masuk dan zap lagi — token lebihnya duduk di wallet. Receipt sudah membuktikan
-  // `gained` token masuk, jadi pembacaan di bawah before+gained ditolak: dicoba lagi
-  // beberapa kali, terakhir memakai angka yang dibuktikan receipt.
+  // The balance after a swap that is ALREADY confirmed. The RPC pool can switch to a node
+  // lagging a few blocks: the balance read is still before the swap, the bot thinks the token
+  // has not arrived and zaps again — the surplus token sits in the wallet. The receipt has already proven
+  // `gained` tokens arrived, so a read below before+gained is rejected: retried
+  // a few times, finally using the figure proven by the receipt.
   async balancesAfterSwap(tokens, token, before, gained, { tries = 5, waitMs = 700 } = {}) {
     const key = String(token).toLowerCase();
     const expect = gained != null && gained > 0n ? BigInt(before ?? 0n) + BigInt(gained) : null;
@@ -1589,7 +1786,7 @@ class Engine {
     return bal;
   }
 
-  // Bagian rencana yang cukup untuk membukukan posisi belakangan (JSON polos, tanpa BigInt).
+  // The part of the plan sufficient to book the position later (plain JSON, no BigInt).
   static planForBooking(p) {
     const keep = ['venue', 'action', 'poolRef', 'poolKey', 'token0', 'token1', 'fee', 'tickSpacing', 'hooks', 'tickLower', 'tickUpper',
       'liquidity', 'amount0Max', 'amount1Max', 'valueQuote', 'valueUsd', 'quoteSymbol', 'quoteKind', 'quoteSide', 'target', 'mirrorOf', 'tokenId', 'positionId', 'singleSide'];
@@ -1598,18 +1795,18 @@ class Engine {
     return JSON.parse(JSON.stringify(out, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
   }
 
-  // Pembukuan sesudah mint/increase terkonfirmasi. `amt`/`sqrt` dari alur masuk kalau
-  // ada; kalau dibukukan belakangan (bookPendingMints) modalnya dibaca dari receipt —
-  // token yang benar-benar keluar dari wallet — dan harga masuknya dari pool saat ini.
+  // Booking after a mint/increase is confirmed. `amt`/`sqrt` from the entry flow if
+  // present; if booked later (bookPendingMints) the capital is read from the receipt —
+  // the tokens that really left the wallet — and its entry price from the current pool.
   async recordEntry(plan, hash, receipt, { amt = null, sqrt = null, notes = [] } = {}) {
     const adding = plan.action === 'increase' && plan.tokenId;
     let L = BigInt(plan.liquidity);
     const me = this.exec.address().toLowerCase();
-    // Di v3 amountDesired (= amount*Max, sudah termasuk ruang slippage) adalah jumlah yang
-    // DISETOR: NPM menghitung likuiditas dari angka itu dan menarik sebanyak itu, jadi
-    // posisi nyatanya ~1% lebih besar dari `amt`/`L` rencana (lp2 #2 dan #3: modal
-    // tercatat 1,2% di bawah token yang benar-benar keluar dari wallet). Kejadian
-    // IncreaseLiquidity di receipt memuat angka sebenarnya — itu yang dibukukan.
+    // On v3 amountDesired (= amount*Max, already including slippage room) is the amount
+    // DEPOSITED: the NPM computes liquidity from that figure and pulls that much, so the
+    // real position is ~1% larger than the plan's `amt`/`L` (lp2 #2 and #3: capital
+    // recorded 1.2% below the tokens that really left the wallet). The
+    // IncreaseLiquidity event in the receipt carries the real figure — that is what gets booked.
     if (this.chain.isV3Venue(plan.venue)) {
       for (const l of receipt.logs || []) {
         if (l.address.toLowerCase() !== this.chain.npmFor(plan.venue) || l.topics[0] !== TOPIC.increaseLiq) continue;
@@ -1621,14 +1818,14 @@ class Engine {
     if (!amt) {
       const spent = async (tok, max) => {
         try { return await this.spentIn(receipt, tok, me); }
-        catch { return BigInt(max || '0'); }   // ETH native tak terisolasi: taksiran batas rencana
+        catch { return BigInt(max || '0'); }   // native ETH is not isolated: estimate the plan bound
       };
       amt = { amount0: await spent(plan.token0, plan.amount0Max), amount1: await spent(plan.token1, plan.amount1Max) };
     }
     if (!sqrt) sqrt = this.chain.isV3Venue(plan.venue) ? await this.chain.slot0V3(plan.poolRef) : await this.chain.slot0V4(plan.poolRef);
     const s2 = sqrt;
 
-    // 4. tokenId dari log Transfer (0x0 -> kita)
+    // 4. tokenId from the Transfer log (0x0 -> us)
     let tokenId = null;
     for (const l of receipt.logs || []) {
       const mgr = this.chain.isV3Venue(plan.venue) ? this.chain.npmFor(plan.venue) : this.chain.ADDR.posmV4;
@@ -1641,8 +1838,8 @@ class Engine {
       sqrtPriceX96: s2.sqrtPriceX96, amount0: amt.amount0, amount1: amt.amount1,
       dec0: toks[0].decimals, dec1: toks[1].decimals, token0: plan.token0, token1: plan.token1,
     });
-    // Idempoten: posisi dengan tokenId ini sudah tercatat (diadopsi lebih dulu, atau
-    // pembukuan sebelumnya terputus setelah menulis baris) — jangan buat baris kedua.
+    // Idempotent: a position with this tokenId is already recorded (adopted first, or
+    // an earlier booking was cut off after writing the row) — do not create a second row.
     const dup = !adding && tokenId && this.store?.get?.('SELECT id FROM positions WHERE chain=? AND venue=? AND token_id=?', this.network, plan.venue, tokenId);
     if (dup) {
       const trow0 = this.store.get('SELECT detail FROM txs WHERE hash=?', hash);
@@ -1654,8 +1851,8 @@ class Engine {
         note: `${pairD} $${usdD.toFixed(2)} (sudah tercatat #${dup.id})` };
     }
     if (adding) {
-      // Modal DITAMBAHKAN, bukan ditimpa: kalau tidak, tambahan modal terbaca
-      // sebagai keuntungan gratis dan baseline IL ikut ter-reset.
+      // Capital is ADDED, not overwritten: otherwise added capital reads
+      // as free profit and the IL baseline also gets reset.
       const prev = this.store.get('SELECT liquidity, cost0, cost1 FROM positions WHERE id=?', plan.positionId)
         || { liquidity: '0', cost0: '0', cost1: '0' };
       this.store.run(
@@ -1670,12 +1867,12 @@ class Engine {
       cost0: amt.amount0.toString(), cost1: amt.amount1.toString(), costQuote: v?.value ?? plan.valueQuote,
       entrySqrt: s2?.sqrtPriceX96 ?? null,
     });
-    // Penanda "sudah dibukukan" di tabel txs — bookPendingMints tidak mengulanginya.
+    // The "already booked" marker in the txs table — bookPendingMints does not repeat it.
     const trow = this.store?.get?.('SELECT detail FROM txs WHERE hash=?', hash);
     if (trow) { let d = {}; try { d = JSON.parse(trow.detail || '{}'); } catch { /* detail lama */ } d.recorded = positionId; this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify(d), hash); }
     const pair = `${toks[0].symbol}/${toks[1].symbol}`;
-    // v.value dinyatakan dalam aset kuotasi pool (bisa ETH), BUKAN dolar — dulu dicetak
-    // langsung dengan "$" sehingga posisi 0,079 ETH terbaca "$0,08" alih-alih ~$195.
+    // v.value is expressed in the pool's quote asset (can be ETH), NOT dollars — it used to be printed
+    // straight with "$" so a 0.079 ETH position read "$0.08" instead of ~$195.
     const usdVal = quoteToUsd(v?.value ?? 0, v?.kind || 'usd', this.ethUsd);
     return {
       txHash: hash, positionId, adding: !!adding, pair, valueUsd: usdVal, curTick: s2?.tick ?? null, steps: notes,
@@ -1689,9 +1886,9 @@ class Engine {
       AND json_extract(t.detail,'$.position')=? ORDER BY t.ts LIMIT 1`, id);
   }
 
-  // `sell`: jual sisi memecoin fee ke aset kuotasi pool sesudah klaim. null = ikut
-  // pengaturan posisi (panen otomatis mode 'claim'); klaim manual tidak menjual apa pun
-  // kecuali diminta, supaya tombol "Claim fee" tetap berarti persis seperti dulu.
+  // `sell`: sell the fee's memecoin side to the pool's quote asset after the claim. null = follow the
+  // position's setting (automatic harvest in 'claim' mode); a manual claim sells nothing
+  // unless asked, so the "Claim fee" button still means exactly what it used to.
   async claimFees(id, opts = {}) {
     if (this.dryRun() || !this.exec.address()) throw new Error('mode simulasi: tidak mengirim transaksi');
     if (this.exiting.has(id)) throw new Error('posisi ini sedang diproses');
@@ -1701,7 +1898,7 @@ class Engine {
     if (!(pos.venue === 'v4' || this.chain.isV3Venue(pos.venue))) throw new Error('venue posisi tidak didukung');
     this.exiting.add(id);
     try {
-      // Sesudah timeout/restart, selesaikan transaksi lama dahulu. Jangan kirim ulang.
+      // After a timeout/restart, settle the old transaction first. Do not resend.
       const pending = this.pendingFeeClaim(id);
       let hash = pending?.hash;
       if (!hash) {
@@ -1729,31 +1926,33 @@ class Engine {
       }
       try { await this.positions.sync(this.ethUsd); } catch { /* sinkron berikutnya mencoba lagi */ }
       let sold = null;
+      let sellError = null;
       if (this.sellFeeWanted(id, opts.sell)) {
-        // Gagal menjual bukan gagal klaim: fee-nya sudah di wallet dan itemnya sudah
-        // masuk antrean jual (retryLeftovers), jadi klaimnya tetap dilaporkan berhasil.
+        // Failing to sell is not failing to claim: the fees are already in the wallet and the item has already
+        // gone into the sell queue (retryLeftovers), so the claim is still reported as a success —
+        // with sellError so the caller can say "queued", not stay silent.
         try { sold = await this.sellClaimedFee(pos, hash, result, { quiet: !!opts.quiet }); }
-        catch (e) { this.store.log('warn', `jual fee posisi #${id}: ${e.message}`, { quiet: true }); }
+        catch (e) { sellError = e.message; this.store.log('warn', `jual fee posisi #${id}: ${e.message}`, { quiet: true }); }
       }
-      return { ok: true, tx: hash, ...result, sold };
+      return { ok: true, tx: hash, ...result, sold, sellError };
     } finally { this.exiting.delete(id); }
   }
 
-  // Berapa `token` yang BERSIH masuk ke `owner` pada transaksi ini, dibaca dari
-  // receipt-nya — bukan dari selisih saldo "sebelum/sesudah", yang bisa nol kalau RPC
-  // yang dibaca masih tertinggal satu blok, atau tercemar tx lain di antaranya.
+  // How much `token` came NET into `owner` in this transaction, read from its
+  // receipt — not from the "before/after" balance difference, which can be zero if the RPC
+  // read is still one block behind, or contaminated by other txs in between.
   async receivedIn(receipt, token, owner) {
     const v = await this.netFlow(receipt, token, owner);
     return v > 0n ? v : 0n;
   }
 
-  // Berapa `token` yang BERSIH keluar dari `owner` pada transaksi ini (modal mint).
+  // How much `token` went NET out of `owner` in this transaction (mint capital).
   async spentIn(receipt, token, owner) {
     const v = await this.netFlow(receipt, token, owner);
     return v < 0n ? -v : 0n;
   }
 
-  // Arus bersih `token` ke `owner` di transaksi ini: positif = masuk, negatif = keluar.
+  // Net flow of `token` to `owner` in this transaction: positive = in, negative = out.
   async netFlow(receipt, token, owner) {
     if (!isNative(token)) {
       let value = 0n;
@@ -1764,8 +1963,8 @@ class Engine {
       }
       return value;
     }
-    // ETH native tidak punya Transfer. Baca saldo historis di blok receipt
-    // agar retry setelah timeout tidak menghitung aktivitas wallet di blok lain.
+    // Native ETH has no Transfer. Read the historical balance at the receipt's block
+    // so a retry after a timeout does not count wallet activity in another block.
     const hash = receipt.transactionHash || receipt.hash;
     const bn = BigInt(receipt.blockNumber);
     const before = BigInt(await this.rpc.call('eth_getBalance', [owner, ethers.toQuantity(bn - 1n)]));
@@ -1779,33 +1978,41 @@ class Engine {
 
   async recordFeeClaim(pos, hash, receipt) {
     if (this.store.get('SELECT tx_hash FROM fee_claims WHERE tx_hash=?', hash)) return {};
-    const detail = JSON.parse(this.store.get('SELECT detail FROM txs WHERE hash=?', hash)?.detail || '{}');
+    const txRow = this.store.get('SELECT kind, detail FROM txs WHERE hash=?', hash);
+    const detail = JSON.parse(txRow?.detail || '{}');
     const owner = String(detail.wallet || this.exec.address()).toLowerCase();
     const amount = (token) => this.receivedIn(receipt, token, owner);
     const amount0 = await amount(pos.token0), amount1 = await amount(pos.token1);
-    // harga penilai, bukan harga pool mentah: pool yang disapu kosong menaruh harga di batas
+    // marking price, not the raw pool price: a pool swept empty puts the price at the bound
     const slot = await this.positions.markSlotFor(pos);
     const [t0, t1] = await this.chain.tokens([pos.token0, pos.token1]);
     const value = slot && this.chain.valueInQuote({ sqrtPriceX96: slot.sqrtPriceX96, amount0, amount1,
       dec0: t0.decimals, dec1: t1.decimals, token0: pos.token0, token1: pos.token1 });
     if (!value) throw new Error('nilai fee belum terbaca');
-    // Sisi memecoin dinilai SENDIRI di harga yang sama: itu bagian dari claimed_quote
-    // yang belum benar-benar jadi uang, dan angka inilah yang nanti diganti hasil jual.
+    // The memecoin side is valued ON ITS OWN at the same price: that is the part of claimed_quote
+    // that has not really become money yet, and this figure is what the sale result will later replace.
     const meme = this.memeSideOf(pos, amount0, amount1, slot, [t0, t1]);
     this.store.db.exec('BEGIN IMMEDIATE');
     try {
       const r = this.store.run('INSERT OR IGNORE INTO fee_claims(tx_hash,position_id,ts,amount0,amount1,value_quote) VALUES(?,?,?,?,?,?)',
         hash, pos.id, Date.now(), String(amount0), String(amount1), value.value);
-      if (Number(r.changes)) this.store.run(`UPDATE positions SET claimed_quote=COALESCE(claimed_quote,0)+?,
-        out_quote=out_quote+CASE WHEN status='closed' THEN ? ELSE 0 END, fees_quote=0 WHERE id=?`, value.value, value.value, pos.id);
+      if (Number(r.changes)) {
+        this.store.run(`UPDATE positions SET claimed_quote=COALESCE(claimed_quote,0)+?,
+          out_quote=out_quote+CASE WHEN status='closed' THEN ? ELSE 0 END, fees_quote=0 WHERE id=?`, value.value, value.value, pos.id);
+        // The memecoin of a plain claim now sits in the wallet at the claim-price estimate. Booking it in the
+        // fee ledger here (not only when the bot sells it) lets ANY later sale — the automatic one or a manual
+        // swap — replace the estimate with the real proceeds. A compound reinvests it, so it never waits there.
+        if (meme && txRow?.kind === 'claim_fees') this.positions.noteFeeLeftover({ posId: pos.id, token: meme.token,
+          amount: meme.amount, estQuote: meme.quoteValue, txHash: hash });
+      }
       this.store.db.exec('COMMIT');
     } catch (e) { this.store.db.exec('ROLLBACK'); throw e; }
     return { amount0: String(amount0), amount1: String(amount1), meme,
       claimedUsd: quoteToUsd(value.value, value.kind, this.ethUsd) };
   }
 
-  // Sisi bukan-kuotasi sebuah klaim fee: { token, quote, amount, quoteValue } atau null
-  // untuk pasangan yang dua-duanya uang (ETH/USDG) atau yang memecoin-nya nol.
+  // The non-quote side of a fee claim: { token, quote, amount, quoteValue } or null
+  // for a pair that is money on both sides (ETH/USDG) or whose memecoin is zero.
   memeSideOf(pos, amount0, amount1, slot, toks) {
     const q = this.chain.quoteSideOf(pos.token0, pos.token1);
     if (!q) return null;
@@ -1814,30 +2021,29 @@ class Engine {
     const quote = String(q.side === 0 ? pos.token0 : pos.token1).toLowerCase();
     if (this.chain.quoteSideOf(token, token)) return null;
     const amount = side === 0 ? amount0 : amount1;
-    if (!(amount > 0n)) return null;   // dikembalikan sebagai string: hasil klaim dikirim sebagai JSON
+    if (!(amount > 0n)) return null;   // returned as a string: the claim result is sent as JSON
     const v = slot && this.chain.valueInQuote({ sqrtPriceX96: slot.sqrtPriceX96,
       amount0: side === 0 ? amount : 0n, amount1: side === 1 ? amount : 0n,
       dec0: toks[0].decimals, dec1: toks[1].decimals, token0: pos.token0, token1: pos.token1 });
     return { token, quote, amount: amount.toString(), quoteValue: v?.value ?? 0 };
   }
 
-  // Apakah sisi memecoin fee dijual sesudah klaim? Penimpaan eksplisit menang;
-  // kalau tidak, panen otomatis mode 'claim' yang menentukan.
+  // Is the fee's memecoin side sold after the claim? An explicit override wins;
+  // otherwise the automatic harvest 'claim' mode decides.
   sellFeeWanted(id, override = null) {
     if (override != null) return !!override;
     const st = this.store.get('SELECT enabled, mode, sell_fee FROM compound_settings WHERE position_id=?', id);
     return !!(st?.enabled && st.mode === 'claim' && st.sell_fee);
   }
 
-  // Memecoin dari fee yang baru diklaim: dicatat di buku fee (supaya taksiran harga
-  // klaim nanti diganti hasil jual sesungguhnya) lalu dijual ke aset kuotasi pool yang
-  // sama. Jumlahnya dari receipt klaim, bukan saldo wallet — wallet ini bisa memegang
-  // token yang sama dari posisi atau program lain.
+  // Memecoin from a freshly claimed fee: recorded in the fee ledger (so the claim-price
+  // estimate is later replaced by the actual sale result) then sold to the same pool's
+  // quote asset. Its amount is from the claim receipt, not the wallet balance — this wallet can hold
+  // the same token from positions or other programs.
   async sellClaimedFee(pos, hash, claim, { quiet = false } = {}) {
     const meme = claim?.meme;
     if (!meme || !(BigInt(meme.amount) > 0n)) return null;
-    this.positions.noteFeeLeftover({ posId: pos.id, token: meme.token, amount: meme.amount,
-      estQuote: meme.quoteValue, txHash: hash });
+    // The fee ledger row was already written by recordFeeClaim.
     return this.sellToken({ posId: pos.id, target: pos.target, token: meme.token, quote: meme.quote,
       amount: BigInt(meme.amount), tries: 0, kind: 'fee' }, { quiet });
   }
@@ -1854,8 +2060,8 @@ class Engine {
       try {
         const rc = await this.rpc.call('eth_getTransactionReceipt', [row.hash]);
         if (!rc) {
-          // Tidak pernah masuk: jangan biarkan "pending" selamanya — executeExit menolak
-          // menutup posisi selama claim-nya belum selesai (lihat Compound.reconcile).
+          // Never landed: do not leave it "pending" forever — executeExit refuses to
+          // close a position while its claim is unfinished (see Compound.reconcile).
           if (Date.now() - row.ts > 30 * 60_000) {
             const known = await this.rpc.call('eth_getTransactionByHash', [row.hash]).catch(() => 'tak terbaca');
             if (!known) this.store.run("UPDATE txs SET status='gagal' WHERE hash=?", row.hash);
@@ -1866,10 +2072,10 @@ class Engine {
         this.store.run('UPDATE txs SET status=? WHERE hash=?', ok ? 'sukses' : 'gagal', row.hash);
         if (!ok) continue;
         const result = await this.recordFeeClaim(pos, row.hash, rc);
-        // Klaim yang selesai SESUDAH proses mati: sisi memecoin-nya tidak pernah
-        // masuk antrean jual dan tidak tersapu (sapu wallet melewati token posisi yang
-        // masih terbuka). Diantrekan di sini, sekali — recordFeeClaim mengembalikan {}
-        // untuk klaim yang sudah pernah dibukukan.
+        // A claim that completed AFTER the process died: its memecoin side never
+        // entered the sell queue and is not swept (the wallet sweep skips tokens of positions
+        // still open). Queued here, once — recordFeeClaim returns {}
+        // for a claim that has already been booked.
         if (row.kind === 'claim_fees' && this.sellFeeWanted(id)) {
           try { await this.sellClaimedFee(pos, row.hash, result, { quiet: true }); }
           catch (e) { this.store.log('warn', `jual fee posisi #${id}: ${e.message}`, { quiet: true }); }
@@ -1880,14 +2086,14 @@ class Engine {
     }
   }
 
-  // Satu posisi hanya boleh punya satu transaksi keluar yang sedang berjalan. Tutup
-  // manual (dasbor/Telegram) menunggu receipt sampai 90 detik; tanpa penjaga ini
-  // pemicu keluar mandiri, rekonsiliasi, atau klik kedua di selang itu mengirim tx
-  // kedua yang pasti revert setelah tx pertama membakar NFT-nya — gas terbuang.
-  // `force` (tutup paksa dari dasbor): penjaga compound/claim yang masih menunggu
-  // dilewati, dan likuiditas yang dibakar dibaca ulang dari chain — bukan dari catatan
-  // yang bisa basi — supaya posisinya benar-benar kosong. Penjaga tx ganda (`exiting`)
-  // dan status tertutup tetap berlaku: itu yang mencegah burn kedua yang pasti revert.
+  // A position may only have one exit transaction running. A manual close
+  // (dashboard/Telegram) waits for the receipt up to 90 seconds; without this guard
+  // a standalone exit trigger, reconciliation, or a second click in that interval sends a
+  // second tx that is certain to revert after the first tx burns its NFT — gas wasted.
+  // `force` (force close from the dashboard): the compound/claim guards that are still waiting
+  // are skipped, and the liquidity to burn is re-read from the chain — not from records
+  // that can be stale — so the position really is empty. The double-tx guard (`exiting`)
+  // and the closed status still apply: they prevent a second burn that is certain to revert.
   async executeExit(plan, pos, { force = false } = {}) {
     if (this.stopping) throw new Error('bot sedang berhenti (restart) — keluar dilanjutkan saat hidup lagi');
     if (this.exiting.has(pos.id)) throw new Error('posisi ini sedang dalam proses ditutup');
@@ -1912,14 +2118,14 @@ class Engine {
     finally { this.exiting.delete(pos.id); }
   }
 
-  // Sinyal keluar target hanya diputuskan SEKALI (lihat handle), jadi gangguan RPC
-  // sesaat dulu berarti posisi kita tertinggal terbuka selamanya. Diulang di sini —
-  // tetapi HANYA kalau transaksi keluarnya belum pernah terkirim (`notSent`). Galat
-  // setelah terkirim (revert, receipt telat) tidak diulang: posisinya mungkin sudah
-  // berubah, dan rekonsiliasi yang mengurusnya.
+  // A target exit signal is only decided ONCE (see handle), so a momentary RPC disturbance
+  // used to mean our position was left open forever. Retried here —
+  // but ONLY if its exit transaction was never sent (`notSent`). An error
+  // after sending (revert, late receipt) is not retried: the position may already have
+  // changed, and reconciliation takes care of it.
   async executeExitRetry(plan, pos, { waits = this.exitRetryWaits || [3000, 10_000, 30_000] } = {}) {
     for (let i = 0; ; i++) {
-      // Diambil alih manual di sela jeda coba-ulang: keluar otomatis ini batal.
+      // Taken over manually during the retry pause: this automatic exit is cancelled.
       if (i > 0 && this.store.get('SELECT takeover_ts FROM positions WHERE id=?', pos.id)?.takeover_ts != null) {
         throw new Error(`posisi #${pos.id} diambil alih manual — keluar otomatis dibatalkan`);
       }
@@ -1928,10 +2134,10 @@ class Engine {
         if (!e.notSent || i >= waits.length) throw e;
         this.store.log('warn', `keluar #${pos.id} belum terkirim (${String(e.message).slice(0, 160)}) — coba lagi dalam ${waits[i] / 1000} dtk (${i + 2}/${waits.length + 1})`, { quiet: true });
         await new Promise((r) => setTimeout(r, waits[i]));
-        // Penjaga terakhir sebelum mengirim ulang: tx yang tadi dianggap tidak masuk
-        // mungkin baru terlihat sekarang, dan likuiditas kita di chain tidak boleh lebih
-        // kecil dari catatan (lebih besar boleh: compound menambahnya).
-        // Kalau salah satu meleset, mengirim lagi bisa menarik dua kali.
+        // The last guard before resending: a tx that was thought not to have landed
+        // may only be visible now, and our liquidity on chain must not be
+        // smaller than the record (larger is fine: compound adds to it).
+        // If either is off, sending again could withdraw twice.
         if (e.txHash && await this.exec.txLanded(e.txHash, 2)) {
           throw new Error(`transaksi keluar ${e.txHash} ternyata masuk — tidak dikirim ulang, rekonsiliasi yang mencatat`);
         }
@@ -1943,20 +2149,20 @@ class Engine {
     }
   }
 
-  // Posisi yang likuiditasnya sudah NOL di chain tanpa tercatat tutup. Tiga sebab:
-  // tx keluar bot yang receipt-nya gagal dibaca (RPC tumbang), tarikan manual di
-  // luar bot (#45: $110 ditarik lewat Uniswap, dulu tercatat hasil $0 = rugi total),
-  // atau tx bot yang baru masuk setelah batas tunggu. Hasilnya dicari dulu — dari
-  // receipt tx bot di tabel txs, kalau tidak ada dari log ModifyLiquidity terakhir —
-  // baru dicatat lewat recordExit seperti keluar biasa. Ditutup dengan $0 hanya kalau
-  // semuanya gagal, dan pemilik dikabari supaya bisa memperbaikinya manual.
+  // A position whose liquidity is already ZERO on chain without a recorded close. Three causes:
+  // a bot exit tx whose receipt failed to be read (RPC down), a manual withdrawal
+  // outside the bot (#45: $110 withdrawn via Uniswap, it used to be recorded as a $0 result = total loss),
+  // or a bot tx that only landed after the wait limit. The proceeds are looked up first — from the
+  // bot tx receipt in the txs table, if none from the last ModifyLiquidity log —
+  // then recorded via recordExit like an ordinary exit. Closed at $0 only if
+  // everything fails, and the owner is notified so they can fix it manually.
   async closeEmptyPosition(pos) {
-    // `pos` datang dari sinkron yang bisa berumur puluhan detik. Alur keluar bot yang
-    // berjalan bersamaan (target tutup → burn) bisa sudah membukukannya di antara
-    // sinkron dan giliran posisi ini di loop trigger — `exiting` sudah kosong lagi,
-    // tapi objek posisinya masih berstatus open. Dibaca ulang dulu. lp3 #220: burn
-    // bot dibukukan +150 USDG, 5 detik kemudian dibukukan lagi dari log ModifyLiquidity
-    // dengan tx yang sama — hasil $300 dari modal $150, "untung" $150.
+    // `pos` comes from a sync that can be tens of seconds old. A bot exit flow that
+    // runs at the same time (target closes → burn) may already have booked it between
+    // the sync and this position's turn in the trigger loop — `exiting` is empty again,
+    // but the position object still has status open. Re-read first. lp3 #220: the bot's
+    // burn was booked +150 USDG, 5 seconds later booked again from the ModifyLiquidity log
+    // with the same tx — a $300 result from $150 capital, "profit" $150.
     if (this.store.get('SELECT status FROM positions WHERE id=?', pos.id)?.status !== 'open') return null;
     const plan = { full: true, liquidity: pos.liquidity };
     let hash = null;
@@ -1964,16 +2170,16 @@ class Engine {
       try {
         const d = JSON.parse(r.detail || '{}');
         if (d.position !== pos.id) continue;
-        // Tutup penuhnya sudah dibukukan — tidak boleh dicari lagi lewat log (tx yang
-        // sama akan ketemu dan dibukukan dua kali).
+        // The full close is already booked — it must not be looked up again via logs (the same
+        // tx would be found and booked twice).
         if (d.closeProceeds) {
           this.store.log('warn', `#${pos.id} kosong di chain dan tx tutupnya ${r.hash.slice(0, 12)}… sudah dibukukan — tidak dibukukan ulang`, { quiet: true });
           return null;
         }
-        // Tarik sebagian yang sudah dibukukan — bukan tx yang mengosongkannya.
+        // A partial withdrawal that is already booked — not the tx that emptied it.
         if (d.decreaseProceeds) break;
         hash = r.hash; break;
-      } catch { /* detail lama tanpa JSON */ }
+      } catch { /* old detail without JSON */ }
     }
     let source = 'tx bot';
     if (!hash && pos.venue === 'v4' && pos.pool_ref && pos.token_id) {
@@ -2001,17 +2207,17 @@ class Engine {
     return null;
   }
 
-  // Tx mint/increase bot yang sudah terkirim tapi posisinya belum dibukukan (receipt
-  // gagal dibaca / lewat batas tunggu). Sukses → dibukukan dari receipt lengkap dengan
-  // tautan target; revert → ditandai gagal dan token hasil zap-nya diantrekan dijual;
-  // tidak pernah masuk (30 menit tanpa receipt) → sama seperti revert.
+  // Bot mint/increase txs that were sent but whose position is not yet booked (the receipt
+  // failed to be read / past the wait limit). Success → booked from the receipt complete with
+  // the target link; revert → flagged failed and its zap token queued for sale;
+  // never landed (30 minutes without a receipt) → the same as a revert.
   async bookPendingMints() {
     if (!this.exec.address()) return;
     const rows = this.store.all("SELECT hash, ts, kind, detail FROM txs WHERE chain=? AND kind IN ('mint','increase') AND status != 'gagal' AND ts > ? ORDER BY ts", this.network, Date.now() - 24 * 3600_000);
     for (const r of rows) {
       let d; try { d = JSON.parse(r.detail || '{}'); } catch { continue; }
       if (!d.plan || d.recorded) continue;
-      if (Date.now() - r.ts < 120_000) continue;   // alur masuknya sendiri masih menunggu (90 dtk)
+      if (Date.now() - r.ts < 120_000) continue;   // its own entry flow is still waiting (90 s)
       if (d.plan.action === 'increase' && d.plan.positionId && this.exiting.has(d.plan.positionId)) continue;
       let receipt = null;
       try { receipt = await this.rpc.call('eth_getTransactionReceipt', [r.hash]); } catch { continue; }
@@ -2023,9 +2229,9 @@ class Engine {
         if (d.zapped) await this.rescueZap({ target: d.target }, { ...d.zapped, before: BigInt(d.zapped.before) }, new Error('mint gagal')).catch(() => {});
         continue;
       }
-      // Mint-nya jadi: kelebihan token zap yang tidak ikut masuk posisi diantrekan
-      // dijual di sini juga — jalur ini yang mengurusnya kalau receipt baru terbaca
-      // belakangan (alur masuknya sendiri sudah menyerah menunggu).
+      // The mint was created: the surplus zap token that did not go into the position is queued
+      // for sale here too — this path takes care of it if the receipt is only read
+      // later (the entry flow itself has given up waiting).
       if (d.zapped) {
         await this.sweepZapSurplus(d.plan, d.zapped, receipt, { hash: r.hash })
           .catch((e) => this.store.log('warn', `kelebihan zap ${r.hash.slice(0, 12)}… tidak terantre: ${e.message}`, { quiet: true }));
@@ -2036,10 +2242,10 @@ class Engine {
     }
   }
 
-  // Tx keluar bot (burn/decrease) yang sudah terkirim tapi hasilnya belum dibukukan —
-  // receipt-nya gagal dibaca saat itu (RPC tumbang / lewat batas tunggu). Dicoba lagi
-  // tiap sinkron sampai receipt terbaca: sukses → dibukukan (tutup penuh kalau
-  // likuiditasnya kini nol, kalau tidak sebagai tarik sebagian); revert → ditandai.
+  // Bot exit txs (burn/decrease) that were sent but whose result is not yet booked —
+  // the receipt failed to be read then (RPC down / past the wait limit). Retried on
+  // every sync until the receipt is read: success → booked (a full close if the
+  // liquidity is now zero, otherwise as a partial withdrawal); revert → flagged.
   async bookPendingExits() {
     if (!this.exec.address()) return;
     const rows = this.store.all("SELECT hash, kind, detail FROM txs WHERE chain=? AND kind IN ('burn','decrease') AND status != 'gagal' AND ts > ? ORDER BY ts", this.network, Date.now() - 24 * 3600_000);
@@ -2062,9 +2268,9 @@ class Engine {
     }
   }
 
-  // Tx terakhir yang MENARIK likuiditas posisi v4 ini (ModifyLiquidity dengan salt ==
-  // tokenId dan delta negatif), dicari mundur dari blok terbaru dalam jendela terbatas.
-  // Dipanggil jarang (posisi kosong tak tercatat), jadi biaya getLogs-nya wajar.
+  // The last tx that WITHDREW liquidity from this v4 position (ModifyLiquidity with salt ==
+  // tokenId and a negative delta), searched backward from the latest block in a limited window.
+  // Called rarely (an empty position not recorded), so the getLogs cost is reasonable.
   async lastWithdrawTx(pos, { span = this.cfg.loop?.empty_scan_blocks ?? 3000, step = 500 } = {}) {
     const head = parseInt(await this.rpc.call('eth_blockNumber', []), 16);
     const salt = BigInt(pos.token_id).toString(16).padStart(64, '0');
@@ -2074,7 +2280,7 @@ class Engine {
         address: this.chain.ADDR.poolManager, topics: [TOPIC.modifyLiquidity, pos.pool_ref],
         fromBlock: '0x' + from.toString(16), toBlock: '0x' + to.toString(16),
       });
-      // data = tickLower, tickUpper, liquidityDelta (int256), salt — masing-masing 32 byte
+      // data = tickLower, tickUpper, liquidityDelta (int256), salt — each 32 bytes
       const mine = logs.filter((l) => l.data.length === 2 + 4 * 64 && l.data.slice(-64) === salt
         && BigInt.asIntN(256, BigInt('0x' + l.data.slice(2 + 2 * 64, 2 + 3 * 64))) < 0n);
       if (mine.length) return mine[mine.length - 1].transactionHash;
@@ -2082,7 +2288,7 @@ class Engine {
     return null;
   }
 
-  // Likuiditas posisi kita menurut chain; null kalau tidak terbaca.
+  // Our position's liquidity per the chain; null if unreadable.
   async chainLiquidity(pos) {
     try {
       if (this.chain.isV3Venue(pos.venue)) {
@@ -2097,8 +2303,8 @@ class Engine {
   async sendExit(plan, pos) {
     let tx, before, hash;
     try {
-      // Keluar juga butuh gas. Diisi SEBELUM saldo "sebelum" dibaca, supaya unwrap-nya
-      // tidak terhitung sebagai hasil penutupan posisi berpasangan ETH.
+      // Exiting needs gas too. Filled BEFORE the "before" balance is read, so its unwrap
+      // is not counted as a close result of an ETH-paired position.
       const gasNotes = [];
       await this.topUpGas(gasNotes);
       if (gasNotes.length) this.store.log('info', `sebelum tutup #${pos.id}: ${gasNotes.join(', ')}`);
@@ -2109,33 +2315,33 @@ class Engine {
         if (!poolKey) throw new Error('poolKey posisi tidak terbaca');
         tx = this.exec.buildV4Decrease({ ...plan, poolKey, tokenId: pos.token_id }, this.exec.deadline());
       }
-      // Saldo SEBELUM keluar: hasil penutupan diukur dari selisihnya, bukan dari data
-      // sinkronisasi berkala. Posisi yang dibuka lalu ditutup di antara dua sinkronisasi
-      // (30 detik) dulu tercatat hasil $0 — PnL-nya jadi seolah rugi total.
+      // The balance BEFORE exit: the close result is measured from its difference, not from the
+      // periodic sync data. A position opened then closed between two syncs
+      // (30 seconds) used to be recorded with a $0 result — its PnL read as a total loss.
       before = await this.exec.balances([pos.token0, pos.token1]);
       hash = await this.exec.send(tx, { kind: plan.full ? 'burn' : 'decrease', detail: { position: pos.id } });
-    } catch (e) { e.notSent = true; throw e; }   // belum ada tx keluar di chain: aman diulang
+    } catch (e) { e.notSent = true; throw e; }   // no exit tx on chain yet: safe to repeat
     const rc = await this.exec.waitReceipt(hash, 90_000);
-    // Tx sudah di chain tapi receipt belum terbaca: JANGAN ditutup dengan $0 oleh sinkron
-    // berikutnya — closeEmptyPosition menemukan tx ini di tabel txs dan mencatat hasilnya
-    // dari receipt begitu terbaca.
+    // The tx is on chain but its receipt is not yet read: do NOT close it with $0 on the next
+    // sync — closeEmptyPosition finds this tx in the txs table and records its result
+    // from the receipt once readable.
     if (rc.timeout) throw new Error(`belum terkonfirmasi setelah 90 detik — tx ${hash} mungkin masih diproses; hasilnya dicatat otomatis begitu receipt terbaca`);
     if (!rc.ok) throw new Error(`transaksi keluar revert (${hash})`);
     return this.recordExit(plan, pos, hash, rc.receipt, before);
   }
 
-  // Pembukuan sesudah tx keluar terkonfirmasi: hasil dari receipt, sisa memecoin, lalu
-  // penjualan sisanya. Dipakai sendExit dan closeEmptyPosition (tx yang receipt-nya
-  // baru terbaca belakangan, atau tarikan di luar bot).
+  // Booking after the exit tx is confirmed: proceeds from the receipt, leftover memecoin, then
+  // the sale of the leftovers. Used by sendExit and closeEmptyPosition (a tx whose receipt
+  // is only read later, or a withdrawal outside the bot).
   async recordExit(plan, pos, hash, receipt, before = null) {
     const proceeds = await this.exitProceeds(pos, before, receipt);
-    // Posisi dicatat tertutup DULU — lengkap dengan memecoin sisa yang diterima dan
-    // nilainya di harga tutup — baru sisanya dijual. Kalau penjualan berhasil,
-    // recordLeftoverSale mengganti taksiran itu dengan hasil sesungguhnya; kalau
-    // tersangkut, ekuitas tetap menilainya di harga kini, bukan menghilangkannya.
+    // The position is recorded closed FIRST — complete with the leftover memecoin received and
+    // its value at the close price — and only then are the leftovers sold. If the sale succeeds,
+    // recordLeftoverSale replaces that estimate with the actual result; if it
+    // gets stuck, equity still values it at the current price, rather than making it vanish.
     const live = this.positions.live.find((p) => p.id === pos.id);
     let left = null;
-    // sisa memecoin dinilai di harga penilai (markSqrt), bukan harga pool yang bisa di batas
+    // leftover memecoin valued at the marking price (markSqrt), not the pool price that can be at the bound
     try { left = await this.leftoverOf(pos, receipt, proceeds?.markSqrt ?? live?.markSqrt ?? live?.curSqrt ?? null); }
     catch (e) { this.store.log('warn', `sisa #${pos.id} tidak terukur: ${e.message}`, { quiet: true }); }
     if (plan.full) {
@@ -2145,32 +2351,32 @@ class Engine {
         exitSqrt: proceeds?.sqrt ?? live?.curSqrt ?? null, left,
       });
     } else {
-      // Tarik sebagian: hasilnya SUDAH di wallet, jadi harus masuk out_quote sekarang.
-      // Dulu hanya likuiditasnya yang dikurangi — posisi #25 kehilangan $68,52 dari
-      // catatan (54,75 USDG + memecoin yang terjual $13,77) dan terbaca rugi $64
-      // padahal untung $4.
+      // Partial withdrawal: its result is ALREADY in the wallet, so it must enter out_quote now.
+      // It used to only reduce the liquidity — position #25 lost $68.52 from its
+      // records (54.75 USDG + memecoin sold for $13.77) and read as a $64 loss
+      // when it was actually a $4 profit.
       this.positions.markDecreased(pos.id, {
         liquidity: (BigInt(pos.liquidity) - BigInt(plan.liquidity)).toString(),
         out0: proceeds?.amount0 ?? 0n, out1: proceeds?.amount1 ?? 0n,
         outQuote: proceeds?.valueQuote ?? 0, txHash: hash, left,
       });
     }
-    // Jual memecoin yang BARU diterima dari transaksi keluar ini. Galatnya tidak boleh
-    // membatalkan pencatatan keluar — posisinya sudah benar-benar tertutup di chain.
+    // Sell the memecoin JUST received from this exit transaction. Its error must not
+    // cancel recording the exit — the position really is closed on chain.
     let sold = null;
     try { sold = await this.sellLeftover(pos, receipt, { quiet: true }); }
-    // Gagal jual masuk antrean coba-ulang (keepLeftover); yang dikabarkan hanya kalau
-    // antrean menyerah.
+    // A failed sale goes into the retry queue (keepLeftover); only reported if
+    // the queue gives up.
     catch (e) { this.store.log('error', `jual sisa #${pos.id}: ${e.message}`, { quiet: true }); }
     return { txHash: hash, sold, note: `${plan.full ? 'tutup penuh' : 'kurangi'} posisi #${pos.id}${sold ? ` · ${sold}` : ''}` };
   }
 
-  // Berapa yang benar-benar masuk wallet dari transaksi keluar, dibaca dari log
-  // Transfer di receipt (ETH native: saldo historis di blok itu, gas dikembalikan —
-  // gas mengurangi saldo tapi bukan bagian dari hasil posisi). Selisih saldo
-  // "sebelum/sesudah" hanya cadangan: RPC yang tertinggal satu blok pernah membuatnya
-  // nol, sehingga posisi #27 tercatat dari cache sinkron yang sudah basi.
-  // Nilainya dihitung di harga pool saat itu.
+  // How much really entered the wallet from the exit transaction, read from the
+  // Transfer log in the receipt (native ETH: the historical balance at that block, gas added back —
+  // gas reduces the balance but is not part of the position's result). The "before/after"
+  // balance difference is only a fallback: an RPC one block behind once made it
+  // zero, so position #27 was recorded from a sync cache that was already stale.
+  // Its value is computed at the pool price at that time.
   async exitProceeds(pos, before, receipt) {
     try {
       const me = this.exec.address().toLowerCase();
@@ -2179,7 +2385,7 @@ class Engine {
         amount0 = await this.receivedIn(receipt, pos.token0, me);
         amount1 = await this.receivedIn(receipt, pos.token1, me);
       } catch (e) {
-        if (!before) throw e;   // tanpa saldo "sebelum" tidak ada cadangan
+        if (!before) throw e;   // without the "before" balance there is no fallback
         this.store.log('warn', `hasil keluar #${pos.id} dari receipt tidak terbaca (${e.message}) — pakai selisih saldo`, { quiet: true });
         const after = await this.exec.balances([pos.token0, pos.token1]);
         const d = (t) => {
@@ -2192,7 +2398,7 @@ class Engine {
         amount0 = d(pos.token0); amount1 = d(pos.token1);
       }
       if (amount0 === 0n && amount1 === 0n) return null;
-      // harga penilai (pool sendiri kalau layak); exit_sqrt tetap harga pool apa adanya
+      // marking price (the pool's own if fit); exit_sqrt stays the raw pool price
       const s = await this.positions.markSlotFor(pos);
       const toks = await this.chain.tokens([pos.token0, pos.token1]);
       const v = s && this.chain.valueInQuote({
@@ -2200,12 +2406,12 @@ class Engine {
         dec0: toks[0].decimals, dec1: toks[1].decimals, token0: pos.token0, token1: pos.token1,
       });
       return { amount0: amount0.toString(), amount1: amount1.toString(), valueQuote: v ? v.value : null, sqrt: s?.poolSqrt ?? null, markSqrt: s?.sqrtPriceX96 ?? null };
-    } catch (e) { this.store.log('warn', `hasil keluar #${pos.id} tidak terukur: ${e.message}`, { quiet: true }); return null; }   // cadangan: angka sinkron terakhir
+    } catch (e) { this.store.log('warn', `hasil keluar #${pos.id} tidak terukur: ${e.message}`, { quiet: true }); return null; }   // fallback: the last sync figure
   }
 
-  // Memecoin yang masuk wallet dari transaksi keluar ini + nilainya di harga tutup
-  // (satuan aset kuotasi posisi). Jumlahnya dari log Transfer di receipt — sama
-  // dengan yang akan dijual sellLeftover — bukan dari selisih saldo.
+  // Memecoin that entered the wallet from this exit transaction + its value at the close price
+  // (position quote asset units). Its amount is from the Transfer log in the receipt — the same
+  // as what sellLeftover will sell — not from the balance difference.
   async leftoverOf(pos, receipt, sqrt) {
     const q = this.chain.quoteSideOf(pos.token0, pos.token1);
     if (!q) return null;
@@ -2230,21 +2436,21 @@ class Engine {
     return { token: meme, amount: got, quote };
   }
 
-  // ---- jual sisa memecoin -------------------------------------------------
-  // Keluar dari posisi LP mengembalikan campuran aset kuotasi + memecoin, tergantung di
-  // mana harga berada. Memecoin itu bukan tujuan copy — dijual balik ke aset kuotasi
-  // pool yang sama. Yang dijual HANYA jumlah yang diterima dari tx keluar ini (dibaca dari
-  // log Transfer di receipt), bukan seluruh saldo: wallet ini bisa dipakai program lain
-  // yang memegang token yang sama.
+  // ---- sell leftover memecoin --------------------------------------------
+  // Exiting an LP position returns a mix of quote asset + memecoin, depending on
+  // where the price is. That memecoin is not the purpose of copying — it is sold back to the quote asset
+  // of the same pool. ONLY the amount received from this exit tx is sold (read from the
+  // Transfer log in the receipt), not the whole balance: this wallet can be used by other programs
+  // that hold the same token.
   async sellLeftover(pos, receipt, opts = {}) {
     const rules = this.rulesFrom(pos.target);
     if (!rules.exit.sell_leftover) return null;
-    // quoteSideOf mengembalikan objek {side, symbol, kind}, bukan angka.
+    // quoteSideOf returns an object {side, symbol, kind}, not a number.
     const q = this.chain.quoteSideOf(pos.token0, pos.token1);
-    if (!q) return null;                            // pasangan tanpa aset kuotasi
+    if (!q) return null;                            // a pair without a quote asset
     const meme = String(q.side === 0 ? pos.token1 : pos.token0).toLowerCase();
     const quote = String(q.side === 0 ? pos.token0 : pos.token1).toLowerCase();
-    // ETH/USDG, WETH/USDG, dst.: dua-duanya "uang" — tidak ada memecoin untuk dijual.
+    // ETH/USDG, WETH/USDG, etc.: both are "money" — there is no memecoin to sell.
     if (this.chain.quoteSideOf(meme, meme)) return null;
     const me = this.exec.address().toLowerCase();
     let got = 0n;
@@ -2256,15 +2462,15 @@ class Engine {
     return this.sellToken({ posId: pos.id, target: pos.target, token: meme, quote, amount: got, tries: 0 }, opts);
   }
 
-  // Jual `amount` token ke `quote` lewat Kyber. Gagal -> dicatat untuk dicoba ulang.
-  // `quiet`: penjualan yang terjadi di dalam transaksi keluar sudah dilaporkan oleh
-  // kabar penutupan posisi — jangan kirim kabar kedua untuk hal yang sama.
+  // Sell `amount` of a token into `quote` via Kyber. Failure -> recorded to be retried.
+  // `quiet`: a sale that happens inside the exit transaction has already been reported by the
+  // position close news — do not send a second notice for the same thing.
   async sellToken(item, { quiet = false } = {}) {
     const rules = this.rulesFrom(item.target);
-    // Satu penjualan per token pada satu waktu. Antrean otomatis (tiap detik), tombol
-    // "jual sekarang", dan sisa dari tx keluar bisa menyentuh token yang sama bersamaan —
-    // penjualan kedua membangun swap dari saldo yang sedang dijual yang pertama dan
-    // revert (gas hangus), atau ikut menjual jatah item lain. Yang tertahan tetap antre.
+    // One sale per token at a time. The automatic queue (every second), the "sell now"
+    // button, and leftovers from an exit tx can touch the same token at once —
+    // a second sale builds a swap from the balance the first is selling and
+    // reverts (gas burned), or sells another item's share. What is held back stays queued.
     this.selling = this.selling || new Set();
     const lockKey = String(item.token).toLowerCase();
     if (this.tokenInEntry(lockKey)) {
@@ -2280,12 +2486,12 @@ class Engine {
     finally { this.selling.delete(lockKey); }
   }
 
-  // Pembanding harga independen untuk satu penjualan sisa, supaya gerbang batas rugi
-  // tidak bergantung pada apakah Kyber kebetulan punya feed harga token itu.
-  //   usdIn   : nilai `amount` di harga pool posisinya sendiri (valueLeftover sudah
-  //             memakai markFor, yang menjepit harga pool gila ke harga masuk posisi)
-  //   usdPerOut/outDecimals : sisi keluar selalu aset kuotasi — nilainya kita tahu persis
-  // null di salah satu sisi bukan kegagalan: routeLoss memakai apa pun yang ada.
+  // An independent price comparator for one leftover sale, so the loss-limit gate
+  // does not depend on whether Kyber happens to have a price feed for that token.
+  //   usdIn   : the value of `amount` at its own position's pool price (valueLeftover already
+  //             uses markFor, which clamps an absurd pool price to the position's entry price)
+  //   usdPerOut/outDecimals : the exit side is always a quote asset — its value we know exactly
+  // null on either side is not a failure: routeLoss uses whatever exists.
   async sellRef(item, amount) {
     const out = this.chain.QUOTES[String(item.quote).toLowerCase()] || null;
     const ref = {
@@ -2298,7 +2504,7 @@ class Engine {
         .filter((r) => item.posId == null || r.id === item.posId);
       if (rows.length) ref.usdIn = await this.positions.valueLeftover(rows, amount, this.ethUsd);
       else {
-        // Memecoin fee yang belum terjual punya buku sendiri, bentuk barisnya sama.
+        // Fee memecoin not yet sold has its own ledger, the same row shape.
         const fee = this.positions.feeLeftoverRows(item.token, item.posId ?? null);
         if (fee.length) ref.usdIn = await this.positions.valueLeftover(fee, amount, this.ethUsd);
       }
@@ -2309,23 +2515,23 @@ class Engine {
     return ref;
   }
 
-  // Jumlah terbesar yang masih muat di batas rugi, dicari biner lewat kutipan Kyber.
+  // The largest amount that still fits the loss limit, found by binary search over Kyber quotes.
   //
-  // Semua-atau-tidak hanya menyisakan dua akhir yang sama-sama buruk: macet selamanya,
-  // atau dibuang utuh di harga berapa pun. Yang terjadi di produksi selalu yang kedua,
-  // lewat celah gerbang di atas, dan polanya sama persis pada ketiga kejadian terbesar —
-  // ditolak berkali-kali selagi Kyber punya harga, lalu DI MENIT YANG SAMA satu kutipan
-  // tanpa harga USD lolos dan seluruh sisa berangkat:
-  //   #82  13 Sep 18:55 ditolak 42,0% → 18:56 ditolak 56,6% → 18:56 terjual $72,76 ($173)
-  //   #175 15 Sep 18:59 ditolak 93,2% → 18:59 terjual $7,26
-  //   #187 16 Sep 10:18 ditolak 88,2% → 10:18 terjual $4,14
-  // Sesudah celah itu ditutup, yang tersisa justru akhir pertama — karena itu potongan.
-  // Jual sebanyak yang pool sanggup serap sekarang, sisanya kembali ke antrean: jeda
-  // antar percobaan memberi likuiditas dan arb waktu memulihkan harga, dan itu justru
-  // yang tidak pernah didapat kalau semuanya dibuang dalam satu tx.
+  // All-or-nothing leaves only two endings that are equally bad: stuck forever,
+  // or dumped whole at any price. What happened in production was always the second,
+  // through the gate gap above, and the pattern is exactly the same in the three biggest incidents —
+  // rejected many times while Kyber had a price, then IN THE SAME MINUTE a quote
+  // without a USD price slipped through and the entire leftover went out:
+  //   #82  13 Sep 18:55 rejected 42.0% → 18:56 rejected 56.6% → 18:56 sold $72.76 ($173)
+  //   #175 15 Sep 18:59 rejected 93.2% → 18:59 sold $7.26
+  //   #187 16 Sep 10:18 rejected 88.2% → 10:18 sold $4.14
+  // After that gap was closed, what remains is precisely the first ending — hence the chunking.
+  // Sell as much as the pool can absorb now, the rest goes back to the queue: the gap
+  // between attempts gives liquidity and arbitrage time to restore the price, and that is exactly
+  // what is never obtained if everything is dumped in one tx.
   //
-  // Hanya kutipan (GET), tidak ada tx yang dikirim. MAX_PROBE langkah dipakai supaya
-  // biayanya tetap ~5 HTTP per penjualan yang bermasalah.
+  // Quotes only (GET), no tx is sent. MAX_PROBE steps are used so the
+  // cost stays ~5 HTTP calls per problematic sale.
   async fitSell(item, amount, rules, ref) {
     const MAX_PROBE = 5, MIN_CHUNK_USD = 2;
     const maxLoss = rules.exit.sell_max_loss_bps;
@@ -2334,7 +2540,7 @@ class Engine {
     for (let i = 0; i < MAX_PROBE && hi - lo > amount / 100n; i++) {
       const mid = lo + (hi - lo) / 2n;
       if (mid <= 0n) break;
-      // Terlalu kecil untuk membayar gasnya sendiri (~$0,16/jual): berhenti mengecilkan.
+      // Too small to pay for its own gas (~$0.16/sale): stop shrinking.
       const usd = usdOf(mid);
       if (usd != null && usd < MIN_CHUNK_USD) break;
       const q = await this.kyber.quote(item.token, item.quote, mid);
@@ -2346,7 +2552,7 @@ class Engine {
   }
 
   async sellTokenLocked(item, rules, { quiet }) {
-    // Penjualan butuh gas: ETH native di bawah cadangan diisi dulu (dari WETH/USDG).
+    // A sale needs gas: native ETH below the reserve is topped up first (from WETH/USDG).
     await this.topUpGas([]).catch(() => {});
     let amount = BigInt(item.amount), label = String(item.token).slice(0, 10);
     try {
@@ -2356,16 +2562,16 @@ class Engine {
       const meta = await this.chain.token(item.token).catch(() => null);
       label = `${(Number(amount) / 10 ** (meta?.decimals ?? 18)).toPrecision(4)} ${meta?.symbol || item.token.slice(0, 8)}`;
     } catch (e) {
-      // Saldo tidak terbaca (RPC). Dulu galat ini lolos SEBELUM item diantrekan: sisa
-      // dari tx keluar tidak pernah masuk antrean dan tidak pernah dijual siapa pun.
-      // Tetap antre (tanpa peringatan keras — ini galat RPC sementara).
+      // The balance is unreadable (RPC). This error used to slip through BEFORE the item was queued: leftovers
+      // from an exit tx never entered the queue and were never sold by anyone.
+      // Still queued (without a loud warning — this is a temporary RPC error).
       this.keepLeftover({ ...item, amount: String(item.amount) }, `saldo belum terbaca: ${e.message}`);
       throw new Error(`${label} belum terjual: ${e.message}`);
     }
     const ref = await this.sellRef(item, amount);
     const swapOpts = {
       slippageBps: rules.swap.max_slippage_bps, maxLossBps: rules.exit.sell_max_loss_bps,
-      kind: 'sell_leftover', detail: { position: item.posId }, ref, requireLoss: true,
+      kind: 'sell_leftover', detail: { position: item.posId, source: leftoverSource(item), target: item.target ?? null }, ref, requireLoss: true,
     };
     let sold = amount;
     try {
@@ -2373,22 +2579,22 @@ class Engine {
       try {
         r = await this.kyber.swap(item.token, item.quote, amount, swapOpts);
       } catch (e) {
-        // Pengaman yang gagal atau receipt yang belum terbaca berhenti di sini. Yang
-        // lolos ke bawah cuma dua sebab pasar: rute terlalu rugi (e.loss) dan tx yang
-        // ditolak chain sampai percobaan ketiga (e.reverted).
+        // A failed safeguard or an unread receipt stops here. Only two market
+        // causes fall through below: a route that loses too much (e.loss) and a tx
+        // rejected by the chain through the third attempt (e.reverted).
         if (!(e.loss || e.reverted)) throw e;
-        // Rute agregator yang mahal belum tentu berarti pasarnya mahal — Kyber
-        // kadang merutekan lewat jalur buruk, dan harganya sendiri bisa kosong. Pool
-        // langsung dinilai sendiri (fee pool + dampak harga) dengan batas yang sama,
-        // dan hanya dikirim kalau simulasinya lolos; kalau pool juga tidak muat,
-        // barulah jumlahnya dipotong dan dijual bertahap lewat Kyber.
+        // An expensive aggregator route does not necessarily mean the market is expensive — Kyber
+        // sometimes routes through a bad path, and its own price can be empty. The direct
+        // pool is evaluated on its own (pool fee + price impact) with the same limit,
+        // and only sent if its simulation passes; if the pool does not fit either,
+        // only then is the amount cut and sold in stages via Kyber.
         const viaPool = await this.sellViaPool(item, amount, rules).catch(() => null);
         if (viaPool) {
           this.log(`sisa ${label}: Kyber tidak jadi (${e.message}) — terjual utuh lewat pool langsung`);
           r = viaPool;
         } else {
-          // Jumlah penuh tidak muat di batas rugi: cari potongan terbesar yang muat dan
-          // jual itu dulu. Sisanya tetap di antrean, bukan hangus dan bukan dibuang paksa.
+          // The full amount does not fit the loss limit: find the largest chunk that fits and
+          // sell that first. The rest stays in the queue, neither burned nor dumped by force.
           if (!e.loss) throw e;
           const fit = await this.fitSell(item, amount, rules, ref);
           if (!fit) throw e;
@@ -2397,29 +2603,29 @@ class Engine {
           r = await this.kyber.swap(item.token, item.quote, sold, swapOpts);
         }
       }
-      // Kyber belum mengenal rutenya (pool token baru sering belum terindeks): coba jual
-      // langsung ke pool yang kita kenal — pool posisinya sendiri dan pool berpasangan sama.
+      // Kyber does not know the route (a new token's pool is often not yet indexed): try selling
+      // directly into a pool we know — the position's own pool and pools of the same pair.
       if (!r) { sold = amount; r = await this.sellViaPool(item, amount, rules); }
-      if (!r) throw new Error('Kyber tidak menemukan rute (pool langsung juga tidak bisa)');
+      if (!r) throw new Error('Tidak ada agregator yang menemukan rute (pool langsung juga tidak bisa)');
       const rest = amount - sold;
-      // Penjualan sebagian itu kemajuan, bukan kegagalan: penghitung percobaan dan
-      // kutipan lama direset supaya pita peringatan tidak menumpuk seolah macet.
+      // A partial sale is progress, not failure: the attempt counter and the
+      // old quote are reset so the warning banner does not pile up as if stuck.
       if (rest > 0n) this.keepLeftover({ ...item, amount: rest.toString(), tries: 0, lastLossBps: null, lastUsdIn: null, lastUsdOut: null },
         'sebagian terjual, sisanya menunggu likuiditas');
       else this.dropLeftover(item);
       try {
-        // Fee yang sudah diklaim dan sisa penutupan bisa sama-sama memuat token ini:
-        // recordTokenSale membagi hasilnya ke buku yang benar.
+        // Claimed fees and close leftovers can both contain this token:
+        // recordTokenSale splits the proceeds into the right ledger.
         this.positions.recordTokenSale({ posId: item.posId, token: item.token, amount: sold, quoteToken: item.quote,
           txHash: r.hash, amountOut: r.amountOut, usdOut: r.quote?.usdOut, ethUsd: this.ethUsd });
-      } catch (e) { this.store.log('warn', `catat hasil jual ${asalSisa(item)}: ${e.message}`, { quiet: true }); }
-      // usdOut Kyber bisa kosong pada token tipis; sisi keluar aset kuotasi, jadi nilainya
-      // dihitung sendiri daripada melaporkan "$0,00" untuk penjualan yang berhasil.
+      } catch (e) { this.store.log('warn', `catat hasil jual ${leftoverOrigin(item)}: ${e.message}`, { quiet: true }); }
+      // Kyber's usdOut can be empty on a thin token; the exit side is a quote asset, so its value
+      // is computed ourselves rather than reporting "$0.00" for a sale that succeeded.
       const usdOut = r.quote?.usdOut ?? (r.amountOut != null && ref.usdPerOut != null
         ? (Number(r.amountOut) / 10 ** ref.outDecimals) * ref.usdPerOut : null);
       const msg = `jual ${label}${rest > 0n ? ' (sebagian)' : ''} → $${(usdOut || 0).toFixed(2)} (${r.quote.dex})`;
       if (!quiet) {
-        this.notify(`${asalSisa(item)}: ${msg}`, {
+        this.notify(`${leftoverOrigin(item)}: ${msg}`, {
           kind: 'leftover', positionId: item.posId, txHash: r.hash, label, usdIn: r.quote.usdIn ?? ref.usdIn,
           usdOut, dex: r.quote.dex, tries: item.tries || 0, partial: rest > 0n,
         });
@@ -2432,10 +2638,10 @@ class Engine {
     }
   }
 
-  // Jual lewat satu pool langsung (UniversalRouter), cadangan kalau Kyber tidak punya rute.
-  // Pengaman yang sama dengan jual lewat Kyber: batas rugi (fee pool + dampak harga) dari
-  // aturan sell_max_loss_bps, minOut dari taksiran pool dikurangi slippage, dan tx hanya
-  // dikirim kalau simulasinya lolos. Debu (< $0,50) tidak dijual: gasnya lebih mahal.
+  // Sell via a single direct pool (UniversalRouter), a fallback if Kyber has no route.
+  // The same safeguards as selling via Kyber: the loss limit (pool fee + price impact) from the
+  // sell_max_loss_bps rule, minOut from the pool estimate minus slippage, and the tx is only
+  // sent if its simulation passes. Dust (< $0.50) is not sold: the gas costs more.
   async sellViaPool(item, amount, rules) {
     const token = String(item.token).toLowerCase(), quote = String(item.quote).toLowerCase();
     const ctx = { store: this.store, chain: this.chain, rpc: this.rpc, exec: this.exec, log: this.log };
@@ -2453,8 +2659,8 @@ class Engine {
       const q = this.chain.QUOTES[quote];
       return q ? (Number(out) / 10 ** q.decimals) * (q.kind === 'eth' ? this.ethUsd : 1) : null;
     };
-    // Taksiran dulu tanpa izin/simulasi yang berarti (minOut 1): kalau debu atau terlalu
-    // rugi, berhenti sebelum approval yang memakan gas.
+    // Estimate first without a meaningful allowance/simulation (minOut 1): if dust or too
+    // lossy, stop before the approval that costs gas.
     for (const a of await this.exec.ensureRouterAllowance(token)) {
       const usdGuess = item.lastUsdOut ?? null;
       if (usdGuess != null && usdGuess < 0.5) return null;
@@ -2477,7 +2683,8 @@ class Engine {
     const pick = await pickSwapPool(ctx, { tokenIn: token, tokenOut: quote, amountIn: amount, minOut,
       maxImpactBps: maxLoss, deadlineSec: this.exec.deadline(), extra, info: {} });
     if (!pick) return null;
-    const h = await this.exec.send(pick.tx, { kind: 'sell_leftover', detail: { position: item.posId, via: pick.pool.pool_ref, dex: `pool ${pick.pool.venue}`, usdOut } });
+    const h = await this.exec.send(pick.tx, { kind: 'sell_leftover', detail: { position: item.posId, source: leftoverSource(item), target: item.target ?? null, via: pick.pool.pool_ref, dex: `pool ${pick.pool.venue}`, usdOut,
+      tokenIn: String(token).toLowerCase(), tokenOut: String(quote).toLowerCase(), amountInRaw: amount.toString() } });
     const rc = await this.exec.waitReceipt(h, 90_000);
     if (rc.timeout) throw new Error(`jual lewat pool ${h} belum terkonfirmasi setelah 90 detik`);
     if (!rc.ok) throw new Error(`jual lewat pool gagal (${h})`);
@@ -2486,10 +2693,10 @@ class Engine {
     return { hash: h, amountOut: got ?? pick.outEst, quote: { dex: `pool ${pick.pool.venue} ${String(pick.pool.pool_ref).slice(0, 10)}…`, usdIn: null, usdOut: got != null ? usdOf(got) : usdOut } };
   }
 
-  // Token yang tidak bisa dijual = uang yang tersangkut. Dikabarkan KERAS pada
-  // kegagalan pertama, lalu diingatkan tiap 6 jam selama masih tersangkut — bukan
-  // tiap percobaan: antrean mengecek tiap beberapa detik, dan kabar yang sama
-  // ribuan kali hanya membuat orang kebal.
+  // A token that cannot be sold = stuck money. Reported LOUDLY on the
+  // first failure, then reminded every 6 hours while still stuck — not
+  // every attempt: the queue checks every few seconds, and the same news
+  // thousands of times only makes people immune.
   alertLeftover(item, label, e) {
     const cur = this.leftovers().find((x) => this.sameLeftover(x, item));
     if (!cur) return;
@@ -2497,7 +2704,7 @@ class Engine {
     const due = Date.now() - (cur.alertedAt || 0) > 6 * 3600_000;
     if (!first && !due) return;
     this.saveLeftovers(this.leftovers().map((x) => (this.sameLeftover(x, item) ? { ...x, alertedAt: Date.now() } : x)));
-    this.notify(`SISA BELUM TERJUAL: ${label} dari ${asalSisa(item)} — ${e.message}`, {
+    this.notify(`SISA BELUM TERJUAL: ${label} dari ${leftoverOrigin(item)} — ${e.message}`, {
       kind: 'leftover_stuck', positionId: item.posId, target: item.target, token: item.token,
       label, amount: item.amount, why: e.message, tries: cur.tries, next: cur.next, retrySec: this.leftoverRetrySec(),
       since: cur.since || null, reminder: !first,
@@ -2514,13 +2721,13 @@ class Engine {
     catch { return []; }
   }
   saveLeftovers(list) { this.store.setState(this.sk('leftovers'), JSON.stringify(list)); }
-  // Satu item dikenali dari pasangan (posisi, token). posId null = disapu dari wallet,
-  // bukan dari posisi — `?? null` menyamakan null dan undefined supaya item lama
-  // (yang belum punya field ini) tidak pernah tertukar dengan item sapuan.
+  // An item is identified by the pair (position, token). posId null = swept from the wallet,
+  // not from a position — `?? null` equates null and undefined so old items
+  // (that do not have this field yet) are never mixed up with sweep items.
   sameLeftover(a, b) { return (a.posId ?? null) === (b.posId ?? null) && a.token === b.token; }
-  // Item TIDAK pernah dibuang sendiri: uangnya masih tersangkut di wallet, jadi
-  // peringatan dasbor dan daftar token swap harus terus melihatnya sampai terjual
-  // atau dikeluarkan manual. `tries` cuma penghitung; jadwalnya tiap beberapa detik.
+  // Items are NEVER dropped by themselves: the money is still stuck in the wallet, so
+  // the dashboard warning and the swap token list must keep seeing it until sold
+  // or removed manually. `tries` is just a counter; the schedule is every few seconds.
   keepLeftover(item, why) {
     const old = this.leftovers().find((x) => this.sameLeftover(x, item));
     const list = this.leftovers().filter((x) => !this.sameLeftover(x, item));
@@ -2534,18 +2741,18 @@ class Engine {
     this.saveLeftovers(this.leftovers().filter((x) => !this.sameLeftover(x, item)));
   }
 
-  // Dipanggil tiap detik (index.js). Tiap item dicek dengan SATU kutipan Kyber
-  // (bukan build + kirim): kalau ruginya masih di atas batas, cukup catat dan
-  // tunggu tick berikutnya. Baru kalau lolos, penjualan sungguhan dijalankan —
-  // dengan pengaman yang sama seperti biasa. Jadi memburu likuiditas yang
-  // sesaat membaik itu murah: satu HTTP ke Kyber per item per interval.
+  // Called every second (index.js). Each item is checked with ONE Kyber quote
+  // (not build + send): if the loss is still above the limit, just record it and
+  // wait for the next tick. Only if it passes is the real sale run —
+  // with the same safeguards as usual. So hunting for liquidity that
+  // improves momentarily is cheap: one HTTP call to Kyber per item per interval.
   async retryLeftovers() {
     if (this.stopping || this.dryRun() || !this.exec.address() || this.leftoverBusy) return;
     this.leftoverBusy = true;
     try {
       for (const item of this.leftovers()) {
         if (Date.now() < (item.next || 0)) continue;
-        if (this.tokenInEntry(item.token)) continue;   // dijual sesudah entry-nya selesai
+        if (this.tokenInEntry(item.token)) continue;   // sold after its entry finishes
         const rules = this.rulesFrom(item.target);
         try {
           const bal = (await this.exec.balances([item.token])).get(item.token) || 0n;
@@ -2555,28 +2762,28 @@ class Engine {
           const ref = await this.sellRef(item, amount);
           const lossRef = q ? Kyber.routeLoss(q, ref) : null;
           const loss = lossRef?.bps ?? null;
-          // Tanpa rute Kyber: jalur pool langsung dicoba (sellToken → sellViaPool), paling
-          // sering tiap 60 detik per item — tiap percobaan membaca & menyimulasikan pool.
+          // Without a Kyber route: the direct pool path is tried (sellToken → sellViaPool), at most
+          // every 60 seconds per item — each attempt reads & simulates pools.
           if (!q && Date.now() - (item.poolTriedAt || 0) > 60_000) {
             this.saveLeftovers(this.leftovers().map((x) => (this.sameLeftover(x, item) ? { ...x, poolTriedAt: Date.now() } : x)));
             await this.sellToken({ ...item, poolTriedAt: Date.now() });
             continue;
           }
-          // Rugi yang TIDAK terukur diperlakukan sama dengan rugi di atas batas: ditahan.
-          // Dulu `loss != null` membuat kutipan tanpa harga USD lolos begitu saja ke
-          // penjualan penuh — jalur yang sama yang menguras posisi #82.
+          // An UNMEASURABLE loss is treated the same as a loss above the limit: held back.
+          // `loss != null` used to let a quote without a USD price slip straight into a
+          // full sale — the same path that drained position #82.
           if (!q || loss == null || loss > rules.exit.sell_max_loss_bps) {
-            const why = !q ? 'Kyber tidak menemukan rute'
-              : loss == null ? 'rugi rute tidak terukur (Kyber tanpa harga USD dan tanpa pembanding)'
-                : `rute Kyber rugi ${(loss / 100).toFixed(1)}% (batas ${(rules.exit.sell_max_loss_bps / 100).toFixed(1)}%) — $${lossRef.usdIn.toFixed(2)} → $${lossRef.usdOut.toFixed(2)}`;
+            const why = !q ? 'Tidak ada agregator yang menemukan rute'
+              : loss == null ? 'rugi rute tidak terukur (agregator tanpa harga USD dan tanpa pembanding)'
+                : `rute agregator rugi ${(loss / 100).toFixed(1)}% (batas ${(rules.exit.sell_max_loss_bps / 100).toFixed(1)}%) — $${lossRef.usdIn.toFixed(2)} → $${lossRef.usdOut.toFixed(2)}`;
             const e = new Error(why);
             if (lossRef) e.loss = { lossBps: loss, maxLossBps: rules.exit.sell_max_loss_bps, usdIn: lossRef.usdIn, usdOut: lossRef.usdOut, dex: q.dex };
-            // Jumlah penuh tidak muat, tapi sebagian mungkin muat. Pencarian potongan
-            // memakan ~5 kutipan, sementara loop ini berjalan tiap detik untuk tiap item —
-            // jadi dua rem: hanya untuk yang sudah gagal beberapa kali (rugi yang sekadar
-            // berkedip biasanya hilang sendiri di tick berikutnya, tidak perlu dipotong),
-            // dan paling sering tiap 60 detik. Penjualan pertama sesudah tutup tidak lewat
-            // sini — sellTokenLocked memotong langsung begitu jumlah penuh ditolak.
+            // The full amount does not fit, but part of it may. Chunk search
+            // costs ~5 quotes, while this loop runs every second for every item —
+            // so two brakes: only for items that have already failed a few times (a loss that merely
+            // flickers usually disappears by itself on the next tick, no need to cut),
+            // and at most every 60 seconds. The first sale after a close does not go through
+            // here — sellTokenLocked cuts right away once the full amount is refused.
             if (q && (item.tries || 0) >= 3 && Date.now() - (item.fitTriedAt || 0) > 60_000) {
               this.saveLeftovers(this.leftovers().map((x) => (this.sameLeftover(x, item) ? { ...x, fitTriedAt: Date.now() } : x)));
               if (await this.fitSell(item, amount, rules, ref)) {
@@ -2584,77 +2791,77 @@ class Engine {
                 continue;
               }
             }
-            // Kutipan terbaru disimpan supaya pita di dasbor menunjukkan angka kini.
+            // The latest quote is stored so the banner on the dashboard shows the current figure.
             this.keepLeftover({ ...item, amount: amount.toString(), lastLossBps: loss, lastUsdOut: lossRef?.usdOut ?? null, lastUsdIn: lossRef?.usdIn ?? null }, why);
             const meta = await this.chain.token(item.token).catch(() => null);
             this.alertLeftover(item, `${(Number(amount) / 10 ** (meta?.decimals ?? 18)).toPrecision(4)} ${meta?.symbol || item.token.slice(0, 8)}`, e);
             continue;
           }
           await this.sellToken(item);
-        } catch (e) { this.store.log('warn', `coba ulang jual sisa #${item.posId}: ${e.message}`, { quiet: true }); }   // masih di antrean
+        } catch (e) { this.store.log('warn', `coba ulang jual sisa #${item.posId}: ${e.message}`, { quiet: true }); }   // still in the queue
       }
     } finally { this.leftoverBusy = false; }
   }
 
-  // Sapu memecoin yang sudah telanjur duduk di wallet.
+  // Sweep memecoins that have already ended up sitting in the wallet.
   //
-  // sellLeftover hanya menangkap apa yang keluar dari tx keluar bot itu sendiri (dibaca
-  // dari log Transfer di receipt-nya), jadi token yang sudah ada lebih dulu — sisa run
-  // lama, LP manual, kiriman langsung — tidak pernah masuk antrean dan tidak pernah
-  // dijual siapa pun. Di sini isi wallet dibaca, tiap token non-kuotasi dikutip ke Kyber
-  // SEKALI, dan yang nilainya di atas ambang dimasukkan ke antrean yang sama seperti
-  // sisa posisi (posId null). Debu di bawah ambang sengaja dilewat: rutenya tidak akan
-  // pernah lolos batas rugi, dan item yang gagal selamanya cuma membuat pita peringatan
-  // kebal dibaca. Tidak ada transaksi yang dikirim di sini — hanya mengisi antrean;
-  // penjualannya tetap lewat retryLeftovers dengan pengaman yang sama.
+  // sellLeftover only catches what comes out of the bot's own exit tx (read
+  // from the Transfer log in its receipt), so tokens that were there earlier — leftovers of an
+  // old run, a manual LP, direct transfers — never entered the queue and were never
+  // sold by anyone. Here the wallet contents are read, each non-quote token is quoted to Kyber
+  // ONCE, and those whose value is above the threshold are put into the same queue as a
+  // position's leftovers (posId null). Dust below the threshold is deliberately skipped: its route would
+  // never pass the loss limit, and an item that fails forever only makes the warning banner
+  // immune to being read. No transaction is sent here — it only fills the queue;
+  // the sale still goes through retryLeftovers with the same safeguards.
   async sweepWallet({ minUsd = 0.5, quote = this.chain.ADDR.usdg } = {}) {
     const me = this.exec.address();
     if (!me) throw new Error('wallet bot belum diatur');
     const q = String(quote).toLowerCase();
-    // Kandidat: semua token yang pernah dikenal bot + yang pernah masuk ke wallet
-    // (daftar yang sama dipakai halaman Swap, disegarkan oleh Manual.seenTokens).
+    // Candidates: every token the bot has ever known + those that ever entered the wallet
+    // (the same list the Swap page uses, refreshed by Manual.seenTokens).
     const set = new Set();
     for (const r of this.store.all('SELECT address FROM tokens WHERE chain=?', this.network)) if (r.address) set.add(String(r.address).toLowerCase());
     try {
       const st = JSON.parse(this.store.getState(this.sk('swap_seen'), '{}') || '{}');
       if (st.wallet === me) for (const a of st.tokens || []) set.add(String(a).toLowerCase());
-    } catch { /* daftar tabel tokens saja sudah cukup */ }
-    // Token yang ditambahkan manual di halaman Swap ikut: justru yang begini yang
-    // paling sering nyangkut — belum pernah jadi posisi, jadi tidak ada di tabel
-    // tokens, dan sudah lewat jendela pindai Transfer kalau masuknya lama.
+    } catch { /* the tokens table list alone is enough */ }
+    // Tokens added manually on the Swap page are included: precisely these
+    // get stuck most often — they never were a position, so are not in the tokens
+    // table, and have passed the Transfer scan window if they arrived long ago.
     try {
       const c = JSON.parse(this.store.getState(this.sk('swap_tokens'), '[]') || '[]');
       if (Array.isArray(c)) for (const a of c) if (/^0x[0-9a-f]{40}$/i.test(a)) set.add(String(a).toLowerCase());
-    } catch { /* daftar manual boleh kosong */ }
-    // Aset kuotasi itu tujuan, bukan sisa. Token posisi yang masih terbuka juga tidak
-    // disentuh: itu bahan kerja (zap, tambah likuiditas), bukan sampah.
+    } catch { /* the manual list may be empty */ }
+    // A quote asset is the destination, not leftover. Tokens of still-open positions are also not
+    // touched: they are working material (zap, add liquidity), not junk.
     for (const a of Object.keys(this.chain.QUOTES)) set.delete(a);
     set.delete(this.chain.ADDR.native);
     for (const r of this.store.all("SELECT token0, token1 FROM positions WHERE chain=? AND status='open'", this.network)) {
       for (const t of [r.token0, r.token1]) if (t) set.delete(String(t).toLowerCase());
     }
     for (const it of this.leftovers()) set.delete(String(it.token).toLowerCase());
-    for (const tk of this.entryTokens?.keys() || []) set.delete(tk);   // bahan entry yang sedang berjalan
+    for (const tk of this.entryTokens?.keys() || []) set.delete(tk);   // material of an entry that is running
     const list = [...set];
     if (!list.length) return { scanned: 0, queued: [], skipped: [] };
 
     const bal = await this.exec.balances(list);
-    const punya = list.filter((a) => (bal.get(a) || 0n) > 0n);
-    const metas = await this.chain.tokens(punya);
+    const owns = list.filter((a) => (bal.get(a) || 0n) > 0n);
+    const metas = await this.chain.tokens(owns);
     const byAddr = new Map(metas.filter(Boolean).map((t) => [String(t.address).toLowerCase(), t]));
 
     const queued = [], skipped = [];
-    for (const token of punya) {
+    for (const token of owns) {
       const amount = bal.get(token);
       const meta = byAddr.get(token) || {};
       const label = `${fmtUnits(amount, meta.decimals ?? 18)} ${meta.symbol || token.slice(0, 8)}`;
-      // Satu kutipan per token: yang menentukan layak dijual atau tidak adalah berapa
-      // yang benar-benar bisa ditarik, bukan harga pool.
+      // One quote per token: what decides whether it is worth selling is how much
+      // can really be withdrawn, not the pool price.
       const k = await this.kyber.quote(token, q, amount).catch(() => null);
       const usd = k?.usdOut ?? null;
       if (usd == null || usd < minUsd) {
         skipped.push({ token, label, usd,
-          why: !k ? 'Kyber tidak menemukan rute' : `cuma $${(usd || 0).toFixed(2)} (< $${minUsd})` });
+          why: !k ? 'Tidak ada agregator yang menemukan rute' : `cuma $${(usd || 0).toFixed(2)} (< $${minUsd})` });
         continue;
       }
       this.keepLeftover({ posId: null, target: null, token, quote: q, amount: amount.toString(), tries: 0,
@@ -2664,24 +2871,24 @@ class Engine {
     if (queued.length) {
       this.store.log('info', `sapu wallet: ${queued.length} token masuk antrean jual — ${queued.map((x) => `${x.label} (~$${x.usd.toFixed(2)})`).join(', ')}`);
     }
-    return { scanned: punya.length, queued, skipped };
+    return { scanned: owns.length, queued, skipped };
   }
 
-  // Jaring pengaman terakhir untuk sinyal keluar.
+  // The last safety net for exit signals.
   //
-  // Semua jalur deteksi bisa gagal: RPC melewatkan satu rentang, proses mati saat
-  // aksi datang, atau target keluar sebelum mint kita sempat tercatat. Kalau itu
-  // terjadi, posisi cermin kita menggantung selamanya sementara targetnya sudah
-  // pergi. Di sini kondisinya diperiksa dari sumber yang paling tidak bisa salah:
-  // likuiditas posisi TARGET di chain. Kalau sudah nol sementara punya kita masih
-  // terbuka, kita keluar.
+  // Every detection path can fail: the RPC skips a range, the process dies when the
+  // action arrives, or the target exits before our mint could be recorded. If that
+  // happens, our mirror position hangs forever while its target has
+  // gone. Here the condition is checked against the source least able to be wrong:
+  // the TARGET position's liquidity on chain. If it is already zero while ours is still
+  // open, we exit.
   //
-  // Butuh DUA pengamatan nol berturut-turut supaya pembacaan yang gagal sesaat atau
-  // rebalance tutup-lalu-buka dalam satu transaksi tidak memicu penutupan.
+  // It needs TWO consecutive zero observations so a momentarily failed read or a
+  // close-then-open rebalance in one transaction does not trigger a close.
   async reconcileExits() {
     if (this.dryRun() || !this.exec.address()) return;
-    // v3 ikut diperiksa: dulu hanya v4, jadi cermin v3 yang sinyal keluarnya terlewat
-    // menggantung selamanya.
+    // v3 is checked too: it used to be v4 only, so a v3 mirror whose exit signal was missed
+    // hung forever.
     const rows = this.store.all(
       "SELECT * FROM positions WHERE chain=? AND status='open' AND target IS NOT NULL AND mirror_of IS NOT NULL AND token_id IS NOT NULL AND takeover_ts IS NULL", this.network)
       .filter((r) => r.venue === 'v4' || this.chain.isV3Venue(r.venue));
@@ -2689,8 +2896,8 @@ class Engine {
     this.goneStreak = this.goneStreak || new Map();
     let res;
     try {
-      // strict: galat sementara melempar (tidak dianggap nol). Hasil null dari v3 = revert
-      // sah positions() untuk NFT yang sudah dibakar = target keluar penuh.
+      // strict: a temporary error throws (not taken as zero). A null result from v3 = the legitimate
+      // revert of positions() for a burned NFT = the target exited fully.
       const out = await this.rpc.ethCallMany(rows.map((r) => (this.chain.isV3Venue(r.venue)
         ? { to: this.chain.npmFor(r.venue), data: IF_NPM.encodeFunctionData('positions', [BigInt(r.mirror_of)]) }
         : { to: this.chain.ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(r.mirror_of)]) })), 'latest', { strict: true });
@@ -2698,15 +2905,15 @@ class Engine {
         if (!this.chain.isV3Venue(rows[i].venue)) {
           if (!w || w === '0x') return null;
           const L = BigInt(w);
-          // NFT yang belum dikenal node TIDAK revert di v4 — getPositionLiquidity menjawab 0.
-          // Node yang tertinggal (ordofi ~2rb blok) karena itu melihat posisi target yang baru
-          // dimint sebagai "kosong", dan cermin kita yang baru dibuka ditutup. Nol hanya
-          // dipercaya untuk cermin yang sudah >10 menit, sama seperti revert di v3.
+          // An NFT not yet known to the node does NOT revert on v4 — getPositionLiquidity answers 0.
+          // A lagging node (ordofi ~2k blocks) therefore sees a freshly minted target position
+          // as "empty", and our freshly opened mirror gets closed. Zero is only
+          // trusted for a mirror that is >10 minutes old, the same as a revert on v3.
           if (L === 0n && Date.now() - (rows[i].opened_ts || 0) <= 10 * 60_000) return null;
           return L;
         }
-        // Revert dipercaya sebagai "dibakar" hanya untuk cermin yang sudah >10 menit: node
-        // yang tertinggal juga me-revert NFT target yang baru saja dimint.
+        // A revert is trusted as "burned" only for a mirror that is >10 minutes old: a
+        // lagging node also reverts a target NFT that was just minted.
         if (w == null) return Date.now() - (rows[i].opened_ts || 0) > 10 * 60_000 ? 0n : null;
         if (w === '0x') return null;
         try { return BigInt(IF_NPM.decodeFunctionResult('positions', w)[7]); } catch { return null; }
@@ -2716,8 +2923,8 @@ class Engine {
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       const liq = res[i];
-      if (liq == null) { this.goneStreak.delete(r.id); continue; }   // tak terbaca: jangan bertindak
-      if (liq > 0n) { this.goneStreak.delete(r.id); continue; }     // target masih di dalam
+      if (liq == null) { this.goneStreak.delete(r.id); continue; }   // unreadable: do not act
+      if (liq > 0n) { this.goneStreak.delete(r.id); continue; }     // the target is still inside
       const n = (this.goneStreak.get(r.id) || 0) + 1;
       this.goneStreak.set(r.id, n);
       if (n < 2 || this.exiting.has(r.id)) continue;
@@ -2735,11 +2942,11 @@ class Engine {
     }
   }
 
-  // ---- pemeliharaan berkala ----------------------------------------------
-  // Sinkron dipanggil tiap 30 detik oleh setInterval. Saat RPC lambat satu putaran bisa
-  // lebih lama dari itu, dan putaran kedua yang jalan bersamaan membukukan hal yang sama
-  // dua kali: closeEmptyPosition/bookPendingExits (hasil keluar dan penjualan sisa ganda),
-  // bookPendingMints (baris posisi ganda). Satu putaran pada satu waktu.
+  // ---- periodic maintenance ---------------------------------------------
+  // The sync is called every 30 seconds by setInterval. When the RPC is slow a round can
+  // take longer than that, and a second round running at the same time books the same thing
+  // twice: closeEmptyPosition/bookPendingExits (doubled exit proceeds and leftover sales),
+  // bookPendingMints (doubled position rows). One round at a time.
   async syncPositions() {
     if (this.syncBusy || this.stopping) return;
     this.syncBusy = true;
@@ -2749,42 +2956,42 @@ class Engine {
 
   async syncPositionsOnce() {
     if (this.cfg.prices?.auto_eth_price !== false) this.ethUsd = await this.chain.ethUsd(this.ethUsd);
-    // Posisi yang dibuka di luar bot muncul tanpa perlu restart (tiap 10 menit).
+    // Positions opened outside the bot appear without needing a restart (every 10 minutes).
     const addr = this.exec.address();
     if (addr && Date.now() - (this.lastAdopt || 0) > 10 * 60_000) {
       this.lastAdopt = Date.now();
       await this.adoptOwnPositions(addr);
     }
-    // Setoran/penarikan eksternal → modal wallet (PnL bersih). Tiap 5 menit — tiap
-    // menit selama jendela yang menumpuk masih dicicil (node arsip publik dibatasi per
-    // menit); galat beruntun ditangani seperti langkah lain, tidak menghentikan tick.
+    // External deposits/withdrawals → wallet capital (net PnL). Every 5 minutes — every
+    // minute while a piled-up window is still being paid in instalments (public archive nodes are limited per
+    // minute); consecutive errors are handled like other steps, not stopping the tick.
     if (addr && this.capital.available() && Date.now() - (this.capital.lastSync || 0) > (this.capital.backlog ? 60_000 : 5 * 60_000)) {
       await this.capital.sync(addr).then(() => this.cleared('modal', 'pelacakan setoran: berhasil lagi'))
         .catch((e) => this.trouble('modal', `pelacakan setoran: ${e.message}`, { after: 3, afterMs: 30 * 60_000 }));
     }
-    // Semua langkah ini diulang tiap sinkron (30 detik) — galat sesaat tidak dikabarkan.
-    const sekali = (key, label, p) => p.then(() => this.cleared(key, `${label}: berhasil lagi`))
+    // All of these steps repeat every sync (30 seconds) — a momentary error is not reported.
+    const once = (key, label, p) => p.then(() => this.cleared(key, `${label}: berhasil lagi`))
       .catch((e) => this.trouble(key, `${label}: ${e.message}`, { after: 5, afterMs: 5 * 60_000 }));
-    await sekali('compound', 'pencatatan compound', this.compound.reconcile());
-    await sekali('claim', 'pencatatan claim fee', this.reconcileFeeClaims());
-    await sekali('rekon', 'rekonsiliasi keluar', this.reconcileExits());
+    await once('compound', 'pencatatan compound', this.compound.reconcile());
+    await once('claim', 'pencatatan claim fee', this.reconcileFeeClaims());
+    await once('rekon', 'rekonsiliasi keluar', this.reconcileExits());
     await this.positions.sync(this.ethUsd);
-    await sekali('buku-masuk', 'pembukuan mint tertunda', this.bookPendingMints());
-    await sekali('buku-keluar', 'pembukuan tx keluar tertunda', this.bookPendingExits());
-    await sekali('zap-yatim', 'pemulihan zap tanpa LP', this.recoverStrandedZaps());
-    await sekali('kas', 'saldo kas', this.refreshCash());
-    await sekali('sisa', 'nilai token sisa', this.positions.refreshLeftovers(this.ethUsd, this.exec.address()));
-    // Aturan target posisinya sendiri (posisi manual/adopsi tanpa target: aturan global).
+    await once('buku-masuk', 'pembukuan mint tertunda', this.bookPendingMints());
+    await once('buku-keluar', 'pembukuan tx keluar tertunda', this.bookPendingExits());
+    await once('zap-yatim', 'pemulihan zap tanpa LP', this.recoverStrandedZaps());
+    await once('kas', 'saldo kas', this.refreshCash());
+    await once('sisa', 'nilai token sisa', this.positions.refreshLeftovers(this.ethUsd, this.exec.address()));
+    // The position's own target rules (manual/adopted positions without a target: the global rules).
     const triggers = this.positions.exitTriggers((p) => this.rulesFrom(p.target));
     for (const t of triggers) {
       if (this.stopping) break;
       if (this.exiting.has(t.pos.id)) continue;
-      // Kendali manual: aturan keluar mandiri tidak berlaku. Dibaca dari basis data, bukan
-      // hasil sinkron (bisa berumur 30 detik). Posisi yang kosong di chain tetap dibukukan.
+      // Manual control: standalone exit rules do not apply. Read from the database, not the
+      // sync result (can be 30 seconds old). A position that is empty on chain is still booked.
       if (!t.pos.empty && this.store.get('SELECT takeover_ts FROM positions WHERE id=?', t.pos.id)?.takeover_ts != null) continue;
       if (t.pos.empty) {
-        // Menutup di database tanpa transaksi = hasil $0 tercatat selamanya. Dibaca
-        // ulang dulu; kalau ternyata masih ada, biarkan sinkron berikutnya yang menilai.
+        // Closing in the database without a transaction = a $0 result recorded forever. Re-read
+        // first; if it turns out to still exist, leave it to the next sync to evaluate.
         if (await this.positions.confirmEmpty(t.pos)) await this.closeEmptyPosition(t.pos).catch((e) => this.store.log('warn', `tutup #${t.pos.id} yang kosong: ${e.message}`, { quiet: true }));
         else this.store.log('warn', `#${t.pos.id} terbaca kosong tapi tidak terkonfirmasi — tidak ditutup`, { quiet: true });
         continue;
@@ -2796,27 +3003,27 @@ class Engine {
           kind: 'exit', positionId: t.pos.id, txHash: out.txHash, full: true, sold: out.sold, auto: true,
           target: t.pos.target, mirrorOf: t.pos.mirror_of, reason: t.reason,
         });
-        this.cleared(`keluar:${t.pos.id}`, null);                   // kartu penutupan = kabarnya
-        // Ditutup karena di luar rentang, bukan karena target keluar: kalau target masih
-        // di dalam dan harga kembali mendekat, cerminnya dibuka lagi.
+        this.cleared(`keluar:${t.pos.id}`, null);                   // close card = its news
+        // Closed because it is out of range, not because the target exited: if the target is still
+        // inside and the price comes back near, its mirror is opened again.
         if (t.kind === 'oor' && t.pos.mirror_of && t.pos.target) {
           this.watchReentry({ target: t.pos.target, venue: t.pos.venue, tokenId: t.pos.mirror_of }, this.rulesFrom(t.pos.target), { why: 'ditutup', posId: t.pos.id });
         }
       } catch (e) {
-        // Pemicunya masih berlaku, jadi diulang di sinkron berikutnya. Dua kali gagal
-        // (~1 menit) sudah dikabarkan: dana sedang tidak terlindungi stop-loss.
+        // The trigger still applies, so it is repeated on the next sync. Two failures
+        // (~1 minute) are already reported: funds are currently not protected by a stop-loss.
         this.trouble(`keluar:${t.pos.id}`, `keluar mandiri gagal #${t.pos.id}: ${e.message}`, { after: 2 });
       }
     }
     if (!this.stopping) await this.compound.tick(Date.now(), new Set(triggers.map((t) => t.pos.id)));
-    if (!this.stopping) await sekali('masuk-lagi', 'buka lagi posisi yang ditunda', this.reentryTick());
+    if (!this.stopping) await once('masuk-lagi', 'buka lagi posisi yang ditunda', this.reentryTick());
   }
 
-  // ---- buka lagi posisi yang ditunda/ditutup karena jauh dari rentang -----------
-  // Satu pantauan per posisi target (target + venue + tokenId), disimpan di tabel state
-  // supaya selamat dari restart. Dibuat saat (a) entry target dilewati karena rentangnya
-  // > out_of_range_pct dari harga, atau (b) cermin ditutup oleh aturan di-luar-rentang.
-  // Dilepas begitu cermin terbuka lagi, target keluar, atau aturannya dimatikan.
+  // ---- reopen a position that was deferred/closed for being far from the range -----------
+  // One watch per target position (target + venue + tokenId), stored in the state table
+  // so it survives a restart. Created when (a) a target entry is skipped because its range is
+  // > out_of_range_pct from the price, or (b) a mirror is closed by the out-of-range rule.
+  // Released once the mirror is open again, the target exits, or its rule is switched off.
   reentryKey(target, venue, tokenId) { return this.sk(`reentry:${target}:${venue}:${tokenId}`); }
 
   watchReentry({ target, venue, tokenId }, rules, extra = {}) {
@@ -2826,15 +3033,15 @@ class Engine {
     let prev = null;
     try { prev = JSON.parse(this.store.getState(key) || 'null'); } catch { prev = null; }
     const w = { ts: Date.now(), target, venue, tokenId: String(tokenId), tries: 0, ...extra, nearPct: near };
-    // Pantauan lama untuk posisi yang sama diperbarui, bukan digandakan.
+    // An old watch for the same position is updated, not duplicated.
     if (prev && prev.actionId != null && w.actionId == null) w.actionId = prev.actionId;
     this.store.setState(key, JSON.stringify(w));
     this.store.log('info', `pantau #${tokenId} target ${target.slice(0, 10)}… (${w.why || 'jauh dari rentang'}): buka lagi kalau harga ≤ ${near}% dari rentang`, { quiet: true });
     return w;
   }
 
-  // Ambang "dekat" yang berlaku: reenter_within_pct, dipaksa di bawah out_of_range_pct
-  // supaya cermin tidak buka-tutup di satu ambang. 0/null = buka-lagi mati.
+  // The "near" threshold in effect: reenter_within_pct, forced below out_of_range_pct
+  // so the mirror does not open-close at one threshold. 0/null = reopen off.
   reentryNearPct(rules) {
     const e = rules.exit;
     let near = Number(e.reenter_within_pct) || 0;
@@ -2863,16 +3070,16 @@ class Engine {
       const near = this.reentryNearPct(rules);
       if (!near) { drop(w, 'aturan buka-lagi dimatikan'); continue; }
       if (this.store.get("SELECT 1 FROM positions WHERE chain=? AND status='open' AND mirror_of=? AND target=?", this.network, w.tokenId, w.target)) { drop(w, 'cermin sudah terbuka'); continue; }
-      // Jeda/target mati/drawdown: sama seperti entry biasa, ditunggu — bukan dilepas.
+      // Pause/disabled target/drawdown: the same as an ordinary entry, waited on — not released.
       if (!t.enabled || this.paused() || this.drawdownTripped()) continue;
       if (w.retryAfter && Date.now() < w.retryAfter) continue;
-      // Posisi target harus masih berisi. Tak terbaca = tunggu sinkron berikutnya.
+      // The target position must still hold liquidity. Unreadable = wait for the next sync.
       let liq = null;
       try { liq = (await this.targetLiquidity(w.venue, w.tokenId))?.liquidity ?? null; } catch { liq = null; }
       if (liq == null) continue;
       if (liq <= 0n) { drop(w, 'target sudah keluar dari posisinya'); continue; }
-      // Rentang & pool posisi target: dari aksi masuk terakhirnya (cadangan: baris cermin
-      // kita yang ditutup — rentang persis sama hanya di mode exact, tapi cukup untuk jarak).
+      // The range & pool of the target position: from its last entry action (fallback: our closed
+      // mirror row — the range is exactly the same only in exact mode, but enough for distance).
       const src = this.store.get(
         "SELECT * FROM actions WHERE chain=? AND target=? AND venue=? AND token_id=? AND kind IN ('mint','increase','reentry') AND tick_lower IS NOT NULL AND pool_ref IS NOT NULL ORDER BY id DESC LIMIT 1",
         this.network, w.target, w.venue, w.tokenId)
@@ -2882,10 +3089,10 @@ class Engine {
       try { slot0 = this.chain.isV3Venue(w.venue) ? await this.chain.slot0V3(src.pool_ref) : await this.chain.slot0V4(src.pool_ref); } catch { slot0 = null; }
       if (!slot0) continue;
       const dist = m.distanceFromRangePct(slot0.tick, src.tick_lower, src.tick_upper);
-      if (dist > near) continue;                                    // masih jauh: tunggu
-      // Dekat & target masih di dalam: dinilai seperti sinyal masuk baru, dengan likuiditas
-      // target SEKARANG (ukuran mengikuti apa yang benar-benar ia pegang). Aksi sintetis
-      // 'reentry' dicatat supaya keputusannya tampak di riwayat seperti sinyal lainnya.
+      if (dist > near) continue;                                    // still far: wait
+      // Near & the target is still inside: evaluated like a new entry signal, with the
+      // target's CURRENT liquidity (the size follows what it really holds). A synthetic
+      // 'reentry' action is recorded so the decision shows in the history like other signals.
       const id = Number(this.store.run(
         `INSERT INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,tick_lower,tick_upper,liquidity,quote_symbol)
          VALUES(?,?,?,?,?,?,?,'reentry',?,?,?,?,?,?,?,?,?,?,?)`,
@@ -2898,8 +3105,8 @@ class Engine {
       catch (e) { this.decide(id, 'error', String(e.message).slice(0, 300)); this.store.log('error', `buka lagi #${w.tokenId}: ${e.message}`); }
       const d = this.store.get('SELECT verdict, reason FROM decisions WHERE action_id=? ORDER BY id DESC LIMIT 1', id);
       if (d && d.verdict !== 'copy' && d.verdict !== 'dry' && !/dari harga \(batas/.test(d.reason || '')) {
-        // Belum bisa (kas, anggaran, jeda pool, …): dicoba lagi tiap 15 menit, paling
-        // banyak 8 kali, selama harga masih dekat dan target masih di dalam.
+        // Cannot yet (cash, budget, pool cooldown, …): retried every 15 minutes, at most
+        // 8 times, while the price is still near and the target is still inside.
         const tries = (w.tries || 0) + 1;
         if (tries < 8) this.store.setState(w.key, JSON.stringify({ ...w, key: undefined, tries, retryAfter: Date.now() + 15 * 60_000 }));
         else this.store.log('warn', `buka lagi #${w.tokenId} target ${w.target.slice(0, 10)}… menyerah setelah ${tries} percobaan: ${d.reason}`);
@@ -2907,18 +3114,18 @@ class Engine {
     }
   }
 
-  // Cadangan ETH native untuk gas: tetap dari config, atau biaya satu transaksi terberat
-  // saat harga gas tinggi (Executor.gasReserve). Exec tiruan di uji tidak punya: tetap.
+  // Native ETH reserve for gas: fixed from the config, or the cost of one heaviest transaction
+  // when the gas price is high (Executor.gasReserve). A fake exec in tests has none: fixed.
   async gasReserve() {
     const fixed = BigInt(this.cfg.gas?.native_reserve_wei ?? 2_000_000_000_000_000);
     if (!this.exec?.gasReserve) return fixed;
     try { return await this.exec.gasReserve(); } catch { return fixed; }
   }
 
-  // ETH native di bawah cadangan gas tapi ada WETH: buka bungkus sampai cadangannya
-  // penuh lagi. Tanpa ini wallet yang kasnya berupa WETH pelan-pelan kehabisan gas —
-  // padahal yang paling butuh gas justru transaksi keluar. Gagal di sini tidak
-  // menghentikan entry maupun keluar: sisa ETH native mungkin masih cukup.
+  // Native ETH below the gas reserve but WETH available: unwrap until the reserve is
+  // full again. Without this a wallet whose cash is WETH slowly runs out of gas —
+  // although exit transactions are what need gas most. A failure here does not
+  // stop entry or exit: the remaining native ETH may still suffice.
   async topUpGas(notes) {
     const reserve = await this.gasReserve();
     let nat;
@@ -2929,27 +3136,27 @@ class Engine {
       if (nat >= reserve) return;
       if (weth > 0n) {
         const amt = weth < reserve - nat ? weth : reserve - nat;
-        // Di bawah 1/10 cadangan tidak sepadan dengan gas unwrap-nya sendiri — tanpa batas
-        // ini debu WETH memicu satu transaksi sia-sia di setiap entry dan exit.
+        // Under 1/10 of the reserve is not worth the unwrap's own gas — without this
+        // limit WETH dust triggers a pointless transaction on every entry and exit.
         if (amt * 10n >= reserve) {
-          const h = await this.exec.send(this.exec.buildUnwrapWeth(amt), { kind: 'unwrap_weth' });
+          const h = await this.exec.send(this.exec.buildUnwrapWeth(amt), { kind: 'unwrap_weth', detail: { amountInRaw: String(amt) } });
           if (!(await this.exec.waitReceipt(h)).ok) throw new Error(`tx ${h} gagal`);
           notes.push(`isi gas: buka bungkus ${fmtUnits(amt, 18)} ${this.chain.wethSymbol}`);
           nat += amt;
         }
       }
     } catch (e) {
-      this.store.log('warn', `isi gas dari ${this.chain.wethSymbol} gagal: ${e.message}`, { quiet: true });   // dicoba lagi di transaksi berikutnya
+      this.store.log('warn', `isi gas dari ${this.chain.wethSymbol} gagal: ${e.message}`, { quiet: true });   // retried on the next transaction
       return;
     }
-    // Tanpa WETH, kas USDG saja: ETH native habis = SEMUA transaksi gagal "insufficient
-    // funds for gas" — termasuk menutup posisi dan menjual sisa (12 Sep 14:39–14:42:
-    // tiga entry dan penjualan 18,86 FRONTIER gagal berturut-turut). Beli ETH secukupnya
-    // dari USDG selagi masih ada gas untuk swap-nya. Hanya kalau sudah di bawah separuh
-    // cadangan, supaya tidak menukar sedikit-sedikit di setiap transaksi.
+    // Without WETH, USDG cash only: native ETH runs out = ALL transactions fail "insufficient
+    // funds for gas" — including closing positions and selling leftovers (12 Sep 14:39–14:42:
+    // three entries and the sale of 18.86 FRONTIER failed in a row). Buy enough ETH
+    // from USDG while there is still gas for its swap. Only when below half
+    // the reserve, so as not to swap a little at a time on every transaction.
     if (nat == null || nat * 2n >= reserve || !this.kyber?.swap) return;
-    // Gagal (mis. ETH-nya bahkan tidak cukup untuk swap ini): jangan diulang di setiap
-    // penjualan sisa tiap 5 detik — beri jeda 10 menit.
+    // Failed (e.g. the ETH is not even enough for this swap): do not repeat on every
+    // leftover sale every 5 seconds — pause 10 minutes.
     if (Date.now() - (this.gasTopupFailedAt || 0) < 10 * 60_000) return;
     try {
       const rules = this.rulesFrom(null);
@@ -2958,7 +3165,7 @@ class Engine {
       const usdg = (await this.exec.balances([this.chain.ADDR.usdg])).get(this.chain.ADDR.usdg) || 0n;
       const want = Engine.gasTopupWei(reserve, nat, this.cfg);
       const pay = Engine.gasTopupUsdg(want, this.ethUsd, this.cfg, usdgDecimals);
-      if (pay < 10n ** BigInt(usdgDecimals) || usdg < pay) return;   // < $1 atau stablecoin tidak cukup
+      if (pay < 10n ** BigInt(usdgDecimals) || usdg < pay) return;   // < $1 or the stablecoin is not enough
       const r = await this.kyber.swap(this.chain.ADDR.usdg, this.chain.ADDR.native, pay, { slippageBps: 100, maxLossBps: 300, kind: 'gas_topup' });
       if (r) notes.push(`isi gas: beli ${fmtUnits(want, 18)} ${nativeSymbol} dari ${fmtUnits(pay, usdgDecimals)} ${usdgSymbol}`);
       else this.gasTopupFailedAt = Date.now();
@@ -2968,10 +3175,10 @@ class Engine {
     }
   }
 
-  // Berapa ETH yang dibeli isi gas. Cadangan dinamis = batas gas × maxFee, jadi lonjakan
-  // harga gas — atau satu endpoint yang melaporkan eth_gasPrice ngawur — bisa membuatnya
-  // 0,2+ ETH; tanpa batas, isi gas akan menukar ratusan dolar USDG ke ETH. Target
-  // pembelian dibatasi 4× cadangan tetap, dan nilainya dibatasi gas.topup_max_usd ($25).
+  // How much ETH the gas top-up buys. The dynamic reserve = gas limit × maxFee, so a spike in the
+  // gas price — or a single endpoint reporting a nonsense eth_gasPrice — can make it
+  // 0.2+ ETH; without a bound, the gas top-up would swap hundreds of dollars of USDG into ETH. The
+  // purchase target is capped at 4× the fixed reserve, and its value capped by gas.topup_max_usd ($25).
   static gasTopupWei(reserve, have, cfg) {
     const fixed = BigInt(cfg?.gas?.native_reserve_wei ?? 2_000_000_000_000_000);
     const target = reserve < fixed * 4n ? reserve : fixed * 4n;
@@ -2984,10 +3191,10 @@ class Engine {
     return BigInt(Math.ceil(usd * 10 ** usdgDecimals));
   }
 
-  // Kas yang bisa dipakai membuka posisi: USDG, dan ETH/WETH di atas cadangan gas (dalam
-  // ETH). Dipisah per aset karena kas di aset kuotasi LAIN harus dijembatani dulu —
-  // policy memotongnya lebih dalam. Sengaja dibaca segar (bukan this.cash yang bisa
-  // berumur dua menit) karena hasilnya menentukan ukuran transaksi.
+  // Cash that can be used to open positions: USDG, and ETH/WETH above the gas reserve (in
+  // ETH). Split per asset because cash in ANOTHER quote asset has to be bridged first —
+  // policy cuts it deeper. Deliberately read fresh (not this.cash, which can
+  // be two minutes old) because its result decides the transaction size.
   async spendableCash() {
     const reserve = await this.gasReserve();
     const { usdgDecimals } = this.chain;
@@ -2995,33 +3202,33 @@ class Engine {
     const ethLike = (b.get(this.chain.ADDR.native) || 0n) + (b.get(this.chain.ADDR.weth) || 0n);
     const eth = ethLike > reserve ? ethLike - reserve : 0n;
     let usdg = b.get(this.chain.ADDR.usdg) || 0n;
-    // ETH+WETH di bawah separuh cadangan: topUpGas akan membeli ETH dari USDG sebelum
-    // entry. Tanpa dikurangi di sini, posisi diukur dari USDG yang sebagiannya habis
-    // untuk gas, lalu gagal "kas kurang".
+    // ETH+WETH below half the reserve: topUpGas will buy ETH from USDG before
+    // the entry. Without subtracting it here, the position is sized from USDG part of which is used up
+    // for gas, then fails "insufficient cash".
     if (ethLike * 2n < reserve && this.ethUsd > 0) {
       const gasUsdg = Engine.gasTopupUsdg(Engine.gasTopupWei(reserve, ethLike, this.cfg), this.ethUsd, this.cfg, usdgDecimals);
-      // syarat yang sama dengan topUpGas: hanya kalau pembelian itu memang akan terjadi
+      // the same condition as topUpGas: only if that purchase will really happen
       if (gasUsdg >= 10n ** BigInt(usdgDecimals) && usdg >= gasUsdg) usdg -= gasUsdg;
     }
     return { usdg: Number(usdg) / 10 ** usdgDecimals, eth: Number(eth) / 1e18 };
   }
 
-  // Kas di wallet (USDG + ETH + WETH) dalam USD. Dibaca ulang tiap sinkron posisi,
-  // di detik yang sama dengan nilai posisi: kalau kas basi sementara posisi segar,
-  // total portofolio menghitung dana dua kali sesaat setelah posisi dibuka.
+  // Cash in the wallet (USDG + ETH + WETH) in USD. Re-read on every position sync,
+  // in the same second as the position value: if cash is stale while positions are fresh,
+  // the portfolio total counts the money twice right after a position is opened.
   async refreshCash() {
     if (!this.exec.address()) { this.cash = null; return null; }
-    // Bacaan pertama sesudah sebuah tx masuk blok dipatok di blok: endpoint yang
-    // tertinggal beberapa blok akan menjawab saldo LAMA untuk 'latest' — kas pun tampak
-    // belum berkurang/bertambah padahal posisinya sudah tercatat. Endpoint yang belum
-    // punya blok itu menjawab galat sementara dan kolam RPC pindah ke endpoint lain.
-    // Bacaan berikutnya kembali ke 'latest': memancang SETIAP bacaan membuat endpoint
-    // gratis (publicnode) menolaknya sebagai permintaan arsip, dan beban pindah ke
-    // Alchemy yang kuotanya sudah habis — mahal untuk perlindungan yang sudah dipegang
-    // penjaga `txSeq` di snapshotEquity.
-    // Patokannya kepala rantai kalau sudah lewat blok tx itu (`head` = kepala TERENDAH
-    // di antara endpoint, jadi semuanya sudah punya): setoran yang masuk sesudah tx
-    // kita ikut terbaca, bukan cuma keadaan di blok tx.
+    // The first read after a tx lands in a block is pinned to the block: an endpoint
+    // lagging a few blocks will answer the OLD balance for 'latest' — cash also looks
+    // unchanged although the position is already recorded. An endpoint that does not yet
+    // have that block answers a temporary error and the RPC pool moves to another endpoint.
+    // Later reads go back to 'latest': pinning EVERY read makes a free endpoint
+    // (publicnode) refuse it as an archive request, and the load moves to
+    // Alchemy whose quota is already used up — expensive for protection the
+    // `txSeq` guard in snapshotEquity already provides.
+    // The reference is the chain head once it is past that tx's block (`head` = the LOWEST head
+    // among endpoints, so all of them already have it): deposits that came in after our tx
+    // are also read, not just the state at the tx's block.
     const seq = this.exec.txSeq;
     const at = Math.max(this.exec.minedBlock || 0, this.head || 0);
     const block = seq !== this.cashSeq && at ? '0x' + at.toString(16) : 'latest';
@@ -3035,16 +3242,16 @@ class Engine {
     return this.cash;
   }
 
-  // Kas untuk dasbor: this.cash kalau belum ada tx yang masuk blok sejak dibaca,
-  // kalau tidak dibaca ulang dulu. this.cash disegarkan tiap sinkron (30 detik); di
-  // antaranya posisi bisa dibuka/ditutup dan tabel positions langsung berubah, kasnya
-  // belum. Dasbor lalu menjumlahkan kas lama + posisi baru (total KELEBIHAN sebesar
-  // modal posisi) atau kas lama tanpa posisi yang baru tutup (total KEKURANGAN sebesar
-  // hasilnya) sampai semenit kemudian. Nilai token sisa ikut dibaca ulang: ia pun
-  // baru berubah di sinkron, padahal tutup posisi menyisakan token (total kurang) dan
-  // penjualan sisa memindahkannya ke kas (dihitung dua kali). Permintaan yang datang
-  // bersamaan (overview dipoll tiap 5 detik oleh beberapa tab) berbagi satu bacaan.
-  // Gagal dibaca: kas lama, bukan null — angka basi sesaat lebih baik daripada kartu kosong.
+  // Cash for the dashboard: this.cash if no tx has landed in a block since it was read,
+  // otherwise re-read first. this.cash is refreshed on every sync (30 seconds); in
+  // between, positions can be opened/closed and the positions table changes immediately, the cash
+  // not yet. The dashboard then adds old cash + a new position (a total EXCESS equal to the
+  // position's capital) or old cash without the position that just closed (a total SHORTFALL equal to its
+  // proceeds) for up to a minute. The leftover token value is also re-read: it too
+  // only changes at the sync, although closing a position leaves tokens (total short) and
+  // selling the leftover moves it into cash (counted twice). Requests that arrive
+  // at the same time (overview polled every 5 seconds by several tabs) share one read.
+  // Failed to read: the old cash, not null — a momentarily stale figure is better than an empty card.
   async freshCash() {
     if (!this.exec.address()) return null;
     if (this.cash && this.cashSeq === this.exec.txSeq) return this.cash;
@@ -3055,53 +3262,53 @@ class Engine {
   }
 
   async snapshotEquity() {
-    // Di tengah transaksi masuk/keluar kas sudah berpindah tapi posisinya belum
-    // tercatat (atau sebaliknya): titiknya pasti salah. Lewati; 5 menit lagi ada lagi.
-    // Kas SELALU dibaca ulang di sini, bukan dari cache tick. Cache itu diisi di awal
-    // tick, SEBELUM posisi dibuka/ditutup di tick yang sama — snapshot yang memakainya
-    // mencatat kas lama + posisi baru: total anjlok $139 saat #38 tutup, dan kurva PnL
-    // bersih ikut menukik lalu melonjak. Tidak terbaca = NULL (titik dilewati grafik).
+    // In the middle of an entry/exit cash has moved but the position is not yet
+    // recorded (or the reverse): the point is certainly wrong. Skip; there is another in 5 minutes.
+    // Cash is ALWAYS re-read here, not from the tick cache. That cache is filled at the start of
+    // the tick, BEFORE positions are opened/closed in the same tick — a snapshot using it
+    // records old cash + a new position: the total plunged $139 when #38 closed, and the net PnL
+    // curve also dived then spiked. Unreadable = NULL (the chart skips the point).
     //
-    // Penjaga di atas cuma berlaku di detik itu: bacaan kas makan beberapa detik, dan
-    // sebuah entry/exit bisa mulai DAN selesai di sela itu — kas dari sebelum tx,
-    // ringkasan posisi dari sesudahnya. Karena itu `txSeq` dicatat sebelum dan diperiksa
-    // lagi sesudah; kalau ada tx yang masuk blok di sela, titik itu diulang sekali
-    // (kas dibaca ulang, kini pasti memuat tx tadi) dan kalau masih ramai, dilewati —
-    // 5 menit lagi ada titik berikutnya.
+    // The guard above only applies in that second: a cash read takes a few seconds, and
+    // an entry/exit can START and FINISH in between — cash from before the tx,
+    // the position summary from after. So `txSeq` is recorded before and checked
+    // again after; if a tx landed in a block in between, the point is repeated once
+    // (cash re-read, now certain to include that tx) and if still busy, skipped —
+    // there is another point in 5 minutes.
     for (let attempt = 0; attempt < 2; attempt++) {
       if ((this.activeEntries || 0) > 0 || this.exiting.size > 0) return;
       const seq = this.exec.txSeq;
       const cash = this.exec.address() ? await this.refreshCash().catch(() => null) : null;
       const s = this.positions.summary(this.ethUsd);
       if (this.exec.txSeq !== seq || (this.activeEntries || 0) > 0 || this.exiting.size > 0) continue;
-      const w = cash ? cash.usd : null;   // tidak terbaca = NULL, bukan 0
-      // Memecoin sisa yang belum terjual ikut dihitung sebagai "posisi": tanpa ini
-      // kurva total anjlok saat posisi tutup dan melonjak lagi saat sisanya terjual.
+      const w = cash ? cash.usd : null;   // unreadable = NULL, not 0
+      // Leftover memecoin not yet sold is counted as a "position": without this
+      // the total curve plunges when a position closes and spikes again when its leftovers are sold.
       const lo = s.leftoverUsd || 0;
       const total = (w || 0) + s.exposureUsd + lo + s.feeUsd;
       this.store.run(
         'INSERT OR REPLACE INTO equity(chain,ts,wallet_quote,positions_quote,total_quote,realized_quote,fees_quote,open_positions,pnl_quote) VALUES(?,?,?,?,?,?,?,?,?)',
         this.network, Date.now(), w, s.exposureUsd + lo, total, s.realizedUsd, s.feeUsd, s.openCount,
         s.realizedUsd + s.unrealizedUsd);
-      // Wallet terpasang tapi kas gagal dibaca siklus ini: `total` anjlok palsu sebesar
-      // kas yang hilang (lihat komentar `w` di atas) — lewati breaker, jangan terpicu
-      // gara-gara RPC seret, bukan portofolio yang sungguh rugi.
+      // The wallet is installed but cash failed to read this cycle: `total` plunges falsely by the
+      // missing cash (see the `w` comment above) — skip the breaker, do not trip it
+      // because of a sluggish RPC, not a portfolio that really lost.
       if (!this.exec.address() || cash) this.updateDrawdown(total);
       return;
     }
   }
 
-  // Titik ekuitas dari sebelum kolom pnl_quote ada. PnL-nya bisa direkonstruksi dari
-  // yang sudah tercatat: terealisasi + nilai posisi + fee − modal posisi yang sedang
-  // terbuka saat itu (diturunkan dari waktu buka/tutup tiap posisi).
+  // Equity points from before the pnl_quote column existed. Their PnL can be reconstructed from
+  // what was recorded: realized + position value + fee − the capital of positions open
+  // at that time (derived from each position's open/close time).
   //
-  // Posisi ADOPSI membawa opened_ts dari chain, jauh sebelum ia masuk database — di
-  // titik-titik sebelum diadopsi ia belum ikut dinilai, jadi modalnya juga tidak boleh
-  // dikurangkan. Jumlah posisi terbuka yang tercatat di titik itu (open_positions)
-  // yang menentukan: kelebihan kandidat dibuang dari yang id-nya terbesar, karena
-  // id mengikuti urutan masuk database.
+  // An ADOPTED position carries opened_ts from the chain, long before it entered the database — at
+  // points before it was adopted it was not valued, so its capital must not
+  // be subtracted either. The count of open positions recorded at that point (open_positions)
+  // decides: the surplus candidates are dropped starting from the largest id, because
+  // the id follows the order of entry into the database.
   //
-  // Versi 1 belum memperhitungkan adopsi; titik lama (kas NULL) dihitung ulang sekali.
+  // Version 1 did not account for adoption; old points (NULL cash) are recomputed once.
   backfillEquityPnl() {
     const V = '2';
     const redo = this.store.getState(this.sk('equity_pnl_backfill')) !== V;
@@ -3119,18 +3326,21 @@ class Engine {
     return rows.length;
   }
 
-  // `detail` (opsional) adalah data terstruktur kejadian itu — {kind:'entry'|'exit'|
-  // 'leftover', positionId, txHash, ...}. ntfy tetap menerima teks polos; pendengar
-  // yang bisa menata (bot Telegram) memakai detail untuk menyusun kartu yang rapi.
-  notify(msg, detail = null) {
+  // `detail` (optional) is the structured data of that event — {kind:'entry'|'exit'|
+  // 'leftover', positionId, txHash, ...}. ntfy still receives plain text; listeners
+  // that can format (the Telegram bot) use the detail to compose a neat card.
+  // `level` determines the log line written (default 'info'). News whose content is
+  // a problem is written 'warn'/'error' so on the dashboard it appears as a problem, not
+  // mixed in with ordinary entry/exit cards.
+  notify(msg, detail = null, level = 'info') {
     const topic = this.cfg.notify?.ntfy_topic;
-    // Pendengar tambahan (bot Telegram) dipasang dari luar; ia menerima kabar
-    // penting yang sama dengan ntfy, tanpa perlu ikut mengintip semua baris log.
-    // Sengaja dipanggil SEBELUM baris lognya ditulis: baris itu memicu store.onLog
-    // dengan teks yang sama, dan pendengar hanya bisa menyaring gemanya kalau ia
-    // sudah tahu kabar apa yang barusan dikirim.
+    // An additional listener (the Telegram bot) is installed from outside; it receives the same
+    // important news as ntfy, without having to peek at every log line.
+    // Deliberately called BEFORE its log line is written: that line triggers store.onLog
+    // with the same text, and the listener can only filter its echo if it
+    // already knows what news was just sent.
     if (this.onNotify) { try { this.onNotify(msg, { ...(detail || {}), chain: this.network, chainLabel: this.label }); } catch { /* abaikan */ } }
-    this.store.log('info', msg);
+    this.store.log(level, msg);
     if (!topic) return;
     fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body: `Quiver [${this.label}]: ${msg}` }).catch(() => {});
   }

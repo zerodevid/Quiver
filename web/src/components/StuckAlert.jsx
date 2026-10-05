@@ -1,10 +1,10 @@
-// Peringatan KERAS: memecoin sisa yang ditolak dijual setelah keluar posisi.
+// LOUD alert: leftover memecoin whose sale was rejected after a position exit.
 //
-// Bukan toast yang hilang sendiri — uangnya masih tersangkut di wallet sampai
-// rutenya membaik atau pengguna memutuskan sesuatu. Jadi tampil sebagai pita merah
-// di atas SEMUA halaman selama antreannya belum kosong, dibunyikan alarm (bukan
-// chime biasa) saat item baru muncul, dan diberi tombol untuk tiga jalan keluarnya:
-// coba jual lagi, jual manual lewat Swap, atau ubah batas rugi di Aturan.
+// Not a toast that disappears by itself — the money is still stuck in the wallet until
+// the route improves or the user decides something. So it shows as a red banner
+// above ALL pages while the queue is not empty, sounds an alarm (not an ordinary
+// chime) when a new item appears, and offers buttons for the three ways out:
+// retry the sale, sell manually via Swap, or change the loss limit in Rules.
 import { useEffect, useRef, useState } from 'react';
 import { Button, toast } from '@heroui/react';
 import { Siren, X } from 'lucide-react';
@@ -16,10 +16,10 @@ import { ask, TradeLinks } from './ui';
 import { useAlertPrefs, alarm, bumpTitle, canDesktop } from './TargetAlerts';
 
 const KEY = 'quiver.stuck-seen';
-// posId null = sisa yang disapu dari wallet, bukan dari posisi mana pun.
+// posId null = leftover swept from the wallet, not from any position.
 const keyOf = (it) => `${it.posId ?? 'w'}:${it.token}`;
-// Sudah dibunyikan di tab ini? Disimpan per sesi tab supaya muat ulang halaman tidak
-// mengulang alarm untuk hal yang sama, tapi tab baru (besok) tetap diberi tahu.
+// Already sounded in this tab? Stored per tab session so reloading the page does not
+// repeat the alarm for the same thing, but a new tab (tomorrow) is still notified.
 const seen = () => { try { return new Set(JSON.parse(sessionStorage.getItem(KEY) || '[]')); } catch { return new Set(); } };
 const remember = (set) => { try { sessionStorage.setItem(KEY, JSON.stringify([...set])); } catch { /* abaikan */ } };
 
@@ -31,32 +31,32 @@ export default function StuckAlert() {
   const { status, reload } = useStatus();
   const prefs = useAlertPrefs();
   const list = status?.leftovers || [];
-  const [busy, setBusy] = useState(null);   // kunci item yang sedang dijual, atau '*' untuk semua
+  const [busy, setBusy] = useState(null);   // key of the item being sold, or '*' for all
   const [, tick] = useState(0);
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
 
-  // Tiap detik: hitung mundur ke percobaan berikutnya harus benar-benar berdetak,
-  // dan "sejak 12 mnt lalu" ikut bergerak tanpa menunggu poll.
+  // Every second: the countdown to the next attempt must really tick,
+  // and "since 12 min ago" moves along without waiting for a poll.
   useEffect(() => { const id = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(id); }, []);
 
   useEffect(() => {
     if (!list.length) return;
     const done = seen();
-    const baru = list.filter((it) => !done.has(keyOf(it)));
-    if (!baru.length) return;
-    baru.forEach((it) => done.add(keyOf(it)));
+    const fresh = list.filter((it) => !done.has(keyOf(it)));
+    if (!fresh.length) return;
+    fresh.forEach((it) => done.add(keyOf(it)));
     remember(done);
     const p = prefsRef.current;
     if (p.enabled && p.sound) alarm();
-    bumpTitle(baru.length);
-    for (const it of baru) {
+    bumpTitle(fresh.length);
+    for (const it of fresh) {
       toast.danger(t('{a} {s} belum terjual — posisi #{id}', { a: num(it.amountNum, 0), s: it.symbol || short(it.token), id: it.posId }), {
         timeout: 15000, description: it.why,
       });
     }
     if (p.enabled && p.desktop && document.hidden && canDesktop() && Notification.permission === 'granted') {
-      const it = baru[0];
+      const it = fresh[0];
       const n = new Notification(t('Sisa belum terjual: {s}', { s: it.symbol || short(it.token) }), { body: it.why || '', tag: `quiver-stuck-${keyOf(it)}` });
       n.onclick = () => { window.focus(); location.hash = 'swap'; n.close(); };
     }
@@ -64,8 +64,8 @@ export default function StuckAlert() {
 
   if (!list.length) return null;
 
-  // Tanpa argumen: seluruh antrean. Dengan item: baris itu saja.
-  const coba = async (it = null) => {
+  // Without an argument: the whole queue. With an item: that row only.
+  const attempt = async (it = null) => {
     setBusy(it ? keyOf(it) : '*');
     const r = await post('/api/leftovers/retry', it ? { posId: it.posId ?? null, token: it.token } : {});
     setBusy(null);
@@ -74,7 +74,7 @@ export default function StuckAlert() {
     else toast.success(t('Terjual — antrean kosong'));
     reload();
   };
-  const buang = async (it) => {
+  const discard = async (it) => {
     if (!(await ask({
       title: t('Keluarkan dari antrean?'), danger: true, confirm: t('Ya, keluarkan'),
       body: t('Tokennya tetap di wallet dan tidak akan dicoba jual otomatis lagi. Kamu masih bisa menjualnya kapan saja lewat halaman Swap.'),
@@ -89,15 +89,15 @@ export default function StuckAlert() {
         {list.length > 1 && (
           <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
             <span className="font-semibold text-danger">{t('{n} token menunggu dijual', { n: list.length })}</span>
-            <Button size="sm" variant="outline" onPress={() => coba()} isPending={busy === '*'}>{t('Jual semua sekarang')}</Button>
+            <Button size="sm" variant="outline" onPress={() => attempt()} isPending={busy === '*'}>{t('Jual semua sekarang')}</Button>
           </div>
         )}
         {list.map((it) => {
-          const rugi = it.lastLossBps != null ? num(it.lastLossBps / 100, 1) : lossPct(it.why), batas = capPct(it.why);
-          // Detik ke percobaan otomatis berikutnya. 0 = jatuh temponya sudah lewat,
-          // jadi tick berikutnya (tiap 1 dtk di server) akan mengutip ulang.
-          const sisa = Math.max(0, Math.ceil(((it.next || 0) - Date.now()) / 1000));
-          const jalan = busy === keyOf(it) || busy === '*';
+          const loss = it.lastLossBps != null ? num(it.lastLossBps / 100, 1) : lossPct(it.why), limit = capPct(it.why);
+          // Seconds to the next automatic attempt. 0 = it is already due,
+          // so the next tick (every 1 s on the server) will pick it up again.
+          const leftover = Math.max(0, Math.ceil(((it.next || 0) - Date.now()) / 1000));
+          const running = busy === keyOf(it) || busy === '*';
           return (
             <div key={keyOf(it)} className="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] items-start gap-x-3 gap-y-3 border-t border-danger/20 pt-3 first:border-t-0 first:pt-0">
               <span className="flex size-8 shrink-0 animate-pulse items-center justify-center rounded-full bg-danger text-white">
@@ -112,14 +112,14 @@ export default function StuckAlert() {
                   </span>
                 </div>
                 <div className="text-foreground/80">
-                  {rugi
-                    ? t('Rute jualnya rugi {a}%, di atas batas {b}% — bot menolak menjual.', { a: rugi, b: batas || '?' })
+                  {loss
+                    ? t('Rute jualnya rugi {a}%, di atas batas {b}% — bot menolak menjual.', { a: loss, b: limit || '?' })
                     : it.why}
                   {' '}
                   <span className="text-muted">
-                    {jalan || sisa === 0
+                    {running || leftover === 0
                       ? t('Sedang dieksekusi…')
-                      : t('Eksekusi otomatis berikutnya dalam {d} dtk', { d: sisa })}
+                      : t('Eksekusi otomatis berikutnya dalam {d} dtk', { d: leftover })}
                     {t(' — sudah {n}×{w}; dijual otomatis begitu lolos batas.', {
                       n: num(it.tries || 0), w: it.since ? ` ${t('sejak {a}', { a: ago(it.since) })}` : '',
                     })}
@@ -127,13 +127,13 @@ export default function StuckAlert() {
                 </div>
               </div>
               <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 sm:col-start-2 sm:col-span-1">
-                <Button size="sm" variant="danger" onPress={() => coba(it)} isPending={jalan}>
-                  {t('Jual sekarang')}{!jalan && sisa > 0 ? ` · ${sisa}s` : ''}
+                <Button size="sm" variant="danger" onPress={() => attempt(it)} isPending={running}>
+                  {t('Jual sekarang')}{!running && leftover > 0 ? ` · ${leftover}s` : ''}
                 </Button>
                 <Button size="sm" variant="outline" onPress={() => { location.hash = 'swap'; }}>{t('Jual manual')}</Button>
                 <Button size="sm" variant="outline" onPress={() => { location.hash = 'rules'; }}>{t('Ubah batas rugi')}</Button>
                 <TradeLinks token={it.token} />
-                <Button size="sm" variant="ghost" isIconOnly aria-label={t('Keluarkan dari antrean')} onPress={() => buang(it)} className="text-muted">
+                <Button size="sm" variant="ghost" isIconOnly aria-label={t('Keluarkan dari antrean')} onPress={() => discard(it)} className="text-muted">
                   <X className="size-4" />
                 </Button>
               </div>

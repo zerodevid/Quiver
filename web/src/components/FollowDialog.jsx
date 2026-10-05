@@ -3,41 +3,41 @@ import { Button, Modal, toast } from '@heroui/react';
 import { Clock } from 'lucide-react';
 import { post } from '../api';
 import { useI18n, reason } from '../i18n';
-import { usd, age, pct, short, locale as fmtLocale, KEPUTUSAN } from '../fmt';
+import { usd, age, pct, short, locale as fmtLocale, DECISIONS } from '../fmt';
 import { Notice, PriceRange, Text, KV } from './ui';
 
-// Ikuti manual posisi target yang gagal/dilewati bot. Modal ini sekaligus konfirmasinya:
-// yang paling atas KETERLAMBATANNYA — harga sudah bergerak sejak target masuk, dan itu
-// hal pertama yang harus ditimbang sebelum membuka posisi. Rencana dihitung server di
-// harga sekarang (dan dihitung ulang lagi saat transaksi dikirim).
+// Manually follow a target position the bot failed on/skipped. This modal doubles as the confirmation:
+// the most prominent item is the LATENESS — the price has moved since the target entered, and that is
+// the first thing to weigh before opening a position. The plan is computed by the server at the
+// current price (and recomputed when the transaction is sent).
 export default function FollowDialog({ action, onClose, onDone }) {
   const { t } = useI18n();
-  const [nominal, setNominal] = useState('');
+  const [notional, setNotional] = useState('');
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const seq = useRef(0);
   const id = action?.id ?? null;
 
-  // Buka modal: pratinjau dengan nominal usulan server; nominalnya lalu diisi ke field.
+  // Open the modal: preview with the server's suggested amount; the amount is then filled into the field.
   useEffect(() => {
     if (id == null) return;
-    setPlan(null); setNominal('');
+    setPlan(null); setNotional('');
     const mine = ++seq.current;
     setLoading(true);
     post('/api/activity/follow/plan', { actionId: id }).then((r) => {
       if (mine !== seq.current) return;
       setPlan(r); setLoading(false);
       const u = r.follow?.usd ?? r.follow?.suggestUsd;
-      if (u != null) setNominal(String(u));
+      if (u != null) setNotional(String(u));
     });
   }, [id]);
 
-  const usdNum = Number(String(nominal).replace(',', '.'));
-  const nominalOk = Number.isFinite(usdNum) && usdNum > 0;
-  // Nominal diubah: pratinjau dihitung ulang (balasan terlambat dibuang).
+  const usdNum = Number(String(notional).replace(',', '.'));
+  const notionalOk = Number.isFinite(usdNum) && usdNum > 0;
+  // Amount changed: the preview is recomputed (late replies are discarded).
   useEffect(() => {
-    if (id == null || !plan?.follow || !nominalOk || usdNum === plan.follow.usd) return;
+    if (id == null || !plan?.follow || !notionalOk || usdNum === plan.follow.usd) return;
     const mine = ++seq.current;
     setLoading(true);
     const h = setTimeout(async () => {
@@ -52,7 +52,7 @@ export default function FollowDialog({ action, onClose, onDone }) {
   const f = plan?.follow;
   const p = plan?.preview;
   const lateMin = f ? f.ageMs / 60000 : 0;
-  // Batas nada: < 5 menit masih wajar, > 30 menit harga memecoin biasanya sudah jauh.
+  // Tone thresholds: < 5 minutes is still reasonable, > 30 minutes the memecoin price has usually moved far.
   const lateTone = lateMin >= 30 ? 'danger' : lateMin >= 5 ? 'warning' : 'default';
   const pair = f?.pair || (action?.symbol0 ? `${action.symbol0}/${action.symbol1}` : '');
   const e = f?.exit;
@@ -67,8 +67,8 @@ export default function FollowDialog({ action, onClose, onDone }) {
     e.outOfRangePct > 0 && t('Ditutup kalau harga lebih dari {n}% di luar rentang.', { n: e.outOfRangePct }),
     e.outOfRangePct > 0 && e.reenterWithinPct > 0 && t('Dibuka lagi kalau harga kembali ≤ {n}% dari rentang dan target masih di dalam.', { n: e.reenterWithinPct }),
   ].filter(Boolean);
-  const k = f ? KEPUTUSAN[f.verdict] : null;
-  const canOpen = !!plan?.plan && !plan.error && !loading && !sending && nominalOk;
+  const k = f ? DECISIONS[f.verdict] : null;
+  const canOpen = !!plan?.plan && !plan.error && !loading && !sending && notionalOk;
 
   const open = async () => {
     if (!canOpen) return;
@@ -122,8 +122,8 @@ export default function FollowDialog({ action, onClose, onDone }) {
                   {f.reason && <> — {reason(f.reason)}</>}
                 </div>
 
-                <Text label="Nominal (USD)" type="number" value={nominal} onChange={setNominal}
-                  isInvalid={nominal !== '' && !nominalOk} error="Nominal harus lebih dari nol"
+                <Text label="Nominal (USD)" type="number" value={notional} onChange={setNotional}
+                  isInvalid={notional !== '' && !notionalOk} error="Nominal harus lebih dari nol"
                   hint={f.targetUsd != null ? t('posisi target {v}', { v: usd(f.targetUsd) }) : null} />
 
                 {plan.error
@@ -132,7 +132,7 @@ export default function FollowDialog({ action, onClose, onDone }) {
                     <div className={`flex flex-col gap-3 ${loading ? 'opacity-60' : ''}`}>
                       <div>
                         <KV label="Nilai posisi">{usd(p.valueUsd)}</KV>
-                        <KV label="Kas tersedia">{usd(p.kasUsd)}</KV>
+                        <KV label="Kas tersedia">{usd(p.walletCashUsd)}</KV>
                       </div>
                       <div>
                         <div className="mb-1 text-xs text-muted">{t('Rentang harga (aturan target)')}</div>

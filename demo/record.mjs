@@ -1,10 +1,10 @@
-// Perekam adegan aplikasi Quiver.
+// Recorder of Quiver app scenes.
 //   QTOKEN=… QLANG=en node record.mjs  -> out/app-<lang>.mp4 + out/timeline-<lang>.json
 //
-// Kit sutradara disuntik ke halaman: kamera (zoom #root), kursor macOS dengan
-// lintasan melengkung, spotlight, subtitle per kata, kartu bab. Setiap adegan
-// menunggu narasinya (out/vo-<lang>.json) selesai sebelum lanjut, jadi VO dan
-// gambar selalu sinkron. Semua kejadian dicatat ke timeline untuk SFX & SRT.
+// A director kit is injected into the page: camera (zoom #root), macOS cursor with a
+// curved path, spotlight, per-word subtitles, chapter cards. Every scene
+// waits for its narration (out/vo-<lang>.json) to finish before moving on, so VO and
+// picture always stay in sync. All events are logged to the timeline for SFX & SRT.
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
@@ -15,12 +15,12 @@ import { TOK } from './studio.mjs';
 
 const LANG = process.env.QLANG || 'en';
 const C = COPY[LANG];
-const W = 1440, H = 810, DSF = 4 / 3;          // keluaran 1920×1080
+const W = 1440, H = 810, DSF = 4 / 3;          // output 1920×1080
 const OUT = path.resolve('out');
 const VO = fs.existsSync(path.join(OUT, `vo-${LANG}.json`)) ? JSON.parse(fs.readFileSync(path.join(OUT, `vo-${LANG}.json`), 'utf8')) : {};
-const T = (id, en) => (LANG === 'en' ? en : id); // teks UI untuk selektor
+const T = (id, en) => (LANG === 'en' ? en : id); // UI text for selectors
 
-// ───────────────────────── kit di dalam halaman ─────────────────────────
+// ───────────────────────── in-page kit ─────────────────────────
 const director = (TOK) => {
   if (window.top !== window) return;
   const css = `
@@ -102,7 +102,7 @@ const director = (TOK) => {
         ch.querySelector('.n').textContent = n; ch.querySelector('.h').textContent = h; ch.querySelector('.s').textContent = s;
         void ch.offsetWidth; ch.classList.add('on');
       },
-      // Kamera: skala #root di titik asal O; fokus P digeser 55% ke tengah, O dijepit agar tepi halaman tak terlihat.
+      // Camera: scale #root around origin O; focus P is shifted 55% toward the centre, O is clamped so the page edge is not visible.
       zoom(x, y, s, ms = 1100, keep) {
         const r = document.getElementById('root'); if (!r) return;
         const ease = 'cubic-bezier(.65,0,.35,1)';
@@ -111,7 +111,7 @@ const director = (TOK) => {
         const qx = x + (W / 2 - x) * 0.55, qy = y + (H / 2 - y) * 0.55;
         let ox = Math.min(W, Math.max(0, (qx - s * x) / (1 - s)));
         let oy = Math.min(H, Math.max(0, (qy - s * y) / (1 - s)));
-        // tepi layar setelah zoom = O(1-1/s) … O(1-1/s)+W/s; jaga kotak `keep` tetap utuh terlihat
+        // screen edge after zoom = O(1-1/s) … O(1-1/s)+W/s; keep the `keep` box fully visible
         if (keep) {
           const k = 1 - 1 / s, pad = 18;
           const clamp = (o, lo, hi, span) => { const a = (hi + pad - span) / k, b = (lo - pad) / k; return a > b ? (a + b) / 2 : Math.min(b, Math.max(a, o)); };
@@ -132,7 +132,7 @@ const director = (TOK) => {
   else new MutationObserver((_, mo) => { if (document.documentElement) { mo.disconnect(); mount(); } }).observe(document, { childList: true });
 };
 
-// ───────────────────────── helper sutradara ─────────────────────────
+// ───────────────────────── director helpers ─────────────────────────
 let page, t0;
 let mx = W * 0.62, my = H * 0.58, bendSign = 1, zoomed = false, spotOn = false;
 const tl = { clicks: [], whoosh: [], pops: [], captions: [], vo: [], marks: [] };
@@ -156,7 +156,7 @@ async function glide(x, y, ms) {
   }
   mx = x; my = y;
 }
-// Target: selektor Playwright, Locator, atau { text, minW, minH, nth, prefix } (naik ke leluhur sampai cukup besar)
+// Target: a Playwright selector, Locator, or { text, minW, minH, nth, prefix } (climbs to an ancestor until large enough)
 async function rect(target) {
   if (target && typeof target === 'object' && 'text' in target) {
     return page.evaluate(({ text, minW = 0, minH = 0, nth = 0, prefix }) => {
@@ -188,7 +188,7 @@ async function rect(target) {
   try { await l.waitFor({ state: 'visible', timeout: 5000 }); } catch { return null; }
   return l.boundingBox();
 }
-// Versi tanpa menunggu: untuk gerakan "membaca" — target yang tidak ada dilewati, bukan ditunggu.
+// Non-waiting version: for "reading" movements — a missing target is skipped, not waited for.
 async function rectQuick(target) {
   try {
     if (target && typeof target === 'object' && ('text' in target || 'sel' in target)) return await rect(target);
@@ -230,7 +230,7 @@ const scrollTop = async (ms) => scrollBy(-(await page.evaluate(() => scrollY)), 
 async function zoomIn(target, s = 1.45, ms = 1100) {
   if (zoomed) await zoomOut();
   const r = await find(target); if (!r) return null;
-  s = Math.min(s, (W - 40) / r.width, (H - 40) / r.height);   // seluruh target harus tetap muat di layar
+  s = Math.min(s, (W - 40) / r.width, (H - 40) / r.height);   // the whole target must still fit on screen
   await qd('zoom', r.x + r.width / 2, r.y + r.height / 2, s, ms, { x: r.x, y: r.y, w: r.width, h: r.height });
   zoomed = true; await sleep(ms + 60);
   return r;
@@ -244,7 +244,7 @@ async function spot(target, pad = 8) {
 }
 async function unspot() { if (!spotOn) return; await qd('spot', null); spotOn = false; await sleep(420); }
 
-// Subtitle + narasi. `until()` menahan adegan sampai narasinya selesai (+ jeda napas).
+// Subtitle + narration. `until()` holds the scene until its narration is done (+ a breath pause).
 let capOpen = null, voEnd = 0;
 async function say(key) {
   const [k, t] = C[key]; mark('say ' + key);
@@ -255,9 +255,9 @@ async function say(key) {
   if (VO[key]) { tl.vo.push({ key, at: a + 0.15 }); voEnd = a + 0.15 + VO[key]; }
   await sleep(450);
 }
-// Menunggu narasi selesai TANPA layar diam: kursor "membaca" — meluncur pelan ke
-// titik-titik menarik di sekitar (baris tabel, kartu), sesekali scroll halus. Kalau
-// diberi daftar target, ia bergiliran menyorotnya; kalau tidak, hanyut di sekitar posisi.
+// Wait for the narration to finish WITHOUT a static screen: the cursor "reads" — glides slowly to
+// interesting spots nearby (table rows, cards), occasionally scrolling gently. If
+// given a list of targets, it highlights them in turn; if not, it drifts around its position.
 async function until(extra = 0.3, targets = []) {
   let i = 0; mark('until');
   const deadline = () => voEnd + extra - at();
@@ -270,7 +270,7 @@ async function until(extra = 0.3, targets = []) {
       if (r && r.y > 40 && r.y + r.height < H - 60) { await glide(r.x + r.width * (0.35 + Math.random() * 0.3), r.y + r.height / 2, Math.min(900, left * 1000 - 100)); }
       else await glide(mx + (Math.random() - 0.5) * 160, my + (Math.random() - 0.5) * 90, 600);
     } else {
-      // hanyut kecil: seperti orang menggerakkan mouse sambil membaca
+      // small drift: like someone moving the mouse while reading
       const nx = Math.min(W - 60, Math.max(300, mx + (Math.random() - 0.5) * 220));
       const ny = Math.min(H - 80, Math.max(90, my + (Math.random() - 0.5) * 120));
       await glide(nx, ny, Math.min(800, left * 1000 - 100));
@@ -307,7 +307,7 @@ async function navSidebar(hash) {
 }
 const row = (i, tbody = 0) => page.locator('tbody').nth(tbody).locator('tr').nth(i);
 
-// ───────────────────────── naskah ─────────────────────────
+// ───────────────────────── script ─────────────────────────
 async function scenario() {
   await sleep(250);
   releaseOverview();
@@ -315,7 +315,7 @@ async function scenario() {
   await sleep(700);
   await page.mouse.move(mx, my); await qd('cursor', true);
 
-  // 01 — Ringkasan
+  // 01 — Summary
   await say('overview');
   await zoomIn({ text: T('Total portofolio', 'Total portfolio'), minW: 1000, minH: 80 }, 1.5);
   await hover({ text: T('Total portofolio', 'Total portfolio') }, 700); await sleep(420);
@@ -341,7 +341,7 @@ async function scenario() {
   await unspot();
 
   await say('source');
-  // Kalender dulu (sorotan mengikuti urutan narasi), baru kinerja per sumber.
+  // Calendar first (the spotlight follows the narration order), then performance per source.
   const cal = { text: T('Kalender PnL', 'PnL calendar'), minW: 600, minH: 400 };
   await find(cal); await spot(cal);
   const calBox = await rect(cal);
@@ -357,7 +357,7 @@ async function scenario() {
   await scrollTop(1200);
   const active = { text: T('Posisi aktif', 'Active positions'), prefix: true, minW: 900, minH: 150 };
   await find(active); await spot(active, 6); await sleep(300); await unspot();
-  // Baris -> laci posisi (PnL, komposisi token) -> tombol "Halaman detail & grafik".
+  // Row -> position drawer (PnL, token composition) -> "Detail page & chart" button.
   let drilled = false;
   if (await click(row(0))) {
     tl.pops.push(at());
@@ -378,7 +378,7 @@ async function scenario() {
   }
   await until(0.3, ['canvas', { text: T('Posisi ini', 'This position'), minW: 200 }]);
 
-  // 02 — Posisi
+  // 02 — Positions
   await chapter('ch2', 'positions');
   await say('positions');
   await hover(row(0), 800); await sleep(420);
@@ -398,7 +398,7 @@ async function scenario() {
     await sleep(420);
   }
 
-  // 03 — Aktivitas
+  // 03 — Activity
   await chapter('ch3', 'activity');
   await say('activity');
   const firstRow = await rect('tbody tr');
@@ -410,7 +410,7 @@ async function scenario() {
   await scrollBy(360); await sleep(700);
   await until(0.3, [row(3), row(4), row(5), row(6)]);
 
-  // 04 — Mesin copy
+  // 04 — Copy engine
   await chapter('ch4', 'targets');
   await say('targets');
   await spot({ sel: 'a[href^="#targets/"]', minW: 900, minH: 300 }, 6);
@@ -426,7 +426,7 @@ async function scenario() {
   await scrollBy(420); await sleep(630);
   await until(0.3, [page.locator('input').nth(5), page.locator('input').nth(6), page.locator('input').nth(7)]);
 
-  // 05 — Riset
+  // 05 — Research
   await chapter('ch5', 'wallet');
   await say('research');
   await hover('input', 800); await sleep(420);
@@ -435,7 +435,7 @@ async function scenario() {
   await until(0.3, [row(3), row(4), row(5)]);
   await unspot();
 
-  // 06 — Harian
+  // 06 — Daily
   await chapter('ch6', 'manual-lp');
   await say('manual');
   await hover({ text: T('Pilih pool', 'Pick a pool') }, 800); await sleep(500);
@@ -459,7 +459,7 @@ async function scenario() {
   await sleep(489);
 }
 
-// ───────────────────────── rekam ─────────────────────────
+// ───────────────────────── recording ─────────────────────────
 let releaseOverview; const held = new Promise((r) => { releaseOverview = r; });
 const mask = await buildMask();
 console.log('sensor:', mask.counts, '· VO:', Object.keys(VO).length, 'klip');
@@ -472,7 +472,7 @@ await ctx.addInitScript((l) => { try { localStorage.setItem('lpcopy-lang', l); l
 await ctx.addInitScript(censorScript(mask.pseudonyms));
 await ctx.addInitScript(director, TOK);
 
-{ // pemanasan cache
+{ // cache warm-up
   const warm = await ctx.newPage();
   for (const h of ['summary', 'positions', 'activity', 'targets', 'rules', 'wallet', 'manual-lp']) {
     await warm.goto(BASE + '/#' + h, { waitUntil: 'commit' }); await warm.waitForLoadState('load').catch(() => {}); await warm.waitForTimeout(h === 'summary' ? 5000 : 2500);

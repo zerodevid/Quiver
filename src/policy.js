@@ -1,16 +1,16 @@
 'use strict';
-// Mesin aturan: mengubah satu aksi target menjadi rencana posisi kita.
-// Semua yang bisa disetel user ada di sini — ukuran, rentang, sisi tunggal, filter.
+// Rules engine: turns one target action into a plan for our position.
+// Everything the user can tune is here — size, range, single-sided, filters.
 const m = require('./v3math');
 const { NETWORKS } = require('./networks');
 
-// Kunci venue yang sah = gabungan venue semua chain yang dikenal (v3, v4, pancakev3, …).
-// Aturan disimpan lepas dari chain tertentu, jadi validasinya tidak boleh menolak venue
-// yang sah di salah satu chain hanya karena tidak dipakai di chain yang lain.
+// Valid venue keys = the union of venues of all known chains (v3, v4, pancakev3, …).
+// Rules are stored independent of any particular chain, so validation must not reject a venue
+// that is valid on one chain merely because it is not used on another.
 const KNOWN_VENUES = ['v4', ...new Set(Object.values(NETWORKS).flatMap((n) => n.venues.map((v) => v.key)))];
 
-// Ruang untuk selisih kurs jembatan USDG<->ETH terhadap harga ETH yang kita pakai
-// (diperbarui tiap 30 detik). Terukur ~0,05% di kondisi normal; 1% untuk pasar bergerak.
+// Room for the USDG<->ETH bridge rate difference against the ETH price we use
+// (updated every 30 seconds). Measured ~0.05% in normal conditions; 1% for a moving market.
 const BRIDGE_MARGIN_BPS = 100;
 
 const DEFAULTS = {
@@ -21,7 +21,7 @@ const DEFAULTS = {
     fixed_quote_usd: 50,
     fixed_quote_eth: 0.02,
     min_quote_usd: 10,
-    force_min: false,         // di bawah minimum: lewati (false) atau naikkan ke force_min_usd (true)
+    force_min: false,         // below the minimum: skip (false) or raise to force_min_usd (true)
     force_min_usd: 25,
     max_quote_per_position_usd: 250,
     max_total_exposure_usd: 1500,
@@ -45,34 +45,40 @@ const DEFAULTS = {
     max_price_impact_bps: 500,
   },
   exit: {
-    follow_target: true,      // ikut keluar kalau target keluar
-    follow_partial: true,     // decrease proporsional
-    out_of_range_minutes: 0,  // 0 = mati
-    // Tutup kalau harga sudah lebih dari X% di luar rentang (jarak ke tepi terdekat, angka
-    // yang sama dengan "di luar · N% di atas" di dasbor). Modal tidak menganggur di posisi
-    // yang jauh dari harga. Berlaku juga saat MASUK: rentang target yang sejauh itu tidak
-    // disalin dulu (ditunda). 0 = mati.
+    follow_target: true,      // exit when the target exits
+    follow_partial: true,     // proportional decrease
+    follow_claim: false,      // follow the mirror fee claim when the target harvests fees
+    out_of_range_minutes: 0,  // 0 = off
+    // Close if the price is more than X% outside the range (the distance to the nearest edge, the
+    // same figure as "out of range · N% above" on the dashboard). Capital does not sit idle in a position
+    // far from the price. Also applies on ENTRY: a target range that far away is
+    // not copied yet (deferred). 0 = off.
     out_of_range_pct: 0,
-    // Buka lagi cermin yang ditunda/ditutup karena jauh: begitu harga kembali ≤ X% dari
-    // rentang DAN posisi target masih terbuka. Wajib lebih kecil dari out_of_range_pct
-    // supaya tidak buka-tutup di ambang. 0 = mati.
+    // Reopen a mirror that was deferred/closed for being far: once the price is back within ≤ X% of the
+    // range AND the target position is still open. Must be smaller than out_of_range_pct
+    // so it does not open-close at the threshold. 0 = off.
     reenter_within_pct: 0,
     stop_loss_pct: 0,
     take_profit_pct: 0,
     max_age_hours: 0,
-    sell_leftover: true,      // jual memecoin yang diterima saat keluar, balik ke aset kuotasi
-    sell_max_loss_bps: 1500,  // tolak jual kalau rute rugi > 15% (fee pool + dampak harga)
-    leftover_retry_sec: 5,    // sisa yang ditolak dicek ulang tiap N detik (kutipan saja; swap hanya kalau lolos)
+    sell_leftover: true,      // sell the memecoin received on exit, back to the quote asset
+    sell_max_loss_bps: 1500,  // refuse to sell if the route loses > 15% (pool fee + price impact)
+    leftover_retry_sec: 5,    // a rejected leftover is re-checked every N seconds (quote only; the swap only if it passes)
   },
   filters: {
     allow_hooks: false,
-    // Kosong = semua aset kuotasi yang dikenal chain itu (chain.QUOTES: stablecoin +
-    // native + wrapped-native). Daftar simbol tetap seperti ['USDG','ETH','WETH'] tidak
-    // dijadikan bawaan lagi karena simbolnya beda per chain (BSC: USDT/BNB/WBNB).
+    // Empty = all quote assets the chain knows (chain.QUOTES: stablecoin +
+    // native + wrapped-native). A fixed symbol list like ['USDG','ETH','WETH'] is no
+    // longer the default because symbols differ per chain (BSC: USDT/BNB/WBNB).
     quote_whitelist: [],
     token_blacklist: [],
     token_whitelist: [],
     min_pool_age_minutes: 0,
+    // Market filters (DexScreener, read at entry). 0 = off. A pool not yet
+    // indexed at all has no such figures — it is let through, the same as a
+    // pool age that cannot be read.
+    min_liquidity_usd: 0,
+    min_volume24h_usd: 0,
     min_target_quote_usd: 25,
     max_open_positions: 25,
     cooldown_seconds: 20,
@@ -81,12 +87,12 @@ const DEFAULTS = {
   },
 };
 
-// Bentuk & batas setiap aturan. Dipakai dua kali: menolak isian yang salah di API
-// (validateRules) dan merapikan aturan yang sudah tersimpan (rulesFor) — config lama atau
-// isian form yang lolos dulu tidak boleh menjatuhkan eksekusi. Contoh nyata: slippage
-// 150.5 dari kolom angka membuat BigInt(150.5) melempar di SETIAP entry; slippage ≥10000
-// membuat minOut negatif.
-//   [tipe, min, max]  tipe: num | int | bool | enum(list) | list
+// Shape & bounds of every rule. Used twice: to reject wrong input at the API
+// (validateRules) and to tidy rules that are already stored (rulesFor) — an old config or
+// a form input that used to slip through must not bring down execution. A real example: slippage
+// 150.5 from a number field made BigInt(150.5) throw on EVERY entry; slippage ≥10000
+// made minOut negative.
+//   [type, min, max]  type: num | int | bool | enum(list) | list
 const RULE_SPEC = {
   sizing: {
     mode: ['enum', ['mirror', 'pct', 'multiplier', 'fixed_quote']],
@@ -105,7 +111,7 @@ const RULE_SPEC = {
   onesided: { policy: ['enum', ['copy', 'skip', 'recenter']], max_quote_usd: ['num', 0, 1e9] },
   swap: { enabled: ['bool'], max_slippage_bps: ['int', 0, 5000], max_price_impact_bps: ['int', 0, 10_000] },
   exit: {
-    follow_target: ['bool'], follow_partial: ['bool'],
+    follow_target: ['bool'], follow_partial: ['bool'], follow_claim: ['bool'],
     out_of_range_minutes: ['num', 0, 1e7], out_of_range_pct: ['num', 0, 1e6], reenter_within_pct: ['num', 0, 1e6],
     stop_loss_pct: ['num', 0, 100], take_profit_pct: ['num', 0, 1e6],
     max_age_hours: ['num', 0, 1e6], sell_leftover: ['bool'], sell_max_loss_bps: ['int', 0, 10_000],
@@ -114,15 +120,16 @@ const RULE_SPEC = {
   filters: {
     allow_hooks: ['bool'], quote_whitelist: ['list'], token_blacklist: ['list'], token_whitelist: ['list'],
     min_pool_age_minutes: ['num', 0, 1e7], min_target_quote_usd: ['num', 0, 1e9],
+    min_liquidity_usd: ['num', 0, 1e12], min_volume24h_usd: ['num', 0, 1e12],
     max_open_positions: ['int', 0, 100_000], cooldown_seconds: ['num', 0, 1e7],
     venues: ['list'], max_fee_bps: ['int', 0, 1_000_000],
   },
 };
 
-// Satu nilai menurut spesifikasinya: { ok, value } atau { error }.
+// One value per its spec: { ok, value } or { error }.
 function checkRule(spec, v, key = null) {
   const [type, a, b] = spec;
-  // Stop loss sejak dulu dibaca sebagai besaran (Math.abs): "-10" = rugi 10%, bukan mati.
+  // Stop loss has always been read as a magnitude (Math.abs): "-10" = a 10% loss, not off.
   if (key === 'stop_loss_pct' && Number(v) < 0) v = Math.abs(Number(v));
   if (type === 'bool') {
     if (typeof v === 'boolean') return { value: v };
@@ -143,8 +150,8 @@ function checkRule(spec, v, key = null) {
   return { value: n };
 }
 
-// Periksa aturan dari API (global atau override per target — boleh sebagian). Kunci yang
-// tidak dikenal dibiarkan. Balikan { rules } (sudah dirapikan) atau { error }.
+// Validate rules from the API (global or a per-target override — may be partial). Unknown
+// keys are left alone. Returns { rules } (already tidied) or { error }.
 function validateRules(input) {
   if (input == null) return { rules: null };
   if (typeof input !== 'object' || Array.isArray(input)) return { error: 'aturan harus berupa objek' };
@@ -160,7 +167,7 @@ function validateRules(input) {
     }
     if (out[g].venues && out[g].venues.some((x) => !KNOWN_VENUES.includes(x))) return { error: `filters.venues hanya boleh salah satu dari ${KNOWN_VENUES.join(', ')}` };
   }
-  // Ambang buka-lagi di atas ambang tutup = cermin buka-tutup terus di satu harga.
+  // A reopen threshold above the close threshold = the mirror opens-closes at one price forever.
   const ex = out.exit;
   if (ex && 'out_of_range_pct' in ex && 'reenter_within_pct' in ex && ex.out_of_range_pct > 0 && ex.reenter_within_pct >= ex.out_of_range_pct) {
     return { error: 'exit.reenter_within_pct harus lebih kecil dari exit.out_of_range_pct' };
@@ -168,9 +175,9 @@ function validateRules(input) {
   return { rules: out };
 }
 
-// Aturan hasil gabungan yang tidak lolos spesifikasi diganti bawaan (bilangan bps yang
-// cuma kurang bulat dibulatkan saja), supaya satu nilai rusak di config tidak mematikan
-// semua entry/keluar.
+// A merged rule that fails its spec is replaced by the default (a bps number that is
+// merely non-integer is just rounded), so a single broken value in the config does not kill
+// all entries/exits.
 function normalizeRules(r) {
   for (const [g, fields] of Object.entries(RULE_SPEC)) {
     r[g] = r[g] && typeof r[g] === 'object' ? r[g] : {};
@@ -203,7 +210,7 @@ function rulesFor(globalRules, targetRulesJson) {
   return normalizeRules(deepMerge(deepMerge(DEFAULTS, globalRules || {}), per || {}));
 }
 
-// ---- rentang --------------------------------------------------------------
+// ---- range ----------------------------------------------------------------
 function planRange(rules, act, curTick) {
   const sp = act.tickSpacing || tickSpacingFromFee(act.fee);
   const align = (t, mode) => m.alignTick(t, sp, mode || rules.range.align);
@@ -221,7 +228,7 @@ function planRange(rules, act, curTick) {
     const half = Math.max(sp, Math.round((width * rules.range.scale) / 2));
     lo = align(center - half, 'down'); hi = align(center + half, 'up');
   } else if (mode === 'width_pct') {
-    // ±X% harga -> ticks: ln(1+x)/ln(1.0001)
+    // ±X% of price -> ticks: ln(1+x)/ln(1.0001)
     const dt = Math.round(Math.log(1 + rules.range.width_pct / 100) / Math.log(1.0001));
     lo = align(curTick - dt, 'down'); hi = align(curTick + dt, 'up');
   } else if (mode === 'full') {
@@ -237,14 +244,14 @@ function planRange(rules, act, curTick) {
   return { tickLower: lo, tickUpper: hi, tickSpacing: sp };
 }
 
-// v3 di RH chain memakai fee tier standar; v4 selalu membawa tickSpacing sendiri.
+// v3 on the RH chain uses standard fee tiers; v4 always carries its own tickSpacing.
 function tickSpacingFromFee(fee) {
   const map = { 100: 1, 500: 10, 2500: 50, 3000: 60, 10000: 200 };
   return map[fee] || 60;
 }
 
-// ---- ukuran ---------------------------------------------------------------
-// Nilai posisi (dalam aset kuotasi) untuk sebuah L pada rentang tertentu.
+// ---- size ---------------------------------------------------------------
+// Position value (in the quote asset) for a given L over a given range.
 function valueOfLiquidity(chain, act, L, tickLower, tickUpper, slot0, dec0, dec1) {
   const a = m.getSqrtRatioAtTick(tickLower), b = m.getSqrtRatioAtTick(tickUpper);
   const { amount0, amount1 } = m.amountsForLiquidity(slot0.sqrtPriceX96, a, b, L);
@@ -255,7 +262,7 @@ function valueOfLiquidity(chain, act, L, tickLower, tickUpper, slot0, dec0, dec1
   return { amount0, amount1, value: v ? v.value : null, symbol: v ? v.symbol : null, kind: v ? v.kind : null };
 }
 
-// Konversi ambang USD ke satuan kuotasi pool (ETH pakai kurs dari config).
+// Convert a USD threshold to the pool's quote unit (ETH uses the rate from the config).
 function usdToQuote(usd, quoteKind, ethUsd) {
   if (quoteKind === 'usd') return usd;
   if (quoteKind === 'eth') return ethUsd > 0 ? usd / ethUsd : 0;
@@ -264,15 +271,15 @@ function usdToQuote(usd, quoteKind, ethUsd) {
 function quoteToUsd(q, quoteKind, ethUsd) {
   return quoteKind === 'eth' ? q * ethUsd : q;
 }
-// Kurs USD per satu satuan aset kuotasi yang tercatat di baris posisi (kolom quote_symbol).
-// WETH sama dengan ETH — dulu banyak tempat hanya mengecek 'ETH', sehingga posisi berkuotasi
-// WETH senilai 0,08 WETH (~$200) terhitung $0,08 untuk anggaran harian, eksposur, dan PnL.
+// USD rate per one unit of the quote asset recorded in the position row (quote_symbol column).
+// WETH equals ETH — many places used to check only 'ETH', so a WETH-quoted position
+// worth 0.08 WETH (~$200) counted as $0.08 for the daily budget, exposure, and PnL.
 function usdPerQuote(symbol, ethUsd, chain = null) {
   return (chain ? chain.isEthLike(symbol) : symbol === 'ETH' || symbol === 'WETH') ? ethUsd : 1;
 }
 
 /**
- * Bangun rencana untuk aksi TAMBAH likuiditas (mint/increase).
+ * Build the plan for an ADD liquidity action (mint/increase).
  * ctx: { chain, store, rules, slot0, dec0, dec1, ethUsd, openExposureUsd, spentTodayUsd, openCount }
  */
 function planEntry(act, ctx) {
@@ -301,7 +308,7 @@ function planEntry(act, ctx) {
   if (targetUsd < rules.filters.min_target_quote_usd) {
     return skip(`posisi target cuma $${targetUsd.toFixed(2)} (< $${rules.filters.min_target_quote_usd})`);
   }
-  // Menambah ke posisi yang sudah kita cermin tidak membuka posisi baru.
+  // Adding to a position we already mirror does not open a new position.
   const adding = ctx.existingUsd != null;
   if (!adding && ctx.openCount >= rules.filters.max_open_positions) return skip('jumlah posisi terbuka sudah mentok');
 
@@ -317,7 +324,7 @@ function planEntry(act, ctx) {
   }
   const sideNow = m.sideOfRange(slot0.tick, range.tickLower, range.tickUpper);
 
-  // ukuran
+  // size
   const Ltarget = BigInt(act.liquidity) < 0n ? -BigInt(act.liquidity) : BigInt(act.liquidity);
   let L;
   const s = rules.sizing;
@@ -336,16 +343,16 @@ function planEntry(act, ctx) {
   if (est.value == null) return skip('tidak bisa menilai posisi');
   let usd = quoteToUsd(est.value, q.kind, ethUsd);
 
-  // batas atas: semua plafon dikumpulkan dulu (bukan cuma yang terlampaui), karena
-  // "paksa minimum" di bawah butuh tahu berapa ruang yang tersisa sebelum menaikkan ukuran.
+  // upper limits: all ceilings are collected first (not just the exceeded one), because
+  // "force minimum" below needs to know how much room is left before raising the size.
   const limits = [];
-  // Posisi satu sisi punya batasnya sendiri (onesided.max_quote_usd). Dicatat terpisah
-  // supaya alasannya menyebut batas yang benar-benar mengikat — dulu keduanya digabung
-  // lalu selalu disebut "batas per posisi", padahal yang memotong sering batas satu sisi.
+  // A one-sided position has its own limit (onesided.max_quote_usd). Recorded separately
+  // so the reason names the limit that really binds — the two used to be merged
+  // and always called "per-position limit", although it was often the one-side limit that cut.
   let capPer = s.max_quote_per_position_usd;
   let capSide = sideNow !== 'both' ? rules.onesided.max_quote_usd : Infinity;
-  // Tambahan ke posisi yang sudah ada: batas per posisi berlaku untuk TOTALNYA. Dulu yang
-  // dibatasi hanya tambahannya, jadi posisi $200 dengan batas $200 bisa tumbuh jadi $400.
+  // An addition to an existing position: the per-position limit applies to its TOTAL. Only the
+  // addition used to be limited, so a $200 position with a $200 limit could grow to $400.
   if (adding) {
     capPer = Math.max(0, capPer - Math.max(0, ctx.existingUsd));
     capSide = Math.max(0, capSide - Math.max(0, ctx.existingUsd));
@@ -354,11 +361,11 @@ function planEntry(act, ctx) {
   if (sideNow !== 'both') limits.push(['batas satu sisi', capSide]);
   limits.push(['sisa jatah eksposur total', Math.max(0, s.max_total_exposure_usd - ctx.openExposureUsd)]);
   limits.push(['sisa anggaran harian', Math.max(0, s.daily_budget_usd - ctx.spentTodayUsd)]);
-  // Kas nyata ({usdg, eth}; null = tidak dibatasi). Eksekusi menyiapkan 105% nilai
-  // posisi di aset kuotasi pool. Kas di aset kuotasi LAIN harus dijembatani dulu, dan
-  // jembatan itu memakan ruang slippage plus selisih kurs Kyber terhadap harga ETH kita
-  // (BRIDGE_MARGIN_BPS) — tanpa ruang itu ukuran yang pas-pasan lolos di sini lalu
-  // gagal "kas kurang untuk jembatan".
+  // Real cash ({usdg, eth}; null = unlimited). Execution prepares 105% of the position's
+  // value in the pool's quote asset. Cash in ANOTHER quote asset has to be bridged first, and
+  // that bridge takes slippage room plus the Kyber rate difference against our ETH price
+  // (BRIDGE_MARGIN_BPS) — without that room a tight size passes here and then
+  // fails with "insufficient cash for the bridge".
   if (ctx.cash) {
     const ethAsUsd = ctx.cash.eth * ethUsd;
     const [same, other] = q.kind === 'eth' ? [ethAsUsd, ctx.cash.usdg] : [ctx.cash.usdg, ethAsUsd];
@@ -367,8 +374,8 @@ function planEntry(act, ctx) {
   }
   const [capWhy, capUsd] = limits.sort((a, b) => a[1] - b[1])[0];
 
-  // Nilai posisi linear terhadap L pada rentang yang sama, jadi menyetel nominal =
-  // menskala L dengan perbandingan dolar.
+  // Position value is linear in L over the same range, so setting the amount =
+  // scaling L by the dollar ratio.
   const resize = (wantUsd) => {
     L = (L * BigInt(Math.round(wantUsd * 1e9))) / BigInt(Math.round(usd * 1e9));
     est = valueOfLiquidity(chain, act, L, range.tickLower, range.tickUpper, slot0, dec0, dec1);
@@ -381,8 +388,8 @@ function planEntry(act, ctx) {
     resize(capUsd);
     capNote = `dipotong oleh ${capWhy} ($${capUsd.toFixed(2)})`;
   }
-  // Di bawah minimum posisi dilewati — kecuali "paksa minimum" menyala: ukurannya
-  // dinaikkan ke nominal paksa, selama nominal itu masih muat di plafon yang mengikat.
+  // Below the minimum the position is skipped — unless "force minimum" is on: the size is
+  // raised to the forced amount, as long as that amount still fits the binding ceiling.
   if (usd < s.min_quote_usd) {
     const small = `hasilnya $${usd.toFixed(2)} (< minimum $${s.min_quote_usd})`;
     if (!s.force_min || s.force_min_usd <= 0) return skip(`${small}${capNote ? ` — ${capNote}` : ''}`);
@@ -422,25 +429,25 @@ function planEntry(act, ctx) {
   };
 }
 
-/** Rencana untuk aksi KURANGI/TUTUP dari target, dipetakan ke posisi kita. */
+/** Plan for a DECREASE/CLOSE action from the target, mapped to our position. */
 function planExit(act, ourPos, ctx) {
   const { rules } = ctx;
   if (!rules.exit.follow_target) return { verdict: 'skip', reason: 'ikut-keluar dimatikan' };
   if (!ourPos) return { verdict: 'skip', reason: 'kita tidak punya cermin posisi ini' };
-  const removed = -BigInt(act.liquidity);          // positif
-  const before = BigInt(act.liquidityBefore || 0n); // L target sebelum aksi (kalau diketahui)
+  const removed = -BigInt(act.liquidity);          // positive
+  const before = BigInt(act.liquidityBefore || 0n); // target L before the action (if known)
   const ourL = BigInt(ourPos.liquidity);
   let takeL;
   const partial = before > 0n && removed < before;
   if (partial && !rules.exit.follow_partial) {
-    // "Ikut menarik sebagian" dimatikan = abaikan tarikan sebagian. Dulu justru menutup
-    // cermin kita PENUH saat target cuma menarik sebagian.
+    // "Follow partial withdrawal" switched off = ignore partial withdrawals. It used to actually
+    // close our mirror FULLY when the target only withdrew partially.
     return { verdict: 'skip', reason: 'target menarik sebagian — ikut-tarik-sebagian dimatikan' };
   }
   if (partial) {
-    takeL = (ourL * removed) / before;             // proporsional
+    takeL = (ourL * removed) / before;             // proportional
   } else {
-    takeL = ourL;                                   // target menutup penuh -> kita tutup penuh
+    takeL = ourL;                                   // target closes fully -> we close fully
   }
   if (takeL <= 0n) return { verdict: 'skip', reason: 'porsi keluar nol' };
   const full = takeL >= ourL;

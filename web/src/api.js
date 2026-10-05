@@ -1,5 +1,5 @@
-// Klien API. Server berada di origin yang sama; autentikasi lewat cookie HttpOnly.
-// 401 = token kedaluwarsa/diganti -> muat ulang supaya server menampilkan halaman masuk.
+// API client. The server is on the same origin; authentication goes through an HttpOnly cookie.
+// 401 = token expired/rotated -> reload so the server shows the sign-in page.
 async function req(path, opts = {}) {
   const r = await fetch(path, { credentials: 'same-origin', ...opts });
   if (r.status === 401) { location.reload(); throw new Error('tidak berwenang'); }

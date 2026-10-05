@@ -1,22 +1,23 @@
-// Kalender PnL harian. Dipakai riset wallet (PnL wallet orang lain) dan Ringkasan
-// (PnL posisi kita) — satu tampilan supaya keduanya dibaca dengan cara yang sama.
+// Daily PnL calendar. Used by wallet research (other people's wallet PnL) and the Summary
+// (our position PnL) — one view so both are read the same way.
 //
 // daily  : { 'YYYY-MM-DD': pnl }
-// counts : { 'YYYY-MM-DD': jumlah posisi ditutup } — opsional
+// counts : { 'YYYY-MM-DD': number of positions closed } — optional
 import { useState } from 'react';
 import { Button } from '@heroui/react';
 import { Empty } from './ui';
 import { usd, kUsd, tone } from '../fmt';
 import { useI18n } from '../i18n';
+import { isHidden } from '../privacy';
 
 const pad = (n) => String(n).padStart(2, '0');
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-// onShare(key, pnl, count): hari yang punya PnL bisa diklik (mis. membuat kartu bagikan).
+// onShare(key, pnl, count): a day with PnL is clickable (e.g. to make a share card).
 export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi tertutup di jendela ini', onShare }) {
   const { t, locale } = useI18n();
   const days = Object.keys(daily).sort();
-  // Hook harus dipanggil sebelum return bersyarat (aturan hooks React).
+  // Hooks must be called before a conditional return (React rules of hooks).
   const [ym, setYm] = useState(() => {
     const last = days.length ? new Date(days[days.length - 1] + 'T00:00:00') : new Date();
     return [last.getFullYear(), last.getMonth()];
@@ -30,8 +31,8 @@ export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi t
   const green = inMonth.filter(([, v]) => v > 0.005).length, red = inMonth.filter(([, v]) => v < -0.005).length;
   const shift = (n) => { const d = new Date(y, mo + n, 1); setYm([d.getFullYear(), d.getMonth()]); };
   const today = keyOf(new Date());
-  // Kekuatan warna mengikuti besarnya PnL (akar, supaya hari kecil tetap terlihat):
-  // $5 dan $113 tidak lagi sama hijaunya. Skala per bulan yang sedang dilihat.
+  // Colour strength follows the PnL magnitude (square root, so small days stay visible):
+  // $5 and $113 are no longer the same green. Scale per month being viewed.
   const maxAbs = Math.max(1e-9, ...inMonth.map(([, v]) => Math.abs(v)));
   const shade = (v) => {
     if (v == null || Math.abs(v) <= 0.005) return undefined;
@@ -57,19 +58,20 @@ export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi t
           ${k === today ? 'ring-1 ring-foreground/40' : ''}`}>
         <span className="flex items-center justify-between text-[0.6875rem] text-muted">
           <span className={k === today ? 'font-semibold text-foreground' : ''}>{d}</span>
-          {/* di HP sel terlalu sempit untuk angka + jumlah posisi; jumlahnya ada di tooltip */}
+          {/* on mobile the cell is too narrow for the number + position count; the count is in the tooltip */}
           {n > 1 && <span className="num hidden sm:inline">×{n}</span>}
         </span>
         {v != null && <span className={`num truncate text-[0.6875rem] font-semibold ${tone(v)}`}>
-          <span className="hidden sm:inline">{kUsd(v)}</span>
-          {/* HP: dibulatkan tanpa sen supaya muat di sel ±45px */}
+          {/* our own PnL: kUsd is deliberately not censored, so it is covered here */}
+          <span className="hidden sm:inline">{isHidden() ? usd(v) : kUsd(v)}</span>
+          {/* mobile: rounded without cents so it fits the ~45px cell */}
           <span className="sm:hidden">{Math.abs(v) >= 10 ? usd(v, 0) : usd(v, 1)}</span>
         </span>}
       </div>,
     );
   }
-  // Baris minggu ikut meregang kalau panelnya lebih tinggi (disejajarkan dengan kolom
-  // sebelah) — tidak menyisakan ruang kosong di bawah legenda.
+  // The week rows stretch if the panel is taller (aligned with the neighbouring
+  // column) — leaving no empty space below the legend.
   const weeks = Math.ceil((first.getDay() + lastDay) / 7);
   return (
     <div className="flex h-full flex-col">
@@ -90,7 +92,7 @@ export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi t
         {cells}
       </div>
       {(green > 0 || red > 0) && (
-        // Legenda skala: rugi besar ← nol → untung besar
+        // Scale legend: big loss ← zero → big profit
         <div className="mt-3 flex items-center justify-end gap-1.5 text-[0.6875rem] text-muted" aria-hidden="true">
           <span>{t('Rugi')}</span>
           {[38, 20, 8].map((a) => <span key={'d' + a} className="size-3 rounded-sm" style={{ background: `color-mix(in oklab, var(--danger) ${a}%, transparent)` }} />)}

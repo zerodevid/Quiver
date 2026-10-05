@@ -6,20 +6,20 @@
 <title>Quiver</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <script>
-  // Dijalankan sebelum CSS: tanpa ini halaman berkedip terang dulu sebelum tema gelap terpasang.
+  // Runs before the CSS: without this the page flashes light before the dark theme is applied.
   (function () {
     try {
       var t = localStorage.getItem('lpcopy-theme');
       if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       document.documentElement.setAttribute('data-bs-theme', t);
-    } catch (e) { /* localStorage diblokir: pakai terang */ }
+    } catch (e) { /* localStorage blocked: use light */ }
   })();
 </script>
 <link rel="stylesheet" href="/vendor/tabler.min.css">
 <link rel="stylesheet" href="/vendor/tabler-icons.min.css">
 <style>
-  /* Lapisan tipis di atas Tabler: font, angka, dan beberapa komponen kecil.
-     Sengaja tanpa gradien, bayangan tebal, atau warna tambahan — hanya token Tabler. */
+  /* A thin layer on top of Tabler: font, figures, and a few small components.
+     Deliberately without gradients, heavy shadows, or extra colours — Tabler tokens only. */
   @font-face {
     font-family: "Inter Var";
     src: url("/vendor/fonts/inter-var-latin.woff2") format("woff2");
@@ -29,7 +29,7 @@
   html[data-bs-theme="dark"] { color-scheme: dark; }
   body { font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiased; }
 
-  /* Angka: Inter dengan digit tabular (lebar sama) — bukan monospace. */
+  /* Figures: Inter with tabular digits (equal width) — not monospace. */
   .num { font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
   .mono { font-family: var(--tblr-font-monospace); font-size: .8125rem; letter-spacing: 0; }
 

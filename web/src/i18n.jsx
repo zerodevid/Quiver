@@ -1,19 +1,19 @@
-// Dwibahasa Indonesia / Inggris.
+// Bilingual Indonesian / English.
 //
-// Teks Indonesia dipakai langsung sebagai kunci. Konsekuensinya: kalau sebuah
-// terjemahan terlewat, yang muncul tetap kalimat Indonesia yang benar — bukan kunci
-// mentah seperti "settings.wallet.title" atau teks kosong. Untuk dua bahasa, itu
-// menghilangkan seluruh kelas bug "kunci tidak ketemu".
+// The Indonesian text is used directly as the key. Consequence: when a translation
+// is missed, what shows is still a correct Indonesian sentence — not a raw key
+// like "settings.wallet.title" or empty text. For two languages, that removes
+// the whole class of "key not found" bugs.
 //
-// Sisipan nilai: t('Tahap {n} dari 2', { n: 1 }).
+// Value interpolation: t('Tahap {n} dari 2', { n: 1 }).
 import { formatNote } from '../../src/message-copy.mjs';
 import { createContext, useContext, useEffect, useState } from 'react';
 import { I18nProvider as AriaI18n } from '@heroui/react';
 
 export const LOCALES = { id: 'Indonesia', en: 'English' };
 
-// Dipakai juga oleh fmt.js untuk memformat angka dan waktu tanpa harus
-// mengoper locale ke setiap pemanggilan.
+// Also used by fmt.js to format numbers and time without having to
+// pass the locale to every call.
 let current = 'id';
 const listeners = new Set();
 export const getLocale = () => current;
@@ -224,6 +224,7 @@ const EN = {
   "Batas perubahan harga yang disebabkan ukuran swap itu sendiri. 100 bps = 1%. Berbeda dari slippage saat eksekusi.": "The limit on price movement caused by the swap size itself. 100 bps = 1%. This differs from execution slippage.",
   "Bot ikut menutup salinan ketika target keluar dari posisi. Aturan keluar mandiri di bawah tetap terpisah.": "The bot closes its copy when the target exits the position. Independent exit rules below are separate.",
   "Saat target menarik sebagian likuiditas, bot menarik bagian yang sebanding dari salinannya.": "When the target withdraws part of its liquidity, the bot withdraws a proportional part of its copy.",
+  "Saat target mengklaim fee posisinya, bot ikut mengklaim fee salinannya. Fee dijual ke aset kuotasi hanya kalau panen otomatis posisi itu mode klaim + jual. Tiap klaim membayar gas — bawaannya mati.": "When the target claims its position's fees, the bot claims its copy's fees too. Fees are sold to the quote asset only if that position's auto-harvest is set to claim + sell. Every claim costs gas — off by default.",
   "Tutup posisi setelah terus berada di luar rentang selama durasi ini. Penghitung direset ketika kembali masuk rentang. 0 = nonaktif.": "Close after the position stays out of range for this duration. The timer resets when it returns in range. 0 = disabled.",
   "Tutup posisi begitu harga lebih jauh dari persentase ini di luar rentang — jarak ke tepi terdekat, angka yang sama dengan \"di luar · 61% di atas\" di daftar posisi. Modal tidak menganggur di posisi yang jauh dari harga. Berlaku juga saat masuk: entry target yang rentangnya sejauh ini ditunda, bukan disalin. Dua sinkron berturut-turut (~1 menit) sebelum ditutup. 0 = nonaktif.": "Close the position once the price is farther than this percentage outside the range — the distance to the nearest edge, the same figure as \"out · 61% above\" in the position list. Capital does not sit idle in positions far from the price. Also applies on entry: a target entry whose range is this far away is deferred instead of copied. Two consecutive syncs (~1 minute) before closing. 0 = disabled.",
   "Cermin yang ditunda atau ditutup karena jauh dibuka lagi begitu harga kembali sedekat ini dari rentang, selama posisi target masih terbuka. Ukurannya dihitung ulang dari likuiditas target saat itu. Harus lebih kecil dari ambang tutup supaya tidak buka-tutup di satu harga. 0 = nonaktif.": "A mirror deferred or closed for being far away is re-opened once the price is back within this distance of the range, as long as the target's position is still open. Size is recomputed from the target's liquidity at that moment. Must be smaller than the close threshold so the mirror does not flip-flop at one price. 0 = disabled.",
@@ -310,14 +311,14 @@ const EN = {
   'Swap manual': 'Manual swap',
   'Jual token sisa': 'Sell leftover token',
   'Izin Kyber': 'Kyber approval',
-  // --- Ringkasan: portofolio ---
+  // --- Summary: portfolio ---
   'Total portofolio': 'Total portfolio',
   'Total PnL': 'Total PnL',
   'PnL bersih': 'Net PnL',
   'Nilai wallet saat bot mulai mencatat + setoran − penarikan': 'Wallet value when the bot started recording + deposits − withdrawals',
   'modal {m} · {p} · PnL posisi {v}': 'capital {m} · {p} · position PnL {v}',
   'modal {m} · PnL posisi {v}': 'capital {m} · position PnL {v}',
-  // --- Ringkasan: ukuran kesehatan LP ---
+  // --- Summary: LP health measures ---
   'APR {v}': 'APR {v}',
   'Fee seluruh posisi terbuka (termasuk yang sudah dipanen) disetahunkan terhadap modalnya': 'Fees across all open positions (harvested ones included), annualised against their capital',
   'Fee vs IL': 'Fees vs IL',
@@ -350,11 +351,13 @@ const EN = {
   'Rentang waktu': 'Time range',
   'PnL kumulatif': 'Cumulative PnL',
   'Kenapa PnL kumulatif dan PnL bersih berbeda?': 'Why do cumulative PnL and net PnL differ?',
-  '{a} − gas {g} {o} = {b}': '{a} − gas {g} {o} = {b}',
   'PnL kumulatif menjumlahkan hasil tiap posisi: hasil keluar dikurangi modal posisi itu. PnL bersih membandingkan nilai wallet sekarang dengan modal, jadi semua yang dibayar dari wallet di luar posisi ikut terhitung. PnL bersih adalah untung yang benar-benar bertambah.': 'Cumulative PnL adds up each position\'s result: what came out minus that position\'s capital. Net PnL compares the current wallet value with your capital, so everything paid from the wallet outside positions is included. Net PnL is the profit that actually landed in the wallet.',
   'PnL kumulatif (hasil posisi)': 'Cumulative PnL (position results)',
   '{n} transaksi, termasuk yang gagal': '{n} transactions, failed ones included',
-  'Slippage swap & pergerakan harga ETH': 'Swap slippage & ETH price moves',
+  'Slippage swap': 'Swap slippage',
+  'Pergerakan harga ETH & lainnya': 'ETH price moves & other',
+  'terukur dari kuotasi swap': 'measured from swap quotes',
+  '{a} − gas {g} − slippage {s} {o} = {b}': '{a} − gas {g} − slippage {s} {o} = {b}',
   'sisa selisih': 'remaining difference',
   'Modal {m} = isi wallet saat bot mulai mencatat ({d}) {b} + dana masuk {i}': 'Capital {m} = wallet balance when the bot started recording ({d}) {b} + funds in {i}',
   ' − penarikan {w}': ' − withdrawals {w}',
@@ -414,7 +417,7 @@ const EN = {
   'terealisasi {v}': 'realised {v}',
   'Belum ada posisi': 'No positions yet',
   'Rata-rata ditahan': 'Average hold',
-  // --- tampilan baru (dasbor dirapikan) ---
+  // --- new look (dashboard tidied up) ---
   'Belum dipindai': 'Not scanned yet',
   'Dipindai': 'Scanned',
   'Durasi': 'Duration',
@@ -422,7 +425,7 @@ const EN = {
   'Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v}.': 'Liquidity is withdrawn and fees are claimed in one transaction. Current value {v}.',
   'Pernah dipindai': 'Previously scanned',
   'PnL wallet': 'Wallet PnL',
-  // saldo target: kas wallet + nilai posisi LP-nya (penanda wallet yang sudah berhenti)
+  // target balance: wallet cash + the value of its LP positions (marker of a wallet that has stopped)
   'Saldo dia': 'Their balance',
   'Belum terbaca': 'Not read yet',
   'kas {c} · LP {l}': 'cash {c} · LP {l}',
@@ -436,6 +439,7 @@ const EN = {
   'dana tipis': 'low funds',
   'Posisi kita': 'Our positions',
   'Hasil kita': 'Our result',
+  'terealisasi {r} · berjalan {u} · biaya {c}': 'realised {r} · open {u} · costs {c}',
   'Hasil dari semua target': 'Result from all targets',
   'Wallet paling cuan': 'Most profitable wallet',
   '{w} menang · {l} kalah': '{w} won · {l} lost',
@@ -504,7 +508,7 @@ const EN = {
   'Buka Pengaturan': 'Open Settings',
   'Token yang ditukar': 'Token to swap from',
   'Token yang diterima': 'Token to receive',
-  // ---- LP manual & swap ----
+  // ---- manual LP & swap ----
   'LP manual': 'Manual LP',
   'Membuka posisi sendiri, di luar penyalinan target. Jalur eksekusinya sama: kas dijembatani, token ditukar seperlunya, lalu mint.': 'Open a position yourself, outside target copying. Same execution path: cash is bridged, tokens swapped as needed, then minted.',
   'Mode simulasi': 'Simulation mode',
@@ -569,6 +573,7 @@ const EN = {
   'Menukar aset lewat agregator Jupiter — rute yang sama dipakai bot untuk membeli token posisi dan menjual memecoin sisa.': 'Swap assets through the Jupiter aggregator — the same route the bot uses to buy position tokens and sell leftover memecoins.',
   'Wallet bot kosong. Isi dengan SOL atau USDC dulu — alamatnya ada di Pengaturan.': 'The bot wallet is empty. Fund it with SOL or USDC first — the address is under Settings.',
   'Alamat ini bukan mint token.': 'This address is not a token mint.',
+  'jumlah pasti dari kutipan agregator saat eksekusi': 'exact amount comes from the aggregator quote at execution',
   'Jumlah yang dijual sudah termasuk ruang slippage {s}%; kelebihannya tetap di wallet.': 'Amounts sold already include {s}% slippage room; any excess stays in the wallet.',
   'Auto-swap dimatikan di Aturan — pembukaan akan berhenti di langkah pertama.': 'Auto-swap is off in Rules — opening will stop at the first step.',
   'Seluruh rentang': 'Full range',
@@ -588,7 +593,17 @@ const EN = {
   'Lihat posisi': 'View positions',
   'Buka satu lagi': 'Open another',
   'Swap': 'Swap',
-  'Menukar aset lewat agregator Kyber — rute yang sama dipakai bot untuk zap dan menjual memecoin sisa.': 'Swap assets through the KyberSwap aggregator — the same route the bot uses to zap and to sell leftover memecoins.',
+  'Menukar aset lewat agregator: halaman ini memindai semua agregator yang aktif, memilih rute terbaik, atau kamu pilih sendiri. Kunci dan urutannya diatur di Pengaturan → Agregator swap.': 'Swap through aggregators: this page scans every active aggregator and picks the best route, or you choose one yourself. Keys and order are set in Settings → Swap aggregators.',
+  'Rute agregator': 'Aggregator routes',
+  '{n} dari {m} menemukan rute': '{n} of {m} found a route',
+  'Otomatis · terbaik': 'Automatic · best',
+  'sekarang: {a}': 'now: {a}',
+  'rugi': 'loss',
+  'tidak ada rute': 'no route',
+  'dimatikan': 'switched off',
+  'butuh API key': 'needs an API key',
+  'chain ini belum didukung': 'chain not supported',
+  'Swap hanya lewat {a}; kalau gagal tidak pindah ke agregator lain.': 'The swap goes through {a} only; if it fails it does not fall back to another aggregator.',
   'Sapu sisa': 'Sweep leftovers',
   '{n} token masuk antrean jual': '{n} tokens queued for selling',
   'Tidak ada sisa yang layak dijual': 'No leftovers worth selling',
@@ -600,6 +615,7 @@ const EN = {
   'Jumlah yang ditukar': 'Amount to swap',
   'Balik arah': 'Flip direction',
   'Tidak bisa dikutip': 'No quote available',
+  'Saldo {s} tidak cukup': 'Insufficient {s} balance',
   'Dikirim': 'Sent',
   'Diterima': 'Received',
   'Nilai': 'Value',
@@ -610,7 +626,7 @@ const EN = {
   'Tukar': 'Swap',
   'Ya, tukar sekarang': 'Yes, swap now',
   'Swap selesai': 'Swap done',
-  // --- Swap: pemilih token, token manual, saldo, riwayat ---
+  // --- Swap: token picker, manual token, balance, history ---
   'Pilih token': 'Select token',
   'Tukar dari': 'Swap from',
   'Tukar ke': 'Swap to',
@@ -632,6 +648,35 @@ const EN = {
   'Tambah token: alamat 0x…': 'Add token: 0x… address',
   'Alamat token': 'Token address',
   'Swap terakhir': 'Recent swaps',
+  'Riwayat swap': 'Swap history',
+  'Swap manual, zap & jual sisa posisi LP, klaim fee, jembatan dan isi gas.': 'Manual swaps, LP zaps & leftover sells, fee claims, bridges and gas top-ups.',
+  'Swap dari halaman ini, bot Telegram, dan posisi LP muncul di sini.': 'Swaps from this page, the Telegram bot and LP positions show up here.',
+  'Jenis swap': 'Swap type',
+  'Lainnya': 'Other',
+  'Manual': 'Manual',
+  'Dikirim dari halaman ini atau bot Telegram': 'Sent from this page or the Telegram bot',
+  'Buka LP': 'Open LP',
+  'Zap: membeli sisi token supaya posisi LP bisa dibuka': 'Zap: buys the token side so the LP position can be opened',
+  'Tutup LP': 'Close LP',
+  'Menjual token sisa hasil menutup posisi': 'Sells the tokens left over from closing a position',
+  'Jual balik': 'Sold back',
+  'Token zap yang tidak jadi LP (mint gagal atau kelebihan) dijual kembali': 'Zapped tokens that never became LP (failed mint or surplus) sold back',
+  'Jual fee': 'Fee sell',
+  'Menjual sisi memecoin dari fee yang diklaim': 'Sells the memecoin side of claimed fees',
+  'Sapu wallet': 'Wallet sweep',
+  'Token yang tertinggal di wallet dijual': 'Tokens left in the wallet were sold',
+  'Token sisa di wallet (zap tanpa LP atau sapuan)': 'Leftover tokens in the wallet (zap without LP or sweep)',
+  'Jembatan': 'Bridge',
+  'Menukar ETH ⇄ stablecoin supaya entry punya aset yang dibutuhkan': 'Swaps ETH ⇄ stablecoin so an entry has the asset it needs',
+  'Isi gas': 'Gas top-up',
+  'Membeli ETH untuk gas dari stablecoin': 'Buys ETH for gas with stablecoin',
+  'Fee posisi LP ditarik ke wallet': 'LP position fees withdrawn to the wallet',
+  'Compound': 'Compound',
+  'Fee disetor kembali ke posisi': 'Fees deposited back into the position',
+  'Compound fee ke posisi': 'Fees compounded into the position',
+  'pool langsung': 'direct pool',
+  'Kyber lewat {d}': 'Kyber via {d}',
+  '{a} lewat {d}': '{a} via {d}',
   'Memuat harga…': 'Loading prices…',
   'Harga gagal — coba lagi': 'Prices failed — retry',
   'Tanpa nilai ({n})': 'No value ({n})',
@@ -647,7 +692,7 @@ const EN = {
   '{s} ditambahkan': '{s} added',
   '{s} ditambahkan — saldonya kosong, jadi dipasang sebagai token tujuan': '{s} added — its balance is empty, so it was set as the token to receive',
   'Kurs': 'Rate',
-  // --- Peringatan sisa belum terjual ---
+  // --- Unsold leftover warning ---
   '{a} {s} belum terjual — posisi #{id}': '{a} {s} not sold — position #{id}',
   '{a} {s} belum terjual': '{a} {s} not sold',
   'Sisa belum terjual: {s}': 'Leftover not sold: {s}',
@@ -664,7 +709,7 @@ const EN = {
   '{s} terjual': '{s} sold',
   'sejak {a}': 'since {a}',
   'Cek ulang sisa tiap (detik)': 'Re-check leftovers every (seconds)',
-  'Satu kutipan Kyber per token per interval; swap hanya dikirim kalau ruginya sudah di bawah batas. Minimal 1 — terlalu rapat bisa kena batas laju Kyber yang juga dipakai zap': 'One Kyber quote per token per interval; the swap is only sent once the loss is under the limit. Minimum 1 — too tight can hit Kyber rate limits, which the zap path shares',
+  'Satu kutipan per token per interval; swap hanya dikirim kalau ruginya sudah di bawah batas. Minimal 1 — terlalu rapat bisa kena batas laju agregator yang juga dipakai zap': 'One quote per token per interval; the swap is only sent once the loss is under the limit. Minimum 1 — too tight can hit aggregator rate limits, which the zap path shares',
   'Fee pool + dampak harga. Di atas batas ini token disimpan dan dikutip ulang terus sampai lolos': 'Pool fee + price impact. Above this the token is kept and re-quoted until it clears',
   'Coba jual sekarang': 'Try selling now',
   'Jual manual': 'Sell manually',
@@ -679,7 +724,7 @@ const EN = {
   'slippage {p}%': 'slippage {p}%',
   'Tukar lagi': 'Swap again',
   'Aksi': 'Actions',
-  // ---- aturan yang baru bisa disetel ----
+  // ---- rules that can now be tuned ----
   'Pembulatan tick': 'Tick rounding',
   'Ke yang terdekat': 'To nearest',
   'Ke bawah': 'Down',
@@ -702,7 +747,7 @@ const EN = {
   'Pool yang baru dibuat sering jebakan; 0 = mati': 'Freshly created pools are often traps; 0 = off',
   'Batas fee pool': 'Pool fee limit',
   'Dalam satuan fee Uniswap: 3000 = 0,3%, 100000 = 10%': 'In Uniswap fee units: 3000 = 0.3%, 100000 = 10%',
-  // ---- bot Telegram ----
+  // ---- Telegram bot ----
   'Bot Telegram': 'Telegram bot',
   'Kendalikan bot ini dari Telegram: semua yang bisa dilakukan dasbor, bisa dilakukan lewat obrolan.': 'Control this bot from Telegram: anything the dashboard can do, a chat can do.',
   'token terpasang, belum tersambung': 'token set, not connected yet',
@@ -727,7 +772,7 @@ const EN = {
   'Peringatan': 'Warnings',
   'Semua baris log': 'Every log line',
   'di luar bot': 'outside bot',
-  // ---- asal posisi: target yang disalin vs hasil kita ----
+  // ---- position origin: the target copied vs our own doing ----
   'Posisi ini tidak menyalin target mana pun: dibuka manual, atau sudah ada di wallet sebelum bot memantaunya.': 'This position copies no target: it was opened manually, or was already in the wallet before the bot started tracking it.',
   'PnL target': 'Target PnL',
   'belum dipindai': 'not scanned yet',
@@ -735,18 +780,18 @@ const EN = {
   'modal target {v}': "target's capital {v}",
   'Wallet target ini belum diriset, jadi hasil posisi aslinya belum diketahui. Buka halaman target dan pindai wallet-nya.': 'This target wallet has not been researched, so the original position\u2019s result is unknown. Open the target page and scan the wallet.',
   'Kolom Sumber memuat wallet yang disalin beserta hasil posisi aslinya. Modal target jarang sebesar modal kita, jadi yang sebanding persennya, bukan dolarnya.': "The Source column carries the wallet being copied along with how its original position ended. The target's capital is rarely the size of ours, so compare the percentages, not the dollars.",
-  // ---- jual sisa memecoin ----
+  // ---- sell the memecoin leftover ----
   'Jual memecoin sisa setelah keluar': 'Sell leftover memecoin after exit',
-  'Token yang diterima saat menutup posisi dijual balik ke USDG/ETH lewat agregator Kyber': 'Tokens received when closing a position are sold back to USDG/ETH via the Kyber aggregator',
+  'Token yang diterima saat menutup posisi dijual balik ke USDG/ETH lewat agregator swap yang aktif': 'Tokens received when closing a position are sold back to USDG/ETH via the active swap aggregators',
   'Batas rugi jual sisa (bps)': 'Max loss when selling leftovers (bps)',
-  // ---- pembaruan riset wallet ----
+  // ---- wallet research refresh ----
   'menghitung ulang posisi {done} / {total}': 'recomputing positions {done} / {total}',
   'mencari posisi baru sejak pindai terakhir': 'looking for new positions since the last scan',
   'Perbarui': 'Refresh',
   'Diperbarui {when} · blok {from}–{to}': 'Updated {when} · blocks {from}–{to}',
   'Diperbarui otomatis saat wallet ini beraksi, dan saat dibuka bila lebih dari 5 menit.': 'Updates automatically when this wallet acts, and on open if older than 5 minutes.',
   'Pembaruan otomatis gagal: {e} — dicoba lagi sebentar lagi.': 'Automatic update failed: {e} — retrying shortly.',
-  // ---- navigasi & kerangka ----
+  // ---- navigation & frame ----
   'Pemantauan': 'Monitoring',
   'Copy': 'Copy',
   'Riset': 'Research',
@@ -800,7 +845,7 @@ const EN = {
   'Sebelumnya': 'Previous',
   'Berikutnya': 'Next',
 
-  // ---- ringkasan ----
+  // ---- summary ----
   'Eksposur terbuka': 'Open exposure',
   'Fee terkumpul': 'Fees earned',
   'PnL belum terealisasi': 'Unrealised PnL',
@@ -830,6 +875,7 @@ const EN = {
   'tidak dibatasi (simulasi)': 'unlimited (simulation)',
   'Blok terkini': 'Latest block',
   'Tertinggal': 'Behind',
+  'Pemindaian terakhir': 'Last scan',
   '{n} blok': '{n} blocks',
   'Aksi terdeteksi': 'Actions detected',
   'Disalin / dilewati': 'Copied / skipped',
@@ -843,7 +889,7 @@ const EN = {
   'Mode simulasi tidak mengirim transaksi.': 'Simulation mode does not send transactions.',
   'Diperbarui {t}': 'Updated {t}',
 
-  // ---- posisi ----
+  // ---- positions ----
   'Posisi LP milik bot — nilai, fee, dan PnL diperbarui dari chain tiap 30 detik.':
     'The bot’s own LP positions — value, fees and PnL refreshed from chain every 30 seconds.',
   'Posisi terbuka ({n})': 'Open positions ({n})',
@@ -894,7 +940,7 @@ const EN = {
   'Gagal: {e}': 'Failed: {e}',
   'Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v} + fee {f}.':
     'Liquidity is withdrawn and fees are claimed in one transaction. Current value {v} + {f} in fees.',
-  // ---- peringatan target ----
+  // ---- target alerts ----
   'Peringatan target': 'Target alerts',
   'Toast dan bunyi saat wallet target membuka posisi LP, dan saat posisi salinan ditutup — lengkap dengan PnL-nya. Bunyi buka dan tutup berbeda.':
     'A toast and a sound when a target wallet opens an LP position, and when a copied position is closed — with its PnL. Open and close use different sounds.',
@@ -935,14 +981,14 @@ const EN = {
   'Koneksi ke server terputus sebelum ada jawaban. Transaksinya mungkin tetap diproses — cek lagi posisinya sebentar lagi.':
     'The connection to the server dropped before it answered. The transaction may still go through — check the position again shortly.',
   'lebar {w}%': 'width {w}%',
-  // ---- rahasia lewat .env ----
+  // ---- secrets via .env ----
   'dari .env': 'from .env',
   '{what} diatur lewat': '{what} is set by',
   'di berkas .env server. Ubah di sana lalu restart bot.': 'in the server’s .env file. Change it there, then restart the bot.',
   'Kunci wallet': 'Wallet key',
   'Token akses': 'Access token',
 
-  // ---- aktivitas ----
+  // ---- activity ----
   'Setiap gerakan LP wallet target dan keputusan bot atasnya.':
     'Every LP move by target wallets and the bot’s decision on it.',
   'Semua keputusan': 'All decisions',
@@ -976,7 +1022,7 @@ const EN = {
   'Bungkus ETH': 'Wrap ETH',
   'Buka WETH': 'Unwrap WETH',
 
-  // ---- target ----
+  // ---- targets ----
   'Wallet yang posisi LP-nya dicermin. Klik sebuah wallet untuk melihat PnL, posisi berjalan, dan riwayat posisinya.':
     'Wallets whose LP positions are mirrored. Click a wallet to see its PnL, live positions and position history.',
   'Tambah wallet': 'Add wallet',
@@ -986,6 +1032,7 @@ const EN = {
   'Tambah': 'Add',
   'Aturan default dipakai sampai kamu setel sendiri per wallet.':
     'Default rules apply until you set per-wallet rules.',
+  'Sudah tersimpan sebagai "{name}".': 'Already saved as "{name}".',
   'Alamat harus 0x diikuti 40 karakter hex.': 'Address must be 0x followed by 40 hex characters.',
   'Alamat Solana harus base58, 32–44 karakter.': 'A Solana address is base58, 32–44 characters.',
   'base58 (ekspor Phantom/Solflare) atau [larik JSON solana-keygen]': 'base58 (Phantom/Solflare export) or [solana-keygen JSON array]',
@@ -1027,7 +1074,7 @@ const EN = {
   'Modal di posisi kita': 'Capital in our positions',
   'Aturan wallet ini': 'Rules for this wallet',
   'Kinerja LP wallet ini': 'This wallet’s LP performance',
-  // isi wallet (portofolio) di detail target
+  // wallet contents (portfolio) in the target detail
   'Isi wallet': 'Wallet holdings',
   'Jumlah': 'Amount',
   'Porsi': 'Share',
@@ -1043,14 +1090,14 @@ const EN = {
   '{n} token tidak ditemukan harganya dan tidak ikut dihitung dalam total.': '{n} tokens have no known price and are left out of the total.',
   'Token yang masuk lewat kontrak lain baru terdeteksi setelah pindai transfer (~1 hari terakhir) selesai.': 'Tokens received via other contracts show up once the transfer scan (~last 1 day) completes.',
 
-  // ---- aturan ----
+  // ---- rules ----
   'Aturan default': 'Default rules',
   'Berlaku untuk semua target yang tidak punya aturan sendiri.':
     'Applies to every target that has no rules of its own.',
   'Aturan tersimpan': 'Rules saved',
   'Gagal menyimpan': 'Save failed',
 
-  // ---- wallet / riset ----
+  // ---- wallet / research ----
   'PnL, fee, gaya ber-LP, dan seluruh riwayat posisi wallet mana pun — dihitung langsung dari chain. Klik baris posisi untuk melihat tiap kejadian on-chain-nya.':
     'PnL, fees, LP style and the full position history of any wallet — computed straight from chain. Click a position row to see every on-chain event behind it.',
   'Alamat wallet': 'Wallet address',
@@ -1128,7 +1175,7 @@ const EN = {
   'Pokok & fee dibaca dari state pool dan posisi tepat di blok tiap kejadian (node arsip). Posisi yang dibuka-tutup tanpa ada swap di rentangnya tercatat impas, bukan kalah.':
     'Principal and fees are read from pool and position state exactly at the block of each event (archive node). A position opened and closed with no swap inside its range is recorded as break-even, not a loss.',
 
-  // rentang harga
+  // price range
   'Rentang {lo} – {hi}{q} per {b}': 'Range {lo} – {hi}{q} per {b}',
   'Harga masuk {p}': 'Entry price {p}',
   'Harga kini {p}{m}': 'Current price {p}{m}',
@@ -1151,7 +1198,7 @@ const EN = {
   'harga kini': 'current price',
   'harga keluar': 'exit price',
 
-  // ---- laci riwayat posisi wallet yang diriset ----
+  // ---- history drawer of a researched wallet's position ----
   'Tarik likuiditas': 'Withdraw liquidity',
   'Harga pool': 'Pool price',
   'blok {n}': 'block {n}',
@@ -1171,7 +1218,79 @@ const EN = {
     'Principal and fees are separated with liquidity math against pool state at each event block, not estimated from token transfers.',
   'Halaman pool & grafik': 'Pool page & chart',
 
-  // ---- profil gaya LP (dulu halaman Scout, sekarang di dalam Wallet) ----
+  // our side of that wallet's position (copy / reason for not copying)
+  'Salinan kita': 'Our copy',
+  'Kendali manual': 'Manual control',
+  'Lihat posisi #{id}': 'View position #{id}',
+  'Baru dibuka — modal {v}; angka selengkapnya menyusul sinkron berikutnya.':
+    'Just opened — capital {v}; the rest of the numbers arrive with the next sync.',
+  'Salinan ini tidak pernah jadi posisi — transaksinya {s}.': 'This copy never became a position — its transaction {s}.',
+  'masih menggantung': 'is still pending',
+  'Target {a} atas modalnya · kita {b} atas modal kita': 'Target {a} on its own capital · us {b} on ours',
+  'Kita tidak menyalin posisi ini': 'We did not copy this position',
+  'Salin manual': 'Copy manually',
+  'Wallet ini bukan target — posisinya hanya diriset, tidak pernah diikuti mesin.':
+    'This wallet is not a target — its positions are only researched, never followed by the engine.',
+  'Target ini baru ditambahkan setelah posisi ini dibuka, jadi pembukaannya tidak pernah dilihat pemantau.':
+    'This target was added after the position had been opened, so the watcher never saw it open.',
+  'Pemantau tidak mencatat satu aksi pun di posisi ini — kemungkinan terjadi selagi mesin mati dan di luar jangkauan backfill.':
+    'The watcher recorded no action at all on this position — it probably happened while the engine was down, beyond the reach of the backfill.',
+  'Mesin melihat aksinya, tapi tidak menyalinnya:': 'The engine saw its actions, but did not copy them:',
+  'Aksinya tercatat, tapi belum ada keputusan atasnya.': 'Its actions are recorded, but no decision has been made on them yet.',
+  'Target ini sedang dimatikan.': 'This target is currently disabled.',
+  'Belum diputuskan': 'Not decided yet',
+  'buka posisi': 'open position',
+  'tambah likuiditas': 'add liquidity',
+  'tarik likuiditas': 'withdraw liquidity',
+  'tutup posisi': 'close position',
+  'klaim fee': 'claim fees',
+  'terima posisi': 'receive position',
+  'kirim posisi': 'send position',
+  'ambil dari otomasi': 'take back from automation',
+  'titip ke otomasi': 'hand over to automation',
+
+  // portfolio value censoring
+  'Sensor nilai portofolio': 'Hide portfolio values',
+  'Tampilkan nilai portofolio': 'Show portfolio values',
+  'Menutup semua nilai dolar milik kita — saldo, modal, PnL, fee, dan jumlah token — dengan $•••••. Persen dan data pasar tetap terlihat. Berguna untuk berbagi layar, merekam, atau membuka dasbor di tempat umum.':
+    'Covers every dollar value of ours — balance, capital, PnL, fees and token amounts — with $•••••. Percentages and market data stay visible. Useful for screen sharing, recording, or opening the dashboard in public.',
+  'Sensor nilai': 'Hide values',
+  'Nilai portofolio kini tersensor': 'Portfolio values are now hidden',
+  'Nilai portofolio kini tampil': 'Portfolio values are now shown',
+  'Sama dengan ikon mata di sebelah tombol tema dan di mini app Telegram — satu sakelar untuk semuanya. Berlaku di semua tab dan perangkat, dan tetap tersimpan sampai dimatikan lagi.':
+    'The same as the eye icon next to the theme button and in the Telegram mini app — one switch for everything. It applies to every tab and device, and stays until turned off again.',
+
+  // the target's side of our position (bot position drawer)
+  'Posisi yang kita tiru': 'The position we mirror',
+  'Perbarui posisi target': 'Refresh the target position',
+  'Tidak meniru siapa pun': 'Mirrors nobody',
+  'Dia masih di dalam': 'They are still in',
+  'Dia sudah keluar': 'They are out',
+  'Modal dia': 'Their capital',
+  'Dia tarik': 'They withdrew',
+  'Dia taruh': 'They put in',
+  'Nilai dia': 'Their value',
+  'Dia dapat': 'They got out',
+  '+{n} klaim fee': '+{n} fee claims',
+  'Hasil dia': 'Their result',
+  'Hasil dia (sementara)': 'Their result (so far)',
+  'Hasil posisi aslinya belum diketahui: wallet target ini belum diriset, dan pemantau belum mencatat satu aksi pun di posisi itu.':
+    'How the original position is doing is unknown: this target wallet has not been researched, and the watcher recorded no action at all on that position.',
+  'Dari riset wallet: pokok, fee, dan token sisa yang dia jual sudah ikut terhitung.':
+    'From the wallet research: principal, fees and the leftover tokens they sold are all counted.',
+  'Dari riset wallet — fee dan token sisa yang dia jual sudah ikut. Posisinya masih terbuka, jadi nilainya sebesar pemindaian wallet terakhir, bukan harga sekarang.':
+    'From the wallet research — fees and the leftover tokens they sold are counted. Their position is still open, so the value is as of the last wallet scan, not the current price.',
+  'Belum ada riset wallet, jadi ini dari aksi yang terpantau saja: pokok yang dia tarik dikurangi yang dia taruh. Fee yang dia panen terpisah tidak ikut, jadi angka ini lantai — bukan laba pastinya.':
+    'No wallet research yet, so this comes from the watched actions alone: the principal they withdrew minus what they put in. Fees they harvested separately are not included, so this is a floor — not their certain profit.',
+  'Dia belum menarik apa pun dari posisi itu, jadi hasilnya belum bisa dihitung.':
+    'They have withdrawn nothing from that position yet, so their result cannot be computed.',
+  'Pindai wallet target': 'Scan the target wallet',
+  'untuk angka yang lengkap.': 'for the complete numbers.',
+  'dia pegang {d}': 'they held {d}',
+  'dia buka {w}': 'they opened it {w}',
+  '{n} aksi terpantau': '{n} watched actions',
+
+  // ---- LP style profile (formerly the Scout page, now inside Wallet) ----
   'Gaya LP · dari {n} posisi berjalan': 'LP style · from {n} open positions',
   'Sedang in-range': 'Currently in range',
   'Lebar rentang khas': 'Typical range width',
@@ -1182,7 +1301,7 @@ const EN = {
   'Periksa': 'Check',
   'Progres': 'Progress',
 
-  // ---- pengaturan ----
+  // ---- settings ----
   'Wallet & mode': 'Wallet & mode',
   'RPC': 'RPC',
   'Gas': 'Gas',
@@ -1190,8 +1309,9 @@ const EN = {
   'Mesin': 'Engine',
   'Tampilan': 'Display',
   'Mata uang kedua di samping dolar': 'A second currency next to the dollar',
+  'Sensor nilai dan mata uang kedua': 'Value privacy and a second currency',
   'Keamanan': 'Security',
-  // mata uang kedua
+  // second currency
   'Mata uang kedua': 'Second currency',
   'Semua nominal di dasbor dihitung dalam dolar — itu satuan yang dipakai pool, harga token, dan seluruh perhitungan PnL. Pilihan di sini menambahkan nilai yang sama dalam mata uang lain, ditulis kecil di sebelah angka dolarnya, supaya nominalnya punya rasa besaran. Angka utamanya tidak berubah.':
     'Every amount on this dashboard is computed in dollars — that is the unit of the pools, the token prices, and every PnL calculation. This setting adds the same amount in another currency, written small beside the dollar figure, so the numbers have a sense of scale. The main figure does not change.',
@@ -1248,6 +1368,11 @@ const EN = {
   'Endpoint RPC': 'RPC endpoints',
   'Urutan = prioritas: yang teratas dipakai lebih dulu, yang di bawahnya cadangan saat ia gagal atau istirahat (429). getLogs hanya ke endpoint yang sanggup, pembacaan state lampau hanya ke endpoint arsip. Perubahan berlaku tanpa restart.':
     'Order = priority: the top endpoint is used first; the ones below are fallbacks when it fails or is cooling down (429). getLogs only goes to endpoints that support it, historical state reads only to archive endpoints. Changes take effect without a restart.',
+  'Cache jawaban pasti': 'Settled-answer cache',
+  'Cache jawaban pasti: {n} tersimpan · {mb} MB · {p}% pembacaan dijawab tanpa menyentuh jaringan':
+    'Settled-answer cache: {n} stored · {mb} MB · {p}% of reads answered without touching the network',
+  'Panggilan yang terikat pada blok lampau — receipt transaksi, header blok, saldo dan eth_call di blok tertentu, getLogs untuk rentang yang sudah lewat — jawabannya tidak mungkin berubah lagi, jadi disimpan di database dan dipakai ulang. Data hidup (harga pool, saldo terkini, tinggi blok) tidak pernah disimpan. Satu blok dianggap pasti setelah tertinggal {n} blok dari kepala rantai. Simpanan lama dibuang sendiri; kehilangannya paling banter berarti satu panggilan RPC lagi.':
+    'Calls pinned to a past block — transaction receipts, block headers, balances and eth_call at a given block, getLogs over a range that has already passed — can no longer answer differently, so they are stored in the database and reused. Live data (pool prices, current balances, block height) is never stored. A block counts as settled once it is {n} blocks behind the chain head. Old entries are discarded on their own; losing one costs at most one more RPC call.',
   'Naikkan prioritas': 'Move up',
   'Turunkan prioritas': 'Move down',
   'Prioritas utama': 'Primary',
@@ -1329,7 +1454,7 @@ const EN = {
   'Salin': 'Copy',
   'Tersalin': 'Copied',
 
-  // ---- skema aturan ----
+  // ---- rule schema ----
   'Ukuran posisi': 'Position size',
   'Cara menentukan ukuran': 'How size is decided',
   'Sama persis dengan target': 'Exactly the same as the target',
@@ -1375,6 +1500,7 @@ const EN = {
   'Keluar': 'Exit',
   'Ikut keluar saat target keluar': 'Exit when the target exits',
   'Ikut menarik sebagian (proporsional)': 'Mirror partial withdrawals (proportional)',
+  'Ikut klaim fee saat target memanen fee': 'Claim fees when the target harvests fees',
   'Tutup kalau di luar rentang selama (menit, 0=mati)': 'Close if out of range for (minutes, 0=off)',
   'Tutup kalau harga lebih dari (%) di luar rentang (0=mati)': 'Close if price is more than (%) outside the range (0=off)',
   'Buka lagi kalau harga kembali ≤ (%) dari rentang (0=mati)': 'Re-open when price is back within (%) of the range (0=off)',
@@ -1385,6 +1511,14 @@ const EN = {
   'Izinkan pool v4 dengan hook': 'Allow v4 pools with hooks',
   'Hook bisa memblokir penarikan — default: tolak': 'A hook can block withdrawals — default: refuse',
   'Abaikan posisi target di bawah (USD)': 'Ignore target positions below (USD)',
+  'Likuiditas pool minimum (USD)': 'Minimum pool liquidity (USD)',
+  'Pool tipis sulit ditutup tanpa rugi; 0 = mati': 'Thin pools are hard to exit without a loss; 0 = off',
+  'Volume 24 jam minimum (USD)': 'Minimum 24h volume (USD)',
+  'Tanpa volume tidak ada fee, seberapa pun betulnya rentangnya; 0 = mati': 'No volume, no fees — however well the range is placed; 0 = off',
+  'Lewati pool yang likuiditasnya (TVL menurut DexScreener) lebih kecil dari angka ini. Pool tipis menggeser harga saat kita masuk dan saat keluar, dan sisa tokennya susah dijual. Pool yang belum terindeks DexScreener tidak punya angka ini dan tetap dilewatkan — saringan ini menolak pool yang terbukti tipis, bukan pool yang belum dikenal. 0 = nonaktif.':
+    'Skip pools whose liquidity (TVL per DexScreener) is below this number. Thin pools move the price both when we enter and when we leave, and their leftover tokens are hard to sell. A pool DexScreener has not indexed has no such number and is let through — this filter rejects pools proven to be thin, not pools that are merely unknown. 0 = off.',
+  'Lewati pool yang volume swap 24 jamnya lebih kecil dari angka ini. Fee LP lahir dari volume: pool sepi membayar mendekati nol berapa pun modalnya, sementara risiko tokennya tetap penuh. Angkanya sumber yang sama dengan kolom Volume 24 jam di daftar posisi. Pool yang belum terindeks DexScreener tetap dilewatkan. 0 = nonaktif.':
+    'Skip pools whose 24-hour swap volume is below this number. LP fees are born of volume: a quiet pool pays close to nothing however much capital sits in it, while the token risk stays full. Same source as the 24h volume column in the position list. A pool DexScreener has not indexed is let through. 0 = off.',
   'Maksimum posisi terbuka': 'Maximum open positions',
   'Jeda antar salinan di pool sama (detik)': 'Cooldown between copies in the same pool (seconds)',
   'Aset kuotasi diizinkan': 'Allowed quote assets',
@@ -1392,9 +1526,9 @@ const EN = {
   'Daftar hitam token (alamat, pisah koma)': 'Token blacklist (addresses, comma separated)',
   'Daftar putih token (kosong = semua)': 'Token whitelist (empty = all)',
 
-  // ---- alasan keputusan dari mesin ----
-  // Kalimatnya dirangkai di server dengan nilai yang disisipkan, jadi diterjemahkan
-  // per potongan: bagian tetapnya diganti, angka/alamat/pesan RPC dibiarkan apa adanya.
+  // ---- reasons for engine decisions ----
+  // The sentences are assembled on the server with the values inserted, so they are translated
+  // piece by piece: the fixed part is swapped, numbers/addresses/RPC messages are left as they are.
   'tidak ada cermin posisi yang cocok': 'no matching mirrored position',
   'posisi dititipkan ke kontrak otomasi — bukan sinyal keluar':
     'position handed to an automation contract — not an exit signal',
@@ -1410,7 +1544,7 @@ const EN = {
   'tutup penuh': 'fully closed',
   'kurangi': 'reduced',
 
-  // ---- potongan alasan (pengganti sebagian) ----
+  // ---- reason pieces (partial replacement) ----
   '@simulasi GAGAL:': 'simulation FAILED:',
   '@simulasi OK': 'simulation OK',
   '@jenis aksi': 'action type',
@@ -1469,7 +1603,7 @@ const EN = {
   '@venue': 'venue',
   '@dimatikan': 'disabled',
 
-  // ---- waktu ----
+  // ---- time ----
   '{n} dtk lalu': '{n} sec ago',
   '{n} mnt lalu': '{n} min ago',
   '{n} jam lalu': '{n} hr ago',
@@ -1486,7 +1620,7 @@ const EN = {
   'PnL LP saat tutup': 'LP PnL at close',
   'Perubahan hasil setelah tutup': 'Change in proceeds after close',
   'Hasil LP menilai token saat penutupan. PnL total mencakup hasil penjualan sisa token; nilai swap bukan tambahan utuh ke hasil LP.': 'LP proceeds value tokens at closing. Total PnL includes leftover token sales; swap proceeds are not added in full to the LP proceeds.',
-  // ---- laci riwayat posisi ----
+  // ---- position history drawer ----
   'Klik baris untuk riwayat transaksi dan catatan bot.': 'Click a row for its transaction history and bot notes.',
   'Modal dan hasil dari pemindaian wallet; posisi yang masih terbuka dinilai ulang di harga sekarang. Klik baris untuk kejadian on-chain-nya.': 'Capital and proceeds from the wallet scan; open positions are revalued at current prices. Click a row for its on-chain events.',
   'Posisi LP milik bot — nilai, fee, dan PnL diperbarui dari chain tiap 30 detik. Klik baris untuk melihat riwayat transaksi dan catatan bot.': 'The bot’s LP positions — value, fees and PnL refreshed from chain every 30 s. Click a row for its transaction history and bot notes.',
@@ -1527,7 +1661,7 @@ const EN = {
   'menunggu konfirmasi': 'Awaiting confirmation',
   'via {dex}': 'Via {dex}',
   'gas {v}': 'Gas {v}',
-  // ongkos jalan posisi: gas terbakar + selisih swap (buka/tutup)
+  // position running cost: gas burned + swap spread (open/close)
   'Ongkos jalan': 'Running cost',
   'Ongkos': 'Cost',
   'Ongkos buka / tutup': 'Open / close cost',
@@ -1535,6 +1669,8 @@ const EN = {
   'slippage': 'slippage',
   'slippage {v}': 'slippage {v}',
   'meleset {b}% dari kutipan': '{b}% off the quote',
+  'hasil jual fee {v}': 'fee sale proceeds {v}',
+  'vs taksiran {v}': 'vs estimate {v}',
   'gas {g} · slippage {s}': 'gas {g} · slippage {s}',
   'gas {g} · slippage {s} · {n} tx': 'gas {g} · slippage {s} · {n} txs',
   'buka {o} · tutup {x} · {n} tx': 'open {o} · close {x} · {n} txs',
@@ -1553,10 +1689,10 @@ const EN = {
   'aksi target: {k}': 'Target action: {k}',
   'Salin hash': 'Copy hash',
   'Hash tersalin': 'Hash copied',
-  'Jumlah token dan nilai dicatat bot saat transaksi; harga swap dari Kyber.': 'Token amounts and values were recorded by the bot at transaction time; swap prices from Kyber.',
+  'Jumlah token dan nilai dicatat bot saat transaksi; harga swap dari agregator.': 'Token amounts and values were recorded by the bot at transaction time; swap prices from the aggregator.',
   'Halaman detail & grafik': 'Detail page & chart',
-  // ---- detail posisi ----
-  // halaman detail token
+  // ---- position detail ----
+  // token detail page
   'Kembali': 'Back',
   '{n} desimal': '{n} decimals',
   'aset kuotasi': 'quote asset',
@@ -1598,7 +1734,7 @@ const EN = {
   'token tidak dikenal — belum pernah terlihat di chain maupun DexScreener': 'unknown token — never seen on chain or on DexScreener',
   'dalam {q}': 'in {q}',
   'Skala harga': 'Price scale',
-  // halaman detail pool
+  // pool detail page
   'Bot belum pernah membuka posisi di sini': 'The bot has never opened a position here',
   'Pool tidak ditemukan': 'Pool not found',
   'Harga {b}': '{b} price',
@@ -1781,6 +1917,39 @@ const EN = {
   'Harga dibaca langsung dari pool tiap {s} detik': 'Price read straight from the pool every {s} seconds',
   'batas bawah': 'lower',
   'rentang yang akan di-LP': 'range to provide liquidity in',
+  'Naik bertahap': 'Stepped up',
+  'Rata': 'Equal',
+  'Berat ×1,5': 'Weighted ×1.5',
+  'Berat ×2': 'Weighted ×2',
+  'Setiap layer dapat porsi yang sama.': 'Every layer gets the same share.',
+  'Layer ke-1 porsi 1, ke-2 porsi 2, dst — makin dalam makin besar.': 'Layer 1 gets 1 part, layer 2 gets 2 parts, and so on — the deeper, the bigger.',
+  'Tiap layer 1,5× layer di atasnya — dana menumpuk di bawah.': 'Each layer is 1.5× the one above it — the money piles up at the bottom.',
+  'Tiap layer 2× layer di atasnya — hampir semua dana di layer terdalam.': 'Each layer is 2× the one above it — almost all the money sits in the deepest layer.',
+  'Dekat · −40%': 'Near · −40%',
+  'Sedang · −5% … −60%': 'Medium · −5% … −60%',
+  'Dalam · −10% … −80%': 'Deep · −10% … −80%',
+  'Metode': 'Method',
+  'Metode layer': 'Layer method',
+  'Jumlah layer': 'Number of layers',
+  'Layer terdekat mulai (di bawah harga)': 'Nearest layer starts (below the price)',
+  'Layer terdalam berakhir (di bawah harga)': 'Deepest layer ends (below the price)',
+  'Batas terdalam harus lebih jauh di bawah harga daripada layer terdekat, dan kurang dari 100%.': 'The deepest bound must be further below the price than the nearest layer, and under 100%.',
+  'Semua layer ada di bawah harga kini, jadi hanya aset kuotasi (misal USDG) yang disetor — tanpa swap. Dana di sebuah layer baru berubah jadi token saat harga turun menembus layer itu.': 'Every layer sits below the current price, so only the quote asset (e.g. USDG) is deposited — no swap. The money in a layer only turns into the token once the price falls through that layer.',
+  'Membuka layer {d}/{n}…': 'Opening layer {d}/{n}…',
+  'Semua layer terbuka': 'All layers opened',
+  'Berhenti di tengah jalan': 'Stopped halfway',
+  'Layer {n}': 'Layer {n}',
+  '{n} layer sudah terbuka dan tetap berjalan.': '{n} layers are already open and keep running.',
+  'Pilih pool, isi nominal, dan atur layer — pratinjau muncul sendiri.': 'Pick a pool, fill in the amount and set the layers — the preview appears by itself.',
+  'Total {n} layer': 'Total of {n} layers',
+  'Layer dibuka satu per satu, dari yang terdekat. Kalau satu gagal, yang sudah terbuka tetap berjalan.': 'Layers are opened one by one, nearest first. If one fails, those already open keep running.',
+  'Buka {n} layer · {v}': 'Open {n} layers · {v}',
+  'Kirim {n} transaksi sungguhan?': 'Send {n} real transactions?',
+  '{v} ke {pair}, di −{a}% sampai −{b}% dari harga kini.': '{v} into {pair}, at −{a}% to −{b}% from the current price.',
+  'Satu rentang': 'Single range',
+  'Berlayer': 'Layered',
+  'Mode rentang': 'Range mode',
+  'geser garis atau pita untuk mengubahnya': 'drag a line or the band to change it',
   'Seluruh rentang — tidak ada batas untuk digambar.': 'Full range — no bounds to draw.',
   'harga dalam {q}': 'price in {q}',
   'Vol': 'Vol',
@@ -1803,10 +1972,33 @@ const EN = {
   'Harga': 'Price',
   'Perubahan': 'Change',
   'Volume 24 jam': '24h volume',
+  '1 jam {v}': '1 hr {v}',
+  'bagian kita {v}': 'our share {v}',
+  // ---- GMGN safety dot in the position list ----
+  'GMGN': 'GMGN',
+  'Keamanan token': 'Token safety',
+  'Bahaya menurut GMGN': 'Dangerous per GMGN',
+  'Perlu waspada menurut GMGN': 'Caution per GMGN',
+  'Tidak ada tanda bahaya pada yang diperiksa GMGN': 'No danger signs in what GMGN checked',
+  'GMGN belum punya cukup data untuk token ini': 'GMGN does not have enough data on this token',
+  'honeypot: tidak': 'honeypot: no',
+  'pajak beli/jual {b}/{s}%': 'buy/sell tax {b}/{s}%',
+  'kontrak terverifikasi': 'contract verified',
+  'owner sudah dilepas': 'ownership renounced',
+  'Kolom keamanan yang dipakai penilaian belum terisi di GMGN. Belum dinilai bukan berarti aman.':
+    'The security fields this check relies on are empty at GMGN. Not judged does not mean safe.',
+  'Penilaian dari data GMGN, bukan audit kontrak.': 'A reading of GMGN data, not a contract audit.',
+  'Seluruh isi pool menurut DexScreener. Bagian kita dihitung dari nilai posisi terhadap angka itu — bukan terhadap likuiditas yang aktif di rentang harga sekarang.':
+    "The pool's entire contents per DexScreener. Our share is the position's value against that figure — not against the liquidity active in the current price range.",
+  'Pool ini belum terindeks di DexScreener.': 'This pool is not indexed by DexScreener yet.',
+  'Volume swap pool ini menurut DexScreener, bukan volume token di seluruh pool.': "This pool's swap volume per DexScreener, not the token's volume across every pool.",
   'Transaksi 24 jam': '24h transactions',
   'beli': 'buys',
   'jual': 'sells',
   'Likuiditas pool': 'Pool liquidity',
+  'Harga & MC': 'Price & MC',
+  'MC {v}': 'MC {v}',
+  'Harga dan kapitalisasi pasar token menurut DexScreener.': "The token's price and market cap per DexScreener.",
   'FDV': 'FDV',
   'Pool dibuat': 'Pool created',
   'lalu': 'ago',
@@ -1814,7 +2006,7 @@ const EN = {
   'Likuiditas sudah nol di chain': 'Liquidity is already zero on-chain',
   'Posisi ini akan ditandai tertutup pada sinkronisasi berikutnya.': 'This position will be marked closed on the next sync.',
 
-  // Kartu bagikan (ShareCard)
+  // Share card (ShareCard)
   'Bagikan': 'Share',
   'Menggambar kartu…': 'Rendering card…',
   'Kartu gagal digambar': 'Could not render the card',
@@ -1913,7 +2105,7 @@ const EN = {
   'Ketik untuk mencari…': 'Type to search…',
   'Mencari…': 'Searching…',
   'Tidak ada hasil untuk "{q}"': 'No results for "{q}"',
-  // Halaman Monitor
+  // Monitor page
   'Monitor': 'Monitor',
   'Semua posisi terbuka dalam satu layar: satu grafik per pool dengan rentang tiap posisi sebagai pita berwarna (klik pita untuk memilih), harga live dari chain, PnL, dan seberapa dekat posisi ke aturan keluar otomatis.': 'Every open position on one screen: one chart per pool with each position\'s range as a coloured band (click a band to select it), live on-chain price, PnL, and how close the position is to an automatic exit rule.',
   'Otomatis': 'Auto',
@@ -1959,13 +2151,95 @@ const EN = {
   '{pair} keluar dari rentang': '{pair} left its range',
   '{pair} mendekati pemicu keluar': '{pair} is close to an exit trigger',
   'Harga dibaca langsung dari pool tiap 3 detik; nilai, fee, dan PnL dari sinkron mesin tiap ~30 detik; lilin dari GeckoTerminal. Bar pemicu memakai aturan keluar yang berlaku untuk tiap posisi (aturan per-target menimpa aturan global).': 'Price is read straight from the pool every 3 seconds; value, fees, and PnL come from the engine sync every ~30 seconds; candles from GeckoTerminal. Trigger bars use the exit rules that actually apply to each position (per-target rules override the global ones).',
+  "Cadangan": "Backup",
+  "Unduh & pulihkan pengaturan, data, wallet": "Download & restore settings, data, wallet",
+  "config.json: aturan, target, RPC, gas, notifikasi, Telegram. Rahasia yang diatur lewat .env tidak ikut.": "config.json: rules, targets, RPC, gas, notifications, Telegram. Secrets set in .env are not included.",
+  "Basis data": "Database",
+  "Riwayat posisi, transaksi, ekuitas, riset wallet target. Cache RPC tidak ikut (terisi lagi sendiri).": "Position history, transactions, equity, target wallet research. The RPC cache is left out (it refills by itself).",
+  "Kunci wallet bot sebagai keystore terenkripsi password — kunci privat mentah tidak pernah masuk berkas.": "The bot wallet key as a password-encrypted keystore — the raw private key never goes into the file.",
+  "Cadangan terunduh ({s}) — simpan di tempat aman: isinya bisa berisi API key dan riwayat lengkap bot.": "Backup downloaded ({s}) — keep it somewhere safe: it can contain API keys and the bot's full history.",
+  "Bukan berkas cadangan Quiver.": "This is not a Quiver backup file.",
+  "Berkas cadangan bukan JSON yang valid.": "The backup file is not valid JSON.",
+  "Riwayat bot di server ini diganti isi cadangan. Posisi yang dibuka SESUDAH cadangan dibuat tidak akan dikenal bot. Berkas lama tidak dihapus — disimpan di sebelahnya sebagai *.pre-restore-*.": "The bot history on this server is replaced by the backup. Positions opened AFTER the backup was made will be unknown to the bot. The old files are not deleted — they are kept alongside as *.pre-restore-*.",
+  "Pengaturan diganti isi cadangan (port, token dasbor, dan lokasi data tetap milik server ini). Bot mulai lagi dalam mode simulasi.": "Settings are replaced by the backup (port, dashboard token and data location stay this server's). The bot restarts in simulation mode.",
+  "Pulihkan {w} dari cadangan?": "Restore {w} from backup?",
+  "Pulihkan": "Restore",
+  "Cadangan dipulihkan": "Backup restored",
+  "Bot belum menyala lagi setelah 4 menit — periksa pm2/log di server.": "The bot has not come back after 4 minutes — check pm2/logs on the server.",
+  "Unduh salinan pengaturan, basis data, dan wallet bot ke satu berkas, lalu pulihkan di instance ini atau instance lain. Kedua arah butuh token dashboard yang diketik ulang.": "Download a copy of the bot's settings, database and wallet into one file, then restore it on this or another instance. Both directions require re-typing the dashboard token.",
+  "Buat cadangan": "Create backup",
+  "belum ada wallet": "no wallet yet",
+  "Unduh cadangan": "Download backup",
+  "Pulihkan dari cadangan": "Restore from backup",
+  "Matikan mode LIVE dulu (tab Wallet & mode) sebelum memulihkan cadangan.": "Switch off LIVE mode first (Wallet & mode tab) before restoring a backup.",
+  "Berkas cadangan (.json)": "Backup file (.json)",
+  "Dibuat": "Created",
+  "Instance": "Instance",
+  "Ukuran berkas": "File size",
+  "{n} posisi ({o} terbuka) · {s}": "{n} positions ({o} open) · {s}",
+  "sama dengan wallet sekarang": "same as the current wallet",
+  "{n} chain": "{n} chain(s)",
+  "Menggantikan seluruh riwayat bot di server ini. Bot dinyalakan ulang.": "Replaces the bot's entire history on this server. The bot restarts.",
+  "Port, token dasbor, dan lokasi data tetap milik server ini. Bot dinyalakan ulang dalam mode simulasi.": "Port, dashboard token and data location stay this server's. The bot restarts in simulation mode.",
+  "Kunci wallet sekarang (kalau ada) dipindah ke berkas cadangan bertanggal, tidak dihapus.": "The current wallet key (if any) is moved to a dated backup file, not deleted.",
+  "password saat mencadangkan": "password used when backing up",
+  "Bot sedang dinyalakan ulang…": "The bot is restarting…",
+  "Halaman ini dimuat ulang otomatis begitu bot menyala lagi.": "This page reloads automatically once the bot is back.",
+  'Token dashboard': 'Dashboard token',
+  'Password keystore baru': 'New keystore password',
+  'Ulangi password': 'Repeat password',
+  'min. 8 karakter': 'min. 8 characters',
+  'Password keystore': 'Keystore password',
+  'Jual {m} dari fee ke {q} sekalian': 'Also sell the {m} from the fees for {q}',
+  'Dijual lewat agregator tepat sesudah klaim. {q} dari fee tetap di wallet.': 'Sold through the best aggregator right after the claim. The {q} part of the fees stays in the wallet.',
+  'Fee dijual': 'Fees sold',
+  'Fee belum terjual': 'Fees not sold yet',
+  'Masuk antrean jual dan dicoba lagi otomatis. {e}': 'Queued for sale and retried automatically. {e}',
+  "Agregator swap": "Swap aggregators",
+  "Kyber, OKX, LI.FI, 0x, 1inch, OpenOcean": "Kyber, OKX, LI.FI, 0x, 1inch, OpenOcean",
+  "Tanpa key. Calldata-nya dibaca dan dicocokkan kolom demi kolom sebelum dikirim — pengaman paling ketat.": "No key needed. Its calldata is decoded and checked field by field before sending — the strictest guard.",
+  "Butuh API key, secret key, dan passphrase. Sekitar 1 permintaan per detik per key.": "Needs an API key, secret key and passphrase. About 1 request per second per key.",
+  "Jalan tanpa key (batas laju ketat); key gratis menaikkan batasnya. LI.FI sendiri merutekan lewat agregator dan DEX lain.": "Works without a key (tight rate limit); a free key raises it. LI.FI itself routes through other aggregators and DEXes.",
+  "Butuh API key dari dashboard 0x. Mesin swap yang dipakai Coinbase Wallet dan MetaMask.": "Needs an API key from the 0x dashboard. The swap engine behind Coinbase Wallet and MetaMask.",
+  "Butuh API key dari portal 1inch. API-nya tidak memberi minimum terima, jadi hasil simulasi yang dijadikan patokan.": "Needs an API key from the 1inch portal. Its API gives no minimum output, so the simulated result is the reference.",
+  "Butuh API key pro — API publiknya memblokir bot lewat Cloudflare.": "Needs a pro API key — the public API blocks bots through Cloudflare.",
+  "Project ID (opsional)": "Project ID (optional)",
+  "Naikkan": "Move up",
+  "Turunkan": "Move down",
+  "Chain ini belum didukung": "Not supported on this chain",
+  "Butuh API key": "Needs an API key",
+  "Daftar key": "Get a key",
+  "Nyala": "On",
+  "Mati": "Off",
+  "Agregator dinyalakan": "Aggregator switched on",
+  "Agregator dimatikan": "Aggregator switched off",
+  "opsional": "optional",
+  "Key tersimpan — berlaku di swap berikutnya": "Key saved — applies from the next swap",
+  "Lepas key {a}?": "Remove the {a} key?",
+  "Key dilepas": "Key removed",
+  "Lepas key": "Remove key",
+  "Router swap belum siap. Muat ulang halaman sebentar lagi.": "The swap router is not ready yet. Reload the page in a moment.",
+  "Semua swap bot — zap saat membuka LP, jembatan ETH/USDG, jual sisa dan fee, isi gas, swap manual — lewat agregator di bawah. Perubahan berlaku di swap berikutnya, tanpa restart.": "Every bot swap — zaps when opening LP, the ETH/USDG bridge, leftover and fee sells, gas top-ups, manual swaps — goes through the aggregators below. Changes apply from the next swap, no restart.",
+  "Cara memilih rute": "How the route is chosen",
+  "Rute terbaik": "Best route",
+  "Urutan cadangan": "Fallback order",
+  "Mode: rute terbaik": "Mode: best route",
+  "Mode: urutan cadangan": "Mode: fallback order",
+  "Setiap swap menanyai semua agregator yang aktif sekaligus, lalu yang memberi hasil terbanyak yang dieksekusi. Kalau gagal, pindah ke peringkat berikutnya. Urutan di bawah hanya jadi penentu kalau hasilnya seri.": "Every swap asks all active aggregators at once and executes the one paying the most. If it fails, the next best is tried. The order below only breaks ties.",
+  "Agregator dicoba satu per satu sesuai urutan di bawah; yang berikutnya hanya dipakai kalau yang sebelumnya tidak menemukan rute, terlalu rugi, atau gagal.": "Aggregators are tried one by one in the order below; the next is only used when the previous finds no route, is too lossy, or fails.",
+  "Bandingkan sekarang": "Compare now",
+  "{n} agregator aktif. Membandingkan kutipan 10 {q} → {n2} tanpa mengirim transaksi.": "{n} aggregators active. Compares quotes for 10 {q} → {n2} without sending a transaction.",
+  "Agregator": "Aggregator",
+  "dimatikan": "switched off",
+  "chain ini belum didukung": "not supported on this chain",
+  "butuh API key": "needs an API key",
 };
 
 const DICT = { id: null, en: EN };
 
-// Alasan dari mesin: coba padanan utuh, kalau tidak ada ganti potongan yang dikenal.
-// Sisanya (angka, alamat, pesan error RPC) dibiarkan apa adanya — memang bukan
-// kalimat kita, dan pesan RPC aslinya berbahasa Inggris.
+// Engine reasons: try an exact match first, otherwise swap the known pieces.
+// The rest (numbers, addresses, RPC error messages) is left as it is — it is not
+// our sentence, and the original RPC messages are in English.
 export function reason(text) {
   return formatNote(text, current);
 }
@@ -1977,7 +2251,7 @@ export function translate(text, vars) {
   return out;
 }
 
-// Hook: komponen ikut tergambar ulang saat bahasa diganti.
+// Hook: components re-render when the language changes.
 const Ctx = createContext('id');
 export function I18nProvider({ children }) {
   const [locale, setL] = useState(getLocale());
@@ -1986,12 +2260,12 @@ export function I18nProvider({ children }) {
     listeners.add(f);
     return () => listeners.delete(f);
   }, []);
-  // AriaI18n menyamakan locale internal React Aria dengan pilihan bahasa di sini,
-  // sehingga arah teks dan format bawaannya ikut. Teks yang dibacakan pembaca layar
-  // ("sortable column", "sorted by column in descending order") tetap Inggris:
-  // React Aria memang tidak mengirim berkas bahasa Indonesia (lihat
-  // node_modules/react-aria/dist/private/intl/table/ — tidak ada id-ID), dan itu
-  // milik pustaka, bukan kamus kita.
+  // AriaI18n aligns React Aria's internal locale with the language choice here,
+  // so text direction and default formats follow. Text read out by screen readers
+  // ("sortable column", "sorted by column in descending order") stays English:
+  // React Aria ships no Indonesian bundle (see
+  // node_modules/react-aria/dist/private/intl/table/ — there is no id-ID), and that
+  // belongs to the library, not to our dictionary.
   return (
     <Ctx.Provider value={locale}>
       <AriaI18n locale={locale === 'en' ? 'en-US' : 'id-ID'}>{children}</AriaI18n>

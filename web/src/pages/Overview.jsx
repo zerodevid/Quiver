@@ -1,33 +1,38 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Button } from '@heroui/react';
 import { useStatus } from '../App';
 import { usePoll, useResync } from '../hooks';
-import { PageHeader, Stat, Hero, HeroFigure, Panel, Empty, Loading, Notice, KV, Dot, DataTable, PriceRange, Segmented, Refresh } from '../components/ui';
+import { PageHeader, Stat, Hero, HeroFigure, Panel, Empty, Loading, Notice, KV, Dot, DataTable, PriceRange, Segmented, Refresh, Fx, WalletLinks, baseTokenOf } from '../components/ui';
 import PnlCalendar from '../components/PnlCalendar';
 import GrowthChart from '../components/GrowthChart';
 import ShareButton, { ShareDialog, totalCard, dailyCard } from '../components/ShareCard';
+import { tokenColumn } from '../components/TokenCell';
 import { Pair, SyncState, FeeCell } from './Positions';
+import { GmgnProvider } from '../components/GmgnDot';
 import PositionHistory from '../components/PositionHistory';
-import { usd, tone, num, pct, age, ago, short, txHref, aprOf, aprText, locale as fmtLocale, TXKIND, TXSTATUS } from '../fmt';
+import { usd, kUsd, tone, num, pct, age, ago, short, txHref, aprOf, aprText, locale as fmtLocale, TXKIND, TXSTATUS } from '../fmt';
+import { isHidden, MASK } from '../privacy';
 import { useI18n, reason } from '../i18n';
 import { useClosePosition } from '../useClosePosition';
+import { canonAddr } from '../chain';
 
 const RANGES = [['24h', '24 jam'], ['7d', '7 hari'], ['30d', '30 hari'], ['all', 'Semua']];
 const VIEWS = [['pnl', 'PnL kumulatif'], ['value', 'Nilai']];
-// PnL bersih hanya ada kalau modal wallet terlacak (setoran/penarikan dari RPC).
+// Net PnL only exists if the wallet capital is tracked (deposits/withdrawals from RPC).
 const VIEWS_NET = [['net', 'PnL bersih'], ...VIEWS];
 const sum = (rows, f) => rows.reduce((a, r) => a + (f(r) || 0), 0);
 
-// Jembatan PnL kumulatif → PnL bersih. Dua angka "PnL" yang beda $20-an tanpa
-// keterangan terbaca sebagai bug. Selisihnya biaya yang dibayar dari wallet di luar
-// posisi: gas (dihitung dari tabel txs) dan sisanya — slippage swap, pergerakan
-// harga ETH yang dipegang — yang tidak bisa dipisah satu per satu.
+// Bridge cumulative PnL → net PnL. Two "PnL" figures that differ by $20-ish without
+// explanation read as a bug. The difference is costs paid from the wallet outside
+// positions: gas (computed from the txs table) and the rest — swap slippage, movement of
+// the ETH price being held — which cannot be separated one by one.
 function PnlGap({ p }) {
   const { t } = useI18n();
   const n = p.now, c = p.capital;
   if (n.netPnl == null) return null;
   const gas = n.gasUsd || 0;
-  const other = n.netPnl - (n.pnl - gas);
+  const slip = -(n.slipUsd || 0);                 // measured from swap quotes; a cost, so negative
+  const other = n.netPnl - (n.pnl - gas) - slip;  // what is left once gas and slippage are explained
   const signed = (v) => `${v > 0.005 ? '+' : ''}${usd(v)}`;
   const Row = ({ label, sub, v, strong }) => (
     <div className={`flex items-baseline justify-between gap-4 py-1.5 ${strong ? 'font-medium' : ''}`}>
@@ -43,7 +48,7 @@ function PnlGap({ p }) {
           {t('Kenapa PnL kumulatif dan PnL bersih berbeda?')}
         </span>
         <span className="num text-xs text-muted">
-          {t('{a} − gas {g} {o} = {b}', { a: usd(n.pnl), g: usd(gas), o: `${other < 0 ? '−' : '+'} ${usd(Math.abs(other))}`, b: usd(n.netPnl) })}
+          {t('{a} − gas {g} − slippage {s} {o} = {b}', { a: usd(n.pnl), g: usd(gas), s: usd(-slip), o: `${other < 0 ? '−' : '+'} ${usd(Math.abs(other))}`, b: usd(n.netPnl) })}
         </span>
       </summary>
       <div className="mt-2 max-w-2xl pl-4">
@@ -53,7 +58,8 @@ function PnlGap({ p }) {
         <div className="mt-2 divide-y divide-border">
           <Row label="PnL kumulatif (hasil posisi)" v={n.pnl} />
           <Row label="Gas" sub={t('{n} transaksi, termasuk yang gagal', { n: num(n.gasTxCount || 0) })} v={-gas} />
-          <Row label="Slippage swap & pergerakan harga ETH" sub={t('sisa selisih')} v={other} />
+          <Row label="Slippage swap" sub={t('terukur dari kuotasi swap')} v={slip} />
+          <Row label="Pergerakan harga ETH & lainnya" sub={t('sisa selisih')} v={other} />
           <Row label="PnL bersih" v={n.netPnl} strong />
         </div>
         {c && (
@@ -72,16 +78,16 @@ function PnlGap({ p }) {
   );
 }
 
-// Ke mana uangnya. Pertanyaan utama untuk bot LP: berapa bagian dana yang benar-benar
-// bekerja di posisi, berapa yang menganggur di kas. Satu batang bertumpuk (bagian dari
-// keseluruhan) dengan dua keluarga warna — biru = bekerja, abu = kas — dan daftar
-// yang dikelompokkan sama. Identitas tiap potong tidak hanya dari warna: tiap baris
-// punya kotak warnanya, dan menyorot baris/potong saling menyalakan.
+// Where the money is. The main question for an LP bot: what share of funds is really
+// working in positions, what share is idle as cash. A single stacked bar (parts of the
+// whole) with two colour families — blue = working, grey = cash — and the list
+// grouped the same. Each slice's identity is not from colour alone: every row
+// has its colour box, and highlighting a row/slice lights up the other.
 function Composition({ now, ethUsd }) {
   const { t } = useI18n();
   const [hot, setHot] = useState(null);
   const c = now.cash;
-  const ethVal = c ? (c.usd - c.usdg) : 0;            // nilai ETH+WETH saat kas dibaca
+  const ethVal = c ? (c.usd - c.usdg) : 0;            // ETH+WETH value when the cash was read
   const perEth = c && c.eth + c.weth > 0 ? ethVal / (c.eth + c.weth) : ethUsd;
   const tint = (base, pct) => `color-mix(in oklab, ${base} ${pct}%, var(--surface))`;
   const working = [
@@ -91,8 +97,8 @@ function Composition({ now, ethUsd }) {
   ].filter((r, i) => i === 0 || r.v > 0.005);
   const idle = c ? [
     { k: 'USDG', v: c.usdg },
-    { k: 'WETH', v: c.weth * perEth, sub: `${num(c.weth, 5)} WETH` },
-    { k: 'ETH', v: c.eth * perEth, sub: `${num(c.eth, 5)} ETH` },
+    { k: 'WETH', v: c.weth * perEth, sub: `${isHidden() ? MASK : num(c.weth, 5)} WETH` },
+    { k: 'ETH', v: c.eth * perEth, sub: `${isHidden() ? MASK : num(c.eth, 5)} ETH` },
   ].filter((r) => r.v > 0.005).sort((x, y) => y.v - x.v).map((r, i) => ({ ...r, color: tint('var(--foreground)', [36, 24, 15][i] ?? 15) })) : [];
   const all = [...working, ...idle];
   const total = Math.max(1e-9, sum(all, (r) => r.v));
@@ -101,14 +107,20 @@ function Composition({ now, ethUsd }) {
   const fmtPct = (v) => `${num(share(v), share(v) < 10 ? 1 : 0)}%`;
   const dimmed = (k) => hot != null && hot !== k;
 
-  // fungsi render biasa, bukan komponen: komponen yang dibuat ulang tiap render akan
-  // dipasang ulang saat sorotan berubah dan hover-nya berkedip
+  // an ordinary render function, not a component: a component recreated on every render would
+  // be remounted when the highlight changes and its hover would flicker
   const item = (r) => (
     <div key={r.k} className={`flex items-center gap-2.5 rounded-md px-1.5 py-1.5 text-sm transition-colors ${hot === r.k ? 'bg-default/60' : ''}`}
       onMouseEnter={() => setHot(r.k)} onMouseLeave={() => setHot(null)}>
       <span className="size-2.5 shrink-0 rounded-[3px]" style={{ background: r.color }} />
       <span className="min-w-0 flex-1 truncate">{t(r.k)}{r.sub && <span className="ml-1.5 text-xs text-muted">{r.sub}</span>}</span>
-      <span className="num shrink-0 font-medium">{usd(r.v)}</span>
+      {/* The rupiah goes under the dollar, not beside it: this column is only a third of
+          the screen, and putting both side by side eats the label space until
+          "Posisi LP" shrinks to "P.". */}
+      <span className="flex shrink-0 flex-col items-end leading-tight">
+        <span className="num font-medium">{usd(r.v)}</span>
+        <Fx v={r.v} className="text-[0.6875rem]" />
+      </span>
       <span className="num w-11 shrink-0 text-end text-xs text-muted">{fmtPct(r.v)}</span>
     </div>
   );
@@ -116,7 +128,10 @@ function Composition({ now, ethUsd }) {
     <div className="pt-2.5">
       <div className="flex items-baseline gap-2.5 px-1.5 pb-0.5 text-xs">
         <span className="flex-1 font-medium text-muted">{t(label)}</span>
-        <span className="num font-medium text-muted">{usd(v)}</span>
+        <span className="flex flex-col items-end leading-tight">
+          <span className="num font-medium text-muted">{usd(v)}</span>
+          <Fx v={v} className="text-[0.6875rem]" />
+        </span>
         <span className="num w-11 text-end text-muted">{fmtPct(v)}</span>
       </div>
       {rows.map(item)}
@@ -134,6 +149,7 @@ function Composition({ now, ethUsd }) {
           <div className="text-end text-xs text-muted">
             {t('menganggur di kas')}
             <div className="num text-sm font-medium text-foreground">{usd(idleUsd)}</div>
+            <Fx v={idleUsd} className="ml-0 block" />
           </div>
         </div>
       )}
@@ -154,27 +170,27 @@ function Composition({ now, ethUsd }) {
       </div>
       <div className="mt-2 divide-y divide-border border-t border-border">
         {now.capitalNet != null
-          // modal nyata: baseline + setoran − penarikan (capital.js) — sama dengan kartu PnL bersih
-          ? <KV label="Modal bersih"><span title={t('Nilai wallet saat bot mulai mencatat + setoran − penarikan')}>{usd(now.capitalNet)}</span></KV>
+          // real capital: baseline + deposits − withdrawals (capital.js) — the same as the net PnL card
+          ? <KV label="Modal bersih" fx={now.capitalNet}><span title={t('Nilai wallet saat bot mulai mencatat + setoran − penarikan')}>{usd(now.capitalNet)}</span></KV>
           : now.capital != null && (
-          <KV label="Modal bersih"><span title={t('Nilai sekarang dikurangi seluruh PnL — kira-kira dana yang disetor ke wallet bot')}>{usd(now.capital)}</span></KV>
+          <KV label="Modal bersih" fx={now.capital}><span title={t('Nilai sekarang dikurangi seluruh PnL — kira-kira dana yang disetor ke wallet bot')}>{usd(now.capital)}</span></KV>
         )}
-        <KV label="Modal di posisi">{usd(now.costUsd)}</KV>
+        <KV label="Modal di posisi" fx={now.costUsd}>{usd(now.costUsd)}</KV>
       </div>
     </div>
   );
 }
 
-// Kinerja per sumber: target mana yang benar-benar menghasilkan setelah disalin.
-// Batang divergen dari satu garis nol — untung ke kanan (hijau), rugi ke kiri
-// (merah) — supaya sumber yang merugi terbaca sebagai rugi, bukan batang pendek.
+// Performance per source: which targets really earn after being copied.
+// Diverging bars from a single zero line — profit to the right (green), loss to the left
+// (red) — so a losing source reads as a loss, not as a short bar.
 function BySource({ rows }) {
   const { t } = useI18n();
   if (!rows.length) return <div className="p-4"><Empty title="Belum ada posisi" /></div>;
-  const tots = rows.map((r) => r.realized + r.upnl);
+  const tots = rows.map((r) => r.net ?? r.realized + r.upnl);   // net of gas and slippage
   const maxPos = Math.max(0, ...tots), maxNeg = Math.max(0, ...tots.map((v) => -v));
   const span = Math.max(1e-9, maxPos + maxNeg);
-  const zero = (maxNeg / span) * 100;   // letak garis nol dalam persen lebar
+  const zero = (maxNeg / span) * 100;   // position of the zero line in percent of the width
   return (
     <div className="divide-y divide-border">
       {rows.map((r, i) => {
@@ -209,7 +225,7 @@ function BySource({ rows }) {
   );
 }
 
-// Ringkasan posisi ditutup: empat angka dalam kisi, bukan daftar label panjang.
+// Closed positions summary: four figures in a grid, not a long list of labels.
 function ClosedStats({ st }) {
   const { t } = useI18n();
   const cells = [
@@ -230,10 +246,10 @@ function ClosedStats({ st }) {
   );
 }
 
-// Delapan angka milidetik berjajar tidak bisa dibaca sekilas. Yang dicari mata:
-// "apakah RPC-nya sehat?" — jadi tampilkan median, dan sisanya di tooltip.
-// Sisa jatah salin: ruang yang masih tersisa di tiap plafon aturan umum. Batang penuh =
-// plafon habis — posisi berikutnya akan dilewati dengan alasan itu.
+// Eight millisecond figures side by side cannot be read at a glance. What the eye looks for:
+// "is the RPC healthy?" — so show the median, and the rest in a tooltip.
+// Remaining copy quota: the room still left under each general rule ceiling. A full bar =
+// ceiling used up — the next position will be skipped for that reason.
 function CopyRoom({ room, dryRun }) {
   const { t } = useI18n();
   const bar = ({ label, used, limit, left, fmt = usd, sub }) => {
@@ -273,9 +289,9 @@ function Latency({ rpc }) {
   if (!ms.length) return <span className="text-muted">—</span>;
   const med = ms[Math.floor(ms.length / 2)];
   const cooling = rpc.filter((r) => r.cooling).length;
-  const judul = rpc.map((r) => `${r.host} · ${r.lastMs} ms${r.cooling ? ' · istirahat' : ''}${r.errors ? ` · ${r.errors} error` : ''}`).join('\n');
+  const heading = rpc.map((r) => `${r.host} · ${r.lastMs} ms${r.cooling ? ' · istirahat' : ''}${r.errors ? ` · ${r.errors} error` : ''}`).join('\n');
   return (
-    <span title={judul}>
+    <span title={heading}>
       {t('{n} ms', { n: med })}
       <span className="ml-1.5 font-normal text-muted">{t('median · {n} RPC', { n: rpc.length })}</span>
       {cooling > 0 && <span className="ml-1.5 font-normal text-warning">{t('{n} istirahat', { n: cooling })}</span>}
@@ -283,8 +299,8 @@ function Latency({ rpc }) {
   );
 }
 
-// PnL per hari dikelompokkan di browser supaya "hari" mengikuti zona waktu pengguna,
-// bukan zona waktu server.
+// PnL per day is grouped in the browser so the "day" follows the user's time zone,
+// not the server's time zone.
 function dailyOf(closed) {
   const daily = {}, counts = {};
   const pad = (n) => String(n).padStart(2, '0');
@@ -297,46 +313,97 @@ function dailyOf(closed) {
   return { daily, counts };
 }
 
+// The pool's swap volume (DexScreener) — this is where fees come from. Without this figure
+// the Fee $0.00 column cannot be read: a quiet pool, or a position out of range?
+// 24 hours for the pool's size, 1 hour because a position opened 20 minutes ago
+// did not enjoy yesterday's volume.
+function VolCell({ pair }) {
+  const { t } = useI18n();
+  const v = pair?.volume;
+  if (!pair) return <span className="text-muted">—</span>;
+  if (v?.h24 == null) return <span className="text-muted" title={t('Pool ini belum terindeks di DexScreener.')}>—</span>;
+  return (
+    <div className="whitespace-nowrap" title={t('Volume swap pool ini menurut DexScreener, bukan volume token di seluruh pool.')}>
+      {kUsd(v.h24)}
+      {v.h1 != null && <div className="text-xs text-muted">{t('1 jam {v}', { v: kUsd(v.h1) })}</div>}
+    </div>
+  );
+}
+
+// How big the pool is, and how big we are in it. Two $120 LPs that
+// look the same are not the same at all: one holds 0.1% of a $4 million deep pool,
+// the other 12% of a $1,000 pool — the second moves its own price when it exits.
+function LiqCell({ pair, p }) {
+  const { t } = useI18n();
+  const liq = pair?.liquidityUsd;
+  if (!pair) return <span className="text-muted">—</span>;
+  if (liq == null) return <span className="text-muted" title={t('Pool ini belum terindeks di DexScreener.')}>—</span>;
+  // Our share = the position value against the pool's whole liquidity. Rough: DexScreener
+  // counts everything in the pool, not just the liquidity active in the current
+  // price range — so our real share of the fees can be larger than this figure.
+  const share = liq > 0 && p.valueUsd > 0 ? (p.valueUsd / liq) * 100 : null;
+  return (
+    <div className="whitespace-nowrap" title={t('Seluruh isi pool menurut DexScreener. Bagian kita dihitung dari nilai posisi terhadap angka itu — bukan terhadap likuiditas yang aktif di rentang harga sekarang.')}>
+      {kUsd(liq)}
+      {share != null && <div className={`text-xs ${share >= 5 ? 'text-warning' : 'text-muted'}`}>{t('bagian kita {v}', { v: pct(share, share < 1 ? 2 : 1).replace('+', '') })}</div>}
+    </div>
+  );
+}
+
 export default function Overview() {
   const { t } = useI18n();
   const { status: d } = useStatus();
-  const [range, setRange] = useState('7d');
-  // Tampilan awal: PnL bersih kalau modal terlacak; kalau tidak, PnL kumulatif.
+  // Initial range: the whole history. The first question people bring to this page
+  // is "how much profit since the beginning", not the last week.
+  const [range, setRange] = useState('all');
+  // Initial view: net PnL if capital is tracked; otherwise cumulative PnL.
   const [viewPick, setView] = useState('net');
-  const [shareDay, setShareDay] = useState(null);   // 'YYYY-MM-DD' yang diklik di kalender
+  const [shareDay, setShareDay] = useState(null);   // the 'YYYY-MM-DD' clicked in the calendar
   const { data: p, reload: reloadPortfolio } = usePoll('/api/portfolio?range=' + range, 30000);
-  // Sama dengan halaman Posisi: endpoint murah, jadi posisi baru muncul dalam ~5 detik.
+  // The same as the Positions page: a cheap endpoint, so a new position appears within ~5 seconds.
   const { data: pos, reload: reloadPos } = usePoll('/api/positions', 5000);
-  // Klik baris posisi aktif -> laci riwayat yang sama dengan halaman Posisi (PnL,
-  // komposisi token, transaksi); nama token tetap menaut ke halaman tokennya.
+  // Click an active position row -> the same history drawer as the Positions page (PnL,
+  // token composition, transactions); the token name still links to its token page.
   const [hist, setHist] = useState(null);
   const { data: tx } = usePoll('/api/txs', 10000);
-  // Satu sinkron chain menyegarkan SELURUH halaman, bukan cuma tabelnya: kartu total
-  // portofolio dan PnL dihitung dari hasil sinkron yang sama, dan dua angka untuk
-  // hal yang sama dengan umur berbeda di satu layar adalah bug yang terlihat.
+  // Pool volume for the Volume column in the active positions table. The same endpoint as
+  // the Monitor card (DexScreener, already memoised per pool on the server), so once
+  // a minute is enough — this is market context, not a position figure that must tick.
+  const pools = useMemo(() => [...new Set((pos?.positions || [])
+    .filter((x) => !x.empty)
+    .map((x) => canonAddr(x.pool_ref || ''))
+    .filter(Boolean))].sort(), [pos]);
+  const { data: mk } = usePoll(pools.length ? `/api/monitor/market?pools=${pools.join(',')}` : null, 60000);
+  // One chain sync refreshes the WHOLE page, not just the table: the portfolio total
+  // card and PnL are computed from the same sync result, and two figures for
+  // the same thing with different ages on one screen is a visible bug.
   const reloadAll = useCallback(async () => {
     await Promise.all([reloadPos(), reloadPortfolio()]);
   }, [reloadPos, reloadPortfolio]);
   const [resync, syncing] = useResync(reloadAll);
-  // Tombol darurat "tutup paksa semua" — sama dengan yang di halaman Posisi, dipakai
-  // dari ringkasan supaya tidak perlu pindah halaman dulu saat pasar bergerak cepat.
+  // The emergency "force close all" button — the same as on the Positions page, used
+  // from the summary so there is no need to switch pages first when the market moves fast.
   const { forceCloseAll, closing } = useClosePosition(reloadAll);
   if (!d) return <Loading page />;
   const s = d.summary, T = d.totals || {};
-  // Kursor bisa sedikit MENDAHULUI kepala rantai yang terakhir dibaca; itu sinkron,
-  // bukan "tertinggal −19 blok".
+  // The cursor can slightly LEAD the chain head last read; that is sync,
+  // not "lagging −19 blocks".
   const lag = Math.max(0, d.chain.lag);
+  // Two minutes without a single successful scan is far outside the normal rhythm
+  // (one cycle every 1.5 seconds) — that is no longer a slow RPC, it is stuck.
+  const scanStale = !d.chain.lastScan || Date.now() - d.chain.lastScan > 120_000;
   const maxSkip = Math.max(1, ...(d.skipReasons || []).map((r) => r.n));
   const now = p?.now, st = p?.stats;
   const view = viewPick === 'net' && now?.netPnl == null ? 'pnl' : viewPick;
   const open = (pos?.positions || []).filter((x) => !x.empty);
-  // Posisi yang belum ikut sinkron chain: nilai masih taksiran modal, fee & PnL belum ada.
+  // A position not yet synced with the chain: the value is still the capital estimate, fee & PnL do not exist yet.
   const pendingSync = open.filter((x) => x.syncing).length;
   const dash = (x, node) => (x.syncing ? <span className="text-muted">—</span> : node);
+  const pairOf = (x) => mk?.pairs?.[canonAddr(x.pool_ref || '')] || null;
   const cal = p ? dailyOf(p.closed) : null;
-  // Kesehatan LP dihitung dari daftar posisi yang sama dengan tabel di bawah, bukan
-  // dari ringkasan mesin: dua angka untuk hal yang sama dengan umur berbeda di satu
-  // layar adalah bug yang terlihat.
+  // LP health is computed from the same position list as the table below, not
+  // from the engine summary: two figures for the same thing with different ages on one
+  // screen is a visible bug.
   const inRangeN = open.filter((x) => x.inRange).length;
   const outUsd = sum(open.filter((x) => x.inRange === false), (x) => x.valueUsd);
   const feeOpen = sum(open, (x) => (x.feeUsd || 0) + (x.claimedUsd || 0));
@@ -350,13 +417,13 @@ export default function Overview() {
       <PageHeader group="Pemantauan" title="Ringkasan">
         <ShareButton label="Bagikan total PnL" isDisabled={!now} card={now ? totalCard({ pnl: now.netPnl ?? now.pnl, net: now.netPnl != null }) : null} />
       </PageHeader>
-      {/* Kartu PnL harian: hari yang diklik di kalender. Server merakit datanya sendiri. */}
+      {/* Daily PnL card: the day clicked in the calendar. The server assembles its data itself. */}
       <ShareDialog card={shareDay && cal ? dailyCard({ day: shareDay, pnl: cal.daily[shareDay] }) : null} onClose={() => setShareDay(null)} />
       <PositionHistory id={hist} onClose={() => setHist(null)} />
-      {/* Satu blok ringkasan, dua tingkat: dua angka yang dicari setiap kali halaman
-          dibuka (berapa nilainya, untung berapa) berdiri sendiri dalam kartu besar di
-          kiri; empat ukuran kesehatan LP jadi ubin di sebelahnya. Empat kartu seukuran
-          sama membuat "total portofolio" dan "win rate" tampak sama pentingnya. */}
+      {/* One summary block, two tiers: the two numbers looked for every time the page is
+          opened (what it is worth, how much profit) stand alone in a big card on the
+          left; four LP health measures become tiles beside it. Four equally sized cards
+          make "total portfolio" and "win rate" look equally important. */}
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Hero className="col-span-2 lg:row-span-2">
           <HeroFigure label="Total portofolio" value={now ? usd(now.value) : '—'} fx={now?.value}
@@ -365,8 +432,8 @@ export default function Overview() {
                 + ((now.leftoverUsd || 0) > 0.005 ? t(' · sisa token {v}', { v: usd(now.leftoverUsd) }) : '')
               : t('hanya posisi — saldo kas tidak terbaca')} />
           {now?.netPnl != null
-            // Modal wallet terlacak: yang utama PnL bersih terhadap modal nyata; PnL
-            // per-posisi (tanpa biaya zap/gas/swap) jadi keterangan.
+            // Wallet capital tracked: the main one is net PnL against the real capital; per-position
+            // PnL (without zap/gas/swap costs) becomes the note.
             ? <HeroFigure className="border-t border-border pt-4 sm:pt-5" label="PnL bersih" value={usd(now.netPnl)} fx={now.netPnl} valueClass={tone(now.netPnl)}
               aside={now.capitalNet > 0 ? <span className={`num text-sm font-semibold ${tone(now.netPnl)}`}>{pct((now.netPnl / now.capitalNet) * 100, 2)}</span> : null}
               sub={t('modal {m} · PnL posisi {v}', { m: usd(now.capitalNet), v: usd(now.pnl) })} />
@@ -374,7 +441,7 @@ export default function Overview() {
               aside={now?.capital > 0 ? <span className={`num text-sm font-semibold ${tone(now.pnl)}`}>{pct((now.pnl / now.capital) * 100, 2)}</span> : null}
               sub={!now ? null : t('terealisasi {r} · berjalan {u}', { r: usd(now.realizedUsd), u: usd(now.unrealizedUsd) })} />}
         </Hero>
-        {/* Fee tanpa APR cuma memberi tahu jumlahnya, bukan apakah modalnya bekerja. */}
+        {/* Fee without APR only gives the amount, not whether the capital is working. */}
         <Stat label="Fee terkumpul" value={usd(s.feeUsd)} fx={s.feeUsd}
           badge={portApr == null ? null : (
             <span className="num shrink-0 rounded bg-success/12 px-1.5 py-0.5 text-[0.6875rem] font-semibold whitespace-nowrap text-success"
@@ -382,14 +449,14 @@ export default function Overview() {
               {t('APR {v}', { v: aprText(portApr) })}
             </span>)}
           sub={s.costUsd > 0 ? t('{p}% dari modal · belum diklaim', { p: num((s.feeUsd / s.costUsd) * 100, 2) }) : t('belum diklaim')} />
-        {/* Pertanyaan pokok LP: fee yang dihasilkan menutup impermanent loss atau tidak. */}
+        {/* The core LP question: whether the fees earned cover the impermanent loss. */}
         <Stat label="Fee vs IL" value={ilOpen == null ? '—' : usd(feeOpen + ilOpen)} fx={ilOpen == null ? null : feeOpen + ilOpen}
           valueClass={ilOpen == null ? '' : tone(feeOpen + ilOpen)}
           sub={<span title={t('Fee posisi terbuka ditambah impermanent loss-nya: selisih terhadap sekadar memegang token yang sama tanpa ber-LP.')}>
             {ilOpen == null ? t('IL belum terhitung') : t('fee {f} · IL {i}', { f: usd(feeOpen), i: usd(ilOpen) })}
           </span>} />
-        {/* Posisi di luar rentang berhenti menghasilkan fee — angka yang menentukan
-            apakah ada yang harus dikerjakan sekarang. */}
+        {/* Out-of-range positions stop earning fees — the number that decides
+            whether something has to be done right now. */}
         <Stat label="Posisi in-range" value={open.length ? `${inRangeN}/${open.length}` : '—'}
           valueClass={!open.length ? '' : inRangeN === open.length ? 'text-success' : 'text-warning'}
           sub={!open.length ? t('belum ada posisi terbuka')
@@ -431,24 +498,31 @@ export default function Overview() {
             </Button>)}
         </div>}>
         {!pos?.positions ? <Loading text="Memuat posisi…" /> : (
+          <GmgnProvider tokens={open.map((x) => baseTokenOf(x))}>
           <DataTable label="Posisi aktif" rows={open} rowKey={(x) => x.id} dense onRow={(x) => setHist(x.id)}
             defaultSort={{ column: 'val', direction: 'descending' }}
             empty={<Empty title="Tidak ada posisi aktif" sub="Posisi muncul di sini setelah bot menyalin LP dari wallet target." />}
             columns={[
               { key: 'pair', label: 'Pasangan', sort: (x) => `${x.symbol0}/${x.symbol1}`, render: (x) => <Pair p={x} link={false} /> },
-              // Versi ringkas kolom Sumber di halaman Posisi: cukup siapa yang disalin
-              // (rincian PnL target ada di sana), supaya panel ringkasan tetap padat.
+              // A compact version of the Source column on the Positions page: just who was copied
+              // (the target PnL breakdown is there), so the summary panel stays compact.
               { key: 'tgt', label: 'Sumber', sort: (x) => x.targetLabel || x.target || '', render: (x) => (
                 x.target ? (
-                  <a href={'#targets/' + x.target} className="group block max-w-40" title={x.target}>
-                    {x.targetLabel && <div className="truncate font-medium group-hover:underline">{x.targetLabel}</div>}
-                    <div className="mono text-xs whitespace-nowrap text-muted group-hover:text-foreground">{short(x.target)}</div>
-                  </a>
+                  <div className="max-w-40">
+                    <a href={'#targets/' + x.target} className="group block" title={x.target}>
+                      {x.targetLabel && <div className="truncate font-medium group-hover:underline">{x.targetLabel}</div>}
+                      <div className="mono text-xs whitespace-nowrap text-muted group-hover:text-foreground">{short(x.target)}</div>
+                    </a>
+                    <WalletLinks address={x.target} compact className="mt-0.5" />
+                  </div>
                 ) : <span className="text-xs text-muted">{t('Manual / di luar bot')}</span>) },
               { key: 'range', label: 'Rentang harga', sortable: false, render: (x) => (
                 <PriceRange position={x} lo={x.tick_lower} hi={x.tick_upper} cur={x.curTick}
                   dec0={x.dec0} dec1={x.dec1} quoteSide={x.quoteSide} symbol0={x.symbol0} symbol1={x.symbol1}
                   entrySqrt={x.entrySqrt} exitSqrt={x.exitSqrt} showPrices={false} />) },
+              tokenColumn(pairOf),
+              { key: 'vol', label: 'Volume 24 jam', align: 'end', sort: (x) => pairOf(x)?.volume?.h24 ?? -1, render: (x) => <VolCell pair={pairOf(x)} /> },
+              { key: 'liq', label: 'Likuiditas pool', align: 'end', sort: (x) => pairOf(x)?.liquidityUsd ?? -1, render: (x) => <LiqCell pair={pairOf(x)} p={x} /> },
               { key: 'val', label: 'Nilai', align: 'end', sort: (x) => x.valueUsd, render: (x) => (
                 <div className="whitespace-nowrap">{usd(x.valueUsd)}<div className="text-xs text-muted">{t('modal {v}', { v: usd(x.costUsd) })}</div></div>) },
               { key: 'fee', label: 'Fee', align: 'end', sort: (x) => x.feeUsd, render: (x) => dash(x, <FeeCell p={x} />) },
@@ -456,10 +530,11 @@ export default function Overview() {
                 <div className={`whitespace-nowrap ${tone(x.pnlUsd)}`}>{usd(x.pnlUsd)}<div className="text-xs">{pct(x.pnlPct)}</div></div>)) },
               { key: 'age', label: 'Umur', align: 'end', sort: (x) => x.ageHours, render: (x) => <span className="whitespace-nowrap text-muted">{age(x.ageHours)}</span> },
             ]} />
+          </GmgnProvider>
         )}
       </Panel>
 
-      {/* Rata tinggi: kolom kanan meregang setinggi kalender, tidak meninggalkan celah */}
+      {/* Equal height: the right column stretches to the calendar's height, leaving no gap */}
       <div className="mb-4 grid gap-3 lg:grid-cols-5">
         <Panel title="Kalender PnL" desc="PnL terealisasi per hari posisi ditutup · klik hari untuk membuat kartu bagikan" className="lg:col-span-3" bodyClass="flex-1">
           {cal ? <PnlCalendar daily={cal.daily} counts={cal.counts} empty="Belum ada posisi ditutup" onShare={(k) => setShareDay(k)} /> : <Loading />}
@@ -487,6 +562,14 @@ export default function Overview() {
               <Dot tone={lag < 60 ? 'success' : 'warning'} />
               <span className="ml-1.5">{lag === 0 ? t('sinkron') : t('{n} blok', { n: num(lag) })}</span>
             </KV>
+            {/* "Lagging" can mislead: the latest block is only read inside a scan cycle,
+                so a stuck cycle freezes both at once and lag stays 0 although the bot has been
+                blind for a long time. The age of the last successful scan cannot be fooled
+                that way. */}
+            <KV label="Pemindaian terakhir">
+              <Dot tone={scanStale ? 'warning' : 'success'} />
+              <span className="ml-1.5">{ago(d.chain.lastScan)}</span>
+            </KV>
             <KV label="Aksi terdeteksi">{num(T.actions)}</KV>
             <KV label="Disalin / dilewati">{num(T.would)} / {num(T.skipped)}</KV>
             <KV label="Harga ETH">{usd(d.chain.ethUsd)}</KV>
@@ -506,7 +589,7 @@ export default function Overview() {
                       <span className="min-w-0 truncate" title={text}>{text.charAt(0).toUpperCase() + text.slice(1)}</span>
                       <span className="num shrink-0 font-medium">{num(r.n)}{share != null && <span className="ml-1.5 inline-block w-9 text-end text-xs font-normal text-muted">{num(share, 0)}%</span>}</span>
                     </div>
-                    {/* batang tipis: perbandingan antaralasan terbaca tanpa membaca angkanya */}
+                    {/* thin bar: the comparison between reasons reads without reading the numbers */}
                     <div className="mt-1.5 h-1 rounded-full bg-default">
                       <div className="h-1 rounded-full bg-muted/70" style={{ width: `${(r.n / maxSkip) * 100}%` }} />
                     </div>
@@ -526,7 +609,7 @@ export default function Overview() {
                   <div key={x.hash} className="flex items-center gap-3 px-4 py-2 text-sm">
                     <Dot tone={TXSTATUS[x.status]?.[1] || 'default'} title={TXSTATUS[x.status]?.[0] || x.status} />
                     <span className="min-w-0 flex-1 truncate">{t(TXKIND[x.kind] || x.kind)}</span>
-                    {/* status bukan hanya warna titik — dan tidak ikut terpotong bersama namanya */}
+                    {/* status is not only the dot colour — and is not truncated together with the name */}
                     {x.status !== 'sukses' && <span className={`shrink-0 text-xs font-medium ${failed ? 'text-danger' : 'text-warning'}`}>{t(TXSTATUS[x.status]?.[0] || x.status)}</span>}
                     <a href={txHref(x.hash)} target="_blank" rel="noreferrer" className="mono shrink-0 text-muted hover:text-accent hover:underline">{short(x.hash)}</a>
                     <span className="shrink-0 text-end whitespace-nowrap tabular-nums text-xs text-muted">{ago(x.ts)}</span>

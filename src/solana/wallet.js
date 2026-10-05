@@ -54,4 +54,33 @@ function saveKeypair(cfg, kp) {
 
 const solanaKeyFromEnv = () => !!process.env.LPCOPY_SOLANA_PRIVATE_KEY;
 
-module.exports = { parseSecret, loadKeypair, saveKeypair, keyFileOf, solanaKeyFromEnv, DEFAULT_FILE };
+// Password-encrypted keystore (Solana has no standard one): the 64-byte secret key under
+// PBKDF2-SHA256 (600k iterations) → AES-256-GCM. The same format the Settings export writes
+// and the dashboard's offline opener / `npm run export-key` read.
+function encryptKeystore(kp, password) {
+  const crypto = require('node:crypto');
+  const salt = crypto.randomBytes(16), iv = crypto.randomBytes(12), iterations = 600_000;
+  const key = crypto.pbkdf2Sync(String(password), salt, iterations, 32, 'sha256');
+  const c = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([c.update(Buffer.from(kp.secretKey)), c.final(), c.getAuthTag()]);
+  const address = kp.publicKey.toBase58();
+  return {
+    format: 'quiver-solana-keystore', version: 1, address,
+    crypto: { cipher: 'aes-256-gcm', kdf: 'pbkdf2', kdfparams: { hash: 'sha256', iterations, salt: salt.toString('hex') }, iv: iv.toString('hex'), ciphertext: ct.toString('hex') },
+  };
+}
+
+function decryptKeystore(j, password) {
+  const crypto = require('node:crypto');
+  const c = j?.crypto || {};
+  if (j?.format !== 'quiver-solana-keystore' || c.cipher !== 'aes-256-gcm' || c.kdf !== 'pbkdf2') throw new Error('format keystore Solana tidak dikenal');
+  const key = crypto.pbkdf2Sync(String(password), Buffer.from(c.kdfparams.salt, 'hex'), c.kdfparams.iterations, 32, c.kdfparams.hash || 'sha256');
+  const ct = Buffer.from(c.ciphertext, 'hex');
+  const d = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(c.iv, 'hex'));
+  d.setAuthTag(ct.subarray(ct.length - 16));
+  let secret;
+  try { secret = Buffer.concat([d.update(ct.subarray(0, ct.length - 16)), d.final()]); } catch { throw new Error('password salah atau keystore rusak'); }
+  return Keypair.fromSecretKey(new Uint8Array(secret));
+}
+
+module.exports = { parseSecret, loadKeypair, saveKeypair, keyFileOf, solanaKeyFromEnv, encryptKeystore, decryptKeystore, DEFAULT_FILE };

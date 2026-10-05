@@ -2,15 +2,16 @@ import { chainInfo, isSolana } from '../chain';
 import { isSolanaKeystore, openSolanaKeystore } from '../solKeystore';
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Chip, Checkbox, Separator, Tabs, toast } from '@heroui/react';
-import { Pencil, Activity as Pulse, Trash2, KeyRound, Unlock, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck, ShieldAlert, ChartCandlestick, Coins, RefreshCw } from 'lucide-react';
+import { Pencil, Activity as Pulse, Trash2, KeyRound, Unlock, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck, ShieldAlert, ChartCandlestick, Coins, RefreshCw, DatabaseBackup, Download, ArchiveRestore, Shuffle, Trophy } from 'lucide-react';
 import { Wallet as EthersWallet } from 'ethers';
 import SettingInfo from '../components/SettingInfo';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { PageHeader, Loading, Notice, Text, Pick, Toggle, ask } from '../components/ui';
-import { num, usd, locale as fmtLocale, ago } from '../fmt';
+import { num, usd, plainUsd, locale as fmtLocale, ago } from '../fmt';
 import { fxFormat } from '../currency';
-import { useI18n, translate as tt } from '../i18n';
+import { usePrivacy } from '../privacy';
+import { useI18n, translate as tt, reason } from '../i18n';
 
 const amt = (v, d = 4) => (v == null ? '—' : Number(v).toLocaleString(fmtLocale(), { maximumFractionDigits: d }));
 
@@ -23,8 +24,10 @@ const SETTINGS_NAV = [
   ['telegram', 'Telegram', 'Hubungkan bot dan chat', MessageCircle],
   ['gmgn', 'GMGN', 'API key untuk lilin harga GMGN', ChartCandlestick],
   ['loop', 'Mesin', 'Pemindaian dan harga ETH', Settings2],
-  ['display', 'Tampilan', 'Mata uang kedua di samping dolar', Coins],
+  ['display', 'Tampilan', 'Sensor nilai dan mata uang kedua', Coins],
   ['security', 'Keamanan', 'Akses masuk dasbor', ShieldCheck],
+  ['aggregators', 'Agregator swap', 'Kyber, OKX, LI.FI, 0x, 1inch, OpenOcean', Shuffle],
+  ['backup', 'Cadangan', 'Unduh & pulihkan pengaturan, data, wallet', DatabaseBackup],
 ];
 
 function Section({ title, desc, children }) {
@@ -211,7 +214,7 @@ function WalletTab({ d, reload }) {
   );
 }
 
-// ---------------- drawdown harian ----------------
+// ---------------- daily drawdown ----------------
 function RiskTab({ d, setD }) {
   const { t } = useI18n();
   const st = d.risk?.status || {};
@@ -280,8 +283,8 @@ function Caps({ e }) {
   );
 }
 
-// `rank`/`total` = urutan prioritas; onMove(-1|+1) menggeser naik/turun. Yang teratas
-// dipakai lebih dulu, sisanya cadangan berurutan (lihat rpc.js usable()).
+// `rank`/`total` = priority order; onMove(-1|+1) shifts up/down. The top one
+// is used first, the rest are ordered fallbacks (see rpc.js usable()).
 function RpcRow({ e, rank, total, onSave, onDelete, onMove }) {
   const { t } = useI18n();
   const [edit, setEdit] = useState(false);
@@ -327,6 +330,24 @@ function RpcRow({ e, rank, total, onSave, onDelete, onMove }) {
   );
 }
 
+// Answers that can no longer change (past blocks) are stored in the database and reused
+// without touching the network — see src/rpccache.js. The row is only a report: there is
+// nothing to tune, and an empty cache is not wrong either.
+function RpcCache({ c }) {
+  const { t } = useI18n();
+  if (!c) return null;
+  const mb = c.bytes / 1048576;
+  return (
+    <div className="flex items-center gap-1 text-sm text-muted">
+      <span>{t('Cache jawaban pasti: {n} tersimpan · {mb} MB · {p}% pembacaan dijawab tanpa menyentuh jaringan',
+        { n: num(c.rows), mb: mb.toLocaleString(fmtLocale(), { maximumFractionDigits: mb < 10 ? 1 : 0 }), p: c.hitPct })}</span>
+      <SettingInfo title="Cache jawaban pasti">
+        <span>{t('Panggilan yang terikat pada blok lampau — receipt transaksi, header blok, saldo dan eth_call di blok tertentu, getLogs untuk rentang yang sudah lewat — jawabannya tidak mungkin berubah lagi, jadi disimpan di database dan dipakai ulang. Data hidup (harga pool, saldo terkini, tinggi blok) tidak pernah disimpan. Satu blok dianggap pasti setelah tertinggal {n} blok dari kepala rantai. Simpanan lama dibuang sendiri; kehilangannya paling banter berarti satu panggilan RPC lagi.', { n: c.confirmations })}</span>
+      </SettingInfo>
+    </div>
+  );
+}
+
 function RpcTab({ d, setD }) {
   const { t } = useI18n();
   const [url, setUrl] = useState('');
@@ -359,7 +380,8 @@ function RpcTab({ d, setD }) {
   };
   const add = async () => {
     const r = await saveList([...current(), { url: tested.url, headers: tested.headers || undefined, no_logs: tested.no_logs,
-      max_log_blocks: tested.max_log_blocks, archive: tested.archive, max_batch: 40 }], 'Endpoint ditambahkan dan langsung dipakai');
+      max_log_blocks: tested.max_log_blocks, archive: tested.archive, max_batch: 40,
+      no_gpa: tested.no_gpa, no_history: tested.no_history }], 'Endpoint ditambahkan dan langsung dipakai');
     if (!r.error) { setUrl(''); setKey(''); setHname(''); setTested(null); }
   };
 
@@ -373,6 +395,8 @@ function RpcTab({ d, setD }) {
             onDelete={async (id) => { if (await ask({ title: t('Hapus endpoint ini?'), confirm: t('Hapus'), danger: true })) saveList(current().filter((x) => x.id !== id), 'Endpoint dihapus'); }} />
         ))}
       </div>
+
+      <RpcCache c={d.rpcCache} />
 
       <Separator />
       <div className="font-medium">{t('Tambah endpoint')}</div>
@@ -395,7 +419,7 @@ function RpcTab({ d, setD }) {
   );
 }
 
-// ---------------- form sederhana ----------------
+// ---------------- simple form ----------------
 function SimpleForm({ title, desc, fields, initial, url, okText, extra, envName, onSaved }) {
   const { t } = useI18n();
   const [v, setV] = useState(initial);
@@ -447,8 +471,8 @@ function SimpleForm({ title, desc, fields, initial, url, okText, extra, envName,
   );
 }
 
-// Kolom yang diatur lewat .env: dasbor menolak mengubahnya (akan tertimpa lagi saat
-// restart), jadi yang ditampilkan adalah di mana mengubahnya.
+// Fields managed through .env: the dashboard refuses to change them (they would be overwritten again on
+// restart), so what is shown is where to change them.
 function EnvNotice({ name, what }) {
   const { t } = useI18n();
   return (
@@ -458,10 +482,10 @@ function EnvNotice({ name, what }) {
   );
 }
 
-// ---------------- OpenAPI GMGN ----------------
-// Key dipakai server untuk menarik lilin harga versi GMGN (tab Chart, sumber "GMGN")
-// — data yang sama dengan chart gmgn.ai, digambar di chart kita supaya rentang
-// posisi bot ikut tergambar. Tidak dikirim utuh ke peramban.
+// ---------------- GMGN OpenAPI ----------------
+// The key is used by the server to pull GMGN's price candles (Chart tab, "GMGN" source)
+// — the same data as the gmgn.ai chart, drawn on our chart so the bot's position
+// range is drawn too. It is not sent whole to the browser.
 function GmgnTab({ d, reload }) {
   const { t } = useI18n();
   const g = d.gmgn || {};
@@ -515,7 +539,7 @@ function GmgnTab({ d, reload }) {
   );
 }
 
-// ---------------- bot Telegram ----------------
+// ---------------- Telegram bot ----------------
 function TelegramTab({ d, reload }) {
   const { t } = useI18n();
   const tg = d.telegram || {};
@@ -614,10 +638,10 @@ function TelegramTab({ d, reload }) {
   );
 }
 
-// ---------------- tampilan: mata uang kedua ----------------
-// Bukan pengaturan mesin: tidak ada satu pun keputusan bot yang berubah karenanya.
-// Yang berubah cuma cara dasbor menulis angka — dolar tetap angka utamanya, mata uang
-// pilihan menempel kecil di sebelahnya.
+// ---------------- display: secondary currency ----------------
+// Not an engine setting: not a single bot decision changes because of it.
+// Only the way the dashboard writes numbers changes — dollars stay the main figure, the chosen
+// currency sits small beside it.
 function DisplayTab({ d, reload }) {
   const { t } = useI18n();
   const dp = d.display || {};
@@ -639,9 +663,23 @@ function DisplayTab({ d, reload }) {
     say(r, 'Kurs diperbarui');
     if (!r.error) reload();
   };
-  // Contoh dipakai supaya pilihannya terlihat hasilnya sebelum pindah halaman.
+  // The same switch as the eye icon (privacy.js): the value is taken from there,
+  // not from this page's payload, so it does not go stale if the eye is pressed elsewhere.
+  const [hidden, toggleHidden] = usePrivacy();
+  const hide = async () => {
+    setBusy('hide');
+    const r = await toggleHidden();
+    setBusy('');
+    say(r, hidden ? 'Nilai portofolio kini tampil' : 'Nilai portofolio kini tersensor');
+  };
+  // An example is used so the choice shows its result before leaving the page.
   const sample = fx?.rate ? fxFormat(1234.56, fx) : null;
   return (
+    <div className="flex flex-col gap-10">
+    <Section title="Sensor nilai portofolio" desc="Menutup semua nilai dolar milik kita — saldo, modal, PnL, fee, dan jumlah token — dengan $•••••. Persen dan data pasar tetap terlihat. Berguna untuk berbagi layar, merekam, atau membuka dasbor di tempat umum.">
+      <Toggle label="Sensor nilai" value={hidden} onChange={hide} isDisabled={busy === 'hide'}
+        desc="Sama dengan ikon mata di sebelah tombol tema dan di mini app Telegram — satu sakelar untuk semuanya. Berlaku di semua tab dan perangkat, dan tetap tersimpan sampai dimatikan lagi." />
+    </Section>
     <Section title="Mata uang kedua" desc="Semua nominal di dasbor dihitung dalam dolar — itu satuan yang dipakai pool, harga token, dan seluruh perhitungan PnL. Pilihan di sini menambahkan nilai yang sama dalam mata uang lain, ditulis kecil di sebelah angka dolarnya, supaya nominalnya punya rasa besaran. Angka utamanya tidak berubah.">
       <div className="grid gap-5 md:grid-cols-2">
         <Pick label="Mata uang" value={dp.currency || OFF} onChange={pick} isDisabled={busy === 'save'} options={options}
@@ -649,7 +687,7 @@ function DisplayTab({ d, reload }) {
         <div className="flex flex-col gap-2">
           <div className="text-xs text-muted">{t('Contoh tampilan')}</div>
           <div className="num rounded-md border border-border px-3 py-2.5 text-lg font-semibold tracking-tight">
-            {usd(1234.56)}{sample && <span className="ml-1.5 text-xs font-medium text-muted">≈ {sample}</span>}
+            {plainUsd(1234.56)}{sample && <span className="ml-1.5 text-xs font-medium text-muted">≈ {sample}</span>}
           </div>
           {dp.currency && !fx?.rate && <Notice status="warning">{t('Kurs belum terbaca')}{fx?.error ? ` — ${fx.error}` : ''}</Notice>}
         </div>
@@ -671,6 +709,7 @@ function DisplayTab({ d, reload }) {
         </>
       )}
     </Section>
+    </div>
   );
 }
 
@@ -698,6 +737,323 @@ function SecurityTab({ d }) {
             <Button variant="outline" onPress={() => { navigator.clipboard?.writeText(tok); toast.success(t('Tersalin')); }}><Copy className="size-4" />{t('Salin')}</Button></div>
         </Card.Content></Card>
       )}
+    </Section>
+  );
+}
+
+// ---------------- swap aggregators ----------------
+const AGG_INFO = {
+  kyber: ['Tanpa key. Calldata-nya dibaca dan dicocokkan kolom demi kolom sebelum dikirim — pengaman paling ketat.', null],
+  okx: ['Butuh API key, secret key, dan passphrase. Sekitar 1 permintaan per detik per key.', 'https://web3.okx.com/onchainos/dev-portal'],
+  lifi: ['Jalan tanpa key (batas laju ketat); key gratis menaikkan batasnya. LI.FI sendiri merutekan lewat agregator dan DEX lain.', 'https://portal.li.fi'],
+  zerox: ['Butuh API key dari dashboard 0x. Mesin swap yang dipakai Coinbase Wallet dan MetaMask.', 'https://dashboard.0x.org'],
+  oneinch: ['Butuh API key dari portal 1inch. API-nya tidak memberi minimum terima, jadi hasil simulasi yang dijadikan patokan.', 'https://business.1inch.com/portal'],
+  openocean: ['Butuh API key pro — API publiknya memblokir bot lewat Cloudflare.', 'https://openocean.finance'],
+};
+const AGG_FIELD_LABEL = { api_key: 'API key', secret_key: 'Secret key', passphrase: 'Passphrase', project_id: 'Project ID (opsional)' };
+
+function AggCard({ it, first, last, move, onSaved }) {
+  const { t } = useI18n();
+  const [vals, setVals] = useState({});
+  const [busy, setBusy] = useState('');
+  const [info, link] = AGG_INFO[it.id] || ['', null];
+  const editable = it.fields.filter((f) => !f.fromEnv);
+  const dirty = Object.values(vals).some((v) => v);
+  const status = it.active ? ['success', 'Aktif'] : !it.enabled ? ['default', 'Dimatikan'] : !it.supported ? ['warning', 'Chain ini belum didukung'] : ['warning', 'Butuh API key'];
+  const save = async (k, body, ok) => {
+    setBusy(k);
+    const r = await post('/api/settings/aggregators', { id: it.id, ...body });
+    setBusy('');
+    if (r.error) return toast.danger(reason(r.error));
+    toast.success(tt(ok));
+    setVals({});
+    onSaved(r.aggregators);
+  };
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-border p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-col">
+          <Button size="sm" variant="ghost" isIconOnly aria-label={t('Naikkan')} isDisabled={first} onPress={() => move(-1)}><ChevronUp className="size-4" /></Button>
+          <Button size="sm" variant="ghost" isIconOnly aria-label={t('Turunkan')} isDisabled={last} onPress={() => move(1)}><ChevronDown className="size-4" /></Button>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">{it.label}</span>
+            <Chip size="sm" variant="soft" color={status[0]}>{t(status[1])}</Chip>
+            {it.fields.some((f) => f.set) && <Chip size="sm" variant="soft">{t('key terpasang')}</Chip>}
+          </div>
+          <p className="mt-1 text-sm text-muted">{t(info)}{link && <> <a href={link} target="_blank" rel="noreferrer" className="text-accent hover:underline">{t('Daftar key')}</a></>}</p>
+        </div>
+        <Toggle label={it.enabled ? 'Nyala' : 'Mati'} value={it.enabled} isDisabled={busy === 'toggle'}
+          onChange={(v) => save('toggle', { enabled: v }, v ? 'Agregator dinyalakan' : 'Agregator dimatikan')} />
+      </div>
+      {it.fields.length > 0 && (
+        <>
+          {it.fields.filter((f) => f.fromEnv).map((f) => <EnvNotice key={f.name} name={f.fromEnv} what={AGG_FIELD_LABEL[f.name]} />)}
+          {editable.length > 0 && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {editable.map((f) => (
+                <Text key={f.name} label={AGG_FIELD_LABEL[f.name]} type="password" mono autoComplete="off"
+                  placeholder={f.masked || (it.keyOptional ? t('opsional') : '')} value={vals[f.name] || ''}
+                  onChange={(v) => setVals((x) => ({ ...x, [f.name]: v }))} />
+              ))}
+            </div>
+          )}
+          {editable.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" isDisabled={!dirty} isPending={busy === 'key'} onPress={() => save('key', { keys: vals }, 'Key tersimpan — berlaku di swap berikutnya')}>{t('Simpan key')}</Button>
+              {editable.some((f) => f.set) && (
+                <Button size="sm" variant="outline" isPending={busy === 'rm'} onPress={async () => {
+                  if (await ask({ title: tt('Lepas key {a}?', { a: it.label }), confirm: tt('Lepas'), danger: true })) {
+                    save('rm', { keys: Object.fromEntries(editable.map((f) => [f.name, ''])) }, 'Key dilepas');
+                  }
+                }}>{t('Lepas key')}</Button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function AggregatorsTab({ d, setD }) {
+  const { t } = useI18n();
+  const ag = d.aggregators;
+  const [cmp, setCmp] = useState(null);
+  const [busy, setBusy] = useState('');
+  if (!ag) return <Section title="Agregator swap"><Notice>{t('Router swap belum siap. Muat ulang halaman sebentar lagi.')}</Notice></Section>;
+  const setAg = (aggregators) => setD((prev) => ({ ...prev, aggregators }));
+  const post2 = async (k, body, ok) => {
+    setBusy(k);
+    const r = await post('/api/settings/aggregators', body);
+    setBusy('');
+    if (r.error) return toast.danger(reason(r.error));
+    if (ok) toast.success(tt(ok));
+    setAg(r.aggregators);
+  };
+  const move = (i, dir) => {
+    const order = [...ag.order];
+    const j = i + dir;
+    [order[i], order[j]] = [order[j], order[i]];
+    post2('order', { order });
+  };
+  const compare = async () => {
+    setBusy('cmp'); setCmp(null);
+    const r = await post('/api/settings/aggregators/test', { usd: 10 });
+    setBusy('');
+    if (r.error) return toast.danger(reason(r.error));
+    setCmp(r);
+  };
+  const activeN = ag.items.filter((x) => x.active).length;
+  return (
+    <Section title="Agregator swap" desc="Semua swap bot — zap saat membuka LP, jembatan ETH/USDG, jual sisa dan fee, isi gas, swap manual — lewat agregator di bawah. Perubahan berlaku di swap berikutnya, tanpa restart.">
+      <div className="flex flex-col gap-2">
+        <div className="font-medium">{t('Cara memilih rute')}</div>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant={ag.mode === 'best' ? 'primary' : 'outline'} isPending={busy === 'mode' && ag.mode !== 'best'} onPress={() => ag.mode !== 'best' && post2('mode', { mode: 'best' }, 'Mode: rute terbaik')}>
+            <Trophy className="size-4" />{t('Rute terbaik')}</Button>
+          <Button size="sm" variant={ag.mode === 'order' ? 'primary' : 'outline'} isPending={busy === 'mode' && ag.mode !== 'order'} onPress={() => ag.mode !== 'order' && post2('mode', { mode: 'order' }, 'Mode: urutan cadangan')}>
+            {t('Urutan cadangan')}</Button>
+        </div>
+        <p className="text-sm text-muted">{t(ag.mode === 'best'
+          ? 'Setiap swap menanyai semua agregator yang aktif sekaligus, lalu yang memberi hasil terbanyak yang dieksekusi. Kalau gagal, pindah ke peringkat berikutnya. Urutan di bawah hanya jadi penentu kalau hasilnya seri.'
+          : 'Agregator dicoba satu per satu sesuai urutan di bawah; yang berikutnya hanya dipakai kalau yang sebelumnya tidak menemukan rute, terlalu rugi, atau gagal.')}</p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="outline" onPress={compare} isPending={busy === 'cmp'} isDisabled={!activeN}><Pulse className="size-4" />{t('Bandingkan sekarang')}</Button>
+        <span className="text-sm text-muted">{t('{n} agregator aktif. Membandingkan kutipan 10 {q} → {n2} tanpa mengirim transaksi.', { n: activeN, q: chainInfo().usdgSymbol, n2: chainInfo().nativeSymbol })}</span>
+      </div>
+      {cmp && (
+        <div className="overflow-x-auto rounded-md border border-border">
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs text-muted"><tr>
+              <th className="px-3 py-2">{t('Agregator')}</th><th className="px-3 py-2 text-right">{t('Hasil')}</th><th className="px-3 py-2">{t('Lewat')}</th><th className="px-3 py-2 text-right">{t('Waktu')}</th>
+            </tr></thead>
+            <tbody>
+              {cmp.rows.map((r) => (
+                <tr key={r.id} className="border-t border-border">
+                  <td className="px-3 py-2 font-medium">{r.label || r.id} {cmp.best === r.id && <Chip size="sm" variant="soft" color="success">{t('terbaik')}</Chip>}</td>
+                  <td className="num px-3 py-2 text-right">{r.amountOut != null ? `${r.amountOut.toLocaleString(fmtLocale(), { maximumFractionDigits: 8 })} ${cmp.symbolOut}` : <span className="text-muted">—</span>}</td>
+                  <td className="px-3 py-2 text-muted">{r.skipped ? t(r.skipped) : r.error ? <span className="text-danger">{reason(r.error)}</span> : r.dex}</td>
+                  <td className="num px-3 py-2 text-right text-muted">{r.ms != null ? `${r.ms} ms` : ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex flex-col gap-3">
+        {ag.items.map((it, i) => (
+          <AggCard key={it.id} it={it} first={i === 0} last={i === ag.items.length - 1} move={(dir) => move(i, dir)} onSaved={setAg} />
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+// ---------------- backup & restore ----------------
+const BACKUP_PARTS = [
+  ['config', 'Pengaturan', 'config.json: aturan, target, RPC, gas, notifikasi, Telegram. Rahasia yang diatur lewat .env tidak ikut.'],
+  ['db', 'Basis data', 'Riwayat posisi, transaksi, ekuitas, riset wallet target. Cache RPC tidak ikut (terisi lagi sendiri).'],
+  ['wallet', 'Wallet', 'Kunci wallet bot sebagai keystore terenkripsi password — kunci privat mentah tidak pernah masuk berkas.'],
+];
+
+function PartBox({ label, desc, selected, onChange, isDisabled, note }) {
+  const { t } = useI18n();
+  return (
+    <Checkbox isSelected={selected} onChange={onChange} isDisabled={isDisabled} aria-label={t(label)}>
+      <Checkbox.Content><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>
+        <span className="flex min-w-0 flex-col"><span className="font-medium">{t(label)}{note && <span className="ml-2 break-all text-xs font-normal text-muted">{note}</span>}</span>
+          <span className="text-xs text-muted">{t(desc)}</span></span>
+      </Checkbox.Content>
+    </Checkbox>
+  );
+}
+
+const fileStamp = (d = new Date()) => {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+};
+const mb = (n) => (n < 1e6 ? `${Math.max(1, Math.round(n / 1e3)).toLocaleString(fmtLocale())} KB`
+  : `${(n / 1e6).toLocaleString(fmtLocale(), { maximumFractionDigits: 1 })} MB`);
+
+function BackupTab({ d }) {
+  const { t } = useI18n();
+  const hasWallet = !!d.wallet?.address;
+  // ---- create a backup ----
+  const [pick, setPick] = useState({ config: true, db: true, wallet: false });
+  const [tok, setTok] = useState('');
+  const [pass, setPass] = useState('');
+  const [pass2, setPass2] = useState('');
+  const [busy, setBusy] = useState(false);
+  const any = pick.config || pick.db || pick.wallet;
+  const passOk = !pick.wallet || (pass.length >= 8 && pass === pass2);
+  const download = async () => {
+    setBusy(true);
+    const r = await post('/api/settings/backup', { token: tok, parts: pick, password: pick.wallet ? pass : undefined });
+    setBusy(false);
+    if (r.error) { toast.danger(reason(r.error)); return; }
+    setTok(''); setPass(''); setPass2('');
+    const blob = new Blob([JSON.stringify(r.backup)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `quiver-backup-${r.backup.instance || 'quiver'}-${fileStamp()}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    toast.success(tt('Cadangan terunduh ({s}) — simpan di tempat aman: isinya bisa berisi API key dan riwayat lengkap bot.', { s: mb(blob.size) }));
+  };
+
+  // ---- restore ----
+  const [file, setFile] = useState(null);        // { name, size, backup }
+  const [fileErr, setFileErr] = useState('');
+  const [rpick, setRpick] = useState({});
+  const [rtok, setRtok] = useState('');
+  const [rpass, setRpass] = useState('');
+  const [rbusy, setRbusy] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const readFile = async (f) => {
+    setFile(null); setFileErr(''); setRpick({});
+    if (!f) return;
+    try {
+      const b = JSON.parse(await f.text());
+      if (b?.format !== 'quiver-backup' || !b.parts) throw new Error(tt('Bukan berkas cadangan Quiver.'));
+      setFile({ name: f.name, size: f.size, backup: b });
+      setRpick(Object.fromEntries(Object.keys(b.parts).map((k) => [k, true])));
+    } catch (e) { setFileErr(e instanceof SyntaxError ? tt('Berkas cadangan bukan JSON yang valid.') : e.message); }
+  };
+  const b = file?.backup;
+  const rany = rpick.config || rpick.db || rpick.wallet;
+  const liveOn = !d.mode?.dry_run;
+  const restore = async () => {
+    const what = BACKUP_PARTS.filter(([k]) => rpick[k]).map(([, l]) => tt(l)).join(', ');
+    const body = rpick.db
+      ? tt('Riwayat bot di server ini diganti isi cadangan. Posisi yang dibuka SESUDAH cadangan dibuat tidak akan dikenal bot. Berkas lama tidak dihapus — disimpan di sebelahnya sebagai *.pre-restore-*.')
+      : rpick.config ? tt('Pengaturan diganti isi cadangan (port, token dasbor, dan lokasi data tetap milik server ini). Bot mulai lagi dalam mode simulasi.') : null;
+    if (!(await ask({ title: tt('Pulihkan {w} dari cadangan?', { w: what }), body, confirm: tt('Pulihkan'), danger: true }))) return;
+    setRbusy(true);
+    const r = await post('/api/settings/restore', { token: rtok, parts: rpick, password: rpick.wallet ? rpass : undefined, backup: b });
+    setRbusy(false);
+    if (r.error) { toast.danger(reason(r.error)); return; }
+    setRtok(''); setRpass('');
+    if (r.wallet && !r.wallet.unchanged) toast.success(tt('Wallet {a} terpasang', { a: r.wallet.address }));
+    if (!r.restarting) { toast.success(tt('Cadangan dipulihkan')); return; }
+    // The bot stops in an orderly way and is started again by pm2; the files are swapped at boot.
+    setRestarting(true);
+    const t0 = Date.now();
+    await new Promise((res) => setTimeout(res, 5000));
+    while (Date.now() - t0 < 4 * 60_000) {
+      try { const x = await get('/api/settings'); if (x && !x.error) { location.reload(); return; } } catch { /* still down */ }
+      await new Promise((res) => setTimeout(res, 2500));
+    }
+    setRestarting(false);
+    toast.danger(tt('Bot belum menyala lagi setelah 4 menit — periksa pm2/log di server.'));
+  };
+
+  return (
+    <Section title="Cadangan" desc="Unduh salinan pengaturan, basis data, dan wallet bot ke satu berkas, lalu pulihkan di instance ini atau instance lain. Kedua arah butuh token dashboard yang diketik ulang.">
+      <div className="flex flex-col gap-4 rounded-md border border-border p-4">
+        <div className="font-medium">{t('Buat cadangan')}</div>
+        <div className="flex flex-col gap-3">
+          {BACKUP_PARTS.map(([k, label, desc]) => (
+            <PartBox key={k} label={label} desc={desc} selected={!!pick[k]} onChange={(v) => setPick((p) => ({ ...p, [k]: v }))}
+              isDisabled={k === 'wallet' && !hasWallet} note={k === 'wallet' && !hasWallet ? t('belum ada wallet') : null} />
+          ))}
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Text label="Token dashboard" type="password" mono placeholder="token" value={tok} onChange={setTok} autoComplete="off" />
+          {pick.wallet && <>
+            <Text label="Password keystore baru" type="password" placeholder="min. 8 karakter" value={pass} onChange={setPass} autoComplete="off" />
+            <Text label="Ulangi password" type="password" placeholder="min. 8 karakter" value={pass2} onChange={setPass2} autoComplete="off"
+              isInvalid={!!pass2 && pass !== pass2} />
+          </>}
+        </div>
+        <Button variant="outline" className="w-fit" isDisabled={!any || !tok || !passOk} isPending={busy} onPress={download}>
+          <Download className="size-4" />{t('Unduh cadangan')}</Button>
+      </div>
+
+      <div className="flex flex-col gap-4 rounded-md border border-border p-4">
+        <div className="font-medium">{t('Pulihkan dari cadangan')}</div>
+        {liveOn && <Notice status="warning">{t('Matikan mode LIVE dulu (tab Wallet & mode) sebelum memulihkan cadangan.')}</Notice>}
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-muted">{t('Berkas cadangan (.json)')}</label>
+          <input type="file" accept=".json,application/json" disabled={rbusy || restarting}
+            className="text-sm file:mr-3 file:rounded-md file:border file:border-border file:bg-transparent file:px-3 file:py-1.5 file:text-sm"
+            onChange={(e) => readFile(e.target.files?.[0] || null)} />
+        </div>
+        {fileErr && <Notice status="danger">{fileErr}</Notice>}
+        {b && (
+          <>
+            <dl className="grid gap-x-8 gap-y-3 text-sm sm:grid-cols-3">
+              <div><dt className="text-xs text-muted">{t('Dibuat')}</dt><dd className="mt-0.5">{new Date(b.createdAt).toLocaleString(fmtLocale())} <span className="text-muted">({ago(Date.parse(b.createdAt))})</span></dd></div>
+              <div><dt className="text-xs text-muted">{t('Instance')}</dt><dd className="mono mt-0.5">{b.instance || '—'}{b.chains?.length ? ` · ${b.chains.join(', ')}` : ''}</dd></div>
+              <div><dt className="text-xs text-muted">{t('Ukuran berkas')}</dt><dd className="num mt-0.5">{mb(file.size)}</dd></div>
+            </dl>
+            <div className="flex flex-col gap-3">
+              {BACKUP_PARTS.filter(([k]) => b.parts[k]).map(([k, label]) => {
+                const note = k === 'db' ? tt('{n} posisi ({o} terbuka) · {s}', { n: b.parts.db.stats?.positions ?? '?', o: b.parts.db.stats?.open ?? '?', s: mb(b.parts.db.bytes || 0) })
+                  : k === 'wallet' ? `${b.parts.wallet.address}${b.parts.wallet.address === d.wallet?.address ? ` · ${tt('sama dengan wallet sekarang')}` : ''}`
+                  : k === 'config' ? tt('{n} chain', { n: Object.keys(b.parts.config.json?.chains || {}).length || 1 }) : null;
+                const desc = k === 'db' ? 'Menggantikan seluruh riwayat bot di server ini. Bot dinyalakan ulang.'
+                  : k === 'config' ? 'Port, token dasbor, dan lokasi data tetap milik server ini. Bot dinyalakan ulang dalam mode simulasi.'
+                  : 'Kunci wallet sekarang (kalau ada) dipindah ke berkas cadangan bertanggal, tidak dihapus.';
+                return <PartBox key={k} label={label} desc={desc} note={note} selected={!!rpick[k]} onChange={(v) => setRpick((p) => ({ ...p, [k]: v }))} />;
+              })}
+            </div>
+            {rpick.wallet && d.wallet?.fromEnv && <EnvNotice name={d.wallet.fromEnv} what="Kunci wallet" />}
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Text label="Token dashboard" type="password" mono placeholder="token" value={rtok} onChange={setRtok} autoComplete="off" />
+              {rpick.wallet && <Text label="Password keystore" type="password" placeholder="password saat mencadangkan" value={rpass} onChange={setRpass} autoComplete="off" />}
+            </div>
+            {restarting ? <Notice status="warning" title="Bot sedang dinyalakan ulang…">{t('Halaman ini dimuat ulang otomatis begitu bot menyala lagi.')}</Notice> : (
+              <Button variant="danger" className="w-fit" isDisabled={!rany || !rtok || liveOn || (rpick.wallet && !rpass)} isPending={rbusy} onPress={restore}>
+                <ArchiveRestore className="size-4" />{t('Pulihkan')}</Button>
+            )}
+          </>
+        )}
+      </div>
     </Section>
   );
 }
@@ -774,6 +1130,8 @@ export default function Settings() {
                 </Tabs.Panel>
                 <Tabs.Panel id="display"><DisplayTab d={d} reload={load} /></Tabs.Panel>
                 <Tabs.Panel id="security"><SecurityTab d={d} /></Tabs.Panel>
+                <Tabs.Panel id="aggregators"><AggregatorsTab d={d} setD={setD} /></Tabs.Panel>
+                <Tabs.Panel id="backup"><BackupTab d={d} /></Tabs.Panel>
               </div>
             </Tabs>
           </Card.Content>

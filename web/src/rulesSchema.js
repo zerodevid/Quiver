@@ -1,7 +1,6 @@
-// Skema form aturan — sumber tunggal untuk halaman Aturan dan aturan per-target.
-// `when` menentukan kapan sebuah field relevan; field yang tidak relevan disembunyikan.
+// Rules form schema — the single source for the Rules page and the per-target rules.
+// `when` decides when a field is relevant; irrelevant fields are hidden.
 import { isSolana } from './chain';
-
 export const SCHEMA = [
   { group: 'Ukuran posisi', icon: 'ti-ruler', fields: [
     { path: 'sizing.mode', label: 'Cara menentukan ukuran', type: 'select', options: [
@@ -50,6 +49,7 @@ export const SCHEMA = [
   { group: 'Keluar', icon: 'ti-door-exit', fields: [
     { path: 'exit.follow_target', label: 'Ikut keluar saat target keluar', type: 'bool' },
     { path: 'exit.follow_partial', label: 'Ikut menarik sebagian (proporsional)', type: 'bool', when: (r) => r.exit.follow_target },
+    { path: 'exit.follow_claim', label: 'Ikut klaim fee saat target memanen fee', type: 'bool' },
     { path: 'exit.out_of_range_minutes', label: 'Tutup kalau di luar rentang selama (menit, 0=mati)', type: 'number', step: 5 },
     { path: 'exit.out_of_range_pct', label: 'Tutup kalau harga lebih dari (%) di luar rentang (0=mati)', type: 'number', step: 5 },
     { path: 'exit.reenter_within_pct', label: 'Buka lagi kalau harga kembali ≤ (%) dari rentang (0=mati)', type: 'number', step: 5, when: (r) => r.exit.out_of_range_pct > 0 },
@@ -57,11 +57,11 @@ export const SCHEMA = [
     { path: 'exit.take_profit_pct', label: 'Take profit (%, 0=mati)', type: 'number', step: 1 },
     { path: 'exit.max_age_hours', label: 'Umur maksimum (jam, 0=mati)', type: 'number', step: 1 },
     { path: 'exit.sell_leftover', label: 'Jual memecoin sisa setelah keluar', type: 'bool',
-      help: 'Token yang diterima saat menutup posisi dijual balik ke USDG/ETH lewat agregator Kyber' },
+      help: 'Token yang diterima saat menutup posisi dijual balik ke USDG/ETH lewat agregator swap yang aktif' },
     { path: 'exit.sell_max_loss_bps', label: 'Batas rugi jual sisa (bps)', type: 'number', step: 100, when: (r) => r.exit.sell_leftover,
       help: 'Fee pool + dampak harga. Di atas batas ini token disimpan dan dikutip ulang terus sampai lolos' },
     { path: 'exit.leftover_retry_sec', label: 'Cek ulang sisa tiap (detik)', type: 'number', step: 1, when: (r) => r.exit.sell_leftover,
-      help: 'Satu kutipan Kyber per token per interval; swap hanya dikirim kalau ruginya sudah di bawah batas. Minimal 1 — terlalu rapat bisa kena batas laju Kyber yang juga dipakai zap' },
+      help: 'Satu kutipan per token per interval; swap hanya dikirim kalau ruginya sudah di bawah batas. Minimal 1 — terlalu rapat bisa kena batas laju agregator yang juga dipakai zap' },
   ] },
   { group: 'Saringan', icon: 'ti-filter', fields: [
     { path: 'filters.allow_hooks', label: 'Izinkan pool v4 dengan hook', type: 'bool', help: 'Hook bisa memblokir penarikan — default: tolak' },
@@ -69,6 +69,8 @@ export const SCHEMA = [
     { path: 'filters.max_open_positions', label: 'Maksimum posisi terbuka', type: 'number', step: 1 },
     { path: 'filters.cooldown_seconds', label: 'Jeda antar salinan di pool sama (detik)', type: 'number', step: 5 },
     { path: 'filters.min_pool_age_minutes', label: 'Umur pool minimum (menit)', type: 'number', step: 5, help: 'Pool yang baru dibuat sering jebakan; 0 = mati' },
+    { path: 'filters.min_liquidity_usd', label: 'Likuiditas pool minimum (USD)', type: 'number', step: 1000, help: 'Pool tipis sulit ditutup tanpa rugi; 0 = mati' },
+    { path: 'filters.min_volume24h_usd', label: 'Volume 24 jam minimum (USD)', type: 'number', step: 1000, help: 'Tanpa volume tidak ada fee, seberapa pun betulnya rentangnya; 0 = mati' },
     { path: 'filters.max_fee_bps', label: 'Batas fee pool', type: 'number', step: 1000, help: 'Dalam satuan fee Uniswap: 3000 = 0,3%, 100000 = 10%' },
     { path: 'filters.quote_whitelist', label: 'Aset kuotasi diizinkan', type: 'list' },
     { path: 'filters.venues', label: 'Venue diizinkan', type: 'list' },
@@ -98,12 +100,15 @@ export const RULE_HELP = {
   "swap.max_price_impact_bps": "Batas perubahan harga yang disebabkan ukuran swap itu sendiri. 100 bps = 1%. Berbeda dari slippage saat eksekusi.",
   "exit.follow_target": "Bot ikut menutup salinan ketika target keluar dari posisi. Aturan keluar mandiri di bawah tetap terpisah.",
   "exit.follow_partial": "Saat target menarik sebagian likuiditas, bot menarik bagian yang sebanding dari salinannya.",
+  "exit.follow_claim": "Saat target mengklaim fee posisinya, bot ikut mengklaim fee salinannya. Fee dijual ke aset kuotasi hanya kalau panen otomatis posisi itu mode klaim + jual. Tiap klaim membayar gas — bawaannya mati.",
   "exit.out_of_range_minutes": "Tutup posisi setelah terus berada di luar rentang selama durasi ini. Penghitung direset ketika kembali masuk rentang. 0 = nonaktif.",
   "exit.out_of_range_pct": "Tutup posisi begitu harga lebih jauh dari persentase ini di luar rentang — jarak ke tepi terdekat, angka yang sama dengan \"di luar · 61% di atas\" di daftar posisi. Modal tidak menganggur di posisi yang jauh dari harga. Berlaku juga saat masuk: entry target yang rentangnya sejauh ini ditunda, bukan disalin. Dua sinkron berturut-turut (~1 menit) sebelum ditutup. 0 = nonaktif.",
   "exit.reenter_within_pct": "Cermin yang ditunda atau ditutup karena jauh dibuka lagi begitu harga kembali sedekat ini dari rentang, selama posisi target masih terbuka. Ukurannya dihitung ulang dari likuiditas target saat itu. Harus lebih kecil dari ambang tutup supaya tidak buka-tutup di satu harga. 0 = nonaktif.",
   "exit.stop_loss_pct": "Memicu penutupan ketika PnL posisi mencapai persentase rugi ini. Isi angka positif, misalnya 10 untuk rugi 10%. Harga eksekusi akhir bisa berbeda. 0 = nonaktif.",
   "exit.take_profit_pct": "Memicu penutupan ketika PnL posisi mencapai persentase untung ini. Harga eksekusi akhir bisa berbeda. 0 = nonaktif.",
   "exit.max_age_hours": "Tutup posisi setelah umur posisi mencapai jumlah jam ini, terlepas dari laba atau rugi. 0 = nonaktif.",
+  "filters.min_liquidity_usd": "Lewati pool yang likuiditasnya (TVL menurut DexScreener) lebih kecil dari angka ini. Pool tipis menggeser harga saat kita masuk dan saat keluar, dan sisa tokennya susah dijual. Pool yang belum terindeks DexScreener tidak punya angka ini dan tetap dilewatkan — saringan ini menolak pool yang terbukti tipis, bukan pool yang belum dikenal. 0 = nonaktif.",
+  "filters.min_volume24h_usd": "Lewati pool yang volume swap 24 jamnya lebih kecil dari angka ini. Fee LP lahir dari volume: pool sepi membayar mendekati nol berapa pun modalnya, sementara risiko tokennya tetap penuh. Angkanya sumber yang sama dengan kolom Volume 24 jam di daftar posisi. Pool yang belum terindeks DexScreener tetap dilewatkan. 0 = nonaktif.",
   "filters.min_target_quote_usd": "Lewati posisi target yang nilainya lebih kecil dari angka ini, sebelum ukuran salinan dihitung.",
   "filters.max_open_positions": "Batasi jumlah posisi bot yang boleh terbuka bersamaan.",
   "filters.cooldown_seconds": "Jeda sebelum menyalin lagi di pool yang sama, untuk menghindari salinan yang terlalu rapat.",

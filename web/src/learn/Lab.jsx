@@ -1,6 +1,6 @@
-// Laboratorium LP: satu posisi TOKEN/USDG dengan entry 100 dan modal 100 USDG.
-// Pengguna menggeser range dan harga skenario lalu melihat inventori, nilai terhadap
-// hold, dan BEP. Tidak ada harga live dan tidak ada transaksi.
+// LP lab: a single TOKEN/USDG position with entry 100 and capital 100 USDG.
+// The user slides the range and the scenario price and sees the inventory, value versus
+// hold, and BEP. No live prices and no transactions.
 import { useMemo } from 'react';
 import { Button, Chip } from '@heroui/react';
 import { RotateCcw } from 'lucide-react';
@@ -14,7 +14,7 @@ import { sources } from './content';
 
 const AXIS = [10, 250];
 
-// Setiap preset adalah hipotesis untuk dicoba, bukan rekomendasi range.
+// Each preset is a hypothesis to try, not a range recommendation.
 export const PRESETS = [
   {
     id: 'sideways', lo: 90, hi: 110, price: 100,
@@ -66,7 +66,7 @@ function Slider({ id, label, value, min, max, unit, onChange }) {
   );
 }
 
-// Keterangan grafik: contoh garis yang sebenarnya, bukan karakter ━ yang tergantung font.
+// Chart legend: a sample of the actual line, not a ━ character that depends on the font.
 function Key({ color, dashed, children }) {
   return (
     <span className="inline-flex items-center gap-1.5">

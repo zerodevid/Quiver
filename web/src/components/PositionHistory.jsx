@@ -1,19 +1,22 @@
-// Laci riwayat satu posisi bot — dibuka dengan mengklik baris di halaman Posisi.
-// Menjawab "apa saja yang bot lakukan untuk posisi ini": setiap transaksi yang
-// menyentuhnya (swap zap, mint, tambah, kurangi, tutup, jual sisa) dengan jumlah
-// token dan nilainya, lalu catatan bot — keputusan atas aksi target yang memicunya
-// dan baris log yang menyebut posisi ini. Grafik harga tetap di halaman detail.
+// History drawer of one bot position — opened by clicking a row on the Positions page.
+// Answers "what did the bot do for this position": every transaction that
+// touched it (zap swap, mint, add, decrease, close, leftover sale) with token
+// amounts and values, then the bot's notes — the decision on the target action that triggered it
+// and the log lines that mention this position. The price chart stays on the detail page.
 import { useEffect, useState } from 'react';
 import PositionSnapshot from './PositionSnapshot';
+import TargetSide from './TargetSide';
 import { Button, Chip, Drawer } from '@heroui/react';
 import { X, ChartCandlestick } from 'lucide-react';
 import { get } from '../api';
 import { Stat, Empty, Loading, Notice, TxHash, TradeLinks, baseTokenOf } from './ui';
+import { GmgnDot, GmgnProvider, useGmgn } from './GmgnDot';
+import { GmgnSecurity } from './Gmgn';
 import TokenIcon, { TokenPair } from './TokenIcon';
 import { usd, pct, tone, age, ago, short, qty, fmtQty, sqrtPrice, locale as fmtLocale } from '../fmt';
 import { useI18n, reason } from '../i18n';
 
-// Jenis transaksi -> label & warna chip.
+// Transaction type -> chip label & colour.
 const KIND = {
   mint: ['Buka posisi', 'success'],
   increase: ['Tambah likuiditas', 'success'],
@@ -29,19 +32,19 @@ const KIND = {
 };
 const VERDICT = { copy: ['Disalin', 'success'], dry: ['Simulasi', 'accent'], skip: ['Dilewati', 'default'], error: ['Gagal', 'danger'] };
 
-// Kenapa PnL posisi terbuka minus/plus. Angka PnL sendiri tidak menjawab apa-apa;
-// yang ditanya orang adalah "harga turun, IL, atau fee-nya kecil?". Dipecah jadi:
-// pergerakan harga kalau token sekadar dipegang, impermanent loss di atas itu, dan
-// fee (belum diklaim + sudah diklaim). Ketiganya dijumlah = PnL di kartu atas.
+// Why an open position's PnL is minus/plus. The PnL figure alone answers nothing;
+// what people ask is "did the price drop, IL, or are the fees small?". Split into:
+// the price movement if the tokens were simply held, impermanent loss on top of that, and
+// fees (unclaimed + claimed). The three summed = the PnL on the top card.
 function PnlWhy({ p }) {
   const { t } = useI18n();
   const o = p.open;
   if (!o || o.pnlUsd == null) return null;
   const cost = p.costUsd || 0;
-  const lp = o.valueUsd + (o.withdrawnUsd || 0) - cost;          // nilai LP sekarang vs modal
+  const lp = o.valueUsd + (o.withdrawnUsd || 0) - cost;          // current LP value vs capital
   const fees = (o.feeUsd || 0) + (o.claimedUsd || 0);
-  const il = o.ilUsd;                                             // nilai LP − kalau dipegang
-  const hodl = il != null ? lp - il : null;                       // kalau dipegang − modal
+  const il = o.ilUsd;                                             // LP value − if held
+  const hodl = il != null ? lp - il : null;                       // if held − capital
   const entry = sqrtPrice(o.entryPrice, o.dec0, o.dec1, o.quoteSide);
   const now = sqrtPrice(o.curSqrt, o.dec0, o.dec1, o.quoteSide);
   const move = entry && now ? ((now - entry) / entry) * 100 : null;
@@ -83,14 +86,14 @@ function PnlWhy({ p }) {
   );
 }
 
-// Ongkos jalan posisi: gas yang terbakar + selisih swap, dipisah buka/tutup.
-// Tidak ada di dalam PnL (PnL cuma modal vs hasil), padahal ini yang menjawab
-// "berapa effort-nya" — di chain ini satu posisi $100 bisa memakai ~1% untuk
-// masuk lalu keluar.
-function Ongkos({ c, cost }) {
+// Running cost of the position: gas burned + swap slippage, split open/close.
+// It is not inside PnL (PnL is only capital vs proceeds), yet it answers
+// "how much effort was it" — on this chain a $100 position can spend ~1% to
+// enter and then exit.
+function Cost({ c, cost }) {
   const { t } = useI18n();
   if (!c || !c.txN) return null;
-  const sisi = (b, label) => (b.txN ? (
+  const side = (b, label) => (b.txN ? (
     <div className="flex justify-between gap-3">
       <span className="text-muted">{label}</span>
       <span className="num">{usd(b.gasUsd, b.gasUsd < 0.1 ? 3 : 2)} <span className="text-muted">{t('gas')}</span>
@@ -103,17 +106,17 @@ function Ongkos({ c, cost }) {
         <span>{t('Ongkos jalan')}</span>
         <span className="num">{usd(c.totalUsd)}{cost > 0 && <span className="ml-1 text-xs font-normal text-muted">{pct((c.totalUsd / cost) * 100, 2).replace('+', '')} {t('dari modal')}</span>}</span>
       </div>
-      {sisi(c.open, t('saat membuka'))}
-      {sisi(c.close, t('saat menutup'))}
-      {sisi(c.lain, t('klaim fee / compound'))}
+      {side(c.open, t('saat membuka'))}
+      {side(c.close, t('saat menutup'))}
+      {side(c.lain, t('klaim fee / compound'))}
       <p className="mt-2 text-xs text-muted">{t('Gas semua transaksi yang menyentuh posisi ini (termasuk approve dan yang gagal) plus selisih tiap swap: kutipan masuk dikurangi kutipan keluar, ditambah geseran harga saat eksekusi. Transaksi pembantu tanpa nomor posisi ditaksir dari alurnya.')}</p>
     </div>
   );
 }
 
 const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
-// Saldo token yang berpindah di satu kejadian: mint/tambah = masuk ke posisi,
-// kurangi/tutup = keluar dari posisi. Swap ditampilkan sebagai USD masuk → keluar.
+// Token balance that moves in one event: mint/add = into the position,
+// decrease/close = out of the position. A swap is shown as USD in → out.
 function Amounts({ ev, p }) {
   const { t } = useI18n();
   if (ev.swap) return <div className="space-y-0.5 text-xs">
@@ -148,7 +151,7 @@ function Amounts({ ev, p }) {
 function Events({ d }) {
   const { t } = useI18n();
   const p = d.position;
-  const evs = [...d.events].reverse();   // terbaru di atas, seperti tabel riwayat lain
+  const evs = [...d.events].reverse();   // newest on top, like the other history tables
   if (!evs.length) return <Empty title="Belum ada transaksi tercatat" sub="Posisi ini belum menyentuh chain lewat bot." />;
   return (
     <div className="overflow-x-auto">
@@ -183,6 +186,9 @@ function Events({ d }) {
                   {!failed && Math.abs(ev.slipUsd || 0) >= 0.005 && <div className="text-xs text-warning"
                     title={ev.slipBps != null ? t('meleset {b}% dari kutipan', { b: (ev.slipBps / 100).toFixed(2) }) : undefined}>
                     {t('slippage {v}', { v: usd(ev.slipUsd) })}</div>}
+                  {!failed && ev.feeSaleUsd != null && <div className="text-xs text-muted">{t('hasil jual fee {v}', { v: usd(ev.feeSaleUsd) })}</div>}
+                  {!failed && Math.abs(ev.saleDeltaUsd || 0) >= 0.005 && <div className={`text-xs ${ev.saleDeltaUsd < 0 ? 'text-warning' : 'text-success'}`}>
+                    {t('vs taksiran {v}', { v: usd(ev.saleDeltaUsd) })}</div>}
                   {ev.targetUsd != null && <div className="text-xs text-muted">{t('target {v}', { v: usd(ev.targetUsd) })}</div>}
                 </td>
                 <td className="py-2.5 text-end whitespace-nowrap text-muted" title={fmtDate(ev.ts)}>{ago(ev.ts)}</td>
@@ -222,7 +228,7 @@ function Notes({ notes }) {
   );
 }
 
-// id: posisi yang dibuka (null = laci tertutup)
+// id: the position being opened (null = drawer closed)
 export default function PositionHistory({ id, onClose }) {
   const { t } = useI18n();
   const [d, setD] = useState(null);
@@ -241,6 +247,7 @@ export default function PositionHistory({ id, onClose }) {
   const closed = p?.status === 'closed';
   const hours = p ? ((p.closed_ts || Date.now()) - (p.opened_ts || Date.now())) / 3600000 : null;
   return (
+    <GmgnProvider tokens={p ? [baseTokenOf(p)] : []}>
     <Drawer isOpen={!!id} onOpenChange={(o) => { if (!o) onClose(); }}>
       <Drawer.Backdrop isDismissable>
         <Drawer.Content placement="right">
@@ -252,6 +259,7 @@ export default function PositionHistory({ id, onClose }) {
                   <div className="min-w-0">
                     <Drawer.Heading className="flex flex-wrap items-center gap-2 text-base font-semibold">
                       {p.symbol0}/{p.symbol1}
+                      <GmgnDot token={baseTokenOf(p)} />
                       <Chip size="sm" variant="soft" color={closed ? 'danger' : 'success'}>{t(closed ? 'Ditutup' : 'Terbuka')}</Chip>
                     </Drawer.Heading>
                     <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted">
@@ -277,8 +285,10 @@ export default function PositionHistory({ id, onClose }) {
                       sub={p.costUsd > 0 ? pct((p.feesUsd / p.costUsd) * 100, 2).replace('+', '') : null} />
                     <Stat label="Modal" value={usd(p.costUsd)} sub={closed ? t('hasil {v}', { v: usd(p.outUsd) }) : null} />
                   </div>
+                  <TargetSide p={p} onRefresh={() => setRevision((v) => v + 1)} />
+                  <GmgnPanel token={baseTokenOf(p)} />
                   {!closed && <PnlWhy p={p} />}
-                  <Ongkos c={p.cost} cost={p.costUsd} />
+                  <Cost c={p.cost} cost={p.costUsd} />
                   <PositionSnapshot key={id} id={id} onUpdate={() => setRevision((v) => v + 1)} />
                   {closed && <div className="mb-4 rounded-lg border border-border p-3 text-sm">
                     <div className="flex justify-between gap-3"><span>{t('Hasil LP saat tutup (taksiran)')}</span><span className="num">{usd(p.closeUsd)}</span></div>
@@ -302,7 +312,7 @@ export default function PositionHistory({ id, onClose }) {
             </Drawer.Body>
             {p && (
               <Drawer.Footer className="mt-4 flex-wrap justify-between gap-2">
-                <span className="text-xs text-muted">{t('Jumlah token dan nilai dicatat bot saat transaksi; harga swap dari Kyber.')}</span>
+                <span className="text-xs text-muted">{t('Jumlah token dan nilai dicatat bot saat transaksi; harga swap dari agregator.')}</span>
                 <Button size="sm" variant="outline" onPress={() => { onClose(); location.hash = '#positions/' + p.id; }}>
                   <ChartCandlestick className="size-4" />{t('Halaman detail & grafik')}</Button>
               </Drawer.Footer>
@@ -311,5 +321,22 @@ export default function PositionHistory({ id, onClose }) {
         </Drawer.Content>
       </Drawer.Backdrop>
     </Drawer>
+    </GmgnProvider>
+  );
+}
+
+// GMGN security figures for this position's speculative token. In the list there is only
+// room for the shield; the drawer has room, so here the figures themselves show —
+// exactly the same chips as the Pool health panel on the Pool/Token page, not a
+// second arrangement that could disagree. Without a GMGN API key, the whole block is absent.
+function GmgnPanel({ token }) {
+  const { t } = useI18n();
+  const g = useGmgn(token);
+  if (!g) return null;
+  return (
+    <div className="mb-4 rounded-lg border border-border p-3">
+      <h3 className="mb-2 text-sm font-semibold">{t('Keamanan token')}</h3>
+      <GmgnSecurity g={g} />
+    </div>
   );
 }

@@ -1,10 +1,10 @@
 'use strict';
-// Penyeragaman jawaban OpenAPI GMGN (token/info, token/security, top holders /
-// traders, wallet_stats) menjadi bentuk ringkas yang dipakai dasbor. Semua angka
-// GMGN datang sebagai string; rasio 0–1 diubah ke persen di sini supaya UI dan
-// poolHealth tidak perlu tahu konvensi GMGN. Kolom yang tidak terisi jadi null —
-// GMGN dirancang untuk meme Solana/BSC, sebagian kolom bisa kosong untuk
-// Robinhood, dan UI hanya menampilkan yang ada.
+// Normalisation of GMGN OpenAPI responses (token/info, token/security, top holders /
+// traders, wallet_stats) into the compact shape the dashboard uses. All GMGN
+// numbers arrive as strings; 0–1 ratios are converted to percent here so the UI and
+// poolHealth do not need to know GMGN's conventions. Unfilled columns become null —
+// GMGN is designed for Solana/BSC memes, some columns can be empty for
+// Robinhood, and the UI only shows what is there.
 const num = (v) => { const n = Number(v); return v == null || v === '' || !Number.isFinite(n) ? null : n; };
 const pctOf = (v) => { const n = num(v); return n == null ? null : n * 100; };
 const yes = (v) => (v === 'yes' || v === true || v === 1 ? true : v === 'no' || v === false || v === 0 ? false : null);
@@ -46,8 +46,8 @@ function normalizeTokenInfo(d) {
       botDegenPct: pctOf(st.bot_degen_rate), freshWalletPct: pctOf(st.fresh_wallet_rate), vaultPct: pctOf(st.private_vault_hold_rate),
     },
     dev: {
-      // GMGN memakai dua kosakata untuk status dev (hold/sell di token/info,
-      // creator_hold/creator_close di token/security) — disamakan jadi hold/sell.
+      // GMGN uses two vocabularies for dev status (hold/sell in token/info,
+      // creator_hold/creator_close in token/security) — unified into hold/sell.
       creator: lc(dv.creator_address), status: /sell|close/.test(String(dv.creator_token_status || '')) ? 'sell' : /hold/.test(String(dv.creator_token_status || '')) ? 'hold' : null,
       balance: num(dv.creator_token_balance),
       openCount: num(dv.creator_open_count), cto: yes(dv.cto_flag), fundFrom: lc(dv.fund_from), fundFromAt: ms(dv.fund_from_ts),
@@ -76,7 +76,7 @@ function normalizeTokenSecurity(d) {
   };
 }
 
-// Baris top holders / top traders — bentuknya sama.
+// Top holders / top traders rows — same shape.
 function normalizeWallets(d) {
   const list = Array.isArray(d) ? d : d?.list || d?.holders || d?.traders || [];
   return list.filter((r) => r && r.address).map((r) => ({
@@ -94,8 +94,8 @@ function normalizeWallets(d) {
   }));
 }
 
-// Nama kolom nyata berbeda dari dokumentasinya (buy/sell, realized_profit_pnl,
-// pnl_stat.winrate) — keduanya diterima.
+// Real column names differ from the documentation (buy/sell, realized_profit_pnl,
+// pnl_stat.winrate) — both are accepted.
 function normalizeWalletStats(d, period = '7d') {
   const x = Array.isArray(d) ? d[0] : d?.list?.[0] || d || {};
   const c = x.common || {}, ps = x.pnl_stat || {};
@@ -105,7 +105,7 @@ function normalizeWalletStats(d, period = '7d') {
     realized: num(x.realized_profit), unrealized: num(x.unrealized_profit), winratePct: pctOf(x.winrate ?? ps.winrate),
     cost: num(x.total_cost), buys: num(x.buy_count ?? x.buy), sells: num(x.sell_count ?? x.sell), pnlPct: pctOf(x.pnl ?? x.realized_profit_pnl),
     tokens: num(ps.token_num), avgHoldSec: num(ps.avg_holding_period),
-    // Sebaran hasil per token: < -50%, -50%..0, 0..2×, 2×..5×, > 5× (jumlah token).
+    // Distribution of results per token: < -50%, -50%..0, 0..2×, 2×..5×, > 5× (token count).
     dist: dist.some((v) => v != null) ? dist.map((v) => v ?? 0) : null,
     soldIncome: num(x.sold_income), boughtCost: num(x.bought_cost), lastActive: ms(x.last_timestamp),
     name: c.name || null, ens: c.ens || null, tag: c.tag || null, tags: Array.isArray(c.tags) ? c.tags : [],

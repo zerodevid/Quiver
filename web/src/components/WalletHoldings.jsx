@@ -1,6 +1,6 @@
-// Isi wallet (portofolio) satu alamat: token yang dipegang, jumlah, harga, dan
-// nilainya. Dipakai halaman detail target — melengkapi riset LP dengan gambaran
-// apa yang sedang dia pegang di luar posisi.
+// Holdings (portfolio) of one address: the tokens held, amounts, prices and
+// values. Used by the target detail page — complements the LP research with a picture of
+// what they are holding outside positions.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@heroui/react';
 import { RefreshCw } from 'lucide-react';
@@ -10,7 +10,7 @@ import TokenIcon, { TokenSym } from './TokenIcon';
 import { usd, kUsd, price, ago } from '../fmt';
 import { useI18n, translate as tt } from '../i18n';
 
-// Jumlah token bisa 0,000012 sampai 4 miliar — angka penting, bukan desimal tetap.
+// A token amount can be 0.000012 up to 4 billion — significant digits matter, not fixed decimals.
 const amount = (v) => (v == null || !Number.isFinite(v) ? '—'
   : v >= 1e6 ? v.toLocaleString(undefined, { maximumFractionDigits: 0 })
     : v >= 1 ? v.toLocaleString(undefined, { maximumSignificantDigits: 6 })
@@ -56,7 +56,7 @@ export default function WalletHoldings({ address }) {
 
   useEffect(() => {
     alive.current = true; setData(null); load();
-    // Nilai portofolio ikut harga — segarkan pelan selama halaman terbuka.
+    // Portfolio value follows the price — refresh slowly while the page is open.
     const tm = setInterval(() => { if (!document.hidden) load(); }, 60000);
     return () => { alive.current = false; clearInterval(tm); };
   }, [load]);

@@ -1,7 +1,7 @@
-// Naskah video — semua teks & narasi per bahasa, satu tempat untuk disunting.
-// Tiap adegan: [kicker, subtitle di layar, narasi (VO)]. Subtitle pendek & bisa
-// dibaca sambil lalu; narasi lebih bercerita. Durasi adegan mengikuti narasinya.
-export const AUTHOR = process.env.QAUTHOR || '';   // mis. "Zero Dev · github.com/zerodev"
+// Video script — all text & narration per language, one place to edit.
+// Each scene: [kicker, on-screen subtitle, narration (VO)]. Subtitles are short and
+// readable at a glance; narration is more of a story. Scene length follows the narration.
+export const AUTHOR = process.env.QAUTHOR || '';   // e.g. "Zero Dev · github.com/zerodev"
 
 export const COPY = {
   en: {

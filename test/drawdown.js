@@ -1,10 +1,10 @@
 'use strict';
-// Uji breaker drawdown harian (engine.js: updateDrawdown/drawdownTripped/drawdownStatus).
+// Test the daily drawdown breaker (engine.js: updateDrawdown/drawdownTripped/drawdownStatus).
 //
-// Beda dari jeda manual (paused): ini otomatis dari ekuitas, dan cuma menghentikan
-// ENTRY baru — sinyal keluar tetap diproses seperti biasa.
+// Unlike the manual pause (paused): this is automatic from equity, and only stops
+// new ENTRIES — exit signals are still processed as usual.
 //
-// Jalankan: node test/drawdown.js
+// Run: node test/drawdown.js
 const assert = require('node:assert');
 const { Engine } = require('../src/engine');
 const { Store } = require('../src/db');
@@ -31,17 +31,17 @@ async function t(name, fn) {
 }
 
 (async () => {
-  console.log('uji breaker drawdown harian\n');
+  console.log('daily drawdown breaker test\n');
 
-  await t('mati (0%): puncak tetap dicatat tapi tidak pernah terpicu', async () => {
+  await t('off (0%): the peak is still recorded but never triggered', async () => {
     const { eng, notified } = harness({ pct: 0 });
     eng.updateDrawdown(1000);
-    eng.updateDrawdown(1); // anjlok 99,9%
+    eng.updateDrawdown(1); // plunged 99.9%
     assert.strictEqual(eng.drawdownTripped(), false);
     assert.strictEqual(notified.length, 0);
   });
 
-  await t('turun di bawah batas: belum terpicu', async () => {
+  await t('falls below the limit: not yet triggered', async () => {
     const { eng, notified } = harness({ pct: 10 });
     eng.updateDrawdown(1000);
     eng.updateDrawdown(920); // -8%
@@ -49,20 +49,20 @@ async function t(name, fn) {
     assert.strictEqual(notified.length, 0);
   });
 
-  await t('menyentuh batas: terpicu sekali, entry baru dijeda, sudah ada kabar', async () => {
+  await t('touches the limit: triggered once, new entries paused, news already sent', async () => {
     const { eng, notified } = harness({ pct: 10 });
     eng.updateDrawdown(1000);
     eng.updateDrawdown(890); // -11%
     assert.strictEqual(eng.drawdownTripped(), true);
     assert.strictEqual(notified.length, 1);
     assert.match(notified[0], /drawdown harian/i);
-    // Ekuitas naik lagi: breaker TIDAK lepas sendiri di hari yang sama (pemicu sekali).
+    // Equity rises again: the breaker does NOT release by itself on the same day (one-shot trigger).
     eng.updateDrawdown(1000);
     assert.strictEqual(eng.drawdownTripped(), true);
-    assert.strictEqual(notified.length, 1, 'tidak boleh kirim kabar dua kali');
+    assert.strictEqual(notified.length, 1, 'must not send the news twice');
   });
 
-  await t('portofolio debu (puncak < $1): tidak terpicu walau turun 100%', async () => {
+  await t('dust portfolio (peak < $1): not triggered even when down 100%', async () => {
     const { eng, notified } = harness({ pct: 10 });
     eng.updateDrawdown(0.5);
     eng.updateDrawdown(0);
@@ -70,11 +70,11 @@ async function t(name, fn) {
     assert.strictEqual(notified.length, 0);
   });
 
-  await t('puncak naik terus mengikuti ekuitas tertinggi hari itu', async () => {
+  await t('the peak keeps rising following the day\'s highest equity', async () => {
     const { eng } = harness({ pct: 10 });
     eng.updateDrawdown(1000);
     eng.updateDrawdown(1200);
-    eng.updateDrawdown(1100); // -8,3% dari puncak 1200, bukan dari 1000
+    eng.updateDrawdown(1100); // -8.3% from the 1200 peak, not from 1000
     assert.strictEqual(eng.drawdownTripped(), false);
     const st = eng.drawdownStatus();
     assert.strictEqual(st.peakUsd, 1200);
@@ -90,17 +90,17 @@ async function t(name, fn) {
     eng.updateDrawdown(890);
     assert.strictEqual(eng.drawdownTripped(), true);
     Date.now = () => t1;
-    assert.strictEqual(eng.drawdownTripped(), false, 'hari baru: flag basi dari kemarin tidak boleh ikut memblokir');
-    eng.updateDrawdown(890); // hari baru mulai dari sini -> ini puncaknya sendiri
+    assert.strictEqual(eng.drawdownTripped(), false, 'new day: a stale flag from yesterday must not keep blocking');
+    eng.updateDrawdown(890); // a new day starts from here -> this is its own peak
     assert.strictEqual(eng.drawdownTripped(), false);
     assert.strictEqual(eng.drawdownStatus().peakUsd, 890);
     Date.now = orig;
   });
 
-  await t('handle(): entry baru dilewati saat terpicu, tapi keluar tetap diproses', async () => {
+  await t('handle(): new entries are skipped once triggered, but exits are still processed', async () => {
     const { eng, store } = harness({ pct: 10 });
     eng.updateDrawdown(1000);
-    eng.updateDrawdown(880); // -12%, terpicu
+    eng.updateDrawdown(880); // -12%, tripped
     assert.strictEqual(eng.drawdownTripped(), true);
 
     const r = store.run(
@@ -114,9 +114,9 @@ async function t(name, fn) {
     assert.strictEqual(dEntry.verdict, 'skip');
     assert.match(dEntry.reason, /drawdown harian/i);
 
-    // Sinyal keluar (decrease) untuk posisi yang tidak kita punya: tetap DIPROSES (tidak
-    // ikut kena gerbang paused/drawdown), keputusannya sendiri (skip, bukan cermin) — bedanya
-    // dengan entry di atas adalah alasannya, bukan drawdown.
+    // Exit signal (decrease) for a position we do not have: still PROCESSED (not
+    // subject to the paused/drawdown gate), its own decision (skip, not mirror) — the difference
+    // from the entry above is the reason, not drawdown.
     const r2 = store.run(
       `INSERT INTO actions(ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,
         tick_lower,tick_upper,liquidity,amount0,amount1,value_quote,quote_symbol)
@@ -126,15 +126,15 @@ async function t(name, fn) {
     await eng.handle({ id: Number(r2.lastInsertRowid), kind: 'decrease', target: TARGET, liquidity: (10n ** 18n).toString() });
     const dExit = store.get('SELECT verdict, reason FROM decisions WHERE action_id=?', Number(r2.lastInsertRowid));
     assert.strictEqual(dExit.verdict, 'skip');
-    assert.doesNotMatch(dExit.reason, /drawdown harian/i, 'keluar tidak boleh kena gerbang drawdown');
+    assert.doesNotMatch(dExit.reason, /drawdown harian/i, 'exit must not be hit by the drawdown gate');
   });
 
-  await t('zona waktu: dayKey mengikuti telegram.timezone, bukan UTC', async () => {
+  await t('time zone: dayKey follows telegram.timezone, not UTC', async () => {
     const { eng } = harness({ tz: 'Asia/Jakarta' }); // UTC+7
     const utcLateNight = Date.parse('2026-09-17T23:30:00Z'); // 18 Sep 06:30 WIB
     assert.strictEqual(eng.dayKey(utcLateNight), '2026-09-18');
   });
 
-  console.log(`\n${pass} ok, ${fail} gagal`);
+  console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) process.exit(1);
 })();

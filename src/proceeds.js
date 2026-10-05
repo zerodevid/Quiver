@@ -1,24 +1,24 @@
 'use strict';
 const { ensureChain } = require('./networks');
-// Terealisasi vs belum, untuk posisi yang sudah ditutup.
+// Realized vs not yet, for positions that have been closed.
 //
-// Menutup posisi USDG/MEME mengembalikan dua hal: USDG (langsung uang) dan MEME
-// (belum tentu uang — harganya bisa turun 80% lagi sebelum sempat dijual). Dulu
-// keduanya dinilai di harga pool saat tutup lalu dianggap selesai, padahal MEME-nya
-// masih duduk di wallet. Modul ini mengikuti token itu sampai benar-benar ditukar:
-//   - aset kuotasi (USDG/ETH/WETH) yang diterima = terealisasi saat itu juga
-//   - token lain: tiap Transfer keluar dari wallet dibaca receipt-nya; kalau di tx
-//     yang sama ada aset kuotasi masuk, itu penjualan dan hasilnya yang dipakai
-//     (bukan harga pool — jual 1 juta token kena price impact & fee router);
-//     kalau tidak ada (dikirim ke wallet lain / ditukar ke memecoin lain), dinilai
-//     harga pool di blok itu. Yang belum keluar = masih dipegang, dinilai harga
-//     pool sekarang sebagai belum terealisasi.
+// Closing a USDG/MEME position returns two things: USDG (money right away) and MEME
+// (not necessarily money — its price can fall another 80% before it gets sold). Both used to
+// be valued at the pool price at close and considered done, although the MEME
+// still sat in the wallet. This module follows that token until it is really swapped:
+//   - quote assets (USDG/ETH/WETH) received = realized right then
+//   - other tokens: each Transfer out of the wallet has its receipt read; if in the same
+//     tx a quote asset came in, that is a sale and its proceeds are used
+//     (not the pool price — selling 1 million tokens incurs price impact & router fee);
+//     if not (sent to another wallet / swapped for another memecoin), valued at the
+//     pool price at that block. What has not left = still held, valued at the
+//     current pool price as unrealized.
 //
-// Satu wallet bisa menerima token yang sama dari beberapa posisi, sudah memegangnya
-// sebelum posisi pertama, dan menambah stok dengan membeli di pasar. Penjualan
-// dialokasikan FIFO atas semua pemasukan itu menurut blok — saldo awal (balanceOf di
-// blok itu), tiap penarikan LP, lalu token yang datang dari luar — dan sebuah
-// penjualan hanya boleh memakan stok yang sudah masuk di blok itu atau sebelumnya.
+// One wallet can receive the same token from several positions, may already hold it
+// before the first position, and adds stock by buying on the market. Sales
+// are allocated FIFO over all those inflows by block — the opening balance (balanceOf at
+// that block), each LP withdrawal, then tokens arriving from outside — and a
+// sale may only consume stock that came in at that block or before.
 const { ethers } = require('ethers');
 const { TOPIC } = require('./chain');
 const { getLogsSafe } = require('./scout');
@@ -28,9 +28,9 @@ const IF_POOL3 = new ethers.Interface(['function slot0() view returns (uint160 s
 const asAddr = (t) => ('0x' + t.slice(-40)).toLowerCase();
 const pad32 = (a) => '0x' + a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
 const big = (v) => BigInt(v || 0);
-// Jendela blok yang sudah dipindai untuk token ini, dua arah sekaligus. Kunci ini
-// diganti nama saat arah "masuk" ditambahkan supaya wallet lama memindai ulang sekali
-// dan mengisi wflows — tanpa itu antreannya tetap timpang selamanya.
+// The block window already scanned for this token, both directions at once. This key
+// was renamed when the "in" direction was added so old wallets rescan once
+// and fill wflows — without that the queue stays lopsided forever.
 const spanKeyOf = (chain, wallet, token) => `wflow_span:${chain}:${wallet}:${token}`;
 
 class Proceeds {
@@ -41,14 +41,14 @@ class Proceeds {
     this.log = log || (() => {});
   }
 
-  // Sisi kuotasi & non-kuotasi sebuah baris wpositions.
+  // Quote and non-quote sides of a wpositions row.
   sides(r) {
     const q = this.chain.quoteSideOf(r.token0, r.token1);
     if (!q) return null;
     return { q, tok: q.side === 0 ? r.token1 : r.token0, side: q.side === 0 ? 1 : 0 };
   }
 
-  // Nilai USD sejumlah token non-kuotasi pada harga sqrt pool baris ini.
+  // USD value of an amount of a non-quote token at this row's pool sqrt price.
   usdOf(r, sqrt, amount, ethUsd) {
     if (!sqrt || amount <= 0n) return 0;
     const s = this.sides(r);
@@ -75,9 +75,9 @@ class Proceeds {
     } catch { return null; }
   }
 
-  // Berapa token yang benar-benar sampai ke wallet di tx penarikan — zap-out lewat
-  // router menjual token itu di tx yang sama, dan yang seperti itu sudah dinilai di
-  // harga tutup oleh pemindai (sudah terealisasi, bukan dipegang).
+  // How many tokens really reached the wallet in the withdrawal tx — a zap-out via the
+  // router sells that token in the same tx, and one like that was already valued at the
+  // close price by the scanner (already realized, not held).
   async receivedIn(txs, wallet, token) {
     const out = new Map();
     if (!txs.length) return out;
@@ -94,7 +94,7 @@ class Proceeds {
     return out;
   }
 
-  // Satu tx yang mengeluarkan token dari wallet: berapa yang pergi, berapa USD masuk.
+  // One tx that takes a token out of the wallet: how much left, how much USD came in.
   async analyzeSale(wallet, token, tx, ethUsd) {
     const [rcR, txR] = await this.rpc.batch([
       { method: 'eth_getTransactionReceipt', params: [tx] },
@@ -103,24 +103,24 @@ class Proceeds {
     const rc = rcR?.result, t = txR?.result;
     if (!rc) return null;
     const bn = parseInt(rc.blockNumber, 16);
-    // hasil jual ke ETH/WETH dinilai dengan harga ETH pada blok itu, bukan sekarang
+    // proceeds of a sale to ETH/WETH are valued at the ETH price at that block, not now
     const ethThen = await this.chain.ethUsdAt(bn, ethUsd);
     let tokOut = 0n, tokIn = 0n, usd = 0;
     for (const l of rc.logs || []) {
       if (l.topics[0] !== TOPIC.transfer || l.topics.length !== 3) continue;
       const a = l.address.toLowerCase(), from = asAddr(l.topics[1]), to = asAddr(l.topics[2]);
       if (a === token && from === wallet) tokOut += BigInt(l.data);
-      // Router/position manager sering mengembalikan sisa di tx yang sama: yang benar-benar
-      // pergi adalah selisihnya, bukan jumlah kotor yang keluar.
+      // The router/position manager often returns leftovers in the same tx: what really
+      // left is the difference, not the gross amount that went out.
       if (a === token && to === wallet) tokIn += BigInt(l.data);
       if (to === wallet && this.chain.QUOTES[a]) {
         const q = this.chain.QUOTES[a];
         usd += (Number(BigInt(l.data)) / 10 ** q.decimals) * (q.kind === 'eth' ? ethThen : 1);
       }
     }
-    // ETH native tidak ber-Transfer: selisih saldo sebelum-sesudah blok, dikembalikan
-    // gas & value tx ini. Butuh node arsip; tanpa itu hasil jual ke ETH tidak terbaca
-    // dan tx-nya dinilai di harga pool.
+    // Native ETH has no Transfer: the balance difference before-after the block, with
+    // the tx's gas & value added back. Needs an archive node; without it the proceeds of a sale to ETH are unreadable
+    // and the tx is valued at the pool price.
     if (this.rpc.hasArchive() && t && t.from.toLowerCase() === wallet) {
       try {
         const [b0, b1] = await this.rpc.batch([
@@ -132,10 +132,10 @@ class Proceeds {
         const delta = BigInt(b1.result) - BigInt(b0.result) + gas + BigInt(t.value || 0);
         if (delta > 0n) usd += (Number(delta) / 1e18) * ethThen;
       } catch (e) {
-        // State blok lama sudah dipangkas node arsip ("missing trie node"): tidak akan
-        // pernah terbaca — pakai yang ada (dinilai harga pool kalau tidak ada USDG masuk).
-        // Kegagalan lain (429, timeout) sementara: lebih baik gagal sekarang supaya token
-        // ini dicoba lagi pada pembaruan berikutnya, daripada tercatat salah permanen.
+        // Old block state has been pruned by the archive node ("missing trie node"): it will
+        // never be readable — use what there is (valued at the pool price if no USDG came in).
+        // Other failures (429, timeout) are temporary: better to fail now so this token
+        // is retried on the next update, than be recorded wrong permanently.
         if (!/missing trie|not available|not found/i.test(e.message)) {
           throw new Error(`saldo ETH ${tx.slice(0, 10)}… tidak terbaca: ${e.message}`);
         }
@@ -144,7 +144,7 @@ class Proceeds {
     return { tokOut: tokOut > tokIn ? tokOut - tokIn : 0n, usd: usd > 0 ? usd : null, block: bn };
   }
 
-  // Lacak semua posisi tertutup wallet ini. Dipanggil setelah persist menulis baris.
+  // Track all closed positions of this wallet. Called after persist writes the rows.
   async track(wallet, { head, ethUsd }) {
     const rows = this.store.all(`SELECT wallet, venue, token_id, pool_ref, token0, token1, out0, out1,
       returned_q, invested_q, quote_symbol, closed_block, held_tok, sold_tok, tracked_to
@@ -153,7 +153,7 @@ class Proceeds {
     const dec = new Map(toks.filter(Boolean).map((t) => [t.address, t.decimals]));
     for (const r of rows) { r.dec0 = dec.get(r.token0) ?? 18; r.dec1 = dec.get(r.token1) ?? 18; }
 
-    // kelompokkan per token non-kuotasi
+    // group per non-quote token
     const byTok = new Map();
     for (const r of rows) {
       const s = this.sides(r);
@@ -161,7 +161,7 @@ class Proceeds {
       r.outN = big(s.side === 0 ? r.out0 : r.out1);
       r.tok = s.tok; r.s = s;
       if (r.outN === 0n) {
-        // semua yang kembali adalah aset kuotasi: terealisasi seluruhnya
+        // everything returned is a quote asset: fully realized
         if (r.tracked_to == null) this.setRow(r, { held: 0n, sold: 0n, realized: r.returned_q || 0, unrealized: 0, head });
         continue;
       }
@@ -170,8 +170,8 @@ class Proceeds {
     }
 
     for (const [token, lots] of byTok) {
-      // Cuma token yang masih ada urusannya: posisi baru tutup, token masih dipegang,
-      // atau pasokan dari luar belum pernah dipindai (alokasi lama perlu dihitung ulang).
+      // Only tokens that still have business: a freshly closed position, a token still held,
+      // or external supply not yet scanned (the old allocation needs recomputing).
       const backfill = this.store.getState(spanKeyOf(this.network, wallet, token)) == null;
       if (!backfill && !lots.some((r) => r.tracked_to == null || big(r.held_tok) > 0n)) continue;
       try { await this.trackToken(wallet, token, lots, { head, ethUsd }); }
@@ -181,12 +181,12 @@ class Proceeds {
 
   async trackToken(wallet, token, lots, { head, ethUsd }) {
     lots.sort((a, b) => a.closed_block - b.closed_block);
-    // Ukuran lot = token yang benar-benar diterima wallet saat penarikan.
+    // Lot size = tokens actually received by the wallet at withdrawal.
     const fresh = lots.filter((r) => r.tracked_to == null);
     const txOf = new Map();
     for (const r of fresh) {
-      // v4: token keluar pada 'decrease'/'collect'; v3: hanya pada 'collect' (baris
-      // 'decrease'-nya bernilai nol), jadi kedua jenis dijumlahkan saja.
+      // v4: tokens out on 'decrease'/'collect'; v3: only on 'collect' (its
+      // 'decrease' row is worth zero), so just sum both kinds.
       const ev = this.store.all(`SELECT tx_hash, ${r.s.side === 0 ? 'amount0' : 'amount1'} AS amt FROM wevents
         WHERE chain=? AND wallet=? AND token_id=? AND kind IN ('decrease','collect') ORDER BY block`, this.network, wallet, r.token_id);
       txOf.set(r, ev);
@@ -200,7 +200,7 @@ class Proceeds {
         if (seen.has(e.tx_hash)) continue;
         seen.add(e.tx_hash);
         const got = recv.get(e.tx_hash);
-        // receipt tidak terbaca: anggap semua diterima (lebih aman daripada nol)
+        // receipt unreadable: assume everything was received (safer than zero)
         lot += got == null ? big(e.amt) : got;
       }
       if (lot > r.outN) lot = r.outN;
@@ -208,7 +208,7 @@ class Proceeds {
     }
     for (const r of lots) if (r.lot == null) r.lot = big(r.held_tok) + big(r.sold_tok);
 
-    // Saldo yang sudah ada sebelum lot pertama — dihabiskan lebih dulu (FIFO).
+    // Balance that existed before the first lot — consumed first (FIFO).
     const first = lots[0].closed_block;
     const preKey = `wpre:${this.network}:${wallet}:${token}:${first}`;
     let pre = this.store.getState(preKey);
@@ -217,9 +217,9 @@ class Proceeds {
       this.store.setState(preKey, pre);
     }
 
-    // Transfer keluar: jendela [lot pertama, head], hanya bagian yang belum dibaca.
-    // Lot yang baru muncul bisa lebih awal dari jendela lama (pindai ulang yang lebih
-    // panjang), jadi jendela yang sudah tercakup disimpan per token.
+    // Transfers out: window [first lot, head], only the part not yet read.
+    // A newly appearing lot can be earlier than the old window (a longer rescan),
+    // so the window already covered is stored per token.
     const spanKey = spanKeyOf(this.network, wallet, token);
     let span = null;
     try { span = JSON.parse(this.store.getState(spanKey) || 'null'); } catch { span = null; }
@@ -231,8 +231,8 @@ class Proceeds {
     }
     const known = this.store.all('SELECT tx_hash, block, tok_out, quote_usd FROM wsales WHERE chain=? AND wallet=? AND token=? ORDER BY block', this.network, wallet, token);
     const seenTx = new Set(known.map((k) => k.tx_hash));
-    // Tx penarikan/penambahan LP yang kita lacak: token yang masuk lewat situ SUDAH
-    // jadi lot, jangan dihitung dua kali sebagai pasokan dari luar.
+    // LP withdrawal/addition txs we track: tokens that came in through there ALREADY
+    // became lots, do not count them twice as outside supply.
     const lpTx = new Set(this.store.all(`SELECT DISTINCT e.tx_hash FROM wevents e
       JOIN wpositions p ON p.chain = e.chain AND p.wallet = e.wallet AND p.token_id = e.token_id
       WHERE e.chain=? AND e.wallet=? AND (p.token0=? OR p.token1=?)`, this.network, wallet, token, token).map((x) => x.tx_hash));
@@ -269,9 +269,9 @@ class Proceeds {
         this.network, wallet, token, tx, a.block, ts, a.tokOut.toString(), a.usd, a.usd != null ? 'sell' : 'send');
       known.push({ tx_hash: tx, block: a.block, tok_out: a.tokOut.toString(), quote_usd: a.usd });
     }
-    // Arah sebaliknya: token yang masuk dari luar posisi kita — dibeli di pasar atau
-    // dikirim wallet lain. Tanpa ini antrean kehabisan stok dan penjualan lama
-    // tumpah ke posisi yang belum dibuka saat penjualan itu terjadi.
+    // The reverse direction: tokens coming in from outside our positions — bought on the market or
+    // sent by another wallet. Without this the queue runs out of stock and an old sale
+    // spills onto a position that had not yet been opened when that sale happened.
     const inLogs = await getLogsSafe(this.rpc, { address: token, topics: [TOPIC.transfer, null, pad32(wallet)] }, lo, hi);
     const inOf = new Map();
     for (const l of inLogs) {
@@ -291,8 +291,8 @@ class Proceeds {
 
   async allocate(wallet, token, lots, { first, pre, known, ethUsd, head }) {
 
-    // Nilai sisi non-kuotasi di harga tutup, per satuan mentah — cadangan kalau harga
-    // pool di blok penjualan / sekarang tidak terbaca (lebih jujur daripada nol).
+    // Value of the non-quote side at the close price, per raw unit — a fallback if the pool price
+    // at the sale block / now is unreadable (more honest than zero).
     for (const r of lots) {
       r.quoteOutUsd = (Number(big(r.s.side === 0 ? r.out1 : r.out0)) / 10 ** (r.s.side === 0 ? r.dec1 : r.dec0))
         * (r.s.q.kind === 'eth' ? ethUsd : 1);
@@ -300,8 +300,8 @@ class Proceeds {
       r.closeUnit = r.outN > 0n ? nonQuoteCloseUsd / Number(r.outN) : 0;
     }
 
-    // Alokasi FIFO atas SEMUA pemasukan token, urut blok: saldo sebelum lot pertama,
-    // tiap penarikan LP (lot), dan token yang datang dari luar.
+    // FIFO allocation over ALL token inflows, in block order: the balance before the first lot,
+    // each LP withdrawal (lot), and tokens arriving from outside.
     const extra = this.store.all('SELECT block, tok_in FROM wflows WHERE chain=? AND wallet=? AND token=? ORDER BY block', this.network, wallet, token);
     const queue = [
       { block: first - 1, left: big(pre) },
@@ -313,9 +313,9 @@ class Proceeds {
       const total = rem;
       for (const q of queue) {
         if (rem === 0n) break;
-        // Token tidak bisa pergi sebelum sampai: penjualan hanya memakan stok yang
-        // sudah masuk pada blok itu. Sisanya berasal dari luar jendela pindai — biarkan
-        // tak teralokasi daripada dibebankan ke posisi yang saat itu belum ada.
+        // A token cannot leave before it arrives: a sale only consumes stock that
+        // had come in by that block. The rest comes from outside the scan window — leave
+        // it unallocated rather than charged to a position that did not exist then.
         if (q.block > k.block) break;
         if (q.left === 0n) continue;
         const take = q.left < rem ? q.left : rem;
@@ -328,12 +328,12 @@ class Proceeds {
       }
     }
 
-    // Tulis hasil per posisi.
+    // Write the per-position result.
     const sqrtCache = new Map();
     for (const q of queue) {
       if (!q.r) continue;
       const r = q.r;
-      // bagian yang tidak pernah sampai ke wallet (zap-out) sudah dinilai di harga tutup
+      // the part that never reached the wallet (zap-out) was already valued at the close price
       const closeUsd = r.closeUnit * Number(r.outN - r.lot);
       const held = q.left;
       let unrealized = 0;
@@ -347,15 +347,15 @@ class Proceeds {
   }
 
   setRow(r, { held, sold, realized, unrealized, head }) {
-    // Modal NULL = riwayat tidak lengkap; PnL-nya ikut tidak diketahui, bukan hasil dikurangi nol.
+    // NULL capital = incomplete history; its PnL is also unknown, not proceeds minus zero.
     const pnl = r.invested_q == null ? null : realized + unrealized - r.invested_q;
     this.store.run(`UPDATE wpositions SET held_tok=?, sold_tok=?, realized_q=?, unrealized_q=?, pnl_q=?, tracked_to=?
       WHERE chain=? AND wallet=? AND venue=? AND token_id=?`,
     held.toString(), sold.toString(), realized, unrealized, pnl, head, this.network, r.wallet, r.venue, r.token_id);
   }
 
-  // Nilai "belum terealisasi" yang segar untuk tampilan: harga pool sekarang, tanpa
-  // menulis ke DB. Baris yang tidak memegang apa-apa dikembalikan apa adanya.
+  // A fresh "unrealized" value for display: the current pool price, without
+  // writing to the DB. A row that holds nothing is returned as it is.
   async refreshHeld(rows, ethUsd) {
     const held = rows.filter((r) => r.status === 'closed' && big(r.held_tok) > 0n && r.realized_q != null);
     if (!held.length) return;

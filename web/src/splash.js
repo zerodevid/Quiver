@@ -1,26 +1,26 @@
-// Layar pembuka (#splash di index.html) ditutup di sini — sekali, setelah data
-// pertama tiba atau ada galat yang harus terlihat. Tampil minimal MIN_MS sejak
-// navigasi dimulai: cukup untuk satu gerakan logo sehingga merek teringat, tidak
-// cukup lama untuk terasa menunda. Koneksi lambat tidak menambah waktu tunggu
-// buatan — layar ditutup begitu data ada.
+// The splash screen (#splash in index.html) is closed here — once, after the first
+// data arrives or an error that must be visible. It shows for at least MIN_MS since
+// navigation started: long enough for one logo motion so the brand is remembered, not
+// long enough to feel like a delay. A slow connection adds no artificial waiting
+// time — the screen closes as soon as data exists.
 //
-// Penutupnya transisi: logo terbang dan mengecil tepat ke logo header sementara
-// latarnya memudar, lalu logo header menyambut dengan satu tembakan panah (sekali,
-// lalu diam — .brand-arrive di index.css). Tanpa header yang terlihat, dengan
-// prefers-reduced-motion, atau di tab latar: cukup memudar.
+// The closing is a transition: the logo flies and shrinks exactly onto the header logo while
+// the background fades, then the header logo welcomes with one arrow shot (once,
+// then still — .brand-arrive in index.css). Without a visible header, with
+// prefers-reduced-motion, or in a background tab: it just fades.
 const MIN_MS = 1500;
-const MAX_MS = 8_000;    // API tidak menjawab: jangan kurung pengguna di logo
+const MAX_MS = 8_000;    // The API does not answer: do not trap the user on the logo
 
 const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
-// Logo header yang sedang tampil: sidebar di desktop, header atas di HP.
+// The header logo currently visible: the sidebar on desktop, the top header on mobile.
 function visibleBrandLogo() {
   return [...document.querySelectorAll('[data-brand-logo]')]
     .find((n) => { const r = n.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
 }
 
-// Animasi panah layar pembuka berulang; hentikan dengan halus dari pose saat ini
-// (bukan melompat) supaya yang terbang adalah logo yang diam.
+// The splash arrow animation repeats; stop it smoothly from the current pose
+// (not jumping) so that what flies is a still logo.
 function settle(logo) {
   for (const n of logo.querySelectorAll('svg, path')) {
     const cs = getComputedStyle(n);
@@ -28,7 +28,7 @@ function settle(logo) {
     n.style.animation = 'none';
     n.style.transform = tf === 'none' ? '' : tf;
     n.style.opacity = op;
-    n.getBoundingClientRect();   // paksa gaya terpasang sebelum transisi
+    n.getBoundingClientRect();   // force the style to apply before the transition
     n.style.transition = 'transform .25s ease, opacity .25s ease';
     n.style.transform = '';
     n.style.opacity = '1';
@@ -37,7 +37,7 @@ function settle(logo) {
 
 const root = document.documentElement;
 
-// Menu & isi halaman muncul berurutan (html.app-enter di index.css).
+// The menu & page contents appear in sequence (html.app-enter in index.css).
 function reveal() {
   if (!root.classList.contains('has-splash')) return;
   root.classList.add('app-enter');
@@ -68,36 +68,36 @@ function fly(el) {
   const scale = b.width / a.width;
   const dx = b.left + b.width / 2 - (a.left + a.width / 2);
   const dy = b.top + b.height / 2 - (a.top + a.height / 2);
-  target.style.visibility = 'hidden';   // satu logo di layar, bukan dua
-  root.classList.add('brand-pending');  // keterangan di bawah logo muncul setelah mendarat
+  target.style.visibility = 'hidden';   // one logo on screen, not two
+  root.classList.add('brand-pending');  // the caption under the logo appears after landing
   el.dataset.state = 'flying';
   logo.style.transform = `translate(${dx}px, ${dy}px) scale(${scale})`;
-  // Gerak cepat-lalu-melambat: logo praktis sudah di tempat pada ~60% durasi —
-  // isi halaman mulai muncul di situ, bukan menunggu logo benar-benar berhenti.
+  // Fast-then-slow motion: the logo is practically in place at ~60% of the duration —
+  // the page content starts appearing there, not waiting for the logo to fully stop.
   setTimeout(reveal, 360);
   let done = false;
   const finish = () => { if (!done) { done = true; land(el, target); } };
   logo.addEventListener('transitionend', (e) => { if (e.target === logo && e.propertyName === 'transform') finish(); });
-  setTimeout(finish, 1000);   // transisi tidak melapor (tab berpindah di tengah jalan)
+  setTimeout(finish, 1000);   // the transition does not report (the tab switched midway)
   return true;
 }
 
 let closing = false;
 export function hideSplash() {
   const el = document.getElementById('splash');
-  // Tanpa layar pembuka (sudah dihapus): isi halaman jangan sampai tetap tersembunyi.
+  // Without the splash screen (already removed): the page content must not stay hidden.
   if (!el) { root.classList.remove('has-splash', 'brand-pending'); return; }
-  // Juga saat ditandai gagal: data sudah tiba berarti aplikasinya jalan.
+  // Also when flagged as failed: data has arrived, so the app works.
   if (closing) return;
   closing = true;
   setTimeout(() => {
     if (!el.classList.contains('sp-failed') && fly(el)) return;
-    reveal();   // tanpa terbang: isi halaman muncul di bawah layar yang memudar
+    reveal();   // without flying: the page content appears beneath the fading screen
     el.dataset.state = 'leaving';
     let done = false;
     const finish = () => { if (!done) { done = true; land(el, null); } };
     el.addEventListener('transitionend', finish, { once: true });
-    setTimeout(finish, 600);   // transisi tidak berjalan (tab di latar, reduced motion)
+    setTimeout(finish, 600);   // the transition does not run (background tab, reduced motion)
   }, Math.max(0, MIN_MS - performance.now()));
 }
 

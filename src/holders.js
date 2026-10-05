@@ -61,7 +61,7 @@ function alchemyHolders(chain, market, cfg, address) {
   let state = jobs.get(market);
   if (!state) { state = { running: false, cache: new Map(), histories: new Map() }; jobs.set(market, state); }
   const token = address.toLowerCase();
-  const cacheKey = `${chain.network}:${token}`; // kunci peta/berkas cache — beda chain, tidak boleh tabrakan
+  const cacheKey = `${chain.network}:${token}`; // map/cache file key — different chains must not collide
   const cacheFile = cfg.db?.path && cfg.db.path !== ':memory:' ? path.join(path.dirname(cfg.db.path), 'holders', chain.network, `${token}.json`) : null;
   if (cacheFile && !state.cache.has(cacheKey) && !state.histories.has(cacheKey)) {
     try {

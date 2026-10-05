@@ -1,28 +1,29 @@
-// Mata uang kedua: nilai yang sama dengan angka dolar di sebelahnya, ditulis kecil.
+// Secondary currency: the same value as the dollar figure beside it, written small.
 //
-// Dolar tetap angka utamanya — itu satuan mesin, harga pool, dan semua perhitungan
-// PnL, dan menukar keduanya akan membuat dua halaman yang sama terbaca berbeda hanya
-// karena kurs bergerak. Yang ditambahkan cuma rasa besaran buat yang tidak berpikir
-// dalam dolar: "$1.234,56  ≈ Rp22 jt".
+// Dollars stay the main figure — that is the unit of the engine, pool prices, and all
+// PnL calculations, and swapping the two would make two identical pages read differently just
+// because the rate moved. All that is added is a sense of scale for people who do not think
+// in dollars: "$1,234.56  ≈ Rp22 m".
 //
-// Kurs datang dari server lewat /api/overview (lihat src/fx.js) setiap poll, sama
-// seperti identitas chain — tidak ada permintaan jaringan dari peramban di sini.
+// The rate comes from the server via /api/overview (see src/fx.js) on each poll, the same
+// as the chain identity — no network request from the browser is made here.
 import { useEffect, useState } from 'react';
 import { getLocale } from './i18n';
+import { isHidden } from './privacy';
 
-let current = null;          // { currency, rate, at, stale } atau null = dolar saja
+let current = null;          // { currency, rate, at, stale } or null = dollars only
 const listeners = new Set();
 
 export function setFx(next) {
   const v = next && next.rate > 0 ? { currency: next.currency, rate: next.rate, at: next.at || null, stale: !!next.stale } : null;
-  // Poll tiap 5 detik: hanya kabari komponen kalau angkanya benar-benar berubah.
+  // Polls every 5 seconds: only notify components if the number really changed.
   if (current?.currency === v?.currency && current?.rate === v?.rate) return;
   current = v;
   listeners.forEach((f) => f(current));
 }
 export const fxInfo = () => current;
 
-// Komponen ikut tergambar ulang saat kurs atau mata uang berganti.
+// Components are redrawn when the rate or the currency changes.
 export function useFx() {
   const [v, setV] = useState(current);
   useEffect(() => {
@@ -34,24 +35,26 @@ export function useFx() {
   return v;
 }
 
-// Nilai dolar -> teks mata uang kedua, atau null kalau tidak ada yang perlu ditulis.
-// Di bawah setengah sen tidak ada isinya ("Rp0" cuma menambah coretan), dan nominal
-// jutaan dipersingkat ("Rp22,4 jt") karena ini keterangan, bukan kuitansi.
+// Dollar value -> secondary currency text, or null if there is nothing to write.
+// Below half a cent there is nothing ("Rp0" just adds clutter), and amounts in
+// the millions are shortened ("Rp22.4 m") because this is an annotation, not a receipt.
 export function fxFormat(v, fx = current) {
   if (!fx || !(fx.rate > 0) || v == null || !Number.isFinite(v)) return null;
   if (Math.abs(v) < 0.005) return null;
   const n = v * fx.rate;
   const abs = Math.abs(n);
   const loc = getLocale() === 'en' ? 'en-US' : 'id-ID';
-  // minimumFractionDigits wajib ikut diisi: bawaan gaya "currency" adalah 2, dan
-  // Intl melempar RangeError kalau minimum lebih besar daripada maksimum.
+  // minimumFractionDigits must be set too: the "currency" style defaults to 2, and
+  // Intl throws a RangeError if the minimum is greater than the maximum.
   const o = { style: 'currency', currency: fx.currency, minimumFractionDigits: 0, maximumFractionDigits: 0 };
   if (abs >= 1e6) { o.notation = 'compact'; o.maximumFractionDigits = 1; }
-  else if (abs < 100) { o.maximumFractionDigits = 2; }   // mata uang "besar" (EUR, GBP): $1,20 -> €1,03
+  else if (abs < 100) { o.maximumFractionDigits = 2; }   // "big" currencies (EUR, GBP): $1.20 -> €1.03
   let s;
   try { s = new Intl.NumberFormat(loc, o).format(abs); }
-  catch { return null; }   // kode mata uang yang tidak dikenal peramban lama
+  catch { return null; }   // currency code unknown to an old browser
   return (n < 0 ? '−' : '') + s;
 }
-// Memakai mata uang yang sedang aktif di dasbor.
-export const fxText = (v) => fxFormat(v, current);
+// Uses the currency currently active on the dashboard.
+// Value redaction (privacy.js): "≈ •••" adds nothing, so it is omitted.
+// Only here, not in fxFormat — the example in Settings is not our money.
+export const fxText = (v) => (isHidden() ? null : fxFormat(v, current));

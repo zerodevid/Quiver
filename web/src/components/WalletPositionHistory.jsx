@@ -1,20 +1,20 @@
-// Laci riwayat satu posisi wallet yang diriset — dibuka dengan mengklik baris di
-// tabel "Posisi berjalan"/"Riwayat posisi" halaman Wallet.
+// History drawer of one researched wallet position — opened by clicking a row in the
+// "Running positions"/"Position history" tables on the Wallet page.
 //
-// Bedanya dengan laci posisi bot (PositionHistory): di sini tidak ada catatan bot,
-// karena posisinya bukan milik kita. Yang ada justru lebih mentah dan lebih menarik
-// untuk riset — setiap kejadian on-chain yang menyentuh posisi itu, dengan POKOK dan
-// FEE yang sudah dipisahkan, plus harga pool di blok kejadian. Semuanya sudah
-// tersimpan saat pindai wallet (tabel wevents), jadi membuka laci ini tidak
-// memanggil chain sama sekali.
+// Unlike the bot position drawer (PositionHistory): there are no bot notes here,
+// because the position is not ours. What is here is rawer and more interesting
+// for research — every on-chain event that touched the position, with PRINCIPAL and
+// FEE already separated, plus the pool price at the event's block. All of it is already
+// stored when the wallet is scanned (wevents table), so opening this drawer
+// does not call the chain at all.
 import { useEffect, useState } from 'react';
 import { Button, Chip, Drawer } from '@heroui/react';
-import { X, ChartCandlestick } from 'lucide-react';
+import { X, ChartCandlestick, PlusCircle } from 'lucide-react';
 import { get } from '../api';
-import { Stat, Empty, Loading, Notice, PriceRange, TxHash } from './ui';
+import { Stat, Empty, Fig, Loading, Notice, PriceRange, TxHash, TradeLinks, WalletLinks, baseTokenOf } from './ui';
 import TokenIcon, { TokenPair } from './TokenIcon';
-import { usd, pct, tone, age, ago, num, short, qty, fmtQty, price, sqrtPrice, locale as fmtLocale } from '../fmt';
-import { useI18n } from '../i18n';
+import { usd, pct, tone, age, ago, num, short, qty, fmtQty, price, sqrtPrice, tickPrice, locale as fmtLocale } from '../fmt';
+import { useI18n, reason } from '../i18n';
 
 const KIND = {
   mint: ['Buka posisi', 'success'],
@@ -26,8 +26,8 @@ const KIND = {
 const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
 const big = (v) => { try { return BigInt(String(v ?? '0')); } catch { return 0n; } };
 
-// "decrease" yang menghabiskan likuiditas adalah penutupan posisi — bedanya cuma
-// terlihat dari likuiditas berjalan, jadi dihitung di sini, bukan disimpan per baris.
+// A "decrease" that exhausts the liquidity is a position close — the difference is only
+// visible from the running liquidity, so it is computed here, not stored per row.
 function withKinds(events) {
   let liq = 0n;
   return events.map((e) => {
@@ -38,9 +38,9 @@ function withKinds(events) {
   });
 }
 
-// Jumlah token pada satu kejadian, dipecah jadi pokok dan fee — inilah yang membuat
-// riwayat wallet bisa dipercaya: penarikan yang tampak besar sering sebagian besar
-// pokok, bukan hasil.
+// Token amounts in one event, split into principal and fee — this is what makes
+// a wallet's history trustworthy: a withdrawal that looks large is often mostly
+// principal, not profit.
 function Amounts({ ev, p }) {
   const { t } = useI18n();
   const row = (addr, sym, raw, dec, cls = '') => {
@@ -72,7 +72,7 @@ function Amounts({ ev, p }) {
 
 function Events({ events, p }) {
   const { t } = useI18n();
-  const evs = [...withKinds(events)].reverse();   // terbaru di atas, seperti tabel lain
+  const evs = [...withKinds(events)].reverse();   // newest on top, like the other tables
   if (!evs.length) {
     return <Empty title="Belum ada kejadian tercatat"
       sub="Riwayat posisi ini ada di luar jendela pindai — perluas jendelanya lalu pindai ulang." />;
@@ -116,25 +116,181 @@ function Events({ events, p }) {
   );
 }
 
+// ---- our side of someone else's position ----
+//
+// This drawer assesses ANOTHER WALLET's position thoroughly, then stops just before the
+// question that makes people open it: "do we follow it or not?". The answer
+// used to be scattered — our copy on the Positions page, the reason for skipping in Activity —
+// so assessing one target position meant opening three pages and matching
+// NFT numbers by hand. Here both are placed under the target's figures: our
+// copy if there is one, and if not, the reason the engine refused — as it is, in
+// the same words as recorded when the decision was made.
+const VERDICT = { copy: ['Disalin', 'success'], dry: ['Simulasi', 'accent'], skip: ['Dilewati', 'default'], error: ['Gagal', 'danger'] };
+const ACTIONS = {
+  mint: 'buka posisi', increase: 'tambah likuiditas', decrease: 'tarik likuiditas', burn: 'tutup posisi',
+  collect: 'klaim fee', claim: 'klaim fee', transfer_in: 'terima posisi', transfer_out: 'kirim posisi',
+  custody_in: 'ambil dari otomasi', custody_out: 'titip ke otomasi',
+};
+const STATUS = { open: ['Terbuka', 'success'], closed: ['Ditutup', 'danger'], pending: ['Menunggu', 'warning'], failed: ['Gagal', 'danger'] };
+
+// The "Copy manually" link: the target position is carried to the manual LP page with the pool and
+// its range already filled in. The range is translated into that page's language — signed percent
+// of each bound RELATIVE TO THE CURRENT PRICE, not ticks — so a pool quoted in
+// token0 (its price moves opposite to the tick) does not get flipped top-to-bottom.
+// If the current price is unknown (the position is already closed) or the range is outside
+// the bounds that page accepts, only the pool is carried.
+function manualHash(p) {
+  const ref = '#manual-lp/' + p.pool_ref;
+  const cur = p.curTick == null ? null : tickPrice(p.curTick, p.dec0, p.dec1, p.quoteSide);
+  if (!(cur > 0) || p.tick_lower == null || p.tick_upper == null) return ref;
+  const a = tickPrice(p.tick_lower, p.dec0, p.dec1, p.quoteSide);
+  const b = tickPrice(p.tick_upper, p.dec0, p.dec1, p.quoteSide);
+  const lo = ((Math.min(a, b) - cur) / cur) * 100;
+  const up = ((Math.max(a, b) - cur) / cur) * 100;
+  if (!(lo > -100) || !(up > -100 && up <= 100000) || !(up > lo)) return ref;
+  const bulat = (v) => Math.round(v * 100) / 100;
+  return `${ref}?lo=${bulat(lo)}&up=${bulat(up)}`;
+}
+
+function Salinan({ q, p }) {
+  const { t } = useI18n();
+  const open = q.status === 'open';
+  const s = STATUS[q.status] || [q.status, 'default'];
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <span className="flex items-center gap-2 text-sm font-medium">
+          {t('Salinan kita')}
+          <Chip size="sm" variant="soft" color={s[1]}>{t(s[0])}</Chip>
+          {q.takeoverTs != null && open && (
+            <Chip size="sm" variant="soft" color="warning">{t('Kendali manual')}</Chip>
+          )}
+        </span>
+        <a href={'#positions/' + q.id} className="text-xs text-accent hover:underline">{t('Lihat posisi #{id}', { id: q.id })}</a>
+      </div>
+      {q.status === 'open' || q.status === 'closed' ? (
+        q.syncing ? (
+          <div className="text-xs text-muted">{t('Baru dibuka — modal {v}; angka selengkapnya menyusul sinkron berikutnya.', { v: usd(q.costUsd) })}</div>
+        ) : (
+          <div className="grid grid-cols-3 gap-3">
+            <Fig label="Modal" value={usd(q.costUsd)} />
+            <Fig label={open ? 'Nilai kini' : 'Hasil'} value={usd(open ? q.valueUsd : q.outUsd)}
+              sub={q.feeUsd > 0.005 ? t('fee {v}', { v: usd(q.feeUsd) }) : null} />
+            <Fig label={open ? 'PnL (belum terealisasi)' : 'PnL'} value={usd(q.pnlUsd)} cls={tone(q.pnlUsd)}
+              sub={q.pnlPct == null ? null : pct(q.pnlPct, 2)} />
+          </div>
+        )
+      ) : (
+        <div className="text-xs text-muted">{t('Salinan ini tidak pernah jadi posisi — transaksinya {s}.', { s: t(q.status === 'pending' ? 'masih menggantung' : 'gagal') })}</div>
+      )}
+      {/* Our capital is almost never as large as the target's, so the dollars cannot be
+          compared; the percent of each one's own capital can. */}
+      {q.pnlPct != null && p.pnlPct != null && !q.syncing && (
+        <div className="mt-2 text-xs text-muted">
+          {t('Target {a} atas modalnya · kita {b} atas modal kita', { a: pct(p.pnlPct, 2), b: pct(q.pnlPct, 2) })}
+        </div>
+      )}
+      <div className="mt-1 text-xs text-muted">
+        {q.openedTs ? t('dibuka {w}', { w: ago(q.openedTs) }) : null}
+        {q.closedTs ? ` · ${t('ditutup {w}', { w: ago(q.closedTs) })}` : null}
+      </div>
+    </div>
+  );
+}
+
+function OurSide({ copy, p, onClose }) {
+  const { t } = useI18n();
+  if (!copy) return null;
+  const ours = copy.positions || [];
+  // Chronological, not newest on top like other tables: what answers
+  // "why it was not followed" is the decision on opening the position — the decision
+  // after it ("no matching mirror" when the target withdrew) is just a consequence.
+  const decs = copy.decisions || [];
+  const rejected = decs.some((d) => d.verdict && d.verdict !== 'copy');
+  // Why there is no copy. Ordered from the most explanatory: this wallet
+  // simply is not a target > the target was added after its position was opened > the engine
+  // never saw its action > the engine saw it but refused (the list of
+  // reasons follows below).
+  const cause = !copy.isTarget
+    ? 'Wallet ini bukan target — posisinya hanya diriset, tidak pernah diikuti mesin.'
+    : !decs.length
+      ? (copy.addedTs && p.opened_ts && copy.addedTs > p.opened_ts
+        ? 'Target ini baru ditambahkan setelah posisi ini dibuka, jadi pembukaannya tidak pernah dilihat pemantau.'
+        : 'Pemantau tidak mencatat satu aksi pun di posisi ini — kemungkinan terjadi selagi mesin mati dan di luar jangkauan backfill.')
+      : rejected
+        ? 'Mesin melihat aksinya, tapi tidak menyalinnya:'
+        : 'Aksinya tercatat, tapi belum ada keputusan atasnya.';
+  return (
+    <div className="mb-4 space-y-3">
+      {ours.map((q) => <Salinan key={q.id} q={q} p={p} />)}
+      {!ours.length && (
+        <div className="rounded-lg border border-border p-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-sm font-medium">{t('Kita tidak menyalin posisi ini')}</div>
+              <p className="mt-1 text-xs text-muted">{t(cause)}</p>
+              {copy.isTarget && !copy.enabled && (
+                <p className="mt-1 text-xs text-muted">{t('Target ini sedang dimatikan.')}</p>
+              )}
+            </div>
+            {/* The engine will no longer pick it up; entering by hand still works.
+                The manual LP page decides whether it is allowed — here only the
+                pool and its range are handed over. */}
+            {p.pool_ref && (
+              <Button size="sm" variant="outline" className="shrink-0"
+                onPress={() => { onClose(); location.hash = manualHash(p); }}>
+                <PlusCircle className="size-4" />{t('Salin manual')}
+              </Button>
+            )}
+          </div>
+          {decs.length > 0 && (
+            <ul className="mt-2 space-y-2 border-t border-border pt-2">
+              {decs.slice(0, 6).map((d) => {
+                const v = d.verdict ? VERDICT[d.verdict] : null;
+                return (
+                  <li key={d.actionId} className="flex flex-col gap-1 text-xs sm:flex-row sm:items-baseline sm:gap-2">
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      <Chip size="sm" variant="soft" color={v ? v[1] : 'default'}>{v ? t(v[0]) : t('Belum diputuskan')}</Chip>
+                      <span className="text-muted">{t(ACTIONS[d.kind] || d.kind)}</span>
+                    </span>
+                    <span className="min-w-0 flex-1 break-words">{d.reason ? reason(d.reason) : '—'}</span>
+                    <span className="shrink-0 text-muted" title={fmtDate(d.ts)}>{ago(d.ts)}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
- * p       : baris posisi dari /api/wallet (null = laci tertutup)
- * address : wallet pemiliknya — kejadian diambil per (wallet, token_id)
+ * p       : position row from /api/wallet (null = drawer closed)
+ * address : the owning wallet — events are fetched per (wallet, token_id)
  */
 export default function WalletPositionHistory({ p, address, onClose }) {
   const { t } = useI18n();
   const [events, setEvents] = useState(null);
+  const [copy, setCopy] = useState(null);
   const [err, setErr] = useState(null);
   const id = p?.token_id;
+  const venue = p?.venue || '';
 
   useEffect(() => {
     if (!id) return undefined;
     let alive = true;
-    setEvents(null); setErr(null);
-    get(`/api/wallet/events?address=${address}&token_id=${id}`)
-      .then((r) => { if (!alive) return; if (r.error) setErr(r.error); else setEvents(r.events || []); })
+    setEvents(null); setCopy(null); setErr(null);
+    get(`/api/wallet/events?address=${address}&token_id=${id}&venue=${venue}`)
+      .then((r) => {
+        if (!alive) return;
+        if (r.error) setErr(r.error);
+        else { setEvents(r.events || []); setCopy(r.copy || null); }
+      })
       .catch((e) => alive && setErr(e.message));
     return () => { alive = false; };
-  }, [id, address]);
+  }, [id, address, venue]);
 
   const open = p?.status === 'open';
   const fee = (p?.fees_q || 0) + (open ? (p?.live_fee_q || 0) : 0);
@@ -156,7 +312,9 @@ export default function WalletPositionHistory({ p, address, onClose }) {
                       <span className="uppercase">{String(p.venue || 'v4')}</span><span>·</span>
                       <span className="mono">#{p.token_id}</span><span>·</span>
                       <a href={'#wallet/' + address} className="mono hover:underline">{short(address)}</a>
+                      <WalletLinks address={address} compact />
                     </div>
+                    <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} className="mt-1.5 flex-wrap" />
                   </div>
                 </div>
               ) : <Drawer.Heading className="text-base font-semibold">{t('Riwayat posisi')}</Drawer.Heading>}
@@ -187,6 +345,8 @@ export default function WalletPositionHistory({ p, address, onClose }) {
                       dec0={p.dec0} dec1={p.dec1} quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1}
                       entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />
                   </div>
+
+                  <OurSide copy={copy} p={p} onClose={onClose} />
 
                   {p.incomplete === 1 && (
                     <div className="mb-4"><Notice status="warning" title="Riwayat posisi ini terpotong">

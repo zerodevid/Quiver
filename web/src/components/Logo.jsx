@@ -1,6 +1,6 @@
 // Outlined vector artwork: no font or bitmap dependency. Inherits the theme color.
-// Tanda dipecah jadi panah + chevron supaya keduanya bisa dianimasikan terpisah
-// (sambutan setelah layar pembuka, lihat src/splash.js dan .brand-arrive di index.css).
+// The mark is split into arrow + chevron so the two can be animated separately
+// (welcome animation after the splash screen, see src/splash.js and .brand-arrive in index.css).
 const ARROW = 'M0 19H26L16 8L24 0L46 24L24 48L16 40L26 30H0Z';
 const CHEVRON = 'M43 11L51 3L73 24L51 46L43 38L56 24Z';
 const MARK = ARROW + CHEVRON;

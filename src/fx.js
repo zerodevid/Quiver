@@ -1,19 +1,19 @@
 'use strict';
-// Mata uang kedua untuk dasbor: kurs USD -> mata uang pilihan (Pengaturan → Tampilan).
+// Secondary currency for the dashboard: USD -> chosen currency rate (Settings → Display).
 //
-// Angka utama di dasbor tetap dolar — itu satuan yang dipakai mesin, harga pool, dan
-// semua perhitungan PnL. Kurs di sini cuma untuk keterangan kecil di sampingnya
-// ("≈ Rp20,3 jt"), supaya nominalnya punya rasa besaran buat yang tidak berpikir
-// dalam dolar. Karena sifatnya keterangan, tidak ada yang bergantung padanya:
-// kalau kursnya gagal diambil, dasbor tetap jalan dan keterangannya hilang.
+// The headline numbers on the dashboard stay in dollars — that is the unit the engine, pool
+// prices and every PnL calculation use. The rate here only feeds a small annotation next to
+// them ("≈ Rp20.3 m"), so the amount has a sense of scale for people who do not think
+// in dollars. Because it is only an annotation, nothing depends on it:
+// if the rate cannot be fetched, the dashboard keeps working and the annotation disappears.
 //
-// Sumbernya dua, gratis dan tanpa kunci: open.er-api.com (pembaruan harian, semua
-// mata uang) dengan cadangan api.frankfurter.app (kurs referensi ECB). Jawabannya
-// disimpan di tabel state, jadi restart bot tidak berarti menarik ulang — dan kalau
-// keduanya sedang tidak bisa dihubungi, kurs terakhir tetap dipakai (ditandai basi).
+// Two sources, free and keyless: open.er-api.com (daily updates, all
+// currencies) with api.frankfurter.app as a fallback (ECB reference rates). The response is
+// stored in the state table, so a bot restart does not mean a refetch — and if
+// neither source can be reached, the last known rate is still used (flagged stale).
 
-// Yang ditawarkan di pemilih. Daftar pendek yang disengaja: mata uang yang mungkin
-// dipakai orang yang menjalankan bot ini, bukan seluruh 160 kode yang dikirim API.
+// What the picker offers. A deliberately short list: currencies likely to be
+// used by whoever runs this bot, not all 160 codes the API returns.
 const CURRENCIES = {
   IDR: 'Rupiah Indonesia', MYR: 'Ringgit Malaysia', SGD: 'Dolar Singapura', THB: 'Baht Thailand',
   VND: 'Dong Vietnam', PHP: 'Peso Filipina', INR: 'Rupee India', CNY: 'Yuan Tiongkok',
@@ -25,14 +25,27 @@ const CURRENCIES = {
   AED: 'Dirham UEA', SAR: 'Riyal Saudi', ZAR: 'Rand Afrika Selatan', NGN: 'Naira Nigeria',
 };
 
+// English names for the same list — used by the setup page, which defaults to
+// English. The ISO code remains the reference; this is only a label next to it.
+const CURRENCIES_EN = {
+  IDR: 'Indonesian rupiah', MYR: 'Malaysian ringgit', SGD: 'Singapore dollar', THB: 'Thai baht',
+  VND: 'Vietnamese dong', PHP: 'Philippine peso', INR: 'Indian rupee', CNY: 'Chinese yuan',
+  JPY: 'Japanese yen', KRW: 'South Korean won', HKD: 'Hong Kong dollar', TWD: 'Taiwan dollar',
+  AUD: 'Australian dollar', NZD: 'New Zealand dollar', CAD: 'Canadian dollar',
+  EUR: 'Euro', GBP: 'Pound sterling', CHF: 'Swiss franc', SEK: 'Swedish krona',
+  TRY: 'Turkish lira', RUB: 'Russian ruble', UAH: 'Ukrainian hryvnia', PLN: 'Polish zloty',
+  BRL: 'Brazilian real', MXN: 'Mexican peso', ARS: 'Argentine peso',
+  AED: 'UAE dirham', SAR: 'Saudi riyal', ZAR: 'South African rand', NGN: 'Nigerian naira',
+};
+
 const SOURCES = [
   ['open.er-api.com', 'https://open.er-api.com/v6/latest/USD', (j) => (j && j.result === 'success' ? j.rates : null)],
   ['frankfurter.app', 'https://api.frankfurter.app/latest?base=USD', (j) => (j && j.rates) || null],
 ];
 
 class Fx {
-  // ttlMs: kurs mata uang bergerak lambat (sumbernya sendiri harian), jadi enam jam
-  // sudah jauh lebih sering daripada datanya berubah.
+  // ttlMs: currency rates move slowly (the source itself updates daily), so six hours
+  // is already far more frequent than the data changes.
   constructor({ store = null, log = null, fetch: fetchImpl = null, ttlMs = 6 * 3600_000 } = {}) {
     this.store = store;
     this.log = log || (() => {});
@@ -52,9 +65,9 @@ class Fx {
 
   fresh() { return !!this.rates && Date.now() - this.at < this.ttlMs; }
 
-  // Kurs satu mata uang untuk dasbor. Dipanggil dari /api/overview yang dipoll tiap
-  // 5 detik, jadi TIDAK menunggu jaringan: kalau kursnya basi, penyegaran dijalankan
-  // di latar dan jawaban sekarang memakai nilai lama (atau kosong kalau belum pernah ada).
+  // The rate for one currency, for the dashboard. Called from /api/overview, which is polled every
+  // 5 seconds, so it does NOT wait on the network: if the rate is stale, a refresh runs
+  // in the background and the current response uses the old value (or empty if there never was one).
   view(code) {
     const c = String(code || '').toUpperCase();
     if (!CURRENCIES[c]) return null;
@@ -69,7 +82,7 @@ class Fx {
     };
   }
 
-  // force: dari tombol "Perbarui kurs" di Pengaturan — abaikan umur cache.
+  // force: from the "Refresh rate" button in Settings — ignore the cache age.
   refresh(force = false) {
     if (!force && this.fresh()) return Promise.resolve(true);
     if (!this.pending) this.pending = this.load().finally(() => { this.pending = null; });
@@ -83,8 +96,8 @@ class Fx {
         const r = await this.fetch(url, { signal: AbortSignal.timeout(10_000) });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const rates = pick(await r.json());
-        // EUR ada di semua sumber kurs yang waras — penanda bahwa yang terbaca memang
-        // tabel kurs, bukan halaman galat yang kebetulan berformat JSON.
+        // EUR exists in every sane rate source — a marker that what was read really is
+        // a rate table, not an error page that happens to be JSON.
         if (!rates || !rates.EUR) throw new Error('jawaban tanpa kurs');
         this.rates = rates; this.at = Date.now(); this.source = name; this.error = null;
         try { if (this.store) this.store.setState('fx_rates', JSON.stringify({ at: this.at, source: name, rates })); } catch { /* biarkan */ }
@@ -97,10 +110,31 @@ class Fx {
   }
 }
 
-// Mata uang yang dipakai dasbor. Belum pernah diatur (config lama, pemasangan baru)
-// = Rupiah: bot ini dipakai dari Indonesia, dan keterangan kecil yang langsung ada
-// lebih berguna daripada fitur yang harus ditemukan dulu. Dimatikan dari Pengaturan
-// tersimpan sebagai null, dan null TIDAK dibaca sebagai "belum pernah diatur".
+// A dollar value written in the secondary currency, or null if there is nothing to
+// write. The rules are exactly the same as the dashboard's (web/src/currency.js): below
+// half a cent there is nothing to show, amounts in the millions are shortened ("Rp22.4 m") because
+// this is an annotation and not a receipt, and "big" currencies (EUR, GBP) keep two
+// decimals so $1.20 does not become "€1".
+function fxFormat(v, fx, lang = 'id') {
+  if (!fx || !(fx.rate > 0) || v == null || !Number.isFinite(Number(v))) return null;
+  if (Math.abs(v) < 0.005) return null;
+  const n = v * fx.rate;
+  const abs = Math.abs(n);
+  // minimumFractionDigits must be set too: the "currency" style defaults to 2, and
+  // Intl throws a RangeError if the minimum is greater than the maximum.
+  const o = { style: 'currency', currency: fx.currency, minimumFractionDigits: 0, maximumFractionDigits: 0 };
+  if (abs >= 1e6) { o.notation = 'compact'; o.maximumFractionDigits = 1; }
+  else if (abs < 100) { o.maximumFractionDigits = 2; }
+  let s;
+  try { s = new Intl.NumberFormat(lang === 'en' ? 'en-US' : 'id-ID', o).format(abs); }
+  catch { return null; }   // unknown currency code
+  return (n < 0 ? '\u2212' : '') + s;
+}
+
+// The currency the dashboard uses. Never configured (old config, fresh install)
+// = Rupiah: this bot is used from Indonesia, and a small annotation that is there right away is
+// more useful than a feature that has to be discovered first. Switched off in Settings
+// it is stored as null, and null is NOT read as "never configured".
 const currencyOf = (cfg) => (cfg?.display && 'currency' in cfg.display ? cfg.display.currency || '' : 'IDR');
 
-module.exports = { Fx, CURRENCIES, currencyOf };
+module.exports = { Fx, CURRENCIES, CURRENCIES_EN, currencyOf, fxFormat };

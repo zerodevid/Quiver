@@ -6,7 +6,7 @@
   <title>Quiver</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <script>
-    // Pasang tema sebelum render supaya tidak berkedip terang dulu.
+    // Apply the theme before render so it does not flash light first.
     (function () {
       try {
         var t = localStorage.getItem('lpcopy-theme');
@@ -14,13 +14,13 @@
         var el = document.documentElement;
         el.classList.add(t); el.setAttribute('data-theme', t);
       } catch (e) {}
-      // penanda layar pembuka masih tampil (lihat .brand-sub di index.css)
+      // the splash marker is still shown (see .brand-sub in index.css)
       document.documentElement.classList.add('has-splash');
     })();
   </script>
   <style>
-    /* Gaya layar pembuka ditulis di sini, bukan di CSS bundel: harus tetap benar
-       walau stylesheet bundel belum (atau gagal) dimuat. */
+    /* Splash screen styles are written here, not in the bundled CSS: they must stay correct
+       even if the bundled stylesheet has not (or failed to) load. */
     #splash {
       --sp-bg: #f7f7f7; --sp-fg: #202B31; --sp-track: rgba(32, 43, 49, .12);
       position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column;
@@ -35,14 +35,14 @@
        baru muncul menjelang mendarat — lihat .app-enter di src/index.css). */
     #splash[data-state="flying"] { background-color: transparent; pointer-events: none; }
     #splash[data-state="flying"] .sp-bar, #splash[data-state="flying"] .sp-msg { opacity: 0; transition: opacity .2s ease; }
-    /* Jarak tanda–nama sama dengan logo header (9 satuan viewBox × 40/48), jadi
-       logo bisa diskalakan tepat ke ukurannya tanpa bergeser. */
+    /* The mark–name gap equals the header logo's (9 viewBox units × 40/48), so
+       the logo can be scaled exactly to its size without shifting. */
     #splash .sp-logo { display: flex; align-items: center; gap: 7.5px; transform-origin: center; transition: transform .62s cubic-bezier(.22, 1, .36, 1); }
     #splash svg { display: block; fill: currentColor; }
     #splash .sp-mark { width: 61px; height: 40px; overflow: visible; }
     #splash .sp-word { width: 152px; height: 40px; }
-    /* Masuk: panah meluncur dari kiri, chevron menyusul, nama merek muncul terakhir.
-       Lalu berulang pelan — panah "ditarik" dan dilepas — selama data dimuat. */
+    /* Enter: the arrow glides in from the left, the chevron follows, the brand name appears last.
+       Then repeats slowly — the arrow is "pulled" and released — while data loads. */
     #splash .sp-arrow { animation: sp-in .55s cubic-bezier(.2, .8, .2, 1) both, sp-shoot 1.6s ease-in-out .9s infinite; }
     #splash .sp-chev { animation: sp-pop .45s cubic-bezier(.2, .8, .2, 1) .22s both, sp-pulse 1.6s ease-in-out .9s infinite; }
     #splash .sp-word { animation: sp-rise .5s ease .38s both; }
@@ -65,9 +65,9 @@
   </style>
 </head>
 <body class="bg-background text-foreground">
-  <!-- Layar pembuka: di LUAR #root, jadi tidak dihapus React saat aplikasi mulai
-       menggambar. Tampil sejak byte pertama HTML, sebelum JS dimuat; App yang
-       menutupnya (src/splash.js) setelah data pertama tiba. -->
+  <!-- Splash screen: OUTSIDE #root, so React does not delete it when the app starts
+       rendering. Shown from the first byte of HTML, before JS loads; App
+       closes it (src/splash.js) once the first data arrives. -->
   <div id="splash" role="status" aria-live="polite">
     <div class="sp-logo">
       <svg class="sp-mark" viewBox="0 0 73 48" aria-hidden="true">
@@ -85,11 +85,11 @@
   <div id="root"></div>
   <noscript>Aktifkan JavaScript untuk membuka dasbor Quiver.</noscript>
   <script>
-    // Pesan gagal HANYA untuk berkas aplikasi sendiri yang tidak termuat (entry JS,
-    // chunk, CSS) atau galat dari skrip kita sebelum aplikasi sempat berjalan.
-    // Galat lain bukan urusan layar ini: ekstensi wallet (MetaMask, Rabby, …) yang
-    // menyuntik skrip ke setiap halaman sering melempar galat sendiri — dulu itu
-    // menahan layar pembuka di "gagal dimuat" padahal dasbornya jalan normal.
+    // A failure message ONLY for the app's own files that fail to load (entry JS,
+    // chunk, CSS) or errors from our script before the app had a chance to run.
+    // Other errors are not this screen's business: wallet extensions (MetaMask, Rabby, …) that
+    // inject scripts into every page often throw errors of their own — that used to
+    // keep the splash screen on "failed to load" although the dashboard ran normally.
     (function () {
       function fail(text) {
         var splash = document.getElementById('splash');
@@ -102,14 +102,14 @@
       }
       var ours = function (url) { return !!url && String(url).indexOf(location.origin + '/') === 0; };
       window.addEventListener('error', function (event) {
-        if (window.__quiverBooted) return;   // setelah jalan, AppBoundary yang menangani
+        if (window.__quiverBooted) return;   // once running, AppBoundary handles it
         var el = event.target;
         var fileMissing = el && (el.tagName === 'SCRIPT' || el.tagName === 'LINK') && ours(el.src || el.href);
         var ourScriptThrew = event.error && ours(event.filename);
         if (!fileMissing && !ourScriptThrew) return;
-        // Berkas kita tidak termuat biasanya sesaat (server sedang restart saat deploy,
-        // koneksi putus): coba sekali lagi otomatis. Paling cepat sekali per 30 detik,
-        // supaya tidak berputar kalau penyebabnya menetap.
+        // Our files failing to load is usually momentary (the server restarting on deploy,
+        // a dropped connection): retry once automatically. At most once per 30 seconds,
+        // so it does not loop if the cause persists.
         var last = 0;
         try { last = Number(sessionStorage.getItem('quiver-boot-retry') || 0); } catch (e) {}
         if (fileMissing && Date.now() - last > 30000) {
@@ -120,7 +120,7 @@
         }
         fail('Aplikasi gagal dimuat. Muat ulang halaman untuk mengambil versi terbaru.');
       }, true);
-      // Jaringan lambat atau entry tertahan: jangan diam selamanya di logo.
+      // Slow network or a held-up entry: do not sit silently on the logo forever.
       setTimeout(function () {
         if (!window.__quiverBooted) fail('Memuat lebih lama dari biasanya. Periksa koneksi, lalu muat ulang halaman.');
       }, 20000);

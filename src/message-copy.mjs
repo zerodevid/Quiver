@@ -62,8 +62,15 @@ const rules = [
   [/^kurangi posisi #(\d+)(.*)$/s, 'Reduced liquidity in position #{1}{2}', 'Mengurangi likuiditas posisi #{1}{2}'],
   [/^jual sisa #(\d+): (.+)$/s, 'Leftover sale for position #{1}: {2}', 'Penjualan sisa posisi #{1}: {2}'],
   [/^(.+?) belum terjual: (.+)$/s, '{1} remains unsold: {2}', '{1} belum terjual: {2}'],
-  [/^rute Kyber rugi ([\d.,]+)% \(batas ([\d.,]+)%\)(.*)$/s, 'Kyber route loss is {1}% (limit {2}%){3}', 'Kerugian rute Kyber {1}% (batas {2}%){3}'],
+  [/^rute (?:Kyber|agregator) rugi ([\d.,]+)% \(batas ([\d.,]+)%\)(.*)$/s, 'Route loss is {1}% (limit {2}%){3}', 'Kerugian rute {1}% (batas {2}%){3}'],
   [/^dipotong oleh (.+?) \((\$[\d.,]+)\)(.*)$/s, 'Position size capped by the {1} ({2}){3}', 'Ukuran posisi dibatasi oleh {1} ({2}){3}'],
+  // Size note from policy.js: "<mode> → $200.00". The mode is a term from the rules
+  // file, not a sentence — and this line is the one read most often in Activity,
+  // because it answers "why did it enter with this much".
+  [/^mirror → (\$[\d.,]+)$/, 'Matched the target\u2019s liquidity → {1}', 'Menyamai likuiditas target → {1}'],
+  [/^pct → (\$[\d.,]+)$/, 'Percentage of the target\u2019s position → {1}', 'Persentase dari posisi target → {1}'],
+  [/^multiplier → (\$[\d.,]+)$/, 'Multiple of the target\u2019s position → {1}', 'Kelipatan dari posisi target → {1}'],
+  [/^fixed_quote → (\$[\d.,]+)$/, 'Fixed amount per position → {1}', 'Nominal tetap per posisi → {1}'],
   [/^dipaksa ke (\$[\d.,]+) \(hitungan (\$[\d.,]+) < minimum (\$[\d.,]+)\)$/,
     'Position size forced up to {1} (calculated {2}, below the {3} minimum)',
     'Ukuran posisi dipaksa ke {1} (hitungan {2}, di bawah minimum {3})'],
@@ -88,6 +95,14 @@ const rules = [
   [/^sebelum tutup #(\d+): (.+)$/s, 'Before closing position #{1}: {2}', 'Sebelum menutup posisi #{1}: {2}'],
   [/^eksekusi masuk: (.+)$/s, 'Opening transaction failed: {1}', 'Transaksi pembukaan gagal: {1}'],
   [/^catat hasil jual sisa(?: #(\d+))?: (.+)$/s, 'Could not record leftover sale proceeds {1}: {2}', 'Hasil penjualan sisa {1} tidak dapat dicatat: {2}'],
+  [/^target panen fee$/, 'The target harvested fees', 'Target memanen fee'],
+  [/^target panen fee \(ke-(\d+) dalam 24 jam\)$/, 'The target harvested fees ({1}× in 24 h)', 'Target memanen fee (ke-{1} dalam 24 jam)'],
+  [/^ikut klaim fee posisi #(\d+)(.*)$/s, 'Claimed fees on position #{1}{2}', 'Ikut mengklaim fee posisi #{1}{2}'],
+  [/^klaim fee posisi #(\d+) gagal: (.+)$/s, 'Fee claim on position #{1} failed: {2}', 'Klaim fee posisi #{1} gagal: {2}'],
+  [/^cermin posisi #(\d+)$/, 'mirrored by position #{1}', 'cermin posisi #{1}'],
+  [/^klaim tidak dicermin$/, 'claim not mirrored', 'klaim tidak dicermin'],
+  [/^posisi #(\d+) dalam kendali manual$/, 'Position #{1} is under manual control', 'Posisi #{1} dalam kendali manual'],
+  [/^klaim tidak diikuti$/, 'claim not followed', 'klaim tidak diikuti'],
   [/^coba ulang jual sisa #(\d+): (.+)$/s, 'Retrying the leftover sale for position #{1}: {2}', 'Mencoba kembali penjualan sisa posisi #{1}: {2}'],
 ];
 const orderedFragments = Object.entries(fragments).sort((a,b)=>b[0].length-a[0].length);

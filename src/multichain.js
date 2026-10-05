@@ -1,7 +1,7 @@
 'use strict';
-// Config multi-chain: satu config.json, satu proses, banyak chain.
+// Multi-chain config: one config.json, one process, many chains.
 //
-// Bentuk config:
+// Config shape:
 //   {
 //     "wallet": {...}, "server": {...}, "telegram": {...}, "db": {...}, "notify": {...},   <- global
 //     "chains": {
@@ -10,27 +10,27 @@
 //     }
 //   }
 //
-// Config lama (satu chain, kolom-kolom itu di tingkat atas) dinormalkan otomatis saat
-// dimuat: isinya dipindah ke chains.robinhood — tidak perlu migrasi manual di tiap
-// instance PM2.
+// An old config (a single chain, those fields at the top level) is normalised automatically on
+// load: its contents are moved to chains.robinhood — no manual migration is needed on each
+// PM2 instance.
 //
-// Mesin, server, dan bot Telegram tidak membaca `chains` langsung. Masing-masing
-// menerima "tampilan" per chain (chainView): objek Proxy yang membaca/menulis kolom
-// per-chain ke chains.<nama> dan kolom lain ke config induk. Jadi kode yang sudah ada
-// (`cfg.rules`, `cfg.mode.dry_run = …`, `cfg.chain.endpoints`) tetap berjalan apa
-// adanya, dan writeCfg(view) tetap menulis config induk yang utuh.
+// The engine, server, and Telegram bot do not read `chains` directly. Each one
+// receives a per-chain "view" (chainView): a Proxy object that reads/writes per-chain fields
+// to chains.<name> and other fields to the parent config. So existing code
+// (`cfg.rules`, `cfg.mode.dry_run = …`, `cfg.chain.endpoints`) keeps working as
+// it is, and writeCfg(view) still writes the complete parent config.
 const { NETWORKS } = require('./networks');
 
 const PER_CHAIN = ['chain', 'targets', 'rules', 'mode', 'gas', 'prices', 'loop', 'scout', 'risk', 'swap'];
 const PRIMARY = 'robinhood';
 
-// Blok BSC bawaan: simulasi, tanpa target, RPC publik. Diuji 2026-09-19 dari VPS:
-//   - bsc.rpc.blxrbdn.com (bloXroute) & rpc-bsc.48.club: getLogs maks 5000 blok, batch OK,
-//     riwayat lama terbaca — tulang punggung pemindaian
-//   - bsc-rpc.publicnode.com: eth_call cepat, getLogs hanya beberapa blok terakhir
-//   - bsc-dataseed.bnbchain.org (resmi): eth_call/kirim tx, getLogs selalu "limit exceeded"
-// Alchemy (bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}) bisa ditambah dari halaman
-// Pengaturan setelah jaringan BNB diaktifkan untuk app itu di dasbor Alchemy.
+// Default BSC block: simulation, no targets, public RPC. Tested 2026-09-19 from the VPS:
+//   - bsc.rpc.blxrbdn.com (bloXroute) & rpc-bsc.48.club: getLogs max 5000 blocks, batch OK,
+//     old history readable — the backbone of scanning
+//   - bsc-rpc.publicnode.com: fast eth_call, getLogs only a few recent blocks
+//   - bsc-dataseed.bnbchain.org (official): eth_call/send tx, getLogs always "limit exceeded"
+// Alchemy (bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}) can be added from the
+// Settings page after the BNB network is enabled for that app in the Alchemy dashboard.
 function bscTemplate() {
   return {
     enabled: true,
@@ -49,15 +49,15 @@ function bscTemplate() {
       filters: { quote_whitelist: [], venues: ['v4', 'v3', 'pancakev3'] },
     },
     mode: { dry_run: true, paused: false },
-    // ~0,75 detik per blok: 1500 blok ≈ 19 menit per potongan pengejaran; poll 3 detik
-    // adopt_blocks: jendela pindai posisi wallet saat mulai (~2 hari); pemindaian
-    // lanjutan hanya blok baru. Tanpa batas ini = seluruh riwayat, 24 ribu panggilan
-    // getLogs 5000-blok di BSC.
+    // ~0.75 seconds per block: 1500 blocks ≈ 19 minutes per catch-up chunk; 3 second poll
+    // adopt_blocks: the wallet position scan window at start (~2 days); follow-up
+    // scans only cover new blocks. Without this limit = the whole history, 24 thousand
+    // 5000-block getLogs calls on BSC.
     loop: { poll_ms: 3000, max_block_span: 1500, sync_seconds: 30, equity_seconds: 300, stale_action_seconds: 300, adopt_blocks: 250_000 },
-    // Gas BSC ~0,1–1 gwei; cadangan 0,005 BNB. legacyGasPricing (networks.js) membuat
-    // tip = harga gas, jadi priority_wei di sini tidak dipakai di BSC.
+    // BSC gas ~0.1–1 gwei; reserve 0.005 BNB. legacyGasPricing (networks.js) makes
+    // tip = gas price, so priority_wei here is not used on BSC.
     gas: { price_multiplier: 1.2, priority_wei: 1_000_000_000, max_gas_limit: 4_000_000, native_reserve_wei: 5_000_000_000_000_000, max_fee_gwei: 20, topup_max_usd: 25 },
-    // Harga BNB otomatis dari pool PancakeSwap v3 USDT/WBNB (networks.js); eth_usd = cadangan.
+    // BNB price is automatic from the PancakeSwap v3 USDT/WBNB pool (networks.js); eth_usd = fallback.
     prices: { eth_usd: 750, auto_eth_price: true },
     scout: { blocks: 120_000 },
     risk: { max_daily_drawdown_pct: 0 },
@@ -66,14 +66,14 @@ function bscTemplate() {
   };
 }
 
-// Blok Solana bawaan: DIMATIKAN (enabled:false) sampai diisi RPC yang layak.
-// Endpoint publik resmi (api.mainnet-beta) melayani getProgramAccounts yang dipakai
-// enumerasi posisi DLMM, tapi dibatasi laju keras (429 per metode); publicnode menolak
-// getProgramAccounts (410) dan sebagian panggilan lain (403). Untuk jalan sungguhan
-// pakai RPC berkunci, taruh PALING ATAS di daftar endpoint, mis.
-//   { "url": "https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}" }  (HELIUS_KEY di .env)
-// Tidak dimasukkan ke templat: ${VAR} yang belum ada di .env memicu peringatan tiap start.
-// Aturannya bawaan Solana: venue meteora/orca/raydium, kuotasi USDC/USDT/SOL.
+// Default Solana block: OFF (enabled:false) until a proper RPC is filled in.
+// The official public endpoint (api.mainnet-beta) serves the getProgramAccounts used to
+// enumerate DLMM positions, but is hard rate-limited (429 per method); publicnode refuses
+// getProgramAccounts (410) and some other calls (403). For real use put a keyed RPC
+// FIRST in the endpoint list, e.g.
+//   { "url": "https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}" }  (HELIUS_KEY in .env)
+// Not in the template: a ${VAR} missing from .env triggers a warning on every start.
+// Solana default rules: venues meteora/orca/raydium, quotes USDC/USDT/SOL.
 function solanaTemplate() {
   return {
     enabled: false,
@@ -90,11 +90,11 @@ function solanaTemplate() {
       swap: { enabled: true, max_slippage_bps: 150, max_price_impact_bps: 500 },
     },
     mode: { dry_run: true, paused: false },
-    // poll 4 dtk: tiap putaran = 1 getSignaturesForAddress per target; daftar ulang
-    // posisi hanya kalau target punya tanda tangan baru (atau 10 menit sekali).
+    // poll 4 s: each round = 1 getSignaturesForAddress per target; positions are re-listed
+    // only when the target has new signatures (or every 10 minutes).
     loop: { poll_ms: 4000, sync_seconds: 30, equity_seconds: 300, stale_action_seconds: 180 },
-    // Cadangan 0,15 SOL: sewa akun posisi DLMM (~0,057 SOL, kembali saat ditutup) + ATA +
-    // biaya. Harga compute (biaya prioritas) diapit min/max microLamport per CU.
+    // 0.15 SOL reserve: DLMM position account rent (~0.057 SOL, refunded on close) + ATA +
+    // fees. The compute price (priority fee) is clamped to min/max microLamports per CU.
     gas: { native_reserve_lamports: 150_000_000, min_cu_price_micro: 10_000, max_cu_price_micro: 2_000_000, price_multiplier: 1.2, jupiter_max_priority_lamports: 2_000_000, topup_max_usd: 25 },
     prices: { eth_usd: 150, auto_eth_price: true },
     scout: {},
@@ -104,8 +104,8 @@ function solanaTemplate() {
   };
 }
 
-// Config lama -> bentuk chains. Mengubah objek di tempat; mengembalikan daftar
-// catatan (untuk log) tentang apa yang dinormalkan.
+// Old config -> chains shape. Mutates the object in place; returns a list of
+// notes (for the log) about what was normalised.
 function normalizeCfg(cfg) {
   const notes = [];
   if (!cfg.chains || typeof cfg.chains !== 'object') {
@@ -130,8 +130,8 @@ function normalizeCfg(cfg) {
   return notes;
 }
 
-// Tampilan per chain. Kunci per-chain dibaca/ditulis ke cfg.chains[key], sisanya ke
-// cfg. `network` = nama chain-nya. JSON.stringify(view) = config induk (untuk writeCfg).
+// Per-chain view. Per-chain keys are read/written to cfg.chains[key], the rest to
+// cfg. `network` = the chain's name. JSON.stringify(view) = the parent config (for writeCfg).
 function chainView(cfg, key) {
   if (!cfg.chains?.[key]) throw new Error(`chains.${key} tidak ada di config`);
   const per = new Set(PER_CHAIN);

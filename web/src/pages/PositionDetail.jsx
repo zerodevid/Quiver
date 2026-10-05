@@ -1,15 +1,15 @@
-// Detail satu posisi LP: grafik harga pool dengan rentang posisi dan titik masuk
-// ditandai, statistik pasar (DexScreener), dan isi posisi (token, fee, modal).
+// Detail of one LP position: the pool price chart with the position range and entry point
+// marked, market stats (DexScreener), and the position contents (tokens, fee, capital).
 //
-// Grafiknya digambar sendiri dari lilin GeckoTerminal, bukan cuma menyematkan
-// DexScreener: yang ingin dilihat pemilik posisi bukan hanya harga, tetapi "di mana
-// rentang saya, kapan saya masuk, dan seberapa jauh harga dari tepi" — dan iframe
-// pihak ketiga tidak bisa digambari. Tampilan GMGN dan DexScreener tetap tersedia
-// sebagai pilihan lain untuk indikator dan alat gambar yang biasa dipakai trader.
+// The chart is drawn by ourselves from GeckoTerminal candles, not just embedding
+// DexScreener: what the position owner wants to see is not only the price, but "where
+// is my range, when did I enter, and how far is the price from the edge" — and a
+// third-party iframe cannot be drawn on. The GMGN and DexScreener views stay available
+// as other choices for the indicators and drawing tools traders are used to.
 //
-// Di bawah grafik ada pita transaksi pool yang berjalan (GeckoTerminal, tiap 10
-// detik): siapa yang sedang beli/jual, berapa besar, di harga berapa — wallet
-// target yang disalin dan bot sendiri diberi nama.
+// Below the chart is a running pool trade tape (GeckoTerminal, every 10
+// seconds): who is buying/selling, how much, at what price — copied target
+// wallets and the bot itself are named.
 import { chainInfo } from '../chain';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Spinner } from '@heroui/react';
@@ -24,6 +24,7 @@ import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
+import TargetSide from '../components/TargetSide';
 import ShareButton, { positionCard } from '../components/ShareCard';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask, TradeLinks, DataLinks } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
@@ -33,11 +34,11 @@ import { useI18n } from '../i18n';
 export const TFS = [['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam'], ['1d', '1 hari']];
 export const SECS = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
 export const VIEWS = [['chart', 'Grafik'], ['gmgn', 'GMGN'], ['dex', 'DexScreener']];
-// Rentang lilin UI -> parameter interval sematan GMGN (menit; 1D untuk harian).
+// UI candle range -> GMGN embed interval parameter (minutes; 1D for daily).
 const GMGN_IV = { '1m': '1', '5m': '5', '15m': '15', '1h': '60', '4h': '240', '1d': '1D' };
 
-// Rentang lilin dipilih supaya titik masuk masih terlihat: posisi berumur 50 menit
-// dilihat per 5 menit, posisi berumur seminggu per 4 jam.
+// The candle range is chosen so the entry point is still visible: a position 50 minutes
+// old is viewed per 5 minutes, a position a week old per 4 hours.
 export const tfFor = (ageHours) => {
   const s = (ageHours || 0) * 3600;
   for (const tf of ['5m', '15m', '1h', '4h']) if (s / SECS[tf] <= 400) return tf;
@@ -48,10 +49,10 @@ const qty = (raw, dec) => (raw == null ? null : Number(raw) / 10 ** (dec ?? 18))
 const fmtQty = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleString(fmtLocale(), { maximumSignificantDigits: v >= 1000 ? 6 : 4 }));
 export const kUsd = (v) => (v == null ? '—' : Math.abs(v) >= 1e6 ? usd(v / 1e6, 2) + 'M' : Math.abs(v) >= 1e4 ? usd(v / 1e3, 1) + 'k' : usd(v));
 
-// GeckoTerminal diminta memakai token spekulatif sebagai dasar harga; kalau ia
-// membalasnya terbalik (atau dasar pool berbeda), lilin dibalik supaya searah
-// dengan harga tick pool. Dicek terhadap harga acuan (ref) kalau ada: arah yang
-// paling dekat menang.
+// GeckoTerminal is asked to use the speculative token as the price base; if it
+// replies inverted (or the pool's base differs), the candles are flipped so they go the same direction
+// as the pool's tick price. Checked against a reference price (ref) if available: the direction
+// closest to it wins.
 export function orientCandles(ohlcv, baseToken, ref) {
   let cs = ohlcv?.candles || [];
   if (!cs.length) return [];
@@ -66,18 +67,18 @@ export function orientCandles(ohlcv, baseToken, ref) {
   return cs.filter((c) => c.o > 0 && c.h > 0 && c.l > 0 && c.c > 0);
 }
 
-// Grafik lilin + rentang posisi + penanda masuk/keluar. Dipakai juga halaman pool:
-// tanpa posisi (tick_lower null) yang tergambar hanya lilin dan harga kini.
-// Sumber lilin tab Chart: GeckoTerminal (harga dalam aset kuotasi pool) atau OpenAPI
-// GMGN (harga USD; butuh API key di Pengaturan). Pilihan diingat per peramban.
+// Candle chart + position range + entry/exit markers. Also used by the pool page:
+// without a position (tick_lower null) only the candles and the current price are drawn.
+// Candle source of the Chart tab: GeckoTerminal (price in the pool's quote asset) or GMGN
+// OpenAPI (USD price; needs an API key in Settings). The choice is remembered per browser.
 export const SOURCES = [['gt', 'GeckoTerminal'], ['gmgn', 'GMGN']];
 const SRC_KEY = 'lpcopy-chart-src';
 export const readSrc = () => { try { return localStorage.getItem(SRC_KEY) === 'gmgn' ? 'gmgn' : 'gt'; } catch { return 'gt'; } };
 export const writeSrc = (v) => { try { localStorage.setItem(SRC_KEY, v); } catch { /* abaikan */ } };
 
-// `ranges` (opsional): semua posisi terbuka di pool ini, supaya grafik detail pool
-// menunjukkan tiap rentang aktif seperti di halaman Monitor. Yang `selected` adalah
-// posisi yang sedang disorot (garis masuk/keluar/BEP tetap hanya untuk yang itu).
+// `ranges` (optional): all open positions in this pool, so the pool detail chart
+// shows every active range as on the Monitor page. The `selected` one is the
+// position being highlighted (the entry/exit/BEP lines remain only for that one).
 export function PriceChart({ p, m, tf, ranges = null, onRangeClick = null }) {
   const { t } = useI18n();
   const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
@@ -87,14 +88,14 @@ export function PriceChart({ p, m, tf, ranges = null, onRangeClick = null }) {
   const range = hasRange && !full ? { lo: Math.min(a, b), hi: Math.max(a, b) } : null;
   const pEntry = sqrtPrice(p.entrySqrt, p.dec0, p.dec1, p.quoteSide);
   const pExit = sqrtPrice(p.exitSqrt, p.dec0, p.dec1, p.quoteSide);
-  // Posisi yang sudah ditutup dilihat sebagai riwayat: tanpa harga live.
+  // A closed position is viewed as history: without a live price.
   const live = useLivePrice(p.pool_ref, p, p.status !== 'closed');
   const pNow = live?.price ?? (p.curSqrt ? sqrtPrice(p.curSqrt, p.dec0, p.dec1, p.quoteSide) : (p.curTick != null ? at(p.curTick) : null));
 
-  // Lilin GMGN berharga USD, sedangkan rentang/entry/BEP posisi dalam aset kuotasi
-  // pool: semuanya dikalikan kurs kuotasi->USD (priceUsd DexScreener / harga kini;
-  // USDG dianggap $1 kalau DexScreener belum ada). Tanpa kurs, lilin tetap tampil
-  // tetapi penanda posisi tidak digambar — lebih baik kosong daripada meleset.
+  // GMGN candles are priced in USD, while the position's range/entry/BEP are in the pool's quote
+  // asset: everything is multiplied by the quote->USD rate (DexScreener's priceUsd / current price;
+  // USDG is assumed $1 if DexScreener is not available yet). Without a rate, the candles still show
+  // but the position markers are not drawn — better empty than off.
   const gmgn = m?.ohlcv?.source === 'gmgn';
   const quoteSym = p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null;
   const k = !gmgn ? 1
@@ -111,8 +112,8 @@ export function PriceChart({ p, m, tf, ranges = null, onRangeClick = null }) {
   const closed = p.status === 'closed';
   const quote = gmgn ? 'USD' : quoteSym;
   const cv = (v) => (v != null && k ? v * k : null);
-  // Lilin GMGN berharga USD: pita ikut dikalikan kurs kuotasi->USD. Tanpa kurs, pita
-  // tidak digambar (sama seperti rentang posisi tunggal).
+  // GMGN candles are priced in USD: the bands are also multiplied by the quote->USD rate. Without a rate, the bands
+  // are not drawn (the same as a single position range).
   const bands = k ? (ranges || []).filter((b) => b.lo > 0 && b.hi > 0).map((b) => ({ ...b, lo: b.lo * k, hi: b.hi * k })) : [];
   return (
     <div>
@@ -162,7 +163,7 @@ export function PriceChart({ p, m, tf, ranges = null, onRangeClick = null }) {
   );
 }
 
-// Penanda bahwa lilin terakhir digerakkan harga chain, bukan menunggu GeckoTerminal.
+// Marker that the last candle is moved by the chain price, rather than waiting for GeckoTerminal.
 export function LiveBadge() {
   const { t } = useI18n();
   return (
@@ -188,14 +189,14 @@ export function DexEmbed({ pool }) {
   );
 }
 
-// Grafik GMGN (gmgn.cc/kline) untuk token spekulatif posisi: indikator dan alat
-// gambar TradingView yang biasa dipakai di terminal GMGN, mengikuti tema dasbor.
+// GMGN chart (gmgn.cc/kline) for the position's speculative token: the TradingView
+// indicators and drawing tools commonly used in the GMGN terminal, following the dashboard theme.
 //
-// Iframe lintas-origin tidak bisa digambari (skala sumbunya milik GMGN, dan
-// default-nya market cap, bukan harga), jadi rentang posisi tidak bisa ditumpangkan
-// di atasnya seperti di tab Grafik. Gantinya: pita angka di bawah grafik — batas
-// rentang, harga masuk, BEP, dan harga kini — dalam USD DAN market cap, supaya bisa
-// langsung dibaca terhadap sumbu GMGN mana pun yang sedang dipakai.
+// A cross-origin iframe cannot be drawn on (its axis scale belongs to GMGN, and its
+// default is market cap, not price), so the position range cannot be overlaid
+// on it as in the Chart tab. Instead: a strip of numbers below the chart — range
+// bounds, entry price, BEP, and current price — in USD AND market cap, so they can be
+// read directly against whichever GMGN axis is in use.
 export function GmgnEmbed({ token, tf, p = null, pair = null }) {
   const { t } = useI18n();
   const dark = document.documentElement.classList.contains('dark');
@@ -215,10 +216,10 @@ export function GmgnEmbed({ token, tf, p = null, pair = null }) {
   );
 }
 
-// Angka acuan posisi untuk dibaca terhadap sumbu GMGN. Harga USD = harga dalam aset
-// kuotasi × kurs kuotasi (priceUsd DexScreener / harga kini); market cap = harga
-// USD × pasokan (marketCap DexScreener / priceUsd). Tanpa data pasar, yang tampil
-// harga dalam aset kuotasi saja.
+// Position reference figures to read against the GMGN axis. USD price = price in the
+// quote asset × quote rate (DexScreener's priceUsd / current price); market cap = USD
+// price × supply (DexScreener's marketCap / priceUsd). Without market data, only the
+// price in the quote asset is shown.
 function GmgnRangeStrip({ p, pair }) {
   const { t } = useI18n();
   const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
@@ -231,7 +232,7 @@ function GmgnRangeStrip({ p, pair }) {
   const pNow = live?.price ?? (p.curSqrt ? sqrtPrice(p.curSqrt, p.dec0, p.dec1, p.quoteSide) : (p.curTick != null ? at(p.curTick) : null));
   const bep = breakEven(p);
   const quote = p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null;
-  // Kurs kuotasi -> USD dan pasokan token, kalau pasar dikenal.
+  // Quote -> USD rate and token supply, if the market is known.
   const k = pair?.priceUsd > 0 && pNow > 0 ? pair.priceUsd / pNow : null;
   const supply = k && (pair.marketCap || pair.fdv) > 0 ? (pair.marketCap || pair.fdv) / pair.priceUsd : null;
   const fmt = (v) => (v == null || !(v > 0) ? '—' : k ? usd(v * k, v * k < 0.01 ? 6 : 4) : `${price(v)} ${quote || ''}`);
@@ -260,17 +261,17 @@ function GmgnRangeStrip({ p, pair }) {
   );
 }
 
-// Pita transaksi pool yang berjalan: swap terakhir dari GeckoTerminal, terbaru di
-// atas. Baris yang datang setelah halaman dibuka disorot sebentar supaya gerak
-// pasar terasa tanpa harus membaca ulang daftarnya. Arah beli/jual terhadap
-// token spekulatif (base), harga dalam aset kuotasi pool — sejajar dengan grafik.
+// Running pool trade tape: the latest swaps from GeckoTerminal, newest on
+// top. Rows that arrive after the page was opened are briefly highlighted so market
+// movement is felt without re-reading the list. Buy/sell direction relative to the
+// speculative token (base), price in the pool's quote asset — aligned with the chart.
 //
-// Diambil BROWSER langsung dari GeckoTerminal (CORS terbuka): jatah ~30
-// panggilan/menit dihitung per IP, dan IP VPS sudah dipakai tiga instance bot
-// untuk lilin harga — lewat server pita ini sering kena 429. Server (/api/trades,
-// dengan cadangan stale) hanya dipakai kalau panggilan browser gagal. Nama wallet
-// (target/bot) datang dari server terpisah, dipoll jarang.
-// Poll berhenti saat tab tidak terlihat; jawaban lama dipertahankan saat gagal.
+// Fetched by the BROWSER directly from GeckoTerminal (CORS open): the ~30
+// calls/minute quota is counted per IP, and the VPS IP is already used by three bot instances
+// for price candles — through the server this tape often hits 429. The server (/api/trades,
+// with a stale fallback) is only used if the browser call fails. Wallet names
+// (target/bot) come from a separate server call, polled rarely.
+// Polling stops when the tab is not visible; the old answer is kept on failure.
 function useTrades(pool, token, ms) {
   const [state, setState] = useState({ trades: null, error: null, via: null });
   useEffect(() => {
@@ -292,7 +293,7 @@ function useTrades(pool, token, ms) {
         } catch (e) { next = { trades: null, error: e.message, via: 'server' }; }
       }
       if (!alive) return;
-      // Gagal total: pertahankan daftar yang sudah tampil, cukup tandai.
+      // Total failure: keep the list already shown, just flag it.
       setState((prev) => (next.trades == null && prev.trades ? { ...prev, error: next.error, via: 'stale' } : next));
     };
     tick();
@@ -308,8 +309,8 @@ export function TradesTape({ pool, token, base, quote, live = true }) {
   const data = useTrades(pool, token, live ? 10000 : 30000);
   const { data: names } = usePoll(pool ? '/api/trade-labels' : null, 60000);
   const [open, setOpen] = useState(true);
-  // Baris "baru" = belum ada pada balasan pertama; dicatat per kunci supaya baris
-  // yang sudah disorot tidak disorot lagi setiap poll.
+  // A "new" row = not present in the first reply; recorded per key so a row
+  // that was already highlighted is not highlighted again on each poll.
   const seen = useRef(null);
   const fresh = useMemo(() => {
     const list = data?.trades || [];
@@ -319,7 +320,7 @@ export function TradesTape({ pool, token, base, quote, live = true }) {
     for (const x of list) { const k = tradeKey(x); if (!seen.current.has(k)) { n.add(k); seen.current.add(k); } }
     return n;
   }, [data]);
-  // Pool berganti (halaman pool memilih posisi lain): mulai dari nol.
+  // Pool changes (the pool page picked another position): start from zero.
   useEffect(() => { seen.current = null; }, [pool]);
 
   const list = useMemo(() => (data.trades || []).map((x) => ({
@@ -390,7 +391,7 @@ export function TradesTape({ pool, token, base, quote, live = true }) {
   );
 }
 
-// Perubahan harga per jendela waktu dari DexScreener — satu baris chip kecil.
+// Price change per time window from DexScreener — a row of small chips.
 export function Changes({ pc }) {
   const { t } = useI18n();
   const items = [['m5', '5 mnt'], ['h1', '1 jam'], ['h6', '6 jam'], ['h24', '24 jam']].filter(([k]) => pc?.[k] != null);
@@ -438,16 +439,16 @@ export default function PositionDetail({ id }) {
   const { close, closing } = useClosePosition(reload);
   const { claim, claiming } = useClaimFees(reload);
   const tf = tfPick || (p ? tfFor(p.ageHours) : '1h');
-  // Cukup lilin supaya titik masuk terlihat, plus sedikit sebelum masuk sebagai konteks.
-  // Posisi yang sudah ditutup dibingkai di sekitar masa hidupnya: sedikit setelah
-  // keluar, bukan sampai sekarang.
+  // Enough candles that the entry point is visible, plus a few before entry as context.
+  // A closed position is framed around its lifetime: a little after
+  // the exit, not up to now.
   const span = p ? p.ageHours * 3600 : 0;
   const tail = p?.status === 'closed' ? Math.max(20, Math.ceil((span * 0.2) / SECS[tf])) : 0;
   const limit = p ? Math.min(1000, Math.max(120, Math.ceil(span / SECS[tf]) + 40 + tail)) : 200;
   const before = p?.status === 'closed' && p.closed_ts ? p.closed_ts + tail * SECS[tf] * 1000 : null;
   const { data: m, reload: reloadMarket } = usePoll(p ? `/api/market?pool=${p.pool_ref}&tf=${tf}&limit=${limit}&token=${p.baseToken || ''}${before ? `&before=${before}` : ''}${src === 'gmgn' ? '&src=gmgn' : ''}` : null, 30000);
-  // "Perbarui detail" memaksa sinkron chain dulu — angka nilai/fee/PnL di halaman ini
-  // berasal dari sinkron terakhir, jadi memuat ulang saja mengembalikan angka yang sama.
+  // "Refresh detail" forces a chain sync first — the value/fee/PnL figures on this page
+  // come from the last sync, so merely reloading returns the same figures.
   const reloadAll = useCallback(async () => { await Promise.all([reload(), reloadMarket()]); }, [reload, reloadMarket]);
   const [resync, syncing] = useResync(reloadAll);
 
@@ -467,7 +468,7 @@ export default function PositionDetail({ id }) {
   const quote = p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null;
   const base = p.quoteSide === 0 ? p.symbol1 : p.quoteSide === 1 ? p.symbol0 : p.symbol0;
 
-  // Jarak ke tepi terdekat, dalam persen pergerakan harga.
+  // Distance to the nearest edge, in percent of price movement.
   let edge = null;
   if (!closed && pNow != null && !full) {
     if (pNow >= pLo && pNow <= pHi) {
@@ -511,12 +512,12 @@ export default function PositionDetail({ id }) {
               </div>
             </div>
           </div>
-          {/* posisi tertutup: angkanya sudah final, jadi tidak ada jam kesegaran — tombolnya
-              cuma menyegarkan grafik pasar. */}
-          {/* Satu klaster aksi, rapat di kanan, tinggi seragam: jam kesegaran + perbarui
-              (pasif) dipisah garis tipis dari aksi yang mengirim transaksi. Urutannya
-              dari yang paling aman ke yang paling merusak, dan hanya "Tutup posisi"
-              yang berwarna — supaya mata langsung tahu mana yang tidak bisa dibatalkan. */}
+          {/* closed position: the numbers are final, so there is no freshness clock — the button
+              only refreshes the market chart. */}
+          {/* One action cluster, tight on the right, uniform height: freshness clock + refresh
+              (passive) are separated by a thin line from the actions that send a transaction.
+              Ordered from the safest to the most destructive, and only "Close position"
+              is coloured — so the eye knows at once which one cannot be undone. */}
           <div className="flex flex-wrap items-center gap-2">
             <Refresh at={closed ? undefined : d.syncedAt} busy={syncing} onPress={resync} label="Perbarui detail" />
             <ShareButton card={positionCard(p)} />
@@ -533,8 +534,8 @@ export default function PositionDetail({ id }) {
 
       <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-5">
         <Stat label={closed ? 'Hasil' : 'Nilai'} value={usd(closed ? p.outUsd : p.valueUsd)} fx={closed ? p.outUsd : p.valueUsd} sub={t('modal {v}', { v: usd(p.costUsd) })} />
-        {/* APR-nya di sebelah label: yang menentukan posisi ini layak dipertahankan atau
-            tidak bukan nominal fee-nya, melainkan berapa cepat modalnya menghasilkan. */}
+        {/* The APR beside the label: what decides whether this position is worth keeping
+            is not the nominal fee but how fast the capital earns. */}
         <Stat label={closed ? 'Fee (sudah diklaim)' : 'Fee belum diklaim'} value={closed ? '—' : usd(p.feeUsd)} fx={closed ? null : p.feeUsd} valueClass={!closed && p.feeUsd > 0.005 ? 'text-success' : ''}
           badge={closed || feeApr(p) == null ? null : (
             <span className="num shrink-0 rounded bg-success/12 px-1.5 py-0.5 text-[0.6875rem] font-semibold whitespace-nowrap text-success"
@@ -545,8 +546,8 @@ export default function PositionDetail({ id }) {
         <Stat label="PnL" value={usd(p.pnlUsd)} fx={p.pnlUsd} valueClass={tone(p.pnlUsd)}
           sub={<span>{pct(p.pnlPct, 2)}{p.ilUsd != null && <> · IL <span className={tone(p.ilUsd)}>{usd(p.ilUsd)}</span></>}</span>} />
         <Stat label={closed ? 'Ditahan' : 'Umur'} value={age(p.ageHours)} sub={t('masuk {d}', { d: fmtDate(p.opened_ts) })} />
-        {/* Ongkos jalan: gas + selisih swap. Tidak ikut dihitung di PnL, padahal
-            inilah harga yang dibayar untuk masuk dan keluar posisi ini. */}
+        {/* Running cost: gas + swap spread. Not counted in PnL, although
+            it is the price paid to enter and exit this position. */}
         <Stat label="Ongkos jalan" value={p.cost?.txN ? usd(p.cost.totalUsd) : '—'} valueClass={p.cost?.totalUsd > 0.005 ? 'text-warning' : ''}
           sub={p.cost?.txN
             ? t('gas {g} · slippage {s}', { g: usd(p.cost.gasUsd, p.cost.gasUsd < 0.1 ? 3 : 2), s: usd(p.cost.slipUsd) })
@@ -586,6 +587,9 @@ export default function PositionDetail({ id }) {
         </Panel>
 
         <div className="grid gap-3">
+          {/* The copied wallet's numbers, above this position's numbers — the same question
+              is answered in the same place as in the history drawer. */}
+          <TargetSide p={p} className="" onRefresh={reload} />
           <Panel title="Posisi ini" bodyClass="px-4 py-1">
             <div className="divide-y divide-border">
               <KV label="Rentang">

@@ -6,21 +6,21 @@ import { muteClose } from './components/TargetAlerts';
 import { usd, short } from './fmt';
 import { useI18n } from './i18n';
 
-// Alur tutup posisi dari dasbor, dipakai halaman daftar dan detail. Server baru
-// membalas setelah transaksinya benar-benar diterima di chain (bisa ~1 menit),
-// jadi selama itu tombolnya berputar dan toast "sedang menutup" tetap tampil.
-// Hasilnya ada tiga, bukan dua: tertutup, gagal (server menjawab dengan alasan),
-// atau belum pasti — koneksi putus / proxy memotong permintaan yang lama sebelum
-// server sempat menjawab, padahal transaksinya bisa saja tetap masuk.
+// The close-position flow from the dashboard, used by the list and detail pages. The server only
+// replies after the transaction is actually accepted on chain (can be ~1 minute),
+// so during that time the button spins and the "closing" toast stays visible.
+// There are three outcomes, not two: closed, failed (the server answers with a reason),
+// or uncertain — the connection dropped / a proxy cut the long request before the
+// server could answer, although the transaction may still have landed.
 export function useClosePosition(reload) {
   const { t } = useI18n();
-  const [closing, setClosing] = useState(null);   // id posisi yang sedang ditutup
-  // Satu posisi: kirim permintaan, tunggu chain, laporkan lewat toast. Dipakai
-  // baik oleh tutup satu maupun tutup semua; konfirmasinya ada di pemanggil.
+  const [closing, setClosing] = useState(null);   // ids of the positions being closed
+  // One position: send the request, wait for the chain, report via toast. Used
+  // by both close-one and close-all; the confirmation is with the caller.
   const run = async (p, { force = false } = {}) => {
     const pair = `${p.symbol0}/${p.symbol1}`;
     setClosing(p.id);
-    muteClose(p.id);   // toast hasilnya dari alur ini; umpan peringatan jangan mengulang
+    muteClose(p.id);   // the toast for the result comes from this flow; the alert feed must not repeat it
     const wait = toast(t('Menutup posisi {pair}…', { pair }), {
       description: t('Menunggu konfirmasi di chain, bisa sampai 1–2 menit.'), isLoading: true, timeout: 0,
     });
@@ -61,11 +61,11 @@ export function useClosePosition(reload) {
     setClosing(null);
     reload?.();
   };
-  // Semua posisi dalam daftar, satu per satu — bukan paralel, supaya nonce wallet
-  // tidak saling salip dan kalau satu gagal yang lain tetap dicoba. Satu konfirmasi
-  // untuk semuanya; hasil tiap posisi tetap dilaporkan sendiri-sendiri.
-  // `pair` (opsional): nama pool kalau daftarnya cuma posisi satu pool (Monitor),
-  // supaya konfirmasinya tidak terbaca seperti menutup seluruh portofolio.
+  // All positions in the list, one by one — not in parallel, so the wallet nonces
+  // do not overtake each other and if one fails the others are still tried. One confirmation
+  // for all; each position's result is still reported individually.
+  // `pair` (optional): the pool name if the list is only one pool's positions (Monitor),
+  // so the confirmation does not read like closing the entire portfolio.
   const closeAll = async (list, { pair = null } = {}) => {
     if (closing != null || !list?.length) return;
     const value = list.reduce((s, p) => s + (p.valueUsd || 0), 0);
@@ -80,16 +80,16 @@ export function useClosePosition(reload) {
     if (!ok) return;
     for (const p of list) {
       await run(p);
-      reload?.();   // tabel menyusut selagi sisanya masih berjalan
+      reload?.();   // the table shrinks while the rest is still running
     }
     setClosing(null);
     reload?.();
   };
-  // Tutup paksa semua posisi terbuka (tombol darurat halaman Posisi). Bedanya dari
-  // closeAll: server melewati penjaga compound/claim yang masih menunggu, membakar
-  // likuiditas menurut chain (bukan catatan), dan posisi yang sudah kosong di chain
-  // langsung dibukukan. Posisi yang gagal dilewati, sisanya tetap dicoba; di akhir
-  // dilaporkan berapa yang tertutup dan berapa yang gagal.
+  // Force-close all open positions (the emergency button on the Positions page). The difference from
+  // closeAll: the server bypasses the compound/claim guards that are still waiting, burns
+  // liquidity according to the chain (not the records), and positions that are already empty on chain
+  // are booked immediately. A failed position is skipped, the rest are still tried; at the end
+  // it reports how many closed and how many failed.
   const forceCloseAll = async (list) => {
     if (closing != null || !list?.length) return;
     const value = list.reduce((s, p) => s + (p.valueUsd || 0), 0);

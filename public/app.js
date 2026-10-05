@@ -1,5 +1,5 @@
 'use strict';
-// Kalau ada error JS, jangan biarkan halaman kosong tanpa penjelasan.
+// If there is a JS error, do not leave the page blank without an explanation.
 window.addEventListener('error', (e) => showFatal(e.message));
 window.addEventListener('unhandledrejection', (e) => showFatal(e.reason && e.reason.message || String(e.reason)));
 function showFatal(msg) {
@@ -31,7 +31,7 @@ const ago = (ts) => {
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const cls = (v) => (v > 0 ? 'text-green' : v < 0 ? 'text-red' : '');
 
-// ---- tema -----------------------------------------------------------------
+// ---- theme ----------------------------------------------------------------
 const theme = {
   get() { return document.documentElement.getAttribute('data-bs-theme') || 'light'; },
   set(t) {
@@ -41,7 +41,7 @@ const theme = {
       const ic = b && b.querySelector('i');
       if (ic) ic.className = t === 'dark' ? 'ti ti-sun' : 'ti ti-moon';
     }
-    // ApexCharts tidak ikut variabel CSS, jadi temanya harus dioper manual.
+    // ApexCharts does not follow CSS variables, so the theme must be passed manually.
     if (equityChart) equityChart.updateOptions(chartTheme(t), false, false);
   },
   toggle() { this.set(this.get() === 'dark' ? 'light' : 'dark'); },
@@ -49,7 +49,7 @@ const theme = {
     this.set(this.get());
     $('#btnTheme').onclick = () => this.toggle();
     const tm = $('#btnThemeMobile'); if (tm) tm.onclick = () => this.toggle();
-    // Ikuti tema sistem selama pengguna belum memilih sendiri.
+    // Follow the system theme as long as the user has not chosen one.
     try {
       window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
         if (!localStorage.getItem('lpcopy-theme')) this.set(e.matches ? 'dark' : 'light');
@@ -64,9 +64,9 @@ function chartTheme(t) {
     chart: { background: 'transparent' },
     grid: { strokeDashArray: 0, borderColor: dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' },
     tooltip: { theme: dark ? 'dark' : 'light', x: { format: 'dd MMM HH:mm' } },
-    // xaxis/yaxis DIGANTI seluruhnya oleh updateOptions, bukan digabung — jadi
-    // konfigurasi aslinya (type datetime, format label) harus ikut disertakan di sini.
-    // Tanpa ini sumbu waktu berubah jadi angka epoch mentah saat tema diganti.
+    // xaxis/yaxis are REPLACED entirely by updateOptions, not merged — so
+    // the original configuration (type datetime, label format) must be included here too.
+    // Without this the time axis turns into raw epoch numbers when the theme changes.
     xaxis: {
       type: 'datetime',
       labels: { datetimeUTC: false, style: { colors: dark ? '#9aa4b2' : '#667382' } },
@@ -80,7 +80,7 @@ function chartTheme(t) {
   };
 }
 
-// ---- label ----------------------------------------------------------------
+// ---- labels ---------------------------------------------------------------
 const AKSI = {
   increase: ['Tambah likuiditas', 'bg-blue-lt'], decrease: ['Kurangi likuiditas', 'bg-orange-lt'],
   custody_out: ['Titip ke otomasi', 'bg-secondary-lt'], custody_in: ['Kembali dari otomasi', 'bg-secondary-lt'],
@@ -101,7 +101,7 @@ const lbl = (map, k) => { const v = map[k]; return v ? `<span class="badge ${v[1
 const emptyRow = (cols, title, sub = '') => `<tr><td colspan="${cols}"><div class="empty py-4">
   <p class="empty-title">${title}</p>${sub ? `<p class="empty-subtitle text-secondary">${sub}</p>` : ''}</div></td></tr>`;
 
-// ---- navigasi -------------------------------------------------------------
+// ---- navigation -----------------------------------------------------------
 function route() {
   const page = (location.hash || '#ringkasan').slice(1);
   const menu = document.getElementById('sidebar-menu');
@@ -112,7 +112,7 @@ function route() {
 }
 window.addEventListener('hashchange', route);
 
-// ---- rentang visual -------------------------------------------------------
+// ---- visual range ---------------------------------------------------------
 function rangeBar(lo, hi, cur) {
   if (lo == null || hi == null) return '';
   const span = hi - lo;
@@ -127,7 +127,7 @@ function rangeBar(lo, hi, cur) {
 }
 const widthPct = (lo, hi) => ((1.0001 ** (hi - lo) - 1) * 100);
 
-// ---- ringkasan ------------------------------------------------------------
+// ---- summary --------------------------------------------------------------
 let equityChart = null;
 async function loadOverview() {
   const d = await api('/api/overview');
@@ -201,7 +201,7 @@ async function loadOverview() {
   } else equityChart.updateSeries([{ name: 'Nilai', data: series }]);
 }
 
-// ---- posisi ---------------------------------------------------------------
+// ---- positions ------------------------------------------------------------
 async function loadPositions() {
   const d = await api('/api/positions');
   $('#posMeta').textContent = `${d.positions.length} posisi`;
@@ -237,7 +237,7 @@ async function loadPositions() {
   }).join('') || emptyRow(5, 'Belum ada posisi tertutup');
 }
 
-// ---- aturan ---------------------------------------------------------------
+// ---- rules ----------------------------------------------------------------
 const SCHEMA = [
   { group: 'Ukuran posisi', icon: 'ti-ruler', fields: [
     { path: 'sizing.mode', label: 'Cara menentukan ukuran', type: 'select', options: [
@@ -315,8 +315,8 @@ function renderRules(container, rules, idPrefix) {
   container.querySelectorAll('[data-type="bool"]').forEach((el) => el.onchange = () => {
     el.nextElementSibling.textContent = el.checked ? 'aktif' : 'mati';
   });
-  // Sembunyikan field yang tidak berlaku untuk mode yang sedang dipilih. Nilainya tetap
-  // ada di DOM (dan ikut tersimpan), jadi kembali ke mode lama tidak kehilangan setelan.
+  // Hide fields that do not apply to the selected mode. The value stays
+  // in the DOM (and is saved too), so going back to the old mode does not lose the settings.
   const apply = () => {
     const cur = collectRules(container);
     for (const g of SCHEMA) {
@@ -325,7 +325,7 @@ function renderRules(container, rules, idPrefix) {
         const wrap = container.querySelector(`[data-field="${f.path}"]`);
         if (wrap) wrap.classList.toggle('d-none', !f.when(cur));
       }
-      // sembunyikan judul grup kalau semua isinya tersembunyi
+      // hide the group title if all its contents are hidden
       const head = container.querySelector(`[data-group="${g.group}"]`);
       const row = head && head.nextElementSibling;
       if (head && row) {
@@ -362,7 +362,7 @@ async function loadRules() {
   };
 }
 
-// ---- target ---------------------------------------------------------------
+// ---- targets --------------------------------------------------------------
 async function loadTargets() {
   const d = await api('/api/targets');
   $('#targetList').innerHTML = d.targets.map((t, i) => `
@@ -423,7 +423,7 @@ async function loadTargets() {
   };
 }
 
-// ---- aktivitas ------------------------------------------------------------
+// ---- activity -------------------------------------------------------------
 async function loadActivity() {
   const d = await api('/api/activity?limit=200');
   const f = $('#filterVerdict').value;
@@ -510,7 +510,7 @@ function setupScout() {
   };
 }
 
-// ---- riset wallet ---------------------------------------------------------
+// ---- wallet research ------------------------------------------------------
 let wTimer = null;
 const kFmt = (v) => (Math.abs(v) >= 1000 ? '$' + (v / 1000).toFixed(2) + 'k' : usd(v));
 
@@ -527,7 +527,7 @@ async function loadWalletList() {
 function profitCalendar(daily) {
   const days = Object.keys(daily).sort();
   if (!days.length) return '<div class="text-secondary">Belum ada posisi tertutup di jendela ini.</div>';
-  // tampilkan bulan dari posisi tertutup terakhir
+  // show the month of the last closed position
   const last = new Date(days[days.length - 1] + 'T00:00:00');
   const y = last.getFullYear(), mo = last.getMonth();
   const first = new Date(y, mo, 1), lastDay = new Date(y, mo + 1, 0).getDate();
@@ -569,9 +569,9 @@ const posRow = (p, isOpen) => `<tr>
     : ago(p.closed_ts) + ' lalu'}</td>
 </tr>`;
 
-// ---- status pindai wallet ----
-let wCurrent = null;        // alamat yang sedang ditampilkan
-let wRendered = null;       // lastScanTs data yang sudah digambar (hindari gambar ulang tiap poll)
+// ---- wallet scan status ----
+let wCurrent = null;        // the address currently shown
+let wRendered = null;       // lastScanTs of the data already drawn (avoid redrawing on every poll)
 
 function setBusy(btn, busy, label) {
   if (!btn) return;
@@ -593,7 +593,7 @@ const fase = (j) => {
 };
 const lama = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + ' dtk' : Math.floor(s / 60) + ' mnt ' + (s % 60) + ' dtk'; };
 
-// Kartu progres. Total progres gabungan: tahap 1 = 0-30%, tahap 2 = 30-100%.
+// Progress card. Combined total progress: stage 1 = 0-30%, stage 2 = 30-100%.
 function progressCard(j, { compact = false } = {}) {
   const pctAll = !j ? 2 : j.phase === 'transfer' ? Math.round((j.progress || 0) * 0.3)
     : j.phase === 'posisi' ? 30 + Math.round((j.progress || 0) * 0.7) : 2;
@@ -638,15 +638,15 @@ async function loadWallet(addr, { poll = false, autoScan = false } = {}) {
     wCurrent = addr; wRendered = null;
     $('#wBody').innerHTML = loadingCard('Memuat data wallet…');
   }
-  if (addr !== wCurrent) return;           // pengguna sudah pindah ke wallet lain
+  if (addr !== wCurrent) return;           // the user has moved to another wallet
   const d = await api('/api/wallet?address=' + addr);
   if (addr !== wCurrent) return;
   if (d.error) { $('#wBody').innerHTML = `<div class="alert alert-danger">${esc(d.error)}</div>`; return; }
 
   const running = d.job && d.job.status === 'jalan';
 
-  // Belum pernah dipindai & tidak sedang dipindai: langsung mulai, jangan suruh
-  // pengguna mencari tombol lain.
+  // Never scanned & not being scanned: start right away, do not make the
+  // user look for another button.
   if (!d.found && !running && autoScan) {
     try { await startScan(addr); } catch (e) { $('#wBody').innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`; return; }
     $('#wBody').innerHTML = progressCard({ phase: 'mulai', startedAt: Date.now() });
@@ -660,7 +660,7 @@ async function loadWallet(addr, { poll = false, autoScan = false } = {}) {
     setBusy($('#btnWScan'), true);
     if (!wTimer) pollWallet(addr);
     if (!d.found) { $('#wBody').innerHTML = progressCard(d.job); return; }
-    // Sudah punya data lama: tetap tampilkan, cukup perbarui banner progres.
+    // Already has old data: still show it, just update the progress banner.
     const banner = $('#wProgBanner');
     if (wRendered && banner) { banner.outerHTML = progressCard(d.job, { compact: true }); return; }
   } else {
@@ -668,7 +668,7 @@ async function loadWallet(addr, { poll = false, autoScan = false } = {}) {
     setBusy($('#btnWScan'), false);
     if (d.job && d.job.status === 'gagal') $('#wHint').innerHTML = `<span class="text-red">Pindai gagal: ${esc(d.job.error)}</span> — coba tekan <i class="ti ti-refresh"></i> lagi.`;
     else if (d.found) $('#wHint').textContent = `Dipindai ${ago(d.lastScanTs)} lalu · blok ${(d.scannedFrom || 0).toLocaleString('id-ID')}–${(d.scannedTo || 0).toLocaleString('id-ID')}`;
-    // Data tidak berubah sejak terakhir digambar: jangan gambar ulang (menghindari kedip/scroll lompat).
+    // Data has not changed since last drawn: do not redraw (avoids flicker/scroll jumps).
     if (d.found && poll && wRendered === d.lastScanTs) return;
   }
   if (!d.found) {
@@ -769,10 +769,10 @@ function setupWallet() {
 }
 
 
-// ---- pengaturan -----------------------------------------------------------
+// ---- settings -------------------------------------------------------------
 let setData = null;
 let setTab = 'wallet';
-let setPending = null;      // pesan yang harus tampil setelah panel digambar ulang
+let setPending = null;      // the message that must show after the panel is redrawn
 
 const fmtAmt = (v, d = 4) => (v == null ? '—' : Number(v).toLocaleString('id-ID', { maximumFractionDigits: d }));
 const alertBox = (type, msg) => `<div class="alert alert-${type} mb-3">${msg}</div>`;
@@ -952,7 +952,7 @@ function renderSetRpc() {
     box.innerHTML = r.error ? `<span class="text-red">${esc(r.error)}</span>` : `${r.usable ? '<span class="text-green">✓</span>' : '<span class="text-red">✗</span>'} ${esc(r.summary)}`;
   });
 
-  // tambah
+  // add
   let tested = null;
   const authSel = $('#newRpcAuth');
   const syncAuth = () => {
@@ -1019,7 +1019,7 @@ function renderSetGas() {
   };
 }
 
-// -- notifikasi --
+// -- notifications --
 function renderSetNotify() {
   $('#setPanel').innerHTML = `
     <h3 class="card-title mb-1">Notifikasi</h3>
@@ -1040,7 +1040,7 @@ function renderSetNotify() {
   };
 }
 
-// -- mesin --
+// -- engine --
 function renderSetLoop() {
   const l = setData.loop, pr = setData.prices;
   $('#setPanel').innerHTML = `
@@ -1065,7 +1065,7 @@ function renderSetLoop() {
   };
 }
 
-// -- keamanan --
+// -- security --
 function renderSetSecurity() {
   $('#setPanel').innerHTML = `
     <h3 class="card-title mb-1">Keamanan</h3>

@@ -1,6 +1,6 @@
 'use strict';
-// Matematika konsentrasi likuiditas Uniswap v3/v4 dengan BigInt penuh (tanpa float).
-// Rumus identik untuk v3 dan v4 — yang berbeda cuma cara menyimpan posisinya.
+// Uniswap v3/v4 concentrated-liquidity math in full BigInt (no floats).
+// The formulas are identical for v3 and v4 — only how the position is stored differs.
 
 const Q96 = 2n ** 96n;
 const Q128 = 2n ** 128n;
@@ -32,11 +32,11 @@ function getSqrtRatioAtTick(tick) {
     if ((abs & MUL[i][0]) !== 0) ratio = (ratio * MUL[i][1]) >> 128n;
   }
   if (tick > 0) ratio = MaxUint256 / ratio;
-  // Q128.128 -> Q64.96, dibulatkan ke atas
+  // Q128.128 -> Q64.96, rounded up
   return ratio % (2n ** 32n) > 0n ? ratio / (2n ** 32n) + 1n : ratio / (2n ** 32n);
 }
 
-// Cari tick terbesar yang sqrtRatio-nya <= sqrtX96 (pencarian biner: cukup ~21 iterasi)
+// Find the largest tick whose sqrtRatio is <= sqrtX96 (binary search: ~21 iterations suffice)
 function getTickAtSqrtRatio(sqrtX96) {
   if (sqrtX96 < MIN_SQRT_RATIO || sqrtX96 >= MAX_SQRT_RATIO) throw new Error('sqrtPrice di luar batas');
   let lo = MIN_TICK, hi = MAX_TICK;
@@ -49,7 +49,7 @@ function getTickAtSqrtRatio(sqrtX96) {
 
 const mulDiv = (a, b, d) => (a * b) / d;
 
-// jumlah token0 yang diwakili L pada rentang [sqrtA, sqrtB]
+// amount of token0 represented by L over the range [sqrtA, sqrtB]
 function amount0ForLiquidity(sqrtA, sqrtB, L) {
   if (sqrtA > sqrtB) [sqrtA, sqrtB] = [sqrtB, sqrtA];
   if (sqrtA <= 0n) return 0n;
@@ -60,7 +60,7 @@ function amount1ForLiquidity(sqrtA, sqrtB, L) {
   return mulDiv(L, sqrtB - sqrtA, Q96);
 }
 
-// Jumlah kedua token untuk posisi L pada [tickLower,tickUpper] saat harga sqrtP
+// Amounts of both tokens for a position of L over [tickLower,tickUpper] when the price is sqrtP
 function amountsForLiquidity(sqrtP, sqrtA, sqrtB, L) {
   if (sqrtA > sqrtB) [sqrtA, sqrtB] = [sqrtB, sqrtA];
   if (sqrtP <= sqrtA) return { amount0: amount0ForLiquidity(sqrtA, sqrtB, L), amount1: 0n };
@@ -91,7 +91,7 @@ function liquidityForAmounts(sqrtP, sqrtA, sqrtB, amount0, amount1) {
   return liquidityForAmount1(sqrtA, sqrtB, amount1);
 }
 
-// harga token1 per token0 (sudah disesuaikan desimal), sebagai Number untuk tampilan
+// token1 per token0 price (decimal-adjusted), as a Number for display
 function priceFromSqrt(sqrtX96, dec0, dec1) {
   const num = Number(sqrtX96) / Number(Q96);
   return num * num * 10 ** (Number(dec0) - Number(dec1));
@@ -99,7 +99,7 @@ function priceFromSqrt(sqrtX96, dec0, dec1) {
 function tickToPrice(tick, dec0, dec1) {
   return priceFromSqrt(getSqrtRatioAtTick(tick), dec0, dec1);
 }
-// tick terdekat untuk sebuah harga (token1 per token0, sudah disesuaikan desimal)
+// nearest tick for a price (token1 per token0, decimal-adjusted)
 function priceToTick(price, dec0, dec1) {
   const raw = price * 10 ** (Number(dec1) - Number(dec0));
   if (!(raw > 0) || !Number.isFinite(raw)) throw new Error('harga tidak valid');
@@ -107,7 +107,7 @@ function priceToTick(price, dec0, dec1) {
   return Math.max(MIN_TICK, Math.min(MAX_TICK, Math.round(t)));
 }
 
-// Bulatkan tick ke kelipatan tickSpacing. mode: 'down' | 'up' | 'nearest'
+// Round a tick to a multiple of tickSpacing. mode: 'down' | 'up' | 'nearest'
 function alignTick(tick, spacing, mode = 'nearest') {
   const s = Number(spacing);
   if (!s) return Number(tick);
@@ -118,32 +118,32 @@ function alignTick(tick, spacing, mode = 'nearest') {
   return Math.max(Math.ceil(MIN_TICK / s) * s, Math.min(Math.floor(MAX_TICK / s) * s, v));
 }
 
-// Posisi berada di sisi mana relatif harga sekarang
+// Which side of the range the current price is on
 function sideOfRange(tick, tickLower, tickUpper) {
-  if (tick < tickLower) return 'token0_only';   // harga di bawah rentang -> butuh token0 saja
-  if (tick >= tickUpper) return 'token1_only';  // harga di atas rentang -> butuh token1 saja
+  if (tick < tickLower) return 'token0_only';   // price below the range -> needs token0 only
+  if (tick >= tickUpper) return 'token1_only';  // price above the range -> needs token1 only
   return 'both';
 }
 
-// Jarak harga ke rentang, dalam persen: berapa persen harga harus bergerak sebelum
-// posisi kembali menghasilkan fee. 0 = di dalam rentang. Dihitung di ruang tick, jadi
-// sama untuk kedua arah kuotasi (1/p menukar sisi, bukan besarnya) dan sama dengan angka
-// "di luar · N% di atas/bawah" di dasbor.
+// Distance from the price to the range, in percent: how many percent the price has to move before
+// the position earns fees again. 0 = inside the range. Computed in tick space, so it is
+// the same for both quote directions (1/p swaps sides, not magnitude) and equals the
+// "out of range · N% above/below" figure on the dashboard.
 function distanceFromRangePct(tick, tickLower, tickUpper) {
   const d = tick < tickLower ? tickLower - tick : tick >= tickUpper ? tick - tickUpper + 1 : 0;
   return d > 0 ? (Math.pow(1.0001, d) - 1) * 100 : 0;
 }
 
-// Taksiran harga setelah swap di satu rentang likuiditas (L dianggap tetap).
-// Dipakai untuk menolak zap yang dampaknya terlalu besar.
+// Estimated price after a swap within a single liquidity range (L assumed constant).
+// Used to reject a zap whose impact is too large.
 function sqrtAfterSwap(sqrtP, L, amountIn, zeroForOne) {
   if (L === 0n) return null;
   if (zeroForOne) {
-    // jual token0: harga turun. sqrtP' = L*sqrtP / (L + amountIn*sqrtP/Q96)
+    // sell token0: price falls. sqrtP' = L*sqrtP / (L + amountIn*sqrtP/Q96)
     const denom = L + (amountIn * sqrtP) / Q96;
     return denom === 0n ? null : (L * sqrtP) / denom;
   }
-  // jual token1: harga naik. sqrtP' = sqrtP + amountIn*Q96/L
+  // sell token1: price rises. sqrtP' = sqrtP + amountIn*Q96/L
   return sqrtP + (amountIn * Q96) / L;
 }
 function priceImpactBps(sqrtP, L, amountIn, zeroForOne) {

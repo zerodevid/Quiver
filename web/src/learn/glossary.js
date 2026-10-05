@@ -1,6 +1,6 @@
-// Glosarium Belajar LP. `term` memakai istilah yang sama dengan label dasbor supaya
-// pengguna bisa mencocokkannya; `quiver` menjelaskan di mana istilah itu muncul di
-// aplikasi; `chapter` menunjuk bab yang membahasnya lebih dalam.
+// Learn LP glossary. `term` uses the same wording as the dashboard labels so
+// users can match them up; `quiver` explains where the term shows up in the
+// app; `chapter` points to the chapter that covers it in more depth.
 
 export const groups = [
   ['price', ['Harga & pasangan', 'Price & pairs']],

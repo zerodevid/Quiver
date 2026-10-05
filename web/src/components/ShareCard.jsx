@@ -1,14 +1,14 @@
-// Kartu bagikan (share card) — gambar PnL siap tempel ke X/Telegram, seperti yang
-// dipunyai Based bot atau GMGN. Gambarnya digambar SERVER (src/share-card.js, rute
-// GET /api/share/card) supaya dasbor dan bot Telegram mengirim kartu yang persis
-// sama; komponen ini cuma dialognya: pratinjau, sakelar sembunyikan nominal, lalu
-// salin / unduh / kirim ke Telegram / bagikan (Web Share, kalau browsernya bisa
-// mengirim berkas).
+// Share card — a PnL image ready to paste into X/Telegram, like the ones
+// Based bot or GMGN have. The image is drawn by the SERVER (src/share-card.js, route
+// GET /api/share/card) so the dashboard and the Telegram bot send exactly the same
+// card; this component is only the dialog: preview, hide-amounts switch, then
+// copy / download / send to Telegram / share (Web Share, if the browser can
+// share files).
 //
-// Sebuah kartu = { kind, id?, day?, text, name }:
-//   positionCard(p)  kind 'position' — satu posisi LP
-//   totalCard(d)     kind 'total'    — seluruh portofolio
-//   dailyCard(d)     kind 'daily'    — satu hari di kalender PnL
+// A card = { kind, id?, day?, text, name }:
+//   positionCard(p)  kind 'position' — a single LP position
+//   totalCard(d)     kind 'total'    — the whole portfolio
+//   dailyCard(d)     kind 'daily'    — a single day in the PnL calendar
 import { useEffect, useRef, useState } from 'react';
 import { Button, Modal, toast } from '@heroui/react';
 import { Share2, Copy, Download, Send } from 'lucide-react';
@@ -17,12 +17,12 @@ import { get, post } from '../api';
 import { useI18n } from '../i18n';
 import { usd, pct } from '../fmt';
 
-// Ukuran & tema: kuncinya sama dengan SIZES/THEMES di src/share-card.js (server yang
-// menggambar; yang tidak dikenal jatuh ke bawaan).
+// Size & theme: the keys are the same as SIZES/THEMES in src/share-card.js (the server
+// draws; unknown ones fall back to the default).
 const SIZES = [['wide', 'Lebar', 1200 / 630], ['square', 'Persegi', 1], ['story', 'Story', 1080 / 1920]];
 const THEMES = [['dark', 'Grafit'], ['midnight', 'Malam'], ['sunset', 'Senja'], ['neon', 'Neon'], ['gold', 'Emas'], ['light', 'Terang'], ['pixel', 'Piksel']];
 const tzName = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ''; } };
-// Pilihan terakhir diingat di browser ini.
+// The last choice is remembered in this browser.
 const remember = (key, fallback, valid) => { try { const v = localStorage.getItem(key); return valid.includes(v) ? v : fallback; } catch { return fallback; } };
 const keep = (key, v) => { try { localStorage.setItem(key, v); } catch { /* abaikan */ } };
 
@@ -34,7 +34,7 @@ export const positionCard = (p) => ({
 export const totalCard = ({ pnl, net }) => ({ kind: 'total', name: 'total-pnl', text: `${net ? 'Net PnL' : 'Total PnL'} ${usd(pnl)} · Quiver` });
 export const dailyCard = ({ day, pnl }) => ({ kind: 'daily', day, name: `pnl-${day}`, text: `PnL ${day}: ${usd(pnl)} · Quiver` });
 
-// Dialog bagikan. `card` null = tertutup.
+// Share dialog. `card` null = closed.
 export function ShareDialog({ card, onClose }) {
   const { t, locale: lang } = useI18n();
   const open = !!card;
@@ -45,19 +45,19 @@ export function ShareDialog({ card, onClose }) {
   const [loading, setLoading] = useState(false);
   const [url, setUrl] = useState(null);
   const [busy, setBusy] = useState(null);
-  const [tg, setTg] = useState(null);           // { ready, chats } — bot Telegram siap?
-  const last = useRef(null);                    // kartu terakhir, tetap tampil saat animasi menutup
+  const [tg, setTg] = useState(null);           // { ready, chats } — is the Telegram bot ready?
+  const last = useRef(null);                    // last card, still shown while the close animation runs
   if (card) last.current = card;
   const c = card || last.current;
 
-  // Sembunyikan nominal diingat: kalau sekali disembunyikan, biasanya selalu.
+  // Hide amounts is remembered: once hidden, it usually always is.
   useEffect(() => { try { setHide(localStorage.getItem('quiver-share-hide') === '1'); } catch { /* abaikan */ } }, []);
   const toggleHide = (v) => { setHide(v); try { localStorage.setItem('quiver-share-hide', v ? '1' : '0'); } catch { /* abaikan */ } };
 
   const pickSize = (v) => { setSize(v); keep('quiver-share-size', v); };
   const pickTheme = (v) => { setTheme(v); keep('quiver-share-theme', v); };
 
-  // Gambar diminta ulang saat kartu, bahasa, ukuran, tema berganti, atau nominal disembunyikan.
+  // The image is requested again when the card, language, size, theme changes, or amounts are hidden.
   useEffect(() => {
     if (!card) { setBlob(null); return; }
     let alive = true;
@@ -103,7 +103,7 @@ export function ShareDialog({ card, onClose }) {
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
       } else if (kind === 'telegram') {
-        // Server menggambar ulang dari data yang sama, lalu mengirimnya ke tiap chat.
+        // The server redraws from the same data, then sends it to each chat.
         const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, hide, lang, tz: tzName(), size, theme });
         if (j.error) throw new Error(j.error);
         toast.success(t('Terkirim ke Telegram'), { description: j.failed ? t('{n} chat gagal: {e}', { n: j.failed, e: j.lastErr }) : t('{n} chat', { n: j.sent }) });
@@ -113,7 +113,7 @@ export function ShareDialog({ card, onClose }) {
         await navigator.share({ files: [file], title: 'Quiver', text: c.text });
       }
     } catch (e) {
-      // Batal dari lembar bagikan bukan kegagalan.
+      // Cancelling from the share sheet is not a failure.
       if (e?.name !== 'AbortError') {
         const title = { copy: 'Gambar gagal disalin', download: 'Gambar gagal diunduh', telegram: 'Gagal mengirim ke Telegram', share: 'Gagal membagikan' }[kind];
         toast.danger(t(title), { description: String(e?.message || e) });
@@ -122,8 +122,8 @@ export function ShareDialog({ card, onClose }) {
       setBusy(null);
     }
   };
-  // Tombol aksi: di layar sempit memenuhi lebar (dua per baris), di layar lebar
-  // sebesar isinya.
+  // Action buttons: on narrow screens fill the width (two per row), on wide screens
+  // sized to their content.
   const act = (kind) => ({ isPending: busy === kind, isDisabled: !blob || busy != null, onPress: () => run(kind), className: 'grow sm:grow-0' });
 
   return (
@@ -136,7 +136,7 @@ export function ShareDialog({ card, onClose }) {
               <Modal.Heading>{t('Bagikan')}</Modal.Heading>
             </Modal.Header>
             <Modal.Body>
-              {/* Pratinjau mengikuti rasio ukuran yang dipilih; story dibatasi tingginya supaya dialog tidak menjulang. */}
+              {/* The preview follows the chosen size ratio; the story is capped in height so the dialog does not tower. */}
               <div className="flex justify-center overflow-hidden rounded-lg border border-border bg-[#0E1015]">
                 <div className={`relative w-full transition-opacity ${loading ? 'opacity-60' : ''}`} style={{ aspectRatio: ratio, maxHeight: '60vh' }}>
                   {url
@@ -171,10 +171,10 @@ export function ShareDialog({ card, onClose }) {
   );
 }
 
-// Tombol "Bagikan" yang membuka dialog untuk satu kartu.
+// "Share" button that opens the dialog for a single card.
 export default function ShareButton({ card, label = 'Bagikan', iconOnly = false, variant = 'outline', size = 'sm', isDisabled }) {
   const { t } = useI18n();
-  // Kartu dipotret saat tombol ditekan: poll berikutnya tidak mengganti pratinjau.
+  // The card is snapshotted when the button is pressed: the next poll does not replace the preview.
   const [snap, setSnap] = useState(null);
   return (
     <>

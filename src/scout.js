@@ -1,11 +1,11 @@
 'use strict';
 const { ensureChain } = require('./networks');
-// "Scout": nilai sebuah wallet SEBELUM dicopy.
+// "Scout": evaluate a wallet BEFORE copying it.
 //
-// Yang bisa dihitung persis tanpa node arsip: posisi yang masih hidup — pasangan,
-// rentang, nilai sekarang, fee yang sudah terkumpul tapi belum diklaim, umur.
-// Rasio fee/nilai per jam adalah sinyal terkuat yang tersedia, dan angkanya eksak
-// karena dibaca dari storage pool, bukan ditaksir.
+// What can be computed exactly without an archive node: positions that are still alive — pair,
+// range, current value, fees collected but not yet claimed, age.
+// The fee/value ratio per hour is the strongest signal available, and the figure is exact
+// because it is read from pool storage, not estimated.
 const { ethers } = require('ethers');
 const { TOPIC, ABI } = require('./chain');
 const { computePoolId } = require('./pools');
@@ -18,28 +18,28 @@ const asAddr = (t) => ('0x' + t.slice(-40)).toLowerCase();
 const hex = (n) => '0x' + n.toString(16);
 
 /**
- * getLogs dengan pemecahan rentang adaptif.
- * Gotcha yang pernah menggigit: kalau kegagalan query ditelan diam-diam, hasilnya
- * scan "sukses" tapi kosong — dan bot menyimpulkan wallet tidak punya posisi.
- * Di sini setiap kegagalan memecah rentang; kalau sudah tidak bisa dipecah, dilempar.
+ * getLogs with adaptive range splitting.
+ * A gotcha that has bitten before: if a query failure is silently swallowed, the scan
+ * result is "successful" but empty — and the bot concludes the wallet has no positions.
+ * Here every failure splits the range; once it cannot be split any more, it is thrown.
  */
 const TRANSIENT = /network is busy|timeout|429|too many requests|503|502|temporarily|try again|tumbang/i;
 const RATE_LIMIT = /429|too many requests|tumbang/i;
 
 async function getLogsSafe(rpc, filter, lo, hi, depth = 0) {
-  // Semua endpoint membatasi rentang getLogs (BSC publik: 5000 blok): potong di muka
-  // sesuai batasnya, urut — bukan menunggu ditolak lalu membelah dua berulang kali.
+  // Every endpoint limits the getLogs range (public BSC: 5000 blocks): cut up front
+  // to their limit, in order — rather than waiting to be rejected and halving repeatedly.
   const limit = depth === 0 && typeof rpc.maxLogSpan === 'function' ? rpc.maxLogSpan() : 0;
   if (limit > 0 && hi - lo + 1 > limit) {
     const out = [];
     for (let a = lo; a <= hi; a += limit) out.push(...await getLogsSafe(rpc, filter, a, Math.min(hi, a + limit - 1), 1));
     return out;
   }
-  // Dua jenis kegagalan yang butuh penanganan BERBEDA:
-  //  - rentang terlalu besar -> pecah dua
-  //  - upstream sedang sibuk  -> tunggu lalu ulangi rentang yang SAMA
-  // Memecah rentang untuk error sesaat itu sia-sia: ia mengecil sampai satu blok
-  // lalu menyerah, padahal rentang aslinya tidak bermasalah.
+  // Two kinds of failure that need DIFFERENT handling:
+  //  - range too large -> split in two
+  //  - upstream busy  -> wait then retry the SAME range
+  // Splitting the range for a transient error is futile: it shrinks down to one block
+  // then gives up, even though the original range was never the problem.
   const maxAttempts = 6;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
@@ -52,10 +52,10 @@ async function getLogsSafe(rpc, filter, lo, hi, depth = 0) {
         const b = await getLogsSafe(rpc, filter, mid + 1, hi, depth + 1);
         return a.concat(b);
       }
-      // Dibatasi laju (429): memecah rentang justru MELIPATGANDAKAN jumlah permintaan
-      // dan memperparah hukuman — jadi hanya menunggu lalu mengulang rentang yang sama.
-      // "network is busy" berbeda: sering muncul untuk query berat, jadi setelah dua
-      // kali gagal, rentangnya dipecah.
+      // Rate limited (429): splitting the range actually MULTIPLIES the number of requests
+      // and worsens the penalty — so only wait and retry the same range.
+      // "network is busy" is different: it often shows up for heavy queries, so after two
+      // failures, the range is split.
       const limited = RATE_LIMIT.test(e.message);
       const giveUpSplit = !limited && attempt >= 1;
       if (attempt === maxAttempts - 1 || giveUpSplit) {
@@ -71,7 +71,7 @@ async function getLogsSafe(rpc, filter, lo, hi, depth = 0) {
   return [];
 }
 
-/** Kumpulkan tokenId v4 milik `owner` dari log Transfer, mundur `blocks` blok. */
+/** Collect the v4 tokenIds owned by `owner` from Transfer logs, looking back `blocks` blocks. */
 async function enumerateV4(chain, owner, headBlock, blocks, chunk = 60_000, onProgress, rpc = null) {
   chain = ensureChain(chain);
   const { ADDR } = chain;
@@ -104,7 +104,7 @@ async function enumerateV4(chain, owner, headBlock, blocks, chunk = 60_000, onPr
   return { held, events };
 }
 
-/** Rincian posisi v4 yang masih hidup (dipakai scout maupun pantau target). */
+/** Details of v4 positions that are still alive (used by both scout and target monitoring). */
 async function livePositions(rpc, chain, tokenIds) {
   if (!tokenIds.length) return [];
   chain = ensureChain(chain);
@@ -124,7 +124,7 @@ async function livePositions(rpc, chain, tokenIds) {
       pk = { currency0: d[0].currency0.toLowerCase(), currency1: d[0].currency1.toLowerCase(), fee: Number(d[0].fee), tickSpacing: Number(d[0].tickSpacing), hooks: d[0].hooks.toLowerCase() };
       inf = d[1];
     } catch { return; }
-    if (/^0x0+$/.test(pk.currency1) && pk.fee === 0) return; // sudah dibakar
+    if (/^0x0+$/.test(pk.currency1) && pk.fee === 0) return; // already burned
     const liqKnown = !!(liq[i] && liq[i] !== '0x');
     const L = liqKnown ? BigInt(liq[i]) : 0n;
     rows.push({
@@ -172,7 +172,7 @@ async function livePositions(rpc, chain, tokenIds) {
   return rows;
 }
 
-/** Rapor lengkap satu wallet. */
+/** Full report for one wallet. */
 async function scoutWallet(rpc, chain, owner, { blocks = 2_600_000, ethUsd = 2500, onProgress } = {}) {
   const head = await rpc.blockNumber();
   const { held, events } = await enumerateV4(chain, owner, head, blocks, 150_000, onProgress);
@@ -194,7 +194,7 @@ async function scoutWallet(rpc, chain, owner, { blocks = 2_600_000, ethUsd = 250
   const totalFee = alive.reduce((s, r) => s + r.feeUsd, 0);
   const closedIds = new Set(events.filter((e) => e.from === owner).map((e) => e.tokenId));
 
-  // profil rentang & pasangan
+  // range & pair profile
   const pairs = {};
   for (const r of alive) {
     const k = `${r.symbol0}/${r.symbol1}`;

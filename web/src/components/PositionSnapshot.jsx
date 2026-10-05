@@ -18,7 +18,7 @@ export default function PositionSnapshot({ id, onUpdate }) {
   const { t } = useI18n();
   const { data, error, reload } = usePoll(`/api/position?id=${encodeURIComponent(id)}`, 10000);
   const refresh = useCallback(async () => { await reload(); onUpdate?.(); }, [reload, onUpdate]);
-  // Tombolnya memaksa sinkron chain dulu: angka di kartu ini dari sinkron terakhir.
+  // The button forces a chain sync first: the numbers on this card come from the last sync.
   const [resync, syncing] = useResync(refresh);
   const { claim, claiming } = useClaimFees(refresh);
   const { close, closing } = useClosePosition(refresh);
@@ -31,10 +31,10 @@ export default function PositionSnapshot({ id, onUpdate }) {
   const current = closed ? sqrtPrice(p.exitSqrt, p.dec0, p.dec1, p.quoteSide) : p.curSqrt ? sqrtPrice(p.curSqrt, p.dec0, p.dec1, p.quoteSide) : p.curTick != null ? tickPrice(p.curTick, p.dec0, p.dec1, p.quoteSide) : null;
   const quote = p.quoteSide === 0 ? p.symbol0 : p.symbol1;
   const base = p.quoteSide === 0 ? p.symbol1 : p.symbol0;
-  // Nilai dolar tiap token: aset kuotasi langsung (USDG = $1, ETH/WETH = harga ETH),
-  // token spekulatif lewat harga pool saat ini (atau harga keluar untuk posisi tertutup).
-  // Modal yang disetor dinilai dengan harga masuk (itulah dolar yang benar-benar
-  // masuk); saldo & fee dengan harga sekarang.
+  // Dollar value of each token: quote asset directly (USDG = $1, ETH/WETH = ETH price),
+  // speculative tokens via the current pool price (or the exit price for closed positions).
+  // The deposited capital is valued at the entry price (that is the dollars that actually
+  // went in); balances & fees at the current price.
   const quoteUsd = p.quoteKind === 'eth' ? data.ethUsd : 1;
   const entry = sqrtPrice(p.entrySqrt, p.dec0, p.dec1, p.quoteSide);
   const tokUsd = (side, raw, at) => {

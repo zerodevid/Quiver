@@ -77,6 +77,8 @@ class RaydiumVenue {
       lower: p.tickLower, upper: p.tickUpper, tickLower: p.tickLower, tickUpper: p.tickUpper,
       liquidity: L.toString(), amount0, amount1,
       fee0: fees ? fees.fee0 : big(p.tokenFeesOwedA), fee1: fees ? fees.fee1 : big(p.tokenFeesOwedB),
+      // Fee growth checkpoint (see OrcaVenue.norm): moves on claim with the liquidity unchanged.
+      feeMark: `${big(p.feeGrowthInsideLastX64A)}:${big(p.feeGrowthInsideLastX64B)}`,
       ext: { nftMint: b58(p.nftMint) },
     };
   }

@@ -1,10 +1,10 @@
 'use strict';
-// Konstanta level-protokol yang SAMA di semua chain: hash signature event,
-// opcode UniversalRouter/Actions v4, dan bentuk ABI. Ini berlaku di deployment
-// Uniswap v3/v4 standar mana pun dan fork verbatim seperti PancakeSwap v3.
+// Protocol-level constants that are the SAME on every chain: event signature hashes,
+// UniversalRouter/Actions v4 opcodes, and ABI shapes. They hold on any standard
+// Uniswap v3/v4 deployment and verbatim forks such as PancakeSwap v3.
 //
-// Alamat kontrak dan hal yang beda per chain (ADDR, QUOTES, CHAIN_ID, daftar
-// venue v3) pindah ke networks.js — lihat `build(network)` di sana.
+// Contract addresses and things that differ per chain (ADDR, QUOTES, CHAIN_ID, the list of
+// v3 venues) moved to networks.js — see `build(network)` there.
 
 const TOPIC = {
   // v4 PoolManager
@@ -15,14 +15,14 @@ const TOPIC = {
   increaseLiq:     '0x3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f',
   decreaseLiq:     '0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4',
   collectV3:       '0x40d0efd1a53d60ecbf40971b9daf7dc90178c3aadc7aab1765632738fa8b8f01',
-  // Swap di kontrak pool v3 (bukan di NPM) — membawa sqrtPriceX96, dipakai riset v3
-  // untuk menilai kejadian pada harga di bloknya sendiri.
+  // Swap on a v3 pool contract (not on the NPM) — carries sqrtPriceX96, used by v3 research
+  // to value events at the price in their own block.
   swapV3:          '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67',
   // PoolCreated(address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool)
   poolCreatedV3:   '0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118',
   // ERC721 / ERC20
   transfer:        '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
-  // pool v3 langsung (LP tanpa NFT manager)
+  // direct v3 pool (LP without an NFT manager)
   mintV3Pool:      '0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde',
   burnV3Pool:      '0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c',
 };
@@ -37,7 +37,7 @@ const ACT = {
   CLOSE_CURRENCY: 0x12, CLEAR_OR_TAKE: 0x13, SWEEP: 0x14, WRAP: 0x15, UNWRAP: 0x16,
 };
 
-// UniversalRouter commands (Commands.sol) — diverifikasi dari source terverifikasi di chain ini
+// UniversalRouter commands (Commands.sol) — verified against the verified source on this chain
 const CMD = {
   V3_SWAP_EXACT_IN: 0x00, V3_SWAP_EXACT_OUT: 0x01, PERMIT2_TRANSFER_FROM: 0x02,
   SWEEP: 0x04, TRANSFER: 0x05, PAY_PORTION: 0x06,
@@ -112,9 +112,9 @@ const ABI = {
   ],
 };
 
-// ADDR/QUOTES/CHAIN_ID Robinhood Chain tetap diekspor untuk uji & skrip lama. Kode
-// produksi TIDAK memakainya lagi — alamat dibaca dari instance Chain (chain.ADDR),
-// yang bisa Robinhood maupun BSC.
+// Robinhood Chain's ADDR/QUOTES/CHAIN_ID are still exported for tests & old scripts. Production
+// code NO LONGER uses them — addresses are read from the Chain instance (chain.ADDR),
+// which can be Robinhood or BSC.
 const { build } = require('./networks');
 const LEGACY = build('robinhood');
 module.exports = { TOPIC, ACT, CMD, SENTINEL, ABI, ADDR: LEGACY.ADDR, QUOTES: LEGACY.QUOTES, CHAIN_ID: LEGACY.CHAIN_ID };

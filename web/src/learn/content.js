@@ -1,9 +1,9 @@
-// Isi buku Belajar LP. Setiap teks punya edisi Indonesia dan Inggris sebagai pasangan
-// [id, en]; halaman memilih salah satu lewat locale, bukan lewat kamus i18n, karena
-// paragraf panjang tidak cocok dijadikan kunci kamus.
+// Content of the Learn LP book. Every text has an Indonesian and an English edition as a pair
+// [id, en]; the page picks one via locale, not via the i18n dictionary, because
+// long paragraphs do not make good dictionary keys.
 //
-// Contoh angka memakai pasangan TOKEN/USDG dengan harga awal 100 dan modal 100 USDG,
-// sama dengan simulator (learn/math.js), supaya teks dan grafik bisa dicocokkan.
+// Number examples use the TOKEN/USDG pair with a starting price of 100 and capital of 100 USDG,
+// the same as the simulator (learn/math.js), so the text and the chart can be matched.
 
 export const sources = [
   { label: 'Concentrated liquidity', href: 'https://developers.uniswap.org/docs/get-started/concepts/liquidity-providers/concentrated-liquidity' },

@@ -1,7 +1,7 @@
-// Grafik realtime: lilin GeckoTerminal tertinggal hingga semenit, jadi harga pool
-// dibaca langsung dari chain (/api/price, slot0) tiap beberapa detik dan dipakai
-// menggerakkan lilin yang sedang berjalan — atau membuka lilin baru kalau
-// intervalnya sudah lewat tapi GeckoTerminal belum mengirimnya.
+// Realtime chart: GeckoTerminal candles lag by up to a minute, so the pool price
+// is read straight from the chain (/api/price, slot0) every few seconds and used to
+// move the running candle — or to open a new candle when the
+// interval has passed but GeckoTerminal has not sent it yet.
 import { useMemo, useRef } from 'react';
 import { usePoll } from './hooks';
 import { sqrtPrice } from './fmt';
@@ -9,8 +9,8 @@ import { canonAddr } from './chain';
 
 export const LIVE_MS = 3000;
 
-// Harga kini dalam aset kuotasi. null kalau dimatikan, belum terbaca, atau basi
-// (poll gagal terus: harga lama tidak boleh tampil seolah-olah live).
+// Current price in the quote asset. null when disabled, not yet read, or stale
+// (polls keep failing: an old price must not be shown as if it were live).
 export function useLivePrice(pool, { dec0, dec1, quoteSide }, enabled = true) {
   const ref = enabled && pool ? canonAddr(pool) : null;
   const { data } = usePoll(ref ? `/api/price?pool=${ref}` : null, LIVE_MS);
@@ -21,9 +21,9 @@ export function useLivePrice(pool, { dec0, dec1, quoteSide }, enabled = true) {
   }, [ref, data, dec0, dec1, quoteSide]);
 }
 
-// candles: [{ t(ms), o, h, l, c, v }] urut naik; secs: panjang satu lilin.
-// Tertinggi/terendah harga live di lilin berjalan diingat antar-poll, supaya
-// lonjakan yang sempat terbaca tidak hilang saat harga balik lagi.
+// candles: [{ t(ms), o, h, l, c, v }] ascending; secs: length of one candle.
+// The live high/low on the running candle are remembered between polls, so
+// a spike that was briefly seen is not lost when the price comes back.
 export function useLiveCandles(candles, secs, live, key) {
   const ext = useRef(null);
   return useMemo(() => {

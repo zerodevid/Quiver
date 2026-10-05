@@ -75,20 +75,48 @@ The example configuration starts in **simulation mode**, binds the dashboard to 
 
 The optional `./lp` and `deploy.sh` wrappers require **zsh**. The Node commands below work without those wrappers.
 
-### Install and build
+### Install
 
 From a checkout of this repository:
 
 ```sh
 npm ci
 npm ci --prefix web
+npm run build --prefix web
+npm start
+```
+
+### First run: the setup wizard
+
+With no `config.json` present, `npm start` opens the setup wizard instead of starting the bot. It prints a one-time setup code in the terminal and serves a seven-step page on the dashboard address ([localhost:8799](http://127.0.0.1:8799) by default):
+
+1. **Start** — paste the setup code.
+2. **Dashboard access** — access token (generated for you), optional external https URL, and the secondary display currency.
+3. **Wallet** — generate a new signing wallet, import a private key, or skip and stay in simulation.
+4. **Chains and RPC** — which chains to run, which endpoints to use, and a per-endpoint test that fills in the `no_logs`, `max_log_blocks`, and `archive` flags from what the endpoint actually supports. An optional Alchemy key adds an Alchemy endpoint to every chain that has one.
+5. **Notifications** — Telegram bot token, ntfy topic, and GMGN key, all optional.
+6. **Capital and targets** — simulation or live, entry size and exposure limits, and the first target wallets.
+7. **Review** — write the files and start.
+
+Finishing writes `config.json` and `.env` with mode 600, writes the signing key to `~/.lpcopy/key` with mode 600, and boots the engine in the same process; the page follows to the dashboard, and no restart is needed.
+
+The wizard is bilingual and **defaults to English**, with an EN/ID switch in its header. The choice is stored under the same `lpcopy-lang` key the dashboard uses, so the dashboard opens in the language chosen during setup; a language already saved in that browser wins over the English default.
+
+Credentials never reach `config.json`: the access token, bot token, ntfy topic, and GMGN and Alchemy keys go to `.env`, and the Alchemy endpoint references its key as `${ALCHEMY_KEY}`. The private key is written to the key file rather than `LPCOPY_PRIVATE_KEY` so the dashboard can still rotate it later.
+
+The setup code is printed to stdout and stored in `data/setup-code.txt` until setup finishes; under pm2, read it with `pm2 logs` or `cat data/setup-code.txt`. The wizard demands it on every request, because the dashboard address is often published through a tunnel even when the server itself binds to loopback.
+
+Re-run the wizard at any time with `npm run setup` (or `LPCOPY_SETUP=1 npm start`). It starts from the existing configuration, adds rather than replaces targets, and moves a replaced key file to a dated backup instead of overwriting it. An existing `config.json` never triggers the wizard on its own.
+
+If `config.json` is missing but `data/lpcopy.db` already holds this instance's history, the wizard refuses to run and the process exits with an error: that is a lost configuration, not a new install, and writing a fresh one over a populated database would be worse than stopping. Ask for it explicitly (`LPCOPY_SETUP=1 npm start`) to override. Under pm2 the wizard also logs that the bot is *not* running, because pm2 otherwise reports the process as online.
+
+Configuration can also be prepared by hand, in which case the wizard never appears:
+
+```sh
 cp config.example.json config.json
 cp .env.example .env
 chmod 600 .env
-npm run build --prefix web
 ```
-
-Edit `config.json` for non-secret settings and `.env` for credentials. Keep `mode.dry_run` set to `true` during initial setup.
 
 ### Start
 
@@ -115,6 +143,8 @@ One process runs every enabled chain at once. Global sections apply to all chain
 | `chains.<name>.targets`, `rules` | per chain | Seed targets and copy rules (sizing, ranges, swaps, exits, filters). `filters.venues` may include `pancakev3` on BSC. |
 | `chains.<name>.mode` | per chain | Simulation/live execution and pause state — BSC can stay in simulation while Robinhood is live. |
 | `chains.<name>.loop`, `gas`, `prices`, `scout`, `risk` | per chain | Polling and scan windows, gas pricing and native reserve, native-token valuation, research window, daily drawdown breaker. |
+
+RPC answers that can no longer change are cached in the same database ([src/rpccache.js](src/rpccache.js), table `rpc_cache`). Only calls pinned to a past block qualify — receipts, transactions, block headers, `eth_getBalance` / `eth_getCode` / `eth_getStorageAt` / `eth_call` at a numeric block, `eth_getLogs` over a numeric range, and `eth_chainId`. Live reads (`latest`, `pending`, block height, gas) are never stored, and a block only counts as settled once it is `confirmations` blocks (default 64) behind the last chain head seen; errors, `null` results and oversized answers are skipped. The cache survives restarts, is keyed per chain, and is swept hourly. Tune it under `chains.<name>.chain.cache` (`enabled`, `confirmations`, `ttl_days`, `max_rows`, `max_mb`, `max_entry_kb`); Settings → RPC reports rows, size and hit rate. Checks: `node test/rpc-cache.js`.
 
 Chain profiles (chain id, contract addresses, quote assets, venues, block time) live in [src/networks.js](src/networks.js). `node src/verify-chain.js bsc` checks a profile against the live chain: chain id, bytecode of every contract, `NonfungiblePositionManager.factory()` for each v3 venue, `PositionManager.poolManager()`, and the quote tokens' symbol and decimals.
 
@@ -208,7 +238,7 @@ The dashboard shows one chain at a time; the switcher under the logo (or `?chain
 
 Position, pool and token detail pages open from the tables and from the global search. Language preferences are stored per browser; Telegram language preferences are stored per chat.
 
-**Settings → Display** adds a second currency beside every dollar figure on the dashboard (`$1,983.22  ≈ Rp 35.4M`). Dollars remain the primary unit: pools, token prices, copy budgets and every PnL calculation stay in USD, and the second currency is display-only annotation, written small and grey. The server fetches the rate from open exchange-rate sources (open.er-api.com, falling back to frankfurter.app), refreshes it every six hours, caches the last good rate across restarts, and serves it to the dashboard with the regular status poll. Choosing *None* removes the annotation entirely.
+**Settings → Display** adds a second currency beside every dollar figure on the dashboard (`$1,983.22  ≈ Rp 35.4M`). Dollars remain the primary unit: pools, token prices, copy budgets and every PnL calculation stay in USD, and the second currency is display-only annotation, written small and grey. The server fetches the rate from open exchange-rate sources (open.er-api.com, falling back to frankfurter.app), refreshes it every six hours, caches the last good rate across restarts, and serves it to the dashboard with the regular status poll. Choosing *None* removes the annotation entirely. The Telegram cards use the same rate: the portfolio total on the home card and on **Summary** carries the same annotation (`💰 Portfolio $2,143.42 · ≈ Rp 34.9M`).
 
 To connect Telegram:
 
@@ -217,6 +247,12 @@ To connect Telegram:
 3. Send `/start <CODE>` to the bot. Pairing codes are single-use and expire after 15 minutes.
 
 Paired chats can perform privileged actions, including changing execution mode and managing positions. Private-key import/export and editing RPC URLs containing credentials are excluded from Telegram controls.
+
+### Telegram mini app
+
+Set `server.public_url` (or `LPCOPY_DASHBOARD_URL` in `.env`, optionally suffixed with the instance folder name, e.g. `LPCOPY_DASHBOARD_URL_LPCOPY2`) to the dashboard's public HTTPS address and the bot gains a **Open mini app** button, plus a menu button next to the message box, both opening `<dashboard>/mini`. It is a separate ~20 KB bundle (`web/mini.html`, `web/src/mini/`, no React) with three phone-shaped screens — Summary, Positions, Activity — wearing the dashboard's own skin: the same colour tokens, Inter at a 15px root, bordered cards, chips, mode badge, token icons and figure layout as `web/src/pages/*.jsx`. Only light-or-dark is taken from Telegram. Fees can be claimed and positions closed from there, through the same API routes as the dashboard. Token icons load through `<img>`, which cannot carry an `Authorization` header, so `/api/icon` alone also accepts the ticket as `?t=`; that URL opens no other route.
+
+Sign-in carries no token. Telegram signs `initData` with the bot token; the server verifies that signature (`checkInitData` in `src/server.js`), rejects stale or altered payloads, and then applies the bot's own rule: the Telegram user must be in `telegram.chat_ids`. Whoever passes receives a random 12-hour ticket — not the dashboard token — sent as `Authorization: Bearer`, because on Telegram Web the page lives inside a `web.telegram.org` iframe where `SameSite=Lax` cookies are not sent. Only `/mini` and its `mini-*` chunks are served before a session exists; the dashboard and every `/api/*` route stay behind the token gate. Checks: `node test/mini-app.js`.
 
 ## Execution and accounting
 
@@ -268,7 +304,8 @@ Vite proxies `/api` requests to `http://127.0.0.1:8799`. Use the Vite address pr
 
 | Command | Purpose |
 | --- | --- |
-| `node --no-warnings src/index.js` | Start the application. |
+| `node --no-warnings src/index.js` | Start the application (or the setup wizard when `config.json` is missing). |
+| `npm run setup` | Re-run the setup wizard against the existing configuration. |
 | `node --no-warnings src/index.js scout <address> [blocks] [--chain=bsc]` | Research a wallet within a specified block window. |
 | `node --no-warnings src/index.js add <address> "label" [--chain=bsc]` | Register a target (default chain: robinhood). |
 | `node --no-warnings src/index.js list` | List targets on every chain. |
@@ -345,6 +382,8 @@ Preserve and back up the database separately. Replacing it with a development co
 ```text
 src/                   Backend, execution, research, API, and Telegram
   index.js             Application startup and CLI
+  setup.js             First-run setup: wizard server, config and .env writers
+  setup-page.js        Setup wizard page (server-rendered, no build step)
   networks.js          Chain profiles (contracts, quote assets, venues)
   multichain.js        Per-chain configuration normalisation
   solana/              Solana engine: RPC pool, watcher, planner, executor, Jupiter,

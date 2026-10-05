@@ -17,7 +17,7 @@ export default function PoolHealth({ pool, pair, open = [] }) {
   const { data, error } = usePoll(token ? `/api/holders?token=${encodeURIComponent(token)}` : null, 15000);
   useTick(30000);
   const holders = String(data?.token || '').toLowerCase() === token?.toLowerCase() && !error ? data : null;
-  // Profil GMGN (keamanan kontrak, perilaku dev/trader) — hanya kalau API key ada.
+  // GMGN profile (contract security, dev/trader behaviour) — only when an API key exists.
   const { data: gm } = usePoll(token ? `/api/gmgn/token?address=${encodeURIComponent(token)}` : null, 60000);
   const gmgn = gm && gm.enabled !== false ? gm : undefined;
   const h = poolHealth({ pool, pair, holders, open, gmgn });

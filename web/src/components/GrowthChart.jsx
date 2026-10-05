@@ -1,16 +1,16 @@
-// Pertumbuhan portofolio. Tiga tampilan, satu sumbu — bukan dua garis berskala beda
-// di satu grafik:
-//  - PnL bersih: nilai wallet − modal (baseline + setoran − penarikan). Memuat semua
-//    biaya di luar posisi (zap, gas, swap ETH↔USDG) — "modal 400 jadi 520 = untung 120".
-//  - PnL kumulatif: jumlah PnL posisi (out − cost). Tidak ikut melonjak saat dana
-//    disetor atau ditarik.
-//  - Nilai: kas + posisi + fee. Hanya titik yang saldo kasnya terbaca; titik lama
-//    (sebelum kas ikut dicatat) cuma berisi nilai posisi dan akan menipu.
+// Portfolio growth. Three views, one axis — not two lines with different scales
+// on one chart:
+//  - Net PnL: wallet value − capital (baseline + deposits − withdrawals). Includes all
+//    costs outside positions (zap, gas, ETH↔USDG swap) — "capital 400 became 520 = profit 120".
+//  - Cumulative PnL: sum of position PnL (out − cost). Does not jump when funds
+//    are deposited or withdrawn.
+//  - Value: cash + positions + fees. Only points whose cash balance was readable; old points
+//    (before cash was recorded) contain only position value and would mislead.
 //
-// Tampilan PnL diwarnai menurut tanda terhadap garis nol (hijau di atas, merah di
-// bawah) dan diisi sampai garis nol, bukan sampai dasar grafik: yang dibaca adalah
-// "untung atau rugi, berapa". Puncak dan drawdown terdalam ditandai di titik yang
-// sama dengan angka di kepala grafik (server menjaga titik itu tetap ada).
+// The PnL view is coloured by sign against the zero line (green above, red
+// below) and filled down to the zero line, not to the chart base: what is read is
+// "profit or loss, how much". The peak and the deepest drawdown are marked at the same
+// point as the figure in the chart header (the server keeps that point present).
 import { useId, useMemo } from 'react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, ReferenceDot, ReferenceArea,
@@ -21,7 +21,7 @@ import { useI18n } from '../i18n';
 
 const HOUR = 3600e3, DAY = 864e5;
 
-// Kelipatan "bulat" (1-2-2,5-5 × 10ⁿ) supaya label sumbu Y enak dibaca.
+// "Round" multiples (1-2-2.5-5 × 10ⁿ) so Y-axis labels are easy to read.
 function niceStep(span, target) {
   const raw = span / target;
   const p = 10 ** Math.floor(Math.log10(raw));
@@ -29,8 +29,8 @@ function niceStep(span, target) {
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
 }
 
-// Domain mengikuti data (+ sedikit bantalan), tick di kelipatan bulat di dalamnya —
-// garis tidak gepeng di tengah hanya karena tick berikutnya kebetulan jauh.
+// The domain follows the data (+ a little padding), ticks at round multiples inside it —
+// the line does not get flattened in the middle just because the next tick happens to be far.
 function yScale(lo, hi, { zero, floor0 }) {
   if (zero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
   if (hi - lo < 1e-9) { hi += Math.max(1, Math.abs(hi) * 0.05); lo -= Math.max(1, Math.abs(lo) * 0.05); }
@@ -43,8 +43,8 @@ function yScale(lo, hi, { zero, floor0 }) {
   return { domain: [dLo, dHi], ticks, step };
 }
 
-// Tick waktu di batas jam/hari lokal: "11 Sep · 12.00 · 12 Sep · 12.00 …" — bukan
-// titik acak yang labelnya berulang ("12 Sep, 12 Sep").
+// Time ticks at local hour/day boundaries: "11 Sep · 12.00 · 12 Sep · 12.00 …" — not
+// random points whose label repeats ("12 Sep, 12 Sep").
 function timeTicks(t0, t1, target = 8) {
   const span = Math.max(1, t1 - t0);
   const steps = [HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY];
@@ -97,7 +97,7 @@ function Tip({ active, payload, view, t }) {
   );
 }
 
-// Titik "sekarang": berbingkai warna kartu, dengan denyut halus (mati untuk
+// The "now" point: framed in the card colour, with a gentle pulse (off for
 // prefers-reduced-motion).
 function LiveDot({ cx, cy, fill }) {
   if (cx == null || cy == null) return null;
@@ -132,21 +132,21 @@ export default function GrowthChart({ p, view, dim = false }) {
   }
 
   const first = pts[0].v, lastPt = pts[pts.length - 1], last = lastPt.v;
-  // Rentang "Semua" dihitung dari nol: PnL kumulatif memang dimulai dari nol.
-  // PnL dihitung dari titik patokan sebelum jendela; kalau riwayatnya dimulai di dalam
-  // jendela (patokan tidak ada), dari nol — bukan dari titik pertama yang sudah berisi laba.
+  // The "All" range is computed from zero: cumulative PnL does start from zero.
+  // PnL is computed from the reference point before the window; if the history starts inside
+  // the window (no reference), from zero — not from the first point that already holds a profit.
   const delta = view === 'net'
     ? last - (p.range === 'all' ? 0 : (p.baseline?.net ?? 0))
     : view === 'pnl'
       ? last - (p.range === 'all' ? 0 : (p.baseline?.pnl ?? 0))
       : last - first;
-  // Persen terhadap modal nyata (baseline + setoran − penarikan) kalau terlacak.
-  // "Nilai − PnL" hanya cadangan: angka itu melingkar — makin besar PnL, makin
-  // kecil pembaginya (PnL $154.62 terbaca 40.97% padahal modal $399.62 → 38.69%).
+  // Percent against real capital (baseline + deposits − withdrawals) if tracked.
+  // "Value − PnL" is only a fallback: that figure is circular — the bigger the PnL, the
+  // smaller the divisor (PnL $154.62 reads 40.97% although capital $399.62 → 38.69%).
   const cap = p.now.capitalNet ?? p.now.capital;
   const vals = pts.map((x) => x.v);
   const vMin = Math.min(...vals), vMax = Math.max(...vals);
-  // Tertinggi/drawdown dari server, dihitung atas semua titik sebelum dijarangkan.
+  // High/drawdown from the server, computed over all points before thinning.
   const ex = p.extremes?.[view] || {};
   const hi = ex.hi ?? vMax, lo = ex.lo ?? vMin;
   const dd = ex.dd ?? Math.max(...pts.map((x) => x.fromPeak));
@@ -162,18 +162,18 @@ export default function GrowthChart({ p, view, dim = false }) {
   const yDec = Y.step < 1 ? 2 : 0;
   const lbl = { '24h': 'dalam 24 jam', '7d': 'dalam 7 hari', '30d': 'dalam 30 hari', all: 'sejak awal' }[p.range];
 
-  // Warna menurut tanda. Gradien dihitung terhadap kotak pembatas masing-masing
-  // bentuk: garis (vMin…vMax) dan area yang diisi sampai nol (min(vMin,0)…max(vMax,0)).
+  // Colour by sign. The gradient is computed against each shape's bounding box:
+  // the line (vMin…vMax) and the area filled down to zero (min(vMin,0)…max(vMax,0)).
   const C = { up: 'var(--success)', down: 'var(--danger)', flat: 'var(--accent)' };
   const clamp01 = (x) => Math.max(0, Math.min(1, x));
   const lineOff = vMax === vMin ? (vMax >= 0 ? 1 : 0) : clamp01(vMax / (vMax - vMin));
   const aTop = Math.max(vMax, 0), aBot = Math.min(vMin, 0);
   const areaOff = aTop === aBot ? 1 : clamp01(aTop / (aTop - aBot));
-  const flatLine = vMax === vMin;   // bbox setinggi 0: gradien objectBoundingBox tidak tergambar
+  const flatLine = vMax === vMin;   // bbox with 0 height: an objectBoundingBox gradient is not drawn
   const lineColor = isPnl ? (flatLine ? (vMax < 0 ? C.down : C.up) : `url(#${gid}-line)`) : C.flat;
   const pointColor = (v) => (isPnl ? (v < 0 ? C.down : C.up) : C.flat);
 
-  // Penanda: puncak (kalau bukan titik terakhir) dan pita drawdown terdalam.
+  // Markers: the peak (if not the last point) and the deepest drawdown band.
   const hasPt = (ts) => ts != null && pts.some((x) => x.t === ts);
   const showPeak = hasPt(ex.hiTs) && ex.hiTs !== t1 && hi - Math.min(first, last) > Y.step * 0.25;
   const showDd = isPnl && dd > 0.005 && hasPt(ex.ddPeakTs) && hasPt(ex.ddTroughTs) && dd > (Y.domain[1] - Y.domain[0]) * 0.08;
@@ -219,7 +219,7 @@ export default function GrowthChart({ p, view, dim = false }) {
                 </linearGradient>
               )}
             </defs>
-            {/* garis bantu: garis rambut utuh, bukan putus-putus — tidak dibaca sebagai ambang */}
+            {/* guide line: a solid hairline, not dashed — so it is not read as a threshold */}
             <CartesianGrid stroke="var(--border)" strokeOpacity={0.6} vertical={false} syncWithTicks />
             <XAxis dataKey="t" type="number" scale="time" domain={[t0, t1]} ticks={X.ticks} tickFormatter={tickFmt}
               tickLine={false} axisLine={false} minTickGap={16} tickMargin={8} padding={{ left: 4, right: 4 }}

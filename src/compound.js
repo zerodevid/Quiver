@@ -8,15 +8,15 @@ const m = require('./v3math');
 const IF_POSM = new ethers.Interface(ABI.posmV4);
 const IF_NPM = new ethers.Interface(ABI.npmV3);
 
-// Panen fee otomatis, dua rasa:
-//   compound — fee dikembalikan jadi likuiditas di posisi yang sama. v4 memakai satu
-//              batch INCREASE+TAKE_PAIR; v3 memakai multicall collect+increaseLiquidity.
-//              Tidak ada swap, jadi tidak ada dampak harga dan tidak ada uang keluar.
-//   claim    — fee ditarik ke wallet. Sisi aset kuotasi langsung jadi uang; sisi
-//              memecoin-nya dijual ke aset kuotasi pool itu juga (kalau sellFee menyala),
-//              lewat antrean jual yang sama dengan sisa penutupan posisi.
-// Keduanya memakai satu baris pengaturan per posisi: minimum nilai fee dan seberapa
-// sering diperiksa.
+// Automatic fee harvesting, two flavours:
+//   compound — fees go back in as liquidity in the same position. v4 uses a single
+//              INCREASE+TAKE_PAIR batch; v3 uses a multicall collect+increaseLiquidity.
+//              No swap, so no price impact and no money leaves.
+//   claim    — fees are withdrawn to the wallet. The quote-asset side becomes cash directly; the
+//              memecoin side is sold into that pool's quote asset (if sellFee is on),
+//              through the same sell queue as the leftovers of a position close.
+// Both use a single settings row per position: the minimum fee value and how
+// often to check.
 const MODES = new Set(['compound', 'claim']);
 
 class Compound {
@@ -28,7 +28,7 @@ class Compound {
     this.running = false;
   }
 
-  // v3 dan v4 sama-sama bisa dipanen; venue lain (pool langsung tanpa NFT) tidak.
+  // v3 and v4 can both be harvested; other venues (direct pools without an NFT) cannot.
   supported(pos) { return pos.venue === 'v4' || this.chain.isV3Venue(pos.venue); }
 
   status(pos) {
@@ -36,8 +36,8 @@ class Compound {
     const q = this.store.get('SELECT COALESCE(SUM(reinvested_quote),0) total FROM compound_runs WHERE position_id=?', pos.id)?.total || 0;
     return { supported: this.supported(pos), enabled: !!s?.enabled,
       mode: s?.mode === 'claim' ? 'claim' : 'compound',
-      // Baris lama tidak punya kolomnya: menjual sisi memecoin adalah perilaku baku
-      // mode klaim — menimbun memecoin bukan tujuan copy-LP.
+      // Old rows do not have the column: selling the memecoin side is the standard behaviour of
+      // claim mode — accumulating memecoins is not the purpose of copy-LP.
       sellFee: s?.sell_fee == null ? true : !!s.sell_fee,
       minUsd: s?.min_usd ?? 5,
       intervalMinutes: s?.interval_minutes ?? 30, lastCheck: s?.last_check || null,
@@ -80,8 +80,8 @@ class Compound {
     return iface.decodeFunctionResult('ownerOf', data)[0].toLowerCase();
   }
 
-  // Fee yang belum diklaim, dalam aset kuotasi posisi -> dolar. Dibaca dari hasil
-  // sinkron terakhir (tiap 30 detik), bukan RPC baru: ini cuma gerbang minimum.
+  // Unclaimed fees, in the position's quote asset -> dollars. Read from the last
+  // sync result (every 30 seconds), not a new RPC: this is only the minimum gate.
   feeUsd(pos) {
     return (pos.fees_quote || 0) * (this.chain.isEthLike(pos.quote_symbol) ? this.engine.ethUsd : 1);
   }
@@ -90,9 +90,9 @@ class Compound {
     this.store.run('UPDATE compound_settings SET last_note=? WHERE position_id=?', String(text).slice(0, 300), id);
   }
 
-  // Berapa likuiditas yang bisa ditambahkan dari fee yang ada, dan berapa nilainya.
-  // Sama untuk v3 dan v4; yang berbeda hanya dari mana fee & harga pool dibaca dan
-  // bentuk transaksinya.
+  // How much liquidity can be added from the existing fees, and what it is worth.
+  // The same for v3 and v4; only where fees & pool price are read from and the
+  // shape of the transaction differ.
   async plan(pos) {
     const e = this.engine;
     const v3 = this.chain.isV3Venue(pos.venue);
@@ -120,7 +120,7 @@ class Compound {
       return { ...amounts, valueQuote: v.value, valueUsd: quoteToUsd(v.value, v.kind, e.ethUsd) };
     };
     let est = value(L);
-    // Likuiditas posisi: v4 membacanya bersama fee, v3 memakai catatan sinkron terakhir.
+    // Position liquidity: v4 reads it together with the fees, v3 uses the last sync record.
     const current = value(v3 ? BigInt(pos.liquidity || '0') : fees.liquidity);
     const cap = Math.min(rules.sizing.max_quote_per_position_usd - current.valueUsd,
       rules.sizing.max_total_exposure_usd - e.positions.summary(e.ethUsd).exposureUsd);
@@ -131,9 +131,9 @@ class Compound {
     }
     if (L <= 0n || est.valueUsd < this.status(pos).minUsd) return { skip: 'fee yang bisa ditambahkan belum mencapai minimum compound' };
     if (v3) {
-      // v3 menarik fee lewat transferFrom sesudah collect: yang diminta adalah jumlah
-      // yang muat di rasio LP (sudah dipotong slippage lewat usable), dan mins menjaga
-      // kalau harga bergerak antara dibangun dan masuk blok. Sisanya tetap di wallet.
+      // v3 pulls the fees via transferFrom after collect: what is requested is the amount
+      // that fits the LP ratio (already cut by slippage via usable), and mins protect
+      // if the price moves between building and landing in a block. The rest stays in the wallet.
       const minOf = (n) => (n * BigInt(10000 - slip) / 10000n).toString();
       return { tokenId: pos.token_id, venue: pos.venue, liquidity: L.toString(),
         amount0Max: est.amount0.toString(), amount1Max: est.amount1.toString(),
@@ -173,10 +173,10 @@ class Compound {
       try {
         const receipt = await this.engine.rpc.call('eth_getTransactionReceipt', [row.hash]);
         if (!receipt) {
-          // Tx yang tidak pernah masuk (terbuang dari mempool) dulu tetap "pending" selamanya
-          // — dan executeExit menolak menutup posisi selama compound-nya belum selesai:
-          // posisi tidak bisa ditutup sama sekali. Setelah 30 menit dan chain tidak mengenal
-          // hash-nya, ditandai gagal.
+          // A tx that never landed (dropped from the mempool) used to stay "pending" forever
+          // — and executeExit refuses to close a position while its compound is unfinished:
+          // the position could not be closed at all. After 30 minutes, if the chain does not know the
+          // hash, it is marked failed.
           if (Date.now() - row.ts > 30 * 60_000) {
             const known = await this.engine.rpc.call('eth_getTransactionByHash', [row.hash]).catch(() => 'tak terbaca');
             if (!known) {
@@ -192,7 +192,7 @@ class Compound {
     }
   }
 
-  // Satu posisi, mode compound: fee jadi likuiditas lagi.
+  // One position, compound mode: fees become liquidity again.
   async runCompound(pos, st) {
     const e = this.engine;
     const v3 = this.chain.isV3Venue(pos.venue);
@@ -203,8 +203,8 @@ class Compound {
       if (await this.ownerOf(pos) !== e.exec.address().toLowerCase()) throw new Error('NFT posisi bukan milik wallet bot');
       const owner = e.exec.address().toLowerCase();
       if (v3) {
-        // increaseLiquidity menarik fee yang baru di-collect dari wallet lewat
-        // transferFrom: tanpa izin ERC20 ke NPM, multicall-nya revert.
+        // increaseLiquidity pulls the freshly collected fees from the wallet via
+        // transferFrom: without an ERC20 allowance to the NPM, the multicall reverts.
         for (const tok of [pos.token0, pos.token1]) {
           if (BigInt(tok === pos.token0 ? plan.amount0Max : plan.amount1Max) === 0n) continue;
           for (const a of await e.exec.ensureAllowance(tok, { forV4: false, venue: pos.venue })) {
@@ -231,8 +231,8 @@ class Compound {
     } finally { e.exiting.delete(pos.id); }
   }
 
-  // Satu posisi, mode claim: fee ditarik ke wallet (dan sisi memecoin-nya dijual).
-  // Kunci posisi TIDAK dipegang di sini — claimFees memasang kuncinya sendiri.
+  // One position, claim mode: fees are withdrawn to the wallet (and the memecoin side is sold).
+  // The position lock is NOT held here — claimFees installs its own lock.
   async runClaim(pos, st) {
     const e = this.engine;
     const feeUsd = this.feeUsd(pos);
@@ -257,7 +257,7 @@ class Compound {
   async tick(now = Date.now(), exitIds = new Set()) {
     const e = this.engine;
     if (this.running || e.busy || e.activeEntries || e.exiting.size || e.dryRun() || e.paused() || !e.exec.address()) return;
-    // Satu DB bisa memuat posisi beberapa chain; tiap mesin hanya memanen chain-nya.
+    // One DB can hold positions of several chains; each engine only harvests its own chain.
     const rows = this.store.all(`SELECT p.* FROM positions p JOIN compound_settings c ON c.position_id=p.id
       WHERE p.chain=? AND p.status='open' AND c.enabled=1
       AND (c.last_check IS NULL OR c.last_check+c.interval_minutes*60000<=?) ORDER BY c.last_check,p.id`, this.network, now);

@@ -4,7 +4,8 @@ import { Search, Check, TriangleAlert, Anchor, ArrowRight } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { usePoll } from '../hooks';
-import CandleChart from '../components/CandleChart';
+import CandleChart, { BAND_COLORS } from '../components/CandleChart';
+import { useLadder, LadderStep, LadderPreview } from './ManualLadder';
 import { PageHeader, Notice, PriceRange, Empty, KV, Segmented } from '../components/ui';
 import { orientCandles, TFS, SECS, LiveBadge } from './PositionDetail';
 import { useLivePrice, useLiveCandles } from '../liveCandles';
@@ -13,37 +14,37 @@ import { usd, num, ago, price, tickPrice, locale } from '../fmt';
 import { useI18n } from '../i18n';
 import { isSolana, isAddr, canonAddr, chainInfo } from '../chain';
 
-// Pilihan cepat rentang: [perubahan batas bawah %, perubahan batas atas %, label],
-// bertanda dari harga kini. Persennya dalam harga, jadi "±50%" benar-benar setengah
-// turun dan setengah naik; "½× – 2×" adalah rentang yang dulu tertulis ±100% (dalam
-// tick simetris, dalam harga tidak).
+// Quick range choices: [lower bound change %, upper bound change %, label],
+// signed from the current price. The percentages are in price, so "±50%" is really half
+// down and half up; "½× – 2×" is the range that used to be written ±100% (in
+// ticks symmetric, in price not).
 const PRESET = [[-5, 5, '±5%'], [-10, 10, '±10%'], [-25, 25, '±25%'], [-50, 50, '±50%'], [-50, 100, '½× – 2×'], [-25, 0, '1 sisi · bawah −25%'], [0, 25, '1 sisi · atas +25%']];
 
-// Teks rentang untuk ringkasan & konfirmasi. lo/up = perubahan bertanda tiap batas.
+// Range text for the summary & confirmation. lo/up = the signed change of each bound.
 const fmtPct = (v) => num(Number(v), 2);
-const bertanda = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${fmtPct(Math.abs(v))}%`;
-const rentangLabel = (lo, up, full, t) => (full ? t('seluruh rentang')
-  : -lo === up ? `±${fmtPct(up)}%` : `${bertanda(lo)} / ${bertanda(up)}`);
+const flagged = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${fmtPct(Math.abs(v))}%`;
+const rangeLabel = (lo, up, full, t) => (full ? t('seluruh rentang')
+  : -lo === up ? `±${fmtPct(up)}%` : `${flagged(lo)} / ${flagged(up)}`);
 
-// Satu kotak batas: tanda di depan, persen di belakang, harga hasilnya di bawah.
-// Tandanya tombol: −/+ memindah batas ke sisi lain harga kini, jadi rentang satu
-// sisi tidak harus menempel di harga (misal −30% … −10%). Mengetik "-" atau "+"
-// di kotaknya melakukan hal yang sama.
-function Batas({ label, arah, onArah, value, onChange, harga, sym, invalid, disabled, aria }) {
+// One bound box: the sign in front, the percent behind, the resulting price below.
+// The sign is a button: −/+ moves the bound to the other side of the current price, so a one-sided
+// range does not have to stick to the price (e.g. −30% … −10%). Typing "-" or "+"
+// in the box does the same thing.
+function Limit({ label, direction, onArah, value, onChange, harga: px, sym, invalid, disabled, aria }) {
   const { t } = useI18n();
-  // Label diikat ke input lewat id: tanpa itu tombol tanda (elemen pertama yang
-  // bisa dilabeli) ikut terklik setiap kali kotaknya diklik.
+  // The label is tied to the input by id: without it the sign button (the first element that
+  // can be labelled) gets clicked every time the box is clicked.
   const id = useId();
   return (
     <label htmlFor={id} className={`flex min-w-0 flex-1 flex-col gap-1.5 rounded-md border p-3 transition-colors
       ${invalid ? 'border-danger/60' : 'border-border focus-within:border-accent'} ${disabled ? 'opacity-50' : ''}`}>
       <span className="text-xs text-muted">{t(label)}</span>
       <span className="flex items-baseline gap-1">
-        <button type="button" disabled={disabled} onClick={() => onArah(-arah)}
-          aria-label={t(arah < 0 ? 'Di bawah harga kini — klik untuk memindah ke atas' : 'Di atas harga kini — klik untuk memindah ke bawah')}
-          title={t(arah < 0 ? 'Di bawah harga kini — klik untuk memindah ke atas' : 'Di atas harga kini — klik untuk memindah ke bawah')}
+        <button type="button" disabled={disabled} onClick={() => onArah(-direction)}
+          aria-label={t(direction < 0 ? 'Di bawah harga kini — klik untuk memindah ke atas' : 'Di atas harga kini — klik untuk memindah ke bawah')}
+          title={t(direction < 0 ? 'Di bawah harga kini — klik untuk memindah ke atas' : 'Di atas harga kini — klik untuk memindah ke bawah')}
           className="num w-6 shrink-0 self-center rounded text-lg font-semibold text-muted hover:bg-default/60 hover:text-foreground">
-          {arah < 0 ? '−' : '+'}
+          {direction < 0 ? '−' : '+'}
         </button>
         <input id={id} value={value} disabled={disabled} inputMode="decimal" aria-label={t(aria)} placeholder="0"
           onChange={(e) => {
@@ -54,13 +55,11 @@ function Batas({ label, arah, onArah, value, onChange, harga, sym, invalid, disa
           className="num w-full min-w-0 bg-transparent text-lg font-semibold outline-none placeholder:text-muted/60" />
         <span className="text-lg text-muted">%</span>
       </span>
-      <span className="num h-4 truncate text-xs text-muted">{harga != null ? `≈ ${price(harga)}${sym ? ' ' + sym : ''}` : ''}</span>
+      <span className="num h-4 truncate text-xs text-muted">{px != null ? `≈ ${price(px)}${sym ? ' ' + sym : ''}` : ''}</span>
     </label>
   );
 }
 
-// Tombol pilihan cepat. Dipakai untuk nominal dan lebar rentang — keduanya hampir
-// selalu diisi dari beberapa nilai yang itu-itu saja, jadi mengetik itu kerja sia-sia.
 // ---- Meteora DLMM: liquidity shape -------------------------------------------------------
 const SHAPES = [
   ['spot', 'Spot', [5, 5, 5, 5, 5, 5, 5], 'Spot: nilai sama rata di setiap bin.'],
@@ -76,7 +75,7 @@ function ShapeIcon({ bars }) {
   );
 }
 
-function PilihBentuk({ value, onChange }) {
+function ShapePicker({ value, onChange }) {
   const { t } = useI18n();
   const cur = SHAPES.find((x) => x[0] === value) || SHAPES[0];
   return (
@@ -101,7 +100,7 @@ function PilihBentuk({ value, onChange }) {
 // Per-bin value of the planned position: token0 above the pool price, token1 below,
 // the active bin half of each. Left = lower price in the pair's display orientation.
 const MAX_BARS = 120;
-function SebaranBin({ p }) {
+function BinDistribution({ p }) {
   const { t } = useI18n();
   const d = p.distribution;
   if (!d?.bins?.length) return null;
@@ -151,6 +150,8 @@ function SebaranBin({ p }) {
   );
 }
 
+// Quick choice button. Used for the amount and the range width — both are almost
+// always filled from a few recurring values, so typing is wasted work.
 function Chips({ options, value, onPick }) {
   return (
     <div className="flex flex-wrap gap-1.5">
@@ -165,7 +166,7 @@ function Chips({ options, value, onPick }) {
   );
 }
 
-function Langkah({ n, title, done, children, action }) {
+function Step({ n, title, done, children, action }) {
   const { t } = useI18n();
   return (
     <Card className="gap-0! p-0!">
@@ -185,29 +186,29 @@ function Langkah({ n, title, done, children, action }) {
 
 const fee = (p) => (p.dynamicFee ? 'dinamis' : `${num(p.feePct, 2)}%`);
 
-// Jumlah token: memecoin bisa jutaan, ETH bisa 0,0000x — desimal tetap tidak cocok
-// untuk keduanya, jadi di bawah 1 memakai angka penting.
-const jml = (v) => (v == null ? '—' : v === 0 ? '0' : Math.abs(v) >= 1 ? num(v, Math.abs(v) >= 1000 ? 0 : 4)
+// Token amount: a memecoin can be millions, ETH can be 0.0000x — fixed decimals suit
+// neither, so below 1 it uses significant digits.
+const qty = (v) => (v == null ? '—' : v === 0 ? '0' : Math.abs(v) >= 1 ? num(v, Math.abs(v) >= 1000 ? 0 : 4)
   : Number(v).toLocaleString(locale(), { maximumSignificantDigits: 4 }));
 
-// Saldo wallet yang relevan: kas (ETH/USDG/WETH) dan token pasangan pool. Kolom
-// "Setelah dibuka" muncul begitu pratinjau untuk pool ini selesai dihitung.
-function Saldo({ saldo, pool }) {
+// Relevant wallet balances: cash (ETH/USDG/WETH) and the pool's pair token. The
+// "After opening" column appears as soon as the preview for this pool is computed.
+function Balance({ saldo: balance, pool }) {
   const { t } = useI18n();
-  if (!saldo) return null;
-  if (saldo.wallet === false) return <p className="text-xs text-muted">{t('Belum ada wallet — saldo tidak bisa dibaca.')}</p>;
-  const milikPool = (a) => pool && (a === pool.token0?.toLowerCase() || a === pool.token1?.toLowerCase());
-  const rows = saldo.tokens.filter((x) => x.amount > 0 || x.native || milikPool(x.token) || x.sesudah > 0);
-  const setelah = rows.some((x) => x.sesudah != null);
+  if (!balance) return null;
+  if (balance.wallet === false) return <p className="text-xs text-muted">{t('Belum ada wallet — saldo tidak bisa dibaca.')}</p>;
+  const inPool = (a) => pool && (a === canonAddr(pool.token0 || '') || a === canonAddr(pool.token1 || ''));
+  const rows = balance.tokens.filter((x) => x.amount > 0 || x.native || inPool(x.token) || x.after > 0);
+  const after = rows.some((x) => x.after != null);
   return (
     <div className="rounded-md border border-border">
       <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 text-xs text-muted">
         <span>{t('Saldo wallet')}</span>
-        <span>{t('Kas')} <span className="num font-semibold text-foreground">{usd(saldo.kasUsd)}</span></span>
+        <span>{t('Kas')} <span className="num font-semibold text-foreground">{usd(balance.walletCashUsd)}</span></span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          {setelah && (
+          {after && (
             <thead>
               <tr className="text-[0.6875rem] text-muted">
                 <th className="px-3 pt-2 text-start font-normal">{t('Token')}</th>
@@ -226,12 +227,12 @@ function Saldo({ saldo, pool }) {
                   </span>
                 </td>
                 <td className="num px-3 py-1.5 text-end">
-                  {jml(x.amount)}
+                  {qty(x.amount)}
                   <span className="ms-1.5 text-xs text-muted">{x.usd != null ? usd(x.usd) : ''}</span>
                 </td>
-                {setelah && (
+                {after && (
                   <td className="num px-3 py-1.5 text-end text-muted">
-                    ≈ {jml(x.sesudah)}
+                    ≈ {qty(x.after)}
                   </td>
                 )}
               </tr>
@@ -240,23 +241,23 @@ function Saldo({ saldo, pool }) {
         </table>
       </div>
       <p className="border-t border-border px-3 py-2 text-xs text-muted">
-        {t('{e} {s} ditahan untuk biaya transaksi dan tidak ikut dipakai.', { e: num(saldo.gasReserveEth, 4), s: saldo.nativeSymbol || chainInfo().nativeSymbol })}
+        {t('{e} {s} ditahan untuk biaya transaksi dan tidak ikut dipakai.', { e: num(balance.gasReserveEth, 4), s: balance.nativeSymbol || chainInfo().nativeSymbol })}
       </p>
     </div>
   );
 }
 
-const jmlSwap = (n, t) => (!n ? t('tidak perlu') : n === 1 ? t('1 transaksi') : t('{n} transaksi', { n }));
+const swapQty = (n, t) => (!n ? t('tidak perlu') : n === 1 ? t('1 transaksi') : t('{n} transaksi', { n }));
 
-const JENIS = {
+const KIND = {
   zap: 'Beli {s}',
-  jembatan: 'Jembatan kas',
-  bungkus: 'Bungkus ETH',
+  bridge: 'Jembatan kas',
+  wrap: 'Bungkus ETH',
   buka_bungkus: 'Buka bungkus WETH',
 };
 
-// Rincian tukar yang akan dijalankan bot sebelum mint, dari simulasi di server
-// (manual.simulasiSwap) — urutan dan jumlahnya sama dengan executeEntry.
+// Breakdown of the swap the bot will run before the mint, from the simulation on the server
+// (manual.simulateSwap) — the order and amounts are the same as executeEntry.
 function AutoSwap({ p }) {
   const { t } = useI18n();
   const sw = p.swaps || [];
@@ -264,7 +265,7 @@ function AutoSwap({ p }) {
     <div className="rounded-md border border-border">
       <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 text-xs text-muted">
         <span>{t('Auto-swap sebelum mint')}</span>
-        <span>{jmlSwap(sw.length, t)}</span>
+        <span>{swapQty(sw.length, t)}</span>
       </div>
       {!sw.length ? (
         <p className="px-3 py-2.5 text-sm text-muted">
@@ -276,25 +277,25 @@ function AutoSwap({ p }) {
             <li key={i} className="flex flex-col gap-1.5 px-3 py-2.5">
               <div className="flex items-center gap-2 text-xs text-muted">
                 <span className="flex size-4 items-center justify-center rounded-full border border-border text-[0.625rem]">{i + 1}</span>
-                <span className="font-medium text-foreground">{t(JENIS[s.jenis] || s.jenis, { s: s.ke.symbol })}</span>
-                {s.jenis === 'zap' || s.jenis === 'jembatan' ? <span>· {s.router || 'Kyber'}</span> : <span>· {t('1:1, tanpa slippage')}</span>}
+                <span className="font-medium text-foreground">{t(KIND[s.jenis] || s.jenis, { s: s.ke.symbol })}</span>
+                {s.jenis === 'zap' || s.jenis === 'jembatan' ? <span>· {s.router || t('Agregator swap')}</span> : <span>· {t('1:1, tanpa slippage')}</span>}
               </div>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                 <span className="flex items-center gap-1.5">
                   <TokenIcon link address={s.dari.token} symbol={s.dari.symbol} size={16} />
-                  <span className="num font-medium">{s.taksiran ? '≈ ' : ''}{jml(s.dari.amount)} <TokenSym address={s.dari.token} symbol={s.dari.symbol} /></span>
+                  <span className="num font-medium">{s.estimate ? '≈ ' : ''}{qty(s.dari.amount)} <TokenSym address={s.dari.token} symbol={s.dari.symbol} /></span>
                 </span>
                 <ArrowRight className="size-3.5 text-muted" />
                 <span className="flex items-center gap-1.5">
                   <TokenIcon link address={s.ke.token} symbol={s.ke.symbol} size={16} />
-                  <span className="num font-medium">{jml(s.ke.amount)} <TokenSym address={s.ke.token} symbol={s.ke.symbol} /></span>
+                  <span className="num font-medium">{qty(s.ke.amount)} <TokenSym address={s.ke.token} symbol={s.ke.symbol} /></span>
                 </span>
                 {s.dari.usd != null && <span className="num text-xs text-muted">{usd(s.dari.usd)}</span>}
               </div>
               {s.maxLossBps != null && (
                 <div className="text-xs text-muted">
                   {t('dibatalkan kalau rugi rute lebih dari {r}%', { r: num(s.maxLossBps / 100, 2) })}
-                  {s.taksiran ? ' · ' + t('jumlah pasti dari kutipan {r} saat eksekusi', { r: s.router || 'Kyber' }) : ''}
+                  {s.estimate ? ' · ' + (s.router ? t('jumlah pasti dari kutipan {r} saat eksekusi', { r: s.router }) : t('jumlah pasti dari kutipan agregator saat eksekusi')) : ''}
                 </div>
               )}
             </li>
@@ -312,32 +313,44 @@ function AutoSwap({ p }) {
   );
 }
 
-// Grafik harga pool dengan pita rentang yang sedang dipilih, supaya terlihat
-// sebelum membuka posisi di mana rentangnya jatuh terhadap pergerakan harga.
-// Pitanya mengikuti ketikan (dari persen × harga kini); begitu pratinjau untuk
-// masukan yang sama datang, batasnya diganti harga tick yang sudah dibulatkan.
-// Tanpa pratinjau (nominal belum diisi), harga kini diambil dari lilin terakhir.
-function GrafikRentang({ pool, lo, up, full, rentangOk, pratinjau, hargaKini }) {
+// Pool price chart with the range band being chosen, so it is visible
+// before opening a position where the range falls relative to the price movement.
+// The band follows typing (from percent × current price); once the preview for
+// the same input arrives, the bounds are replaced by the rounded tick prices.
+// Without a preview (amount not yet filled), the current price is taken from the last candle.
+function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag, bands = null }) {
   const { t } = useI18n();
   const [tf, setTf] = useState('1h');
   const baseToken = pool.quoteSide === 0 ? pool.token1 : pool.token0;
   const { data: m } = usePoll(`/api/market?pool=${pool.poolRef}&tf=${tf}&limit=240&pair=0&token=${baseToken || ''}`, 30000);
   const live = useLivePrice(pool.poolRef, pool);
-  const acuan = live?.price ?? hargaKini;
+  const acuan = live?.price ?? currentPrice;
   const oriented = useMemo(() => orientCandles(m?.ohlcv, baseToken, acuan), [m, baseToken, acuan]);
   const candles = useLiveCandles(oriented, SECS[tf], live, `${pool.poolRef}:${tf}`);
-  const kini = acuan ?? candles[candles.length - 1]?.c ?? null;
+  const nowPrice = acuan ?? candles[candles.length - 1]?.c ?? null;
   const quote = pool.quoteSide === 0 ? pool.symbol0 : pool.quoteSide === 1 ? pool.symbol1 : null;
 
   const range = useMemo(() => {
-    if (full || !rentangOk) return null;
-    if (pratinjau) {
-      const a = tickPrice(pratinjau.tickLower, pratinjau.dec0, pratinjau.dec1, pratinjau.quoteSide);
-      const b = tickPrice(pratinjau.tickUpper, pratinjau.dec0, pratinjau.dec1, pratinjau.quoteSide);
+    if (full || !rangeOk) return null;
+    if (preview) {
+      const a = tickPrice(preview.tickLower, preview.dec0, preview.dec1, preview.quoteSide);
+      const b = tickPrice(preview.tickUpper, preview.dec0, preview.dec1, preview.quoteSide);
       if (a > 0 && b > 0) return { lo: Math.min(a, b), hi: Math.max(a, b) };
     }
-    return kini > 0 ? { lo: kini * (1 + lo / 100), hi: kini * (1 + up / 100) } : null;
-  }, [full, rentangOk, pratinjau, kini, lo, up]);
+    return nowPrice > 0 ? { lo: nowPrice * (1 + lo / 100), hi: nowPrice * (1 + up / 100) } : null;
+  }, [full, rangeOk, preview, nowPrice, lo, up]);
+
+  // Ladder layers: price ratios to the current price -> bands drawn on the chart.
+  const ranges = useMemo(() => (bands && nowPrice > 0
+    ? bands.map((b, i) => ({ id: i, lo: nowPrice * b.lo, hi: nowPrice * b.hi, color: BAND_COLORS[i % 2], label: b.usd != null ? `L${i + 1} · ${usd(b.usd)}` : `L${i + 1}`, selected: true }))
+    : null), [bands, nowPrice]);
+
+  // Dragged bounds (prices) -> percent change from the price the band is drawn against.
+  const drag = (a, b) => {
+    if (!(nowPrice > 0)) return;
+    const r2 = (p) => Math.round((p / nowPrice - 1) * 10000) / 100;
+    onDrag(r2(a), r2(b));
+  };
 
   return (
     <div className="rounded-md border border-border p-3">
@@ -356,9 +369,9 @@ function GrafikRentang({ pool, lo, up, full, rentangOk, pratinjau, hargaKini }) 
         <Empty title="Belum ada lilin harga" sub="GeckoTerminal belum punya riwayat harga untuk pool ini." />
       ) : (
         <>
-          <CandleChart key={pool.poolRef} candles={candles} tf={tf} quote={quote} range={range} now={kini} pickRange height={300} />
+          <CandleChart key={pool.poolRef} candles={candles} tf={tf} quote={quote} range={range} ranges={ranges} now={nowPrice} pickRange onRangeDrag={drag} height={300} />
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-            {range && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang yang akan di-LP')}</span>}
+            {range && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang yang akan di-LP')} · {t('geser garis atau pita untuk mengubahnya')}</span>}
             {full && <span>{t('Seluruh rentang — tidak ada batas untuk digambar.')}</span>}
             <span className="ml-auto inline-flex items-center gap-3">
               {live && <LiveBadge />}
@@ -371,40 +384,40 @@ function GrafikRentang({ pool, lo, up, full, rentangOk, pratinjau, hargaKini }) 
   );
 }
 
-function PilihPool({ pools, onPick }) {
+function PoolPicker({ pools, onPick }) {
   const { t } = useI18n();
   const [q, setQ] = useState('');
-  const [scan, setScan] = useState(null);     // hasil pindai dari alamat token
-  const [semua, setSemua] = useState(false);
+  const [scan, setScan] = useState(null);     // scan result from the token address
+  const [every, setAll] = useState(false);
   const timer = useRef(null);
   const token = canonAddr(q);
-  const isAlamat = isAddr(token);
+  const isAddress = isAddr(token);
   useEffect(() => () => clearInterval(timer.current), []);
 
-  const ambil = async (tok, all) => {
+  const take = async (tok, all) => {
     const d = await get(`/api/manual/pools/scan?token=${tok}${all ? '&all=1' : ''}`);
     setScan({ token: tok, ...d });
     return d;
   };
-  const pindai = async () => {
+  const scanning = async () => {
     setScan({ token, status: 'jalan', progress: 0 });
     const r = await post('/api/manual/pools/scan', { token });
     if (r.error) return setScan({ token, status: 'gagal', error: r.error });
     clearInterval(timer.current);
     timer.current = setInterval(async () => {
-      const d = await ambil(token, semua);
+      const d = await take(token, every);
       if (d.status !== 'jalan') clearInterval(timer.current);
     }, 1500);
   };
-  const gantiSemua = (v) => { setSemua(v); if (scan?.token) ambil(scan.token, v); };
+  const changeAll = (v) => { setAll(v); if (scan?.token) take(scan.token, v); };
 
-  // Hasil pindai menggantikan daftar hanya selagi kotak cari masih berisi alamat itu.
-  const pakaiScan = isAlamat && scan?.token === token && scan.status === 'selesai';
-  const hasil = useMemo(() => {
-    if (pakaiScan) return scan.pools || [];
+  // A scan result replaces the list only while the search box still contains that address.
+  const useScan = isAddress && scan?.token === token && scan.status === 'selesai';
+  const result = useMemo(() => {
+    if (useScan) return scan.pools || [];
     const n = q.trim().toLowerCase();
     return n ? pools.filter((p) => p.pair.toLowerCase().includes(n)) : pools;
-  }, [pools, q, pakaiScan, scan]);
+  }, [pools, q, useScan, scan]);
 
   return (
     <div className="flex flex-col gap-3">
@@ -414,9 +427,9 @@ function PilihPool({ pools, onPick }) {
           className="h-9 w-full rounded-md border border-field-border bg-surface pl-8 pr-3 text-sm outline-none focus:border-accent" />
       </div>
 
-      {/* Alamat token: pool-nya dicari langsung dari chain, bukan dari yang sudah dikenal. */}
-      {isAlamat && (!scan || scan.token !== token) && (
-        <Button size="sm" onPress={pindai}>{t('Cari pool untuk token ini')}</Button>
+      {/* Token address: the pool is looked up straight from the chain, not from the already known ones. */}
+      {isAddress && (!scan || scan.token !== token) && (
+        <Button size="sm" onPress={scanning}>{t('Cari pool untuk token ini')}</Button>
       )}
       {scan?.token === token && scan.status === 'jalan' && (
         <div className="flex items-center gap-2 text-sm text-muted"><Spinner size="sm" />{t('Mencari pool di chain… {p}%', { p: scan.progress || 0 })}</div>
@@ -424,31 +437,31 @@ function PilihPool({ pools, onPick }) {
       {scan?.token === token && scan.status === 'gagal' && (
         <Notice status="danger" title={t('Pemindaian gagal')}>{scan.error}</Notice>
       )}
-      {pakaiScan && (
+      {useScan && (
         <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted">
           <span>{t('{n} pool bisa dimasuki dari {total} yang ada', { n: (scan.pools || []).length, total: scan.total })}</span>
           {!!scan.hidden && (
-            <button type="button" className="underline underline-offset-2" onClick={() => gantiSemua(!semua)}>
-              {semua ? t('Sembunyikan yang kosong') : t('Tampilkan semua')}
+            <button type="button" className="underline underline-offset-2" onClick={() => changeAll(!every)}>
+              {every ? t('Sembunyikan yang kosong') : t('Tampilkan semua')}
             </button>
           )}
         </div>
       )}
-      {pakaiScan && !!scan.hidden && !semua && (
+      {useScan && !!scan.hidden && !every && (
         <p className="text-xs text-muted">
           {t(isSolana() ? 'Yang disembunyikan: pool tanpa likuiditas, pool nonaktif, atau tidak dipasangkan USDC/USDT/SOL.' : 'Yang disembunyikan: pool tanpa likuiditas, berfee dinamis, atau tidak dipasangkan USDG/ETH — masuk ke sana sama saja membuang gas.')}
         </p>
       )}
 
       <div className="max-h-80 overflow-y-auto rounded-md border border-border">
-        {!hasil.length ? (
+        {!result.length ? (
           <div>
-            <Empty title={isAlamat ? (isSolana() ? 'Tidak ada pool Meteora DLMM / Orca / Raydium CLMM yang bisa dimasuki' : 'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki') : 'Tidak ada pool yang cocok'}
-              sub={isAlamat ? (isSolana() ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDC, USDT, atau SOL.' : 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.') : 'Tempel alamat token untuk mencari poolnya langsung dari chain.'} />
-            {pakaiScan && scan.lainnya?.length > 0 && (
+            <Empty title={isAddress ? (isSolana() ? 'Tidak ada pool Meteora DLMM / Orca / Raydium CLMM yang bisa dimasuki' : 'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki') : 'Tidak ada pool yang cocok'}
+              sub={isAddress ? (isSolana() ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDC, USDT, atau SOL.' : 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.') : 'Tempel alamat token untuk mencari poolnya langsung dari chain.'} />
+            {useScan && scan.others?.length > 0 && (
               <div className="border-t border-border px-3 py-3 text-sm">
                 <div className="mb-1.5 font-medium">{t('Diperdagangkan di tempat lain')}</div>
-                {scan.lainnya.map((x) => (
+                {scan.others.map((x) => (
                   <div key={x.address || x.name} className="flex justify-between gap-3 py-0.5 text-muted">
                     <span className="truncate"><span className="text-foreground">{x.dex}</span> · {x.name}</span>
                     <span className="num shrink-0">{usd(x.reserveUsd, 0)}</span>
@@ -458,7 +471,7 @@ function PilihPool({ pools, onPick }) {
               </div>
             )}
           </div>
-        ) : hasil.map((p) => (
+        ) : result.map((p) => (
           <button key={p.poolRef} type="button" onClick={() => onPick(p)}
             className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2 text-start last:border-0 hover:bg-default/50">
             <span className="flex min-w-0 items-center gap-2.5">
@@ -478,113 +491,139 @@ function PilihPool({ pools, onPick }) {
   );
 }
 
-export default function ManualLp() {
+export default function ManualLp({ param }) {
   const { t } = useI18n();
   const { status, reload: reloadStatus } = useStatus();
   const [pools, setPools] = useState(null);
   const [rules, setRules] = useState(null);
   const [pool, setPool] = useState(null);
-  const [gantiPool, setGantiPool] = useState(false);
-  const [nominal, setNominal] = useState('');
-  // Tiap batas = besar persen + arah dari harga kini (−1 di bawah, +1 di atas).
-  const [bawah, setBawah] = useState('25');
-  const [atas, setAtas] = useState('25');
-  const [arahBawah, setArahBawah] = useState(-1);
-  const [arahAtas, setArahAtas] = useState(1);
+  const [swapPool, setSwapPool] = useState(false);
+  const [notional, setNotional] = useState('');
+  // Each bound = percent magnitude + direction from the current price (−1 below, +1 above).
+  const [lower, setLower] = useState('25');
+  const [upper, setUpper] = useState('25');
+  const [dirDown, setDirDown] = useState(-1);
+  const [dirUp, setDirUp] = useState(1);
   const [full, setFull] = useState(false);
-  const [bentuk, setBentuk] = useState('spot');   // Meteora DLMM: spot | curve | bidask
+  const [shape, setShape] = useState('spot');   // Meteora DLMM: spot | curve | bidask
   const [plan, setPlan] = useState(null);      // { preview, warnings } | { error }
-  const [hitung, setHitung] = useState(false);
-  const [konfirm, setKonfirm] = useState(false);
-  const [kirim, setKirim] = useState(false);
-  const [hasil, setHasil] = useState(null);
-  const [saldo, setSaldo] = useState(null);
+  const [compute, setCompute] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [sendOrig, setSending] = useState(false);
+  const [result, setResult] = useState(null);
+  const [balance, setBalance] = useState(null);
   const seq = useRef(0);
+  const [mode, setMode] = useState('single');   // 'single' range | 'ladder' of layers
 
   useEffect(() => {
     get('/api/manual/pools?limit=200').then((d) => setPools(d.pools || []));
     get('/api/rules').then(setRules);
   }, []);
 
-  // Saldo dibaca sendiri, tidak menunggu pratinjau: pengguna perlu tahu kasnya
-  // SEBELUM memilih nominal. Dibaca ulang saat pool berganti (token pasangannya
-  // ikut ditampilkan) dan setelah posisi dibuka.
-  const muatSaldo = useCallback(async (ref) => {
-    const d = await get(`/api/manual/saldo${ref ? `?poolRef=${ref}` : ''}`);
-    if (!d.error) setSaldo({ ...d, _ref: ref || null });
-  }, []);
-  useEffect(() => { muatSaldo(pool?.poolRef); }, [pool?.poolRef, muatSaldo]);
+  // Opened from the wallet position drawer: "#manual-lp/<poolRef>?lo=…&up=…" carries the pool
+  // and the target position's range, only the amount is left to fill in. The pool is looked up via
+  // the same list as its picker (q also matches pool_ref), so the data shape is exactly the same as
+  // one picked by hand — including pools outside the top 200.
+  useEffect(() => {
+    const [ref, qs] = String(param || '').split('?');
+    if (!ref) return undefined;
+    const sp = new URLSearchParams(qs || '');
+    const lo = Number(sp.get('lo')), up = Number(sp.get('up'));
+    if (Number.isFinite(lo) && Number.isFinite(up) && lo > -100 && up > -100 && up <= 100000 && up > lo) {
+      setFull(false);
+      setLower(String(Math.abs(lo))); setDirDown(lo > 0 ? 1 : -1);
+      setUpper(String(Math.abs(up))); setDirUp(up < 0 ? -1 : 1);
+    }
+    let alive = true;
+    get(`/api/manual/pools?q=${encodeURIComponent(ref)}&limit=1`).then((d) => {
+      const x = (d.pools || [])[0];
+      if (alive && x) setPool(x);
+    });
+    return () => { alive = false; };
+  }, [param]);
 
-  const usdNum = Number(String(nominal).replace(',', '.'));
-  // lo/up = perubahan bertanda tiap batas dari harga kini. API memakai lowerPct =
-  // seberapa jauh batas bawah DI BAWAH harga, jadi tandanya dibalik saat dikirim.
-  const pctDari = (s) => Number(String(s).replace(',', '.') || 0);
-  const lo = arahBawah * pctDari(bawah), up = arahAtas * pctDari(atas);
+  // Balances are read separately, not waiting for the preview: the user needs to know their cash
+  // BEFORE choosing an amount. Re-read when the pool changes (its pair token
+  // is shown too) and after a position is opened.
+  const loadBalance = useCallback(async (ref) => {
+    const d = await get(`/api/manual/saldo${ref ? `?poolRef=${ref}` : ''}`);
+    if (!d.error) setBalance({ ...d, _ref: ref || null });
+  }, []);
+  useEffect(() => { loadBalance(pool?.poolRef); }, [pool?.poolRef, loadBalance]);
+
+  const usdNum = Number(String(notional).replace(',', '.'));
+  // lo/up = the signed change of each bound from the current price. The API uses lowerPct =
+  // how far the lower bound is BELOW the price, so the sign is flipped when sent.
+  const pctFrom = (s) => Number(String(s).replace(',', '.') || 0);
+  const lo = dirDown * pctFrom(lower), up = dirUp * pctFrom(upper);
   const loBad = !full && !(lo > -100);
   const upBad = !full && !(up > -100 && up <= 100000);
-  const kosong = !full && lo === 0 && up === 0;
-  const terbalik = !full && !loBad && !upBad && !kosong && up <= lo;
-  const rentangOk = full || (!loBad && !upBad && !kosong && !terbalik);
-  const siap = !!pool && Number.isFinite(usdNum) && usdNum > 0 && rentangOk;
+  const empty = !full && lo === 0 && up === 0;
+  const inverted = !full && !loBad && !upBad && !empty && up <= lo;
+  const rangeOk = full || (!loBad && !upBad && !empty && !inverted);
+  const ready = mode === 'single' && !!pool && Number.isFinite(usdNum) && usdNum > 0 && rangeOk;
+  const ladder = useLadder({ pool, usdNum: Number.isFinite(usdNum) ? usdNum : 0, enabled: mode === 'ladder',
+    onOpened: () => { reloadStatus(); loadBalance(pool?.poolRef); } });
+  const stepsDone = mode === 'ladder' ? ladder.ready : ready;
   const dlmm = pool?.venue === 'meteora';
-  const body = { poolRef: pool?.poolRef, usd: usdNum, ...(full ? { full: true } : { lowerPct: -lo, upperPct: up }), ...(dlmm ? { strategy: bentuk } : {}) };
+  const body = { poolRef: pool?.poolRef, usd: usdNum, ...(full ? { full: true } : { lowerPct: -lo, upperPct: up }), ...(dlmm ? { strategy: shape } : {}) };
 
-  // Pratinjau dihitung ulang sendiri setiap pilihan berubah — tidak ada tombol
-  // "hitung". Balasan yang datang terlambat dibuang lewat nomor urut.
+  // The preview is recomputed by itself every time a choice changes — there is no "compute"
+  // button. Replies that arrive late are discarded via a sequence number.
   useEffect(() => {
-    setKonfirm(false);
-    if (!siap) { setPlan(null); return; }
+    setConfirm(false);
+    if (!ready) { setPlan(null); return; }
     const mine = ++seq.current;
-    setHitung(true);
+    setCompute(true);
     const id = setTimeout(async () => {
       const r = await post('/api/manual/lp/plan', body);
       if (mine !== seq.current) return;
-      setPlan({ ...r, _ref: body.poolRef }); setHitung(false);
+      setPlan({ ...r, _ref: body.poolRef }); setCompute(false);
     }, 350);
     return () => { clearTimeout(id); };
-  }, [pool?.poolRef, usdNum, lo, up, full, siap, dlmm, bentuk]);
+  }, [pool?.poolRef, usdNum, lo, up, full, ready, dlmm, shape]);
 
-  const kas = plan?.preview?.kasUsd ?? saldo?.kasUsd ?? null;
-  // Nominal terbesar yang masih lolos semua batas — supaya tombol "Maks" tidak
-  // mengantar ke penolakan.
-  const maks = useMemo(() => {
+  const cash = plan?.preview?.walletCashUsd ?? balance?.walletCashUsd ?? null;
+  // The largest amount that still passes every limit — so the "Max" button does not
+  // lead to a rejection.
+  const maxVal = useMemo(() => {
     const s = rules?.rules?.sizing;
     if (!s) return null;
-    const sisaTotal = s.max_total_exposure_usd - (status?.summary?.exposureUsd || 0);
-    const batas = [s.max_quote_per_position_usd, sisaTotal, kas ?? Infinity].filter((x) => Number.isFinite(x));
-    const v = Math.floor(Math.min(...batas) * 100) / 100;
+    const leftoverTotal = s.max_total_exposure_usd - (status?.summary?.exposureUsd || 0);
+    const limit = [s.max_quote_per_position_usd, leftoverTotal, cash ?? Infinity].filter((x) => Number.isFinite(x));
+    const v = Math.floor(Math.min(...limit) * 100) / 100;
     return v > 0 ? v : 0;
-  }, [rules, status, kas]);
+  }, [rules, status, cash]);
 
-  const buka = async () => {
-    setKirim(true);
+  const open = async () => {
+    setSending(true);
     const r = await post('/api/manual/lp/open', body);
-    setKirim(false); setKonfirm(false);
+    setSending(false); setConfirm(false);
     if (r.error) return toast.danger(r.error);
-    setHasil(r);
+    setResult(r);
     toast.success(t('Posisi dibuka'));
     reloadStatus();
-    muatSaldo(pool?.poolRef);
+    loadBalance(pool?.poolRef);
   };
 
   const p = plan?.preview;
-  // Harga kini (dalam aset kuotasi) dari pratinjau terakhir UNTUK POOL INI — dipakai
-  // menampilkan harga tiap batas selagi pengguna mengetik, sebelum pratinjau baru datang.
-  const pKini = p && plan._ref === pool?.poolRef ? p : null;
-  const hargaKini = pKini ? tickPrice(pKini.curTick, pKini.dec0, pKini.dec1, pKini.quoteSide) : null;
-  const symQ = pKini ? (pKini.quoteSide === 0 ? pKini.symbol0 : pKini.symbol1) : null;
-  // Rentang yang seluruhnya di satu sisi harga hanya diisi satu token: di bawah =
-  // aset kuotasi, di atas = token pasangannya.
-  const satuSisi = !full && rentangOk ? (up <= 0 ? 'bawah' : lo >= 0 ? 'atas' : null) : null;
-  const symSetor = satuSisi && pool?.quoteSide != null
-    ? ((pool.quoteSide === 0) === (satuSisi === 'bawah') ? pool.symbol0 : pool.symbol1) : null;
-  // Pratinjau membawa saldo "setelah dibuka"; selama belum ada, pakai bacaan
-  // sendiri — asal untuk pool yang sama, supaya token pasangannya tidak salah.
-  const pSiap = pKini && siap && !plan?.error ? pKini : null;
-  const saldoTampil = pSiap?.saldo || (saldo && saldo._ref === (pool?.poolRef || null) ? saldo : null);
+  // Current price (in the quote asset) from the last preview FOR THIS POOL — used to
+  // show each bound's price while the user types, before a new preview arrives.
+  const pNow = p && plan._ref === pool?.poolRef ? p : null;
+  const currentPrice = pNow ? tickPrice(pNow.curTick, pNow.dec0, pNow.dec1, pNow.quoteSide) : null;
+  const symQ = pNow ? (pNow.quoteSide === 0 ? pNow.symbol0 : pNow.symbol1) : null;
+  // A range entirely on one side of the price is only filled with one token: below =
+  // the quote asset, above = its pair token.
+  const oneSide = !full && rangeOk ? (up <= 0 ? 'bawah' : lo >= 0 ? 'atas' : null) : null;
+  const symSetor = oneSide && pool?.quoteSide != null
+    ? ((pool.quoteSide === 0) === (oneSide === 'bawah') ? pool.symbol0 : pool.symbol1) : null;
+  // The preview carries the "after opening" balance; while it does not exist, use
+  // our own reading — only if for the same pool, so the pair token is not wrong.
+  const pReady = pNow && ready && !plan?.error ? pNow : null;
+  const shownBalance = pReady?.saldo || (balance && balance._ref === (pool?.poolRef || null) ? balance : null);
   const dry = status?.mode?.dry_run !== false;
 
-  if (hasil) {
+  if (result) {
     return (
       <>
         <PageHeader group="Aksi" title="LP manual" />
@@ -593,12 +632,12 @@ export default function ManualLp() {
             <span className="flex size-12 items-center justify-center rounded-full bg-success/15 text-success"><Check className="size-6" /></span>
             <div>
               <div className="text-lg font-semibold">{t('Posisi dibuka')}</div>
-              <div className="mt-1 text-muted">{hasil.note}</div>
-              <div className="mono mt-2 text-sm text-muted">{hasil.tx}</div>
+              <div className="mt-1 text-muted">{result.note}</div>
+              <div className="mono mt-2 text-sm text-muted">{result.tx}</div>
             </div>
             <div className="flex gap-2">
               <Button onPress={() => { location.hash = 'positions'; }}>{t('Lihat posisi')}</Button>
-              <Button variant="outline" onPress={() => { setHasil(null); setNominal(''); }}>{t('Buka satu lagi')}</Button>
+              <Button variant="outline" onPress={() => { setResult(null); setNotional(''); }}>{t('Buka satu lagi')}</Button>
             </div>
           </Card.Content>
         </Card>
@@ -619,9 +658,9 @@ export default function ManualLp() {
 
       <div className="mt-4 grid items-start gap-3 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="flex min-w-0 flex-col gap-3">
-          <Langkah n={1} title="Pilih pool" done={!!pool}
-            action={pool && !gantiPool ? <Button size="sm" variant="outline" onPress={() => setGantiPool(true)}>{t('Ganti')}</Button> : null}>
-            {pools === null ? <Spinner /> : pool && !gantiPool ? (
+          <Step n={1} title="Pilih pool" done={!!pool}
+            action={pool && !swapPool ? <Button size="sm" variant="outline" onPress={() => setSwapPool(true)}>{t('Ganti')}</Button> : null}>
+            {pools === null ? <Spinner /> : pool && !swapPool ? (
               <div className="flex items-center gap-3">
                 <TokenPair token0={pool.token0} token1={pool.token1} symbol0={pool.symbol0} symbol1={pool.symbol1} size={30} />
                 <div className="min-w-0">
@@ -635,76 +674,90 @@ export default function ManualLp() {
                 </div>
               </div>
             ) : (
-              <PilihPool pools={pools} onPick={(x) => { setPool(x); setGantiPool(false); }} />
+              <PoolPicker pools={pools} onPick={(x) => { setPool(x); setSwapPool(false); }} />
             )}
-          </Langkah>
+          </Step>
 
-          <Langkah n={2} title="Nominal" done={siap}>
+          <Step n={2} title="Nominal" done={stepsDone}>
             <div className="flex flex-col gap-3">
               <div className="flex items-center gap-2">
                 <span className="text-xl text-muted">$</span>
-                <input value={nominal} onChange={(e) => setNominal(e.target.value.replace(/[^\d.,]/g, ''))}
+                <input value={notional} onChange={(e) => setNotional(e.target.value.replace(/[^\d.,]/g, ''))}
                   inputMode="decimal" placeholder="0" aria-label={t('Nominal posisi')}
                   className="num h-11 w-44 rounded-md border border-field-border bg-surface px-3 text-xl font-semibold outline-none focus:border-accent" />
               </div>
-              {/* "Maks" dihitung dari batas yang benar-benar berlaku, jadi menekannya
-                  tidak pernah mengantar ke penolakan. Nilai yang kebetulan sama
-                  dengan salah satu pilihan cepat dibuang supaya tidak dobel. */}
-              <Chips value={usdNum} onPick={(v) => setNominal(String(v))}
-                options={[25, 50, 100, 200].filter((v) => !maks || v < maks).map((v) => [v, `$${v}`])
-                  .concat(maks > 0 ? [[maks, t('Maks {v}', { v: usd(maks, 0) })]] : [])} />
+              {/* "Max" is computed from the limit that actually applies, so pressing it never
+                  leads to a rejection. A value that happens to equal one of the quick choices
+                  is dropped so it is not duplicated. */}
+              <Chips value={usdNum} onPick={(v) => setNotional(String(v))}
+                options={[25, 50, 100, 200].filter((v) => !maxVal || v < maxVal).map((v) => [v, `$${v}`])
+                  .concat(maxVal > 0 ? [[maxVal, t('Maks {v}', { v: usd(maxVal, 0) })]] : [])} />
               <p className="text-xs text-muted">
                 {t('Nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.')}
               </p>
-              <Saldo saldo={saldoTampil} pool={pool} />
-              {pSiap?.swaps && <AutoSwap p={pSiap} />}
+              <Balance saldo={shownBalance} pool={pool} />
+              {mode === 'single' && pReady?.swaps && <AutoSwap p={pReady} />}
             </div>
-          </Langkah>
+          </Step>
 
-          <Langkah n={3} title="Rentang harga" done={siap}>
+          <Step n={3} title="Rentang harga" done={stepsDone}
+            action={<Segmented size="sm" aria="Mode rentang" value={mode} onChange={setMode}
+              options={[['single', 'Satu rentang'], ['ladder', 'Berlayer']]} />}>
+            {mode === 'ladder' ? (
+              <LadderStep L={ladder} chart={pool && (
+                <ChartRange pool={pool} lo={-ladder.botN} up={-ladder.topN} full={false} rangeOk={ladder.rangeOk} currentPrice={null}
+                  preview={null} bands={ladder.bands}
+                  onDrag={(a, b) => { ladder.setBottom(String(Math.min(99.9, Math.max(0, -a)))); ladder.setTop(String(Math.max(0, -b))); }} />
+              )} />
+            ) : (
             <div className="flex flex-col gap-3">
-              {dlmm && <PilihBentuk value={bentuk} onChange={setBentuk} />}
-              {dlmm && p && !plan?.error && <SebaranBin p={p} />}
+              {dlmm && <ShapePicker value={shape} onChange={setShape} />}
+              {dlmm && p && !plan?.error && <BinDistribution p={p} />}
               {pool && (
-                <GrafikRentang pool={pool} lo={lo} up={up} full={full} rentangOk={rentangOk} hargaKini={hargaKini}
-                  pratinjau={pSiap && !hitung ? pSiap : null} />
+                <ChartRange pool={pool} lo={lo} up={up} full={full} rangeOk={rangeOk} currentPrice={currentPrice}
+                  preview={pReady && !compute ? pReady : null}
+                  onDrag={(a, b) => {
+                    setFull(false);
+                    setLower(String(Math.abs(a))); setDirDown(a > 0 ? 1 : -1);
+                    setUpper(String(Math.abs(b))); setDirUp(b < 0 ? -1 : 1);
+                  }} />
               )}
               <Chips value={full ? 'full' : PRESET.find(([a, b]) => a === lo && b === up)?.[2]}
                 onPick={(v) => {
                   if (v === 'full') return setFull(true);
                   const [a, b] = PRESET.find((x) => x[2] === v);
                   setFull(false);
-                  setBawah(String(Math.abs(a))); setArahBawah(a > 0 ? 1 : -1);
-                  setAtas(String(Math.abs(b))); setArahAtas(b < 0 ? -1 : 1);
+                  setLower(String(Math.abs(a))); setDirDown(a > 0 ? 1 : -1);
+                  setUpper(String(Math.abs(b))); setDirUp(b < 0 ? -1 : 1);
                 }}
                 options={[...PRESET.map(([, , l]) => [l, t(l)]), ['full', t('Seluruh rentang')]]} />
               <p className="text-xs text-muted">{t('Klik tanda −/+ untuk memindah batas ke sisi lain harga kini. Rentang yang seluruhnya di bawah harga (misal −30% sampai −10%) hanya diisi aset kuotasi seperti USDG; yang seluruhnya di atas hanya diisi tokennya.')}</p>
-              {/* Batas bebas: mengetik di salah satu kotak otomatis keluar dari "seluruh rentang". */}
+              {/* Free bounds: typing in either box automatically leaves "whole range". */}
               <div className="flex flex-col gap-2 sm:flex-row">
-                <Batas label="Batas bawah" aria="Batas bawah dari harga kini (persen)" arah={arahBawah} value={full ? '' : bawah} disabled={false}
-                  onArah={(a) => { setFull(false); setArahBawah(a); }}
-                  onChange={(v) => { setFull(false); setBawah(v); }} invalid={loBad || terbalik}
-                  harga={hargaKini != null && !full && !loBad ? hargaKini * (1 + lo / 100) : null} sym={symQ} />
-                <Batas label="Batas atas" aria="Batas atas dari harga kini (persen)" arah={arahAtas} value={full ? '' : atas} disabled={false}
-                  onArah={(a) => { setFull(false); setArahAtas(a); }}
-                  onChange={(v) => { setFull(false); setAtas(v); }} invalid={upBad || terbalik}
-                  harga={hargaKini != null && !full && !upBad ? hargaKini * (1 + up / 100) : null} sym={symQ} />
+                <Limit label="Batas bawah" aria="Batas bawah dari harga kini (persen)" direction={dirDown} value={full ? '' : lower} disabled={false}
+                  onArah={(a) => { setFull(false); setDirDown(a); }}
+                  onChange={(v) => { setFull(false); setLower(v); }} invalid={loBad || inverted}
+                  harga={currentPrice != null && !full && !loBad ? currentPrice * (1 + lo / 100) : null} sym={symQ} />
+                <Limit label="Batas atas" aria="Batas atas dari harga kini (persen)" direction={dirUp} value={full ? '' : upper} disabled={false}
+                  onArah={(a) => { setFull(false); setDirUp(a); }}
+                  onChange={(v) => { setFull(false); setUpper(v); }} invalid={upBad || inverted}
+                  harga={currentPrice != null && !full && !upBad ? currentPrice * (1 + up / 100) : null} sym={symQ} />
               </div>
-              {(loBad || upBad || kosong || terbalik) && (
+              {(loBad || upBad || empty || inverted) && (
                 <p className="text-xs text-danger">{t(loBad ? 'Batas bawah harus di atas −100% — turun 100% berarti harga nol.'
                   : upBad ? 'Batas atas harus di atas −100% dan maksimal +100.000%.'
-                    : terbalik ? 'Batas atas harus lebih tinggi dari batas bawah.' : 'Isi batas bawah atau batas atas.')}</p>
+                    : inverted ? 'Batas atas harus lebih tinggi dari batas bawah.' : 'Isi batas bawah atau batas atas.')}</p>
               )}
-              {satuSisi && (
+              {oneSide && (
                 <p className="text-xs text-muted">
-                  {t(satuSisi === 'bawah'
+                  {t(oneSide === 'bawah'
                     ? 'Satu sisi di bawah harga kini: hanya {s} yang disetor. Fee mulai saat harga turun masuk rentang.'
                     : 'Satu sisi di atas harga kini: hanya {s} yang disetor. Fee mulai saat harga naik masuk rentang.',
                   { s: symSetor || t('satu token') })}
                 </p>
               )}
               {!full && p && !plan?.error && (Math.abs(-p.lowerPct - lo) >= 0.05 || Math.abs(p.upperPct - up) >= 0.05) && (
-                <p className="text-xs text-muted">{t(p.nativeUnit === 'bin' ? 'Dibulatkan ke bin pool: {a} / {b}.' : 'Dibulatkan ke tick pool: {a} / {b}.', { a: bertanda(-p.lowerPct), b: bertanda(p.upperPct) })}</p>
+                <p className="text-xs text-muted">{t(p.nativeUnit === 'bin' ? 'Dibulatkan ke bin pool: {a} / {b}.' : 'Dibulatkan ke tick pool: {a} / {b}.', { a: flagged(-p.lowerPct), b: flagged(p.upperPct) })}</p>
               )}
               <p className="text-xs text-muted">
                 {t('Fee hanya mengalir selama harga ada di dalam rentang. Sempit = fee lebih besar tapi lebih cepat keluar; lebar = lebih aman tapi encer.')}
@@ -716,17 +769,18 @@ export default function ManualLp() {
                 </div>
               )}
             </div>
-          </Langkah>
+            )}
+          </Step>
         </div>
 
         {/* pratinjau */}
         <Card className="gap-0! p-0! lg:sticky lg:top-4">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <h2 className="text-sm font-semibold">{t('Pratinjau')}</h2>
-            {hitung && <Spinner size="sm" />}
+            {(mode === 'ladder' ? ladder.compute : compute) && <Spinner size="sm" />}
           </div>
           <div className="flex flex-col gap-4 p-4">
-            {!siap ? (
+            {mode === 'ladder' ? <LadderPreview L={ladder} dry={dry} /> : !ready ? (
               <p className="text-sm text-muted">{t('Pilih pool dan isi nominalnya — pratinjau muncul sendiri.')}</p>
             ) : plan?.error ? (
               <Notice status="danger" title={t('Belum bisa dibuka')}>{plan.error}</Notice>
@@ -739,8 +793,8 @@ export default function ManualLp() {
                 <div className="divide-y divide-border border-y border-border">
                   <KV label={p.symbol0}>{num(Number(p.amount0) / 10 ** p.dec0, 6)}</KV>
                   <KV label={p.symbol1}>{num(Number(p.amount1) / 10 ** p.dec1, 6)}</KV>
-                  {p.swaps && <KV label="Auto-swap">{jmlSwap(p.swaps.length, t)}</KV>}
-                  <KV label="Kas setelah dibuka">{usd(Math.max(0, p.kasUsd - p.valueUsd))}</KV>
+                  {p.swaps && <KV label="Auto-swap">{swapQty(p.swaps.length, t)}</KV>}
+                  <KV label="Kas setelah dibuka">{usd(Math.max(0, p.walletCashUsd - p.valueUsd))}</KV>
                 </div>
 
                 {(plan.warnings || []).map((w) => (
@@ -753,24 +807,24 @@ export default function ManualLp() {
                   {t('Posisi ini tidak mencermin siapa pun — ia tidak akan ikut ditutup saat target keluar.')}
                 </p>
 
-                {/* Di mode simulasi tombolnya TIDAK dimatikan begitu saja: tombol mati
-                    tanpa jalan keluar cuma bikin user menebak. Ia berubah jadi jalan
-                    pintas ke tempat yang bisa mengubah keadaannya. */}
+                {/* In simulation mode the button is NOT just disabled: a dead button with no way
+                    out only makes the user guess. It turns into a shortcut to the place that can
+                    change the situation. */}
                 {dry ? (
                   <Button variant="outline" className="w-full" onPress={() => { location.hash = 'settings'; }}>
                     {t('Nyalakan LIVE dulu')}
                   </Button>
-                ) : !konfirm ? (
-                  <Button className="w-full" onPress={() => setKonfirm(true)}>
+                ) : !confirm ? (
+                  <Button className="w-full" onPress={() => setConfirm(true)}>
                     {t('Buka posisi {v}', { v: usd(p.valueUsd) })}
                   </Button>
                 ) : (
                   <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/5 p-3">
                     <div className="text-sm font-medium">{t('Kirim transaksi sungguhan?')}</div>
-                    <div className="text-sm text-muted">{t('{v} ke {pair}, rentang {r}.', { v: usd(p.valueUsd), pair: p.pair, r: rentangLabel(lo, up, full, t) })}</div>
+                    <div className="text-sm text-muted">{t('{v} ke {pair}, rentang {r}.', { v: usd(p.valueUsd), pair: p.pair, r: rangeLabel(lo, up, full, t) })}</div>
                     <div className="flex gap-2">
-                      <Button className="flex-1" onPress={buka} isPending={kirim}>{t('Ya, buka sekarang')}</Button>
-                      <Button variant="outline" onPress={() => setKonfirm(false)}>{t('Batal')}</Button>
+                      <Button className="flex-1" onPress={open} isPending={sendOrig}>{t('Ya, buka sekarang')}</Button>
+                      <Button variant="outline" onPress={() => setConfirm(false)}>{t('Batal')}</Button>
                     </div>
                   </div>
                 )}

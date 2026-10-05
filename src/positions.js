@@ -1,7 +1,7 @@
 'use strict';
 const { ensureChain } = require('./networks');
-// Sinkronisasi posisi milik kita: nilai sekarang, fee terkumpul, PnL, dan
-// pemicu keluar mandiri (di luar rentang, stop loss, take profit, umur).
+// Sync of our own positions: current value, collected fees, PnL, and
+// standalone exit triggers (out of range, stop loss, take profit, age).
 const { ethers } = require('ethers');
 const { ABI } = require('./chain');
 const { computePoolId, priceUsable } = require('./pools');
@@ -17,19 +17,19 @@ class Positions {
   constructor({ rpc, store, chain, log }) {
     chain = ensureChain(chain);
     this.rpc = rpc; this.store = store; this.chain = chain; this.log = log || console.log;
-    this.live = [];      // hasil sinkron terakhir, dipakai dashboard
-    this.farStreak = new Map();   // id posisi -> berapa sinkron berturut-turut harganya terlalu jauh dari rentang
+    this.live = [];      // last sync result, used by the dashboard
+    this.farStreak = new Map();   // position id -> how many consecutive syncs its price was too far from the range
     this.lastSync = 0;
-    this.syncing = null; // sinkron yang sedang berjalan, dipakai bersama
-    this.markWarned = new Set();   // posisi yang harga pool-nya sudah dilaporkan gila
+    this.syncing = null; // the sync currently running, shared
+    this.markWarned = new Set();   // positions whose pool price has already been reported as absurd
   }
 
   open() {
     return this.store.all("SELECT * FROM positions WHERE chain=? AND status='open'", this.chain.network);
   }
 
-  // Catat posisi baru hasil mint kita
-  // entrySqrt: harga pool saat mint — dipakai halaman detail untuk menandai titik masuk.
+  // Record a new position resulting from our mint
+  // entrySqrt: the pool price at mint — used by the detail page to mark the entry point.
   record(plan, { tokenId, txHash, target, cost0, cost1, costQuote, openedTs, entrySqrt }) {
     const r = this.store.run(
       `INSERT INTO positions
@@ -44,12 +44,12 @@ class Positions {
     return Number(r.lastInsertRowid);
   }
 
-  // Hasil penarikan DITAMBAHKAN ke catatan: out0/out1/out_quote menampung semua yang
-  // pernah keluar dari posisi (tarik sebagian + tutup), dan memecoin sisa yang belum
-  // terjual ikut bertambah — jadi PnL = out_quote − cost_quote tetap benar berapa kali
-  // pun posisi ditarik sebagian sebelum ditutup.
-  // `left`: memecoin yang ikut keluar dan belum dijual — {token, amount, quote}; nilai
-  // quote-nya (di harga tutup) sudah termasuk dalam outQuote.
+  // The withdrawal result is ADDED to the record: out0/out1/out_quote hold everything
+  // that ever came out of the position (partial withdrawal + close), and the leftover memecoin not yet
+  // sold also accumulates — so PnL = out_quote − cost_quote stays correct however many
+  // times the position is partially withdrawn before it closes.
+  // `left`: memecoin that also came out and is not yet sold — {token, amount, quote}; its
+  // quote value (at the close price) is already included in outQuote.
   #addProceeds(id, { out0, out1, outQuote, left }) {
     const prev = this.store.get('SELECT out0, out1, left_token, left_amount FROM positions WHERE id=?', id) || {};
     const sum = (a, b) => (BigInt(a || '0') + BigInt(b ?? 0)).toString();
@@ -71,8 +71,8 @@ class Positions {
   }
 
   markClosed(id, { out0, out1, outQuote, txHash, exitSqrt, left = null }) {
-    // Pagar terakhir: hasil DIJUMLAHKAN, jadi menutup posisi yang sudah tertutup =
-    // hasilnya dobel (lp3 #220, $150 → $300). Pemanggil yang balapan harus gagal di sini.
+    // The last fence: results are SUMMED, so closing an already-closed position =
+    // doubled proceeds (lp3 #220, $150 → $300). A racing caller must fail here.
     const st = this.store.get('SELECT status FROM positions WHERE id=?', id)?.status;
     if (st !== 'open') throw new Error(`posisi #${id} sudah ${st ?? 'tidak ada'} — hasil tutup tidak dibukukan ulang`);
     this.#addProceeds(id, { out0, out1, outQuote, left });
@@ -82,17 +82,17 @@ class Positions {
     this.#noteProceeds(txHash, 'closeProceeds', { out0, out1, outQuote });
   }
 
-  // Tarik sebagian: posisi tetap terbuka dengan likuiditas sisa, hasilnya dicatat
-  // seperti hasil tutup. Selama masih terbuka, PnL-nya = nilai kini + fee + yang sudah
-  // ditarik − modal (lihat sync/summary).
+  // Partial withdrawal: the position stays open with the remaining liquidity, the proceeds are recorded
+  // like close proceeds. While still open, its PnL = current value + fee + what was already
+  // withdrawn − capital (see sync/summary).
   markDecreased(id, { liquidity, out0, out1, outQuote, txHash, left = null }) {
     this.#addProceeds(id, { out0, out1, outQuote, left });
     this.store.run('UPDATE positions SET liquidity=? WHERE id=?', String(liquidity), id);
     this.#noteProceeds(txHash, 'decreaseProceeds', { out0, out1, outQuote });
   }
 
-  // ---- memecoin sisa: dari "dinilai harga tutup" ke "hasil jual sesungguhnya" ----
-  // Posisi yang menyimpan memecoin sisa dari tutupnya, urut tertua (FIFO).
+  // ---- leftover memecoin: from "valued at the close price" to "actual sale proceeds" ----
+  // Positions holding leftover memecoin from their close, oldest first (FIFO).
   leftoverRows(token = null) {
     return this.store.all(`SELECT id, token0, token1, pool_ref, venue, quote_symbol, left_token, left_amount, left_quote, out_quote,
         entry_sqrt, exit_sqrt, liquidity, cost0, cost1, tick_lower, tick_upper
@@ -100,17 +100,17 @@ class Positions {
     this.chain.network, ...(token ? [String(token).toLowerCase()] : []));
   }
 
-  // Dipanggil setelah token sisa terjual (otomatis maupun dari halaman Swap): hasil
-  // jual dialokasikan FIFO ke posisi-posisi yang menyimpannya, dan out_quote tiap
-  // posisi dikoreksi — taksiran harga tutup diganti hasil yang benar-benar diterima.
-  // `posId` membatasi ke satu posisi (penjualan otomatis tahu asalnya).
+  // Called after leftover tokens are sold (automatically or from the Swap page): the sale
+  // proceeds are allocated FIFO to the positions holding them, and each
+  // position's out_quote is corrected — the close price estimate replaced by what was actually received.
+  // `posId` limits it to one position (an automatic sale knows its origin).
   recordLeftoverSale({ posId = null, token, amount, quoteToken, amountOut, usdOut, ethUsd, txHash = null }) {
     const rows = this.leftoverRows(token).filter((r) => posId == null || r.id === posId);
     if (!rows.length) return [];
     const sold = BigInt(amount);
     if (sold <= 0n) return [];
-    // Hasil dalam USD: dari jumlah aset kuotasi yang diterima kalau dikenal, kalau tidak
-    // dari taksiran USD Kyber.
+    // Proceeds in USD: from the quote asset amount received if known, otherwise
+    // from Kyber's USD estimate.
     const qt = String(quoteToken || '').toLowerCase();
     const q = this.chain.quoteSideOf(qt, qt);
     const gotUsd = q && amountOut != null
@@ -143,12 +143,12 @@ class Positions {
     return done;
   }
 
-  // ---- memecoin dari fee yang sudah diklaim -------------------------------
-  // Klaim fee mengembalikan DUA token: aset kuotasi (langsung uang) dan memecoin
-  // (belum tentu). recordFeeClaim membukukan keduanya ke claimed_quote di harga pool
-  // saat klaim; sisi memecoin-nya dicatat di sini sampai benar-benar terjual, lalu
-  // taksiran itu diganti hasil jual sesungguhnya. Tanpa buku ini, fee $40 yang baru
-  // laku $9 sesudah dampak harga tetap tercatat $40 selamanya.
+  // ---- memecoin from fees that were already claimed -------------------------------
+  // A fee claim returns TWO tokens: a quote asset (money right away) and a memecoin
+  // (not necessarily). recordFeeClaim books both into claimed_quote at the pool price
+  // at claim time; the memecoin side is recorded here until it is really sold, then
+  // that estimate is replaced by the actual sale proceeds. Without this ledger, a $40 fee that only
+  // sold for $9 after price impact would stay recorded as $40 forever.
   noteFeeLeftover({ posId, token, amount, estQuote, txHash = null }) {
     if (!(BigInt(amount) > 0n)) return null;
     const r = this.store.run('INSERT INTO fee_leftovers(chain,position_id,ts,token,amount,est_quote,tx_hash) VALUES(?,?,?,?,?,?,?)',
@@ -156,9 +156,9 @@ class Positions {
     return Number(r.lastInsertRowid);
   }
 
-  // Baris fee yang belum terjual, berbentuk SAMA dengan leftoverRows (left_token/
-  // left_amount/left_quote) supaya valueLeftover dan leftoverQuote bisa dipakai apa
-  // adanya untuk menilainya. Urut tertua dulu (FIFO).
+  // Fee rows not yet sold, in the SAME shape as leftoverRows (left_token/
+  // left_amount/left_quote) so valueLeftover and leftoverQuote can be used
+  // as they are to value them. Oldest first (FIFO).
   feeLeftoverRows(token = null, posId = null) {
     return this.store.all(`SELECT f.id AS fee_id, f.position_id AS id, f.ts AS fee_ts, f.est_quote AS left_quote,
         f.token AS left_token, f.amount AS left_amount,
@@ -170,10 +170,10 @@ class Positions {
     this.chain.network, ...(token ? [String(token).toLowerCase()] : []), ...(posId != null ? [posId] : []));
   }
 
-  // Dipanggil setelah memecoin fee terjual. Mengembalikan berapa banyak dari `amount`
-  // yang memang berasal dari buku fee — sisanya milik buku sisa penutupan dan
-  // diserahkan ke recordLeftoverSale oleh pemanggil. Fee dialokasikan lebih dulu
-  // karena klaim selalu mendahului penutupan posisi yang sama.
+  // Called after fee memecoin is sold. Returns how much of `amount`
+  // really came from the fee ledger — the rest belongs to the close-leftover ledger and
+  // is handed to recordLeftoverSale by the caller. Fees are allocated first
+  // because a claim always precedes the close of the same position.
   recordFeeSale({ posId = null, token, amount, quoteToken, amountOut, usdOut, ethUsd, txHash = null }) {
     const rows = this.feeLeftoverRows(token, posId);
     let rem = BigInt(amount);
@@ -196,9 +196,9 @@ class Positions {
       const k = usdPerQuote(r.quote_symbol, ethUsd, this.chain);
       const gotQuote = share / k;
       const estQuote = (r.left_quote || 0) * frac;
-      // Posisi yang sudah ditutup: markClosed sudah melipat claimed_quote ke out_quote,
-      // jadi koreksinya harus mengenai keduanya — kalau tidak, PnL posisi tertutup
-      // tetap memakai taksiran harga klaim.
+      // A position that is already closed: markClosed has already folded claimed_quote into out_quote,
+      // so the correction must hit both — otherwise a closed position's PnL
+      // keeps using the claim price estimate.
       this.store.run(`UPDATE positions SET claimed_quote = COALESCE(claimed_quote,0) - ? + ?,
           out_quote = out_quote + CASE WHEN status='closed' THEN ? ELSE 0 END WHERE id=?`,
       estQuote, gotQuote, gotQuote - estQuote, r.id);
@@ -217,36 +217,36 @@ class Positions {
     return { consumed: BigInt(amount) - rem, done };
   }
 
-  // Satu penjualan token, dibagi ke dua buku yang mungkin memuatnya: fee yang sudah
-  // diklaim tapi belum terjual, lalu sisa penutupan posisi. Fee didahulukan karena
-  // klaim selalu mendahului penutupan posisi yang sama. Hasil penjualan dibagi
-  // proporsional menurut jumlah yang diambil tiap buku — kalau tidak, satu penjualan
-  // mengoreksi dua kolom dengan hasil penuh yang sama.
+  // One token sale, split across the two ledgers that may hold it: fees that were
+  // claimed but not yet sold, then leftovers of a position close. Fees go first because a
+  // claim always precedes the close of the same position. The sale proceeds are split
+  // proportionally to the amount each ledger took — otherwise a single sale
+  // corrects two columns with the same full proceeds.
   recordTokenSale({ posId = null, token, amount, quoteToken, amountOut, usdOut, ethUsd, txHash = null }) {
     const sold = BigInt(amount);
     const fee = this.recordFeeSale({ posId, token, amount: sold, quoteToken, amountOut, usdOut, ethUsd, txHash });
     const rest = sold - (fee?.consumed || 0n);
     if (rest <= 0n) return { fee, leftover: [] };
-    const bagian = (x) => (x == null ? null : x * Number(rest) / Number(sold));
+    const part = (x) => (x == null ? null : x * Number(rest) / Number(sold));
     const leftover = this.recordLeftoverSale({ posId, token, amount: rest, quoteToken, txHash,
       amountOut: amountOut != null ? (BigInt(amountOut) * rest / sold).toString() : null,
-      usdOut: bagian(usdOut ?? null), ethUsd });
+      usdOut: part(usdOut ?? null), ethUsd });
     return { fee, leftover };
   }
 
-  // Nilai memecoin sisa yang masih dipegang, di harga pool SEKARANG. Dibaca tiap
-  // sinkron bersama kas; hasilnya dipakai summary() supaya total portofolio tidak
-  // "anjlok" begitu posisi tutup lalu "melonjak" begitu sisanya terjual.
+  // The value of leftover memecoin still held, at the CURRENT pool price. Read on every
+  // sync together with cash; the result is used by summary() so the portfolio total does not
+  // "plunge" when a position closes then "spike" when its leftovers are sold.
   async refreshLeftovers(ethUsd, wallet = null) {
     let rows = this.leftoverRows();
     let usd = 0, closeUsd = 0;
     const items = [];
-    // Token yang ternyata sudah tidak ada di wallet (dijual lewat DEX lain, dikirim
-    // keluar) tidak boleh terus dinilai: kekurangannya dianggap terealisasi di harga
-    // kini, seperti perlakuan riset wallet terhadap transfer keluar tanpa hasil.
-    // Memecoin fee yang sudah diklaim ikut diperiksa: saldonya di wallet yang sama,
-    // dan kalau ia hilang di luar bot, claimed_quote-nya juga harus berhenti memakai
-    // taksiran harga klaim.
+    // A token that turns out to be no longer in the wallet (sold via another DEX, sent
+    // out) must not keep being valued: the shortfall is considered realized at the current
+    // price, like wallet research treats an outgoing transfer with no proceeds.
+    // Fee memecoin that was already claimed is checked too: its balance is in the same wallet,
+    // and if it vanishes outside the bot, its claimed_quote must also stop using the
+    // claim price estimate.
     let feeRows = wallet ? this.feeLeftoverRows() : [];
     if ((rows.length || feeRows.length) && wallet) {
       const toksL = [...new Set([...rows.map((r) => r.left_token), ...feeRows.map((r) => r.left_token)])];
@@ -258,19 +258,19 @@ class Positions {
         const bal = BigInt(bals[i]);
         const mine = rows.filter((r) => r.left_token === toksL[i]);
         const mineFee = feeRows.filter((r) => r.left_token === toksL[i]);
-        const jumlah = (list) => list.reduce((a, r) => a + BigInt(r.left_amount), 0n);
-        const total = jumlah(mine) + jumlah(mineFee);
+        const qty = (list) => list.reduce((a, r) => a + BigInt(r.left_amount), 0n);
+        const total = qty(mine) + qty(mineFee);
         if (bal >= total) continue;
         let gone = total - bal;
-        // Kekurangannya dibebankan ke buku fee dulu, urutan yang sama dengan
-        // recordTokenSale — supaya satu token yang ada di dua buku tidak pernah
-        // dihitung dua kali.
-        const ambilFee = jumlah(mineFee) < gone ? jumlah(mineFee) : gone;
-        if (ambilFee > 0n) {
-          const val = await this.valueLeftover(mineFee, ambilFee, ethUsd);
-          this.log(`fee ${toksL[i].slice(0, 10)}… berkurang di luar bot (${ambilFee} satuan) — dianggap terjual $${val.toFixed(2)}`);
-          this.recordFeeSale({ token: toksL[i], amount: ambilFee, quoteToken: null, usdOut: val, ethUsd });
-          gone -= ambilFee;
+        // The shortfall is charged to the fee ledger first, in the same order as
+        // recordTokenSale — so a token that is in two ledgers is never
+        // counted twice.
+        const takeFee = qty(mineFee) < gone ? qty(mineFee) : gone;
+        if (takeFee > 0n) {
+          const val = await this.valueLeftover(mineFee, takeFee, ethUsd);
+          this.log(`fee ${toksL[i].slice(0, 10)}… berkurang di luar bot (${takeFee} satuan) — dianggap terjual $${val.toFixed(2)}`);
+          this.recordFeeSale({ token: toksL[i], amount: takeFee, quoteToken: null, usdOut: val, ethUsd });
+          gone -= takeFee;
           changed = true;
         }
         if (gone > 0n && mine.length) {
@@ -296,10 +296,10 @@ class Positions {
       const dec = new Map(toks.filter(Boolean).map((t) => [t.address, t.decimals]));
       for (const r of rows) {
         const k = usdPerQuote(r.quote_symbol, ethUsd, this.chain);
-        // token sisa dinilai dengan harga penilai, bukan harga pool yang mungkin sudah kosong
+        // leftover tokens valued at the marking price, not the pool price that may already be empty
         const mk = await this.markFor(r, slots.get(r.pool_ref), liqs.get(r.pool_ref));
         const v = this.leftoverQuote(r, BigInt(r.left_amount), mk ? { sqrtPriceX96: mk.sqrt } : null, dec);
-        // harga pool tidak terbaca: pakai nilai tutup supaya tidak hilang dari ekuitas
+        // pool price unreadable: use the close value so it does not vanish from equity
         const now = (v ?? (r.left_quote || 0)) * k;
         usd += now; closeUsd += (r.left_quote || 0) * k;
         items.push({ id: r.id, token: r.left_token, amount: r.left_amount, usd: now });
@@ -309,28 +309,28 @@ class Positions {
     return this.leftoverVal;
   }
 
-  // Harga penilai untuk baris posisi r, diberi slot0 `s` dan likuiditas aktif pool-nya:
-  // harga pool sendiri kalau layak; kalau tidak, pool lain yang memuat pasangan yang
-  // sama; terakhir, harga posisi sendiri saat keluar/masuk (usang, tapi berhingga dan
-  // masuk akal — lebih baik daripada 1e17× harga wajar dari pool yang sudah disapu kosong).
-  // Balikan { sqrt, ref } — ref null = harga pool sendiri, 'exit'/'entry', atau pool_ref acuan.
+  // The marking price for position row r, given slot0 `s` and its pool's active liquidity:
+  // the pool's own price if fit; otherwise another pool containing the same pair;
+  // last, the position's own exit/entry price (stale, but finite and
+  // sensible — better than 1e17× the fair price from a pool that has been swept empty).
+  // Returns { sqrt, ref } — ref null = the pool's own price, 'exit'/'entry', or the reference pool_ref.
   async markFor(r, s, poolLiq) {
     if (!s) return null;
-    // Harga pool yang lolos priceUsable pun bisa gila: pool berlikuiditas 1 wei sesudah
-    // rug / satu swap liar menaruh harga 1e9× harga wajar tanpa menyentuh tepi tick —
-    // dasbor pernah menunjukkan "milyaran dolar". Batas: harga penilai tidak boleh lebih
-    // dari MARK_RATIO_MAX× (atau kurang dari 1/MARK_RATIO_MAX×) pembandingnya: harga
-    // masuk posisi, atau — kalau itu tidak tercatat — tepi rentang posisi yang terdekat.
-    // Memecoin memang bisa 100× atau −99%, tapi 1000× dalam umur satu posisi bukan
-    // sesuatu yang layak dipercaya dari satu pool tipis.
+    // A pool price that passes priceUsable can also be absurd: a pool with 1 wei of liquidity after a
+    // rug / one wild swap puts the price at 1e9× the fair price without touching the tick edge —
+    // the dashboard once showed "billions of dollars". Bound: the marking price must not be more
+    // than MARK_RATIO_MAX× (or less than 1/MARK_RATIO_MAX×) its comparator: the position's
+    // entry price, or — if that is not recorded — the nearest edge of the position range.
+    // A memecoin can indeed go 100× or −99%, but 1000× within a position's lifetime is not
+    // something worth trusting from a single thin pool.
     const own = Positions.entrySqrtOf(r) ? BigInt(Positions.entrySqrtOf(r)) : null;
     const hasRange = r.tick_lower != null && r.tick_upper != null;
     const sa = hasRange ? m.getSqrtRatioAtTick(r.tick_lower) : null;
     const sb = hasRange ? m.getSqrtRatioAtTick(r.tick_upper) : null;
-    const nearEdge = (x) => (x < sa ? sa : x > sb ? sb : x);   // di dalam rentang: dirinya sendiri
+    const nearEdge = (x) => (x < sa ? sa : x > sb ? sb : x);   // inside the range: itself
     const ratioOk = (x, ref) => {
       const hi = x > ref ? x : ref, lo = x > ref ? ref : x;
-      // rasio harga = (sqrt_hi/sqrt_lo)^2 ; dibandingkan tanpa float
+      // price ratio = (sqrt_hi/sqrt_lo)^2 ; compared without floats
       return lo > 0n && hi * hi < lo * lo * BigInt(Positions.MARK_RATIO_MAX);
     };
     const sane = (x) => {
@@ -342,22 +342,22 @@ class Positions {
     if (priceUsable(s, poolLiq ?? 0n) && sane(s.sqrtPriceX96)) return { sqrt: s.sqrtPriceX96, ref: null };
     const alt = await this.chain.markSqrtForPair(r.token0, r.token1, r.pool_ref);
     if (alt && sane(alt.sqrtPriceX96)) return { sqrt: alt.sqrtPriceX96, ref: alt.poolRef };
-    // Harga sendiri (keluar / pool mentah) bisa juga gila atau di batas tick — kalau
-    // rentang posisi diketahui, diapit ke tepinya: harga terakhir yang dilalui posisi ini.
+    // The own price (exit / raw pool) can also be absurd or at the tick bound — if the
+    // position range is known, clamp it to its edge: the last price this position passed through.
     const clamp = (x) => (hasRange && !sane(x) ? nearEdge(x) : x);
     if (r.exit_sqrt) {
       const ex = clamp(BigInt(r.exit_sqrt));
       if (sane(ex)) return { sqrt: ex, ref: 'exit' };
     }
-    // Harga pool tidak dipercaya (gila, atau pool tanpa likuiditas aktif) dan posisi
-    // punya rentang: tepi rentang yang terdekat, BUKAN harga masuk. Di luar rentang
-    // komposisi posisi sudah beku — seluruhnya satu sisi — dan tepi adalah harga
-    // terakhir yang sungguh mengubahnya; berapa pun harga lari sesudah itu, isinya
-    // tetap sama. Harga masuk bisa jauh di luar rentang (posisi tangga dipasang di
-    // bawah pasar), dan menilai token hasil konversi di harga itu = keadaan yang
-    // mustahil: kalau harga masih di sana, posisi tidak akan memegang token itu.
-    // lp3 2026-09-19: WIN rug 1e10×, 4 posisi tangga modal $310 terbaca $1.229 dan
-    // grafik melonjak +$1.187 palsu selama dua jam.
+    // The pool price is not trusted (absurd, or a pool without active liquidity) and the position
+    // has a range: the nearest range edge, NOT the entry price. Outside the range the
+    // position's composition is already frozen — entirely one side — and the edge is the last
+    // price that really changed it; however far the price runs after that, its contents
+    // stay the same. The entry price can be far outside the range (a ladder position placed
+    // below the market), and valuing the converted token at that price = an
+    // impossible state: if the price were still there, the position would not hold that token.
+    // lp3 2026-09-19: WIN rugged 1e10×, 4 ladder positions with capital $310 read $1,229 and the
+    // chart spiked a fake +$1,187 for two hours.
     if (hasRange) {
       const edge = nearEdge(s.sqrtPriceX96);
       if (edge !== s.sqrtPriceX96) {
@@ -367,7 +367,7 @@ class Positions {
         }
         return { sqrt: edge, ref: 'edge' };
       }
-      // di dalam rentang tapi pool tak layak dibaca: harga ini masih yang terbaik
+      // inside the range but the pool is unfit to read: this price is still the best
       if (sane(edge)) return { sqrt: edge, ref: null };
     }
     if (own) {
@@ -380,15 +380,15 @@ class Positions {
     return { sqrt: s.sqrtPriceX96, ref: null };
   }
 
-  // Baca harga pool posisi r lalu pilih harga penilainya; bentuknya slot0 supaya bisa
-  // langsung dioper ke valueInQuote. null kalau harga pool tidak terbaca sama sekali.
+  // Read the pool price of position r then choose its marking price; shaped as slot0 so it can be
+  // passed straight to valueInQuote. null if the pool price is not readable at all.
   async markSlotFor(r) {
     const s = this.chain.isV3Venue(r.venue) ? await this.chain.slot0V3(r.pool_ref) : await this.chain.slot0V4(r.pool_ref);
     const mk = await this.markFor(r, s, await this.poolLiquidityOf(r.venue, r.pool_ref));
     return mk ? { sqrtPriceX96: mk.sqrt, tick: s.tick, ref: mk.ref, poolSqrt: s.sqrtPriceX96 } : null;
   }
 
-  // Likuiditas aktif pool (v3 lewat kontrak pool, v4 lewat PoolManager); 0n kalau tak terbaca.
+  // Active liquidity of the pool (v3 via the pool contract, v4 via the PoolManager); 0n if unreadable.
   async poolLiquidityOf(venue, poolRef) {
     try {
       if (this.chain.isV3Venue(venue)) {
@@ -399,7 +399,7 @@ class Positions {
     } catch { return 0n; }
   }
 
-  // Nilai `amt` token sisa baris r (satuan aset kuotasi) di harga slot0 `s`; null kalau tak terbaca.
+  // Value of `amt` leftover tokens of row r (quote asset units) at slot0 price `s`; null if unreadable.
   leftoverQuote(r, amt, s, dec) {
     if (!s) return null;
     const side = r.left_token === r.token0 ? 0 : 1;
@@ -410,7 +410,7 @@ class Positions {
     return v ? v.value : null;
   }
 
-  // Nilai USD `amt` satuan token sisa, dinilai lewat pool posisi pertama yang menyimpannya.
+  // USD value of `amt` leftover token units, valued via the pool of the first position holding them.
   async valueLeftover(rows, amt, ethUsd) {
     const r = rows[0];
     let s = null;
@@ -421,15 +421,15 @@ class Positions {
     const v = this.leftoverQuote(r, amt, mk ? { sqrtPriceX96: mk.sqrt } : null, dec);
     const k = usdPerQuote(r.quote_symbol, ethUsd, this.chain);
     if (v != null) return v * k;
-    // harga tidak terbaca: proporsional dari nilai tutup
+    // price unreadable: proportional to the close value
     const total = rows.reduce((a, x) => a + BigInt(x.left_amount), 0n);
     return rows.reduce((a, x) => a + (x.left_quote || 0), 0) * k * Number(amt) / Number(total);
   }
 
-  // Harga masuk untuk posisi yang dicatat sebelum kolom entry_sqrt ada: diturunkan
-  // balik dari jumlah token yang disetor. Di dalam rentang, amount1 = L·(√P − √A),
-  // jadi √P = √A + amount1/L. Semua token di satu sisi = harga di luar rentang saat
-  // mint; batas rentangnya yang dipakai.
+  // Entry price for a position recorded before the entry_sqrt column existed: derived
+  // back from the deposited token amounts. Inside the range, amount1 = L·(√P − √A),
+  // so √P = √A + amount1/L. All tokens on one side = the price outside the range at
+  // mint; the range bound is what gets used.
   static get MARK_RATIO_MAX() { return 1000; }
 
   static entrySqrtOf(r) {
@@ -445,14 +445,14 @@ class Positions {
     } catch { return null; }
   }
 
-  // ---- sinkronisasi -------------------------------------------------------
-  // Sinkron atas permintaan pengguna: tombol "Perbarui" di tabel dasbor.
+  // ---- sync -----------------------------------------------------------
+  // Sync on user request: the "Refresh" button in the dashboard table.
   //
-  // Kalau sinkron sedang berjalan, permintaan ini menumpang yang itu — menekan
-  // tombol lima kali tidak boleh berarti lima putaran eth_call, dan hasilnya toh
-  // dibaca beberapa milidetik yang lalu. Yang TIDAK boleh menumpang adalah sinkron
-  // sesudah transaksi mendarat (claim, compound): di sana angka lama pasti salah,
-  // jadi pemanggilnya memakai sync() langsung dan selalu membaca ulang.
+  // If a sync is already running, this request rides on it — pressing the
+  // button five times must not mean five rounds of eth_call, and the result
+  // was read a few milliseconds ago anyway. What must NOT ride along is a sync
+  // after a transaction lands (claim, compound): there the old figures are certainly wrong,
+  // so its caller uses sync() directly and always re-reads.
   resync(ethUsd) {
     if (!this.syncing) this.syncing = this.sync(ethUsd).finally(() => { this.syncing = null; });
     return this.syncing;
@@ -462,18 +462,18 @@ class Positions {
     const rows = this.open();
     if (!rows.length) { this.live = []; this.lastSync = Date.now(); return []; }
 
-    // 1. likuiditas terkini
+    // 1. current liquidity
     const v4 = rows.filter((r) => r.venue === 'v4' && r.token_id);
     const v3 = rows.filter((r) => this.chain.isV3Venue(r.venue) && r.token_id);
     const liqCalls = [
       ...v4.map((r) => ({ to: this.chain.ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(r.token_id)]) })),
       ...v3.map((r) => ({ to: this.chain.npmFor(r.venue), data: IF_NPM.encodeFunctionData('positions', [BigInt(r.token_id)]) })),
     ];
-    // Panggilan yang GAGAL (RPC error, balasan kosong) TIDAK boleh dibaca sebagai nol:
-    // nol berarti "likuiditas habis" dan engine menutup posisinya di database tanpa
-    // transaksi apa pun. Pernah terjadi saat endpoint sedang rusak — #45 ($110) dicatat
-    // tutup dengan hasil $0 padahal di chain masih utuh. Gagal = pakai angka terakhir
-    // yang tersimpan, dan posisi ditandai belum tersinkron (bukan kosong).
+    // A call that FAILED (RPC error, empty reply) must NOT be read as zero:
+    // zero means "liquidity exhausted" and the engine closes the position in the database without any
+    // transaction. This happened when an endpoint was broken — #45 ($110) was recorded
+    // closed with a result of $0 although on chain it was still whole. Failed = use the last
+    // stored figure, and mark the position as not synced (not empty).
     const liqRes = await this.rpc.ethCallMany(liqCalls);
     const liqBy = new Map();
     const liqStale = new Set();
@@ -489,11 +489,11 @@ class Positions {
       if (L != null) liqBy.set(r.id, L); else keepOld(r);
     });
 
-    // 2. state pool — harga DAN likuiditas aktif. Likuiditas nol berarti harganya
-    //    tidak bisa dipercaya (lihat markSqrtForPair), jadi dibaca bersamaan.
+    // 2. pool state — price AND active liquidity. Zero liquidity means the price
+    //    cannot be trusted (see markSqrtForPair), so they are read together.
     const poolIds = [...new Set(rows.filter((r) => r.venue === 'v4').map((r) => r.pool_ref))];
-    // Likuiditas yang gagal dibaca tidak boleh menjatuhkan sinkron: dianggap 0 → jatuh
-    // ke pool acuan / harga sendiri, yang aman.
+    // Liquidity that failed to read must not bring the sync down: treated as 0 → falls
+    // to the reference pool / own price, which is safe.
     const [slots, poolLiq] = poolIds.length
       ? await Promise.all([this.chain.slot0V4Many(poolIds), this.chain.poolLiquidityMany(poolIds).catch(() => [])]) : [[], []];
     const slotBy = new Map(poolIds.map((id, i) => [id, slots[i]]));
@@ -510,14 +510,14 @@ class Positions {
       if (mk) markBy.set(r.id, mk);
     }
 
-    // 3. fee belum diklaim
+    // 3. unclaimed fees
     const curTick = new Map([...slotBy.entries()].filter(([, s]) => s).map(([k, s]) => [k, s.tick]));
     const feeItems = v4.map((r) => ({ poolId: r.pool_ref, tickLower: r.tick_lower, tickUpper: r.tick_upper, tokenId: r.token_id }));
     const feesV4 = feeItems.length ? await unclaimedV4(this.chain, feeItems, curTick, this.rpc) : [];
     const owner = this.store.getState('wallet_address');
     const feeBy = new Map();
     v4.forEach((r, i) => feeBy.set(r.id, feesV4[i] || { fee0: 0n, fee1: 0n }));
-    // v3 dikelompokkan per venue: tiap venue punya NPM sendiri (Uniswap v3 vs PancakeSwap v3).
+    // v3 is grouped per venue: each venue has its own NPM (Uniswap v3 vs PancakeSwap v3).
     if (owner) {
       for (const venue of new Set(v3.map((r) => r.venue))) {
         const group = v3.filter((r) => r.venue === venue);
@@ -527,7 +527,7 @@ class Positions {
     }
     for (const r of v3) if (!feeBy.has(r.id)) feeBy.set(r.id, { fee0: 0n, fee1: 0n });
 
-    // 4. metadata token
+    // 4. token metadata
     const toks = new Set();
     for (const r of rows) { if (r.token0) toks.add(r.token0); if (r.token1) toks.add(r.token1); }
     const metas = await this.chain.tokens([...toks]);
@@ -538,18 +538,26 @@ class Positions {
     for (const r of rows) {
       const s = slotBy.get(r.pool_ref);
       const L = liqBy.get(r.id) ?? BigInt(r.liquidity || '0');
+      // Zero for a freshly minted position (< 15 minutes) although its mint recorded
+      // liquidity: usually a lagging node that does not know the mint yet. `empty` still
+      // follows the chain — confirmEmpty decides, with the mint receipt as proof — but its
+      // VALUE comes from the stored liquidity. The table used to show $0 / PnL −100% until the
+      // next sync fell on a healthy node.
+      const stored = BigInt(r.liquidity || '0');
+      const young = L === 0n && stored > 0n && Date.now() - (r.opened_ts || 0) < 15 * 60_000;
+      const Lval = young ? stored : L;
       const d0 = metaBy.get(r.token0)?.decimals ?? 18;
       const d1 = metaBy.get(r.token1)?.decimals ?? 18;
       const f = feeBy.get(r.id) || { fee0: 0n, fee1: 0n };
       let amount0 = 0n, amount1 = 0n, valueQuote = null, feeQuote = null, inRange = null;
-      if (s && L > 0n) {
+      if (s && Lval > 0n) {
         const a = m.getSqrtRatioAtTick(r.tick_lower), b = m.getSqrtRatioAtTick(r.tick_upper);
-        const amt = m.amountsForLiquidity(s.sqrtPriceX96, a, b, L);
+        const amt = m.amountsForLiquidity(s.sqrtPriceX96, a, b, Lval);
         amount0 = amt.amount0; amount1 = amt.amount1;
         inRange = m.sideOfRange(s.tick, r.tick_lower, r.tick_upper) === 'both';
       }
-      // Komposisi token (amount0/1) mengikuti harga pool sendiri — itulah yang benar-
-      // benar keluar saat ditarik. Tapi NILAINYA dalam kuotasi memakai harga penilai.
+      // The token composition (amount0/1) follows the pool's own price — that is what really
+      // comes out when withdrawn. But its VALUE in the quote uses the marking price.
       const mark = markBy.get(r.id);
       if (s && mark) {
         const v = this.chain.valueInQuote({ sqrtPriceX96: mark.sqrt, amount0, amount1, dec0: d0, dec1: d1, token0: r.token0, token1: r.token1 });
@@ -557,9 +565,9 @@ class Positions {
         const vf = this.chain.valueInQuote({ sqrtPriceX96: mark.sqrt, amount0: f.fee0, amount1: f.fee1, dec0: d0, dec1: d1, token0: r.token0, token1: r.token1 });
         if (vf) feeQuote = vf.value;
       }
-      if (f.unknown) feeQuote = r.fees_quote ?? null;   // fee tidak terbaca: angka terakhir, bukan nol
-      // Pagar nominal: fee tak berhingga atau > 10× modal (+$100) bukan rezeki, tapi
-      // perhitungan yang rusak (slot fee salah baca, harga gila) — pakai angka terakhir.
+      if (f.unknown) feeQuote = r.fees_quote ?? null;   // fee unreadable: the last figure, not zero
+      // Nominal fence: an infinite fee or > 10× capital (+$100) is not a windfall, but a
+      // broken calculation (a fee slot misread, an absurd price) — use the last figure.
       if (feeQuote != null && (!Number.isFinite(feeQuote) || feeQuote > Math.max(r.cost_quote || 0, 1) * 10 + 100)) {
         if (!this.markWarned.has(`fee:${r.id}`)) { this.markWarned.add(`fee:${r.id}`); this.log(`fee posisi #${r.id} terbaca ${feeQuote} — tidak masuk akal, pakai angka terakhir`); }
         feeQuote = Number.isFinite(r.fees_quote) ? r.fees_quote : 0;
@@ -568,22 +576,22 @@ class Positions {
       const kind = this.chain.quoteSideOf(r.token0, r.token1)?.kind || 'usd';
       const toUsd = (x) => (x == null ? null : (kind === 'eth' ? x * ethUsd : x));
       const costUsd = toUsd(r.cost_quote) ?? 0;
-      // Harga tidak terbaca (RPC) ≠ posisi bernilai $0. Dulu nilainya 0 → PnL −100% →
-      // stop loss (kalau disetel) menutup posisi sungguhan di harga pasar, dan kurva
-      // ekuitas anjlok sesaat. Pakai nilai terakhir yang diketahui dan tandai basi;
-      // pemicu berbasis PnL tidak dinilai dari angka basi.
+      // A price not read (RPC) ≠ a position worth $0. It used to be 0 → PnL −100% →
+      // stop loss (if set) closes a real position at the market price, and the equity
+      // curve plunges momentarily. Use the last known value and flag it stale;
+      // PnL-based triggers are not evaluated from a stale figure.
       const withdrawnUsd0 = toUsd(r.out_quote) ?? 0;
-      const valueStale = valueQuote == null && L > 0n;
+      const valueStale = valueQuote == null && Lval > 0n;
       const valUsd = valueQuote != null ? toUsd(valueQuote)
-        : L > 0n ? (prevLive.get(r.id)?.valueUsd ?? Math.max(0, costUsd - withdrawnUsd0)) : 0;
+        : Lval > 0n ? (prevLive.get(r.id)?.valueUsd ?? Math.max(0, costUsd - withdrawnUsd0)) : 0;
       const feeUsd = toUsd(feeQuote) ?? 0;
       const claimedUsd = toUsd(r.claimed_quote) ?? 0;
-      // out_quote posisi terbuka = hasil tarik sebagian yang sudah di wallet
+      // out_quote of an open position = partial withdrawal proceeds already in the wallet
       const withdrawnUsd = toUsd(r.out_quote) ?? 0;
       const pnlUsd = valUsd + feeUsd + claimedUsd + withdrawnUsd - costUsd;
 
-      // HODL: kalau modal awal dibiarkan sebagai token, berapa nilainya sekarang?
-      // Selisihnya = impermanent loss.
+      // HODL: if the initial capital were left as tokens, what would it be worth now?
+      // The difference = impermanent loss.
       let hodlUsd = null;
       if (s && mark) {
         const v = this.chain.valueInQuote({
@@ -594,20 +602,20 @@ class Positions {
       }
 
       this.store.run('UPDATE positions SET liquidity=?, fees_quote=?, last_sync=? WHERE id=?',
-        L.toString(), feeQuote ?? 0, Date.now(), r.id);
+        Lval.toString(), feeQuote ?? 0, Date.now(), r.id);
 
       out.push({
         ...r, liquidity: L.toString(),
         symbol0: metaBy.get(r.token0)?.symbol || '?', symbol1: metaBy.get(r.token1)?.symbol || '?',
         dec0: d0, dec1: d1,
-        // Sisi kuotasi menentukan arah harga yang ditampilkan di UI.
+        // The quote side determines the direction of the price displayed in the UI.
         quoteSide: this.chain.quoteSideOf(r.token0, r.token1)?.side ?? null,
         amount0: amount0.toString(), amount1: amount1.toString(),
         fee0: f.fee0.toString(), fee1: f.fee1.toString(),
         curTick: s?.tick ?? null, inRange,
         curSqrt: s?.sqrtPriceX96 != null ? s.sqrtPriceX96.toString() : null,
-        // Harga penilai kalau berbeda dari harga pool (pool tidak layak dinilai):
-        // sqrt-nya dan dari mana ('entry' atau pool_ref pool acuan).
+        // The marking price if it differs from the pool price (the pool is unfit for valuation):
+        // its sqrt and where from ('entry' or the reference pool's pool_ref).
         markSqrt: mark && mark.ref ? mark.sqrt.toString() : null,
         markRef: mark?.ref ?? null,
         entrySqrt: Positions.entrySqrtOf(r),
@@ -615,7 +623,7 @@ class Positions {
         pnlPct: costUsd > 0 ? (pnlUsd / costUsd) * 100 : 0,
         ilUsd: hodlUsd != null ? valUsd - hodlUsd : null,
         ageHours: (Date.now() - (r.opened_ts || Date.now())) / 3600000,
-        // Kosong hanya kalau chain BENAR-BENAR menjawab nol — bukan karena gagal dibaca.
+        // Empty only if the chain REALLY answers zero — not because it failed to read.
         empty: L === 0n && !liqStale.has(r.id),
         liqStale: liqStale.has(r.id),
         valueStale,
@@ -626,17 +634,17 @@ class Positions {
     return out;
   }
 
-  // Pastikan likuiditas posisi memang nol di chain sebelum ditutup di database.
-  // Dibaca ulang lewat satu panggilan tersendiri (bukan hasil sinkron terakhir): nol
-  // dari sinkron bisa datang dari node yang tertinggal/rusak, dan menutup posisi
-  // berdasarkan itu berarti $110 hilang dari pembukuan tanpa transaksi. Gagal baca
-  // = belum pasti = false.
+  // Make sure the position's liquidity really is zero on chain before closing it in the database.
+  // Re-read via a separate call (not the last sync result): a zero
+  // from the sync can come from a lagging/broken node, and closing the position
+  // on that means $110 vanishes from the books without a transaction. Failing to read
+  // = not certain = false.
   //
-  // Posisi yang BARU dibuka (< 15 menit): node yang tertinggal (ordofi bisa ribuan blok)
-  // belum mengenal mint-nya dan menjawab likuiditas 0 — dua kali berturut-turut kalau
-  // kebetulan dua-duanya jatuh ke node itu. Menutupnya berarti posisi hidup tercatat
-  // tutup $0 dan tidak pernah diadopsi lagi (tokenId-nya sudah "dikenal"). Jadi node yang
-  // menjawab harus sekaligus menunjukkan receipt mint-nya, dalam satu batch.
+  // A FRESHLY opened position (< 15 minutes): a lagging node (ordofi can be thousands of blocks)
+  // does not know its mint yet and answers liquidity 0 — twice in a row if
+  // both happen to fall on that node. Closing it means a live position is recorded
+  // closed at $0 and is never adopted again (its tokenId is already "known"). So the node
+  // that answers must also show its mint receipt, in one batch.
   async confirmEmpty(pos) {
     try {
       const call = pos.venue === 'v4'
@@ -659,18 +667,18 @@ class Positions {
     } catch { return false; }
   }
 
-  // Posisi yang perlu ditutup karena aturan mandiri (bukan karena target keluar).
-  // `rules`: objek aturan, atau fungsi (posisi) -> aturan. Engine memakai fungsi supaya
-  // aturan keluar PER TARGET (stop loss, take profit, umur, di luar rentang) berlaku —
-  // form aturan per-target menampilkannya, dan dulu diam-diam diabaikan.
+  // Positions that need closing because of standalone rules (not because the target exited).
+  // `rules`: a rules object, or a function (position) -> rules. The engine uses a function so
+  // PER-TARGET exit rules (stop loss, take profit, age, out of range) apply —
+  // the per-target rules form shows them, and they used to be silently ignored.
   exitTriggers(rules) {
     const now = Date.now();
     const outs = [];
     for (const p of this.live) {
       const e = (typeof rules === 'function' ? rules(p) : rules).exit;
       if (p.empty) { outs.push({ pos: p, reason: 'likuiditas sudah nol di chain' }); continue; }
-      // Nilai/likuiditas basi (RPC gagal): stop loss, take profit, dan di-luar-rentang tidak
-      // boleh dinilai dari angka lama — tunggu sinkron yang terbaca.
+      // Stale value/liquidity (RPC failed): stop loss, take profit, and out-of-range must not
+      // be evaluated from old figures — wait for a sync that reads.
       if (p.valueStale || p.liqStale) continue;
       if (e.stop_loss_pct > 0 && p.pnlPct <= -Math.abs(e.stop_loss_pct)) {
         outs.push({ pos: p, reason: `stop loss ${p.pnlPct.toFixed(1)}%` }); continue;
@@ -681,10 +689,10 @@ class Positions {
       if (e.max_age_hours > 0 && p.ageHours >= e.max_age_hours) {
         outs.push({ pos: p, reason: `umur ${p.ageHours.toFixed(1)} jam` }); continue;
       }
-      // Terlalu jauh dari rentang: modalnya menganggur (tidak menghasilkan fee) dan
-      // harganya belum tentu kembali. Dua sinkron berturut-turut (~1 menit) supaya sumbu
-      // sesaat tidak menutup posisi; kalau target masih di dalam, mesin membukanya lagi
-      // begitu harga mendekat (reenter_within_pct).
+      // Too far from the range: its capital sits idle (earning no fees) and
+      // the price will not necessarily return. Two consecutive syncs (~1 minute) so a momentary wick
+      // does not close the position; if the target is still inside, the engine opens it again
+      // once the price comes near (reenter_within_pct).
       const far = e.out_of_range_pct > 0 && p.inRange === false && p.curTick != null
         ? m.distanceFromRangePct(p.curTick, p.tick_lower, p.tick_upper) : 0;
       if (far > e.out_of_range_pct) {
@@ -708,13 +716,13 @@ class Positions {
     return outs;
   }
 
-  // Ringkasan posisi terbuka.
+  // Summary of open positions.
   //
-  // Jumlah dan eksposur DIHITUNG DARI DB, bukan dari cache `live`. Cache itu hanya
-  // disegarkan tiap 30 detik; kalau dipakai sebagai sumber, posisi yang baru saja
-  // dibuka tidak terhitung — dan batas "maksimum posisi terbuka" serta "eksposur
-  // total" bisa ditembus beberapa kali berturut-turut oleh target yang cepat,
-  // persis batas yang dipasang untuk membatasi kerugian.
+  // The count and exposure are COMPUTED FROM THE DB, not from the `live` cache. That cache is only
+  // refreshed every 30 seconds; if used as the source, a position just
+  // opened is not counted — and the "maximum open positions" and "total
+  // exposure" limits can be breached several times in a row by a fast target,
+  // exactly the limits put in place to cap losses.
   summary(ethUsd) {
     const liveById = new Map(this.live.map((p) => [p.id, p]));
     const rows = this.store.all("SELECT id, cost_quote, out_quote, quote_symbol, claimed_quote FROM positions WHERE chain=? AND status='open'", this.chain.network)
@@ -724,12 +732,12 @@ class Positions {
       const k = usdPerQuote(r.quote_symbol, ethUsd, this.chain);
       const c = (r.cost_quote || 0) * k;
       cost += c;
-      // hasil tarik sebagian sudah di wallet (ikut kas), tapi modalnya masih utuh di
-      // cost_quote — tanpa ini posisi yang ditarik sebagian terbaca rugi sebesar tarikannya
+      // the partial withdrawal proceeds are already in the wallet (part of cash), but its capital is still whole in
+      // cost_quote — without this a partially withdrawn position reads as a loss equal to the withdrawal
       withdrawn += (r.out_quote || 0) * k;
       const l = liveById.get(r.id);
       if (l) { val += l.valueUsd || 0; fee += l.feeUsd || 0; }
-      else val += Math.max(0, c - (r.out_quote || 0) * k);   // belum tersinkron: sisa modal sebagai taksiran nilai
+      else val += Math.max(0, c - (r.out_quote || 0) * k);   // not yet synced: the remaining capital as a value estimate
     }
     const open = rows.map((r) => liveById.get(r.id)).filter(Boolean).filter((p) => !p.empty);
     const closed = this.store.all("SELECT cost_quote, out_quote, quote_symbol FROM positions WHERE chain=? AND status='closed'", this.chain.network);
@@ -738,8 +746,8 @@ class Positions {
       const k = usdPerQuote(c.quote_symbol, ethUsd, this.chain);
       realized += ((c.out_quote || 0) - (c.cost_quote || 0)) * k;
     }
-    // Memecoin sisa yang belum dijual: out_quote posisinya masih memakai harga tutup,
-    // selisih ke harga kini adalah PnL yang belum terealisasi.
+    // Leftover memecoin not yet sold: the position's out_quote still uses the close price,
+    // the difference to the current price is unrealized PnL.
     const lo = this.leftoverVal || { usd: 0, closeUsd: 0 };
     return {
       openCount: rows.length, exposureUsd: val, costUsd: cost, feeUsd: fee,

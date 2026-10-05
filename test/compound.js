@@ -24,7 +24,7 @@ function fixture() {
   };
   const chain = {
     slot0V4: async () => ({ tick: 0, sqrtPriceX96: m.Q96 }),
-    poolLiquidity: async () => 1n,   // pool hidup: harga pool sendiri yang dipakai menilai
+    poolLiquidity: async () => 1n,   // live pool: the pool's own price is what gets used for valuation
     tokens: async (list) => list.map((address) => ({ address, decimals: 6, symbol: 'TOK' })),
     valueInQuote: ({ amount0, amount1 }) => ({ value: Number(amount0 + amount1) / 1e6, kind: 'usd' }),
   };
@@ -61,8 +61,8 @@ test('default OFF; per-position settings persist and reject invalid values', () 
     for (const input of [{ minUsd: 0 }, { minUsd: NaN }, { intervalMinutes: 0 }, { intervalMinutes: 1.5 }, { enabled: 'true' }]) {
       assert.throws(() => f.c.configure(f.id, input));
     }
-    // v3 ikut dipanen sejak jalur multicall collect+increaseLiquidity ada; venue tanpa
-    // NFT posisi (pool langsung) tetap ditolak.
+    // v3 is harvested too since the multicall collect+increaseLiquidity path exists; venues without
+    // a position NFT (direct pools) are still rejected.
     f.store.run("UPDATE positions SET venue='v3' WHERE id=?", f.id);
     assert.equal(f.c.configure(f.id, { enabled: true }).supported, true);
     f.store.run("UPDATE positions SET venue='v3pool' WHERE id=?", f.id);

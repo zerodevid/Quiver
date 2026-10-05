@@ -1,35 +1,35 @@
 'use strict';
-// Grafik pertumbuhan portofolio sebagai GAMBAR untuk Telegram: garis nilai wallet
-// atau PnL sepanjang waktu, diisi sampai garis nol, dengan puncak dan drawdown
-// terdalam ditandai — kembaran web/src/components/GrowthChart.jsx.
+// Portfolio growth chart as an IMAGE for Telegram: a line of wallet value
+// or PnL over time, filled down to the zero line, with the peak and the deepest drawdown
+// marked — the twin of web/src/components/GrowthChart.jsx.
 //
-// Kenapa digambar di server: sama seperti grafik posisi (src/chart-card.js) —
-// pertanyaan "portofolio saya naik atau turun minggu ini" muncul di ponsel, dan
-// Telegram tidak bisa menjalankan Recharts. Angkanya diambil dari /api/portfolio
-// yang sama dengan dasbor, jadi gambar dan halaman Ringkasan tidak pernah berbeda.
+// Why it is drawn on the server: same as the position chart (src/chart-card.js) —
+// the question "is my portfolio up or down this week" comes up on a phone, and
+// Telegram cannot run Recharts. The numbers come from /api/portfolio,
+// the same as the dashboard, so the image and the Summary page never differ.
 //
-// Tiga tampilan, satu sumbu (bukan dua garis berskala beda di satu grafik):
-//  - net   : PnL bersih = nilai wallet − modal (baseline + setoran − penarikan).
-//            Memuat biaya di luar posisi (zap, gas, swap). Hanya kalau modal terlacak.
-//  - pnl   : PnL kumulatif = jumlah PnL posisi (out − cost); kebal setoran/penarikan.
-//  - value : nilai wallet = kas + posisi + fee; hanya titik yang kasnya terbaca.
+// Three views, one axis (not two lines with different scales on one chart):
+//  - net   : net PnL = wallet value − capital (baseline + deposits − withdrawals).
+//            Includes costs outside positions (zap, gas, swap). Only when capital is tracked.
+//  - pnl   : cumulative PnL = sum of position PnL (out − cost); immune to deposits/withdrawals.
+//  - value : wallet value = cash + positions + fees; only points whose cash was readable.
 const { Resvg } = require('@resvg/resvg-js');
 const { tr, localeContext } = require('./telegram-i18n');
 const { prims } = require('./chart-card');
 
 const { W, SCALE, PAD, AXIS_W, C, FONTS, txt, line, rect, poly, tag, usd, pct, clock, hhmm, dayShort, setTz } = prims;
-const HEAD_H = 132;             // judul + angka besar + tertinggi/drawdown
-const PLOT_H = 380;             // tinggi panel grafik
-const FOOT_H = 78;              // sumbu waktu + catatan kaki
+const HEAD_H = 132;             // title + big number + high/drawdown
+const PLOT_H = 380;             // chart panel height
+const FOOT_H = 78;              // time axis + footnote
 const HOUR = 3600e3, DAY = 864e5;
 
-// Urutan = urutan tombol di Telegram; kuncinya ikut tersimpan di callback data.
+// Order = the order of the buttons in Telegram; the key is also stored in the callback data.
 const VIEWS = [['net', 'PnL bersih'], ['pnl', 'PnL kumulatif'], ['value', 'Nilai']];
 const RANGES = ['24h', '7d', '30d', 'all'];
 const RANGE_LABEL = { '24h': '24 jam', '7d': '7 hari', '30d': '30 hari', all: 'Semua' };
 const RANGE_IN = { '24h': 'dalam 24 jam', '7d': 'dalam 7 hari', '30d': 'dalam 30 hari', all: 'sejak awal' };
 
-// Kelipatan "bulat" (1-2-2,5-5 × 10ⁿ) untuk label sumbu — salinan GrowthChart.jsx.
+// "Round" multiples (1-2-2.5-5 × 10ⁿ) for axis labels — a copy of GrowthChart.jsx.
 function niceStep(span, target) {
   const raw = span / target;
   const p = 10 ** Math.floor(Math.log10(raw));
@@ -47,12 +47,12 @@ function yScale(lo, hi, { zero, floor0 }) {
   for (let v = Math.ceil(dLo / step) * step; v <= dHi + step * 1e-9; v += step) ticks.push(Math.abs(v) < step * 1e-9 ? 0 : v);
   return { lo: dLo, hi: dHi, ticks, step };
 }
-// Tick waktu di batas jam/hari (zona waktu pengguna), bukan titik acak berlabel sama.
+// Time ticks at hour/day boundaries (the user's time zone), not random points with the same label.
 function timeTicks(t0, t1, tz, target = 7) {
   const span = Math.max(1, t1 - t0);
   const steps = [HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY];
   const step = steps.find((s) => span / s <= target) || 30 * DAY;
-  // Offset zona waktu supaya pembulatan ke jam/hari mengikuti jam lokal pengguna.
+  // Time zone offset so rounding to hour/day follows the user's local time.
   const off = tz ? tzOffset(t0, tz) : new Date(t0).getTimezoneOffset() * -60000;
   const out = [];
   let v = Math.ceil((t0 + off) / step) * step - off;
@@ -67,7 +67,7 @@ function tzOffset(ts, tz) {
   } catch { return 0; }
 }
 
-// Titik-titik yang digambar untuk satu tampilan, dari balasan /api/portfolio.
+// The points drawn for one view, from the /api/portfolio reply.
 function pointsOf(p, view) {
   const s = p.series || [];
   if (view === 'net') return s.filter((e) => e.net != null).map((e) => ({ t: e.ts, v: e.net }));
@@ -75,16 +75,16 @@ function pointsOf(p, view) {
   return s.filter((e) => e.cash != null).map((e) => ({ t: e.ts, v: e.total }));
 }
 
-// Bahan gambar dari balasan /api/portfolio: tampilan yang diminta (net jatuh ke pnl
-// kalau modal tidak terlacak, seperti dasbor), titik, selisih, dan penanda.
+// Drawing material from the /api/portfolio reply: the requested view (net falls back to pnl
+// if capital is not tracked, like the dashboard), points, difference, and markers.
 function prepare(p, view) {
   const v = VIEWS.some(([k]) => k === view) ? view : 'net';
   const eff = v === 'net' && p.now?.netPnl == null ? 'pnl' : v;
   const pts = pointsOf(p, eff);
   const isPnl = eff !== 'value';
   const first = pts[0]?.v ?? 0, last = pts[pts.length - 1]?.v ?? 0;
-  // Rentang "Semua" dari nol; selain itu dari patokan sebelum jendela — kalau
-  // riwayat mulai di dalam jendela, dari nol, bukan dari titik pertama yang sudah berisi laba.
+  // The "All" range starts from zero; otherwise from the reference before the window — if
+  // the history starts inside the window, from zero, not from the first point that already holds a profit.
   const delta = eff === 'net' ? last - (p.range === 'all' ? 0 : (p.baseline?.net ?? 0))
     : eff === 'pnl' ? last - (p.range === 'all' ? 0 : (p.baseline?.pnl ?? 0))
       : last - first;
@@ -116,22 +116,22 @@ function portfolioSvg(d, tz) {
     <linearGradient id="gFlat" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${C.accent}" stop-opacity="0.35"/><stop offset="1" stop-color="${C.accent}" stop-opacity="0.03"/></linearGradient>
   </defs>`);
 
-  // ---- kepala ----
-  const judul = `${tr("Portofolio")} · ${viewLabel(d.view)} · ${tr(RANGE_LABEL[d.range] || d.range)}`;
-  parts.push(txt(judul, PAD, 40, { size: 22, weight: 600 }));
+  // ---- header ----
+  const heading = `${tr("Portofolio")} · ${viewLabel(d.view)} · ${tr(RANGE_LABEL[d.range] || d.range)}`;
+  parts.push(txt(heading, PAD, 40, { size: 22, weight: 600 }));
   parts.push(txt(`Quiver · ${clock(d.at)}`, W - PAD, 40, { size: 13, color: C.faint, anchor: 'end' }));
   const tone = d.delta > 0 ? C.up : d.delta < 0 ? C.down : C.text;
-  const besar = (d.delta > 0 ? '+' : '') + usd(d.delta);
-  parts.push(txt(besar, PAD, 92, { size: 40, weight: 700, color: tone }));
-  const bx = PAD + besar.length * 22.5 + 16;   // taksiran lebar angka besar (Inter 40px)
+  const large = (d.delta > 0 ? '+' : '') + usd(d.delta);
+  parts.push(txt(large, PAD, 92, { size: 40, weight: 700, color: tone }));
+  const bx = PAD + large.length * 22.5 + 16;   // estimated width of the big number (Inter 40px)
   if (d.isPnl && d.cap > 0) parts.push(txt(pct((d.delta / d.cap) * 100, 2), bx, 92, { size: 18, weight: 500, color: tone }));
   parts.push(txt(tr(RANGE_IN[d.range] || d.range) + (d.view === 'value' ? ` · ${tr("termasuk setoran & penarikan")}` : ''), PAD, 116, { size: 13, color: C.muted }));
-  // Tertinggi & drawdown/terendah di kanan, sejajar angka besar.
-  const kanan = d.isPnl
+  // High & drawdown/low on the right, aligned with the big number.
+  const right = d.isPnl
     ? [[tr("Tertinggi"), usd(d.hi), C.text], [tr("Drawdown maks"), (d.dd > 0.005 ? '−' : '') + usd(d.dd), d.dd > 0.005 ? C.down : C.text]]
     : [[tr("Tertinggi"), usd(d.hi), C.text], [tr("Terendah"), usd(d.lo), C.text]];
   let kx = W - PAD;
-  for (const [label, val, col] of kanan.reverse()) {
+  for (const [label, val, col] of right.reverse()) {
     parts.push(txt(val, kx, 92, { size: 20, weight: 600, color: col, anchor: 'end' }));
     parts.push(txt(label, kx, 112, { size: 12, color: C.muted, anchor: 'end' }));
     kx -= Math.max(label.length * 7, val.length * 12) + 34;
@@ -144,7 +144,7 @@ function portfolioSvg(d, tz) {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${parts.join('')}</svg>`;
   }
 
-  // ---- skala ----
+  // ---- scale ----
   const vals = pts.map((x) => x.v);
   const vMin = Math.min(...vals), vMax = Math.max(...vals);
   const Y = yScale(Math.min(d.lo, vMin), Math.max(d.hi, vMax), { zero: d.isPnl, floor0: !d.isPnl });
@@ -159,9 +159,9 @@ function portfolioSvg(d, tz) {
   const X = timeTicks(t0, t1, tz);
   for (const t of X.ticks) parts.push(line(px(t), y0, px(t), y1, C.grid));
 
-  // ---- area + garis ----
-  // Diisi sampai garis nol (PnL) atau dasar grafik (nilai). Warna menurut tanda:
-  // bagian di atas nol hijau, di bawah nol merah — dua clip-path atas gambar yang sama.
+  // ---- area + line ----
+  // Filled down to the zero line (PnL) or the chart base (value). Colour by sign:
+  // the part above zero green, below zero red — two clip-paths over the same drawing.
   const zeroY = d.isPnl ? py(0) : y1;
   const linePts = pts.map((x) => [px(x.t), py(x.v)]);
   const areaPath = `M${linePts[0][0].toFixed(1)},${zeroY.toFixed(1)} ` + linePts.map(([x, y]) => `L${x.toFixed(1)},${y.toFixed(1)}`).join(' ') + ` L${linePts[linePts.length - 1][0].toFixed(1)},${zeroY.toFixed(1)} Z`;
@@ -175,7 +175,7 @@ function portfolioSvg(d, tz) {
     parts.push(poly(linePts, C.accent, 2));
   }
 
-  // ---- penanda: puncak (bukan titik terakhir) dan pita drawdown terdalam ----
+  // ---- markers: peak (not the last point) and the deepest drawdown band ----
   const at = (ts) => pts.find((x) => x.t === ts);
   const peakPt = at(d.hiTs);
   if (peakPt && d.hiTs !== t1 && d.hi - Math.min(pts[0].v, pts[pts.length - 1].v) > Y.step * 0.25) {
@@ -190,20 +190,20 @@ function portfolioSvg(d, tz) {
     parts.push(line(xb, py(ddA.v), xb, py(ddB.v), C.down, 1.2, '3 3'));
     parts.push(txt(`−${usd(d.dd)}`, xb + 10, (py(ddA.v) + py(ddB.v)) / 2 + 4, { size: 12, weight: 600, color: C.down, anchor: xb > x1 - 90 ? 'end' : 'start' }));
   }
-  // Titik terakhir + label nilainya di kolom kanan.
+  // The last point + its value label in the right column.
   const lastPt = linePts[linePts.length - 1];
   const lastCol = d.isPnl ? (pts[pts.length - 1].v < 0 ? C.down : C.up) : C.accent;
   parts.push(`<circle cx="${lastPt[0].toFixed(1)}" cy="${lastPt[1].toFixed(1)}" r="4" fill="${lastCol}"/>`);
   parts.push(tag(usd(pts[pts.length - 1].v), x1 + 6, lastPt[1], lastCol, { bg: C.bg1 }));
 
-  // ---- sumbu waktu ----
+  // ---- time axis ----
   const axisY = y1 + 22;
   for (const t of X.ticks) {
     const label = X.step >= DAY ? dayShort(t) : `${dayShort(t)} ${hhmm(t)}`;
     parts.push(txt(label, px(t), axisY, { size: 12, color: C.faint, anchor: 'middle' }));
   }
 
-  // ---- kaki ----
+  // ---- footer ----
   parts.push(line(0, y1 + 34, W, y1 + 34, C.line));
   const n = d.now, st = d.stats;
   const kaki = [

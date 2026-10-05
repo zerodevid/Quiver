@@ -1,12 +1,12 @@
 'use strict';
-// Uji edge case mesin copy-LP.
+// Edge case tests of the copy-LP engine.
 //
-// Semua uji di sini memakai KODE ASLI (policy/engine/watcher). Yang dipalsukan hanya
-// batas luar: chain dan pengiriman transaksi. Tujuannya menjawab satu pertanyaan —
-// "kalau target melakukan X, apakah bot mengambil keputusan yang benar?" — untuk
-// bentuk-bentuk aksi yang jarang terjadi tetapi mahal kalau salah.
+// All tests here use the REAL CODE (policy/engine/watcher). Only the outer boundaries are
+// faked: the chain and transaction submission. The goal is to answer one question —
+// "if the target does X, does the bot make the right decision?" — for
+// action shapes that rarely happen but are expensive to get wrong.
 //
-// Jalankan: node test/edge.js
+// Run: node test/edge.js
 const assert = require('node:assert');
 const { Engine } = require('../src/engine');
 const { Store } = require('../src/db');
@@ -19,7 +19,7 @@ const POOL = '0x' + 'ab'.repeat(32);
 const TARGET = '0x3c926ee5e990b3999f1f656a9b18ff678ce82976';
 const ME = '0xe9c209fd02a1562761c99700fc3d126e64b981ee';
 
-// Harga pool dipatok di tengah rentang uji supaya posisi butuh kedua token.
+// The pool price is pinned in the middle of the test range so the position needs both tokens.
 const TICK = 0;
 const SQRT = m.getSqrtRatioAtTick(TICK);
 
@@ -55,10 +55,10 @@ function harness({ balances = {}, rules = {}, positions = [], targetLiquidityAft
     blockTs: async (b) => b * 101,
   };
   const cfg = { mode: { dry_run: false, paused: false }, rules, gas: {}, loop: {} };
-  // getPositionLiquidity dipakai handleExit untuk menghitung L target SEBELUM aksi.
+  // getPositionLiquidity is used by handleExit to compute the target's L BEFORE the action.
   const rpc = {
     ethCallMany: async (c) => c.map(() => (targetLiquidityAfter == null ? '0x' : '0x' + targetLiquidityAfter.toString(16).padStart(64, '0'))),
-    // receipt tx yang log-nya terlihat pasti ada di chain (tanpa log likuiditas di sini);
+    // the tx receipt whose log is seen certainly exists on chain (no liquidity logs here);
     // getCode = '0x' (EOA)
     batch: async (c) => c.map((x) => ({ result: x.method === 'eth_getTransactionReceipt' ? { logs: [] } : x.method === 'eth_getCode' ? '0x' : null })),
     blockNumber: async () => 1e6, call: async () => null,
@@ -84,7 +84,7 @@ function harness({ balances = {}, rules = {}, positions = [], targetLiquidityAft
   return { eng, store, sent };
 }
 
-// Aksi target berbentuk seperti yang dihasilkan watcher.
+// A target action shaped as the watcher produces it.
 function action(over = {}) {
   const liq = 10n ** 20n;
   return {
@@ -119,9 +119,9 @@ async function t(name, fn) {
 }
 
 (async () => {
-  console.log('uji edge case mesin copy-LP\n');
+  console.log('copy-LP engine edge case tests\n');
 
-  await t('target menambah ke posisi yang sudah kita cermin -> menambah, bukan buka posisi baru', async () => {
+  await t('target adds to a position we already mirror -> adds, not opening a new position', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,
       positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 19n).toString() }],
@@ -130,29 +130,29 @@ async function t(name, fn) {
     const v = verdictOf(store);
     assert.strictEqual(v.verdict, 'copy', v.reason);
     assert.match(v.reason, /menambah posisi/, v.reason);
-    assert.strictEqual(sent.filter((s) => s.kind === 'increase').length, 1, 'harus mengirim increase');
-    assert.strictEqual(store.all("SELECT id FROM positions WHERE status='open'").length, 1, 'tidak boleh ada posisi kedua');
+    assert.strictEqual(sent.filter((s) => s.kind === 'increase').length, 1, 'must send an increase');
+    assert.strictEqual(store.all("SELECT id FROM positions WHERE status='open'").length, 1, 'there must be no second position');
   });
 
-  await t('target menarik SEBAGIAN -> kita menarik proporsional, posisi tetap terbuka', async () => {
+  await t('target withdraws PARTIALLY -> we withdraw proportionally, the position stays open', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,
       positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
-      targetLiquidityAfter: 6n * 10n ** 19n,   // target menarik 40%, menyisakan 60%
+      targetLiquidityAfter: 6n * 10n ** 19n,   // target withdraws 40%, leaving 60%
     });
     const a = action({ kind: 'decrease', liquidity: (-4n * 10n ** 19n).toString() });
     await eng.handle(rec(store, a));
     const v = verdictOf(store);
     assert.strictEqual(v.verdict, 'copy', v.reason);
-    assert.strictEqual(sent.filter((s) => s.kind === 'decrease').length, 1, 'harus decrease, bukan burn');
+    assert.strictEqual(sent.filter((s) => s.kind === 'decrease').length, 1, 'must be a decrease, not a burn');
     const p = store.get('SELECT status, liquidity FROM positions');
-    assert.strictEqual(p.status, 'open', 'posisi harus tetap terbuka');
+    assert.strictEqual(p.status, 'open', 'the position must stay open');
     assert.strictEqual(p.liquidity, (6n * 10n ** 19n).toString(), 'sisa L salah: ' + p.liquidity);
   });
 
-  // ---- retry keluar ------------------------------------------------------
-  // Sinyal keluar hanya diputuskan sekali; kalau siarannya gagal, posisi kita
-  // tertinggal terbuka. Diulang — tapi hanya selama tx keluarnya belum terkirim.
+  // ---- exit retry ------------------------------------------------------
+  // An exit signal is only decided once; if the broadcast fails, our position
+  // is left open. Retried — but only while the exit tx has not been sent.
   const exitHarness = (sendFn) => {
     const h = harness({
       balances: RICH,
@@ -160,7 +160,7 @@ async function t(name, fn) {
       targetLiquidityAfter: 6n * 10n ** 19n,
     });
     h.eng.exitRetryWaits = [1, 1, 1];
-    h.eng.chainLiquidity = async () => 10n ** 20n;   // posisi kita di chain belum berubah
+    h.eng.chainLiquidity = async () => 10n ** 20n;   // our position on chain has not changed
     h.eng.exec.txLanded = async () => false;
     let n = 0;
     h.eng.exec.send = async (tx, meta) => sendFn(++n, meta, h);
@@ -169,7 +169,7 @@ async function t(name, fn) {
   };
   const decreaseAct = () => action({ kind: 'decrease', liquidity: (-4n * 10n ** 19n).toString() });
 
-  await t('siaran keluar ditolak RPC sekali -> diulang dan berhasil', async () => {
+  await t('exit broadcast rejected by the RPC once -> retried and succeeds', async () => {
     const h = exitHarness((n, meta) => {
       if (n === 1) throw Object.assign(new Error('eth_sendRawTransaction: Method not found'), { txHash: '0xaa' });
       h.sent.push({ kind: meta?.kind });
@@ -182,14 +182,14 @@ async function t(name, fn) {
     assert.strictEqual(h.store.get('SELECT liquidity FROM positions').liquidity, (6n * 10n ** 19n).toString());
   });
 
-  await t('siaran keluar gagal terus -> menyerah setelah 4 percobaan, dicatat galat', async () => {
+  await t('exit broadcast keeps failing -> gives up after 4 attempts, an error is recorded', async () => {
     const h = exitHarness(() => { throw new Error('eth_sendRawTransaction: Method not found'); });
     await h.eng.handle(rec(h.store, decreaseAct()));
     assert.strictEqual(verdictOf(h.store).verdict, 'error');
     assert.strictEqual(h.tries(), 4);
   });
 
-  await t('tx keluar yang dianggap gagal ternyata masuk -> TIDAK dikirim ulang', async () => {
+  await t('an exit tx thought to have failed actually landed -> NOT resent', async () => {
     const h = exitHarness(() => { throw Object.assign(new Error('timeout'), { txHash: '0xaa' }); });
     h.eng.exec.txLanded = async () => true;
     await h.eng.handle(rec(h.store, decreaseAct()));
@@ -199,7 +199,7 @@ async function t(name, fn) {
     assert.strictEqual(h.tries(), 1);
   });
 
-  await t('likuiditas kita di chain sudah berkurang -> TIDAK dikirim ulang', async () => {
+  await t('our liquidity on chain has already decreased -> NOT resent', async () => {
     const h = exitHarness(() => { throw new Error('timeout'); });
     h.eng.chainLiquidity = async () => 6n * 10n ** 19n;
     await h.eng.handle(rec(h.store, decreaseAct()));
@@ -207,7 +207,7 @@ async function t(name, fn) {
     assert.strictEqual(h.tries(), 1);
   });
 
-  await t('tx keluar terkirim tapi revert -> TIDAK diulang', async () => {
+  await t('exit tx sent but reverted -> NOT repeated', async () => {
     const h = exitHarness(() => '0x' + 'cc'.repeat(32));
     h.eng.exec.waitReceipt = async () => ({ ok: false, receipt: {} });
     await h.eng.handle(rec(h.store, decreaseAct()));
@@ -224,12 +224,12 @@ async function t(name, fn) {
       : { jsonrpc: '2.0', id: 1, result: '0xhash' });
     assert.strictEqual(await pool.sendRaw('0x02'), '0xhash');
     await new Promise((r) => setImmediate(r));
-    assert.strictEqual(pool.eps[0].noSend, true, 'endpoint baca-saja harus ditandai');
+    assert.strictEqual(pool.eps[0].noSend, true, 'a read-only endpoint must be flagged');
     pool.post = async () => ({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'insufficient funds' } });
     await assert.rejects(() => pool.sendRaw('0x02'), /insufficient funds/);
   });
 
-  await t('target memindahkan NFT ke dompet lain -> kita tutup penuh', async () => {
+  await t('target moves the NFT to another wallet -> we close fully', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,
       positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
@@ -237,19 +237,19 @@ async function t(name, fn) {
     await eng.handle(rec(store, action({ kind: 'transfer_out', poolRef: null, token0: null, token1: null })));
     const v = verdictOf(store);
     assert.strictEqual(v.verdict, 'copy', v.reason);
-    assert.strictEqual(sent.filter((s) => s.kind === 'burn').length, 1, 'harus burn');
+    assert.strictEqual(sent.filter((s) => s.kind === 'burn').length, 1, 'must burn');
     assert.strictEqual(store.get('SELECT status FROM positions').status, 'closed');
   });
 
-  await t('penitipan ke kontrak otomasi -> TIDAK dianggap keluar', async () => {
+  await t('deposit into an automation contract -> NOT treated as an exit', async () => {
     const { eng, store, sent } = harness({ balances: RICH, positions: [{ tokenId: '5', mirrorOf: '999', liquidity: '1' }] });
     await eng.handle(rec(store, action({ kind: 'custody_out' })));
     assert.strictEqual(verdictOf(store).verdict, 'skip');
-    assert.strictEqual(sent.length, 0, 'tidak boleh mengirim apa pun');
+    assert.strictEqual(sent.length, 0, 'must not send anything');
     assert.strictEqual(store.get('SELECT status FROM positions').status, 'open');
   });
 
-  await t('pool dengan hook ditolak selama allow_hooks mati', async () => {
+  await t('pool with a hook rejected while allow_hooks is off', async () => {
     const { eng, store } = harness({ balances: RICH });
     const hook = '0x1111111111111111111111111111111111111111';
     await eng.handle(rec(store, action({ hooks: hook, poolKey: { currency0: USDG, currency1: MEME, fee: 3000, tickSpacing: 60, hooks: hook } })));
@@ -258,7 +258,7 @@ async function t(name, fn) {
     assert.match(v.reason, /hook/i, v.reason);
   });
 
-  await t('batas jumlah posisi terbuka dihormati', async () => {
+  await t('the open position count limit is respected', async () => {
     const { eng, store } = harness({
       balances: RICH, rules: { filters: { max_open_positions: 1 } },
       positions: [{ tokenId: '7', mirrorOf: 'lain', liquidity: '1' }],
@@ -269,7 +269,7 @@ async function t(name, fn) {
     assert.match(v.reason, /posisi terbuka/i, v.reason);
   });
 
-  await t('jeda antar-salinan di pool yang sama dihormati', async () => {
+  await t('the pause between copies in the same pool is respected', async () => {
     const { eng, store } = harness({ balances: RICH, rules: { filters: { cooldown_seconds: 60 } } });
     eng.lastCopyAt.set(POOL, Date.now());
     await eng.handle(rec(store, action()));
@@ -278,7 +278,7 @@ async function t(name, fn) {
     assert.match(v.reason, /cooldown/i, v.reason);
   });
 
-  await t('batas eksposur total habis -> dilewati, bukan dipaksakan', async () => {
+  await t('total exposure limit used up -> skipped, not forced', async () => {
     const { eng, store } = harness({
       balances: RICH,
       rules: { sizing: { mode: 'mirror', max_total_exposure_usd: 50, max_quote_per_position_usd: 200 } },
@@ -290,7 +290,7 @@ async function t(name, fn) {
     assert.match(v.reason, /eksposur|minimum/i, v.reason);
   });
 
-  await t('aksi keluar tanpa cermin -> dilewati diam-diam, tidak menutup posisi lain', async () => {
+  await t('exit action without a mirror -> skipped silently, does not close other positions', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,
       positions: [{ tokenId: '9', mirrorOf: 'posisi-lain', liquidity: (10n ** 20n).toString(), tickLower: -1200, tickUpper: 1200 }],
@@ -301,26 +301,26 @@ async function t(name, fn) {
     assert.strictEqual(store.get('SELECT status FROM positions').status, 'open');
   });
 
-  await t('pasangan dua aset kuotasi (ETH/USDG) -> tidak ada memecoin untuk dijual', async () => {
+  await t('pair of two quote assets (ETH/USDG) -> no memecoin to sell', async () => {
     const { eng } = harness({ balances: RICH });
     const r = await eng.sellLeftover(
       { id: 1, target: TARGET, token0: ETH, token1: USDG, pool_ref: POOL },
       { logs: [{ address: USDG, topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', '0x'.padEnd(66, '0'), '0x' + ME.slice(2).padStart(64, '0')], data: '0x' + (10n ** 6n).toString(16).padStart(64, '0') }] },
     );
-    assert.strictEqual(r, null, 'tidak boleh menjual aset kuotasi');
+    assert.strictEqual(r, null, 'must not sell a quote asset');
   });
 
-  await t('sisa memecoin yang gagal dijual masuk antrean coba-ulang', async () => {
+  await t('leftover memecoin that failed to sell enters the retry queue', async () => {
     const { eng, store } = harness({ balances: { ...RICH } });
     eng.kyber.swap = async () => { throw new Error('rute tidak ada'); };
     await assert.rejects(() => eng.sellToken({ posId: 1, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0 }));
     const q = JSON.parse(store.getState('leftovers:robinhood', '[]'));
-    assert.strictEqual(q.length, 1, 'harus tersimpan untuk dicoba lagi');
+    assert.strictEqual(q.length, 1, 'must be stored to retry');
     assert.strictEqual(q[0].tries, 1);
-    assert.ok(q[0].next > Date.now(), 'harus dijadwalkan ulang');
+    assert.ok(q[0].next > Date.now(), 'must be rescheduled');
   });
 
-  await t('antrean jual tidak pernah menyerah: item tetap ada, dijadwalkan ulang tiap beberapa detik', async () => {
+  await t('the sell queue never gives up: the item stays, rescheduled every few seconds', async () => {
     const { eng, store } = harness({ balances: { ...RICH } });
     eng.kyber.swap = async () => { throw new Error('rute tidak ada'); };
     for (let i = 0; i < 20; i++) {
@@ -329,71 +329,71 @@ async function t(name, fn) {
       await eng.sellToken(item).catch(() => {});
     }
     const q = JSON.parse(store.getState('leftovers:robinhood', '[]'));
-    assert.strictEqual(q.length, 1, 'item harus tetap tersimpan — uangnya masih tersangkut');
+    assert.strictEqual(q.length, 1, 'the item must stay stored — the money is still stuck');
     assert.strictEqual(q[0].tries, 20);
-    assert.ok(q[0].since > 0, 'waktu mulai tersangkut dicatat');
-    assert.ok(q[0].next - Date.now() <= 5000 + 50 && q[0].next > Date.now(), 'dijadwalkan tiap 5 detik (bawaan), bukan menit');
+    assert.ok(q[0].since > 0, 'the time it started being stuck is recorded');
+    assert.ok(q[0].next - Date.now() <= 5000 + 50 && q[0].next > Date.now(), 'scheduled every 5 seconds (default), not minutes');
   });
 
-  await t('pemburu sisa: tiap tick cuma MENGUTIP; swap sungguhan hanya saat rugi sudah di bawah batas', async () => {
+  await t('leftover hunter: each tick only QUOTES; a real swap only when the loss is already below the limit', async () => {
     const { eng, store } = harness({ balances: { ...RICH } });
     let usdOut = 40, quotes = 0, swaps = 0;
     eng.kyber.quote = async () => { quotes++; return { usdIn: 100, usdOut, amountOut: 1n, dex: 'uji', routeSummary: {} }; };
     eng.kyber.swap = async () => { swaps++; return { hash: '0xjual', amountOut: 1n, quote: { usdIn: 100, usdOut, dex: 'uji' } }; };
     eng.saveLeftovers([{ posId: 1, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0, next: 0 }]);
     await eng.retryLeftovers();
-    assert.strictEqual(quotes, 1, 'satu kutipan');
-    assert.strictEqual(swaps, 0, 'rugi 60% > 15%: jangan swap');
+    assert.strictEqual(quotes, 1, 'one quote');
+    assert.strictEqual(swaps, 0, 'loss 60% > 15%: do not swap');
     let q = JSON.parse(store.getState('leftovers:robinhood', '[]'));
     assert.strictEqual(q.length, 1);
-    assert.strictEqual(q[0].lastLossBps, 6000, 'kutipan terakhir disimpan untuk dasbor');
+    assert.strictEqual(q[0].lastLossBps, 6000, 'the last quote is stored for the dashboard');
     assert.match(q[0].why, /rugi 60\.0%/);
-    // Jadwal belum tiba -> tick berikutnya tidak mengutip lagi.
+    // The schedule has not arrived -> the next tick does not re-quote.
     await eng.retryLeftovers();
-    assert.strictEqual(quotes, 1, 'belum jadwalnya: tidak ada kutipan baru');
-    // Likuiditas membaik: rugi 10% -> langsung dijual dan antrean kosong.
+    assert.strictEqual(quotes, 1, 'not yet its schedule: no new quote');
+    // Liquidity improves: a 10% loss -> sold right away and the queue is empty.
     usdOut = 90;
     eng.saveLeftovers(q.map((x) => ({ ...x, next: 0 })));
     await eng.retryLeftovers();
-    assert.strictEqual(swaps, 1, 'rugi sudah di bawah batas: swap dikirim');
-    assert.strictEqual(JSON.parse(store.getState('leftovers:robinhood', '[]')).length, 0, 'terjual: keluar dari antrean');
+    assert.strictEqual(swaps, 1, 'loss already below the limit: swap sent');
+    assert.strictEqual(JSON.parse(store.getState('leftovers:robinhood', '[]')).length, 0, 'sold: leaves the queue');
   });
 
-  await t('sisa yang ditolak dijual dikabarkan KERAS sekali di awal, lalu diingatkan tiap 6 jam — bukan tiap tick', async () => {
+  await t('a leftover refused for sale is reported LOUDLY once at the start, then reminded every 6 hours — not every tick', async () => {
     const { eng, store } = harness({ balances: { ...RICH } });
-    const kabar = [];
-    eng.notify = (msg, d) => kabar.push(d);
+    const notice = [];
+    eng.notify = (msg, d) => notice.push(d);
     eng.kyber.quote = async () => ({ usdIn: 229.44, usdOut: 90.01, amountOut: 1n, dex: 'uji', routeSummary: {} });
     eng.saveLeftovers([{ posId: 9, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0, next: 0 }]);
     for (let i = 0; i < 30; i++) {
       eng.saveLeftovers(eng.leftovers().map((x) => ({ ...x, next: 0 })));
       await eng.retryLeftovers();
     }
-    let macet = kabar.filter((d) => d?.kind === 'leftover_stuck');
-    assert.strictEqual(macet.length, 1, 'hanya satu kabar untuk 30 kegagalan beruntun');
-    assert.strictEqual(macet[0].tries, 1);
-    assert.ok(Math.abs(macet[0].lossBps - 6077) < 1, String(macet[0].lossBps));
-    assert.strictEqual(macet[0].maxLossBps, 1500);
-    assert.strictEqual(macet[0].retrySec, 5);
-    assert.ok(/60\.8%/.test(macet[0].why), macet[0].why);
-    // Enam jam kemudian masih tersangkut -> pengingat.
+    let stuck = notice.filter((d) => d?.kind === 'leftover_stuck');
+    assert.strictEqual(stuck.length, 1, 'only one notice for 30 consecutive failures');
+    assert.strictEqual(stuck[0].tries, 1);
+    assert.ok(Math.abs(stuck[0].lossBps - 6077) < 1, String(stuck[0].lossBps));
+    assert.strictEqual(stuck[0].maxLossBps, 1500);
+    assert.strictEqual(stuck[0].retrySec, 5);
+    assert.ok(/60\.8%/.test(stuck[0].why), stuck[0].why);
+    // Six hours later still stuck -> a reminder.
     eng.saveLeftovers(eng.leftovers().map((x) => ({ ...x, next: 0, alertedAt: Date.now() - 7 * 3600_000 })));
     await eng.retryLeftovers();
-    macet = kabar.filter((d) => d?.kind === 'leftover_stuck');
-    assert.strictEqual(macet.length, 2, 'pengingat setelah 6 jam');
-    assert.strictEqual(macet[1].reminder, true);
+    stuck = notice.filter((d) => d?.kind === 'leftover_stuck');
+    assert.strictEqual(stuck.length, 2, 'reminder after 6 hours');
+    assert.strictEqual(stuck[1].reminder, true);
   });
 
-  await t('posisi satu sisi (rentang di atas harga) tetap disalin sebagai limit order', async () => {
+  await t('one-sided position (range above the price) is still copied as a limit order', async () => {
     const { eng, store, sent } = harness({ balances: RICH });
-    // rentang seluruhnya DI ATAS harga kini -> hanya butuh satu token
+    // the range is entirely ABOVE the current price -> only one token is needed
     await eng.handle(rec(store, action({ tickLower: 6000, tickUpper: 12000 })));
     const v = verdictOf(store);
     assert.strictEqual(v.verdict, 'copy', v.reason);
     assert.strictEqual(sent.filter((x) => x.kind === 'mint').length, 1);
   });
 
-  await t('posisi satu sisi dilewati kalau aturannya begitu', async () => {
+  await t('one-sided position is skipped if the rule says so', async () => {
     const { eng, store, sent } = harness({ balances: RICH, rules: { onesided: { policy: 'skip' } } });
     await eng.handle(rec(store, action({ tickLower: 6000, tickUpper: 12000 })));
     const v = verdictOf(store);
@@ -402,7 +402,7 @@ async function t(name, fn) {
     assert.strictEqual(sent.length, 0);
   });
 
-  await t('target sedang dimatikan -> tidak menyalin apa pun', async () => {
+  await t('target is switched off -> copies nothing', async () => {
     const { eng, store, sent } = harness({ balances: RICH });
     store.run('UPDATE targets SET enabled=0 WHERE address=?', TARGET);
     await eng.handle(rec(store, action()));
@@ -410,7 +410,7 @@ async function t(name, fn) {
     assert.strictEqual(sent.length, 0);
   });
 
-  await t('bot dijeda -> tidak menyalin apa pun', async () => {
+  await t('bot paused -> copies nothing', async () => {
     const { eng, store, sent } = harness({ balances: RICH });
     store.setState('paused', '1');
     await eng.handle(rec(store, action()));
@@ -418,34 +418,34 @@ async function t(name, fn) {
     assert.strictEqual(sent.length, 0);
   });
 
-  // Kyber tanpa rute -> cadangan swap langsung ke pool. Yang dipakai BUKAN pool posisi
-  // apa adanya, melainkan pool terbaik untuk pasangan itu (lihat test/zap-pool.js untuk
-  // pemilihnya). Hanya di jalur buka posisi: jual sisa & tutup posisi tetap Kyber saja.
-  await t('zap tanpa rute Kyber -> swap lewat pool berfee paling murah, bukan pool posisi', async () => {
+  // Kyber with no route -> fallback to a direct swap into a pool. What is used is NOT the position's pool
+  // as it is, but the best pool for that pair (see test/zap-pool.js for its
+  // picker). Only on the open-position path: leftover sales & closing positions stay Kyber only.
+  await t('zap without a Kyber route -> swap via the cheapest-fee pool, not the position\'s pool', async () => {
     const { eng, store, sent } = harness({ balances: { ...RICH, [MEME]: 0n } });
     eng.kyber.swap = async () => null;
-    // Pool lain untuk pasangan yang sama, jauh lebih murah dari pool posisi (0,3%).
+    // Another pool for the same pair, much cheaper than the position's pool (0.3%).
     store.run(`INSERT INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block)
       VALUES(?,'v4',?,?,500,10,?,1)`, '0x' + 'be'.repeat(32), USDG, MEME, '0x' + '0'.repeat(40));
     eng.chain.slot0V4Many = async (ids) => ids.map(() => ({ sqrtPriceX96: SQRT, tick: TICK, lpFee: 0 }));
     eng.chain.poolLiquidityMany = async (ids) => ids.map(() => 10n ** 24n);
-    // Tiap kandidat yang disimulasikan dibangunkan transaksinya; yang menentukan
-    // adalah transaksi mana yang akhirnya DIKIRIM.
-    // (satu pool bisa dibangunkan dua kali: dua bentuk params swap v4 ikut disimulasikan)
-    const dibangun = [];
-    const asli = eng.exec.buildSwapV4.bind(eng.exec);
+    // Every simulated candidate has its transaction built; what decides
+    // is which transaction is finally SENT.
+    // (one pool can be built twice: two v4 swap params shapes are simulated too)
+    const built = [];
+    const original = eng.exec.buildSwapV4.bind(eng.exec);
     eng.exec.buildSwapV4 = (key, ...rest) => {
-      const tx = asli(key, ...rest);
-      dibangun.push({ key, tx });
+      const tx = original(key, ...rest);
+      built.push({ key, tx });
       return tx;
     };
-    // MEME baru ada di wallet SESUDAH zap terkirim — tanpa ini putaran zap mengira
-    // harga bergerak dan membatalkan pembukaan.
+    // MEME only exists in the wallet AFTER the zap is sent — without this the zap round thinks
+    // the price moved and cancels the opening.
     let meme = 0n;
-    const kirim = eng.exec.send;
+    const sendOrig = eng.exec.send;
     eng.exec.send = async (tx, meta) => {
       if (meta?.kind === 'zap_swap') meme = 10n ** 30n;
-      return kirim(tx, meta);
+      return sendOrig(tx, meta);
     };
     eng.exec.balances = async (list) => new Map(list.map((a) => {
       const k = String(a).toLowerCase();
@@ -454,42 +454,42 @@ async function t(name, fn) {
     await eng.handle(rec(store, action()));
     assert.strictEqual(verdictOf(store).verdict, 'copy', verdictOf(store).reason);
     const zap = sent.find((s) => s.kind === 'zap_swap');
-    assert.ok(zap, 'zap harus terkirim lewat pool langsung');
-    const fee = new Set(dibangun.map((d) => d.key.fee));
-    assert.ok(fee.has(500) && fee.has(3000), 'kedua pool harus ikut dinilai');
-    const terpakai = dibangun.find((d) => d.tx.data === zap.tx.data);
-    assert.ok(terpakai, 'yang dikirim harus salah satu calldata yang disimulasikan');
-    assert.strictEqual(terpakai.key.fee, 500, 'pool 0,05% harus menang dari pool posisi 0,3%');
-    assert.strictEqual(terpakai.key.tickSpacing, 10, 'poolKey diambil dari pool terpilih, bukan pool posisi');
+    assert.ok(zap, 'the zap must be sent via a direct pool');
+    const fee = new Set(built.map((d) => d.key.fee));
+    assert.ok(fee.has(500) && fee.has(3000), 'both pools must be evaluated');
+    const consumed = built.find((d) => d.tx.data === zap.tx.data);
+    assert.ok(consumed, 'what is sent must be one of the simulated calldatas');
+    assert.strictEqual(consumed.key.fee, 500, 'the 0.05% pool must beat the position\'s 0.3% pool');
+    assert.strictEqual(consumed.key.tickSpacing, 10, 'poolKey is taken from the chosen pool, not the position\'s pool');
   });
 
-  await t('jembatan gagal di tengah eksekusi -> galat jelas, tidak ada posisi tercatat', async () => {
+  await t('bridge fails midway through execution -> a clear error, no position recorded', async () => {
     const { eng, store } = harness({ balances: { ...RICH, [MEME]: 0n } });
-    eng.kyber.swap = async () => null;               // tidak ada rute penambal
+    eng.kyber.swap = async () => null;               // no patching route
     eng.ensureQuoteAsset = async () => { throw new Error('kas kurang untuk jembatan: butuh 0.07 ETH untuk 170.00 USDG, punya 0.01 ETH'); };
     await eng.handle(rec(store, action()));
     const v = verdictOf(store);
     assert.strictEqual(v.verdict, 'error', v.reason);
-    assert.strictEqual(store.all("SELECT id FROM positions").length, 0, 'tidak boleh mencatat posisi yang gagal dibuka');
+    assert.strictEqual(store.all("SELECT id FROM positions").length, 0, 'must not record a position that failed to open');
   });
 
-  // Wallet persis seperti di server saat Bang GE masuk $1.000 (batas $200): kas
-  // sebagian besar berupa WETH, ETH native di bawah cadangan gas. Dulu: "saldo ETH
-  // kosong — tidak ada kas untuk dijembatani" padahal ada ~$173 WETH.
+  // A wallet exactly like on the server when Bang GE entered $1,000 (cap $200): cash
+  // mostly in WETH, native ETH below the gas reserve. It used to say: "ETH balance
+  // empty — no cash to bridge" although there was ~$173 of WETH.
   const e18 = (x) => BigInt(Math.round(x * 1e18));
   const WALLET_SERVER = { [USDG]: 36_107_783n, [ADDR.weth]: e18(0.069436618), [ETH]: e18(0.000861055) };
-  // Saldo yang ikut berubah oleh unwrap dan swap Kyber — tanpa ini langkah sesudah
-  // jembatan (zap, mint) membaca saldo lama dan hasilnya tidak bermakna.
-  // `kurs` = harga ETH di Kyber (USDG per ETH); bot sendiri menilai ETH di 2500.
-  function dompetHidup(eng, sent, awal, kurs = 2500n) {
-    const bal = new Map(Object.entries(awal).map(([k, v]) => [k.toLowerCase(), BigInt(v)]));
+  // Balances that also change through unwrap and the Kyber swap — without this the step after the
+  // bridge (zap, mint) reads the old balance and the result is meaningless.
+  // `rate` = the ETH price on Kyber (USDG per ETH); the bot itself values ETH at 2500.
+  function liveWallet(eng, sent, initial, rate = 2500n) {
+    const bal = new Map(Object.entries(initial).map(([k, v]) => [k.toLowerCase(), BigInt(v)]));
     const get = (a) => bal.get(String(a).toLowerCase()) || 0n;
     const add = (a, x) => bal.set(String(a).toLowerCase(), get(a) + x);
-    // USDG<->MEME 1:1 dalam unit mentah (harga pool di tick 0).
+    // USDG<->MEME 1:1 in raw units (pool price at tick 0).
     const conv = (a, b, x) => {
       a = String(a).toLowerCase(); b = String(b).toLowerCase();
-      if (a === ETH && b === USDG) return (x * kurs) / 10n ** 12n;
-      if (a === USDG && b === ETH) return (x * 10n ** 12n) / kurs;
+      if (a === ETH && b === USDG) return (x * rate) / 10n ** 12n;
+      if (a === USDG && b === ETH) return (x * 10n ** 12n) / rate;
       return x;
     };
     eng.exec.balances = async (list) => new Map(list.map((a) => [String(a).toLowerCase(), get(a)]));
@@ -509,42 +509,42 @@ async function t(name, fn) {
     return { get };
   }
 
-  await t('kas berupa WETH + ETH native di bawah cadangan -> WETH dipakai, posisi terbuka', async () => {
+  await t('cash as WETH + native ETH below the reserve -> WETH is used, the position opens', async () => {
     const { eng, store, sent } = harness({ rules: { sizing: { mode: 'mirror', max_quote_per_position_usd: 200, max_total_exposure_usd: 400 } } });
-    const w = dompetHidup(eng, sent, WALLET_SERVER);
+    const w = liveWallet(eng, sent, WALLET_SERVER);
     await eng.handle(rec(store, action({ valueQuote: 1000 })));
     const v = verdictOf(store);
     assert.strictEqual(v.verdict, 'copy', v.reason);
-    assert.match(v.reason, /kas tersedia/, 'kas ~$206 tidak cukup untuk $200 + cadangan — ukurannya harus dipotong ke kas');
+    assert.match(v.reason, /kas tersedia/, 'cash ~$206 is not enough for $200 + reserve — the size must be cut to the cash');
     const kinds = sent.map((x) => x.kind);
     assert.ok(kinds.includes('unwrap_weth'), kinds.join(','));
-    assert.ok(sent.some((x) => x.kind === 'bridge_swap' && x.from === ETH), 'jembatan ETH -> USDG harus jalan');
-    assert.ok(w.get(ETH) >= 1_900_000_000_000_000n, `cadangan gas harus terisi lagi, tersisa ${w.get(ETH)}`);
+    assert.ok(sent.some((x) => x.kind === 'bridge_swap' && x.from === ETH), 'the ETH -> USDG bridge must run');
+    assert.ok(w.get(ETH) >= 1_900_000_000_000_000n, `the gas reserve must be refilled, left ${w.get(ETH)}`);
     const plan = JSON.parse(store.get('SELECT plan FROM decisions ORDER BY id DESC LIMIT 1').plan);
     assert.ok(plan.valueUsd > 150 && plan.valueUsd < 200, `ukuran ${plan.valueUsd}`);
     assert.strictEqual(store.all("SELECT id FROM positions WHERE status='open'").length, 1);
   });
 
-  await t('kurs Kyber 0,8% lebih buruk dari harga ETH bot -> ukuran pas-pasan tetap terbayar', async () => {
+  await t('Kyber rate 0.8% worse than the bot\'s ETH price -> a tight size is still paid', async () => {
     const { eng, store, sent } = harness({ rules: { sizing: { mode: 'mirror', max_quote_per_position_usd: 200, max_total_exposure_usd: 400 } } });
-    dompetHidup(eng, sent, WALLET_SERVER, 2480n);
+    liveWallet(eng, sent, WALLET_SERVER, 2480n);
     await eng.handle(rec(store, action({ valueQuote: 1000 })));
     const v = verdictOf(store);
     assert.strictEqual(v.verdict, 'copy', v.reason);
   });
 
-  await t('kas di aset kuotasi pool sendiri tidak dipotong ruang jembatan', async () => {
+  await t('cash in the pool\'s own quote asset is not cut by bridge room', async () => {
     const { eng, store, sent } = harness({ rules: { sizing: { mode: 'mirror', max_quote_per_position_usd: 500, max_total_exposure_usd: 1000 } } });
-    dompetHidup(eng, sent, { [USDG]: 210_000_000n, [ETH]: e18(0.002) });
+    liveWallet(eng, sent, { [USDG]: 210_000_000n, [ETH]: e18(0.002) });
     await eng.handle(rec(store, action({ valueQuote: 1000 })));
     const v = verdictOf(store);
     assert.strictEqual(v.verdict, 'copy', v.reason);
     const plan = JSON.parse(store.get('SELECT plan FROM decisions ORDER BY id DESC LIMIT 1').plan);
     assert.ok(Math.abs(plan.valueUsd - 200) < 0.5, `210 USDG / 1,05 = $200, dapat ${plan.valueUsd}`);
-    assert.ok(!sent.some((x) => x.kind === 'bridge_swap'), 'tidak perlu jembatan');
+    assert.ok(!sent.some((x) => x.kind === 'bridge_swap'), 'no bridge needed');
   });
 
-  await t('kas sedikit -> alasan "di bawah minimum" menyebut kas sebagai penyebabnya', async () => {
+  await t('little cash -> the reason "below the minimum" names cash as the cause', async () => {
     const { eng, store, sent } = harness({ balances: { [USDG]: 3_000_000n } });
     await eng.handle(rec(store, action()));
     const v = verdictOf(store);
@@ -553,23 +553,23 @@ async function t(name, fn) {
     assert.strictEqual(sent.length, 0);
   });
 
-  await t('debu WETH tidak memicu unwrap isi gas', async () => {
+  await t('WETH dust does not trigger a gas top-up unwrap', async () => {
     const { eng, sent } = harness({});
-    dompetHidup(eng, sent, { [ADDR.weth]: 10_000_000_000n, [ETH]: e18(0.0005) });
+    liveWallet(eng, sent, { [ADDR.weth]: 10_000_000_000n, [ETH]: e18(0.0005) });
     const notes = [];
     await eng.topUpGas(notes);
     assert.strictEqual(sent.length, 0, sent.map((x) => x.kind).join(','));
   });
 
-  await t('keluar dengan ETH native di bawah cadangan -> gas diisi dari WETH dulu, lalu burn', async () => {
+  await t('exit with native ETH below the reserve -> gas is topped up from WETH first, then burn', async () => {
     const { eng, store, sent } = harness({ positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }] });
-    dompetHidup(eng, sent, { ...RICH, [ETH]: e18(0.0005), [ADDR.weth]: e18(0.05) });
+    liveWallet(eng, sent, { ...RICH, [ETH]: e18(0.0005), [ADDR.weth]: e18(0.05) });
     await eng.handle(rec(store, action({ kind: 'transfer_out', poolRef: null, token0: null, token1: null })));
     assert.strictEqual(verdictOf(store).verdict, 'copy', verdictOf(store).reason);
     assert.deepStrictEqual(sent.map((x) => x.kind).slice(0, 2), ['unwrap_weth', 'burn']);
   });
 
-  await t('isi gas gagal (RPC mati) -> keluar TETAP jalan', async () => {
+  await t('gas top-up fails (RPC down) -> exit STILL runs', async () => {
     const { eng, store, sent } = harness({ balances: RICH, positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }] });
     const bal0 = eng.exec.balances;
     let first = true;
@@ -583,7 +583,7 @@ async function t(name, fn) {
     assert.strictEqual(store.get('SELECT status FROM positions').status, 'closed');
   });
 
-  await t('kas kosong -> dilewati dengan alasan jelas, tanpa transaksi', async () => {
+  await t('cash empty -> skipped with a clear reason, without a transaction', async () => {
     const { eng, store, sent } = harness({ balances: { [ETH]: e18(0.0015) } });
     await eng.handle(rec(store, action()));
     const v = verdictOf(store);
@@ -592,7 +592,7 @@ async function t(name, fn) {
     assert.strictEqual(sent.length, 0);
   });
 
-  await t('mode simulasi tidak dibatasi kas (wallet uji boleh kosong)', async () => {
+  await t('simulation mode is not limited by cash (the test wallet may be empty)', async () => {
     const { eng, store } = harness({ balances: {} });
     eng.cfg.mode.dry_run = true;
     eng.exec.simulate = async () => ({ ok: true, gas: 1 });
@@ -602,21 +602,21 @@ async function t(name, fn) {
     assert.doesNotMatch(v.reason, /kas tersedia/, v.reason);
   });
 
-  await t('jembatan kurang kas -> pesan dalam satuan manusia, bukan wei', async () => {
+  await t('bridge short of cash -> message in human units, not wei', async () => {
     const { eng, sent } = harness({});
-    dompetHidup(eng, sent, { [ADDR.weth]: e18(0.01), [ETH]: e18(0.001) });
+    liveWallet(eng, sent, { [ADDR.weth]: e18(0.01), [ETH]: e18(0.001) });
     const plan = { quoteSide: 0, token0: USDG, token1: MEME };
     const rules = { swap: { enabled: true, max_slippage_bps: 100, max_price_impact_bps: 500 } };
     await assert.rejects(() => eng.ensureQuoteAsset(plan, rules, 200_000_000n), (e) => {
       assert.match(e.message, /butuh 0\.0808 ETH untuk 200\.00 USDG, punya 0\.01 ETH/, e.message);
       assert.match(e.message, /ETH\+WETH di atas cadangan gas 0\.002 ETH/, e.message);
-      assert.doesNotMatch(e.message, /\d{10,}/, 'tidak boleh ada angka mentah');
+      assert.doesNotMatch(e.message, /\d{10,}/, 'there must be no raw numbers');
       return true;
     });
-    assert.strictEqual(sent.length, 0, 'tidak ada yang dikirim kalau kasnya memang kurang');
+    assert.strictEqual(sent.length, 0, 'nothing is sent if cash really is insufficient');
   });
 
-  await t('hasil setelah dipotong batas di bawah minimum -> dilewati', async () => {
+  await t('result after being cut by the limit below the minimum -> skipped', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,
       rules: { sizing: { mode: 'mirror', max_quote_per_position_usd: 3, min_quote_usd: 10 } },
@@ -628,18 +628,18 @@ async function t(name, fn) {
     assert.strictEqual(sent.length, 0);
   });
 
-  await t('aksi yang sama diproses dua kali -> tidak membuka posisi ganda', async () => {
+  await t('the same action processed twice -> does not open a double position', async () => {
     const { eng, store, sent } = harness({ balances: RICH });
     const a = rec(store, action());
     await eng.handle(a);
-    await eng.handle(a);   // ulangi aksi yang sama persis
-    assert.strictEqual(store.all("SELECT id FROM positions WHERE status='open'").length, 1, 'harus tetap satu posisi');
-    assert.strictEqual(sent.filter((x) => x.kind === 'mint').length, 1, 'mint hanya sekali');
-    assert.strictEqual(sent.filter((x) => x.kind === 'increase').length, 0, 'tidak boleh menambah modal untuk aksi yang sama');
-    assert.strictEqual(store.all('SELECT id FROM decisions').length, 1, 'hanya satu keputusan per aksi');
+    await eng.handle(a);   // repeat the exact same action
+    assert.strictEqual(store.all("SELECT id FROM positions WHERE status='open'").length, 1, 'must remain one position');
+    assert.strictEqual(sent.filter((x) => x.kind === 'mint').length, 1, 'mint only once');
+    assert.strictEqual(sent.filter((x) => x.kind === 'increase').length, 0, 'must not add capital for the same action');
+    assert.strictEqual(store.all('SELECT id FROM decisions').length, 1, 'only one decision per action');
   });
 
-  await t('menutup posisi yang sudah tertutup -> dilewati, tidak mengirim tx', async () => {
+  await t('closing an already-closed position -> skipped, sends no tx', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,
       positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
@@ -650,18 +650,18 @@ async function t(name, fn) {
     assert.strictEqual(sent.length, 0);
   });
 
-  await t('receipt keluar tanpa log token -> tidak ada yang dijual, bukan galat', async () => {
+  await t('exit receipt without a token log -> nothing is sold, not an error', async () => {
     const { eng } = harness({ balances: RICH });
     const r = await eng.sellLeftover({ id: 1, target: TARGET, token0: USDG, token1: MEME, pool_ref: POOL }, { logs: [] });
     assert.strictEqual(r, null);
   });
 
-  await t('mint berhasil di chain tapi jawaban RPC hilang -> tidak dianggap gagal', async () => {
+  await t('mint succeeded on chain but the RPC answer was lost -> not treated as a failure', async () => {
     const { eng } = harness({ balances: RICH });
     const { ethers } = require('ethers');
-    // pakai send() yang ASLI (harness menggantinya dengan pengirim palsu)
+    // use the REAL send() (the harness replaces it with a fake sender)
     eng.exec.send = Object.getPrototypeOf(eng.exec).send.bind(eng.exec);
-    // wallet uji: cukup untuk menandatangani, kuncinya tidak pernah dipakai di mana pun
+    // test wallet: enough to sign, its key is never used anywhere
     const w = ethers.Wallet.createRandom();
     eng.exec.loadWallet = () => w;
     eng.exec.gasFees = async () => ({ maxFeePerGas: 1n, maxPriorityFeePerGas: 1n });
@@ -671,20 +671,20 @@ async function t(name, fn) {
       call: async (method) => {
         if (method === 'eth_getTransactionCount') return '0x1';
         if (method === 'eth_sendRawTransaction') throw new Error('nonce too low: address x, tx: 1 state: 2');
-        if (method === 'eth_getTransactionByHash') { asked++; return { hash: '0xada' }; }   // ternyata sudah masuk
+        if (method === 'eth_getTransactionByHash') { asked++; return { hash: '0xada' }; }   // it had actually landed
         return null;
       },
     };
     const h = await eng.exec.send({ to: ME, data: '0x', value: '0' }, { kind: 'uji' });
-    assert.ok(h && h.startsWith('0x'), 'harus mengembalikan hash, bukan melempar');
-    assert.ok(asked > 0, 'harus memeriksa chain sebelum menyerah');
+    assert.ok(h && h.startsWith('0x'), 'must return the hash, not throw');
+    assert.ok(asked > 0, 'must check the chain before giving up');
   });
 
-  await t('mint yang benar-benar gagal tetap dilaporkan gagal', async () => {
+  await t('a mint that really failed is still reported as failed', async () => {
     const { eng } = harness({ balances: RICH });
     const { ethers } = require('ethers');
     eng.exec.send = Object.getPrototypeOf(eng.exec).send.bind(eng.exec);
-    eng.exec.txLanded = async () => false;   // percepat: tidak menunggu 6 kali
+    eng.exec.txLanded = async () => false;   // speed up: does not wait 6 times
     const w = ethers.Wallet.createRandom();
     eng.exec.loadWallet = () => w;
     eng.exec.gasFees = async () => ({ maxFeePerGas: 1n, maxPriorityFeePerGas: 1n });
@@ -693,17 +693,17 @@ async function t(name, fn) {
       call: async (method) => {
         if (method === 'eth_getTransactionCount') return '0x1';
         if (method === 'eth_sendRawTransaction') throw new Error('insufficient funds');
-        if (method === 'eth_getTransactionByHash') return null;   // memang tidak masuk
+        if (method === 'eth_getTransactionByHash') return null;   // it really did not land
         return null;
       },
     };
     await assert.rejects(() => eng.exec.send({ to: ME, data: '0x', value: '0' }, { kind: 'uji' }), /insufficient funds/);
   });
 
-  // ---- yang TIDAK boleh memicu apa pun -----------------------------------
-  // Kekhawatiran wajar: kalau target mengirim ETH/token, bridge, atau swap, apakah
-  // bot ikut? Tidak — bot hanya membaca event likuiditas dari PoolManager dan
-  // perpindahan NFT posisi. Uji ini mengunci perilaku itu.
+  // ---- what must NOT trigger anything -----------------------------------
+  // A reasonable worry: if the target sends ETH/tokens, bridges, or swaps, does
+  // the bot follow? No — the bot only reads liquidity events from the PoolManager and
+  // position NFT moves. This test locks that behaviour in.
   const { Watcher } = require('../src/watcher');
   const TOPIC_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
   const TOPIC_SWAP_V4 = '0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f';
@@ -722,16 +722,16 @@ async function t(name, fn) {
   }
   const log = (address, topics, data = '0x' + '0'.repeat(64)) => ({ address, topics, data, blockNumber: '0x1', transactionHash: '0xdead', logIndex: '0x1' });
 
-  await t('target mengirim USDG ke alamat lain -> bot diam', async () => {
+  await t('target sends USDG to another address -> bot stays silent', async () => {
     const w = watcherWith({
-      modLiq: [], npm: [], xferV4: [],   // transfer ERC20 ada di kontrak USDG, bukan di POSM
+      modLiq: [], npm: [], xferV4: [],   // the ERC20 transfer is on the USDG contract, not on the POSM
     });
     assert.strictEqual((await w.scan(1, 1)).length, 0);
   });
 
-  await t('token ERC20 apa pun yang menyentuh target -> bot diam walau lognya ikut terbawa', async () => {
-    // pertahanan berlapis: seandainya log ERC20 sampai masuk hasil query, bentuknya
-    // 3 topik (bukan NFT 4 topik) dan harus diabaikan.
+  await t('any ERC20 token touching the target -> bot stays silent even if its log came along', async () => {
+    // defence in depth: even if an ERC20 log made it into the query result, its shape is
+    // 3 topics (not a 4-topic NFT) and must be ignored.
     const w = watcherWith({
       modLiq: [], npm: [],
       xferV4: [log(USDG, [TOPIC_TRANSFER, pad32(TARGET), pad32(LAIN)])],
@@ -739,7 +739,7 @@ async function t(name, fn) {
     assert.strictEqual((await w.scan(1, 1)).length, 0);
   });
 
-  await t('target melakukan swap (bukan LP) -> bot diam', async () => {
+  await t('target does a swap (not LP) -> bot stays silent', async () => {
     const w = watcherWith({
       modLiq: [log(ADDR.poolManager, [TOPIC_SWAP_V4, '0x' + 'aa'.repeat(32), pad32(TARGET)])],
       xferV4: [], npm: [],
@@ -753,22 +753,22 @@ async function t(name, fn) {
       xferV4: [log(LAIN, [TOPIC_TRANSFER, pad32(TARGET), pad32(ME), pad32('0x01')])],
     });
     const acts = await w.scan(1, 1);
-    // hanya NFT dari PositionManager yang berarti; koleksi lain tidak dianggap posisi
+    // only NFTs from the PositionManager count; other collections are not considered positions
     assert.strictEqual(acts.filter((a) => a.venue === 'v4' && a.kind !== 'transfer_out').length, 0);
   });
 
-  await t('kontrol positif: NFT POSISI yang berpindah TETAP terdeteksi', async () => {
+  await t('positive control: a position NFT that moves IS still detected', async () => {
     const w = watcherWith({
       modLiq: [], npm: [],
       xferV4: [log(ADDR.posmV4, [TOPIC_TRANSFER, pad32(TARGET), pad32(LAIN), pad32('0x7b')])],
     });
     const acts = await w.scan(1, 1);
-    assert.strictEqual(acts.length, 1, 'perpindahan NFT posisi harus terdeteksi');
+    assert.strictEqual(acts.length, 1, 'a position NFT move must be detected');
     assert.strictEqual(acts[0].kind, 'transfer_out');
     assert.strictEqual(acts[0].tokenId, '123');
   });
 
-  await t('target dimatikan -> aksinya tidak dicatat (aktivitas & peringatan diam)', async () => {
+  await t('target switched off -> its actions are not recorded (activity & alerts silent)', async () => {
     const w = watcherWith({
       modLiq: [], npm: [],
       xferV4: [log(ADDR.posmV4, [TOPIC_TRANSFER, pad32(TARGET), pad32(LAIN), pad32('0x7b')])],
@@ -777,12 +777,12 @@ async function t(name, fn) {
     assert.strictEqual((await w.scan(1, 1)).length, 0);
   });
 
-  await t('target dimatikan tapi masih punya cermin terbuka -> HANYA sinyal keluar untuk cermin itu yang dicatat', async () => {
+  await t('target switched off but still has an open mirror -> ONLY the exit signal for that mirror is recorded', async () => {
     const w = watcherWith({
       modLiq: [], npm: [],
       xferV4: [
-        log(ADDR.posmV4, [TOPIC_TRANSFER, pad32(TARGET), pad32(LAIN), pad32('0x7b')]),   // cermin kita (#123)
-        log(ADDR.posmV4, [TOPIC_TRANSFER, pad32(TARGET), pad32(LAIN), pad32('0x7c')]),   // bukan cermin
+        log(ADDR.posmV4, [TOPIC_TRANSFER, pad32(TARGET), pad32(LAIN), pad32('0x7b')]),   // our mirror (#123)
+        log(ADDR.posmV4, [TOPIC_TRANSFER, pad32(TARGET), pad32(LAIN), pad32('0x7c')]),   // not a mirror
       ],
     });
     w.store.run('UPDATE targets SET enabled=0 WHERE address=?', TARGET);
@@ -792,7 +792,7 @@ async function t(name, fn) {
     assert.deepStrictEqual(acts.map((a) => [a.kind, a.tokenId]), [['transfer_out', '123']]);
   });
 
-  await t('bot dijeda -> sinyal MASUK dilewati, sinyal KELUAR target tetap diikuti', async () => {
+  await t('bot paused -> ENTRY signal skipped, the target\'s EXIT signal still followed', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,
       positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
@@ -806,7 +806,7 @@ async function t(name, fn) {
     assert.strictEqual(sent.filter((x) => x.kind === 'decrease').length, 1);
   });
 
-  await t('target dimatikan -> entry dilewati, tapi keluar penuh untuk cermin yang ada tetap diikuti', async () => {
+  await t('target switched off -> entry skipped, but a full exit for the existing mirror is still followed', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,
       positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
@@ -820,7 +820,7 @@ async function t(name, fn) {
     assert.strictEqual(sent.filter((x) => x.kind === 'burn').length, 1);
   });
 
-  await t('target punya posisi A & B identik, kita cuma cermin A; target tutup B -> cermin A TIDAK ikut ditutup', async () => {
+  await t('target has identical positions A & B, we only mirror A; target closes B -> mirror A is NOT closed', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,
       positions: [{ tokenId: '5', mirrorOf: '999', liquidity: (10n ** 20n).toString() }],
@@ -832,7 +832,7 @@ async function t(name, fn) {
     assert.strictEqual(store.get('SELECT status FROM positions').status, 'open');
   });
 
-  await t('cadangan pool+rentang tetap bekerja untuk posisi yang asal tokenId-nya tidak tercatat', async () => {
+  await t('pool+range fallback still works for positions whose tokenId origin is not recorded', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,
       positions: [{ tokenId: '5', mirrorOf: null, liquidity: (10n ** 20n).toString() }],
@@ -843,7 +843,7 @@ async function t(name, fn) {
     assert.strictEqual(sent.filter((x) => x.kind === 'burn').length, 1);
   });
 
-  await t('dua cermin untuk satu posisi target (rentang berbeda) -> tarik sebagian mengenai KEDUANYA, satu keputusan', async () => {
+  await t('two mirrors for one target position (different ranges) -> a partial withdrawal hits BOTH, one decision', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,
       positions: [
@@ -860,7 +860,7 @@ async function t(name, fn) {
     assert.strictEqual(verdictOf(store).verdict, 'copy');
   });
 
-  await t('dua cermin, target menambah di rentang cermin KEDUA -> menambah cermin kedua, bukan posisi baru', async () => {
+  await t('two mirrors, target adds in the SECOND mirror\'s range -> adds to the second mirror, not a new position', async () => {
     const { eng, store, sent } = harness({
       balances: RICH,
       positions: [
@@ -876,7 +876,7 @@ async function t(name, fn) {
     assert.strictEqual(store.get("SELECT COUNT(*) n FROM positions WHERE status='open'").n, 2);
   });
 
-  await t('stop loss PER TARGET berlaku di pemicu keluar mandiri (global mati); target lain & posisi manual pakai global', async () => {
+  await t('PER-TARGET stop loss applies on the standalone exit trigger (global off); other targets & manual positions use the global', async () => {
     const { eng, store } = harness({ balances: RICH, positions: [
       { tokenId: '5', mirrorOf: '999', liquidity: '1000' },
       { tokenId: '6', mirrorOf: '998', liquidity: '1000' },
@@ -900,7 +900,7 @@ async function t(name, fn) {
     assert.deepStrictEqual(closed, ['5']);
   });
 
-  await t('kas dasbor dibaca ulang begitu ada tx yang masuk blok — bukan menunggu sinkron 30 detik', async () => {
+  await t('dashboard cash is re-read as soon as a tx lands in a block — not waiting for the 30-second sync', async () => {
     const { eng } = harness({ balances: RICH });
     const bal = { usdg: 1_000_000_000n };
     const reads = [];
@@ -910,42 +910,42 @@ async function t(name, fn) {
     };
     eng.positions.refreshLeftovers = async () => {};
     eng.ethUsd = 2500;
-    // Bacaan pertama: 'latest', kas $1000.
+    // First read: 'latest', cash $1000.
     assert.strictEqual((await eng.freshCash()).usdg, 1000);
     assert.deepStrictEqual(reads, ['latest']);
-    // Tanpa tx, permintaan berikutnya memakai cache — tidak ada RPC lagi.
+    // Without a tx, the next request uses the cache — no more RPC.
     assert.strictEqual((await eng.freshCash()).usdg, 1000);
     assert.strictEqual(reads.length, 1);
-    // Posisi dibuka: $200 keluar dari wallet, tx masuk blok 500. Kas lama ($1000)
-    // + posisi baru ($200) = total kelebihan $200 — bug yang dilaporkan.
+    // Position opened: $200 leaves the wallet, the tx lands in block 500. Old cash ($1000)
+    // + the new position ($200) = a total surplus of $200 — the reported bug.
     bal.usdg = 800_000_000n;
     eng.exec.txSeq++; eng.exec.minedBlock = 500;
-    // Dua permintaan bersamaan (dua tab) berbagi satu bacaan, dipatok di blok tx-nya.
+    // Two simultaneous requests (two tabs) share one read, pinned at its tx's block.
     const [a, b] = await Promise.all([eng.freshCash(), eng.freshCash()]);
     assert.strictEqual(a.usdg, 800); assert.strictEqual(b.usdg, 800);
     assert.deepStrictEqual(reads, ['latest', '0x1f4']);
-    // Sesudah itu kembali 'latest' (setoran masuk tanpa tx dari bot tetap terbaca;
-    // memancang tiap bacaan ditolak endpoint gratis sebagai permintaan arsip).
+    // After that it goes back to 'latest' (a deposit without a bot tx is still read;
+    // pinning every read is refused by free endpoints as an archive request).
     bal.usdg = 850_000_000n;
     await eng.refreshCash();
     assert.strictEqual(eng.cash.usdg, 850);
     assert.strictEqual(reads[2], 'latest');
-    // Kepala rantai sudah lewat blok tx: patokannya kepala, bukan blok tx yang lama.
+    // The chain head is past the tx block: the reference is the head, not the old tx block.
     eng.exec.txSeq++; eng.head = 620;
     await eng.refreshCash();
     assert.strictEqual(reads[3], '0x26c');
-    // RPC gagal saat kas basi: angka lama dikembalikan, bukan null/lempar.
+    // RPC fails while cash is stale: the old figure is returned, not null/throw.
     eng.exec.txSeq++;
     eng.exec.balances = async () => { throw new Error('429'); };
     assert.strictEqual((await eng.freshCash()).usdg, 850);
   });
 
-  await t('titik ekuitas: tx yang masuk blok DI SELA bacaan kas tidak jadi puncak palsu', async () => {
+  await t('equity point: a tx that lands in a block BETWEEN cash reads does not become a false peak', async () => {
     const { eng, store } = harness();
-    // Mint masuk blok tepat sesudah saldo dibaca: kas masih yang lama ($1000), tapi
-    // ringkasan posisi sesudahnya sudah berisi posisi $200 yang baru — titik ekuitas
-    // menghitung dana itu dua kali ($1200, bukan $1000). Ini lonjakan +$100 di kurva
-    // lp3 2026-09-24 08:40 UTC.
+    // A mint lands in the block right after the balance is read: cash is still the old ($1000), but
+    // the position summary after it already contains the new $200 position — the equity point
+    // counts that money twice ($1200, not $1000). This is the +$100 spike on lp3's
+    // curve at 2026-09-24 08:40 UTC.
     let minted = false, reads = 0;
     eng.positions.refreshLeftovers = async () => {};
     eng.exec.balances = async (list) => {
@@ -961,11 +961,11 @@ async function t(name, fn) {
     await eng.snapshotEquity();
     const rows = store.all('SELECT * FROM equity');
     assert.strictEqual(rows.length, 1);
-    assert.strictEqual(reads, 2);                       // diulang sekali dengan kas sesudah tx
+    assert.strictEqual(reads, 2);                       // repeated once with the cash after the tx
     assert.strictEqual(Math.round(rows[0].wallet_quote), 800);
     assert.strictEqual(Math.round(rows[0].total_quote), 1000);
 
-    // Masih ramai di percobaan kedua -> titik dilewati, bukan ditulis salah.
+    // Still busy on the second attempt -> the point is skipped, not written wrong.
     store.run('DELETE FROM equity');
     eng.exec.balances = async (list) => {
       eng.exec.txSeq++;
@@ -975,7 +975,7 @@ async function t(name, fn) {
     assert.strictEqual(store.all('SELECT * FROM equity').length, 0);
   });
 
-  await t('receipt yang terbaca menandai tx masuk blok — sukses maupun gagal (gas tetap terbakar)', async () => {
+  await t('a receipt that is read marks the tx as landed — success or failure (gas is still burned)', async () => {
     const { Executor } = require('../src/executor');
     const store = new Store(':memory:');
     const calls = [];
@@ -988,22 +988,22 @@ async function t(name, fn) {
     assert.strictEqual(ex.txSeq, 2);
   });
 
-  await t('ikuti manual aksi yang dilewati: dicatat sebagai cermin target (keluar tetap otomatis), keputusan jadi disalin', async () => {
+  await t('manually follow a skipped action: recorded as a target mirror (exit still automatic), decision becomes copied', async () => {
     const { Manual } = require('../src/manual');
     const { eng, store } = harness({ balances: RICH, targetLiquidityAfter: 10n ** 20n });
     const act = rec(store, action({ ts: Date.now() - 42 * 60_000 }));
     eng.decide(act.id, 'skip', 'cooldown pool 20s');
     const manual = new Manual({ engine: eng, store, chain: eng.chain, rpc: eng.rpc, log: () => {} });
     const row = () => store.get('SELECT a.*, d.verdict FROM actions a JOIN decisions d ON d.action_id=a.id WHERE a.id=?', act.id);
-    assert.ok(Manual.followable(row(), manual.openMirrorKeys()), 'aksi masuk yang dilewati bisa diikuti');
+    assert.ok(Manual.followable(row(), manual.openMirrorKeys()), 'a skipped entry action can be followed');
 
     const pv = await manual.planFollow({ actionId: act.id, usd: 60 });
     assert.ok(!pv.error, pv.error);
     assert.strictEqual(pv.plan.target, TARGET);
     assert.strictEqual(pv.plan.mirrorOf, '999');
-    assert.ok(pv.follow.ageMs >= 42 * 60_000, 'keterlambatan dikirim ke modal');
+    assert.ok(pv.follow.ageMs >= 42 * 60_000, 'lateness is sent to the modal');
     assert.strictEqual(pv.follow.exit.followTarget, true);
-    // rentang = aturan target (exact) atas rentang target
+    // range = the target rule (exact) over the target's range
     assert.deepStrictEqual([pv.plan.tickLower, pv.plan.tickUpper], [-600, 600]);
 
     let used = null;
@@ -1015,31 +1015,31 @@ async function t(name, fn) {
     const r = await manual.follow({ actionId: act.id, usd: 60 });
     assert.strictEqual(used.a.target, TARGET);
     const pos = store.get('SELECT target, mirror_of FROM positions WHERE id=?', r.positionId);
-    assert.deepStrictEqual({ ...pos }, { target: TARGET, mirror_of: '999' }, 'posisi = cermin posisi target');
+    assert.deepStrictEqual({ ...pos }, { target: TARGET, mirror_of: '999' }, 'position = mirror of the target position');
     const d = store.get('SELECT verdict, reason, position_id, plan FROM decisions WHERE action_id=?', act.id);
     assert.strictEqual(d.verdict, 'copy');
     assert.match(d.reason, /^diikuti manual 42 mnt setelah target masuk — /);
     assert.strictEqual(d.position_id, r.positionId);
-    assert.strictEqual(JSON.parse(d.plan).followedManually.reason, 'cooldown pool 20s', 'keputusan semula tidak hilang');
+    assert.strictEqual(JSON.parse(d.plan).followedManually.reason, 'cooldown pool 20s', 'the original decision is not lost');
     assert.strictEqual(store.get('SELECT COUNT(*) n FROM decisions WHERE action_id=?', act.id).n, 1);
-    assert.ok(!Manual.followable(row(), manual.openMirrorKeys()), 'sesudah diikuti tombolnya hilang');
+    assert.ok(!Manual.followable(row(), manual.openMirrorKeys()), 'after being followed its button disappears');
     assert.match((await manual.planFollow({ actionId: act.id })).error, /sudah disalin/);
   });
 
-  await t('ikuti manual ditolak kalau target sudah menutup posisinya', async () => {
+  await t('manual follow is rejected if the target has already closed its position', async () => {
     const { Manual } = require('../src/manual');
     const { eng, store } = harness({ balances: RICH, targetLiquidityAfter: 0n });
     const act = rec(store, action());
     eng.decide(act.id, 'error', 'rute Kyber rugi 19.4% (batas 5.9%)');
     const manual = new Manual({ engine: eng, store, chain: eng.chain, rpc: eng.rpc, log: () => {} });
     assert.match((await manual.planFollow({ actionId: act.id })).error, /target sudah menutup/);
-    // aksi keluar tidak pernah bisa diikuti
+    // an exit action can never be followed
     const out = rec(store, action({ kind: 'decrease' }));
     eng.decide(out.id, 'skip', 'kita tidak punya cermin posisi ini');
     assert.match((await manual.planFollow({ actionId: out.id })).error, /hanya aksi buka/);
   });
 
-  await t('ambil alih: keluar, tambahan, rekonsiliasi, dan SL target tidak menyentuh posisi; kembalikan -> ikut lagi', async () => {
+  await t('take over: exit, additions, reconciliation, and the target\'s SL do not touch the position; hand back -> follows again', async () => {
     const { Manual } = require('../src/manual');
     const { eng, store, sent } = harness({
       balances: RICH,
@@ -1051,25 +1051,25 @@ async function t(name, fn) {
     await manual.takeover(id);
     assert.ok(store.get('SELECT takeover_ts FROM positions WHERE id=?', id).takeover_ts > 0);
 
-    // target menarik 40%: tidak diikuti
+    // target withdraws 40%: not followed
     await eng.handle(rec(store, action({ kind: 'decrease', liquidity: (-4n * 10n ** 19n).toString() })));
     let v = verdictOf(store);
     assert.strictEqual(v.verdict, 'skip');
     assert.match(v.reason, /posisi #\d+ dalam kendali manual — keluar target tidak diikuti/);
-    // target menambah: tidak diikuti
+    // target adds: not followed
     await eng.handle(rec(store, action({ kind: 'increase', ts: Date.now() })));
     v = verdictOf(store);
     assert.strictEqual(v.verdict, 'skip');
     assert.match(v.reason, /tambahan target tidak diikuti/);
-    // rekonsiliasi (target tampak kosong) tidak menutup
+    // reconciliation (target looks empty) does not close
     const closed = [];
     eng.executeExit = async (plan, pos) => { closed.push(pos.id); return { note: 'ok' }; };
     let reads = 0;
     const ecm = eng.rpc.ethCallMany;
     eng.rpc.ethCallMany = async (c, ...r) => { reads++; return ecm(c, ...r); };
     await eng.reconcileExits(); await eng.reconcileExits();
-    assert.strictEqual(reads, 0, 'posisi manual bahkan tidak dibaca rekonsiliasi');
-    // stop loss yang terpicu tidak menutup
+    assert.strictEqual(reads, 0, 'a manual position is not even read by reconciliation');
+    // a triggered stop loss does not close
     store.run('UPDATE positions SET liquidity=? WHERE id=?', (10n ** 20n).toString(), id);
     const row = store.get('SELECT * FROM positions WHERE id=?', id);
     eng.positions.live = [{ ...row, pnlPct: -80, inRange: true, ageHours: 1 }];
@@ -1082,17 +1082,17 @@ async function t(name, fn) {
     eng.cfg.prices = { auto_eth_price: false };
     eng.lastAdopt = Date.now();
     await eng.syncPositionsOnce();
-    assert.deepStrictEqual(closed, [], 'stop loss tidak berlaku selama kendali manual');
-    assert.strictEqual(sent.length, 0, 'tidak ada transaksi apa pun');
+    assert.deepStrictEqual(closed, [], 'stop loss does not apply during manual control');
+    assert.strictEqual(sent.length, 0, 'no transaction at all');
 
-    // kembalikan (target masih punya likuiditas) -> SL berlaku lagi
+    // give back (target still has liquidity) -> SL applies again
     await manual.handBack(id);
     assert.strictEqual(store.get('SELECT takeover_ts FROM positions WHERE id=?', id).takeover_ts, null);
     await eng.syncPositionsOnce();
     assert.deepStrictEqual(closed, [id]);
   });
 
-  await t('kembalikan ditolak kalau target sudah menutup posisinya; posisi tanpa target tidak bisa diambil alih', async () => {
+  await t('hand back is rejected if the target has already closed its position; a position without a target cannot be taken over', async () => {
     const { Manual } = require('../src/manual');
     const { eng, store } = harness({
       balances: RICH,
@@ -1104,11 +1104,11 @@ async function t(name, fn) {
     await manual.takeover(id);
     assert.strictEqual((await manual.handBackInfo(id)).targetOpen, false);
     await assert.rejects(manual.handBack(id), /target sudah menutup posisi #999/);
-    assert.ok(store.get('SELECT takeover_ts FROM positions WHERE id=?', id).takeover_ts > 0, 'tetap manual');
+    assert.ok(store.get('SELECT takeover_ts FROM positions WHERE id=?', id).takeover_ts > 0, 'stays manual');
     store.run('UPDATE positions SET target=NULL, mirror_of=NULL WHERE id=?', id);
     await assert.rejects(manual.takeover(id), /tidak mengikuti target/);
   });
 
-  console.log(`\n${pass} lulus, ${fail} gagal`);
+  console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

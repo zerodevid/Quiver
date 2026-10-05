@@ -1,16 +1,16 @@
-// Transaksi swap satu pool dari GeckoTerminal — dipakai server (market.js) DAN
-// browser (web: TradesTape). Dipisah supaya browser bisa memanggil GeckoTerminal
-// langsung: jatah ~30 panggilan/menit dihitung per IP, dan IP VPS sudah dipakai
-// tiga instance bot untuk lilin harga. Dari browser, jatahnya milik penonton
-// sendiri; server tinggal jadi cadangan kalau browser gagal (jaringan/429).
+// Swap transactions of one pool from GeckoTerminal — used by the server (market.js) AND the
+// browser (web: TradesTape). Split out so the browser can call GeckoTerminal
+// directly: the ~30 calls/minute quota is counted per IP, and the VPS IP is already used by
+// three bot instances for price candles. From the browser the quota belongs to the viewer,
+// and the server only acts as a fallback when the browser fails (network/429).
 export const gtTradesUrl = (slug, pool) =>
   `https://api.geckoterminal.com/api/v2/networks/${slug}/pools/${pool}/trades?trade_volume_in_usd_greater_than=0`;
 
-// Menyeragamkan jawaban GeckoTerminal: terbaru di depan.
-//  - token: alamat token spekulatif; arah beli/jual dinyatakan terhadap token itu,
-//    bukan terhadap "base" versi GeckoTerminal yang bisa terbalik dari UI.
-//  - harga dalam aset kuotasi pool dihitung dari jumlah kedua sisi swap (bukan
-//    price_*_in_currency_token, yang dihargai dalam koin native jaringan).
+// Normalises GeckoTerminal's response: newest first.
+//  - token: the speculative token address; buy/sell direction is stated relative to that token,
+//    not to GeckoTerminal's "base", which can be inverted relative to the UI.
+//  - the price in the pool's quote asset is computed from the amounts on both sides of the swap (not
+//    price_*_in_currency_token, which is priced in the network's native coin).
 export function normalizeTrades(json, { token = null, limit = 80 } = {}) {
   const t = String(token || '').toLowerCase();
   const n = Math.max(10, Math.min(300, Number(limit) || 80));
@@ -19,8 +19,8 @@ export function normalizeTrades(json, { token = null, limit = 80 } = {}) {
   for (const row of json?.data || []) {
     const a = row?.attributes; if (!a) continue;
     const from = lc(a.from_token_address), to = lc(a.to_token_address);
-    // Beli = token spekulatif keluar dari pool ke wallet; tanpa alamat token,
-    // ikut label GeckoTerminal.
+    // Buy = the speculative token leaves the pool for the wallet; without a token address,
+    // follow GeckoTerminal's label.
     const buy = t ? to === t : a.kind === 'buy';
     const fromAmt = Number(a.from_token_amount), toAmt = Number(a.to_token_amount);
     const base = buy ? toAmt : fromAmt, quote = buy ? fromAmt : toAmt;

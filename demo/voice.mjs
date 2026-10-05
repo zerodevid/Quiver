@@ -1,6 +1,6 @@
-// Narasi (VO) per adegan -> out/vo/<lang>/<key>.wav + out/vo-<lang>.json (durasi).
-//   QLANG=en node voice.mjs          Inggris: Kokoro (neural, lokal) — QVOICE=af_heart|am_michael|bf_emma|…
-//   QLANG=id node voice.mjs          Indonesia: suara sistem macOS "Damayanti" (Kokoro belum punya bahasa Indonesia)
+// Narration (VO) per scene -> out/vo/<lang>/<key>.wav + out/vo-<lang>.json (durations).
+//   QLANG=en node voice.mjs          English: Kokoro (neural, local) — QVOICE=af_heart|am_michael|bf_emma|…
+//   QLANG=id node voice.mjs          Indonesian: macOS system voice "Damayanti" (Kokoro has no Indonesian yet)
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -11,7 +11,7 @@ const LANG = process.env.QLANG || 'en';
 const C = COPY[LANG];
 const DIR = path.resolve('out/vo', LANG); fs.mkdirSync(DIR, { recursive: true });
 
-// Kalimat yang sama dipakai untuk subtitle & VO; singkatan dibaca supaya tidak dieja aneh.
+// The same sentences feed subtitles & VO; abbreviations are spelled out so they are not read awkwardly.
 const spoken = (s) => s
   .replace(/\bPnL\b/g, LANG === 'en' ? 'P and L' : 'P N L')
   .replace(/\bLP\b/g, LANG === 'en' ? 'L-P' : 'L P')

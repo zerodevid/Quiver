@@ -1,3 +1,3 @@
-// Implementasinya tinggal di src/ supaya server (kartu grafik Telegram) dan dasbor
-// memakai rumus BEP yang sama persis — src/ ikut terkirim ke VPS, web/src tidak.
+// The implementation lives in src/ so the server (Telegram chart card) and the dashboard
+// use exactly the same BEP formula — src/ is shipped to the VPS, web/src is not.
 export { breakEven } from '../../src/breakeven.mjs';

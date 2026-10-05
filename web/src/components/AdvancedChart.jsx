@@ -1,7 +1,7 @@
-// Grafik lanjutan dengan KLineChart: alat gambar (garis tren, fibonacci, dst) dan
-// indikator (MA/EMA/BOLL/VOL/RSI/MACD) gaya TradingView. Gambar & indikator aktif
-// disimpan di server per pool (bukan localStorage) lewat /api/chart/overlays, jadi
-// tetap ada saat halaman dibuka lagi dari perangkat mana pun.
+// Advanced chart with KLineChart: drawing tools (trend line, fibonacci, etc.) and
+// indicators (MA/EMA/BOLL/VOL/RSI/MACD) in TradingView style. Active drawings & indicators are
+// stored on the server per pool (not localStorage) via /api/chart/overlays, so they
+// are still there when the page is opened again from any device.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { init, dispose, registerOverlay } from 'klinecharts';
 import { TrendingUp, Minus, Ruler, Brush, GitCommitHorizontal, Square, Trash2 } from 'lucide-react';
@@ -10,15 +10,15 @@ import { ask } from './ui';
 import { useI18n } from '../i18n';
 import { palette, withAlpha } from './CandleChart';
 
-// Pita rentang posisi LP: titik 1 = (saat masuk, hi), titik 2 = (saat keluar, lo).
-// Sumbu waktu dipotong ke masa posisi hidup: mulai di lilin masuk (atau tepi kiri kalau
-// masuknya sebelum lilin pertama) dan berhenti di lilin keluar; posisi yang masih
-// terbuka (extendData.open) memanjang sampai tepi kanan pane.
+// LP position range band: point 1 = (entry time, hi), point 2 = (exit time, lo).
+// The time axis is clipped to the position's lifetime: starting at the entry candle (or the left edge if
+// the entry was before the first candle) and stopping at the exit candle; a position still
+// open (extendData.open) extends to the right edge of the pane.
 //
-// Kalau satu pool punya beberapa posisi, tiap posisi jadi pitanya sendiri: yang
-// sedang dipilih digambar pekat dan bergaris utuh, sisanya tipis dan putus-putus
-// (extendData.dim) supaya tidak saling menutupi. extendData.label = nama pendek
-// posisi, ditulis di tepi kiri pita.
+// If a pool has several positions, each one becomes its own band: the one
+// selected is drawn solid with a full line, the others thin and dashed
+// (extendData.dim) so they do not cover each other. extendData.label = the short name of the
+// position, written at the band's left edge.
 registerOverlay({
   name: 'lpRange', totalStep: 2,
   needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
@@ -73,9 +73,9 @@ function buildStyles(pal) {
         upBorderColor: pal.up, downBorderColor: pal.down, noChangeBorderColor: pal.muted,
         upWickColor: pal.up, downWickColor: pal.down, noChangeWickColor: pal.muted,
       },
-      // Legenda OHLC bawaan menempel di pojok kiri atas dan bertabrakan dengan
-      // penanda harga tertinggi kalau lilin tertingginya ada di sana. Dijadikan
-      // kotak yang mengikuti kursor — muncul saat dibaca, hilang saat tidak.
+      // The built-in OHLC legend sticks to the top-left corner and collides with the
+      // highest price marker if the highest candle is there. It was turned into
+      // a box that follows the cursor — it appears while reading, and disappears when not.
       tooltip: {
         showRule: 'follow_cross', showType: 'rect',
         rect: { position: 'pointer', color: withAlpha(pal.dark ? '#000000' : '#ffffff', 0.85), borderColor: pal.border, borderRadius: 6, paddingLeft: 10, paddingRight: 10, paddingTop: 8, paddingBottom: 8 },
@@ -95,8 +95,8 @@ function buildStyles(pal) {
   };
 }
 
-// Presisi harga tetap (bukan format kustom per titik seperti lightweight-charts):
-// disetel dari rentang harga lilin supaya token remeh (0,00000032) tetap kebaca.
+// Fixed price precision (not a custom per-point format like lightweight-charts):
+// tuned from the candle price range so trivial tokens (0.00000032) stay readable.
 function precisionFor(data) {
   const prices = data.flatMap((d) => [d.open, d.high, d.low, d.close]).filter((p) => p > 0);
   if (!prices.length) return 4;
@@ -106,9 +106,9 @@ function precisionFor(data) {
   return Math.min(12, leadingZeros + 4);
 }
 
-// DataLoader KLineChart v10: sekali dipasang, ia menarik data awal lewat getBars lalu
-// berlangganan pembaruan lewat subscribeBar. Kita dorong lilin terbaru tiap kali polling
-// membawa data baru lewat push(); riwayat awal dibaca dari dataRef saat itu juga.
+// KLineChart v10 DataLoader: once installed, it pulls initial data via getBars then
+// subscribes to updates via subscribeBar. We push the latest candle each time polling
+// brings new data via push(); the initial history is read from dataRef at that moment.
 function makeLoader(dataRef) {
   let sub = null;
   return {
@@ -120,24 +120,24 @@ function makeLoader(dataRef) {
 }
 
 const overlayPayload = (o) => ({ name: o.name, points: o.points, styles: o.styles, mode: o.mode, lock: o.lock, visible: o.visible, extendData: o.extendData });
-// Overlay konteks posisi LP (pita rentang, garis masuk/keluar/BEP) memakai groupId
-// tetap 'lp' — dibedakan dari gambar milik pengguna supaya "hapus semua" dan
-// penyimpanan ke server tidak ikut membuang/menyimpannya (overlay ini diturunkan dari
-// props posisi, dibangun ulang tiap props berubah, bukan gambar tangan pengguna).
+// LP position context overlays (range band, entry/exit/BEP lines) use a fixed groupId
+// 'lp' — distinguished from the user's own drawings so "delete all" and
+// saving to the server do not remove/save them (these overlays are derived from
+// position props, rebuilt each time props change, not the user's hand drawings).
 const LP_GROUP = 'lp';
 const userOverlays = (chart) => chart.getOverlays().filter((o) => o.groupId !== LP_GROUP);
 
 /**
- * candles  : [{ t(ms), o, h, l, c, v }] urut naik
+ * candles  : [{ t(ms), o, h, l, c, v }] ascending
  * tf       : '5m' | '15m' | '1h' | '4h' | '1d'
- * quote    : simbol aset kuotasi (ticker di legenda)
- * poolRef  : kunci penyimpanan gambar/indikator di server — null = tidak disimpan
- * range    : { lo, hi } harga rentang posisi LP, atau null
- * ranges   : [{ id, lo, hi, color, label, selected, from(ms), to(ms) }] — banyak pita
- *            sekaligus (semua posisi terbuka di pool yang sama). Kalau diisi, `range`
- *            diabaikan: pita yang `selected` yang mewakili posisi yang sedang dilihat.
- * entry    : { t(ms), p }  exit : { t(ms), p }  now : harga kini — semuanya opsional,
- *            dipakai untuk menggambar konteks posisi (bukan gambar pengguna)
+ * quote    : quote asset symbol (the ticker in the legend)
+ * poolRef  : storage key of drawings/indicators on the server — null = not stored
+ * range    : { lo, hi } price range of the LP position, or null
+ * ranges   : [{ id, lo, hi, color, label, selected, from(ms), to(ms) }] — many bands
+ *            at once (all open positions in the same pool). If given, `range`
+ *            is ignored: the `selected` band represents the position being viewed.
+ * entry    : { t(ms), p }  exit : { t(ms), p }  now : current price — all optional,
+ *            used to draw the position context (not user drawings)
  */
 export default function AdvancedChart({ candles, tf, quote, poolRef, height = 420, range = null, ranges = null, entry = null, exit = null, now = null, bep = null }) {
   const { t } = useI18n();
@@ -173,7 +173,7 @@ export default function AdvancedChart({ candles, tf, quote, poolRef, height = 42
   };
   const withHooks = (o) => ({ ...o, onDrawEnd: scheduleSave, onPressedMoveEnd: scheduleSave, onRemoved: scheduleSave });
 
-  // Buat grafik sekali per mount (parent me-remount lewat `key={tf}` saat rentang lilin diganti).
+  // Create the chart once per mount (the parent remounts via `key={tf}` when the candle range changes).
   useEffect(() => {
     const el = box.current;
     const chart = init(el, { styles: buildStyles(pal) });
@@ -190,7 +190,7 @@ export default function AdvancedChart({ candles, tf, quote, poolRef, height = 42
 
   useEffect(() => { chartRef.current?.chart.setStyles(buildStyles(pal)); }, [pal]);
 
-  // Muat gambar & indikator tersimpan sekali chart siap.
+  // Load stored drawings & indicators once the chart is ready.
   useEffect(() => {
     if (!ready) return;
     let cancelled = false;
@@ -214,8 +214,8 @@ export default function AdvancedChart({ candles, tf, quote, poolRef, height = 42
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, poolRef]);
 
-  // Lilin baru dari polling: dorong lewat langganan DataLoader, bukan reset data
-  // (reset akan mengulang zoom/pan pengguna).
+  // New candles from polling: push through the DataLoader subscription, not reset the data
+  // (a reset would replay the user's zoom/pan).
   useEffect(() => {
     const r = chartRef.current;
     if (!r || !ready || !data.length) return;
@@ -224,31 +224,31 @@ export default function AdvancedChart({ candles, tf, quote, poolRef, height = 42
     if (last.timestamp >= lastTsRef.current) { r.loader.push(last); lastTsRef.current = last.timestamp; }
   }, [data, ready]);
 
-  // Pita rentang: disaring ke yang harganya masuk akal, lalu diringkas jadi satu kunci
-  // supaya efek di bawah hanya dibangun ulang saat pitanya benar-benar berubah.
+  // Range bands: filtered to those with sensible prices, then summarised into a single key
+  // so the effect below is only rebuilt when the bands really change.
   const bandList = useMemo(() => (ranges || []).filter((b) => b.lo > 0 && b.hi > 0), [ranges]);
   const bandKey = useMemo(() => bandList.map((b) => `${b.id}:${b.lo}:${b.hi}:${b.from || 0}:${b.to || 0}:${b.color}:${b.selected ? 1 : 0}`).join('|'), [bandList]);
 
-  // Konteks posisi LP: pita rentang + garis masuk/keluar/BEP/kini. Dibangun ulang
-  // (bukan dipindah) tiap props berubah — cukup murah dan menghindari melacak id per garis.
+  // LP position context: range band + entry/exit/BEP/now lines. Rebuilt
+  // (not moved) every time props change — cheap enough and avoids tracking an id per line.
   useEffect(() => {
     const r = chartRef.current;
     if (!r || !ready || !data.length) return;
     for (const o of r.chart.getOverlays({ groupId: LP_GROUP })) r.chart.removeOverlay({ id: o.id });
     const anchor = data[data.length - 1].timestamp;
     const specs = [];
-    // Banyak pita (semua posisi terbuka di pool) atau satu pita saja. Yang terpilih
-    // digambar belakangan supaya berada di atas pita lain.
+    // Many bands (all open positions in the pool) or a single band. The selected one
+    // is drawn last so it sits above the other bands.
     const bands = bandList.length
       ? [...bandList].sort((a, b) => (a.selected ? 1 : 0) - (b.selected ? 1 : 0))
       : range?.lo > 0 && range?.hi > 0
         ? [{ lo: range.lo, hi: range.hi, color: pal.accent, selected: true, from: entry?.t, to: exit?.t }]
         : [];
-    // Tanpa posisi yang disorot, semua pita digambar pekat — tidak ada yang "kalah".
+    // Without a highlighted position, all bands are drawn solid — none "loses".
     const anySel = bands.some((b) => b.selected);
     for (const b of bands) {
-      // Tanpa waktu masuk, pita mulai dari lilin pertama; tanpa waktu keluar, pita
-      // dianggap masih terbuka dan memanjang ke tepi kanan.
+      // Without an entry time, the band starts at the first candle; without an exit time, the band
+      // is considered still open and extends to the right edge.
       const from = b.from > 0 ? Math.max(b.from, data[0].timestamp) : data[0].timestamp;
       const to = b.to > 0 ? b.to : anchor;
       const color = b.color || pal.accent;
