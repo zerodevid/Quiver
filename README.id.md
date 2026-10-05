@@ -56,7 +56,12 @@ pilih lewat pemilih chain seperti chain lain.
   `1.0001` setara (bin aslinya di kolom `ext`).
 - **Ukuran:** aturannya sama dengan EVM, tapi dinyatakan dalam nilai: `mirror`/`pct`/
   `multiplier` menskala nilai yang ditambahkan target, dan di mode rentang `exact` jumlah
-  token target sendiri yang diskala — pembagian X/Y (dan bentuk strategi DLMM) ikut sama.
+  token target sendiri yang diskala — pembagian X/Y ikut sama.
+- **Bentuk DLMM:** `rules.range.dlmm_strategy` = `mirror` (bawaan) | `spot` | `curve` |
+  `bidask`. `mirror` membaca bentuk posisi target dari nilai per bin (rata = spot, menumpuk
+  di tengah = curve, menumpuk di tepi = bid-ask; tidak jelas = spot) tanpa riwayat
+  transaksi. Bentuknya disimpan di posisi kita dan dipakai lagi saat tambah & compound.
+  LP manual bisa memilih bentuknya sendiri.
 - **Eksekusi:** instruksi disusun SDK venue; bot memasang compute budget + biaya prioritas
   (persentil fee terkini akun yang ditulis, diapit `gas.min_cu_price_micro`/
   `max_cu_price_micro`), simulasi, tanda tangan, kirim ke semua endpoint, siarkan ulang

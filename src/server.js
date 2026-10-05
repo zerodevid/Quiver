@@ -1789,7 +1789,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         upperPct: b.upperPct != null ? Number(b.upperPct) : null,
         tickLower: b.tickLower != null ? Math.round(Number(b.tickLower)) : null,
         tickUpper: b.tickUpper != null ? Math.round(Number(b.tickUpper)) : null,
-        full: !!b.full,
+        full: !!b.full, strategy: b.strategy || null,
       });
     },
     'POST /api/manual/lp/open': async (req) => {
@@ -1808,7 +1808,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           upperPct: b.upperPct != null ? Number(b.upperPct) : null,
           tickLower: b.tickLower != null ? Math.round(Number(b.tickLower)) : null,
           tickUpper: b.tickUpper != null ? Math.round(Number(b.tickUpper)) : null,
-          full: !!b.full,
+          full: !!b.full, strategy: b.strategy || null,
         });
         if (d.error) return d;
         try {

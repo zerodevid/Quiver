@@ -234,8 +234,8 @@ class SolanaEngine {
     const ad = this.chain.adapter(plan.venue);
     const owner = this.exec.address();
     const built = plan.action === 'increase'
-      ? await ad.buildIncrease({ pool: plan.poolRef, position: plan.tokenId, amount0: BigInt(plan.amount0), amount1: BigInt(plan.amount1), slippageBps: plan.slippageBps ?? 150, owner })
-      : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: BigInt(plan.amount0), amount1: BigInt(plan.amount1), slippageBps: plan.slippageBps ?? 150, owner });
+      ? await ad.buildIncrease({ pool: plan.poolRef, position: plan.tokenId, amount0: BigInt(plan.amount0), amount1: BigInt(plan.amount1), slippageBps: plan.slippageBps ?? 150, owner, strategy: plan.strategy || null })
+      : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: BigInt(plan.amount0), amount1: BigInt(plan.amount1), slippageBps: plan.slippageBps ?? 150, owner, strategy: plan.strategy || 'spot' });
     return this.exec.simulateGroups(built.groups);
   }
 
@@ -337,8 +337,8 @@ class SolanaEngine {
     for (let attempt = 1; ; attempt++) {
       try {
         built = plan.action === 'increase'
-          ? await ad.buildIncrease({ pool: plan.poolRef, position: plan.tokenId, amount0: a0, amount1: a1, slippageBps: slip, owner })
-          : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: a0, amount1: a1, slippageBps: slip, owner, strategy: this.cfg.solana?.dlmm_strategy || 'spot' });
+          ? await ad.buildIncrease({ pool: plan.poolRef, position: plan.tokenId, amount0: a0, amount1: a1, slippageBps: slip, owner, strategy: plan.strategy || null })
+          : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: a0, amount1: a1, slippageBps: slip, owner, strategy: plan.strategy || 'spot' });
         // Posisi baru dicatat "tertunda" sebelum dikirim: kalau proses mati sesudah tx
         // masuk tapi sebelum dibukukan, adopsi berikutnya menautkannya lagi ke target.
         if (plan.action !== 'increase') {
@@ -394,7 +394,7 @@ class SolanaEngine {
       const lo = built.native?.lower ?? plan.lower, hi = built.native?.upper ?? plan.upper;
       const tk = got ? { tickLower: got.tickLower, tickUpper: got.tickUpper } : (pool ? ad.ticksOf(pool, lo, hi) : { tickLower: plan.tickLower, tickUpper: plan.tickUpper });
       positionId = this.positions.record({ ...plan, ...tk, liquidity: got ? String(got.liquidity) : '0', amount0: String(cost0), amount1: String(cost1), lower: lo, upper: hi },
-        { tokenId: posId, txHash: hash, target: act?.target ?? null, cost0, cost1, costQuote: val(cost0, cost1) ?? plan.valueQuote, entrySqrt: sqrt, ext: got?.ext || null });
+        { tokenId: posId, txHash: hash, target: act?.target ?? null, cost0, cost1, costQuote: val(cost0, cost1) ?? plan.valueQuote, entrySqrt: sqrt, ext: { ...(got?.ext || {}), ...(plan.strategy ? { strategy: plan.strategy } : {}) } });
     }
     if (plan.action !== 'increase') this.store.run('DELETE FROM state WHERE k=?', this.sk(`sol_pending_entry:${posId}`));
     // Sisa token hasil tukar yang tidak masuk posisi (slippage / pembulatan) dijual lagi.

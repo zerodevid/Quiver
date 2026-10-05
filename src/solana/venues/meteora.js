@@ -8,6 +8,7 @@ const BN = require('bn.js');
 const DLMM = require('@meteora-ag/dlmm');
 const { BorshAccountsCoder } = require('@coral-xyz/anchor');
 const u = require('../units');
+const { dlmmShape } = require('../dlmm-shape');
 
 const PROGRAM = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 // Satu posisi DLMM biasa menampung maksimal 70 bin; yang lebih lebar dibuat sebagai
@@ -85,7 +86,8 @@ class MeteoraVenue {
   }
 
   // LbPosition SDK -> bentuk posisi bersama.
-  norm(pool, binStep, p) {
+  // activeId: active bin of the pair, used to read the liquidity shape (ext.strategy).
+  norm(pool, binStep, p, activeId = null) {
     const d = p.positionData;
     let L = 0n;
     for (const b of d.positionBinData || []) L += BigInt(b.positionLiquidity || '0');
@@ -96,8 +98,14 @@ class MeteoraVenue {
       liquidity: L.toString(),
       amount0: BigInt(d.totalXAmount || '0'), amount1: BigInt(d.totalYAmount || '0'),
       fee0: BigInt(d.feeX?.toString() || '0'), fee1: BigInt(d.feeY?.toString() || '0'),
-      ext: { binStep, lowerBin: d.lowerBinId, upperBin: d.upperBinId },
+      ext: { binStep, lowerBin: d.lowerBinId, upperBin: d.upperBinId, strategy: MeteoraVenue.shapeOf(d, activeId, binStep)?.strategy ?? null },
     };
+  }
+
+  static shapeOf(positionData, activeId, binStep) {
+    if (activeId == null) return null;
+    const bins = (positionData.positionBinData || []).map((b) => ({ binId: b.binId, x: b.positionXAmount, y: b.positionYAmount }));
+    return dlmmShape(bins, Number(activeId), binStep);
   }
 
   // Semua posisi DLMM milik sebuah wallet (satu getProgramAccounts + pair + bin array).
@@ -107,7 +115,7 @@ class MeteoraVenue {
     for (const [pool, info] of m) {
       const binStep = Number(info.lbPair.binStep);
       for (const p of info.lbPairPositionsData) {
-        const n = this.norm(pool, binStep, p);
+        const n = this.norm(pool, binStep, p, info.lbPair.activeId);
         n.token0 = b58(info.lbPair.tokenXMint); n.token1 = b58(info.lbPair.tokenYMint);
         out.push(n);
       }
@@ -132,7 +140,7 @@ class MeteoraVenue {
       ids.forEach((id, i) => {
         const p = got.res[i];
         if (!p) { out.set(id, null); return; }
-        const n = this.norm(pool, binStep, p);
+        const n = this.norm(pool, binStep, p, got.d.lbPair.activeId);
         n.token0 = b58(got.d.lbPair.tokenXMint); n.token1 = b58(got.d.lbPair.tokenYMint);
         out.set(id, n);
       });
@@ -149,13 +157,17 @@ class MeteoraVenue {
     }));
   }
 
+  static strategyType(s) {
+    return { spot: DLMM.StrategyType.Spot, curve: DLMM.StrategyType.Curve, bidask: DLMM.StrategyType.BidAsk }[s] ?? DLMM.StrategyType.Spot;
+  }
+
   // lower/upper: bin id (inklusif). amount0/1: jumlah mentah token X/Y.
   async buildOpen({ pool, lower, upper, amount0, amount1, slippageBps, owner, strategy = 'spot' }) {
     const width = upper - lower + 1;
     if (width > MAX_BINS) throw new Error(`rentang ${width} bin melebihi batas posisi DLMM (${MAX_BINS} bin)`);
     const pos = Keypair.generate();
     const user = new PublicKey(owner);
-    const st = { spot: DLMM.StrategyType.Spot, curve: DLMM.StrategyType.Curve, bidask: DLMM.StrategyType.BidAsk }[strategy] ?? DLMM.StrategyType.Spot;
+    const st = MeteoraVenue.strategyType(strategy);
     const params = {
       positionPubKey: pos.publicKey, user,
       totalXAmount: new BN(amount0.toString()), totalYAmount: new BN(amount1.toString()),
@@ -172,14 +184,15 @@ class MeteoraVenue {
   }
 
   // Tambah ke posisi yang sudah ada, di rentang posisi itu sendiri.
-  async buildIncrease({ pool, position, amount0, amount1, slippageBps, owner, strategy = 'spot' }) {
-    const st = { spot: DLMM.StrategyType.Spot, curve: DLMM.StrategyType.Curve, bidask: DLMM.StrategyType.BidAsk }[strategy] ?? DLMM.StrategyType.Spot;
+  // strategy null: keep the position's own shape (read from its bins; spot if unclear).
+  async buildIncrease({ pool, position, amount0, amount1, slippageBps, owner, strategy = null }) {
     const groups = await this.withPool(pool, async (d) => {
       const p = await d.getPosition(new PublicKey(position));
+      const use = strategy || MeteoraVenue.shapeOf(p.positionData, d.lbPair.activeId, Number(d.lbPair.binStep))?.strategy || 'spot';
       return MeteoraVenue.groups(await d.addLiquidityByStrategy({
         positionPubKey: new PublicKey(position), user: new PublicKey(owner),
         totalXAmount: new BN(amount0.toString()), totalYAmount: new BN(amount1.toString()),
-        strategy: { minBinId: p.positionData.lowerBinId, maxBinId: p.positionData.upperBinId, strategyType: st },
+        strategy: { minBinId: p.positionData.lowerBinId, maxBinId: p.positionData.upperBinId, strategyType: MeteoraVenue.strategyType(use) },
         slippage: Number(slippageBps) / 100,
       }));
     });

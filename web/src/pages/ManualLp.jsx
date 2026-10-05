@@ -402,6 +402,7 @@ export default function ManualLp() {
   const [arahBawah, setArahBawah] = useState(-1);
   const [arahAtas, setArahAtas] = useState(1);
   const [full, setFull] = useState(false);
+  const [bentuk, setBentuk] = useState('spot');   // Meteora DLMM: spot | curve | bidask
   const [plan, setPlan] = useState(null);      // { preview, warnings } | { error }
   const [hitung, setHitung] = useState(false);
   const [konfirm, setKonfirm] = useState(false);
@@ -435,7 +436,8 @@ export default function ManualLp() {
   const terbalik = !full && !loBad && !upBad && !kosong && up <= lo;
   const rentangOk = full || (!loBad && !upBad && !kosong && !terbalik);
   const siap = !!pool && Number.isFinite(usdNum) && usdNum > 0 && rentangOk;
-  const body = { poolRef: pool?.poolRef, usd: usdNum, ...(full ? { full: true } : { lowerPct: -lo, upperPct: up }) };
+  const dlmm = pool?.venue === 'meteora';
+  const body = { poolRef: pool?.poolRef, usd: usdNum, ...(full ? { full: true } : { lowerPct: -lo, upperPct: up }), ...(dlmm ? { strategy: bentuk } : {}) };
 
   // Pratinjau dihitung ulang sendiri setiap pilihan berubah — tidak ada tombol
   // "hitung". Balasan yang datang terlambat dibuang lewat nomor urut.
@@ -450,7 +452,7 @@ export default function ManualLp() {
       setPlan({ ...r, _ref: body.poolRef }); setHitung(false);
     }, 350);
     return () => { clearTimeout(id); };
-  }, [pool?.poolRef, usdNum, lo, up, full, siap]);
+  }, [pool?.poolRef, usdNum, lo, up, full, siap, dlmm, bentuk]);
 
   const kas = plan?.preview?.kasUsd ?? saldo?.kasUsd ?? null;
   // Nominal terbesar yang masih lolos semua batas — supaya tombol "Maks" tidak
@@ -611,6 +613,18 @@ export default function ManualLp() {
               )}
               {!full && p && !plan?.error && (Math.abs(-p.lowerPct - lo) >= 0.05 || Math.abs(p.upperPct - up) >= 0.05) && (
                 <p className="text-xs text-muted">{t(p.nativeUnit === 'bin' ? 'Dibulatkan ke bin pool: {a} / {b}.' : 'Dibulatkan ke tick pool: {a} / {b}.', { a: bertanda(-p.lowerPct), b: bertanda(p.upperPct) })}</p>
+              )}
+              {dlmm && (
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-muted">{t('Bentuk likuiditas')}</span>
+                  <Chips value={bentuk} onPick={setBentuk}
+                    options={[['spot', t('Spot')], ['curve', t('Curve')], ['bidask', t('Bid-Ask')]]} />
+                  <p className="text-xs text-muted">{t({
+                    spot: 'Spot: nilai sama rata di setiap bin.',
+                    curve: 'Curve: menumpuk di sekitar harga kini — fee besar selama harga tenang, cepat habis kalau harga bergerak.',
+                    bidask: 'Bid-Ask: menumpuk di tepi rentang — membeli saat turun dan menjual saat naik.',
+                  }[bentuk])}</p>
+                </div>
               )}
               <p className="text-xs text-muted">
                 {t('Fee hanya mengalir selama harga ada di dalam rentang. Sempit = fee lebih besar tapi lebih cepat keluar; lebar = lebih aman tapi encer.')}

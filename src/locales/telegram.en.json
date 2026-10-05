@@ -834,5 +834,11 @@
   "<i>Angka target = pokok yang terpantau masuk & keluar; fee yang dia panen terpisah belum terhitung.</i>": "<i>Target figures: principal we watched go in and out — fees they claimed separately are not counted.</i>",
   "↔ Rentang dia {0} – {1}": "↔ Their range {0} – {1}",
   "kita tambah": "We added",
-  "total kita": "Our total"
+  "total kita": "Our total",
+  "Bentuk likuiditas DLMM": "DLMM liquidity shape",
+  "Ikuti bentuk target": "Follow the target's shape",
+  "Spot (rata)": "Spot (flat)",
+  "Curve (menumpuk di tengah)": "Curve (concentrated in the middle)",
+  "Bid-Ask (menumpuk di tepi)": "Bid-Ask (concentrated at the edges)",
+  "Khusus Meteora DLMM di Solana: cara likuiditas disebar ke bin.": "Meteora DLMM on Solana only: how liquidity is spread across bins."
 }

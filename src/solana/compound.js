@@ -52,7 +52,10 @@ class SolanaCompound extends Compound {
       const a0 = usable(before.fee0), a1 = usable(before.fee1);
       if (a0 > 0n || a1 > 0n) {
         try {
-          const inc = await ad.buildIncrease({ pool: pos.pool_ref, position: pos.token_id, amount0: a0, amount1: a1, slippageBps: Number(slip), owner });
+          // DLMM: reinvest in the shape the position was opened with (null = read it from the bins).
+          let strategy = null;
+          try { strategy = JSON.parse(pos.ext || '{}')?.strategy || null; } catch { strategy = null; }
+          const inc = await ad.buildIncrease({ pool: pos.pool_ref, position: pos.token_id, amount0: a0, amount1: a1, slippageBps: Number(slip), owner, strategy });
           const r = await e.exec.sendGroups(inc.groups, { kind: 'compound', detail: { position: pos.id, step: 'increase' } });
           addHash = r.hashes[r.hashes.length - 1] || null;
           if (r.ok) {

@@ -16,20 +16,28 @@
 const m = require('../v3math');
 const u = require('./units');
 const { planRange, quoteToUsd } = require('../policy');
+const { shapeWeight, resolveStrategy, strategyLabel } = require('./dlmm-shape');
 
 const BRIDGE_MARGIN_BPS = 100;
 // Orca & Raydium: batas tick program (lebih sempit dari Uniswap).
 const CLMM_MAX_TICK = 443636;
 
 // Bagian nilai (0..1) yang berada di token0 untuk rentang [tl, tu) di harga sekarang.
-function share0(venue, pool, tl, tu, lowerNative, upperNative) {
+function share0(venue, pool, tl, tu, lowerNative, upperNative, strategy = 'spot') {
   if (venue === 'meteora') {
-    // Spot: nilai sama di tiap bin; bin di atas bin aktif memuat X saja, di bawahnya Y
-    // saja, bin aktif separuh-separuh.
-    const a = pool.current, w = upperNative - lowerNative + 1;
+    // Bins above the active bin hold X only, bins below Y only, the active bin half of
+    // each; each bin's value follows the strategy's shape (spot: equal per bin).
+    const a = pool.current;
     if (a < lowerNative) return 1;
     if (a > upperNative) return 0;
-    return (upperNative - a + 0.5) / w;
+    const n = Math.max(a - lowerNative, upperNative - a);
+    let x = 0, all = 0;
+    for (let b = lowerNative; b <= upperNative; b++) {
+      const w = shapeWeight(strategy, Math.abs(b - a), n);
+      all += w;
+      if (b > a) x += w; else if (b === a) x += w / 2;
+    }
+    return all > 0 ? x / all : 0.5;
   }
   const L = 10n ** 18n;
   const r = m.amountsForLiquidity(pool.sqrtX96, m.getSqrtRatioAtTick(tl), m.getSqrtRatioAtTick(tu), L);
@@ -107,6 +115,7 @@ function planEntrySol(act, ctx) {
   }
   if (act.venue === 'meteora' && upper - lower + 1 > 1400) return skip(`rentang ${upper - lower + 1} bin melebihi batas posisi DLMM (1400)`);
   const sameRange = exact && Number(act.lower) === lower && Number(act.upper) === upper;
+  const strategy = act.venue === 'meteora' ? resolveStrategy(rules.range.dlmm_strategy, act.ext?.strategy) : null;
 
   // ---- ukuran ----
   const s = rules.sizing;
@@ -156,7 +165,7 @@ function planEntrySol(act, ctx) {
     const f = BigInt(Math.floor((quoteAmt / tv.value) * 1e12));
     amount0 = (t0 * f) / 10n ** 12n; amount1 = (t1 * f) / 10n ** 12n;
   } else {
-    ({ amount0, amount1 } = amountsForValue(pool, q, quoteAmt, share0(act.venue, pool, tl, tu, lower, upper)));
+    ({ amount0, amount1 } = amountsForValue(pool, q, quoteAmt, share0(act.venue, pool, tl, tu, lower, upper, strategy || 'spot')));
   }
   if (side === 'token0_only') amount1 = 0n;
   if (side === 'token1_only') amount0 = 0n;
@@ -165,12 +174,12 @@ function planEntrySol(act, ctx) {
 
   return {
     verdict: 'copy',
-    reason: note || `${s.mode} → $${usd.toFixed(2)}`,
+    reason: `${note || `${s.mode} → $${usd.toFixed(2)}`}${strategy ? ` · ${strategyLabel(strategy)}` : ''}`,
     plan: {
       venue: act.venue, action: adding ? 'increase' : 'mint',
       poolRef: pool.id, token0: pool.token0, token1: pool.token1, fee: pool.fee,
       tickSpacing: pool.tickSpacing, tickLower: tl, tickUpper: tu,
-      lower, upper, binStep: pool.binStep ?? null,
+      lower, upper, binStep: pool.binStep ?? null, strategy,
       amount0: amount0.toString(), amount1: amount1.toString(),
       valueQuote: est.value, quoteSymbol: q.symbol, quoteKind: q.kind, quoteSide: q.side,
       valueUsd: quoteToUsd(est.value, q.kind, ethUsd),

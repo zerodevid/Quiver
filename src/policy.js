@@ -33,6 +33,7 @@ const DEFAULTS = {
     width_pct: 25,
     align: 'nearest',         // nearest | down | up
     min_width_ticks: 0,
+    dlmm_strategy: 'mirror',  // Meteora DLMM only: mirror (follow the target's shape) | spot | curve | bidask
   },
   onesided: {
     policy: 'copy',           // copy | skip | recenter
@@ -99,6 +100,7 @@ const RULE_SPEC = {
     mode: ['enum', ['exact', 'recenter', 'scale', 'width_pct', 'full']],
     scale: ['num', 0.01, 100], width_pct: ['num', 0.01, 100_000],
     align: ['enum', ['nearest', 'down', 'up']], min_width_ticks: ['int', 0, 1_774_544],
+    dlmm_strategy: ['enum', ['mirror', 'spot', 'curve', 'bidask']],
   },
   onesided: { policy: ['enum', ['copy', 'skip', 'recenter']], max_quote_usd: ['num', 0, 1e9] },
   swap: { enabled: ['bool'], max_slippage_bps: ['int', 0, 5000], max_price_impact_bps: ['int', 0, 10_000] },

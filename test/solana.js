@@ -883,6 +883,129 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     } finally { await new Promise((r) => server.close(r)); }
   });
 
+  // ---- DLMM liquidity shape (spot / curve / bid-ask) -------------------------------------
+  const { dlmmShape, shapeWeight } = require('../src/solana/dlmm-shape');
+  // Bins around active bin 0 whose VALUE follows `w(d)`: X side holds value / price.
+  const shapedBins = (w, left = 10, right = 10, bs = BIN_STEP) => {
+    const r = 1 + bs / 10_000, out = [];
+    for (let k = -left; k <= right; k++) {
+      if (k > 0) out.push({ binId: k, x: (1e9 * w(k)) / r ** k, y: 0 });
+      else if (k < 0) out.push({ binId: k, x: 0, y: 1e9 * w(-k) });
+      else out.push({ binId: 0, x: 5e8, y: 5e8 });
+    }
+    return out;
+  };
+
+  await t('DLMM shape: spot, curve and bid-ask are read back from per-bin value; too few bins = unknown', () => {
+    assert.strictEqual(dlmmShape(shapedBins(() => 1), 0, BIN_STEP).strategy, 'spot');
+    assert.ok(Math.abs(dlmmShape(shapedBins(() => 1), 0, BIN_STEP).ratio - 1) < 1e-9, 'X amounts fall with price but value stays flat');
+    assert.strictEqual(dlmmShape(shapedBins((d) => 11 - d), 0, BIN_STEP).strategy, 'curve');
+    assert.strictEqual(dlmmShape(shapedBins((d) => d + 1), 0, BIN_STEP).strategy, 'bidask');
+    // one-sided (only above the price) still classifies
+    assert.strictEqual(dlmmShape(shapedBins((d) => d + 1, 0, 12), 0, BIN_STEP).strategy, 'bidask');
+    assert.strictEqual(dlmmShape(shapedBins(() => 1, 2, 2), 0, BIN_STEP), null, '2 bins per side cannot tell');
+    // mainnet: a CurveImBalanced open measured 0.21; a mildly drifted spot 1.1
+    assert.strictEqual(dlmmShape(shapedBins((d) => (d <= 3 ? 1 : d <= 6 ? 0.5 : 0.21), 10, 10), 0, BIN_STEP).strategy, 'curve');
+    assert.strictEqual(dlmmShape(shapedBins((d) => 1 + d / 100), 0, BIN_STEP).strategy, 'spot');
+  });
+
+  await t('Meteora adapter: listed positions carry ext.strategy read from their bins', () => {
+    const { MeteoraVenue } = require('../src/solana/venues/meteora');
+    const bins = shapedBins((d) => d + 1).map((b) => ({ binId: b.binId, positionXAmount: String(Math.floor(b.x)), positionYAmount: String(Math.floor(b.y)), positionLiquidity: '1' }));
+    const p = { publicKey: 'TPos', positionData: { positionBinData: bins, lowerBinId: -10, upperBinId: 10, totalXAmount: '1', totalYAmount: '1', owner: TARGET } };
+    const v = new MeteoraVenue({ rpc: null, log: () => {} });
+    assert.strictEqual(v.norm(POOL, BIN_STEP, p, 0).ext.strategy, 'bidask');
+    assert.strictEqual(v.norm(POOL, BIN_STEP, p).ext.strategy, null, 'no active bin → unknown');
+  });
+
+  await t('planner: mirror follows the target shape; an explicit rule overrides it; unknown = spot; Orca has none', () => {
+    const store = new Store(':memory:');
+    const c = ctx(store);
+    const big = { sizing: { max_quote_per_position_usd: 1e6, max_total_exposure_usd: 1e6, daily_budget_usd: 1e6 } };
+    assert.strictEqual(rulesSol().range.dlmm_strategy, 'mirror', 'default');
+    const m1 = planEntrySol(act({ ext: { strategy: 'bidask' } }), { ...c, rules: rulesSol(big) });
+    assert.strictEqual(m1.plan.strategy, 'bidask');
+    assert.match(m1.reason, /bid-ask/);
+    assert.strictEqual(planEntrySol(act({ ext: { strategy: 'bidask' } }), { ...c, rules: rulesSol({ ...big, range: { dlmm_strategy: 'curve' } }) }).plan.strategy, 'curve');
+    assert.strictEqual(planEntrySol(act(), { ...c, rules: rulesSol(big) }).plan.strategy, 'spot');
+    const orcaPool = poolState({ venue: 'orca', spacing: 64, tickSpacing: 64 });
+    const o = planEntrySol(act({ venue: 'orca', ext: { strategy: 'curve' }, lower: -640, upper: 640, tickLower: -640, tickUpper: 640 }),
+      { ...c, pool: orcaPool, rules: rulesSol({ ...big, range: { mode: 'exact' } }) });
+    assert.strictEqual(o.verdict, 'copy', o.reason);
+    assert.strictEqual(o.plan.strategy, null);
+    assert.doesNotMatch(o.reason, /spot|curve/);
+  });
+
+  await t('planner: the X/Y split of a non-exact DLMM range follows the shape', () => {
+    const { share0 } = require('../src/solana/planner');
+    const pool = poolState();
+    // symmetric around the active bin: half and half whatever the shape
+    for (const s of ['spot', 'curve', 'bidask']) assert.ok(Math.abs(share0('meteora', pool, 0, 0, -5, 5, s) - 0.5) < 1e-9, s);
+    // more bins above the price: bid-ask weighs the far (X-only) bins most, curve least
+    const [sp, cu, ba] = ['spot', 'curve', 'bidask'].map((s) => share0('meteora', pool, 0, 0, -3, 9, s));
+    assert.ok(Math.abs(sp - 9.5 / 13) < 1e-9, `spot ${sp}`);
+    assert.ok(cu < sp && sp < ba, `curve ${cu} < spot ${sp} < bid-ask ${ba}`);
+    assert.strictEqual(shapeWeight('spot', 4, 9), 1);
+  });
+
+  await t('rules: dlmm_strategy accepts mirror/spot/curve/bidask only', () => {
+    const { validateRules } = require('../src/policy');
+    assert.strictEqual(validateRules({ range: { dlmm_strategy: 'bidask' } }).rules.range.dlmm_strategy, 'bidask');
+    assert.match(validateRules({ range: { dlmm_strategy: 'wave' } }).error, /dlmm_strategy/);
+    assert.strictEqual(rulesFor({ range: { dlmm_strategy: 'wave' } }).range.dlmm_strategy, 'mirror', 'a broken config value falls back to the default');
+  });
+
+  await t('engine: the plan strategy reaches the open (live & simulated), is stored on the position, and compound reuses it', async () => {
+    const got = { venue: 'meteora', id: 'NewPos', pool: POOL, liquidity: '777', amount0: 29n * 10n ** 8n, amount1: 39n * 10n ** 8n, fee0: 0n, fee1: 0n, tickLower: -300, tickUpper: 400, ext: { binStep: BIN_STEP, strategy: 'spot' } };
+    const { store, eng, sent } = engineHarness({ position: got, balances: new Map([['SOL', 10n * 10n ** 9n], [MEME, 10n * 10n ** 9n]]) });
+    const plan = { venue: 'meteora', action: 'mint', poolRef: POOL, token0: MEME, token1: WSOL, lower: -3, upper: 3, tickLower: -300, tickUpper: 400, strategy: 'curve',
+      amount0: String(3n * 10n ** 9n), amount1: String(4n * 10n ** 9n), valueQuote: 7, quoteSymbol: 'SOL', quoteKind: 'eth', mirrorOf: 'TPos', target: TARGET };
+    const r = await eng.executeEntry(plan, { target: TARGET });
+    assert.strictEqual(sent[0].strategy, 'curve');
+    const row = store.get('SELECT * FROM positions WHERE id=?', r.positionId);
+    assert.strictEqual(JSON.parse(row.ext).strategy, 'curve', 'intended shape wins over the read-back one');
+    // compound adds the fees in the same shape
+    const ad = eng.chain.adapters.meteora;
+    let reads = 0;
+    ad.getPositions = async (items) => new Map(items.map((it) => [it.id, reads++ === 0 ? { ...got, fee0: 10n ** 9n, fee1: 10n ** 9n } : got]));
+    ad.buildClaim = async () => ({ groups: [{ instructions: [] }] });
+    ad.buildIncrease = async (p) => { ad.inc = p; return { groups: [{ instructions: [] }] }; };
+    eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { sizing: { max_quote_per_position_usd: 1e6, max_total_exposure_usd: 1e6 } }));
+    eng.compound.configure(row.id, { enabled: true, mode: 'compound', minUsd: 1, intervalMinutes: 5 });
+    await eng.compound.runCompound(row, eng.compound.status(row));
+    assert.strictEqual(ad.inc.strategy, 'curve');
+    // dry run with a wallet: the simulated open uses the target's shape
+    const h = engineHarness({ dry: true });
+    h.eng.exec.simulateGroups = async () => ({ ok: true, cu: 1 });
+    h.store.run(`INSERT INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,amount0,amount1,value_quote,quote_symbol,ext)
+      VALUES('solana',?,1,'s:TPos',0,?,'meteora','increase','TPos',?,?,?,?,?,'100',?,?,7,'SOL',?)`, Date.now(), TARGET, POOL, MEME, WSOL,
+    u.binToTick(-3, BIN_STEP), u.binToTick(4, BIN_STEP), String(3n * 10n ** 9n), String(4n * 10n ** 9n), JSON.stringify({ lower: -3, upper: 3, liquidityBefore: '0', strategy: 'bidask' }));
+    await h.eng.handle(SolanaWatcher.actFromRow(h.store.get('SELECT * FROM actions')));
+    const d = h.store.get('SELECT verdict, reason, plan FROM decisions');
+    assert.strictEqual(d.verdict, 'dry', d.reason);
+    assert.strictEqual(h.sent[0].strategy, 'bidask');
+    assert.strictEqual(JSON.parse(d.plan).strategy, 'bidask');
+  });
+
+  await t('manual LP & follow: shape choice for DLMM (rules "mirror" = spot for a manual LP; follow uses the target shape)', async () => {
+    const { man, store, eng } = manualHarness({ balances: new Map([['SOL', 10n ** 12n]]) });
+    eng.targetLiquidity = async () => ({ liquidity: 100n });
+    const a = await man.planLp({ poolRef: POOL, usd: 100, widthPct: 20 });
+    assert.strictEqual(a.plan.strategy, 'spot');
+    assert.strictEqual(a.preview.strategy, 'spot');
+    const b = await man.planLp({ poolRef: POOL, usd: 100, widthPct: 20, strategy: 'bidask' });
+    assert.strictEqual(b.plan.strategy, 'bidask');
+    assert.match((await man.planLp({ poolRef: POOL, usd: 100, strategy: 'wave' })).error, /strategi/);
+    store.run(`INSERT INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,amount0,amount1,value_quote,quote_symbol,ext)
+      VALUES('solana',?,1,'s:F',0,?,'meteora','increase','TPosF',?,?,?,?,?,'100',?,?,7,'SOL',?)`, Date.now(), TARGET, POOL, MEME, WSOL,
+    u.binToTick(-3, BIN_STEP), u.binToTick(4, BIN_STEP), String(3n * 10n ** 9n), String(4n * 10n ** 9n), JSON.stringify({ lower: -3, upper: 3, liquidityBefore: '0', strategy: 'curve' }));
+    const aid = store.get("SELECT id FROM actions WHERE tx_hash='s:F'").id;
+    store.run("INSERT INTO decisions(action_id,ts,verdict,reason) VALUES(?,?,'skip','test')", aid, Date.now());
+    const f = await man.planFollow({ actionId: aid, usd: 20 });
+    assert.ok(!f.error, f.error);
+    assert.strictEqual(f.plan.strategy, 'curve');
+  });
+
   console.log(`\n${pass} ok, ${fail} gagal`);
   process.exit(fail ? 1 : 0);
 })();

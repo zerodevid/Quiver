@@ -365,6 +365,9 @@ const RULE_GROUPS = [
       F.pct('width_pct', 'Lebar ±X%', { when: (r) => r.range.mode === 'width_pct' }),
       F.pick('align', 'Pembulatan tick', [['nearest', 'Terdekat'], ['down', 'Ke bawah'], ['up', 'Ke atas']], { when: (r) => r.range.mode !== 'exact' }),
       F.int('min_width_ticks', 'Lebar minimum (tick)', { when: (r) => r.range.mode !== 'full' }),
+      F.pick('dlmm_strategy', 'Bentuk likuiditas DLMM', [
+        ['mirror', 'Ikuti bentuk target'], ['spot', 'Spot (rata)'], ['curve', 'Curve (menumpuk di tengah)'], ['bidask', 'Bid-Ask (menumpuk di tepi)']],
+      { help: 'Khusus Meteora DLMM di Solana: cara likuiditas disebar ke bin.' }),
     ],
   },
   {

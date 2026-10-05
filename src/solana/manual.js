@@ -16,6 +16,7 @@ const u = require('./units');
 const { planRange, quoteToUsd } = require('../policy');
 const { share0, amountsForValue, CLMM_MAX_TICK } = require('./planner');
 const { WSOL } = require('../networks');
+const { resolveStrategy, STRATEGIES } = require('./dlmm-shape');
 
 const isBase58 = (a) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(a || ''));
 const str = (a) => String(a || '').trim();
@@ -154,8 +155,10 @@ class SolanaManual extends Manual {
   // ---- rencana LP manual --------------------------------------------------------------
   // Masukan & bentuk balikan sama dengan Manual.planLp. Tambahan: `native` = rentang asli
   // venue yang sudah pasti (ikuti aksi, mode exact: bin/tick target apa adanya).
+  // strategy: Meteora DLMM shape (spot | curve | bidask); unset = the rules' choice, and
+  // spot when that is 'mirror' (a manual LP has no target shape to follow).
   async planLp({ poolRef, usd, widthPct = 25, lowerPct = null, upperPct = null, tickLower = null, tickUpper = null, full = false,
-    pool = null, target = null, ranged = false, native = null }) {
+    pool = null, target = null, ranged = false, native = null, strategy = null }) {
     const eng = this.engine;
     const p = pool || await this.poolByRef(poolRef);
     if (!p) return { error: 'pool tidak dikenal — tempel alamat pool Meteora DLMM / Orca / Raydium CLMM, atau pindai dari alamat token' };
@@ -216,12 +219,14 @@ class SolanaManual extends Manual {
       if (upper <= lower) return { error: 'rentang kosong sesudah dibulatkan ke tick spacing' };
     }
     const { tickLower: tl, tickUpper: tu } = ad.ticksOf(st, lower, upper);
+    if (strategy != null && strategy !== '' && !STRATEGIES.includes(strategy)) return { error: `strategi harus salah satu dari ${STRATEGIES.join(', ')}` };
+    const shape = p.venue === 'meteora' ? resolveStrategy(strategy || rules.range.dlmm_strategy, null) : null;
 
     // 2) jumlah token dari nilai (lihat planner.js)
     const q = this.chain.quoteSideOf(st.token0, st.token1);
     const quoteAmt = q.kind === 'eth' ? nominal / eng.ethUsd : nominal;
     const side = m.sideOfRange(cur, tl, tu);
-    let { amount0, amount1 } = amountsForValue(st, q, quoteAmt, share0(p.venue, st, tl, tu, lower, upper));
+    let { amount0, amount1 } = amountsForValue(st, q, quoteAmt, share0(p.venue, st, tl, tu, lower, upper, shape || 'spot'));
     if (side === 'token0_only') amount1 = 0n;
     if (side === 'token1_only') amount0 = 0n;
     const est = this.chain.valueInQuote({ sqrtPriceX96: st.sqrtX96, amount0, amount1, dec0: st.dec0, dec1: st.dec1, token0: st.token0, token1: st.token1 });
@@ -233,7 +238,7 @@ class SolanaManual extends Manual {
     const plan = {
       venue: p.venue, action: 'mint', poolRef: st.id, poolKey: null,
       token0: st.token0, token1: st.token1, fee, tickSpacing: st.tickSpacing,
-      tickLower: tl, tickUpper: tu, lower, upper, binStep: st.binStep ?? null,
+      tickLower: tl, tickUpper: tu, lower, upper, binStep: st.binStep ?? null, strategy: shape,
       liquidity: '0',
       amount0: amount0.toString(), amount1: amount1.toString(),
       amount0Max: pad(amount0).toString(), amount1Max: pad(amount1).toString(),
@@ -282,6 +287,7 @@ class SolanaManual extends Manual {
         symbol0: p.symbol0, symbol1: p.symbol1, dec0: st.dec0, dec1: st.dec1, quoteSide: p.quoteSide,
         tickLower: tl, tickUpper: tu, curTick: cur,
         nativeLower: lower, nativeUpper: upper, nativeUnit: p.venue === 'meteora' ? 'bin' : 'tick', activeBin: p.venue === 'meteora' ? st.current : null,
+        strategy: shape,
         valueUsd, amount0: amount0.toString(), amount1: amount1.toString(),
         side, hasHooks: false, kasUsd,
         swaps: sim.langkah, router: 'Jupiter',
@@ -431,6 +437,7 @@ class SolanaManual extends Manual {
       pool: this.poolFromAction(c.a, c.toks), poolRef: c.a.pool_ref, usd: nominal,
       tickLower: c.a.tick_lower, tickUpper: c.a.tick_upper, ranged: true, target: c.a.target,
       native: exact ? { lower: Number(ext.lower), upper: Number(ext.upper) } : null,
+      strategy: c.a.venue === 'meteora' ? resolveStrategy(c.rules.range.dlmm_strategy, ext.strategy) : null,
     });
     if (r.error) return { ...r, follow: c.info };
     r.plan.mirrorOf = c.a.token_id;
