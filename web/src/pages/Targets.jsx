@@ -336,6 +336,7 @@ export default function Targets({ param }) {
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const valid = /^0x[0-9a-fA-F]{40}$/.test(addr.trim());
+  const existing = valid ? d?.targets?.find((x) => x.address.toLowerCase() === addr.trim().toLowerCase()) : null;
 
   if (param) return !d ? <Loading page /> : <TargetDetail address={param} targets={d.targets} reload={reload} enabledOf={enabledOf} onToggle={toggle} />;
 
@@ -363,9 +364,10 @@ export default function Targets({ param }) {
         <Panel className="mb-4">
           <div className="grid items-start gap-3 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]">
             <Text label="Alamat" mono placeholder="0x…" value={addr} onChange={setAddr}
-              isInvalid={addr !== '' && !valid} error="Alamat harus 0x diikuti 40 karakter hex." />
+              isInvalid={addr !== '' && (!valid || !!existing)}
+              error={existing ? t('Sudah tersimpan sebagai "{name}".', { name: existing.label || short(existing.address) }) : 'Alamat harus 0x diikuti 40 karakter hex.'} />
             <Text label="Label (opsional)" placeholder="mis. LP pro #1" value={label} onChange={setLabel} />
-            <Button className="md:mt-[1.6rem]" onPress={add} isDisabled={!valid} isPending={busy}><Plus className="size-4" />{t('Tambah')}</Button>
+            <Button className="md:mt-[1.6rem]" onPress={add} isDisabled={!valid || !!existing} isPending={busy}><Plus className="size-4" />{t('Tambah')}</Button>
           </div>
           <p className="mt-3 text-xs text-muted">{t('Aturan default dipakai sampai kamu setel sendiri per wallet.')}</p>
         </Panel>

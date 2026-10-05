@@ -993,6 +993,7 @@ const EN = {
   'Tambah': 'Add',
   'Aturan default dipakai sampai kamu setel sendiri per wallet.':
     'Default rules apply until you set per-wallet rules.',
+  'Sudah tersimpan sebagai "{name}".': 'Already saved as "{name}".',
   'Alamat harus 0x diikuti 40 karakter hex.': 'Address must be 0x followed by 40 hex characters.',
   'Belum ada wallet target': 'No target wallets yet',
   'Tambahkan alamat di sebelah kiri, atau dari halaman Wallet setelah memeriksa kinerjanya.':
