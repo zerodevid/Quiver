@@ -16,7 +16,7 @@ const u = require('./units');
 const { planRange, quoteToUsd } = require('../policy');
 const { share0, amountsForValue, CLMM_MAX_TICK } = require('./planner');
 const { WSOL } = require('../networks');
-const { resolveStrategy, STRATEGIES } = require('./dlmm-shape');
+const { resolveStrategy, shapeWeight, STRATEGIES } = require('./dlmm-shape');
 
 const isBase58 = (a) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(a || ''));
 const str = (a) => String(a || '').trim();
@@ -288,6 +288,7 @@ class SolanaManual extends Manual {
         tickLower: tl, tickUpper: tu, curTick: cur,
         nativeLower: lower, nativeUpper: upper, nativeUnit: p.venue === 'meteora' ? 'bin' : 'tick', activeBin: p.venue === 'meteora' ? st.current : null,
         strategy: shape,
+        distribution: shape ? this.distribution(lower, upper, st.current, st.binStep, shape) : null,
         valueUsd, amount0: amount0.toString(), amount1: amount1.toString(),
         side, hasHooks: false, kasUsd,
         swaps: sim.langkah, router: 'Jupiter',
@@ -295,6 +296,17 @@ class SolanaManual extends Manual {
         saldo: this.saldoDari(bal, st, px, sim.sesudah),
       },
     };
+  }
+
+  // Relative value per bin of a planned DLMM position, for the dashboard's shape preview.
+  // The SDK lays out the real amounts; the weights are the same ones the planner splits
+  // X/Y with. Bins above the active bin hold token0 only, below token1 only.
+  distribution(lower, upper, active, binStep, strategy) {
+    const n = Math.max(Math.abs(lower - active), Math.abs(upper - active), 1);
+    const bins = [];
+    for (let b = lower; b <= upper; b++) bins.push([b, shapeWeight(strategy, Math.abs(b - active), n)]);
+    const max = Math.max(...bins.map((x) => x[1]));
+    return { binStep, active, bins: bins.map(([b, w]) => [b, w / max]) };
   }
 
   // ---- saldo & simulasi tukar ---------------------------------------------------------

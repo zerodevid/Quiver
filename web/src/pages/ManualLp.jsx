@@ -61,6 +61,96 @@ function Batas({ label, arah, onArah, value, onChange, harga, sym, invalid, disa
 
 // Tombol pilihan cepat. Dipakai untuk nominal dan lebar rentang — keduanya hampir
 // selalu diisi dari beberapa nilai yang itu-itu saja, jadi mengetik itu kerja sia-sia.
+// ---- Meteora DLMM: liquidity shape -------------------------------------------------------
+const SHAPES = [
+  ['spot', 'Spot', [5, 5, 5, 5, 5, 5, 5], 'Spot: nilai sama rata di setiap bin.'],
+  ['curve', 'Curve', [2, 3, 4, 6, 4, 3, 2], 'Curve: menumpuk di sekitar harga kini — fee besar selama harga tenang, cepat habis kalau harga bergerak.'],
+  ['bidask', 'Bid-Ask', [6, 4, 3, 2, 3, 4, 6], 'Bid-Ask: menumpuk di tepi rentang — membeli saat turun dan menjual saat naik.'],
+];
+
+function ShapeIcon({ bars }) {
+  return (
+    <span aria-hidden="true" className="inline-flex h-3.5 items-end gap-px">
+      {bars.map((h, i) => <span key={i} className="w-0.5 rounded-sm bg-current" style={{ height: `${h * 2}px` }} />)}
+    </span>
+  );
+}
+
+function PilihBentuk({ value, onChange }) {
+  const { t } = useI18n();
+  const cur = SHAPES.find((x) => x[0] === value) || SHAPES[0];
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-xs font-medium text-muted">{t('Bentuk likuiditas')}</span>
+      <div role="radiogroup" aria-label={t('Bentuk likuiditas')} className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-surface p-1">
+        {SHAPES.map(([id, label, bars]) => {
+          const on = value === id;
+          return (
+            <button key={id} type="button" role="radio" aria-checked={on} onClick={() => onChange(id)}
+              className={`flex h-9 items-center justify-center gap-2 rounded-md text-[0.8125rem] font-medium transition-colors ${on ? 'bg-default text-foreground' : 'text-muted hover:text-foreground'}`}>
+              <ShapeIcon bars={bars} />{t(label)}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-xs text-muted">{t(cur[3])}</p>
+    </div>
+  );
+}
+
+// Per-bin value of the planned position: token0 above the pool price, token1 below,
+// the active bin half of each. Left = lower price in the pair's display orientation.
+const MAX_BARS = 120;
+function SebaranBin({ p }) {
+  const { t } = useI18n();
+  const d = p.distribution;
+  if (!d?.bins?.length) return null;
+  const tpb = Math.log(1 + d.binStep / 10_000) / Math.log(1.0001);
+  const priceOf = (b) => tickPrice(b * tpb, p.dec0, p.dec1, p.quoteSide);
+  const ordered = p.quoteSide === 0 ? [...d.bins].reverse() : d.bins;
+  // Wide ranges: neighbouring bins merged into one bar (mean weight).
+  const size = Math.ceil(ordered.length / MAX_BARS);
+  const bars = [];
+  for (let i = 0; i < ordered.length; i += size) {
+    const g = ordered.slice(i, i + size);
+    const ids = g.map((x) => x[0]);
+    bars.push({ w: g.reduce((a, x) => a + x[1], 0) / g.length, lo: Math.min(...ids), hi: Math.max(...ids), first: g[0][0], last: g[g.length - 1][0] });
+  }
+  const col0 = 'var(--bin-0)', col1 = 'var(--bin-1)';
+  const fill = (b) => (b.lo > d.active ? col0 : b.hi < d.active ? col1 : `linear-gradient(to right, ${p.quoteSide === 0 ? col0 : col1} 50%, ${p.quoteSide === 0 ? col1 : col0} 50%)`);
+  const activeIdx = bars.findIndex((b) => b.lo <= d.active && d.active <= b.hi);
+  const labels = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(f * (bars.length - 1)));
+  const sym = (s) => <span className="inline-flex items-center gap-1.5"><span className="size-2 rounded-full" style={{ background: s === 0 ? col0 : col1 }} />{s === 0 ? p.symbol0 : p.symbol1}</span>;
+  return (
+    <div className="rounded-md border border-border p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
+        <span className="font-medium text-foreground">{t('Sebaran per bin')}</span>
+        <span className="flex gap-3">{sym(0)}{sym(1)}</span>
+      </div>
+      <div className="relative">
+        {activeIdx >= 0 && (
+          <div className="pointer-events-none absolute inset-y-0 z-10 border-l border-dashed border-foreground/70"
+            style={{ left: `${((activeIdx + 0.5) / bars.length) * 100}%` }}>
+            <span className="num absolute -top-0.5 left-1 whitespace-nowrap rounded bg-default px-1 text-[0.6875rem] text-foreground">
+              {t('Harga pool')} {price(priceOf(d.active))}
+            </span>
+          </div>
+        )}
+        <div className="flex h-28 items-end gap-px pt-5" role="img"
+          aria-label={t('Sebaran likuiditas di {n} bin', { n: d.bins.length })}>
+          {bars.map((b, i) => (
+            <div key={i} className="min-w-0 flex-1 rounded-t-[1px]" style={{ height: `${Math.max(4, b.w * 100)}%`, background: fill(b) }} />
+          ))}
+        </div>
+      </div>
+      <div className="num mt-1.5 flex justify-between text-[0.6875rem] text-muted">
+        {labels.map((i, k) => <span key={k}>{price(priceOf(k < 2 ? bars[i].first : bars[i].last))}</span>)}
+      </div>
+      {activeIdx < 0 && <p className="mt-1.5 text-xs text-muted">{t('Harga pool di luar rentang ini — posisi satu sisi.')}</p>}
+    </div>
+  );
+}
+
 function Chips({ options, value, onPick }) {
   return (
     <div className="flex flex-wrap gap-1.5">
@@ -573,6 +663,8 @@ export default function ManualLp() {
 
           <Langkah n={3} title="Rentang harga" done={siap}>
             <div className="flex flex-col gap-3">
+              {dlmm && <PilihBentuk value={bentuk} onChange={setBentuk} />}
+              {dlmm && p && !plan?.error && <SebaranBin p={p} />}
               {pool && (
                 <GrafikRentang pool={pool} lo={lo} up={up} full={full} rentangOk={rentangOk} hargaKini={hargaKini}
                   pratinjau={pSiap && !hitung ? pSiap : null} />
@@ -613,18 +705,6 @@ export default function ManualLp() {
               )}
               {!full && p && !plan?.error && (Math.abs(-p.lowerPct - lo) >= 0.05 || Math.abs(p.upperPct - up) >= 0.05) && (
                 <p className="text-xs text-muted">{t(p.nativeUnit === 'bin' ? 'Dibulatkan ke bin pool: {a} / {b}.' : 'Dibulatkan ke tick pool: {a} / {b}.', { a: bertanda(-p.lowerPct), b: bertanda(p.upperPct) })}</p>
-              )}
-              {dlmm && (
-                <div className="flex flex-col gap-1.5">
-                  <span className="text-xs font-medium text-muted">{t('Bentuk likuiditas')}</span>
-                  <Chips value={bentuk} onPick={setBentuk}
-                    options={[['spot', t('Spot')], ['curve', t('Curve')], ['bidask', t('Bid-Ask')]]} />
-                  <p className="text-xs text-muted">{t({
-                    spot: 'Spot: nilai sama rata di setiap bin.',
-                    curve: 'Curve: menumpuk di sekitar harga kini — fee besar selama harga tenang, cepat habis kalau harga bergerak.',
-                    bidask: 'Bid-Ask: menumpuk di tepi rentang — membeli saat turun dan menjual saat naik.',
-                  }[bentuk])}</p>
-                </div>
               )}
               <p className="text-xs text-muted">
                 {t('Fee hanya mengalir selama harga ada di dalam rentang. Sempit = fee lebih besar tapi lebih cepat keluar; lebar = lebih aman tapi encer.')}
