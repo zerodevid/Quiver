@@ -40,6 +40,42 @@ function Section({ title, desc, children }) {
 }
 const say = (r, ok) => (r.error ? toast.danger(r.error) : toast.success(tt(ok)));
 
+// ---------------- simulation balance (paper trading) ----------------
+// A virtual balance for simulation mode: open follows open, close follows close, with a profit.
+function SimBox({ sim, act, busy }) {
+  const { t } = useI18n();
+  const [bal, setBal] = useState(sim?.balance_usd ? String(sim.balance_usd) : '');
+  const [fric, setFric] = useState(sim ? String(sim.friction_pct) : '0.3');
+  const st = sim?.status;
+  const on = !!st;
+  const save = () => act('sim', '/api/settings/sim', { balance_usd: Number(bal) || 0, friction_pct: Number(fric) || 0 }, on ? 'Pengaturan simulasi disimpan' : 'Simulasi dengan saldo menyala');
+  return (
+    <div className="flex flex-col gap-4 rounded-md border border-border p-4">
+      <div>
+        <div className="font-medium">{t('Saldo simulasi')}</div>
+        <p className="mt-1 text-sm text-muted">{t('Isi saldo awal (USD) supaya simulasi berjalan seperti trading sungguhan: bot membuka posisi virtual saat target membuka, menutupnya saat target menutup, dan menghitung profit dari saldo itu. Fee mengikuti fee posisi target. Kosongkan atau isi 0 untuk simulasi biasa (hanya mencatat keputusan).')}</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Text label="Saldo awal (USD)" type="number" placeholder="1000" value={bal} onChange={setBal} />
+        <Text label="Biaya per transaksi (%)" type="number" placeholder="0.3" value={fric} onChange={setFric} hint="Slippage, swap, dan fee yang dibayar tiap masuk dan keluar." />
+        <div className="flex items-end gap-2">
+          <Button variant="outline" isPending={busy === 'sim'} onPress={save}>{t('Simpan')}</Button>
+          {on && <Button variant="ghost" isPending={busy === 'simr'}
+            onPress={async () => { if (await ask({ title: t('Ulangi simulasi dari awal? Posisi virtual dan kurva ekuitasnya dihapus; saldo kembali ke saldo awal.'), confirm: t('Ulangi'), danger: true })) act('simr', '/api/settings/sim', { reset: true }, 'Simulasi diulang dari awal'); }}>{t('Ulangi dari awal')}</Button>}
+        </div>
+      </div>
+      {on && (
+        <dl className="grid gap-x-8 gap-y-3 sm:grid-cols-4">
+          <div><dt className="text-xs text-muted">{t('Kas virtual')}</dt><dd className="num mt-0.5 font-medium">{usd(st.cashUsd)}</dd></div>
+          <div><dt className="text-xs text-muted">{t('Ekuitas')}</dt><dd className="num mt-0.5 font-medium">{usd(st.equityUsd)}</dd></div>
+          <div><dt className="text-xs text-muted">{t('Untung')}</dt><dd className={`num mt-0.5 font-medium ${st.pnlUsd >= 0 ? 'text-success' : 'text-danger'}`}>{usd(st.pnlUsd)} ({st.pnlPct.toFixed(2)}%)</dd></div>
+          <div><dt className="text-xs text-muted">{t('Posisi')}</dt><dd className="num mt-0.5 font-medium">{t('{o} terbuka · {c} selesai', { o: st.openCount, c: st.closedCount })}</dd></div>
+        </dl>
+      )}
+    </div>
+  );
+}
+
 // ---------------- wallet & mode ----------------
 function WalletTab({ d, reload }) {
   const { t } = useI18n();
@@ -174,6 +210,8 @@ function WalletTab({ d, reload }) {
           <Button variant="outline" isPending={busy === 'live'} onPress={() => act('live', '/api/settings/live', { live: false }, 'Kembali ke simulasi')}>{t('Kembali ke simulasi')}</Button>
         )}
       </div>
+
+      {m.dry_run && <SimBox key={m.sim?.balance_usd ?? 0} sim={m.sim} act={act} busy={busy} />}
 
       <Separator />
       {w.fromEnv ? <EnvNotice name={w.fromEnv} what="Kunci wallet" />

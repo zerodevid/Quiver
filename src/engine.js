@@ -13,6 +13,7 @@ const { Compound } = require('./compound');
 const { Capital } = require('./capital');
 const { Holdings } = require('./holdings');
 const { WalletResearch } = require('./wallet');
+const { PaperBook } = require('./paper');
 
 // A wallet research older than this is refreshed in the background when equity sizing needs it.
 const TARGET_RESEARCH_STALE_MS = 5 * 60_000;
@@ -96,6 +97,7 @@ class Engine {
     this.exiting = new Set();      // ids of positions whose exit transaction is in progress
     this.compound = new Compound(this);
     this.capital = new Capital({ rpc, store, chain, cfg, log: this.log });
+    this.paper = new PaperBook(this);   // simulation mode's virtual balance (paper.js)
     this.troubles = new Map();     // key -> consecutive errors being handled by the fallback
     this.lastCopyAt = new Map();   // poolRef -> ts (cooldown)
     // Third-party pool statistics (DexScreener) for the liquidity/volume filter.
@@ -140,6 +142,7 @@ class Engine {
     }
     this.log(`mulai di blok ${this.cursor}; wallet ${addr || '(belum diisi — mode simulasi)'}; ${this.chain.nativeSymbol} $${this.ethUsd.toFixed(2)}`);
     if (addr) { this.lastAdopt = Date.now(); await this.adoptOwnPositions(addr); }
+    if (this.paper.on()) this.paper.ensureSince();
     await this.backfillDecisions();
   }
 
@@ -679,7 +682,8 @@ class Engine {
     // the balance is opened smaller instead of failing midway through the bridge. Simulation mode
     // deliberately not — the test wallet is often empty, and the simulation would become useless.
     const live = !this.dryRun() && this.exec.address();
-    const cash = live ? await this.spendableCash().catch(() => null) : null;
+    // Simulation with a virtual balance is limited by that balance, like live is by the wallet.
+    const cash = live || this.paper.on() ? await this.spendableCash().catch(() => null) : null;
     // If we already have a mirror of this position, the target is ADDING — so we
     // add too, rather than opening a second position. Looked up BEFORE evaluating: the position count
     // limit does not apply (no new position) and the per-position limit is computed from the total.
@@ -730,6 +734,7 @@ class Engine {
       d.reason = `${d.reason} (menambah posisi #${existing.id})`;
     }
 
+    if (this.paper.on()) return this.paper.copyEntry(d, act, { sqrt: act.slot0.sqrtPriceX96 });
     if (this.dryRun() || !this.exec.address()) {
       const sim = this.exec.address() ? await this.simulateEntry(d.plan) : null;
       const note = sim ? (sim.ok ? `simulasi OK (gas ${sim.gas})` : `simulasi GAGAL: ${sim.error}`) : 'tanpa wallet';
@@ -881,6 +886,10 @@ class Engine {
         mirrorOf: act.tokenId, target: act.target,
       };
       if (!rules.exit.follow_target) return out('skip', 'ikut-keluar dimatikan');
+      if (this.paper.on()) {
+        try { return out('copy', await this.paper.copyExit(planT, pos, 'target memindahkan posisinya', act), planT, { positionId: pos.id }); }
+        catch (e) { this.stats.errors++; return out('error', String(e.message).slice(0, 300), planT); }
+      }
       if (this.dryRun() || !this.exec.address()) return out('dry', 'target memindahkan posisinya', planT);
       try {
         const r = await this.executeExitRetry(planT, pos);
@@ -898,6 +907,10 @@ class Engine {
     const poolKey = pos.venue === 'v4' ? await this.poolKeyOf(pos) : null;
     const d = planExit({ ...act, liquidityBefore: before }, { ...pos, poolKey }, { rules });
     if (d.verdict !== 'copy') return out('skip', d.reason);
+    if (this.paper.on()) {
+      try { return out('copy', await this.paper.copyExit(d.plan, pos, d.reason, act), d.plan, { positionId: pos.id }); }
+      catch (e) { this.stats.errors++; return out('error', String(e.message).slice(0, 300), d.plan); }
+    }
     if (this.dryRun() || !this.exec.address()) return out('dry', d.reason, d.plan);
     try {
       const r = await this.executeExitRetry(d.plan, pos);
@@ -2961,6 +2974,7 @@ class Engine {
   }
 
   async syncPositionsOnce() {
+    this.paper.settle();
     if (this.cfg.prices?.auto_eth_price !== false) this.ethUsd = await this.chain.ethUsd(this.ethUsd);
     // Positions opened outside the bot appear without needing a restart (every 10 minutes).
     const addr = this.exec.address();
@@ -2981,6 +2995,7 @@ class Engine {
     await once('compound', 'pencatatan compound', this.compound.reconcile());
     await once('claim', 'pencatatan claim fee', this.reconcileFeeClaims());
     await once('rekon', 'rekonsiliasi keluar', this.reconcileExits());
+    await once('simulasi', 'fee simulasi', this.paper.accrue());
     await this.positions.sync(this.ethUsd);
     await once('buku-masuk', 'pembukuan mint tertunda', this.bookPendingMints());
     await once('buku-keluar', 'pembukuan tx keluar tertunda', this.bookPendingExits());
@@ -3002,6 +3017,7 @@ class Engine {
         else this.store.log('warn', `#${t.pos.id} terbaca kosong tapi tidak terkonfirmasi — tidak ditutup`, { quiet: true });
         continue;
       }
+      if (this.paper.on()) { await this.paper.autoExit(t); continue; }
       if (this.dryRun() || !this.exec.address()) { this.store.log('info', `[simulasi] keluar #${t.pos.id}: ${t.reason}`); continue; }
       try {
         const out = await this.executeExit({ venue: t.pos.venue, action: 'burn', full: true, liquidity: t.pos.liquidity, tokenId: t.pos.token_id }, t.pos);
@@ -3248,11 +3264,18 @@ class Engine {
     return cashUsd + lpUsd + (covered ? 0 : actUsd);
   }
 
+  // The wallet research instance shared by equity sizing and the simulation's fee following.
+  paperResearch() {
+    this.research ??= new WalletResearch({ rpc: this.rpc, store: this.store, chain: this.chain, log: this.log });
+    return this.research;
+  }
+
   // Cash that can be used to open positions: USDG, and ETH/WETH above the gas reserve (in
   // ETH). Split per asset because cash in ANOTHER quote asset has to be bridged first —
   // policy cuts it deeper. Deliberately read fresh (not this.cash, which can
   // be two minutes old) because its result decides the transaction size.
   async spendableCash() {
+    if (this.paper.on()) return { usdg: this.paper.cashUsd(), eth: 0 };
     const reserve = await this.gasReserve();
     const { usdgDecimals } = this.chain;
     const b = await this.exec.balances([this.chain.ADDR.native, this.chain.ADDR.usdg, this.chain.ADDR.weth]);
@@ -3274,6 +3297,8 @@ class Engine {
   // in the same second as the position value: if cash is stale while positions are fresh,
   // the portfolio total counts the money twice right after a position is opened.
   async refreshCash() {
+    // Simulation: the virtual cash comes from the books — no RPC, always current.
+    if (this.paper.on()) { this.cash = this.paper.cashObj(); return this.cash; }
     if (!this.exec.address()) { this.cash = null; return null; }
     // The first read after a tx lands in a block is pinned to the block: an endpoint
     // lagging a few blocks will answer the OLD balance for 'latest' — cash also looks
@@ -3310,6 +3335,7 @@ class Engine {
   // at the same time (overview polled every 5 seconds by several tabs) share one read.
   // Failed to read: the old cash, not null — a momentarily stale figure is better than an empty card.
   async freshCash() {
+    if (this.paper?.on()) return this.refreshCash();
     if (!this.exec.address()) return null;
     if (this.cash && this.cashSeq === this.exec.txSeq) return this.cash;
     this.cashRefresh ??= this.refreshCash()
@@ -3335,7 +3361,7 @@ class Engine {
     for (let attempt = 0; attempt < 2; attempt++) {
       if ((this.activeEntries || 0) > 0 || this.exiting.size > 0) return;
       const seq = this.exec.txSeq;
-      const cash = this.exec.address() ? await this.refreshCash().catch(() => null) : null;
+      const cash = this.exec.address() || this.paper?.on() ? await this.refreshCash().catch(() => null) : null;
       const s = this.positions.summary(this.ethUsd);
       if (this.exec.txSeq !== seq || (this.activeEntries || 0) > 0 || this.exiting.size > 0) continue;
       const w = cash ? cash.usd : null;   // unreadable = NULL, not 0

@@ -21,6 +21,14 @@ RPC, mode simulasi/live, dan gas **terpisah per chain** di `config.json` →
 `chains.robinhood` dan `chains.bsc`. Config lama (satu chain) dirapikan otomatis saat
 bot dinyalakan; blok `chains.bsc` dibuat sendiri dalam mode simulasi tanpa target.
 
+**Simulasi dengan saldo virtual.** Simulasi biasa hanya mencatat keputusan bot. Isi
+`chains.<nama>.mode.sim_balance_usd` (atau Pengaturan → Wallet & mode → Saldo simulasi) dengan
+saldo awal dalam USD, dan simulasi berubah jadi buku paper trading: target buka → posisi virtual
+terbuka (ukuran mengikuti aturan, dibatasi kas virtual), target tutup → posisi virtual tertutup,
+dan dasbor menampilkan profitnya. Tidak ada transaksi yang dikirim. Fee mengikuti fee posisi
+target, tiap masuk/keluar dikenai `mode.sim_friction_pct` (bawaan `0.3`), dan nyalakan LIVE atau
+set saldo 0 untuk menyisihkan posisi virtual. Uji: `node test/paper.js`.
+
 Ganti chain semudah ini:
 
 - **Dasbor:** klik nama chain di bawah logo → pilih chain. Semua halaman, pengaturan,

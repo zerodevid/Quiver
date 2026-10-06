@@ -5,6 +5,8 @@
 // venue adapter, not eth_call to the PositionManager.
 const { Positions } = require('../positions');
 const { usdPerQuote } = require('../policy');
+const { isSim, simFee } = require('../paper');
+const m = require('../v3math');
 
 class SolanaPositions extends Positions {
   constructor(opts) {
@@ -38,7 +40,7 @@ class SolanaPositions extends Positions {
     const out = new Map();
     const byVenue = new Map();
     for (const r of rows) {
-      if (!r.token_id || !this.chain.isSolVenue(r.venue)) continue;
+      if (!r.token_id || isSim(r) || !this.chain.isSolVenue(r.venue)) continue;
       (byVenue.get(r.venue) || byVenue.set(r.venue, []).get(r.venue)).push(r);
     }
     for (const [venue, list] of byVenue) {
@@ -56,6 +58,8 @@ class SolanaPositions extends Positions {
     const rows = this.open();
     if (!rows.length) { this.live = []; this.lastSync = Date.now(); return []; }
     const chainPos = await this.readChain(rows);
+    // Simulated positions (paper.js) are not on chain: their contents come from the books at the pool price.
+    for (const r of rows) if (isSim(r)) chainPos.set(r.id, { liquidity: BigInt(r.liquidity || '0'), ...simFee(this.chain, r), sim: true });
 
     // pool state per venue
     const poolBy = new Map();
@@ -78,7 +82,12 @@ class SolanaPositions extends Positions {
       const L = stale ? BigInt(r.liquidity || '0') : gone ? 0n : BigInt(cp.liquidity);
       const d0 = metaBy.get(r.token0)?.decimals ?? st?.dec0 ?? 9;
       const d1 = metaBy.get(r.token1)?.decimals ?? st?.dec1 ?? 9;
-      const amount0 = cp ? cp.amount0 : 0n, amount1 = cp ? cp.amount1 : 0n;
+      let amount0 = cp ? cp.amount0 : 0n, amount1 = cp ? cp.amount1 : 0n;
+      if (cp?.sim) {
+        // At the pool's own price, treating the range as one uniform liquidity band (see paper.js).
+        const a = st && L > 0n ? m.amountsForLiquidity(st.sqrtX96, m.getSqrtRatioAtTick(r.tick_lower), m.getSqrtRatioAtTick(r.tick_upper), L) : { amount0: 0n, amount1: 0n };
+        amount0 = a.amount0; amount1 = a.amount1;
+      }
       const fee0 = cp ? cp.fee0 : 0n, fee1 = cp ? cp.fee1 : 0n;
       const s = st ? { sqrtPriceX96: st.sqrtX96, tick: st.tick } : null;
       const mark = s ? await this.markFor(r, s, st.liquidity ?? 1n) : null;

@@ -389,6 +389,43 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {}, meteo
     assert.strictEqual(sendCount, 0);
   });
 
+  await t('simulation with a virtual balance: the entry is booked from virtual cash, synced from the books, and the target exit closes it', async () => {
+    const { store, eng } = engineHarness({ dry: true });
+    eng.exec.address = () => null;
+    eng.cfg.mode.sim_balance_usd = 1000;
+    eng.cfg.mode.sim_friction_pct = 0;
+    eng.notify = () => {};
+    let sendCount = 0;
+    eng.exec.sendGroups = async () => { sendCount++; return { ok: true, hashes: ['X'] }; };
+    const entry = (id, kind, liq, extra) => store.run(`INSERT INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,amount0,amount1,value_quote,quote_symbol,ext)
+      VALUES('solana',?,1,?,0,?,'meteora',?,'TPos',?,?,?,?,?,?,?,?,7,'SOL',?)`, Date.now(), `s:${id}`, TARGET, kind, POOL, MEME, WSOL,
+    u.binToTick(-3, BIN_STEP), u.binToTick(4, BIN_STEP), liq, String(3n * 10n ** 9n), String(4n * 10n ** 9n), JSON.stringify(extra));
+    entry('in', 'increase', '100', { lower: -3, upper: 3, liquidityBefore: '0' });
+    await eng.handle(SolanaWatcher.actFromRow(store.get("SELECT * FROM actions WHERE tx_hash='s:in'")));
+    const d = store.get('SELECT verdict, reason FROM decisions');
+    assert.strictEqual(d.verdict, 'copy', d.reason);
+    assert.match(d.reason, /\[simulasi\]/);
+    const p = store.get('SELECT * FROM positions');
+    assert.ok(p.token_id.startsWith('sim:'));
+    assert.strictEqual(p.status, 'open');
+    assert.ok(BigInt(p.liquidity) > 0n);
+    const cash = eng.paper.cashUsd();
+    assert.ok(cash < 1000 && cash > 0, `cash ${cash}`);
+    // sync reads the position from the books at the pool price — never from the chain
+    eng.chain.adapters.meteora.getPositions = async () => { throw new Error('a simulated position must not be read from the chain'); };
+    const live = await eng.positions.sync(eng.ethUsd);
+    assert.strictEqual(live.length, 1);
+    assert.ok(Math.abs(live[0].valueUsd - (1000 - cash)) < 1, `value ${live[0].valueUsd} vs spent ${1000 - cash}`);
+    assert.strictEqual(live[0].empty, false);
+    // the target closes
+    entry('out', 'decrease', '-100', { liquidityBefore: '100', gone: true });
+    await eng.handle(SolanaWatcher.actFromRow(store.get("SELECT * FROM actions WHERE tx_hash='s:out'")));
+    assert.strictEqual(store.get("SELECT verdict FROM decisions WHERE action_id=(SELECT id FROM actions WHERE tx_hash='s:out')").verdict, 'copy');
+    assert.strictEqual(store.get('SELECT status FROM positions').status, 'closed');
+    assert.ok(Math.abs(eng.paper.cashUsd() - 1000) < 1, `cash back to about the balance (no price move, no friction): ${eng.paper.cashUsd()}`);
+    assert.strictEqual(sendCount, 0, 'nothing is sent');
+  });
+
   await t('entry leftovers: only tokens BOUGHT by this entry are sold back — the owner’s existing balance is untouched', async () => {
     const { eng, swaps } = engineHarness({ balances: new Map([[MEME, 1000n * 10n ** 9n]]) });   // the owner already holds 1000 MEME
     // the entry buys 5 MEME; after the mint the wallet holds 1002 MEME (3 went into the position)

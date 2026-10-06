@@ -327,7 +327,11 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
           fromEnv: keyFromEnv() ? keyEnvName : null,
           kind: SOL ? 'solana' : 'evm',
         },
-        mode: { dry_run: engine.dryRun(), paused: engine.paused() },
+        mode: {
+          dry_run: engine.dryRun(), paused: engine.paused(),
+          // Simulation with a virtual balance (paper.js): the configured balance and how it is doing.
+          sim: engine.paper ? { balance_usd: Number(cfg.mode?.sim_balance_usd) || 0, friction_pct: engine.paper.frictionPct(), status: engine.paper.status() } : null,
+        },
         risk: {
           max_daily_drawdown_pct: cfg.risk?.max_daily_drawdown_pct ?? 0,
           status: { ...engine.drawdownStatus(), equityUsd: await equityNow() },
@@ -610,8 +614,33 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       cfg.mode = cfg.mode || {};
       cfg.mode.dry_run = !b.live;
       saveCfg();
+      engine.paper?.settle();     // LIVE on: the simulated positions are set aside, not mixed with real ones
       log(`mode diubah ke ${b.live ? 'LIVE' : 'SIMULASI'} dari halaman Pengaturan`);
       return { ok: true, dry_run: cfg.mode.dry_run };
+    },
+
+    // ---- simulation balance (paper trading) ----
+    // balance_usd > 0 turns the simulation into a paper-trading book: open follows open, close
+    // follows close, with a virtual cash balance and profit. 0 = the plain simulation (decisions
+    // are only recorded). `reset` starts the book over from the balance.
+    'POST /api/settings/sim': async (req) => {
+      const b = await readBody(req);
+      let balance, friction;
+      try {
+        balance = b.balance_usd == null ? (Number(cfg.mode?.sim_balance_usd) || 0) : num(b.balance_usd, 0, 100_000_000, 'Saldo simulasi');
+        friction = b.friction_pct == null ? null : num(b.friction_pct, 0, 10, 'Biaya simulasi');
+      } catch (e) { return { error: e.message }; }
+      cfg.mode = cfg.mode || {};
+      cfg.mode.sim_balance_usd = balance;
+      if (friction != null) cfg.mode.sim_friction_pct = friction;
+      saveCfg();
+      if (!engine.paper) return { error: 'engine ini belum mendukung simulasi dengan saldo' };
+      let retired = 0;
+      if (b.reset) retired = engine.paper.reset();
+      else if (engine.paper.on()) engine.paper.ensureSince();
+      retired += engine.paper.settle();
+      log(`saldo simulasi diatur ke $${balance}${b.reset ? ' (diulang dari awal)' : ''} dari halaman Pengaturan`);
+      return { ok: true, balance_usd: balance, retired, status: engine.paper.status() };
     },
 
     // ---- risk ----
