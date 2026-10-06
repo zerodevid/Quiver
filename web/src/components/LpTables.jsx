@@ -2,7 +2,7 @@
 // researched wallet positions, and target moves. The data comes from lpRows on the server.
 import { chainInfo, isEthLike } from '../chain';
 import { Button } from '@heroui/react';
-import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing, TradeLinks, WalletLinks, baseTokenOf } from './ui';
+import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing, TradeLinks, WalletLinks, PositionRef, baseTokenOf } from './ui';
 import { TokenPair, PairName } from './TokenIcon';
 import { Pair } from '../pages/Positions';
 import { GmgnProvider } from './GmgnDot';
@@ -161,7 +161,7 @@ export function WalletPositions({ rows, onHist, jumpTo, loading = false, classNa
               <div>
                 <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} className="block font-medium" />
                 <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
-                  <span className="uppercase">{p.venue}</span><span>·</span><span className="mono">#{p.token_id}</span>
+                  <span className="uppercase">{p.venue}</span><span>·</span><PositionRef p={p} />
                   <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} compact className="ml-2" />
                 </div>
               </div>

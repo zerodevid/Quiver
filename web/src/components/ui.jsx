@@ -851,6 +851,22 @@ export function TradeLinks({ token, pool = null, compact = false, className = ''
     .map((app) => ({ ...app, href: pool && app.poolHref ? app.poolHref(pool) : app.href(token) }));
   return <LinkBar tag="Trade" links={links} compact={compact} className={className} />;
 }
+// Identifier of one position in a table/drawer. A Meteora position is an anonymous account
+// address, useless to read: show a button to the pool on Meteora instead. Other venues keep
+// the "#id" they always had.
+export function PositionRef({ p, id = p.token_id }) {
+  if (p.venue === 'meteora' && p.pool_ref) {
+    return (
+      <span className="trade-bar" onClick={(e) => e.stopPropagation()}>
+        <a href={`https://app.meteora.ag/dlmm/${p.pool_ref}`} target="_blank" rel="noreferrer" className="trade-link"
+          style={{ '--brand': '#f06f2c' }} title={t('Buka {app}', { app: 'Meteora' })} aria-label={t('Buka {app}', { app: 'Meteora' })}>
+          <span>Meteora</span><ArrowUpRight />
+        </a>
+      </span>
+    );
+  }
+  return <span className="mono">#{id}</span>;
+}
 // Third-party market data (DexScreener, GeckoTerminal) — the pool page if the pool
 // is known, the token page if only the token. dexUrl: the DexScreener URL already
 // provided by the pair API, more precise than guessing from the address.

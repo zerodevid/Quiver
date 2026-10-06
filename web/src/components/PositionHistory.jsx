@@ -9,7 +9,7 @@ import TargetSide from './TargetSide';
 import { Button, Chip, Drawer } from '@heroui/react';
 import { X, ChartCandlestick } from 'lucide-react';
 import { get } from '../api';
-import { Stat, Empty, Loading, Notice, TxHash, TradeLinks, baseTokenOf } from './ui';
+import { Stat, Empty, Loading, Notice, TxHash, TradeLinks, PositionRef, baseTokenOf } from './ui';
 import { GmgnDot, GmgnProvider, useGmgn } from './GmgnDot';
 import { GmgnSecurity } from './Gmgn';
 import TokenIcon, { TokenPair } from './TokenIcon';
@@ -263,7 +263,7 @@ export default function PositionHistory({ id, onClose }) {
                       <Chip size="sm" variant="soft" color={closed ? 'danger' : 'success'}>{t(closed ? 'Ditutup' : 'Terbuka')}</Chip>
                     </Drawer.Heading>
                     <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted">
-                      <span className="uppercase">{p.venue}</span><span>·</span><span className="mono">#{p.token_id || p.id}</span>
+                      <span className="uppercase">{p.venue}</span><span>·</span><PositionRef p={p} id={p.token_id || p.id} />
                       {p.target && <><span>·</span><a href={'#targets/' + p.target} className="hover:underline">{t('meniru {t}', { t: p.targetLabel || short(p.target) })}</a></>}
                     </div>
                     <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} className="mt-1.5 flex-wrap" />
