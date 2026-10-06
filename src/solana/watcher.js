@@ -61,9 +61,12 @@ class SolanaWatcher {
     return Array.isArray(want) && want.length ? all.filter((v) => want.includes(v)) : all;
   }
 
-  // New signatures since the last one seen. null = failed to read.
+  // New signatures since the last one seen. null = failed to read. Only recent history is needed:
+  // a target's new moves are seconds old, so a day-of-history endpoint (publicnode) is tried first
+  // and the rate-limited full-history endpoint is only a fallback. An empty answer there for a
+  // quiet wallet is correct here ("nothing new"); a cursor it no longer knows is handled below.
   async newSignatures(target, last) {
-    const get = (until) => this.rpc.run((c) => c.getSignaturesForAddress(new PublicKey(target), { limit: 25, ...(until ? { until } : {}) }), { needsHistory: true });
+    const get = (until) => this.rpc.run((c) => c.getSignaturesForAddress(new PublicKey(target), { limit: 25, ...(until ? { until } : {}) }), { recentHistory: true });
     try {
       return await get(last);
     } catch (e) {

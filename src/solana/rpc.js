@@ -74,7 +74,11 @@ class SolanaRpc {
     return (this.eps.find((e) => e.cooldownUntil <= now && !e.noSend) || this.eps[0]).conn;
   }
 
-  order({ needsGpa = false, send = false, needsHistory = false, indexed = false } = {}) {
+  // recentHistory: only the latest signatures are needed (the watcher polling a target for new
+  // moves). Endpoints that keep just a day of history (no_history, e.g. publicnode) serve that
+  // fine and are tried FIRST: they are fast and generous, while the full-history endpoint
+  // (mainnet-beta) rate-limits per method and is better kept for research & listings.
+  order({ needsGpa = false, send = false, needsHistory = false, indexed = false, recentHistory = false } = {}) {
     const now = Date.now();
     const ok = this.eps.filter((e) => !(needsGpa && e.noGpa) && !(send && e.noSend) && !(needsHistory && e.noHistory)
       && !(indexed && e.noIndexed));
@@ -83,13 +87,15 @@ class SolanaRpc {
     // Rotate among the healthy ones to spread load; the first endpoint in the config is still
     // the most used when it is the only healthy one.
     const start = warm.length ? this.rr++ % warm.length : 0;
-    return [...warm.slice(start), ...warm.slice(0, start), ...cold];
+    const rotated = [...warm.slice(start), ...warm.slice(0, start)];
+    if (recentHistory) return [...rotated.filter((e) => e.noHistory), ...rotated.filter((e) => !e.noHistory), ...cold];
+    return [...rotated, ...cold];
   }
 
   // fn(connection, endpoint) -> Promise. Retried on another endpoint when the error is
   // transient; other errors are thrown as is.
-  async run(fn, { needsGpa = false, send = false, needsHistory = false, indexed = false, tries = null } = {}) {
-    const list = this.order({ needsGpa, send, needsHistory, indexed });
+  async run(fn, { needsGpa = false, send = false, needsHistory = false, indexed = false, recentHistory = false, tries = null } = {}) {
+    const list = this.order({ needsGpa, send, needsHistory, indexed, recentHistory });
     if (!list.length) throw new Error(needsGpa ? 'tidak ada endpoint Solana yang melayani getProgramAccounts (tambahkan RPC berbayar: Helius/QuickNode/Alchemy)' : 'tidak ada endpoint Solana');
     let last;
     for (const e of list.slice(0, tries || list.length)) {

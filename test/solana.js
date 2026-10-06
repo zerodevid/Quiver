@@ -194,14 +194,24 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.deepStrictEqual(sigs.map((x) => x.signature), ['NEW2', 'NEW1']);
   });
 
-  await t('RPC: target signatures are never read from an endpoint without history (publicnode)', async () => {
+  await t('RPC: full history never comes from a day-of-history endpoint; target polling prefers it, the full one is the fallback', async () => {
     const { SolanaRpc } = require('../src/solana/rpc');
-    const rpc = new SolanaRpc([{ url: 'https://solana-rpc.publicnode.com', no_gpa: true, no_history: true }, { url: 'https://api.mainnet-beta.solana.com' }], () => {});
-    for (let i = 0; i < 4; i++) assert.deepStrictEqual(rpc.order({ needsHistory: true }).map((e) => new URL(e.url).hostname), ['api.mainnet-beta.solana.com']);
+    const rpc = new SolanaRpc([{ url: 'https://api.mainnet-beta.solana.com' }, { url: 'https://solana-rpc.publicnode.com', no_gpa: true, no_history: true }], () => {});
+    const hosts = (list) => list.map((e) => new URL(e.url).hostname);
+    for (let i = 0; i < 4; i++) assert.deepStrictEqual(hosts(rpc.order({ needsHistory: true })), ['api.mainnet-beta.solana.com']);
+    for (let i = 0; i < 4; i++) assert.deepStrictEqual(hosts(rpc.order({ recentHistory: true })), ['solana-rpc.publicnode.com', 'api.mainnet-beta.solana.com']);
     assert.strictEqual(rpc.order({}).length, 2, 'plain account reads still use both');
+    // the watcher's signature poll lands on publicnode; when it is resting, mainnet-beta answers
+    const store = new Store(':memory:');
+    store.run("INSERT INTO targets(chain,address,enabled,added_ts) VALUES('solana',?,1,?)", TARGET, Date.now());
+    const chain = fakeChain(store);
+    const w = new SolanaWatcher({ rpc, store, chain, cfg: { rules: solanaTemplate().rules }, log: () => {} });
     const hit = [];
-    await rpc.run(async (c, e) => { hit.push(new URL(e.url).hostname); return 1; }, { needsHistory: true });
-    assert.deepStrictEqual(hit, ['api.mainnet-beta.solana.com']);
+    for (const e of rpc.eps) e.conn = { getSignaturesForAddress: async () => { hit.push(new URL(e.url).hostname); return []; } };
+    await w.newSignatures(TARGET, null);
+    rpc.eps[1].cooldownUntil = Date.now() + 60_000;
+    await w.newSignatures(TARGET, null);
+    assert.deepStrictEqual(hit, ['solana-rpc.publicnode.com', 'api.mainnet-beta.solana.com']);
   });
 
   await t('trivial share moves (<0.1%) are not actions; ones that add up are still caught once', async () => {
