@@ -857,6 +857,50 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual((await pr.receivedIn(['gift'], ME, MEME)).get('gift'), 500n);
   });
 
+  await t('Solana token proceeds: a refused RPC read (429) is reported incomplete, not cached, and the window is not marked covered', async () => {
+    const store = new Store(':memory:');
+    const chain = fakeChain(store);
+    const pr = new SolanaProceeds({ rpc: chain.rpc, store, chain, research: {}, log: () => {} });
+    const sale = ptx({ keys: [key(ME, true)], programs: ['JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'], pre: [1e9], post: [1e9 - 5000], preTok: [tb(ME, MEME, 1000), tb(ME, USDC, 0)], postTok: [tb(ME, MEME, 0), tb(ME, USDC, 7_000_000)] });
+    pr.tokenAccounts = async () => [TARGET];
+    const scan = () => { const known = []; return pr.scanTransfers(ME, MEME, 1, 100, { ethUsd: 100, known, seenTx: new Set(), lpTx: new Set() }).then((ok) => ({ ok, known })); };
+
+    // 1. the signature list is refused
+    chain.rpc.run = async () => { throw new Error('429 Too Many Requests'); };
+    assert.strictEqual((await scan()).ok, false);
+
+    // 2. the list works but the transaction read is refused: still incomplete, nothing cached
+    let refuseTx = true;
+    chain.rpc.run = async (fn) => fn({
+      getSignaturesForAddress: async () => [{ signature: 'sell', slot: 10 }],
+      getParsedTransaction: async () => { if (refuseTx) throw new Error('429 Too Many Requests'); return sale; },
+    });
+    assert.strictEqual((await scan()).ok, false);
+
+    // 3. the same window read again once the RPC answers: complete, and the sale is found
+    refuseTx = false;
+    const r = await scan();
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(r.known.map((k) => [k.tx_hash, k.tok_out, k.quote_usd]), [['sell', '1000', 7]]);
+  });
+
+  await t('trackToken keeps the scanned span unset after an incomplete scan, so the next pass reads the window again', async () => {
+    const store = new Store(':memory:');
+    const chain = fakeChain(store);
+    const pr = new SolanaProceeds({ rpc: chain.rpc, store, chain, research: {}, log: () => {} });
+    const lots = [{ closed_block: 50, token_id: 'P1', pool_ref: POOL, wallet: ME, venue: 'meteora', outN: 10n, out0: '10', out1: '0', tracked_to: null, held_tok: '0', sold_tok: '0', s: { side: 0 } }];
+    let ok = false;
+    pr.receivedIn = async () => new Map();
+    pr.allocate = async () => {};
+    pr.scanTransfers = async () => ok;
+    const key2 = `wflow_span:${pr.network}:${ME}:${MEME}`;
+    await pr.trackToken(ME, MEME, lots, { head: 100, ethUsd: 100 });
+    assert.strictEqual(store.getState(key2), null, 'incomplete scan: window not remembered');
+    ok = true;
+    await pr.trackToken(ME, MEME, lots, { head: 100, ethUsd: 100 });
+    assert.deepStrictEqual(JSON.parse(store.getState(key2)), { from: 50, to: 100 });
+  });
+
   await t('DLMM depth: bins → equivalent L; buying one full bin in the model = swapping that bin’s contents', async () => {
     const { poolDepthSol, uniformL } = require('../src/solana/pool-depth');
     const { makeCurve, buyToPrice } = await import('../web/src/liquidityRisk.mjs');

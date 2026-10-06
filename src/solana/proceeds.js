@@ -19,7 +19,15 @@ class SolanaProceeds extends Proceeds {
   async getTx(sig) {
     this.txCache ??= new Map();
     if (this.txCache.has(sig)) return this.txCache.get(sig);
-    const tx = await this.rpc.run((c) => c.getParsedTransaction(sig, { maxSupportedTransactionVersion: 1, commitment: 'confirmed' }), { needsHistory: true }).catch(() => null);
+    let tx = null;
+    try {
+      tx = await this.rpc.run((c) => c.getParsedTransaction(sig, { maxSupportedTransactionVersion: 1, commitment: 'confirmed' }), { needsHistory: true });
+    } catch {
+      // A refused read (429) is NOT an answer: count it so the scan is not taken as complete,
+      // and do not cache it.
+      this.rpcFailures = (this.rpcFailures || 0) + 1;
+      return null;
+    }
     if (this.txCache.size > 500) this.txCache.clear();
     this.txCache.set(sig, tx);
     return tx;
@@ -74,12 +82,20 @@ class SolanaProceeds extends Proceeds {
     return [...set];
   }
 
+  // Returns false when part of the window could not be read (RPC refused a signature page or a
+  // transaction): the caller must not remember the window as covered, or a sale in the
+  // unread part would be missed forever and the tokens counted as still held.
   async scanTransfers(wallet, token, lo, hi, { ethUsd, known, seenTx, lpTx }) {
+    const failuresBefore = this.rpcFailures || 0;
+    let complete = true;
     const sigs = new Map();
     for (const acc of await this.tokenAccounts(wallet, token)) {
       let before;
       for (let page = 0; page < MAX_PAGES; page++) {
-        const list = await this.rpc.run((c) => c.getSignaturesForAddress(new PublicKey(acc), { limit: 1000, before }), { needsHistory: true }).catch(() => []);
+        let list;
+        try {
+          list = await this.rpc.run((c) => c.getSignaturesForAddress(new PublicKey(acc), { limit: 1000, before }), { needsHistory: true });
+        } catch { complete = false; break; }
         for (const s of list) if (!s.err && s.slot >= lo && s.slot <= hi) sigs.set(s.signature, s);
         if (list.length < 1000 || list[list.length - 1].slot < lo) break;
         before = list[list.length - 1].signature;
@@ -111,6 +127,7 @@ class SolanaProceeds extends Proceeds {
           this.network, wallet, token, s.signature, s.slot, ts, tokD.toString());
       }
     }
+    return complete && (this.rpcFailures || 0) === failuresBefore;
   }
 }
 

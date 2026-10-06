@@ -236,11 +236,15 @@ class Proceeds {
     const lpTx = new Set(this.store.all(`SELECT DISTINCT e.tx_hash FROM wevents e
       JOIN wpositions p ON p.chain = e.chain AND p.wallet = e.wallet AND p.token_id = e.token_id
       WHERE e.chain=? AND e.wallet=? AND (p.token0=? OR p.token1=?)`, this.network, wallet, token, token).map((x) => x.tx_hash));
+    // A scan that could not read everything (RPC refused part of it) returns false: the span is
+    // then left as it was, so the same window is read again on the next pass.
+    let covered = true;
     for (const [lo, hi] of parts) {
       if (lo > hi) continue;
-      await this.scanTransfers(wallet, token, lo, hi, { ethUsd, known, seenTx, lpTx });
+      if (await this.scanTransfers(wallet, token, lo, hi, { ethUsd, known, seenTx, lpTx }) === false) covered = false;
     }
-    this.store.setState(spanKey, JSON.stringify({ from: Math.min(first, span?.from ?? first), to: head }));
+    if (covered) this.store.setState(spanKey, JSON.stringify({ from: Math.min(first, span?.from ?? first), to: head }));
+    else this.log(`lacak ${token.slice(0, 10)}…: pembacaan transfer belum lengkap, diulang di putaran berikutnya`);
     known.sort((x, y) => x.block - y.block);
     await this.allocate(wallet, token, lots, { first, pre, known, ethUsd, head });
   }
