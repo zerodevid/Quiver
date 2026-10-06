@@ -16,7 +16,7 @@ import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/
 import { PriceChart, DexEmbed, GmgnEmbed, TradesTape, MarketPanel, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc } from './PositionDetail';
 import { GmgnWallets } from '../components/Gmgn';
 import { BAND_COLORS } from '../components/CandleChart';
-import { usd, pct, tone, num, price, sqrtPrice, tickPrice } from '../fmt';
+import { usd, pct, tone, num, price, sqrtPrice, tickPrice, shortId } from '../fmt';
 import { useI18n } from '../i18n';
 import { canonAddr } from '../chain';
 
@@ -81,7 +81,7 @@ export default function PoolDetail({ param }) {
   const band = (p, color) => {
     const a = at(p.tick_lower), b = at(p.tick_upper);
     return { id: p.id, lo: Math.min(a, b), hi: Math.max(a, b), color,
-      label: p.token_id ? `#${p.token_id}` : `#${p.id}`, selected: focus?.id === p.id,
+      label: p.token_id ? `#${shortId(p.token_id)}` : `#${p.id}`, selected: focus?.id === p.id,
       from: p.opened_ts || null, to: p.status === 'closed' ? p.closed_ts || null : null };
   };
   // "hide" (focusPick === null) still means a clean chart without positions.
@@ -140,8 +140,8 @@ export default function PoolDetail({ param }) {
         <Panel title={t('Harga {b} / {q}', { b: base, q: quote || '?' })} className="lg:col-span-2"
           desc={focus
             ? <span>{ranges.length > 1
-                ? t('{n} rentang posisi bot · disorot #{id}', { n: ranges.length, id: focus.token_id || focus.id })
-                : t('menampilkan posisi bot #{id}', { id: focus.token_id || focus.id })} · <button type="button" className="text-accent hover:underline" onClick={() => setFocus(null)}>{t('sembunyikan')}</button></span>
+                ? t('{n} rentang posisi bot · disorot #{id}', { n: ranges.length, id: shortId(focus.token_id || focus.id) })
+                : t('menampilkan posisi bot #{id}', { id: shortId(focus.token_id || focus.id) })} · <button type="button" className="text-accent hover:underline" onClick={() => setFocus(null)}>{t('sembunyikan')}</button></span>
             : ranges.length ? <span>{t('{n} rentang posisi bot', { n: ranges.length })}</span> : null}
           action={<div className="flex flex-wrap gap-2">
             <Segmented size="sm" aria="Tampilan grafik" value={view} onChange={setView} options={VIEWS} />

@@ -32,7 +32,7 @@ import { TokenPair, PairName } from '../components/TokenIcon';
 import { GmgnDot, GmgnProvider } from '../components/GmgnDot';
 import { useAlertPrefs, alarm, bumpTitle } from '../components/TargetAlerts';
 import { orientCandles, tfFor, SECS, LiveBadge, kUsd } from './PositionDetail';
-import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice } from '../fmt';
+import { usd, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice } from '../fmt';
 import { useI18n } from '../i18n';
 import { canonAddr } from '../chain';
 
@@ -443,7 +443,7 @@ export default function Monitor() {
     const m = mon?.positions?.[p.id] || null;
     const trig = triggersOf(p, m, live?.tick ?? null, now, t);
     // Short position name: its NFT number if present (that is what shows on Uniswap), otherwise the bot id.
-    const tag = p.token_id ? `#${p.token_id}` : `#${p.id}`;
+    const tag = p.token_id ? `#${shortId(p.token_id)}` : `#${p.id}`;
     return { p, ref, mon: m, live, edge, full, lo, hi, tag, trig, risk: riskOf(p, trig, edge) };
   }), [open, fresh, mon, now, t]);
 

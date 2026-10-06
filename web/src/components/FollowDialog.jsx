@@ -3,7 +3,7 @@ import { Button, Modal, toast } from '@heroui/react';
 import { Clock } from 'lucide-react';
 import { post } from '../api';
 import { useI18n, reason } from '../i18n';
-import { usd, age, pct, short, locale as fmtLocale, DECISIONS } from '../fmt';
+import { usd, age, pct, short, shortId, locale as fmtLocale, DECISIONS } from '../fmt';
 import { Notice, PriceRange, Text, KV } from './ui';
 
 // Manually follow a target position the bot failed on/skipped. This modal doubles as the confirmation:
@@ -58,8 +58,8 @@ export default function FollowDialog({ action, onClose, onDone }) {
   const e = f?.exit;
   const exits = !e ? [] : [
     e.followTarget && (e.followPartial
-      ? t('Ikut ditutup saat target menutup posisi #{id}, dan ikut ditarik sebagian saat target menarik sebagian.', { id: f.tokenId })
-      : t('Ikut ditutup saat target menutup posisi #{id}.', { id: f.tokenId })),
+      ? t('Ikut ditutup saat target menutup posisi #{id}, dan ikut ditarik sebagian saat target menarik sebagian.', { id: shortId(f.tokenId) })
+      : t('Ikut ditutup saat target menutup posisi #{id}.', { id: shortId(f.tokenId) })),
     e.stopLossPct > 0 && t('Stop loss di −{n}%.', { n: e.stopLossPct }),
     e.takeProfitPct > 0 && t('Take profit di +{n}%.', { n: e.takeProfitPct }),
     e.maxAgeHours > 0 && t('Ditutup setelah berumur {n} jam.', { n: e.maxAgeHours }),

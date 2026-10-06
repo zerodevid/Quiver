@@ -4,6 +4,7 @@ import { Hand, Undo2 } from 'lucide-react';
 import { get, post } from '../api';
 import { ask } from './ui';
 import { useI18n, reason } from '../i18n';
+import { shortId } from '../fmt';
 
 // Manual control of a mirror position. "Take over": the bot stops managing this position (does not
 // follow the target's exits/adds, no SL/TP/age/out-of-range). "Give back": follow the target
@@ -22,7 +23,7 @@ export default function TakeoverButton({ p, reload, disabled = false, size = 'sm
         <div className="flex flex-col gap-2">
           <p>{t('Bot berhenti mengelola posisi ini:')}</p>
           <ul className="list-disc space-y-1 pl-5">
-            <li>{t('tidak ikut menutup atau menarik sebagian saat target keluar dari posisi #{id};', { id: p.mirror_of })}</li>
+            <li>{t('tidak ikut menutup atau menarik sebagian saat target keluar dari posisi #{id};', { id: shortId(p.mirror_of) })}</li>
             <li>{t('tidak ikut menambah saat target menambah;')}</li>
             <li>{t('stop loss, take profit, batas umur, dan di luar rentang tidak berlaku.')}</li>
           </ul>
@@ -47,7 +48,7 @@ export default function TakeoverButton({ p, reload, disabled = false, size = 'sm
     if (info.error) return toast.danger(reason(info.error));
     if (info.targetOpen === false) {
       return toast.danger(t('Tidak bisa dikembalikan'), {
-        description: t('Target sudah menutup posisi #{id} — tidak ada yang bisa diikuti lagi. Posisi ini tetap manual; tutup sendiri kalau sudah waktunya.', { id: info.tokenId }),
+        description: t('Target sudah menutup posisi #{id} — tidak ada yang bisa diikuti lagi. Posisi ini tetap manual; tutup sendiri kalau sudah waktunya.', { id: shortId(info.tokenId) }),
         timeout: 12000,
       });
     }
@@ -55,8 +56,8 @@ export default function TakeoverButton({ p, reload, disabled = false, size = 'sm
     const e = info.exit;
     const rules = [
       e.followTarget && (e.followPartial
-        ? t('ikut ditutup saat target menutup posisi #{id}, dan ikut ditarik sebagian;', { id: info.tokenId })
-        : t('ikut ditutup saat target menutup posisi #{id};', { id: info.tokenId })),
+        ? t('ikut ditutup saat target menutup posisi #{id}, dan ikut ditarik sebagian;', { id: shortId(info.tokenId) })
+        : t('ikut ditutup saat target menutup posisi #{id};', { id: shortId(info.tokenId) })),
       t('ikut menambah saat target menambah (sesuai aturan);'),
       e.stopLossPct > 0 && t('stop loss di −{n}%;', { n: e.stopLossPct }),
       e.takeProfitPct > 0 && t('take profit di +{n}%;', { n: e.takeProfitPct }),
@@ -69,7 +70,7 @@ export default function TakeoverButton({ p, reload, disabled = false, size = 'sm
       title: t('Kembalikan {pair} ke otomatis?', { pair }),
       body: (
         <div className="flex flex-col gap-2">
-          <p>{t('Posisi target #{id} masih terbuka. Bot kembali mengelola posisi ini:', { id: info.tokenId })}</p>
+          <p>{t('Posisi target #{id} masih terbuka. Bot kembali mengelola posisi ini:', { id: shortId(info.tokenId) })}</p>
           <ul className="list-disc space-y-1 pl-5">{rules.map((x) => <li key={x}>{x}</li>)}</ul>
           <p>{t('Aksi target selama kendali manual tidak disusulkan — hanya aksi berikutnya yang diikuti. Stop loss / take profit langsung dinilai di sinkron berikutnya (±30 detik).')}</p>
         </div>

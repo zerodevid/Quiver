@@ -7,7 +7,7 @@ import { TokenPair, PairName } from './TokenIcon';
 import { Pair } from '../pages/Positions';
 import { GmgnProvider } from './GmgnDot';
 import { usePairs, tokenColumn } from './TokenCell';
-import { usd, pct, tone, ago, short, locale as fmtLocale, ACTIONS, DECISIONS } from '../fmt';
+import { usd, pct, tone, ago, short, shortId, locale as fmtLocale, ACTIONS, DECISIONS } from '../fmt';
 import { useI18n, reason } from '../i18n';
 import { useClosePosition } from '../useClosePosition';
 
@@ -50,7 +50,7 @@ function CopiedFrom({ p }) {
       <a href={'#targets/' + p.target} className="group block" title={p.target}>
         {p.targetLabel && <div className="truncate font-medium group-hover:underline">{p.targetLabel}</div>}
         <div className="mono text-xs whitespace-nowrap text-muted group-hover:text-foreground">
-          {short(p.target)}{p.mirror_of ? ` · #${p.mirror_of}` : ''}
+          {short(p.target)}{p.mirror_of ? ` · #${shortId(p.mirror_of)}` : ''}
         </div>
       </a>
       <WalletLinks address={p.target} compact className="mt-0.5" />
@@ -115,7 +115,7 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, w
             <div className="flex flex-wrap items-center justify-end gap-2">
               {sourceOf(p) && (
                 <Button size="sm" variant="outline" onPress={() => onSource(sourceOf(p))}
-                  aria-label={t('Ke posisi asli #{id} di tabel wallet yang diriset', { id: p.mirror_of })}>
+                  aria-label={t('Ke posisi asli #{id} di tabel wallet yang diriset', { id: shortId(p.mirror_of) })}>
                   {t('Posisi asli')}
                 </Button>)}
               {onFocus && (p.id === focusId

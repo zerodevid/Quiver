@@ -3,7 +3,7 @@ import { ChevronDown, TriangleAlert } from 'lucide-react';
 import { Panel } from './ui';
 import { usePoll, useTick } from '../hooks';
 import { useI18n } from '../i18n';
-import { usd, num, pct, price, short, ago } from '../fmt';
+import { usd, num, pct, price, short, shortId, ago } from '../fmt';
 import { breakEven } from '../breakeven';
 import { makeCurve, buyToPrice, exitScenarios } from '../liquidityRisk.mjs';
 const explanation = {
@@ -45,7 +45,7 @@ export default function LiquidityRisk({ pool, focus }) {
           <h3 className="mb-2 text-sm font-semibold">{t('USD untuk menggerakkan harga')}</h3>
           <table className="w-full text-sm"><thead className="text-xs text-muted"><tr><th className="py-2 text-left font-normal">{t('Target harga')}</th><th className="text-right font-normal">{t('Pembelian bruto')}</th></tr></thead><tbody>
             {[1, 5, 10].map((move) => { const r = buyToPrice(curve, curve.price * (1 + move / 100)); return <tr className="border-t border-border" key={move}><td className="py-2">+{move}%</td><td className="text-right num">{r.error ? t('Belum terukur') : usd(r.quote * d.quoteUsd)}</td></tr>; })}
-            <tr className="border-t border-border"><td className="py-2">{t('Ke BEP posisi')}{p && <span className="ml-1 text-xs text-muted">#{p.token_id}</span>}</td><td className="text-right num">{required && !required.error ? usd(required.quote * d.quoteUsd) : '—'}</td></tr>
+            <tr className="border-t border-border"><td className="py-2">{t('Ke BEP posisi')}{p && <span className="ml-1 text-xs text-muted">#{shortId(p.token_id)}</span>}</td><td className="text-right num">{required && !required.error ? usd(required.quote * d.quoteUsd) : '—'}</td></tr>
           </tbody></table>
           <p className="mt-2 text-xs leading-relaxed text-muted">{bep?.price ? <>{t('Harga BEP')}: {price(bep.price)} {pool.quoteSide === 0 ? pool.symbol0 : pool.symbol1} · {pct((bep.price / curve.price - 1) * 100, 2)}. {required?.error && t(explanation[required.error])}</> : t(bep?.reason || 'Pilih posisi terbuka untuk menghitung BEP.')}</p>
           <p className="mt-2 text-xs leading-relaxed text-muted">{t('Ini pembelian pasar yang dibutuhkan dalam model, bukan dana tambahan yang harus Anda setor. BEP belum memasukkan gas dan biaya keluar.')}</p>

@@ -28,7 +28,7 @@ import TargetSide from '../components/TargetSide';
 import ShareButton, { positionCard } from '../components/ShareCard';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask, TradeLinks, DataLinks } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
-import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice, widthPct, txHref, addrHref, feeApr, aprText, locale as fmtLocale } from '../fmt';
+import { usd, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice, widthPct, txHref, addrHref, feeApr, aprText, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
 
 export const TFS = [['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam'], ['1d', '1 hari']];
@@ -504,7 +504,7 @@ export default function PositionDetail({ id }) {
               <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted">
                 <span>Uniswap {String(p.venue).toUpperCase()}</span><span>·</span>
                 <span className="num">{t('fee {f}%', { f: num(p.fee / 10000, 2) })}</span>
-                {p.token_id && <><span>·</span><span className="mono">#{p.token_id}</span></>}
+                {p.token_id && <><span>·</span><span className="mono" title={String(p.token_id)}>#{shortId(p.token_id)}</span></>}
                 <span>·</span>
                 {closed
                   ? <span>{t('ditutup {w}', { w: ago(p.closed_ts) })}</span>

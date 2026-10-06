@@ -13,7 +13,7 @@ const PositionDetail = lazy(() => import('./PositionDetail'));
 import PositionHistory from '../components/PositionHistory';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
-import { usd, pct, tone, age, ago, short, num, feeApr, aprText } from '../fmt';
+import { usd, pct, tone, age, ago, short, shortId, num, feeApr, aprText } from '../fmt';
 import { useI18n } from '../i18n';
 
 const sum = (rows, f) => rows.reduce((a, r) => a + (f(r) || 0), 0);
@@ -120,7 +120,7 @@ function Source({ p }) {
       <a href={'#targets/' + p.target} className="group block" title={p.target}>
         {p.targetLabel && <div className="truncate font-medium group-hover:underline">{p.targetLabel}</div>}
         <div className="mono text-xs whitespace-nowrap text-muted group-hover:text-foreground">
-          {short(p.target)}{p.mirror_of ? ` · #${p.mirror_of}` : ''}
+          {short(p.target)}{p.mirror_of ? ` · #${shortId(p.mirror_of)}` : ''}
         </div>
       </a>
       {/* wallet target di luar dasbor: DeBank, LPAgent, Etherscan */}
@@ -280,7 +280,7 @@ export default function Positions({ param }) {
               <div className="flex items-center gap-2.5">
                 <TokenPair token0={c.token0} token1={c.token1} symbol0={c.symbol0} symbol1={c.symbol1} size={20} />
                 <div><PairName token0={c.token0} token1={c.token1} symbol0={c.symbol0} symbol1={c.symbol1} pool={c.pool_ref} sep="/" className="font-medium" />
-                  <div className="mono mt-0.5 text-xs text-muted">{String(c.venue || '').toUpperCase()} · #{c.token_id}</div>
+                  <div className="mono mt-0.5 text-xs text-muted">{String(c.venue || '').toUpperCase()} · #{shortId(c.token_id)}</div>
                   <TradeLinks token={baseTokenOf(c)} pool={c.pool_ref} venue={c.venue} compact className="mt-1" /></div>
               </div>) },
             { key: 'tgt', label: 'Sumber', sort: (c) => c.targetLabel || c.target,

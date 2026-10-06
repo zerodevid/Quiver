@@ -6,7 +6,7 @@ import {
   Switch, Table, Spinner, Alert, Pagination, AlertDialog, Button,
 } from '@heroui/react';
 import { Inbox, Search, ArrowLeft, ArrowUpRight, Copy, Check, ExternalLink, RefreshCw } from 'lucide-react';
-import { price, tickPrice, sqrtPrice, widthPct, pct, short, txHref, addrHref, debankHref, lpagentHref, etherscanHref, ago } from '../fmt';
+import { price, tickPrice, sqrtPrice, widthPct, pct, short, shortId, txHref, addrHref, debankHref, lpagentHref, etherscanHref, ago } from '../fmt';
 import { breakEven } from '../breakeven';
 import { useTick } from '../hooks';
 import { translate as t } from '../i18n';
@@ -868,7 +868,7 @@ export function PositionRef({ p, id = p.token_id }) {
       </span>
     );
   }
-  return <span className="mono">#{id}</span>;
+  return <span className="mono" title={String(id)}>#{shortId(id)}</span>;
 }
 // Third-party market data (DexScreener, GeckoTerminal) — the pool page if the pool
 // is known, the token page if only the token. dexUrl: the DexScreener URL already

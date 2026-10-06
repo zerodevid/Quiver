@@ -20,7 +20,7 @@ import { Chip, Button } from '@heroui/react';
 import { Crosshair, RefreshCw } from 'lucide-react';
 import { get, post } from '../api';
 import { Fig, WalletLinks } from './ui';
-import { usd, pct, tone, age, ago, short } from '../fmt';
+import { usd, pct, tone, age, ago, short, shortId } from '../fmt';
 import { useI18n } from '../i18n';
 
 // Re-scan the target's wallet (incremental), wait for the job, then let the parent reload.
@@ -96,7 +96,7 @@ export default function TargetSide({ p, className = 'mb-4', onRefresh }) {
         </span>
         <span className="flex min-w-0 items-center gap-2">
           <a href={'#targets/' + p.target} className="min-w-0 text-xs text-accent hover:underline" title={p.target}>
-            {label || short(p.target)}{nft ? ` · #${nft}` : ''}
+            {label || short(p.target)}{nft ? ` · #${shortId(nft)}` : ''}
           </a>
           <WalletLinks address={p.target} compact />
           <Button size="sm" variant="ghost" isIconOnly isDisabled={busy} onPress={refresh}
