@@ -860,7 +860,7 @@ export function PositionRef({ p, id = p.token_id }) {
       <span className="trade-bar" onClick={(e) => e.stopPropagation()}>
         <a href={`https://app.meteora.ag/dlmm/${p.pool_ref}`} target="_blank" rel="noreferrer" className="trade-link"
           style={{ '--brand': '#f06f2c' }} title={t('Buka {app}', { app: 'Meteora' })} aria-label={t('Buka {app}', { app: 'Meteora' })}>
-          <span>Meteora</span><ArrowUpRight />
+          <img src="/meteora.png" alt="" /><ArrowUpRight />
         </a>
       </span>
     );
