@@ -325,7 +325,10 @@ export default function WalletPositionHistory({ p, address, onClose }) {
                 <>
                   <div className="mb-4 grid grid-cols-1 min-[360px]:grid-cols-2 gap-3">
                     <Stat label={open ? 'PnL (belum terealisasi)' : 'PnL'} value={usd(p.pnl_q)} valueClass={tone(p.pnl_q)}
-                      sub={p.pnlPct == null ? null : pct(p.pnlPct, 2)} />
+                      sub={p.pnlPct == null ? null : pct(p.pnlPct, 2)
+                        // Leftover tokens still held are valued at today's price, so "result" (at close)
+                        // and PnL differ; say how much of the PnL is money already in hand.
+                        + (!open && p.heldTok > 0 ? ' · ' + t('terealisasi {r} · {t} dipegang', { r: usd(p.realizedPnl), t: usd(p.heldUnrealized) }) : '')} />
                     <Stat label="Umur" value={age(p.ageHours)}
                       sub={p.opened_ts ? t('dibuka {w}', { w: ago(p.opened_ts) }) : null} />
                     <Stat label="Fee total" value={usd(fee)} valueClass={fee > 0.005 ? 'text-success' : ''}
