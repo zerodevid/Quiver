@@ -578,12 +578,13 @@ class SolanaManual extends Manual {
     const [mi, mo] = await this.chain.tokens([ti, to]);
     const all = await this.chain.router.quoteAll(ti, to, BigInt(amountRaw), { slippageBps: rules.swap.max_slippage_bps });
     const best = all.find((r) => r.state === 'ok');
-    if (!best) return { error: `Jupiter tidak menemukan rute: ${all.map((r) => `${r.label}: ${r.error}`).join('; ')}` };
+    if (!best) return { error: `Jupiter tidak menemukan rute: ${all.filter((r) => r.state === 'error').map((r) => `${r.label}: ${r.error}`).join('; ') || 'semua agregator mati'}` };
     const px = await this.chain.jup.prices([ti, to]).catch(() => new Map());
     const amountIn = Number(BigInt(amountRaw)) / 10 ** (mi.decimals ?? 9);
     const maxLoss = rules.exit.sell_max_loss_bps;
     const usdInOf = px.get(ti) ? amountIn * px.get(ti) : null;
     const routes = all.map((r) => {
+      if (r.state === 'off') return { id: r.id, label: r.label, state: 'off', blocker: r.blocker, ms: null, best: false };
       if (r.state !== 'ok') return { id: r.id, label: r.label, state: 'noroute', blocker: r.error, ms: r.ms, best: false };
       const amountOut = Number(r.out) / 10 ** (mo.decimals ?? 9);
       const usdOut = px.get(to) ? amountOut * px.get(to) : null;

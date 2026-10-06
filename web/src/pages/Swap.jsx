@@ -69,7 +69,7 @@ function TokenPicker({ value, onChange, list, all, exclude, side, onImport }) {
   const pick = (a) => { onChange(a); close(); };
   const importKey = async () => {
     setAdd(true);
-    const ok = await onImport(qq, side);
+    const ok = await onImport(qa, side);   // canonical form: Solana base58 is case-sensitive
     setAdd(false);
     if (ok) close();
   };

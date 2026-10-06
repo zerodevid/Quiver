@@ -782,6 +782,7 @@ function SecurityTab({ d }) {
 // ---------------- swap aggregators ----------------
 const AGG_INFO = {
   jupiter: ['Tanpa key (lite-api, ada batas laju). Agregator utama Solana: meroute lewat Meteora, Orca, Raydium, HumidiFi, dan lainnya.', 'https://portal.jup.ag'],
+  dflow: ['Butuh API key dari DFlow. Agregator Solana dengan API bergaya Jupiter.', 'https://pond.dflow.net'],
   raydium: ['Tanpa key. Hanya rute lewat pool Raydium; dipakai sebagai cadangan kalau Jupiter gagal atau memberi hasil lebih kecil.', null],
   kyber: ['Tanpa key. Calldata-nya dibaca dan dicocokkan kolom demi kolom sebelum dikirim — pengaman paling ketat.', null],
   okx: ['Butuh API key, secret key, dan passphrase. Sekitar 1 permintaan per detik per key.', 'https://web3.okx.com/onchainos/dev-portal'],
@@ -1122,7 +1123,7 @@ export default function Settings() {
               <Tabs.ListContainer className="md:w-60 md:shrink-0">
                 <Tabs.List aria-label={t('Bagian pengaturan')} className="grid! grid-cols-2 md:flex! md:flex-col">
                   {SETTINGS_NAV.map(([id, label, description0, Icon]) => {
-                    const description = id === 'aggregators' && isSolana() ? 'Jupiter, Raydium' : description0;
+                    const description = id === 'aggregators' && isSolana() ? 'Jupiter, Raydium, LI.FI, OKX, OpenOcean, DFlow' : description0;
                     return (
                     <Tabs.Tab key={id} id={id} className="min-h-16 justify-start gap-3 px-3 py-3 text-left">
                       <Icon className="size-5 shrink-0" aria-hidden="true" />

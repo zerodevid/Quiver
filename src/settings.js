@@ -201,7 +201,7 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
   // ---- swap aggregators (swaprouter.js) ----
   // Secrets never go back to the browser whole: only whether they are set, a masked prefix,
   // and which .env variable supplies them (those cannot be edited here).
-  const AGG_FIELDS = { jupiter: [], raydium: [], kyber: [], okx: ['api_key', 'secret_key', 'passphrase', 'project_id'], lifi: ['api_key'], zerox: ['api_key'], oneinch: ['api_key'], openocean: ['api_key'] };
+  const AGG_FIELDS = { jupiter: [], raydium: [], dflow: ['api_key'], kyber: [], okx: ['api_key', 'secret_key', 'passphrase', 'project_id'], lifi: ['api_key'], zerox: ['api_key'], oneinch: ['api_key'], openocean: ['api_key'] };
   const router = () => (chain.kind === 'solana' ? chain.router : engine.kyber);
   const aggView = () => {
     const r = router();

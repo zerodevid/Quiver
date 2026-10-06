@@ -6,6 +6,9 @@
 const assert = require('node:assert');
 const { SwapRouter } = require('../src/solana/swap-router');
 const { RaydiumSwap } = require('../src/solana/swap-raydium');
+const { LifiSwap, OkxSwap, OpenOceanSwap, DflowSwap, decodeTx } = require('../src/solana/swap-adapters');
+const { Keypair, VersionedTransaction, TransactionMessage } = require('@solana/web3.js');
+const bs58 = require('bs58').default;
 
 let pass = 0, fail = 0;
 async function t(name, fn) {
@@ -72,7 +75,7 @@ const router = (...aggregators) => new SwapRouter({ aggregators, log: () => {}, 
     r.setConfig({ aggregators: { raydium: { enabled: false } } });
     assert.strictEqual((await r.quote(SOL, USDC, 1n)).aggregator, 'jupiter');
     r.setConfig({ aggregators: { jupiter: { enabled: false }, raydium: { enabled: false } } });
-    await assert.rejects(r.quote(SOL, USDC, 1n), /dimatikan/);
+    await assert.rejects(r.quote(SOL, USDC, 1n), /mati atau belum punya API key/);
   });
 
   await t('order() lists configured ids first and appends unmentioned ones; byId has settings-page fields', async () => {
@@ -117,6 +120,105 @@ const router = (...aggregators) => new SwapRouter({ aggregators, log: () => {}, 
     assert.strictEqual(bodies[0].wrapSol, true); assert.strictEqual(bodies[0].unwrapSol, false);
     assert.strictEqual(bodies[0].computeUnitPriceMicroLamports, '1000000', '400k lamports / 400k CU = 1M micro-lamports');
     assert.strictEqual(bodies[1].unwrapSol, true); assert.strictEqual(bodies[1].inputAccount, 'ACC');
+  });
+
+  // ---- more aggregators (LI.FI, OKX, OpenOcean, DFlow) ------------------------------------------
+  const payer = Keypair.generate();
+  const mkTx = (kp = payer) => new VersionedTransaction(new TransactionMessage({
+    payerKey: kp.publicKey, recentBlockhash: bs58.encode(Buffer.alloc(32, 1)), instructions: [] }).compileToV0Message());
+  const b64 = (tx) => Buffer.from(tx.serialize()).toString('base64');
+  const b58 = (tx) => bs58.encode(tx.serialize());
+  const OWNER = payer.publicKey.toBase58();
+  const quoteOf = (out, extra = {}) => ({ inputMint: SOL, outputMint: USDC, inAmount: '1000', outAmount: String(out), slippageBps: 100, ...extra });
+
+  await t('decodeTx reads both base64 and base58 and rejects garbage', async () => {
+    const tx = mkTx();
+    assert.strictEqual(decodeTx(b64(tx)).message.staticAccountKeys[0].toBase58(), OWNER);
+    assert.strictEqual(decodeTx(b58(tx)).message.staticAccountKeys[0].toBase58(), OWNER);
+    assert.throws(() => decodeTx('not a transaction'), /unreadable/);
+  });
+
+  await t('LI.FI: quote works without a key; swapTx rebuilds for the wallet and refuses a drifted price', async () => {
+    const calls = [];
+    const reply = (toAmount) => async (url) => { calls.push(url);
+      return resp({ estimate: { toAmount }, tool: 'okx', toolDetails: { name: 'OKX' }, transactionRequest: { data: b64(mkTx()) } }); };
+    const l = new LifiSwap({ fetchImpl: reply('1000') });
+    const q = await l.quote(SOL, USDC, 500n);
+    assert.strictEqual(q.outAmount, '1000'); assert.match(q.routePlan[0].swapInfo.label, /OKX/);
+    assert.ok(!calls[0].includes(OWNER), 'the quote uses a placeholder address');
+    assert.ok(l.hasCredentials());
+    const ok = await l.swapTx(q, OWNER);
+    assert.strictEqual(ok.tx.message.staticAccountKeys[0].toBase58(), OWNER);
+    assert.ok(calls[1].includes(OWNER), 'the build uses the real wallet');
+    await assert.rejects(new LifiSwap({ fetchImpl: reply('900') }).swapTx(q, OWNER), /price moved/);
+  });
+
+  await t('keyed aggregators have no credentials until configured (OKX needs key+secret+passphrase)', async () => {
+    let s = {};
+    const okx = new OkxSwap({ settings: () => s }), dflow = new DflowSwap({ settings: () => s }), oo = new OpenOceanSwap({ settings: () => s });
+    assert.deepStrictEqual([okx, dflow, oo].map((a) => a.hasCredentials()), [false, false, false]);
+    s = { api_key: 'k', secret_key: 's' };
+    assert.deepStrictEqual([okx.hasCredentials(), dflow.hasCredentials(), oo.hasCredentials()], [false, true, true]);
+    s = { api_key: 'k', secret_key: 's', passphrase: 'p' };
+    assert.strictEqual(okx.hasCredentials(), true);
+  });
+
+  await t('OKX: signed headers, native SOL mapped to the system address, base58 tx accepted', async () => {
+    let seen;
+    const okx = new OkxSwap({ settings: () => ({ api_key: 'K', secret_key: 'S', passphrase: 'P' }), fetchImpl: async (url, o) => {
+      seen = { url, h: o.headers };
+      return resp({ code: '0', data: [url.includes('/swap?')
+        ? { routerResult: { toTokenAmount: '1000' }, tx: { data: b58(mkTx()) } }
+        : { routerResult: { toTokenAmount: '1000', dexRouterList: [{ dexProtocol: { dexName: 'Whirlpool' } }] } }] });
+    } });
+    const q = await okx.quote(SOL, USDC, 500n);
+    assert.ok(seen.url.includes('fromTokenAddress=11111111111111111111111111111111'));
+    assert.ok(seen.h['OK-ACCESS-SIGN'] && seen.h['OK-ACCESS-KEY'] === 'K');
+    assert.strictEqual(q.routePlan[0].swapInfo.label, 'Whirlpool');
+    assert.strictEqual((await okx.swapTx(q, OWNER)).tx.message.staticAccountKeys[0].toBase58(), OWNER);
+  });
+
+  await t('DFlow: x-api-key header, quote then swap with the quote echoed back', async () => {
+    let body;
+    const d = new DflowSwap({ settings: () => ({ api_key: 'K' }), fetchImpl: async (url, o) => {
+      assert.strictEqual(o.headers['x-api-key'], 'K');
+      if (o.method === 'POST') { body = JSON.parse(o.body); return resp({ swapTransaction: b64(mkTx()) }); }
+      return resp({ outAmount: '1000', routePlan: [{ venue: 'Orca' }] });
+    } });
+    const q = await d.quote(SOL, USDC, 500n);
+    await d.swapTx(q, OWNER);
+    assert.strictEqual(body.userPublicKey, OWNER); assert.strictEqual(body.quoteResponse.outAmount, '1000');
+  });
+
+  await t('OpenOcean: human-readable amount from decimals, apikey header, tx under data.data', async () => {
+    let url0;
+    const oo = new OpenOceanSwap({ settings: () => ({ api_key: 'K' }), decimalsOf: async () => 9, fetchImpl: async (url, o) => {
+      url0 = url0 || url; assert.strictEqual(o.headers.apikey, 'K');
+      return resp({ code: 200, data: { outAmount: '1000', data: b64(mkTx()) } });
+    } });
+    const q = await oo.quote(SOL, USDC, 1_500_000_000n);
+    assert.ok(url0.includes('amount=1.5'), url0);
+    assert.strictEqual((await oo.swapTx(q, OWNER)).tx.message.staticAccountKeys[0].toBase58(), OWNER);
+  });
+
+  await t('router refuses a transaction whose fee payer is not the wallet and falls back', async () => {
+    const stranger = mkTx(Keypair.generate());
+    const bad = { ...agg('raydium', 120), swapTx: async () => ({ tx: stranger, lastValidBlockHeight: 1 }) };
+    const good = { ...agg('jupiter', 100), swapTx: async () => ({ tx: mkTx(), lastValidBlockHeight: 1 }) };
+    const r = router(bad, good);
+    const b = await r.swapTx(await r.quote(SOL, USDC, 1n), OWNER);
+    assert.strictEqual(b.quote.aggregator, 'jupiter');
+  });
+
+  await t('keyless-off aggregators are listed as "off" with the reason and never asked', async () => {
+    const asked = [];
+    const keyed = { ...agg('okx', 999), needsKey: true, hasCredentials: () => false, quote: async () => { asked.push('okx'); return null; } };
+    const r = router(agg('jupiter', 100), keyed);
+    const routes = await r.quoteAll(SOL, USDC, 1n);
+    assert.deepStrictEqual(routes.map((x) => [x.id, x.state]), [['jupiter', 'ok'], ['okx', 'off']]);
+    assert.strictEqual(routes[1].blocker, 'butuh API key');
+    assert.deepStrictEqual(asked, []);
+    assert.strictEqual(r.byId.get('okx').enabled(), false);
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -2241,6 +2241,7 @@ const EN = {
   'Fee belum terjual': 'Fees not sold yet',
   'Masuk antrean jual dan dicoba lagi otomatis. {e}': 'Queued for sale and retried automatically. {e}',
   "Agregator swap": "Swap aggregators",
+  "Butuh API key dari DFlow. Agregator Solana dengan API bergaya Jupiter.": "Needs an API key from DFlow. A Solana aggregator with a Jupiter-style API.",
   "Kyber, OKX, LI.FI, 0x, 1inch, OpenOcean": "Kyber, OKX, LI.FI, 0x, 1inch, OpenOcean",
   "Tanpa key (lite-api, ada batas laju). Agregator utama Solana: meroute lewat Meteora, Orca, Raydium, HumidiFi, dan lainnya.": "No key (lite-api, rate limited). The main Solana aggregator: routes through Meteora, Orca, Raydium, HumidiFi and more.",
   "Tanpa key. Hanya rute lewat pool Raydium; dipakai sebagai cadangan kalau Jupiter gagal atau memberi hasil lebih kecil.": "No key. Routes through Raydium pools only; used as the fallback when Jupiter fails or pays less.",

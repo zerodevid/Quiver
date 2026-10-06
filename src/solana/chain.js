@@ -34,7 +34,8 @@ class SolanaChain {
     this.jup = jupiter || new Jupiter({ log });
     // Swaps go through the router (Jupiter + Raydium, best output wins); this.jup stays the
     // price / token-info source.
-    this.router = router || new SwapRouter({ jupiter: this.jup, log, tokenAccount: (mint, owner) => this.tokenAccountOf(mint, owner) });
+    this.router = router || new SwapRouter({ jupiter: this.jup, log, tokenAccount: (mint, owner) => this.tokenAccountOf(mint, owner),
+      decimalsOf: async (mint) => (await this.token(mint))?.decimals ?? 9 });
     // Meteora DLMM data API: pool stats, creation time, candles (see meteora-api.js).
     this.meteora = meteoraApi || new MeteoraApi({ log });
     this.adapters = {
