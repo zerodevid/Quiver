@@ -1,12 +1,12 @@
 'use strict';
-// Kunci wallet Solana. Terpisah dari kunci EVM (ed25519, bukan secp256k1): satu kunci
-// privat EVM tidak bisa dipakai di Solana dan sebaliknya.
+// The Solana wallet key. Separate from the EVM key (ed25519, not secp256k1): an EVM private
+// key cannot be used on Solana and vice versa.
 //
-// Sumber, urutan prioritas:
-//   LPCOPY_SOLANA_PRIVATE_KEY      (.env / lingkungan)
-//   wallet.solana_key_file         (config; bawaan ~/.lpcopy/solana-key)
-// Bentuk yang diterima: base58 64-byte (ekspor Phantom/Solflare) atau larik JSON
-// [n,n,…] 64 angka (berkas solana-keygen).
+// Sources, in priority order:
+//   LPCOPY_SOLANA_PRIVATE_KEY      (.env / environment)
+//   wallet.solana_key_file         (config; default ~/.lpcopy/solana-key)
+// Accepted forms: 64-byte base58 (Phantom/Solflare export) or a JSON array
+// [n,n,…] of 64 numbers (solana-keygen file).
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -43,12 +43,12 @@ function loadKeypair(cfg, env = process.env) {
   return parseSecret(fs.readFileSync(p, 'utf8'));
 }
 
-// Simpan kunci baru (dari halaman Pengaturan / Telegram): base58, izin 600.
+// Store a new key (from the Settings page / Telegram): base58, mode 600.
 function saveKeypair(cfg, kp) {
   const p = keyFileOf(cfg);
   fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
   fs.writeFileSync(p, bs58.encode(kp.secretKey), { mode: 0o600 });
-  try { fs.chmodSync(p, 0o600); } catch { /* abaikan */ }
+  try { fs.chmodSync(p, 0o600); } catch { /* ignore */ }
   return p;
 }
 

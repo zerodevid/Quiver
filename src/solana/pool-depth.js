@@ -1,29 +1,29 @@
 'use strict';
-// Kedalaman harga & risiko keluar untuk pool Solana — bentuk balikan sama dengan
-// src/pool-depth.js, jadi model di dasbor (web/src/liquidityRisk.mjs) dipakai apa adanya.
+// Price depth & exit risk for a Solana pool — same return shape as src/pool-depth.js, so the
+// dashboard model (web/src/liquidityRisk.mjs) is used as is.
 //
-//   Orca / Raydium : tick array → tick terinisialisasi + liquidityNet (satuan Uniswap)
-//   Meteora DLMM   : tiap bin (isi X & Y mentah) diubah jadi L setara di rentang tick
-//                    bin itu — L = nilai bin dalam Y / (√P_atas − √P_bawah), sehingga
-//                    menyeberangi bin penuh di model = menukar seluruh isi bin. Harga
-//                    model diletakkan di tengah bin aktif (bin DLMM berharga tetap).
-// Posisi (kita & target) dibaca live lewat adapter. Posisi DLMM tidak seragam per bin;
-// di model ia diwakili L seragam yang nilainya sama di harga sekarang (perkiraan).
+//   Orca / Raydium : tick arrays → initialised ticks + liquidityNet (Uniswap units)
+//   Meteora DLMM   : each bin (raw X & Y) becomes an equivalent L over that bin's tick
+//                    range — L = the bin's value in Y / (√P_upper − √P_lower), so crossing a
+//                    full bin in the model = swapping the whole bin. The model price sits in
+//                    the middle of the active bin (a DLMM bin has a fixed price).
+// Positions (ours & the target's) are read live through the adapters. A DLMM position is not
+// uniform per bin; in the model it is represented by a uniform L of equal value at the current price (an estimate).
 const { PublicKey } = require('@solana/web3.js');
 const m = require('../v3math');
 const u = require('./units');
 
-const SPAN = 14_000;           // ± tick dari harga kini, sama dengan EVM
-const MAX_ARRAYS = 64;         // per sisi (Orca/Raydium) — batas akun yang dibaca
-const MAX_BINS = 700;          // per sisi (DLMM)
+const SPAN = 14_000;           // ± ticks from the current price, same as EVM
+const MAX_ARRAYS = 64;         // per side (Orca/Raydium) — cap on accounts read
+const MAX_BINS = 700;          // per side (DLMM)
 const Q96 = 2 ** 96;
 const sqrtRaw = (tick) => Math.sqrt(1.0001 ** tick);
 
-// L seragam setara untuk isi (a0, a1) di rentang [tl, tu) pada √harga s (mentah).
+// Equivalent uniform L for contents (a0, a1) over the range [tl, tu) at √price s (raw).
 function uniformL(a0, a1, tl, tu, s) {
   const sa = sqrtRaw(tl), sb = sqrtRaw(tu), c = Math.max(sa, Math.min(sb, s));
-  const v1 = Number(a1) + Number(a0) * s * s;                  // nilai dalam Y
-  const per = (c - sa) + s * s * (1 / c - 1 / sb);              // nilai per 1 L
+  const v1 = Number(a1) + Number(a0) * s * s;                  // value in Y
+  const per = (c - sa) + s * s * (1 / c - 1 / sb);              // value per 1 L
   return per > 0 ? v1 / per : 0;
 }
 
@@ -45,11 +45,11 @@ async function poolDepthSol({ rpc, chain, store, engine }, ref) {
     const Ls = new Map();
     for (const b of bins) {
       const { tickLower: tl, tickUpper: tu } = u.binRangeToTicks(b.bin, b.bin, pool.binStep);
-      const p = (1 + pool.binStep / 10_000) ** b.bin;              // Y per X mentah
+      const p = (1 + pool.binStep / 10_000) ** b.bin;              // raw Y per X
       const den = sqrtRaw(tu) - sqrtRaw(tl);
       Ls.set(b.bin, den > 0 ? (Number(b.y) + Number(b.x) * p) / den : 0);
     }
-    // Batas tiap bin: net = L bin ini − L bin di bawahnya.
+    // Each bin boundary: net = this bin's L − the L of the bin below.
     let prev = 0;
     const lo = bins[0]?.bin ?? pool.current, hi = bins[bins.length - 1]?.bin ?? pool.current;
     for (let b = lo; b <= hi + 1; b++) {
@@ -71,7 +71,7 @@ async function poolDepthSol({ rpc, chain, store, engine }, ref) {
     L = BigInt(pool.liquidity ?? 0n);
   }
 
-  // Posisi kita & target di pool ini, dibaca live.
+  // Our & the target's positions in this pool, read live.
   const own = store.all("SELECT * FROM positions WHERE chain=? AND pool_ref=? AND status='open' AND token_id IS NOT NULL", chain.network, ref);
   const watched = store.all("SELECT w.*, t.label FROM wpositions w JOIN targets t ON t.address=w.wallet AND t.chain=w.chain WHERE w.chain=? AND w.pool_ref=? AND w.status='open'", chain.network, ref);
   const req = new Map();
@@ -98,7 +98,7 @@ async function poolDepthSol({ rpc, chain, store, engine }, ref) {
     }
   }
 
-  // Saldo token dasar di wallet target (skenario "jual juga yang di wallet").
+  // Base token balance in the target's wallet (the "also sell what is in the wallet" scenario).
   const base = q === 0 ? pool.token1 : pool.token0, dec = q === 0 ? pool.dec1 : pool.dec0;
   const walletBalances = [];
   let missingWallets = false;
@@ -117,7 +117,7 @@ async function poolDepthSol({ rpc, chain, store, engine }, ref) {
     dec0: pool.dec0, dec1: pool.dec1, quoteSide: q, quoteUsd: chain.QUOTES[qt].kind === 'eth' ? engine.ethUsd : 1,
     buyFee: fee, sellFee: fee, hook: false,
     positions, missingPositions, walletBalances, missingWallets, targetScope: 'watched_positions',
-    // Fee DLMM = fee dasar + fee variabel yang naik saat volatil.
+    // DLMM fee = base fee + a variable fee that rises with volatility.
     dynamicFee: venue === 'meteora', venue,
   };
 }

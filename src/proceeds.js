@@ -245,7 +245,7 @@ class Proceeds {
     await this.allocate(wallet, token, lots, { first, pre, known, ethUsd, head });
   }
 
-  // Saldo token sebelum lot pertama (butuh node arsip; tanpa itu nol).
+  // Token balance before the first lot (needs an archive node; zero without one).
   async preBalance(wallet, token, first) {
     if (!this.rpc.hasArchive()) return 0n;
     try {
@@ -254,7 +254,7 @@ class Proceeds {
     } catch (e) { this.log(`saldo awal ${token.slice(0, 10)} gagal: ${e.message}`); return 0n; }
   }
 
-  // Transfer token keluar (→ wsales) dan masuk dari luar posisi (→ wflows) di [lo, hi].
+  // Token transfers out (→ wsales) and in from outside positions (→ wflows) within [lo, hi].
   async scanTransfers(wallet, token, lo, hi, { ethUsd, known, seenTx, lpTx }) {
     const logs = await getLogsSafe(this.rpc, { address: token, topics: [TOPIC.transfer, pad32(wallet)] }, lo, hi);
     const outOf = new Map();

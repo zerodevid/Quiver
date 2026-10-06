@@ -1,28 +1,27 @@
 'use strict';
-// Rencana entry Solana. Aturannya SAMA dengan policy.js (bentuk rules, filter, plafon,
-// sisi tunggal, mode rentang) — yang beda cara mengukur: policy EVM menskala L posisi
-// v3, di sini ukuran dinyatakan dalam NILAI (USD), karena "L" DLMM (jumlah saham bin)
-// tidak bisa dibandingkan dengan L pool lain dan tidak bisa dipakai menghitung jumlah
-// token lewat rumus v3.
+// Solana entry plan. The rules are THE SAME as policy.js (rules shape, filters, caps,
+// one-sided, range modes) — what differs is how size is measured: the EVM policy scales a v3
+// position's L, here size is expressed as VALUE (USD), because DLMM "L" (bin shares) cannot
+// be compared with another pool's L nor used to compute token amounts through the v3 formula.
 //
-//   mirror      : nilai = nilai yang ditambahkan target
-//   pct         : pct% dari itu
+//   mirror      : value = the value the target added
+//   pct         : pct% of that
 //   multiplier  : ×multiplier
-//   fixed_quote : nominal tetap (fixed_quote_usd; pool berkuotasi SOL: fixed_quote_eth SOL)
+//   fixed_quote : a fixed amount (fixed_quote_usd; SOL-quoted pools: fixed_quote_eth SOL)
 //
-// Komposisi token: kalau rentang kita = rentang target (mode exact), jumlah token yang
-// BENAR-BENAR disetor target diskala — pembagian X/Y-nya ikut persis (termasuk bentuk
-// strategi DLMM). Kalau rentangnya lain, pembagian dihitung dari harga sekarang.
+// Token composition: when our range = the target's range (exact mode), the token amounts the
+// target ACTUALLY deposited are scaled — its X/Y split follows exactly. When the range
+// differs, the split is computed from the current price (and the DLMM shape, see share0).
 const m = require('../v3math');
 const u = require('./units');
 const { planRange, quoteToUsd } = require('../policy');
 const { shapeWeight, resolveStrategy, strategyLabel } = require('./dlmm-shape');
 
 const BRIDGE_MARGIN_BPS = 100;
-// Orca & Raydium: batas tick program (lebih sempit dari Uniswap).
+// Orca & Raydium: the program's tick bounds (narrower than Uniswap's).
 const CLMM_MAX_TICK = 443636;
 
-// Bagian nilai (0..1) yang berada di token0 untuk rentang [tl, tu) di harga sekarang.
+// Share of value (0..1) held in token0 for the range [tl, tu) at the current price.
 function share0(venue, pool, tl, tu, lowerNative, upperNative, strategy = 'spot') {
   if (venue === 'meteora') {
     // Bins above the active bin hold X only, bins below Y only, the active bin half of
@@ -46,10 +45,10 @@ function share0(venue, pool, tl, tu, lowerNative, upperNative, strategy = 'spot'
   return v0 + v1 > 0 ? v0 / (v0 + v1) : 0.5;
 }
 
-// Jumlah mentah token0/1 untuk nilai `quoteAmt` (satuan aset kuotasi pool).
+// Raw token0/1 amounts for the value `quoteAmt` (in the pool's quote asset units).
 function amountsForValue(pool, q, quoteAmt, s0) {
   const p = u.priceFromSqrtX96(pool.sqrtX96, pool.dec0, pool.dec1);   // token1 per token0
-  // nilai dalam token1: token1 = kuotasi → langsung; token0 = kuotasi → ×p
+  // value in token1: token1 = quote → as is; token0 = quote → ×p
   const inT1 = q.side === 1 ? quoteAmt : quoteAmt * p;
   const v0 = inT1 * s0, v1 = inT1 * (1 - s0);
   const a0 = p > 0 ? v0 / p : 0;
@@ -64,7 +63,7 @@ function valueQuote(chain, pool, a0, a1) {
 }
 
 /**
- * act: aksi target (watcher.actFromRow). ctx: { chain, rules, pool, ethUsd, openExposureUsd,
+ * act: the target action (watcher.actFromRow). ctx: { chain, rules, pool, ethUsd, openExposureUsd,
  * spentTodayUsd, openCount, cash: {usd, sol}|null, existingUsd }
  */
 function planEntrySol(act, ctx) {
@@ -87,7 +86,7 @@ function planEntrySol(act, ctx) {
   const adding = ctx.existingUsd != null;
   if (!adding && ctx.openCount >= rules.filters.max_open_positions) return skip('jumlah posisi terbuka sudah mentok');
 
-  // ---- rentang (dihitung di ruang tick setara, lalu ke satuan asli venue) ----
+  // ---- range (computed in equivalent tick space, then to the venue's native units) ----
   const adapter = chain.adapter(act.venue);
   const exact = rules.range.mode === 'exact' && act.lower != null && act.upper != null;
   let lower, upper, tl, tu;
@@ -117,7 +116,7 @@ function planEntrySol(act, ctx) {
   const sameRange = exact && Number(act.lower) === lower && Number(act.upper) === upper;
   const strategy = act.venue === 'meteora' ? resolveStrategy(rules.range.dlmm_strategy, act.ext?.strategy) : null;
 
-  // ---- ukuran ----
+  // ---- size ----
   const s = rules.sizing;
   let usd;
   if (s.mode === 'mirror') usd = targetUsd;
@@ -135,7 +134,7 @@ function planEntrySol(act, ctx) {
   limits.push(['sisa jatah eksposur total', Math.max(0, s.max_total_exposure_usd - ctx.openExposureUsd)]);
   limits.push(['sisa anggaran harian', Math.max(0, s.daily_budget_usd - ctx.spentTodayUsd)]);
   if (ctx.cash) {
-    // Kas di aset kuotasi LAIN harus ditukar dulu (Jupiter) — ruang slippage + margin.
+    // Cash in ANOTHER quote asset must be swapped first (Jupiter) — room for slippage + margin.
     const solUsd = ctx.cash.sol * ethUsd;
     const [same, oth] = q.kind === 'eth' ? [solUsd, ctx.cash.usd] : [ctx.cash.usd, solUsd];
     const bridge = 1 + (rules.swap.max_slippage_bps + BRIDGE_MARGIN_BPS) / 10000;
@@ -156,7 +155,7 @@ function planEntrySol(act, ctx) {
     usd = s.force_min_usd;
   }
 
-  // ---- jumlah token ----
+  // ---- token amounts ----
   const quoteAmt = q.kind === 'eth' ? usd / ethUsd : usd;
   let amount0, amount1;
   const t0 = BigInt(act.amount0 || '0'), t1 = BigInt(act.amount1 || '0');

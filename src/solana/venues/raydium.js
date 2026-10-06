@@ -1,8 +1,8 @@
 'use strict';
-// Adapter Raydium CLMM. Seperti Orca: tick 1.0001, sqrtPriceX64, L bermakna sama.
-// Posisi = NFT (SPL atau Token-2022); PDA "personal position" diturunkan dari mint NFT.
-// Enumerasi & state dibaca langsung dengan layout SDK (satu getMultipleAccounts per
-// kelompok); SDK Raydium hanya dipakai untuk menyusun instruksi transaksi.
+// Raydium CLMM adapter. Like Orca: 1.0001 ticks, sqrtPriceX64, L means the same.
+// Positions = NFTs (SPL or Token-2022); the "personal position" PDA is derived from the NFT mint.
+// Enumeration & state are read directly with the SDK layouts (one getMultipleAccounts per
+// group); the Raydium SDK is only used to build transaction instructions.
 const { PublicKey } = require('@solana/web3.js');
 const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = require('@solana/spl-token');
 const BN = require('bn.js');
@@ -21,8 +21,8 @@ class RaydiumVenue {
   constructor({ rpc, log }) {
     this.key = 'raydium'; this.program = PROGRAM; this.rpc = rpc; this.log = log || console.log;
     this.nativeIsBin = false;
-    this.feeRates = new Map();   // configId -> tradeFeeRate (tidak berubah)
-    this.sdk = new Map();        // owner -> instans Raydium (pembangun transaksi)
+    this.feeRates = new Map();   // configId -> tradeFeeRate (never changes)
+    this.sdk = new Map();        // owner -> Raydium instance (transaction builder)
   }
 
   async multi(addrs) {
@@ -57,7 +57,7 @@ class RaydiumVenue {
         fee: rate(b58(d.configId)), tickSpacing: d.tickSpacing,
         liquidity: big(d.liquidity),
         feeGrowthGlobalA: big(d.feeGrowthGlobalX64A), feeGrowthGlobalB: big(d.feeGrowthGlobalX64B),
-        // bit 1 status = buka/tutup posisi dinonaktifkan
+        // status bit 1 = opening/closing positions disabled
         enabled: (Number(d.status) & 0b1) === 0,
       });
     });
@@ -83,7 +83,7 @@ class RaydiumVenue {
     };
   }
 
-  // NFT (jumlah 1, desimal 0) milik wallet di kedua program token -> PDA posisi.
+  // NFTs (amount 1, 0 decimals) held by the wallet in both token programs -> position PDAs.
   async listPositions(owner) {
     const own = new PublicKey(owner);
     const mints = [];
@@ -103,8 +103,8 @@ class RaydiumVenue {
     return found.map(({ id, p }) => ({ ...this.norm(id, p, pools.get(b58(p.poolId))), owner }));
   }
 
-  // Tick terinisialisasi (liquidityNet) di [start, end] untuk kurva kedalaman pool
-  // (solana/pool-depth.js). Satu tick array = 60 tick × spacing.
+  // Initialised ticks (liquidityNet) in [start, end] for the pool depth curve
+  // (solana/pool-depth.js). One tick array = 60 ticks × spacing.
   async depth(pool, start, end) {
     const span = TICKS_PER_ARRAY * pool.spacing;
     const addrs = [];
@@ -171,9 +171,9 @@ class RaydiumVenue {
     return out;
   }
 
-  // ---- transaksi ------------------------------------------------------------
-  // Instans SDK per (wallet, endpoint): ia mengikat Connection tempat dibuat, jadi satu
-  // build berjalan utuh di satu endpoint dan rpc.run bisa mengulangnya di endpoint lain.
+  // ---- transactions ---------------------------------------------------------
+  // SDK instance per (wallet, endpoint): it binds the Connection it was created on, so one
+  // build runs whole on one endpoint and rpc.run can retry it on another.
   async raydiumOn(owner, conn) {
     const key = `${owner}|${conn.rpcEndpoint}`;
     let r = this.sdk.get(key);
@@ -182,17 +182,17 @@ class RaydiumVenue {
         connection: conn, owner: new PublicKey(owner), cluster: 'mainnet',
         disableLoadToken: true, disableFeatureCheck: true, blockhashCommitment: 'confirmed',
       });
-      // Tanpa langganan websocket perubahan akun (satu soket per instans, tidak dipakai).
+      // No websocket subscription to account changes (one socket per instance, unused).
       r.account.notSubscribeAccountChange = true;
       this.sdk.set(key, r);
     }
-    // Akun token wallet berubah tiap transaksi; SDK memakainya untuk memilih ATA.
+    // The wallet's token accounts change with every transaction; the SDK uses them to pick the ATA.
     r.account.resetTokenAccounts();
     return r;
   }
   on(owner, fn) { return this.rpc.run(async (c) => fn(await this.raydiumOn(owner, c))); }
 
-  // Hasil MakeTxData SDK -> satu grup instruksi (+ lookup table yang diminta pool).
+  // SDK MakeTxData result -> one instruction group (+ the lookup tables the pool asks for).
   static group(res) {
     const d = res.builder.AllTxData;
     return {
@@ -228,9 +228,9 @@ class RaydiumVenue {
     };
   }
 
-  // Basis = sisi yang MENGIKAT likuiditas (L terkecil dari keduanya): dengan basis itu
-  // kebutuhan sisi lain pasti ≤ jumlah yang kita pegang. Memilih sisi yang salah =
-  // program menuntut sisi lain melebihi otherAmountMax dan transaksinya gagal.
+  // Base = the side that BINDS the liquidity (the smaller L of the two): with that base the
+  // other side's requirement is surely ≤ what we hold. Picking the wrong side = the program
+  // demands more of the other side than otherAmountMax and the transaction fails.
   async baseSide(pool, lo, hi, a0, a1) {
     if (a0 === 0n) return 'MintB';
     if (a1 === 0n) return 'MintA';
@@ -265,11 +265,11 @@ class RaydiumVenue {
     return R.PersonalPositionLayout.decode(info.data);
   }
 
-  // Tarik L tertentu (0 = cuma klaim fee); close = tarik semua + bakar NFT posisi.
+  // Withdraw a given L (0 = only claim fees); close = withdraw everything + burn the position NFT.
   async buildDecrease({ pool, position, liquidity, close, slippageBps, owner }) {
     const pos = await this.ownerPosition(position);
     const L = close ? big(pos.liquidity) : BigInt(String(liquidity));
-    // Batas bawah jumlah: nilai tarik di harga kini dikurangi slippage.
+    // Lower bound on amounts: the withdrawal value at the current price minus slippage.
     let min0 = 0n, min1 = 0n;
     if (L > 0n) {
       const st = (await this.pools([pool])).get(pool);

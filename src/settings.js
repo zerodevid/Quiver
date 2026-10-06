@@ -138,8 +138,8 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
     return n ? { error: `Diatur lewat ${n} di .env — ubah di berkas itu lalu restart.` } : null;
   };
   const exec = engine.exec;
-  // Solana: kunci ed25519 terpisah (~/.lpcopy/solana-key, LPCOPY_SOLANA_PRIVATE_KEY) —
-  // dibuat/diimpor/dilepas lewat rute yang sama, dengan bentuk kunci Solana.
+  // Solana: a separate ed25519 key (~/.lpcopy/solana-key, LPCOPY_SOLANA_PRIVATE_KEY) —
+  // created/imported/detached through the same routes, in the Solana key form.
   const SOL = chain.kind === 'solana';
   const sol = SOL ? require('./solana/wallet') : null;
   const keyFromEnv = () => (SOL ? sol.solanaKeyFromEnv() : privateKeyFromEnv());
@@ -377,8 +377,8 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       const live = refuseIfLive(); if (live) return live;
       if (fs.existsSync(exec.keyPath()) && !b.replace) return { error: 'Sudah ada kunci. Centang "ganti kunci yang ada" untuk menggantinya (kunci lama dicadangkan).' };
       if (SOL) {
-        // Kunci Solana tanpa frasa pemulihan: berkasnya sendiri adalah cadangannya
-        // (base58 — bisa diimpor ke Phantom/Solflare).
+        // A Solana key has no recovery phrase: its file is its own backup
+        // (base58 — importable into Phantom/Solflare).
         const kp = require('@solana/web3.js').Keypair.generate();
         return { ok: true, ...writeKey(require('bs58').default.encode(kp.secretKey)) };
       }

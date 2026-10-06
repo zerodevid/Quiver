@@ -1,8 +1,8 @@
 'use strict';
-// Posisi milik kita di Solana. Pembukuan (record/markClosed/markDecreased, sisa token,
-// ringkasan, pemicu keluar, pagar harga markFor) diwarisi utuh dari Positions — yang
-// diganti hanya cara MEMBACA chain: likuiditas, jumlah token, dan fee per posisi lewat
-// adapter venue, bukan eth_call ke PositionManager.
+// Our own positions on Solana. Bookkeeping (record/markClosed/markDecreased, leftover tokens,
+// summary, exit triggers, the markFor price guard) is inherited whole from Positions — only
+// how the chain is READ changes: liquidity, token amounts and fees per position through the
+// venue adapter, not eth_call to the PositionManager.
 const { Positions } = require('../positions');
 const { usdPerQuote } = require('../policy');
 
@@ -14,7 +14,7 @@ class SolanaPositions extends Positions {
 
   static extOf(r) { try { return JSON.parse(r.ext || '{}') || {}; } catch { return {}; } }
 
-  // Posisi dicatat dengan data asli venue (rentang bin/tick, mint NFT) di kolom ext.
+  // Positions are recorded with the venue's native data (bin/tick range, NFT mint) in the ext column.
   record(plan, info) {
     const id = super.record(plan, info);
     const ext = { lower: plan.lower, upper: plan.upper, binStep: plan.binStep ?? null, ...(info.ext || {}) };
@@ -22,7 +22,7 @@ class SolanaPositions extends Positions {
     return id;
   }
 
-  // Alamat Solana peka huruf — tidak di-lowercase seperti versi EVM.
+  // Solana addresses are case-sensitive — not lower-cased like the EVM version.
   leftoverRows(token = null) {
     return this.store.all(`SELECT id, token0, token1, pool_ref, venue, quote_symbol, left_token, left_amount, left_quote, out_quote,
         entry_sqrt, exit_sqrt, liquidity, cost0, cost1, tick_lower, tick_upper
@@ -30,10 +30,10 @@ class SolanaPositions extends Positions {
     this.chain.network, ...(token ? [String(token)] : []));
   }
 
-  // Baca posisi terbuka lewat adapter, dikelompokkan per venue.
-  // Balikan Map id-posisi-kita -> posisi ternormalisasi | null (akun sudah tidak ada).
-  // Venue yang gagal dibaca: posisinya TIDAK ada di peta (≠ null) — pemanggil
-  // memperlakukannya sebagai basi, bukan kosong.
+  // Read open positions through the adapters, grouped by venue.
+  // Returns Map our-position-id -> normalised position | null (the account no longer exists).
+  // A venue that failed to read: its positions are NOT in the map (≠ null) — the caller
+  // treats them as stale, not empty.
   async readChain(rows) {
     const out = new Map();
     const byVenue = new Map();
@@ -57,7 +57,7 @@ class SolanaPositions extends Positions {
     if (!rows.length) { this.live = []; this.lastSync = Date.now(); return []; }
     const chainPos = await this.readChain(rows);
 
-    // state pool per venue
+    // pool state per venue
     const poolBy = new Map();
     const byVenue = new Map();
     for (const r of rows) if (this.chain.isSolVenue(r.venue)) (byVenue.get(r.venue) || byVenue.set(r.venue, new Set()).get(r.venue)).add(r.pool_ref);
@@ -73,8 +73,8 @@ class SolanaPositions extends Positions {
     for (const r of rows) {
       const st = poolBy.get(r.pool_ref) || null;
       const cp = chainPos.get(r.id);
-      const stale = cp === undefined;          // tidak terbaca
-      const gone = cp === null;                // akun posisi sudah tidak ada
+      const stale = cp === undefined;          // unreadable
+      const gone = cp === null;                // the position account no longer exists
       const L = stale ? BigInt(r.liquidity || '0') : gone ? 0n : BigInt(cp.liquidity);
       const d0 = metaBy.get(r.token0)?.decimals ?? st?.dec0 ?? 9;
       const d1 = metaBy.get(r.token1)?.decimals ?? st?.dec1 ?? 9;
@@ -116,7 +116,7 @@ class SolanaPositions extends Positions {
         pnlPct: costUsd > 0 ? (pnlUsd / costUsd) * 100 : 0,
         ilUsd: hodl != null && valueQuote != null ? toUsd(valueQuote) - toUsd(hodl) : null,
         ageHours: (Date.now() - (r.opened_ts || Date.now())) / 3600000,
-        // Kosong hanya kalau chain BENAR-BENAR menjawab: akun hilang atau L nol.
+        // Empty only when the chain REALLY answered: the account is gone or L is zero.
         empty: !stale && L === 0n,
         liqStale: stale, valueStale,
         ext: SolanaPositions.extOf(r),
@@ -127,8 +127,8 @@ class SolanaPositions extends Positions {
     return out;
   }
 
-  // Dibaca ulang tersendiri sebelum posisi ditutup di database. Posisi yang baru dibuka
-  // (< 2 menit) tidak dipercaya kosong: node yang tertinggal belum melihat akunnya.
+  // Re-read on its own before a position is closed in the database. A freshly opened position
+  // (< 2 minutes) is not trusted to be empty: a lagging node may not see its account yet.
   async confirmEmpty(pos) {
     try {
       if (Date.now() - (pos.opened_ts || 0) < 120_000) return false;
@@ -139,8 +139,8 @@ class SolanaPositions extends Positions {
     } catch { return false; }
   }
 
-  // Nilai token sisa di harga Jupiter (agregat semua pool — lebih tahan terhadap satu
-  // pool yang sudah disapu kosong). Token yang berkurang di luar bot dianggap terjual.
+  // Value of leftover tokens at the Jupiter price (aggregated over all pools — more robust
+  // against one pool that was swept empty). Tokens that shrank outside the bot are taken as sold.
   async refreshLeftovers(ethUsd) {
     let rows = this.leftoverRows();
     let usd = 0, closeUsd = 0;

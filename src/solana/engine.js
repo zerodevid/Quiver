@@ -1,15 +1,14 @@
 'use strict';
-// Mesin copy-LP Solana. Antarmuka luarnya sama dengan Engine EVM (index.js, dasbor, dan
-// bot Telegram memanggil tick/syncPositions/snapshotEquity/retryLeftovers, dryRun,
-// paused, positions.*, exec.address, ethUsd, …) dan ia menulis tabel yang sama
-// (actions, decisions, positions, txs, equity) — jadi dasbor dan Telegram menampilkan
-// posisi Solana tanpa cabang khusus.
+// The Solana copy-LP engine. Its outer interface is the same as the EVM Engine (index.js, the
+// dashboard and the Telegram bot call tick/syncPositions/snapshotEquity/retryLeftovers, dryRun,
+// paused, positions.*, exec.address, ethUsd, …) and it writes the same tables
+// (actions, decisions, positions, txs, equity) — so the dashboard and Telegram show
+// Solana positions without a special branch.
 //
-// Bagian yang tidak bergantung pada chain (keputusan, jeda, breaker drawdown, antrean
-// masuk/keluar, anggaran harian, antrean token sisa, ekuitas, kabar) DIPINJAM langsung
-// dari Engine.prototype — satu sumber kebenaran untuk aturan yang sama. Yang ditulis
-// ulang di sini: pemindaian (watcher Solana), eksekusi masuk/keluar lewat adapter
-// venue + Jupiter, dan kas (SOL/wSOL/USDC/USDT).
+// The chain-independent parts (decisions, pause, drawdown breaker, entry/exit queues, daily
+// budget, leftover token queue, equity, news) are BORROWED straight from Engine.prototype —
+// one source of truth for the same rules. Rewritten here: scanning (the Solana watcher),
+// entry/exit execution through the venue adapters + Jupiter, and cash (SOL/wSOL/USDC/USDT).
 const { Engine } = require('../engine');
 const { rulesFor, planExit, quoteToUsd, usdPerQuote } = require('../policy');
 const m = require('../v3math');
@@ -27,7 +26,7 @@ const fmtPct = (x) => (x >= 1000 ? '999+' : x.toFixed(0));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const minB = (a, b) => (a < b ? a : b);
 
-// Metode Engine yang murni aturan/pembukuan — dipakai apa adanya.
+// Engine methods that are pure rules/bookkeeping — used as is.
 const BORROWED = [
   'sk', 'rulesFrom', 'trouble', 'cleared', 'dryRun', 'paused', 'setPaused',
   'maxDailyDrawdownPct', 'dayKey', 'updateDrawdown', 'drawdownTripped', 'drawdownStatus',
@@ -62,10 +61,10 @@ class SolanaEngine {
     this.stats = { scanned: 0, actions: 0, copied: 0, skipped: 0, errors: 0, startedAt: Date.now() };
     this.lastError = null;
     this.cash = null; this.cashSeq = -1;
-    // Setoran/penarikan → modal wallet & PnL bersih (tabel dan rumus sama dengan EVM).
+    // Deposits/withdrawals → wallet capital & net PnL (same tables and formula as EVM).
     this.capital = new (require('./capital').SolanaCapital)({ engine: this, rpc, store, chain, cfg, log: this.log });
-    // Panen fee otomatis: pengaturan & jadwal sama dengan EVM (src/compound.js),
-    // transaksinya lewat adapter venue (src/solana/compound.js).
+    // Automatic fee harvesting: settings & schedule as on EVM (src/compound.js), the
+    // transactions through the venue adapters (src/solana/compound.js).
     this.compound = new (require('./compound').SolanaCompound)(this);
   }
 
@@ -73,7 +72,7 @@ class SolanaEngine {
   get label() { return this.chain.label; }
   static isExitKind(kind) { return Engine.isExitKind(kind); }
 
-  // ---- mulai ------------------------------------------------------------------
+  // ---- start --------------------------------------------------------------------
   async init() {
     const addr = this.exec.address();
     if (addr) this.store.setState(this.sk('wallet_address'), addr);
@@ -85,7 +84,7 @@ class SolanaEngine {
     await this.backfillDecisions();
   }
 
-  // Aksi tercatat tanpa keputusan (proses mati di tengah). LIVE: yang basi dilewati.
+  // Actions recorded without a decision (the process died midway). LIVE: stale ones are skipped.
   async backfillDecisions() {
     const stale = (this.cfg.loop?.stale_action_seconds ?? 300) * 1000;
     const rows = this.store.all(`SELECT a.* FROM actions a LEFT JOIN decisions d ON d.action_id = a.id
@@ -96,8 +95,8 @@ class SolanaEngine {
     }
   }
 
-  // Posisi LP milik wallet kita yang belum tercatat (dibuka manual / proses mati sebelum
-  // sempat mencatat) diadopsi: modal = nilai sekarang (tidak diketahui berapa awalnya).
+  // LP positions owned by our wallet that are not recorded (opened by hand / the process died
+  // before recording) are adopted: capital = the current value (how much it started with is unknown).
   async adoptOwnPositions(addr) {
     const known = new Set(this.store.all('SELECT token_id FROM positions WHERE chain=? AND token_id IS NOT NULL', this.network).map((r) => r.token_id));
     for (const [venue, a] of Object.entries(this.chain.adapters)) {
@@ -109,12 +108,12 @@ class SolanaEngine {
         if (!st) continue;
         const v = this.chain.valueInQuote({ sqrtPriceX96: st.sqrtX96, amount0: p.amount0, amount1: p.amount1, dec0: st.dec0, dec1: st.dec1, token0: st.token0, token1: st.token1 });
         const q = this.chain.quoteSideOf(st.token0, st.token1);
-        // Posisi yang dibuka bot tapi belum sempat dibukukan (proses mati di tengah):
-        // ditautkan lagi ke target & aksi asalnya, modalnya isi posisi sebenarnya.
+        // A position the bot opened but did not get to book (the process died midway):
+        // linked again to its target & originating action, its capital = the actual contents.
         const pkey = this.sk(`sol_pending_entry:${p.id}`);
         let pend = null;
         try { pend = JSON.parse(this.store.getState(pkey) || 'null'); } catch { pend = null; }
-        // Entry yang masih berjalan membukukan posisinya sendiri — jangan diadopsi dobel.
+        // An entry still running books its own position — do not adopt it twice.
         if (pend && (this.activeEntries || 0) > 0) continue;
         if (pend) {
           const id = this.positions.record({ ...pend.plan, liquidity: String(p.liquidity), amount0: String(p.amount0), amount1: String(p.amount1), tickLower: p.tickLower, tickUpper: p.tickUpper, lower: p.lower, upper: p.upper },
@@ -133,7 +132,7 @@ class SolanaEngine {
     }
   }
 
-  // ---- satu putaran pemindaian ---------------------------------------------------
+  // ---- one scanning round -------------------------------------------------------
   async tick() {
     if (this.stopping) return;
     // A tick still running is usually just slow; past the limit it is released (Engine.unwedge)
@@ -182,7 +181,7 @@ class SolanaEngine {
     return age > max ? `sinyal masuk sudah ${Math.round(age / 60000)} menit — terlalu basi untuk disalin` : null;
   }
 
-  // ---- masuk ------------------------------------------------------------------
+  // ---- entry ------------------------------------------------------------------
   async handleEntry(act, rules) {
     const stale = await this.staleEntry(act);
     if (stale) return this.decide(act.id, 'skip', stale);
@@ -195,7 +194,7 @@ class SolanaEngine {
       try {
         const age = await this.chain.poolAgeMinutes(act.poolRef);
         if (age < rules.filters.min_pool_age_minutes) return this.decide(act.id, 'skip', `pool baru ${age.toFixed(0)} menit (< ${rules.filters.min_pool_age_minutes})`);
-      } catch { /* kalau tidak terbaca, jangan halangi — sama dengan EVM */ }
+      } catch { /* unreadable: do not block — same as EVM */ }
     }
     const pool = await this.chain.pool(act.venue, act.poolRef, { maxAgeMs: 0 });
     const sum = this.positions.summary(this.ethUsd);
@@ -219,8 +218,8 @@ class SolanaEngine {
 
     const far = rules.exit.out_of_range_pct > 0 ? m.distanceFromRangePct(pool.tick, d.plan.tickLower, d.plan.tickUpper) : 0;
     if (far > rules.exit.out_of_range_pct) {
-      // Sama dengan EVM: kalau buka-lagi menyala, posisi target dipantau dan cermin dibuka
-      // begitu harga mendekat.
+      // As on EVM: when re-entry is on, the target position is watched and the mirror opened
+      // once the price comes close.
       const watch = this.watchReentry(act, rules, { why: 'ditunda', actionId: act.id });
       return this.decide(act.id, 'skip', `rentang ${fmtPct(far)}% dari harga (batas ${rules.exit.out_of_range_pct}%) — ${
         watch ? `ditunda; dibuka begitu harga ≤ ${watch.nearPct}% dari rentang dan target masih di dalam` : 'tidak disalin'}`);
@@ -230,7 +229,7 @@ class SolanaEngine {
       d.reason = `${d.reason} (menambah posisi #${mirror.id})`;
     }
     if (this.dryRun() || !this.exec.address()) {
-      // Ada wallet: transaksi entry disimulasikan di mainnet (tanpa dikirim), seperti EVM.
+      // With a wallet: the entry transaction is simulated on mainnet (not sent), as on EVM.
       const sim = this.exec.address() ? await this.simulateEntry(d.plan).catch((e) => ({ ok: false, error: e.message })) : null;
       const note = sim ? (sim.ok ? `simulasi OK (${sim.cu} CU)` : `simulasi GAGAL: ${String(sim.error).slice(0, 160)}`) : 'tanpa wallet';
       return this.decide(act.id, 'dry', `${d.reason} — ${note}`, d.plan);
@@ -252,8 +251,8 @@ class SolanaEngine {
     } finally { this.activeEntries--; }
   }
 
-  // Simulasi transaksi entry (mode simulasi dengan wallet): susun lewat adapter dengan
-  // jumlah rencana, lalu simulateTransaction — tidak ada yang dikirim.
+  // Simulate the entry transaction (dry run with a wallet): built through the adapter with the
+  // planned amounts, then simulateTransaction — nothing is sent.
   async simulateEntry(plan) {
     const ad = this.chain.adapter(plan.venue);
     const owner = this.exec.address();
@@ -263,8 +262,8 @@ class SolanaEngine {
     return this.exec.simulateGroups(built.groups);
   }
 
-  // Catatan entry tertunda yang posisinya tidak pernah muncul (tx tidak masuk) dibuang
-  // sesudah 30 menit.
+  // Pending entry notes whose position never appeared (the tx did not land) are dropped
+  // after 30 minutes.
   prunePendingEntries() {
     for (const r of this.store.all("SELECT k, v FROM state WHERE k LIKE 'sol_pending_entry:%' AND k LIKE ?", `%:${this.network}`)) {
       let pend; try { pend = JSON.parse(r.v); } catch { pend = null; }
@@ -272,7 +271,7 @@ class SolanaEngine {
     }
   }
 
-  // Kas yang boleh dipakai: stablecoin (USDC+USDT) dan SOL (native + wSOL) di atas cadangan.
+  // Spendable cash: stablecoins (USDC+USDT) and SOL (native + wSOL) above the reserve.
   async spendableCash() {
     const b = await this.exec.balances();
     const reserve = this.exec.gasReserveCached();
@@ -282,8 +281,8 @@ class SolanaEngine {
     return { usd, sol: Number(sol) / 1e9 };
   }
 
-  // Tersedia untuk sebuah mint: wSOL dihitung bersama SOL native di atas cadangan (SDK
-  // venue membungkus SOL sendiri); mint lain = saldo akun token.
+  // Available for a mint: wSOL counted together with native SOL above the reserve (the venue
+  // SDKs wrap SOL themselves); any other mint = its token account balance.
   availOf(bal, mint) {
     if (mint === WSOL) {
       const all = (bal.get('SOL') || 0n) + (bal.get(WSOL) || 0n);
@@ -293,8 +292,8 @@ class SolanaEngine {
     return bal.get(mint) || 0n;
   }
 
-  // Sumber dana untuk membeli kekurangan senilai `usd`: aset kuotasi pool dulu, lalu kas
-  // lain (USDC/USDT/SOL). Balikan [mint, jumlah mentah] atau null.
+  // Funding source to buy a shortfall worth `usd`: the pool's quote asset first, then other
+  // cash (USDC/USDT/SOL). Returns [mint, raw amount] or null.
   fundSource(bal, usd, prefer) {
     const order = [prefer, this.chain.ADDR.usdg, this.chain.ADDR.usdt, WSOL].filter((x, i, a) => x && a.indexOf(x) === i);
     for (const mint of order) {
@@ -316,12 +315,12 @@ class SolanaEngine {
     const [t0, t1] = toks;
     let bal = await this.exec.balances();
     const balStart = new Map(bal);
-    const bought = new Map();   // mint -> jumlah yang dibeli entry ini (batas jual-kembali)
+    const bought = new Map();   // mint -> amount bought by this entry (cap for selling back)
     const want0 = BigInt(plan.amount0), want1 = BigInt(plan.amount1);
     const q = this.chain.quoteSideOf(plan.token0, plan.token1);
     const quoteMint = q.side === 0 ? plan.token0 : plan.token1;
 
-    // 1) beli kekurangan tiap sisi lewat Jupiter (tepat-masuk, dilebihkan slippage)
+    // 1) buy each side's shortfall through Jupiter (exact-in, padded by slippage)
     const slip = rules.swap.max_slippage_bps;
     const ad = this.chain.adapter(plan.venue);
     let built, sent, pre = null, a0 = 0n, a1 = 0n;
@@ -342,29 +341,29 @@ class SolanaEngine {
       bal = await this.balancesAfter(bal, mint, r.out);
     }
 
-    // 2) jumlah akhir: sebanding rencana, dibatasi yang benar-benar ada di wallet
+    // 2) final amounts: proportional to the plan, capped by what is really in the wallet
     const h0 = this.availOf(bal, plan.token0), h1 = this.availOf(bal, plan.token1);
     const f0 = want0 > 0n ? (h0 * 1_000_000n) / want0 : 1_000_000n, f1 = want1 > 0n ? (h1 * 1_000_000n) / want1 : 1_000_000n;
     const f = minB(1_000_000n, minB(f0, f1));
     a0 = (want0 * f) / 1_000_000n; a1 = (want1 * f) / 1_000_000n;
     if (a0 === 0n && a1 === 0n) throw new Error('jumlah token untuk posisi nol');
 
-    // 3) buka / tambah. Tambah: isi posisi dibaca TEPAT sebelum kirim — modal tambahan =
-    // isi sesudah − isi sebelum (potret sinkron bisa berumur 30 detik).
+    // 3) open / add. Add: the position contents are read RIGHT before sending — the added capital =
+    // contents after − contents before (the sync snapshot can be 30 seconds old).
     if (plan.action === 'increase') {
       pre = (await ad.getPositions([{ id: plan.tokenId, pool: plan.poolRef }], (mm) => this.chain.decimalsMap(mm))).get(plan.tokenId);
       if (!pre) throw new Error(`posisi #${plan.positionId} tidak terbaca dari chain`);
     }
-    // Galat di SIMULASI (belum ada yang terkirim) — biasanya harga bergeser melewati pita
-    // slippage di antara susun & eksekusi (Raydium PriceSlippageCheck, dst): susun ulang
-    // sekali di harga terbaru. Galat sesudah terkirim tidak diulang di sini.
+    // An error in SIMULATION (nothing sent yet) — usually the price moved past the slippage
+    // band between build & execution (Raydium PriceSlippageCheck, etc.): rebuild once at the
+    // latest price. Errors after sending are not retried here.
     for (let attempt = 1; ; attempt++) {
       try {
         built = plan.action === 'increase'
           ? await ad.buildIncrease({ pool: plan.poolRef, position: plan.tokenId, amount0: a0, amount1: a1, slippageBps: slip, owner, strategy: plan.strategy || null })
           : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: a0, amount1: a1, slippageBps: slip, owner, strategy: plan.strategy || 'spot' });
-        // Posisi baru dicatat "tertunda" sebelum dikirim: kalau proses mati sesudah tx
-        // masuk tapi sebelum dibukukan, adopsi berikutnya menautkannya lagi ke target.
+        // The new position is noted "pending" before sending: if the process dies after the tx
+        // lands but before booking, the next adoption links it to the target again.
         if (plan.action !== 'increase') {
           this.store.setState(this.sk(`sol_pending_entry:${built.position}`), JSON.stringify({ ts: Date.now(), target: act?.target ?? null, mirrorOf: plan.mirrorOf ?? null, plan: { ...plan, lower: built.native?.lower ?? plan.lower, upper: built.native?.upper ?? plan.upper } }));
         }
@@ -377,19 +376,19 @@ class SolanaEngine {
       }
     }
     } catch (e) {
-      // Galat di tengah (swap kedua, susun/kirim transaksi): token yang sudah terbeli
-      // untuk entry ini tidak boleh telantar.
+      // An error midway (second swap, building/sending the transaction): tokens already bought
+      // for this entry must not be stranded.
       await this.rescueTokens(bought, balStart, `entry gagal (${String(e.message).slice(0, 80)})`).catch(() => {});
       throw e;
     }
     const hash = sent.hashes[sent.hashes.length - 1] || null;
     if (!sent.ok) {
-      // Token yang sudah terbeli untuk posisi ini tidak boleh telantar: dijual lagi.
+      // Tokens already bought for this position must not be stranded: sold back.
       await this.rescueTokens(bought, balStart, `entry gagal (${hash || 'tx tidak masuk'})`);
       throw new Error(`transaksi ${plan.action} gagal${hash ? ` (${hash})` : ''}`);
     }
 
-    // 4) catat: modal = isi posisi sesungguhnya (dibaca ulang dari chain)
+    // 4) record: capital = the actual position contents (read again from the chain)
     const posId = plan.action === 'increase' ? plan.tokenId : built.position;
     let got = null;
     for (let i = 0; i < 5 && !got; i++) {
@@ -398,8 +397,8 @@ class SolanaEngine {
     }
     const pool = await this.chain.pool(plan.venue, plan.poolRef, { maxAgeMs: 0 }).catch(() => null);
     const sqrt = pool?.sqrtX96 ?? null;
-    // Modal dibukukan dalam satuan kuotasi baris: posisi baru = kuotasi rencana, tambah =
-    // kuotasi baris lama (lihat SolanaChain.valueAs).
+    // Capital is booked in the row's quote units: a new position = the plan's quote, an add =
+    // the old row's quote (see SolanaChain.valueAs).
     const rowSym = plan.action === 'increase' ? this.store.get('SELECT quote_symbol FROM positions WHERE id=?', plan.positionId)?.quote_symbol : plan.quoteSymbol;
     const val = (x0, x1) => (sqrt ? this.chain.valueAs({ sqrtPriceX96: sqrt, amount0: x0, amount1: x1, dec0: t0.decimals, dec1: t1.decimals, token0: plan.token0, token1: plan.token1 }, rowSym, this.ethUsd) : null);
     let positionId, cost0, cost1;
@@ -421,7 +420,7 @@ class SolanaEngine {
         { tokenId: posId, txHash: hash, target: act?.target ?? null, cost0, cost1, costQuote: val(cost0, cost1) ?? plan.valueQuote, entrySqrt: sqrt, ext: { ...(got?.ext || {}), ...(plan.strategy ? { strategy: plan.strategy } : {}) } });
     }
     if (plan.action !== 'increase') this.store.run('DELETE FROM state WHERE k=?', this.sk(`sol_pending_entry:${posId}`));
-    // Sisa token hasil tukar yang tidak masuk posisi (slippage / pembulatan) dijual lagi.
+    // Leftover tokens from the swaps that did not go into the position (slippage / rounding) are sold back.
     await this.rescueTokens(bought, balStart, null, { minUsd: 0.5 });
     const valueUsd = quoteToUsd(val(cost0, cost1) ?? plan.valueQuote, plan.quoteKind, this.ethUsd);
     const pair = `${t0.symbol}/${t1.symbol}`;
@@ -431,9 +430,9 @@ class SolanaEngine {
     };
   }
 
-  // Saldo sesudah swap. Endpoint lain bisa belum melihat tx yang baru terkonfirmasi:
-  // dibaca ulang sampai saldo mint yang dibeli benar-benar naik (≥ 90% hasil swap), maks
-  // ~6 detik. Dua bacaan basi yang SAMA bukan tanda sudah terbaru.
+  // Balances after a swap. Another endpoint may not see the just-confirmed tx yet: read again
+  // until the bought mint's balance really rises (≥ 90% of the swap output), at most
+  // ~6 seconds. Two IDENTICAL stale reads are not a sign of being up to date.
   async balancesAfter(before, mint, gained) {
     const need = this.availOf(before, mint) + (gained * 9n) / 10n;
     let b = null;
@@ -445,9 +444,9 @@ class SolanaEngine {
     return b;
   }
 
-  // ---- tukar (Jupiter) ---------------------------------------------------------------
-  // Dengan pagar rugi: nilai USD yang masuk vs keluar menurut harga Jupiter tidak boleh
-  // selisih lebih dari maxLossBps (dampak harga + fee rute). Balikan {hash, out}.
+  // ---- swap (Jupiter) ----------------------------------------------------------------
+  // With a loss guard: the USD value in vs out at Jupiter prices may not differ by more than
+  // maxLossBps (price impact + route fees). Returns {hash, out}.
   async swap(inMint, outMint, amount, { slippageBps = 100, maxLossBps = 500, kind = 'swap' } = {}) {
     const q = await this.chain.jup.quote(inMint, outMint, amount, { slippageBps });
     const [ti, to] = await this.chain.tokens([inMint, outMint]);
@@ -465,9 +464,9 @@ class SolanaEngine {
     const { tx, lastValidBlockHeight } = await this.chain.jup.swapTx(q, this.exec.address(), { maxPriorityLamports: Number(this.cfg.gas?.jupiter_max_priority_lamports ?? 2_000_000) });
     const r = await this.exec.sendVersioned(tx, { kind, lastValidBlockHeight, detail: { in: inMint, out: outMint, amountIn: String(amount), quoteOut: q.outAmount, usdIn, usdOut } });
     if (!r.ok) throw new Error(`swap ${ti.symbol}→${to.symbol} gagal (${r.hash})`);
-    // hasil sesungguhnya dari meta tx (bukan kutipan)
-    // Meta tx tidak terbaca (node tertinggal): pakai kutipan. Tanpa pagar ini keluaran
-    // ke SOL terbaca "0 + biaya" = 5000 lamport (ditemukan lewat simulasi mainnet).
+    // the actual output from the tx meta (not the quote)
+    // Tx meta unreadable (lagging node): use the quote. Without this guard an output
+    // to SOL reads as "0 + fee" = 5000 lamports (found through a mainnet simulation).
     let out = BigInt(q.outAmount);
     if (r.meta) {
       const dl = this.exec.deltas(r.meta);
@@ -478,9 +477,9 @@ class SolanaEngine {
     return { hash: r.hash, out, quoteOut: BigInt(q.outAmount), usdIn, usdOut };
   }
 
-  // Jual kembali token non-kuotasi yang DIBELI entry ini tapi tidak masuk posisi (entry
-  // gagal / kelebihan tukar). Yang dijual paling banyak min(dibeli, saldo kini − saldo
-  // sebelum entry) — token yang memang dipegang wallet sebelumnya tidak pernah disentuh.
+  // Sell back non-quote tokens this entry BOUGHT that did not go into the position (entry
+  // failed / over-swapped). At most min(bought, balance now − balance before the entry) is
+  // sold — tokens the wallet already held before are never touched.
   async rescueTokens(bought, balStart, why, { minUsd = 0 } = {}) {
     if (!bought.size) return;
     const rules = this.rulesFrom(null);
@@ -505,15 +504,15 @@ class SolanaEngine {
     }
   }
 
-  // ---- keluar -----------------------------------------------------------------------
+  // ---- exit -------------------------------------------------------------------------
   async handleExit(act, rules) {
     const pos = this.store.get("SELECT * FROM positions WHERE chain=? AND status='open' AND mirror_of=? AND target=? ORDER BY id LIMIT 1",
       this.network, act.tokenId ?? '', act.target);
     if (pos?.takeover_ts != null) return this.decide(act.id, 'skip', `posisi #${pos.id} dalam kendali manual — keluar target tidak diikuti`);
     const d = planExit(act, pos, { rules });
     if (d.verdict !== 'copy') return this.decide(act.id, 'skip', d.reason);
-    // Porsi yang bulat ke 0 bps tidak dikirim: dulu dipaksa 1 bps (0,01%) — lebih besar
-    // dari gerakan target yang remeh, dan tetap membayar biaya transaksi.
+    // A share that rounds to 0 bps is not sent: it used to be forced to 1 bps (0.01%) — larger
+    // than the target's trivial move, and still paying a transaction fee.
     if (!d.plan.full && (BigInt(d.plan.liquidity) * 10_000n) / BigInt(pos.liquidity || '1') === 0n) {
       return this.decide(act.id, 'skip', 'porsi tarik < 0,01% — terlalu kecil untuk dicermin');
     }
@@ -530,8 +529,8 @@ class SolanaEngine {
 
   pendingExitKey(id) { return this.sk(`sol_pending_exit:${id}`); }
 
-  // plan: {full, liquidity (L yang ditarik)}. `force` (tutup paksa dasbor) diterima demi
-  // antarmuka yang sama; di Solana tidak ada compound tertunda yang bisa menghalangi.
+  // plan: {full, liquidity (the L withdrawn)}. `force` (forced close from the dashboard) is
+  // accepted for the same interface; on Solana there is no pending compound that could block.
   async executeExit(plan, pos, { force = false } = {}) {
     void force;
     if (this.exiting.has(pos.id)) throw new Error(`posisi #${pos.id} sedang ditutup`);
@@ -552,14 +551,14 @@ class SolanaEngine {
         pool: pos.pool_ref, position: pos.token_id, liquidity: takeL, bps: Math.max(1, bps), close: full,
         slippageBps: rules.swap.max_slippage_bps, owner,
       });
-      // Isi posisi sebelum keluar dicatat SEBELUM mengirim: kalau proses mati atau
-      // konfirmasi tak terbaca, sinkron berikutnya membukukan hasilnya dari catatan ini.
+      // The position contents before exiting are recorded BEFORE sending: if the process dies or
+      // the confirmation is unreadable, the next sync books the result from this note.
       const pend = { ts: Date.now(), full, bps, ourL: ourL.toString(), before: SolanaEngine.slimPos(before) };
       this.store.setState(this.pendingExitKey(pos.id), JSON.stringify(pend));
       let sent;
       try { sent = await this.exec.sendGroups(built.groups, { kind: full ? 'burn' : 'decrease', detail: { venue: pos.venue, position: pos.id } }); }
       catch (e) {
-        // Gagal di simulasi / ditolak semua endpoint: belum ada yang terkirim.
+        // Failed in simulation / refused by every endpoint: nothing has been sent.
         this.store.run('DELETE FROM state WHERE k=?', this.pendingExitKey(pos.id));
         if (/^simulasi |ditolak semua endpoint/.test(String(e.message))) e.notSent = true;
         throw e;
@@ -567,8 +566,8 @@ class SolanaEngine {
       const hash = sent.hashes[sent.hashes.length - 1] || null;
       if (!sent.ok) {
         const e = new Error(`transaksi keluar ${sent.last?.expired ? 'tidak masuk (blockhash kedaluwarsa)' : 'gagal'}${hash ? ` (${hash})` : ''}`);
-        // Kedaluwarsa = pasti tidak masuk → boleh dicoba lagi. Batas tunggu habis = belum
-        // pasti → catatan tertunda dibiarkan, sinkron yang memutuskan.
+        // Expired = surely did not land → may be retried. Wait limit reached = not certain →
+        // the pending note is left, the sync decides.
         if (sent.last?.expired || sent.last?.error) { this.store.run('DELETE FROM state WHERE k=?', this.pendingExitKey(pos.id)); e.notSent = !!sent.last?.expired; }
         throw e;
       }
@@ -582,14 +581,14 @@ class SolanaEngine {
     return { liquidity: String(p.liquidity), amount0: String(p.amount0), amount1: String(p.amount1), fee0: String(p.fee0), fee1: String(p.fee1) };
   }
 
-  // Bukukan hasil keluar dari isi posisi yang dibaca tepat sebelum transaksi.
+  // Book the exit result from the position contents read right before the transaction.
   async bookExit(pos, pend, hash, rules) {
     const b = pend.before;
     const full = pend.full, bps = pend.bps, ourL = BigInt(pend.ourL);
     const takeL = full ? ourL : (ourL * BigInt(bps)) / 10_000n;
-    // Hasil = porsi isi posisi + fee yang ikut terkirim. Tutup penuh: seluruh fee.
-    // Tarik sebagian: Raydium (DecreaseLiquidityV2) ikut mengirim SEMUA fee yang
-    // terkumpul; DLMM (removeLiquidity tanpa klaim) dan Orca (decreaseLiquidity) tidak.
+    // Result = the share of position contents + the fees sent along. Full close: all fees.
+    // Partial withdrawal: Raydium (DecreaseLiquidityV2) also sends ALL accumulated
+    // fees; DLMM (removeLiquidity without claim) and Orca (decreaseLiquidity) do not.
     const feesOut = full || pos.venue === 'raydium';
     const frac = (x) => (full ? BigInt(x) : (BigInt(x) * BigInt(bps)) / 10_000n);
     const out0 = frac(b.amount0) + (feesOut ? BigInt(b.fee0) : 0n);
@@ -603,8 +602,8 @@ class SolanaEngine {
     const memeMint = q.side === 0 ? pos.token1 : pos.token0;
     const memeAmt = q.side === 0 ? out1 : out0;
     const memeQuote = q.side === 0 ? val(0n, out1) : val(out0, 0n);
-    // Sisi "memecoin" yang ternyata aset kuotasi juga (SOL di pool SOL/USDC) adalah kas,
-    // bukan sisa yang harus dijual.
+    // A "memecoin" side that turns out to be a quote asset too (SOL in a SOL/USDC pool) is cash,
+    // not a leftover to sell.
     const left = memeAmt > 0n && !this.chain.QUOTES[memeMint] ? { token: memeMint, amount: memeAmt.toString(), quote: memeQuote } : null;
     if (full) this.positions.markClosed(pos.id, { out0, out1, outQuote, txHash: hash, exitSqrt: sqrt, left });
     else this.positions.markDecreased(pos.id, { liquidity: (ourL - takeL).toString(), out0, out1, outQuote, txHash: hash, left });
@@ -619,9 +618,9 @@ class SolanaEngine {
     return { note, txHash: hash };
   }
 
-  // Keluar yang BELUM terkirim (simulasi gagal, ditolak endpoint, blockhash kedaluwarsa)
-  // dicoba lagi 3/10/30 dtk kemudian — asal posisi di chain masih sama persis. Yang
-  // sudah mungkin terkirim tidak pernah dikirim ulang: menarik dua kali.
+  // An exit NOT yet sent (failed simulation, refused by endpoints, expired blockhash) is
+  // retried 3/10/30 s later — as long as the position on chain is exactly the same. One that
+  // may already have been sent is never sent again: that would withdraw twice.
   async executeExitRetry(plan, pos, { waits = this.exitRetryWaits || [3000, 10_000, 30_000] } = {}) {
     for (let i = 0; ; i++) {
       if (i > 0 && this.store.get('SELECT takeover_ts FROM positions WHERE id=?', pos.id)?.takeover_ts != null) {
@@ -638,10 +637,10 @@ class SolanaEngine {
     }
   }
 
-  // Keluar yang terkirim tapi belum dibukukan (proses mati / konfirmasi tak terbaca):
-  // posisi di chain dibandingkan dengan isi yang dicatat sebelum kirim. Hilang atau L
-  // turun sebanyak yang ditarik = transaksinya masuk → dibukukan; tidak berubah dan
-  // sudah > 3 menit = tidak masuk → catatan dibuang.
+  // An exit that was sent but not booked (process died / confirmation unreadable): the
+  // position on chain is compared with the contents recorded before sending. Gone, or L
+  // down by the amount withdrawn = the transaction landed → booked; unchanged and
+  // > 3 minutes old = it did not land → the note is dropped.
   async bookPendingExits() {
     for (const r of this.store.all("SELECT k, v FROM state WHERE k LIKE 'sol_pending_exit:%' AND k LIKE ?", `%:${this.network}`)) {
       const id = Number(r.k.split(':')[1]);
@@ -667,9 +666,9 @@ class SolanaEngine {
     }
   }
 
-  // Cermin yang posisi targetnya sudah hilang dari chain tapi sinyal keluarnya terlewat
-  // (pengamat melewatkan / keluar gagal): ditutup. Dua pembacaan berturut-turut, dan
-  // hanya untuk cermin > 10 menit (node tertinggal bisa belum melihat posisi baru).
+  // A mirror whose target position is gone from the chain but whose exit signal was missed
+  // (the watcher skipped it / the exit failed): closed. Two consecutive reads, and
+  // only for mirrors > 10 minutes old (a lagging node may not see a new position yet).
   async reconcileExits() {
     if (this.dryRun() || !this.exec.address()) return;
     const rows = this.store.all("SELECT * FROM positions WHERE chain=? AND status='open' AND target IS NOT NULL AND mirror_of IS NOT NULL AND token_id IS NOT NULL AND takeover_ts IS NULL", this.network);
@@ -703,8 +702,8 @@ class SolanaEngine {
     }
   }
 
-  // Akun posisi sudah tidak ada tanpa tx keluar dari bot (ditutup di luar bot): ditutup di
-  // pembukuan pada nilai terakhir yang diketahui — BUKAN $0, yang akan membukukan rugi palsu.
+  // The position account is gone without an exit tx from the bot (closed outside the bot): closed
+  // in the books at the last known value — NOT $0, which would book a false loss.
   async closeEmptyPosition(pos) {
     if (this.store.getState(this.pendingExitKey(pos.id))) return this.bookPendingExits();
     if (!(await this.positions.confirmEmpty(pos))) throw new Error(`posisi #${pos.id} belum pasti kosong`);
@@ -720,7 +719,7 @@ class SolanaEngine {
     return got ? BigInt(got.liquidity) : 0n;
   }
 
-  // Likuiditas posisi target sekarang (dipakai buka-lagi & dasbor LP manual).
+  // The target position's current liquidity (used by re-entry & the manual LP dashboard).
   async targetLiquidity(venue, tokenId) {
     const act = this.store.get('SELECT pool_ref FROM actions WHERE chain=? AND token_id=? AND pool_ref IS NOT NULL ORDER BY id DESC LIMIT 1', this.network, String(tokenId));
     const got = (await this.chain.adapter(venue).getPositions([{ id: String(tokenId), pool: act?.pool_ref }], (mm) => this.chain.decimalsMap(mm))).get(String(tokenId));
@@ -728,13 +727,13 @@ class SolanaEngine {
     return got ? { liquidity: BigInt(got.liquidity), position: got } : { liquidity: 0n, position: null };
   }
 
-  // ---- klaim fee ----------------------------------------------------------------------
-  // Klaim di Solana dibukukan langsung sesudah konfirmasi (tidak ada receipt tertunda).
+  // ---- fee claims ---------------------------------------------------------------------
+  // A claim on Solana is booked right after confirmation (there are no pending receipts).
   pendingFeeClaim() { return null; }
   sellFeeWanted(id, override = null) { return Engine.prototype.sellFeeWanted.call(this, id, override); }
 
-  // `sell`: jual sisi memecoin fee ke aset kuotasi pool sesudah klaim (null = ikut
-  // pengaturan panen otomatis posisi). Sama dengan EVM.
+  // `sell`: sell the memecoin side of the fees to the pool's quote asset after claiming (null =
+  // follow the position's automatic harvest setting). Same as EVM.
   async claimFees(id, opts = {}) {
     if (this.dryRun() || !this.exec.address()) throw new Error('mode simulasi: tidak mengirim transaksi');
     if (this.exiting.has(id)) throw new Error('posisi ini sedang diproses');
@@ -782,19 +781,19 @@ class SolanaEngine {
     return { value: v, usd: v * usdPerQuote(pos.quote_symbol, this.ethUsd, this.chain), meme };
   }
 
-  // ---- token sisa ----------------------------------------------------------------------
+  // ---- leftover tokens -----------------------------------------------------------------
   async sellLeftover(item) {
     this.selling.add(item.token);
     try {
       const rules = this.rulesFrom(item.target ?? null);
-      // Kembali ke aset kuotasi pool asalnya (SOL/USDC/USDT), sama dengan EVM; sisa entry
-      // dan sapuan tanpa pool asal ke USDC.
+      // Back to the quote asset of its origin pool (SOL/USDC/USDT), as on EVM; entry leftovers
+      // and sweeps without an origin pool go to USDC.
       const out = item.quote && this.chain.QUOTES[item.quote] ? item.quote : this.chain.ADDR.usdg;
       const r = await this.swap(item.token, out, BigInt(item.amount), { slippageBps: rules.swap.max_slippage_bps, maxLossBps: rules.exit.sell_max_loss_bps, kind: 'sell_leftover' });
       const qm = this.chain.QUOTES[out];
       const usdOut = (Number(r.out) / 10 ** qm.decimals) * (qm.kind === 'eth' ? this.ethUsd : 1);
-      // Buku fee dulu lalu buku sisa (recordTokenSale), seperti EVM. Sisa entry yang gagal
-      // (rescue) bukan milik posisi mana pun — tidak dibukukan ke posisi lain.
+      // Fee ledger first, then the leftover ledger (recordTokenSale), as on EVM. A failed entry's
+      // leftover (rescue) belongs to no position — not booked to another position.
       if (!item.rescue) this.positions.recordTokenSale({ posId: item.posId ?? null, token: item.token, amount: item.amount, quoteToken: null, amountOut: null, usdOut, ethUsd: this.ethUsd, txHash: r.hash });
       this.dropLeftover(item);
       return r;
@@ -818,9 +817,9 @@ class SolanaEngine {
     } finally { this.leftoverBusy = false; }
   }
 
-  // Sapu wallet: semua token non-kuotasi bernilai ≥ minUsd dijual ke `quote` (Jupiter).
-  // Token milik posisi terbuka (masih di LP, bukan di wallet) tidak ikut — yang dibaca
-  // hanya saldo wallet.
+  // Sweep the wallet: every non-quote token worth ≥ minUsd is sold to `quote` (Jupiter).
+  // Tokens of open positions (still in the LP, not in the wallet) are not included — only the
+  // wallet balance is read.
   async sweepWallet({ minUsd = 0.5, quote = this.chain.ADDR.usdg } = {}) {
     if (this.dryRun() || !this.exec.address()) throw new Error('mode simulasi: tidak mengirim transaksi');
     const bal = await this.exec.balances();
@@ -839,10 +838,10 @@ class SolanaEngine {
     return { swept: out.filter((x) => x.sold).length, items: out };
   }
 
-  // ---- buka lagi posisi yang ditunda/ditutup karena jauh dari rentang --------------
-  // Pantauan disimpan sama dengan EVM (watchReentry); di Solana harga & likuiditas
-  // target dibaca lewat adapter, dan aksi sintetis 'reentry' membawa isi posisi target
-  // sekarang supaya rencana exact menskala komposisinya.
+  // ---- re-open positions deferred/closed for being far from the range --------------
+  // Watches are stored as on EVM (watchReentry); on Solana the target's price & liquidity
+  // are read through the adapters, and the synthetic 'reentry' action carries the target
+  // position's current contents so an exact plan scales its composition.
   async reentryTick() {
     const watches = this.reentryWatches();
     if (!watches.length) return;
@@ -884,29 +883,29 @@ class SolanaEngine {
     }
   }
 
-  // ---- sinkron posisi & keluar mandiri -------------------------------------------------
-  // Urutan sama dengan EVM: adopsi/penautan posisi yatim, rekonsiliasi keluar, sinkron,
-  // pembukuan keluar tertunda, kas, sisa, pemicu keluar mandiri, panen fee, buka lagi.
+  // ---- position sync & standalone exits -------------------------------------------------
+  // Same order as EVM: adopting/linking orphan positions, exit reconciliation, sync,
+  // booking pending exits, cash, leftovers, standalone exit triggers, fee harvest, re-entry.
   async syncPositions() {
     if (this.syncBusy) return;
     this.syncBusy = true;
     try {
       if (this.cfg.prices?.auto_eth_price !== false) this.ethUsd = await this.chain.ethUsd(this.ethUsd);
       const addr = this.exec.address();
-      const sekali = (key, label, p) => p.then(() => this.cleared(key, `${label}: berhasil lagi`))
+      const guarded = (key, label, p) => p.then(() => this.cleared(key, `${label}: berhasil lagi`))
         .catch((e) => this.trouble(key, `${label}: ${e.message}`, { after: 5, afterMs: 5 * 60_000 }));
       if (addr && Date.now() - (this.lastAdopt || 0) > 10 * 60_000) {
         this.lastAdopt = Date.now();
-        await sekali('adopsi', 'adopsi posisi wallet', this.adoptOwnPositions(addr).then(() => this.prunePendingEntries()));
+        await guarded('adopsi', 'adopsi posisi wallet', this.adoptOwnPositions(addr).then(() => this.prunePendingEntries()));
       }
       if (addr && this.capital?.available?.() && Date.now() - (this.capital.lastSync || 0) > (this.capital.backlog ? 60_000 : 5 * 60_000)) {
-        await sekali('modal', 'pelacakan setoran', this.capital.sync(addr));
+        await guarded('modal', 'pelacakan setoran', this.capital.sync(addr));
       }
-      await sekali('rekon', 'rekonsiliasi keluar', this.reconcileExits());
+      await guarded('rekon', 'rekonsiliasi keluar', this.reconcileExits());
       await this.positions.sync(this.ethUsd);
-      await sekali('buku-keluar', 'pembukuan keluar tertunda', this.bookPendingExits());
-      await sekali('kas', 'saldo kas', this.refreshCash());
-      await sekali('sisa', 'nilai token sisa', this.positions.refreshLeftovers(this.ethUsd));
+      await guarded('buku-keluar', 'pembukuan keluar tertunda', this.bookPendingExits());
+      await guarded('kas', 'saldo kas', this.refreshCash());
+      await guarded('sisa', 'nilai token sisa', this.positions.refreshLeftovers(this.ethUsd));
       const outs = this.positions.exitTriggers((p) => this.rulesFrom(p.target));
       for (const t of outs) {
         const { pos, reason } = t;
@@ -925,12 +924,12 @@ class SolanaEngine {
         } catch (e) { this.trouble(`keluar:${pos.id}`, `keluar mandiri gagal #${pos.id}: ${e.message}`, { after: 2 }); }
       }
       if (!this.stopping) await this.compound.tick(Date.now(), new Set(outs.map((t) => t.pos.id)));
-      if (!this.stopping) await sekali('masuk-lagi', 'buka lagi posisi yang ditunda', this.reentryTick());
+      if (!this.stopping) await guarded('masuk-lagi', 'buka lagi posisi yang ditunda', this.reentryTick());
     } finally { this.syncBusy = false; }
   }
 
-  // ---- kas -----------------------------------------------------------------------------
-  // Bentuk sama dengan EVM: usdg = stablecoin, eth = SOL native, weth = wSOL.
+  // ---- cash ----------------------------------------------------------------------------
+  // Same shape as EVM: usdg = stablecoin, eth = native SOL, weth = wSOL.
   async refreshCash() {
     if (!this.exec.address()) { this.cash = null; return null; }
     const seq = this.exec.txSeq;
@@ -957,8 +956,8 @@ class SolanaEngine {
     };
   }
 
-  // SOL native di bawah separuh cadangan: beli SOL dari USDC (maks gas.topup_max_usd),
-  // supaya menutup posisi dan menjual sisa tidak gagal kehabisan biaya transaksi.
+  // Native SOL below half the reserve: buy SOL with USDC (at most gas.topup_max_usd),
+  // so closing positions and selling leftovers do not fail for lack of transaction fees.
   async topUpGas(notes = []) {
     if (Date.now() - (this.gasTopupFailedAt || 0) < 10 * 60_000) return;
     try {

@@ -352,7 +352,7 @@ const BACK_HOME = btn('🏠 Menu', 'h');
 // Uniswap points at its pool page if the pool is known (chart, liquidity, swap &
 // add LP on one screen); without a pool, the swap screen with that token.
 const tradeRows = (chain, token, pool = null) => {
-  // Solana: GMGN (slug 'sol'), DexScreener, Jupiter — tidak ada Based/Uniswap/fomo.
+  // Solana: GMGN (slug 'sol'), DexScreener, Jupiter — no Based/Uniswap/fomo.
   if (chain?.kind === 'solana') {
     if (!normAddr(chain.network, token)) return [];
     return [
@@ -482,7 +482,7 @@ const FORMS = {
       F.num('reserve_eth', 'Cadangan ETH tak tersentuh', { hi: 10, unit: 'ETH' }),
     ],
   },
-  // Solana: harga prioritas (µlamport/CU) & cadangan SOL — lihat SolanaExecutor.cuPrice.
+  // Solana: priority price (µlamports/CU) & the SOL reserve — see SolanaExecutor.cuPrice.
   gasSol: {
     title: '⛽ Gas', post: '/api/settings/gas', pick: (s) => ({ ...s.gas }),
     fields: [
@@ -960,7 +960,7 @@ class Telegram {
     // token -> straight to the LP setup card; wallet -> research / make-target choices.
     // (?![0-9a-f]) prevents a v4 poolId (64 hex) from being read as a 40-hex address.
     if (!text.startsWith('/') && text.length <= 300) {
-      // Chat yang sedang di chain Solana: alamat base58 (huruf dipertahankan).
+      // A chat currently on the Solana chain: a base58 address (case kept).
       if (isSolana(this.chatChain(chatId))) {
         const b = text.match(/(?<![1-9A-HJ-NP-Za-km-z])[1-9A-HJ-NP-Za-km-z]{32,44}(?![1-9A-HJ-NP-Za-km-z])/)?.[0];
         if (b) return this.tempel(chatId, b);

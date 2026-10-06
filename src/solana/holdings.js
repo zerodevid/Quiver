@@ -1,12 +1,12 @@
 'use strict';
-// Isi wallet mana pun di Solana (panel "Wallet holdings" & kolom saldo daftar target):
-// SOL native (digabung dengan wSOL — di dompet itu uang yang sama) dan semua akun
-// token SPL + Token-2022 yang bersaldo. Bentuk barisnya sama dengan Holdings EVM.
+// Holdings of any Solana wallet (the "Wallet holdings" panel & the balance column of the target
+// list): native SOL (merged with wSOL — in a wallet it is the same money) and every SPL +
+// Token-2022 token account with a balance. Same row shape as the EVM Holdings.
 const { PublicKey } = require('@solana/web3.js');
 const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = require('@solana/spl-token');
 const { WSOL } = require('../networks');
 
-// Wallet memecoin bisa memegang ratusan token debu; yang dinilai dibatasi.
+// A memecoin wallet can hold hundreds of dust tokens; only this many are valued.
 const MAX_TOKENS = 150;
 
 class SolanaHoldings {
@@ -24,7 +24,7 @@ class SolanaHoldings {
     for (const { account } of [...a.value, ...b.value]) {
       const info = account.data?.parsed?.info;
       const amt = BigInt(info?.tokenAmount?.amount || '0');
-      // NFT posisi LP (jumlah 1, desimal 0) bukan saldo token
+      // LP position NFTs (amount 1, 0 decimals) are not token balances
       if (!info || amt === 0n || info.tokenAmount.decimals === 0) continue;
       raw.set(info.mint, (raw.get(info.mint) || 0n) + amt);
       decs.set(info.mint, info.tokenAmount.decimals);
@@ -46,7 +46,7 @@ class SolanaHoldings {
     });
   }
 
-  // Harga USD sekaligus untuk semua token (Jupiter), bukan satu DexScreener per token.
+  // USD prices for all tokens at once (Jupiter), not one DexScreener call per token.
   async prices(mints) { return this.chain.jup.prices(mints).catch(() => new Map()); }
 }
 

@@ -47,7 +47,7 @@ class Icons {
   constructor({ store, dir, chain = null, log = () => {}, fetchImpl = globalThis.fetch, gapMs = GAP_MS, collectMs = 150, now = Date.now }) {
     this.store = store; this.dir = dir; this.log = log; this.fetch = fetchImpl;
     this.network = chain?.network || 'robinhood';
-    // Solana: alamat base58 PEKA HURUF (tidak di-lowercase); ikon cadangan dari Jupiter.
+    // Solana: base58 addresses are CASE-SENSITIVE (not lower-cased); fallback icons from Jupiter.
     this.chain = chain;
     this.sol = chain?.kind === 'solana';
     this.lc = this.sol ? (x) => String(x || '').trim() : (x) => String(x || '').toLowerCase();
@@ -186,14 +186,14 @@ class Icons {
         }
       } catch { /* fallback only: GeckoTerminal already answered */ }
     }
-    // Solana: Jupiter mengenal logo hampir semua token SPL (termasuk memecoin baru yang
-    // belum terindeks GeckoTerminal/DexScreener).
+    // Solana: Jupiter knows the logo of almost every SPL token (including new memecoins
+    // not yet indexed by GeckoTerminal/DexScreener).
     const sisa = batch.filter((a) => !url.has(a));
     if (this.sol && sisa.length && this.chain?.jup?.tokenInfo) {
       try {
         const info = await this.chain.jup.tokenInfo(sisa);
         for (const a of sisa) { const u = info.get(a)?.icon; if (/^https:\/\//.test(u || '')) url.set(a, u); }
-      } catch { /* cadangan saja */ }
+      } catch { /* fallback only */ }
     }
     for (const a of batch) {
       const prev = this.row(a);

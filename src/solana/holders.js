@@ -1,9 +1,9 @@
 'use strict';
-// Distribusi holder sebuah mint (panel "Kesehatan pool"), bentuk sama dengan holders.js:
-// 20 akun token terbesar (getTokenLargestAccounts) → pemiliknya (satu pemilik bisa punya
-// beberapa akun token, digabung), jenis pemilik dari program pemilik akunnya: vault pool
-// Meteora/Orca/Raydium = likuiditas pool, incinerator = burn, akun program lain =
-// kontrak. Jumlah holder dari Jupiter — tidak ada cara murah lewat RPC publik.
+// Holder distribution of a mint (the "Pool health" panel), same shape as holders.js:
+// the 20 largest token accounts (getTokenLargestAccounts) → their owners (one owner can hold
+// several token accounts, merged), owner kind from the program that owns the account: a
+// Meteora/Orca/Raydium pool vault = pool liquidity, the incinerator = burn, another program's
+// account = contract. Holder count from Jupiter — there is no cheap way over public RPC.
 const { PublicKey } = require('@solana/web3.js');
 
 const INCINERATOR = '1nc1nerator11111111111111111111111111111111';
@@ -21,7 +21,7 @@ async function solanaHolders({ rpc, chain }, mint) {
     let sup, largest;
     [sup, largest, rec] = await Promise.all([
       rpc.run((c) => c.getTokenSupply(pk)),
-      // Permintaan terindeks: tidak dikirim ke endpoint yang menolaknya (rpc.js no_indexed).
+      // Indexed request: never sent to an endpoint that refuses it (rpc.js no_indexed).
       rpc.run((c) => c.getTokenLargestAccounts(pk), { indexed: true }),
       chain.jup.tokenRecord(mint).catch(() => null),
     ]);
@@ -38,8 +38,8 @@ async function solanaHolders({ rpc, chain }, mint) {
     const venuePrograms = new Set(Object.values(chain.adapters).map((a) => a.program));
     const items = owners.map((o, i) => {
       const prog = infos[i]?.owner?.toBase58() || null;
-      // Wallet biasa = akun milik System Program. Tanpa akun (PDA otoritas) atau milik
-      // program lain = kontrak.
+      // A plain wallet = an account owned by the System Program. No account (an authority PDA)
+      // or owned by another program = contract.
       const isContract = prog !== SYSTEM;
       const kind = o === INCINERATOR ? 'burn' : venuePrograms.has(prog) ? 'pool_manager' : isContract ? 'contract' : 'address';
       const bal = byOwner.get(o);
@@ -53,9 +53,9 @@ async function solanaHolders({ rpc, chain }, mint) {
       fetchedAt: Date.now(), source: 'Solana RPC', url: chain.explorerTokenUrl ? chain.explorerTokenUrl(mint) : null,
     };
   } catch (e) {
-    // RPC publik menolak getTokenLargestAccounts (publicnode "Request blocked",
-    // mainnet-beta 429 per metode) — daftar lengkap butuh RPC berbayar (Helius dst).
-    // Tanpa itu: jumlah holder & porsi top holder menurut audit Jupiter.
+    // Public RPC refuses getTokenLargestAccounts (publicnode "Request blocked",
+    // mainnet-beta 429 per method) — the full list needs a paid RPC (Helius etc.).
+    // Without it: holder count & top-holder share from Jupiter's audit.
     rec ??= await chain.jup.tokenRecord(mint).catch(() => null);
     const count = Number(rec?.holderCount), top = Number(rec?.audit?.topHoldersPercentage);
     value = rec && (Number.isSafeInteger(count) || Number.isFinite(top))

@@ -1,10 +1,10 @@
 'use strict';
-// Adapter Orca Whirlpools. Tick Orca = tick Uniswap (1.0001), sqrtPrice Q64.64, L sama
-// artinya — jadi normalisasinya cuma menggeser sqrt ke Q96, dan jumlah token posisi
-// dihitung dengan rumus v3 yang sama (v3math.amountsForLiquidity).
+// Orca Whirlpools adapter. Orca ticks = Uniswap ticks (1.0001), sqrtPrice Q64.64, L means the
+// same — so normalising only shifts sqrt to Q96, and position token amounts are computed with
+// the same v3 formula (v3math.amountsForLiquidity).
 //
-// Posisi Orca = NFT: pemilik posisi = pemegang NFT-nya. Enumerasi wallet lewat SDK
-// (getAllPositionAccountsByOwner: akun token SPL + Token-2022 milik wallet → PDA posisi).
+// Orca positions = NFTs: the position owner = the NFT holder. Wallet enumeration as in the SDK
+// (getAllPositionAccountsByOwner: the wallet's SPL + Token-2022 token accounts → position PDAs).
 const { PublicKey } = require('@solana/web3.js');
 const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = require('@solana/spl-token');
 const BN = require('bn.js');
@@ -21,9 +21,9 @@ const { feeGrowthInside, unclaimed, big } = require('../clmm-math');
 const PROGRAM = ORCA_WHIRLPOOL_PROGRAM_ID.toBase58();
 const b58 = (k) => (k?.toBase58 ? k.toBase58() : String(k));
 
-// Dompet anchor tiruan: SDK hanya butuh publicKey untuk menyusun instruksi. Tanda
-// tangan dilakukan pengirim (src/solana/executor.js), jadi sign* di sini tidak boleh
-// pernah terpanggil.
+// Fake anchor wallet: the SDK only needs publicKey to build instructions. Signing is done by
+// the sender (src/solana/executor.js), so sign* here must never
+// be called.
 const viewWallet = (pk) => ({
   publicKey: new PublicKey(pk),
   signTransaction: () => { throw new Error('orca: tanda tangan lewat executor'); },
@@ -36,17 +36,17 @@ class OrcaVenue {
     this.nativeIsBin = false;
   }
 
-  // Konteks SDK terikat satu Connection. `on` menjalankan satu baca/build utuh di satu
-  // endpoint; galat sementara (429/403/timeout) mengulang SELURUHNYA di endpoint lain.
+  // The SDK context is bound to one Connection. `on` runs one whole read/build on one
+  // endpoint; a transient error (429/403/timeout) retries ALL of it on another endpoint.
   ctx(owner, conn) {
     return WhirlpoolContext.from(conn, viewWallet(owner || PublicKey.default.toBase58()));
   }
   on(owner, fn, opts) { return this.rpc.run((c) => fn(this.ctx(owner, c)), opts); }
 
-  // Akun dibaca sendiri lewat rpc.run (≤100 per getMultipleAccounts, berurutan, dengan
-  // alih endpoint), SDK Orca hanya dipakai untuk parse. Fetcher SDK memakai
-  // `new Promise(async …)`: kalau RPC menolak, galatnya jadi promise tak tertangani dan
-  // panggilannya menggantung sampai timeout 10 detik.
+  // Accounts are read by us through rpc.run (≤100 per getMultipleAccounts, sequential, with
+  // failover); the Orca SDK is only used to parse. The SDK fetcher uses
+  // `new Promise(async …)`: when the RPC refuses, the error becomes an unhandled promise and
+  // the call hangs until a 10 second timeout.
   async fetchMany(method, keys) {
     const P = { getPools: ParsableWhirlpool, getTickArrays: ParsableTickArray, getPositions: ParsablePosition }[method];
     const out = [];
@@ -65,7 +65,7 @@ class OrcaVenue {
       dec0: dec.get(a) ?? null, dec1: dec.get(b) ?? null,
       sqrtX96: u.x64ToX96(d.sqrtPrice), tick: d.tickCurrentIndex,
       current: d.tickCurrentIndex, spacing: d.tickSpacing, ticksPerUnit: 1,
-      fee: d.feeRate,                      // seperseratus bip = 1e-6, sama dengan fee v3
+      fee: d.feeRate,                      // hundredths of a bip = 1e-6, same as the v3 fee
       tickSpacing: d.tickSpacing,
       liquidity: big(d.liquidity),
       feeGrowthGlobalA: big(d.feeGrowthGlobalA), feeGrowthGlobalB: big(d.feeGrowthGlobalB),
@@ -87,7 +87,7 @@ class OrcaVenue {
     return out;
   }
 
-  // PositionData SDK + state pool -> bentuk posisi bersama.
+  // SDK PositionData + pool state -> the shared position shape.
   norm(id, p, pool, fees = null) {
     const L = big(p.liquidity);
     let amount0 = 0n, amount1 = 0n;
@@ -109,8 +109,8 @@ class OrcaVenue {
   }
 
   async listPositions(owner, decimalsOf) {
-    // NFT posisi (jumlah 1, desimal 0) di kedua program token → PDA posisi (sama dengan
-    // getAllPositionAccountsByOwner SDK tanpa bundle, tapi lewat rpc.run).
+    // Position NFTs (amount 1, 0 decimals) in both token programs → position PDAs (same as the
+    // SDK's getAllPositionAccountsByOwner without bundles, but through rpc.run).
     const own = new PublicKey(owner);
     const mints = [];
     for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
@@ -128,8 +128,8 @@ class OrcaVenue {
     return all.map(([id, p]) => ({ ...this.norm(String(id), p, pools.get(b58(p.whirlpool))), owner }));
   }
 
-  // Tick terinisialisasi (liquidityNet) di [start, end] untuk kurva kedalaman pool
-  // (solana/pool-depth.js). Satu tick array = 88 tick × spacing.
+  // Initialised ticks (liquidityNet) in [start, end] for the pool depth curve
+  // (solana/pool-depth.js). One tick array = 88 ticks × spacing.
   async depth(pool, start, end) {
     const span = 88 * pool.spacing;
     const starts = [];
@@ -147,8 +147,8 @@ class OrcaVenue {
     return ticks;
   }
 
-  // Fee belum diklaim yang sebenarnya (feeOwed hanya diperbarui saat posisi disentuh):
-  // pertumbuhan fee di dalam rentang dari tick array kedua batas.
+  // The real unclaimed fees (feeOwed is only updated when the position is touched):
+  // fee growth inside the range from the tick arrays of both bounds.
   async feesFor(rows) {
     const addrs = [];
     for (const { p, pool } of rows) {
@@ -193,7 +193,7 @@ class OrcaVenue {
     return out;
   }
 
-  // TransactionBuilder Orca -> satu grup instruksi (+ penanda tangan tambahan).
+  // Orca TransactionBuilder -> one instruction group (+ extra signers).
   static group(tb) {
     if (!tb) return null;
     const ix = tb.compressIx(true);
@@ -205,16 +205,16 @@ class OrcaVenue {
     return this.on(owner, async (ctx) => {
       const w = await buildWhirlpoolClient(ctx).getPool(pool, IGNORE_CACHE);
       const d = w.getData();
-      // Pembulatan sendiri (bukan TickUtil.getInitializableTickIndex yang memotong ke arah
-      // nol — tick negatif jadi membulat ke atas): bawah ke bawah, atas ke atas.
+      // Our own rounding (not TickUtil.getInitializableTickIndex, which truncates toward
+      // zero — negative ticks round up): lower rounds down, upper rounds up.
       const lo = m.alignTick(lower, d.tickSpacing, 'down');
       const hi = m.alignTick(upper, d.tickSpacing, 'up');
       if (hi <= lo) throw new Error(`rentang tick tidak sah ${lo}..${hi}`);
-      // Pita harga: posisi hanya dibuat kalau harga saat eksekusi masih dalam ±slippage
-      // dari harga saat rencana. Harga ~ sqrt², jadi pita sqrt = √(1 ± s).
+      // Price band: the position is only created when the price at execution is still within
+      // ±slippage of the planned price. Price ~ sqrt², so the sqrt band = √(1 ± s).
       const band = OrcaVenue.sqrtBand(d.sqrtPrice, slippageBps);
       const groups = [];
-      // Tick array batas yang belum ada dibuat dulu (transaksi tersendiri).
+      // Boundary tick arrays that do not exist yet are created first (a separate transaction).
       const init = await w.initTickArrayForTicks([lo, hi], me, IGNORE_CACHE);
       if (init) groups.push(OrcaVenue.group(init));
       const { positionMint, tx } = await w.openPosition(lo, hi, {
@@ -226,7 +226,7 @@ class OrcaVenue {
     });
   }
 
-  // Pita harga ±slippage di sekitar sqrt sekarang (lihat buildOpen).
+  // ±slippage price band around the current sqrt (see buildOpen).
   static sqrtBand(sqrtPrice, slippageBps) {
     const s = Number(slippageBps) / 10_000;
     const sq = BigInt(sqrtPrice.toString());
@@ -257,7 +257,7 @@ class OrcaVenue {
       const client = buildWhirlpoolClient(ctx);
       const w = await client.getPool(pool, IGNORE_CACHE);
       if (close) {
-        // closePosition = kumpulkan fee & reward + tarik semua + tutup akun (sewa kembali)
+        // closePosition = collect fees & rewards + withdraw everything + close the account (rent returned)
         const tbs = await w.closePosition(new PublicKey(position), slip, me, me, me);
         return { groups: tbs.map(OrcaVenue.group).filter(Boolean) };
       }

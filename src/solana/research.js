@@ -1,22 +1,22 @@
 'use strict';
-// Riset wallet di Solana: riwayat posisi LP sebuah wallet (Meteora DLMM, Orca, Raydium)
-// dan PnL-nya — padanan src/wallet.js (EVM). Hasilnya ditulis ke tabel yang SAMA
-// (wallets, wpositions, wevents) dengan satuan yang sama (nilai dalam USD), jadi panel
-// "Kinerja LP wallet ini", halaman Wallet, dan tabel riset di halaman pool/token
-// menampilkannya tanpa cabang khusus.
+// Wallet research on Solana: a wallet's LP position history (Meteora DLMM, Orca, Raydium)
+// and its PnL — the counterpart of src/wallet.js (EVM). Results are written to the SAME tables
+// (wallets, wpositions, wevents) in the same units (values in USD), so the "This wallet's LP
+// performance" panel, the Wallet page, and the research tables on pool/token pages show
+// them without a special branch.
 //
-// Sumber data: riwayat transaksi wallet (getSignaturesForAddress + getParsedTransactions),
-// lalu EVENT resmi tiap program di dalamnya — di-decode dengan IDL Anchor-nya:
-//   Meteora DLMM : AddLiquidity / RemoveLiquidity (jumlah + active_bin_id), ClaimFee(2),
-//                  PositionCreate / PositionClose — lewat emit_cpi (inner instruction)
-//   Orca         : PositionOpened, LiquidityIncreased / LiquidityDecreased (tick, L,
-//                  jumlah) — lewat log "Program data:"; collect_fees tidak ber-event,
-//                  jumlahnya dibaca dari transfer keluar vault pool di bawahnya
-//   Raydium CLMM : CreatePersonalPosition, IncreaseLiquidity / DecreaseLiquidity (fee
-//                  terpisah), CollectPersonalFee, LiquidityCalculate (sqrt harga pool)
-// Harga saat kejadian diambil dari chain sendiri (bin aktif DLMM, sqrt harga pool
-// Raydium, atau komposisi setoran di rentang tick untuk Orca: √P = √A + jumlah1/L).
-// Posisi yang masih terbuka dinilai di harga sekarang lewat adapter venue.
+// Data source: the wallet's transaction history (getSignaturesForAddress + getParsedTransactions),
+// then each program's official EVENTS inside — decoded with its Anchor IDL:
+//   Meteora DLMM : AddLiquidity / RemoveLiquidity (amounts + active_bin_id), ClaimFee(2),
+//                  PositionCreate / PositionClose — via emit_cpi (inner instruction)
+//   Orca         : PositionOpened, LiquidityIncreased / LiquidityDecreased (ticks, L,
+//                  amounts) — via "Program data:" logs; collect_fees has no event, its
+//                  amounts are read from the pool vault transfers out beneath it
+//   Raydium CLMM : CreatePersonalPosition, IncreaseLiquidity / DecreaseLiquidity (fees
+//                  separate), CollectPersonalFee, LiquidityCalculate (pool sqrt price)
+// The price at the time of each event comes from the chain itself (DLMM active bin, Raydium
+// pool sqrt price, or the deposit composition within the tick range for Orca: √P = √A + amount1/L).
+// Positions still open are valued at the current price through the venue adapters.
 const { PublicKey } = require('@solana/web3.js');
 const anchor = require('@coral-xyz/anchor');
 const bs58 = require('bs58').default;
@@ -31,16 +31,16 @@ const IDL = {
   orca: require('@orca-so/whirlpools-sdk/dist/artifacts/whirlpool.json'),
   raydium: require('./idl/raydium_clmm.json'),
 };
-// Awalan inner instruction event Anchor (emit_cpi): sha256("anchor:event")[..8].
+// Prefix of the Anchor event inner instruction (emit_cpi): sha256("anchor:event")[..8].
 const EVENT_IX_TAG = Buffer.from('e445a52e51cb9a1d', 'hex');
-// Jendela dari dasbor dinyatakan dalam blok Robinhood (~0,101 dtk): 900.000 = ~1 hari.
+// The window from the dashboard is expressed in Robinhood blocks (~0.101 s): 900,000 = ~1 day.
 const WINDOW_BLOCK_MS = 101;
-// Wallet bot bisa punya ribuan transaksi sehari (kebanyakan swap). Batas per pindai;
-// yang lebih tua dari itu ditandai tidak lengkap.
+// A bot wallet can have thousands of transactions a day (mostly swaps). Cap per scan;
+// anything older is flagged incomplete.
 const MAX_TX = 2500;
-// publicnode melayani getTransaction ±50/detik; mainnet-beta hampir selalu 429.
+// publicnode serves getTransaction at ±50/second; mainnet-beta almost always 429s.
 const TX_CONCURRENCY = 10;
-// Endpoint riwayat yang menolak sekian kali beruntun dianggap mati untuk pindai ini.
+// A history endpoint refusing this many times in a row is taken as dead for this scan.
 const HIST_DEAD_AFTER = 6;
 
 const flatAccounts = (list) => (list || []).flatMap((a) => (a.accounts ? flatAccounts(a.accounts) : [a.name]));
@@ -60,12 +60,12 @@ class SolanaWalletResearch {
       this.codec[venue] = { program: idl.address, ev: new anchor.BorshEventCoder(idl), ix: new anchor.BorshInstructionCoder(idl), accounts };
     }
     this.byProgram = new Map(Object.entries(this.codec).map(([v, c]) => [c.program, v]));
-    // Token hasil tutup yang masih dipegang vs sudah dijual (src/proceeds.js, versi Solana).
+    // Close-proceeds tokens still held vs already sold (src/proceeds.js, Solana version).
     this.proceeds = new (require('./proceeds').SolanaProceeds)({ rpc, store, chain, research: this, log: this.log });
   }
 
-  // ---- ambil riwayat -------------------------------------------------------------
-  // Tanda tangan sukses wallet, terbaru dulu, sampai `sinceMs` / `stopSig` / MAX_TX.
+  // ---- fetch history -------------------------------------------------------------
+  // The wallet's successful signatures, newest first, back to `sinceMs` / `stopSig` / MAX_TX.
   async signatures(wallet, { sinceMs = 0, stopSig = null } = {}) {
     const out = [];
     let before = null, capped = false;
@@ -85,10 +85,10 @@ class SolanaWalletResearch {
     return { sigs: out, capped };
   }
 
-  // Transaksi dibaca bergiliran di SEMUA endpoint (transaksi baru ada di mana-mana);
-  // yang tidak ditemukan diminta ulang ke endpoint yang menyimpan riwayat. Endpoint
-  // publik membatasi laju per metode — 429 ditunggu dan diulang (jeda naik), bukan
-  // menggagalkan seluruh pindai.
+  // Transactions are read in turn across ALL endpoints (new transactions are everywhere);
+  // those not found are asked again from an endpoint that keeps history. Public endpoints
+  // rate-limit per method — a 429 is waited out and retried (growing pause), not
+  // failing the whole scan.
   async withRetry(fn, what) {
     for (let i = 0; ; i++) {
       try { return await fn(); } catch (e) {
@@ -99,22 +99,22 @@ class SolanaWalletResearch {
     }
   }
 
-  // Satu transaksi per panggilan (publicnode menolak batch getTransaction > 1), 4
-  // berjalan bersamaan dan bergiliran di antara endpoint.
+  // One transaction per call (publicnode refuses batched getTransaction > 1), 4
+  // running at once and rotating among the endpoints.
   async transactions(sigs, onProgress) {
-    // Versi 1: sebagian transaksi mainnet sudah memakai format pesan v1; jsonParsed
-    // dikembalikan sebagai JSON, jadi klien web3.js v1 tidak perlu men-decode-nya.
+    // Version 1: some mainnet transactions already use the v1 message format; jsonParsed
+    // comes back as JSON, so the web3.js v1 client does not need to decode it.
     const opts = { maxSupportedTransactionVersion: 1, commitment: 'confirmed' };
     const fetchTx = (sig) => (c) => c.getParsedTransaction(sig, opts);
     const out = new Array(sigs.length);
     let next = 0, done = 0, skipped = 0;
     const missing = [];
-    // Endpoint cepat (publicnode) hanya menyimpan ±1 hari transaksi; yang lebih tua cuma
-    // ada di endpoint riwayat (mainnet-beta), yang dari banyak IP menolak getTransaction
-    // sama sekali. Maka: coba endpoint cepat dulu; begitu ia menjawab "tidak ada" untuk
-    // transaksi berumur T, transaksi yang lebih tua dari T langsung ke endpoint riwayat.
-    // Kalau endpoint riwayat menolak terus, sisanya dilewati (posisinya jadi "tidak
-    // lengkap") — pindai tidak boleh berputar belasan menit tanpa hasil.
+    // The fast endpoint (publicnode) only keeps ±1 day of transactions; older ones only
+    // exist on the history endpoint (mainnet-beta), which refuses getTransaction from many IPs
+    // altogether. So: try the fast endpoint first; as soon as it answers "not found" for a
+    // transaction of age T, transactions older than T go straight to the history endpoint.
+    // When the history endpoint keeps refusing, the rest are skipped (their positions become
+    // "incomplete") — a scan must not spin for a quarter of an hour without results.
     let quickFloor = 0, histFails = 0, histDead = false;
     this.oldUnread = 0;
     const history = async (sig) => {
@@ -147,8 +147,8 @@ class SolanaWalletResearch {
           if (h === undefined) { this.oldUnread++; return null; }
           tx = h;
         }
-        // Transaksi yang sangat baru bisa belum tersedia di node yang ditanya: sekali lagi
-        // sesudah jeda. Masih null = "tertunda" (dibaca pada pembaruan berikutnya).
+        // A very new transaction may not be available yet on the node asked: once more
+        // after a pause. Still null = "pending" (read on the next refresh).
         if (!tx && (!s.blockTime || Date.now() / 1000 - s.blockTime < 600)) {
           await new Promise((r) => setTimeout(r, 2500));
           tx = await this.rpc.run(fetchTx(sig)).catch(() => null);
@@ -156,7 +156,7 @@ class SolanaWalletResearch {
         }
         return tx;
       } catch (e) {
-        // Masih 429 sesudah semua percobaan ulang: jadi "tertunda", pindai tetap selesai.
+        // Still 429 after all retries: becomes "pending", the scan still finishes.
         if (TRANSIENT.test(String(e.message))) { missing.push(sig); return null; }
         if (skipped++ < 3) this.log(`riset: tx ${sig.slice(0, 8)} dilewati (${String(e.message).slice(0, 100)})`);
         return null;
@@ -178,9 +178,9 @@ class SolanaWalletResearch {
     return txs;
   }
 
-  // ---- ekstraksi per transaksi ----------------------------------------------------
-  // Semua instruksi dalam urutan eksekusi (atas + inner), tiap satu dengan nama hasil
-  // decode kalau programnya salah satu dari tiga venue.
+  // ---- per-transaction extraction ------------------------------------------------
+  // All instructions in execution order (top level + inner), each with its decoded name
+  // when its program is one of the three venues.
   instructions(tx) {
     const innerBy = new Map((tx.meta?.innerInstructions || []).map((x) => [x.index, x.instructions]));
     const seq = [];
@@ -203,7 +203,7 @@ class SolanaWalletResearch {
     });
   }
 
-  // Event "Program data:" di log (Orca & Raydium memakai emit!).
+  // "Program data:" events in the logs (Orca & Raydium use emit!).
   logEvents(tx) {
     const out = [];
     for (const l of tx.meta?.logMessages || []) {
@@ -218,7 +218,7 @@ class SolanaWalletResearch {
     return out;
   }
 
-  // Satu transaksi -> daftar kejadian posisi { venue, id, pool, kind, a0, a1, f0, f1,
+  // One transaction -> a list of position events { venue, id, pool, kind, a0, a1, f0, f1,
   // liq, tickLower, tickUpper, lowerBin, upperBin, activeBin, sqrtX96 }.
   extract({ sig, tx }) {
     const out = [];
@@ -226,7 +226,7 @@ class SolanaWalletResearch {
     const seq = this.instructions(tx);
     const push = (e) => out.push({ sig, slot, ts, idx: out.length, ...e });
 
-    // --- Meteora DLMM: event inner (emit_cpi) + rentang dari initialize_position* ---
+    // --- Meteora DLMM: inner events (emit_cpi) + range from initialize_position* ---
     const dlmmRange = new Map();   // position -> {lowerBin, upperBin}
     for (const s of seq) {
       if (s.venue === 'meteora' && s.name && /^initialize_position/.test(s.name) && s.acc.position) {
@@ -245,7 +245,7 @@ class SolanaWalletResearch {
         const [a0, a1] = (d.amounts || []).map(big);
         push({ venue: 'meteora', id: pos, pool, kind: name === 'AddLiquidity' ? 'increase' : 'decrease', a0, a1, activeBin: num(bin), ...(dlmmRange.get(pos) || {}) });
       } else if (name === 'ClaimFee' || name === 'ClaimFee2') {
-        // Satu klaim memancarkan ClaimFee DAN ClaimFee2 dengan jumlah sama — dihitung sekali.
+        // One claim emits ClaimFee AND ClaimFee2 with the same amounts — counted once.
         const f0 = big(pick(d, 'fee_x', 'feeX')), f1 = big(pick(d, 'fee_y', 'feeY'));
         const k = `${pos}:${f0}:${f1}`;
         if (seenClaim.has(k)) { if (bin != null) { const prev = out.find((e) => e.kind === 'collect' && e.id === pos && e.f0 === f0 && e.f1 === f1); if (prev) prev.activeBin = num(bin); } continue; }
@@ -254,7 +254,7 @@ class SolanaWalletResearch {
       } else if (name === 'PositionClose') push({ venue: 'meteora', id: pos, kind: 'close' });
     }
 
-    // --- Orca & Raydium: event log + instruksi untuk yang tidak ber-event ---
+    // --- Orca & Raydium: log events + instructions for what has no event ---
     const logs = this.logEvents(tx);
     const orcaIx = seq.filter((s) => s.venue === 'orca' && s.name);
     const rayIx = seq.filter((s) => s.venue === 'raydium' && s.name);
@@ -266,7 +266,7 @@ class SolanaWalletResearch {
         push({ ...base, kind: event.name === 'LiquidityIncreased' ? 'increase' : 'decrease', liq: big(d.liquidity), a0: big(d.token_a_amount), a1: big(d.token_b_amount) });
       }
     }
-    // collect_fees(_v2): jumlah = transfer keluar vault A/B yang mengikutinya
+    // collect_fees(_v2): amount = the vault A/B transfers out that follow it
     for (let i = 0; i < seq.length; i++) {
       const s = seq[i];
       if (s.venue !== 'orca' || !s.name || !/^collect_fees/.test(s.name)) continue;
@@ -282,8 +282,8 @@ class SolanaWalletResearch {
     }
     for (const s of orcaIx) if (/^close_position/.test(s.name) && s.acc.position) push({ venue: 'orca', id: s.acc.position, kind: 'close' });
 
-    // Raydium: Increase/Decrease/Collect dikunci mint NFT posisi → PDA posisi. Pool &
-    // harga dari LiquidityChange/LiquidityCalculate yang dipancarkan tepat sebelumnya.
+    // Raydium: Increase/Decrease/Collect are keyed by the position NFT mint → position PDA. Pool &
+    // price from the LiquidityChange/LiquidityCalculate emitted right before.
     const rayOpen = rayIx.filter((s) => /^open_position/.test(s.name));
     let openK = 0, lastChange = null, lastCalc = null;
     const pdaOf = (mint) => R.getPdaPersonalPositionAddress(R.CLMM_PROGRAM_ID, new PublicKey(mint)).publicKey.toBase58();
@@ -315,14 +315,14 @@ class SolanaWalletResearch {
     return out;
   }
 
-  // ---- susun posisi ----------------------------------------------------------------
-  // Harga (sqrtX96) satu kejadian: dari event kalau ada, kalau tidak dari komposisi
-  // jumlah di rentang tick (rumus v3), kalau tidak dari kejadian terdekat posisi itu.
+  // ---- assemble positions ------------------------------------------------------------
+  // The price (sqrtX96) of one event: from the event when present, otherwise from the amount
+  // composition within the tick range (v3 formula), otherwise from the nearest event of that position.
   static sqrtFromAmounts(L, a0, a1, tl, tu) {
     if (tl == null || tu == null) return null;
     const sa = m.getSqrtRatioAtTick(tl), sb = m.getSqrtRatioAtTick(tu);
-    if (a0 > 0n && a1 === 0n) return sa;      // semua token0: harga di bawah/di tepi bawah rentang
-    if (a1 > 0n && a0 === 0n) return sb;      // semua token1: di atas rentang
+    if (a0 > 0n && a1 === 0n) return sa;      // all token0: price below / at the lower edge of the range
+    if (a1 > 0n && a0 === 0n) return sb;      // all token1: above the range
     if (!(L > 0n) || !(a1 > 0n)) return null;
     const p = sa + (a1 * m.Q96) / L;
     return p < sa ? sa : p > sb ? sb : p;
@@ -345,7 +345,7 @@ class SolanaWalletResearch {
     if (p.lastSlot == null || e.slot >= p.lastSlot) { p.lastSlot = e.slot; p.lastTs = e.ts; }
     if (e.kind === 'open') { p.sawOpen = true; return; }
     if (e.kind === 'close') { p.sawClose = true; return; }
-    // harga kejadian
+    // event price
     let sqrt = e.sqrtX96 || null;
     if (!sqrt && e.activeBin != null && st?.binStep) sqrt = u.binSqrtX96(e.activeBin, st.binStep);
     if (!sqrt && (e.kind === 'increase' || e.kind === 'decrease')) sqrt = SolanaWalletResearch.sqrtFromAmounts(e.liq, e.a0 || 0n, e.a1 || 0n, p.tickLower, p.tickUpper);
@@ -369,8 +369,8 @@ class SolanaWalletResearch {
     p.events.push({ ...e, sqrt, valueUsd });
   }
 
-  // Posisi terbuka wallet sekarang (ketiga venue). Venue yang gagal dibaca: null —
-  // posisinya tidak boleh terbaca "tertutup".
+  // The wallet's open positions now (all three venues). A venue that failed to read: null —
+  // its positions must not read as "closed".
   async livePositions(wallet) {
     const out = new Map(), failed = new Set();
     for (const [venue, a] of Object.entries(this.chain.adapters)) {
@@ -389,8 +389,8 @@ class SolanaWalletResearch {
     const positions = base;
     const poolOf = new Map();
     const { live, failed } = await this.livePositions(wallet);
-    // pool posisi yang kejadiannya tidak membawa pool (Orca collect/close, Raydium
-    // tanpa LiquidityChange): dari posisi hidup atau kejadian lain posisi yang sama
+    // The pool of a position whose events carry no pool (Orca collect/close, Raydium
+    // without LiquidityChange): from the live position or another event of the same position
     for (const e of evs) if (e.pool) poolOf.set(e.id, e.pool);
     for (const [id, p] of live) poolOf.set(id, p.pool);
     const pools = new Map();
@@ -399,7 +399,7 @@ class SolanaWalletResearch {
       const k = `${venue}:${pool}`;
       if (!pools.has(k)) {
         const st = await this.chain.pool(venue, pool).catch(() => null);
-        // simbol kedua token harus ada di tabel tokens (dasbor membaca dari sana)
+        // both tokens' symbols must be in the tokens table (the dashboard reads from there)
         if (st) await this.chain.tokens([st.token0, st.token1]).catch(() => null);
         pools.set(k, st);
       }
@@ -412,7 +412,7 @@ class SolanaWalletResearch {
       this.apply(p, e, await poolState(p.venue, p.pool), ethUsd);
       if (onProgress && ++n % 50 === 0) onProgress({ phase: 'posisi', scanned: n, total: evs.length });
     }
-    // Posisi yang masih terbuka tapi tidak punya kejadian di jendela ini (dibuka lebih lama)
+    // Positions still open but without events in this window (opened earlier)
     for (const [id, lp] of live) if (!positions.has(id)) positions.set(id, { ...this.newPos(lp), pool: lp.pool });
     for (const p of positions.values()) {
       const lp = live.get(p.id);
@@ -423,25 +423,25 @@ class SolanaWalletResearch {
       else if (p.venue === 'meteora' && p.lowerBin != null && p.st?.binStep) {
         ({ tickLower: p.tickLower, tickUpper: p.tickUpper } = u.binRangeToTicks(p.lowerBin, p.upperBin, p.st.binStep));
       }
-      // Tanpa kejadian pembukaan di jendela = modal awalnya tidak diketahui.
+      // No opening event in the window = its starting capital is unknown.
       p.incomplete = p.sawOpen || p.fromDb ? (p.incomplete || 0) : 1;
-      // Tidak hidup lagi tapi tidak ada kejadian tarik/tutup yang terbaca (transaksinya
-      // belum terbaca / di luar jendela): hasilnya tidak diketahui — TIDAK dibukukan
-      // sebagai rugi 100%.
+      // No longer live but no withdrawal/close event read (its transactions not read yet /
+      // outside the window): the result is unknown — NOT booked
+      // as a 100% loss.
       if (p.status === 'closed' && !p.sawClose && !p.events.some((e) => e.kind === 'decrease') && !(p.returnedUsd > 0)) p.incomplete = 1;
     }
     return positions;
   }
 
-  // ---- simpan ---------------------------------------------------------------------
+  // ---- store ---------------------------------------------------------------------
   async persist(wallet, positions, { fromSlot, head, ethUsd }) {
-    // Hasil pelacak token (proceeds) posisi tertutup yang tidak berubah dipertahankan —
-    // INSERT OR REPLACE di bawah menghapusnya, dan melacak ulang semuanya tiap pembaruan
-    // berarti membaca ulang puluhan transaksi dari RPC publik.
+    // Token tracker results (proceeds) of unchanged closed positions are kept —
+    // the INSERT OR REPLACE below deletes them, and re-tracking everything on every refresh
+    // means re-reading dozens of transactions from public RPC.
     const tracked = new Map(this.store.all(`SELECT token_id, out0, out1, held_tok, sold_tok, realized_q, unrealized_q, pnl_q, tracked_to
       FROM wpositions WHERE chain=? AND wallet=? AND status='closed' AND tracked_to IS NOT NULL`, this.network, wallet).map((r) => [r.token_id, r]));
     for (const p of positions.values()) {
-      if (!p.st) continue;   // pool tidak terbaca: tidak bisa dinilai
+      if (!p.st) continue;   // pool unreadable: cannot be valued
       const q = this.chain.quoteSideOf(p.st.token0, p.st.token1);
       let liveUsd = 0, liveFeeUsd = 0, inRange = null;
       if (p.live && p.st.sqrtX96) {
@@ -492,7 +492,7 @@ class SolanaWalletResearch {
 
   stateKey(wallet) { return `sol_research:${this.network}:${wallet}`; }
 
-  // ---- pindai penuh ------------------------------------------------------------------
+  // ---- full scan ------------------------------------------------------------------
   async scan(wallet, { blocks = 900_000, ethUsd = 150, onProgress } = {}) {
     const sinceMs = Date.now() - blocks * WINDOW_BLOCK_MS;
     const head = await this.rpc.slot();
@@ -500,7 +500,7 @@ class SolanaWalletResearch {
     const { sigs, capped } = await this.signatures(wallet, { sinceMs });
     const txs = await this.transactions(sigs, onProgress);
     const positions = await this.build(wallet, txs, ethUsd, { onProgress });
-    // Pindai penuh membangun ulang: baris lama wallet ini diganti seluruhnya.
+    // A full scan rebuilds: this wallet's old rows are replaced entirely.
     this.store.run('DELETE FROM wpositions WHERE chain=? AND wallet=?', this.network, wallet);
     this.store.run('DELETE FROM wevents WHERE chain=? AND wallet=?', this.network, wallet);
     const fromSlot = sigs.length ? sigs[sigs.length - 1].slot : head;
@@ -512,7 +512,7 @@ class SolanaWalletResearch {
     return { wallet, positions: [...positions.values()], head, from: fromSlot, stats, txs: txs.length };
   }
 
-  // ---- pembaruan lanjutan: hanya transaksi sejak pindai terakhir ------------------
+  // ---- incremental refresh: only transactions since the last scan ------------------
   async refresh(wallet, { ethUsd = 150, onProgress } = {}) {
     let st = null;
     try { st = JSON.parse(this.store.getState(this.stateKey(wallet)) || 'null'); } catch { st = null; }
@@ -521,12 +521,12 @@ class SolanaWalletResearch {
     const { sigs } = await this.signatures(wallet, { stopSig: st.newest, sinceMs: st.sinceMs });
     const pending = (st.pending || []).filter((sg) => !sigs.some((x) => x.signature === sg)).map((signature) => ({ signature }));
     const txs = await this.transactions([...sigs, ...pending], onProgress);
-    // Kejadian dari transaksi tertunda yang ternyata sudah pernah tersimpan tidak dobel:
-    // wevents dikunci (tx_hash, log_index) dan agregat hanya menambah kejadian baru.
+    // Events from pending transactions that turn out to be stored already are not doubled:
+    // wevents is keyed (tx_hash, log_index) and the aggregate only adds new events.
     const known = new Set(this.store.all('SELECT DISTINCT tx_hash FROM wevents WHERE chain=? AND wallet=?', this.network, wallet).map((r) => r.tx_hash));
     const fresh = txs.filter((t) => !known.has(t.sig));
     fresh.missing = txs.missing;
-    // Posisi yang sudah tersimpan jadi dasar: kejadian baru ditambahkan ke agregatnya.
+    // Positions already stored are the base: new events are added to their aggregate.
     const base = new Map();
     for (const r of this.store.all('SELECT * FROM wpositions WHERE chain=? AND wallet=?', this.network, wallet)) {
       base.set(r.token_id, {
@@ -544,7 +544,7 @@ class SolanaWalletResearch {
     return { wallet, positions: [...positions.values()], head, stats, refreshed: fresh.length };
   }
 
-  // ---- nilai posisi terbuka di harga sekarang (halaman Wallet/Pool/Token) ----------
+  // ---- open position value at the current price (Wallet/Pool/Token pages) ----------
   async refreshOpen(rows, ethUsd, { ttlMs = 15_000 } = {}) {
     const open = rows.filter((r) => r.status === 'open' && r.pool_ref && this.chain.adapters[r.venue]);
     const now = Date.now();
@@ -557,7 +557,7 @@ class SolanaWalletResearch {
       catch { continue; }
       for (const r of list) {
         const p = got.get(r.token_id);
-        if (!p) continue;   // null = sudah ditutup; pindai berikutnya yang membukukannya
+        if (!p) continue;   // null = already closed; the next scan books it
         const st = await this.chain.pool(venue, r.pool_ref).catch(() => null);
         if (!st) continue;
         const v = (x0, x1) => { const q = this.chain.valueInQuote({ sqrtPriceX96: st.sqrtX96, amount0: x0, amount1: x1, dec0: st.dec0, dec1: st.dec1, token0: st.token0, token1: st.token1 }); return q ? q.value * (q.kind === 'eth' ? ethUsd : 1) : 0; };
@@ -573,7 +573,7 @@ class SolanaWalletResearch {
   }
 }
 
-// Ringkasan dari DB: persis versi EVM (satu rumus untuk kedua jenis chain).
+// Summary from the DB: exactly the EVM version (one formula for both chain kinds).
 SolanaWalletResearch.prototype.statsFromDb = WalletResearch.prototype.statsFromDb;
 
 module.exports = { SolanaWalletResearch, summarize, EVENT_IX_TAG };

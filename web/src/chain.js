@@ -11,13 +11,13 @@ const DEFAULT = {
 let current = { ...DEFAULT };
 
 export const setChain = (info) => { if (info?.key) current = { ...DEFAULT, ...info }; };
-// Solana: alamat base58, PEKA HURUF — tidak boleh di-lowercase seperti alamat EVM.
+// Solana: base58 addresses, CASE-SENSITIVE — must not be lower-cased like EVM addresses.
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 export const isSolana = () => current.kind === 'solana';
-// Bentuk kanonik alamat di chain ini (EVM huruf kecil, Solana apa adanya).
+// The canonical form of an address on this chain (EVM lower case, Solana as is).
 export const canonAddr = (a) => (isSolana() ? String(a || '').trim() : String(a || '').trim().toLowerCase());
 export const isAddr = (a) => (isSolana() ? BASE58.test(String(a || '')) : /^0x[0-9a-f]{40}$/.test(String(a || '')));
-// Rujukan pool: EVM alamat v3 atau poolId v4 (32 byte); Solana alamat akun pool.
+// Pool reference: EVM v3 address or v4 poolId (32 bytes); Solana the pool account address.
 export const isPoolRef = (r) => (isSolana() ? BASE58.test(String(r || '')) : /^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(String(r || '')));
 export const chainInfo = () => current;
 // Symbols valued through the native price (ETH/WETH on Robinhood, BNB/WBNB on BSC).

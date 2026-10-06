@@ -1,10 +1,10 @@
 'use strict';
-// Verifikasi profil Solana (networks.js) langsung ke mainnet:
+// Verifies the Solana profile (networks.js) straight against mainnet:
 //   node src/solana/verify.js [https://rpc-url]
-// Memastikan endpoint memang mainnet-beta (hash genesis), tiap program venue ada dan
-// executable, program ID sama dengan yang dipakai SDK resmi untuk menyusun transaksi,
-// dan mint aset kuotasi (USDC/USDT/wSOL) ada dengan desimal yang dicatat. Jalankan
-// sebelum mematikan dry_run — satu karakter salah berarti transaksi ke program lain.
+// Checks that the endpoint really is mainnet-beta (genesis hash), every venue program exists
+// and is executable, the program IDs equal the ones the official SDKs build transactions with,
+// and the quote asset mints (USDC/USDT/wSOL) exist with the recorded decimals. Run it
+// before turning dry_run off — one wrong character means transactions to another program.
 const { Connection, PublicKey } = require('@solana/web3.js');
 const { build } = require('../networks');
 
@@ -21,7 +21,7 @@ async function verify(url = 'https://api.mainnet-beta.solana.com', log = console
   const slot = await conn.getSlot();
   check('slot terbaru terbaca', slot > 0, String(slot));
 
-  // Program venue: akun ada, executable, dan sama dengan konstanta SDK.
+  // Venue programs: the account exists, is executable, and equals the SDK constant.
   const sdk = {
     meteora: () => require('@meteora-ag/dlmm').LBCLMM_PROGRAM_IDS['mainnet-beta'],
     orca: () => require('@orca-so/whirlpools-sdk').ORCA_WHIRLPOOL_PROGRAM_ID.toBase58(),
@@ -37,7 +37,7 @@ async function verify(url = 'https://api.mainnet-beta.solana.com', log = console
     check(`program ${v.label} = SDK`, s === v.program, s || 'SDK tidak terbaca');
   });
 
-  // Mint kuotasi: ada, dimiliki program token, desimal sesuai QUOTES.
+  // Quote mints: exist, owned by the token program, decimals as in QUOTES.
   for (const [mint, q] of Object.entries(p.QUOTES)) {
     try {
       const r = await conn.getParsedAccountInfo(new PublicKey(mint));

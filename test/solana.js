@@ -1,12 +1,12 @@
 'use strict';
-// Uji dukungan Solana (Meteora DLMM, Orca Whirlpools, Raydium CLMM).
+// Tests of Solana support (Meteora DLMM, Orca Whirlpools, Raydium CLMM).
 //
-// Kode asli dipakai untuk satuan, pengamat (selisih potret), perencana, dan mesin;
-// yang dipalsukan hanya batas luar: RPC, adapter venue (baca/susun transaksi), Jupiter,
-// dan pengirim transaksi. Pertanyaannya sama dengan uji EVM: "kalau target melakukan
-// X, apakah bot memutuskan dan membukukan hal yang benar?"
+// The real code is used for units, the watcher (snapshot diffs), the planner and the engine;
+// only the outer edges are faked: RPC, venue adapters (reading/building transactions), Jupiter,
+// and the transaction sender. The question is the same as the EVM tests: "when the target does
+// X, does the bot decide and book the right thing?"
 //
-// Jalankan: node test/solana.js
+// Run: node test/solana.js
 const assert = require('node:assert');
 const path = require('node:path');
 const os = require('node:os');
@@ -26,7 +26,7 @@ const { feeGrowthInside, unclaimed } = require('../src/solana/clmm-math');
 let pass = 0, fail = 0;
 async function t(name, fn) {
   try { await fn(); pass++; console.log(`  ok   ${name}`); }
-  catch (e) { fail++; console.log(`  GAGAL ${name}\n       ${e.stack.split('\n').slice(0, process.env.V ? 14 : 3).join('\n       ')}`); }
+  catch (e) { fail++; console.log(`  FAILED ${name}\n       ${e.stack.split('\n').slice(0, process.env.V ? 14 : 3).join('\n       ')}`); }
 }
 
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -35,7 +35,7 @@ const TARGET = '6mch5rCLBtZ9DCnM2mx18Ud1XXhXAip7otw9LkrTXwTD';
 const ME = 'Me11111111111111111111111111111111111111111';
 const POOL = 'Poo1111111111111111111111111111111111111111';
 
-// Pool DLMM MEME/SOL: binStep 100, bin aktif 0 → harga mentah 1 (9 vs 9 desimal = 1 SOL/MEME).
+// DLMM MEME/SOL pool: binStep 100, active bin 0 → raw price 1 (9 vs 9 decimals = 1 SOL/MEME).
 const BIN_STEP = 100;
 const poolState = (over = {}) => ({
   venue: 'meteora', id: POOL, token0: MEME, token1: WSOL, dec0: 9, dec1: 9,
@@ -43,7 +43,7 @@ const poolState = (over = {}) => ({
   ticksPerUnit: u.ticksPerBin(BIN_STEP), fee: 10_000, tickSpacing: 100, liquidity: null, enabled: true, ...over,
 });
 
-// Chain Solana asli dengan RPC, adapter, dan Jupiter palsu.
+// The real Solana chain with a fake RPC, adapters and Jupiter.
 function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}) {
   const rpc = { run: async () => { throw new Error('rpc palsu'); }, primary: () => null, slot: async () => 1, allCooling: () => false, stats: () => [] };
   const jup = {
@@ -60,53 +60,53 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
 (async () => {
   console.log('solana');
 
-  // ---- alamat ------------------------------------------------------------------------
-  await t('alamat Solana: base58 dipertahankan hurufnya, EVM tetap huruf kecil, yang tak sah ditolak', () => {
+  // ---- addresses ---------------------------------------------------------------------
+  await t('Solana addresses: base58 keeps its case, EVM stays lower-case, invalid ones are rejected', () => {
     assert.ok(isSolana('solana') && !isSolana('bsc'));
     assert.strictEqual(normAddr('solana', ` ${TARGET} `), TARGET);
     assert.strictEqual(normAddr('solana', '0xabc'), null);
-    assert.strictEqual(normAddr('solana', TARGET.replace('m', '0')), null, 'angka 0 bukan base58');
+    assert.strictEqual(normAddr('solana', TARGET.replace('m', '0')), null, 'the digit 0 is not base58');
     assert.strictEqual(normAddr('bsc', '0xE9C209FD02A1562761C99700FC3D126E64B981EE'), '0xe9c209fd02a1562761c99700fc3d126e64b981ee');
     assert.strictEqual(normAddr('bsc', TARGET), null);
   });
 
-  // ---- satuan --------------------------------------------------------------------------
-  await t('bin DLMM ↔ tick setara: bin aktif di [lower, upper] ⇔ tick-nya di [tickLower, tickUpper)', () => {
+  // ---- units ---------------------------------------------------------------------------
+  await t('DLMM bin ↔ equivalent tick: active bin in [lower, upper] ⇔ its tick in [tickLower, tickUpper)', () => {
     for (const bs of [1, 4, 10, 25, 80, 100, 250]) {
       for (const [lo, hi] of [[-10, 10], [-5388, -5343], [0, 0], [100, 169]]) {
         const { tickLower, tickUpper } = u.binRangeToTicks(lo, hi, bs);
-        assert.ok(tickUpper > tickLower, `bs ${bs} [${lo},${hi}] lebar nol`);
+        assert.ok(tickUpper > tickLower, `bs ${bs} [${lo},${hi}] zero width`);
         for (let a = lo - 3; a <= hi + 3; a++) {
           const inBins = a >= lo && a <= hi;
           const tk = u.binToTick(a, bs);
           assert.strictEqual(tk >= tickLower && tk < tickUpper, inBins, `bs ${bs} bin ${a} [${lo},${hi}]`);
         }
-        assert.strictEqual(u.tickToBin(tickLower, bs), lo, `bs ${bs} tickToBin(${tickLower}) balik ke ${lo}`);
+        assert.strictEqual(u.tickToBin(tickLower, bs), lo, `bs ${bs} tickToBin(${tickLower}) maps back to ${lo}`);
       }
     }
   });
 
-  await t('harga bin DLMM & sqrt Q64 Orca/Raydium dinormalkan ke harga yang sama dengan rumus Uniswap', () => {
-    // SOL/USDC DLMM binStep 4, bin −5426 → ~114 USDC per SOL (terukur di mainnet 2026-09-24)
+  await t('DLMM bin prices & Orca/Raydium Q64 sqrt normalise to the same price as the Uniswap formula', () => {
+    // SOL/USDC DLMM binStep 4, bin −5426 → ~114 USDC per SOL (measured on mainnet 2026-09-24)
     const p = m.priceFromSqrt(u.binSqrtX96(-5426, 4), 9, 6);
-    assert.ok(p > 113 && p < 115, `harga ${p}`);
-    assert.ok(Math.abs(m.tickToPrice(u.binToTick(-5426, 4), 9, 6) - p) / p < 0.001, 'tick setara memberi harga yang sama');
+    assert.ok(p > 113 && p < 115, `price ${p}`);
+    assert.ok(Math.abs(m.tickToPrice(u.binToTick(-5426, 4), 9, 6) - p) / p < 0.001, 'the equivalent tick gives the same price');
     // Q64.64 → Q96: tick 0 = sqrt 1.0 = 2^64 (Q64) = 2^96 (Q96)
     assert.strictEqual(u.x64ToX96(1n << 64n), 1n << 96n);
     assert.strictEqual(m.getTickAtSqrtRatio(u.x64ToX96(1n << 64n)), 0);
   });
 
-  await t('fee CLMM (Orca/Raydium): pertumbuhan di dalam rentang × L >> 64, dengan putaran 2^128', () => {
+  await t('CLMM fees (Orca/Raydium): growth inside the range × L >> 64, with 2^128 wrap-around', () => {
     const g = 1000n << 64n;
-    // harga di dalam rentang: inside = global − below − above
+    // price inside the range: inside = global − below − above
     const inside = feeGrowthInside({ tickCurrent: 0, tickLower: -10, tickUpper: 10, global: g, lowerOut: 100n << 64n, upperOut: 50n << 64n });
     assert.strictEqual(inside, 850n << 64n);
     assert.strictEqual(unclaimed({ liquidity: 2n, inside, checkpoint: 800n << 64n, owed: 7n }), 7n + 100n);
-    // checkpoint "di depan" (sudah berputar): tetap positif kecil, bukan negatif raksasa
+    // checkpoint "ahead" (already wrapped): stays small positive, not a huge negative
     assert.strictEqual(unclaimed({ liquidity: 1n, inside: 5n << 64n, checkpoint: ((1n << 128n) - (3n << 64n)), owed: 0n }), 8n);
   });
 
-  await t('pool SOL/USDC: stablecoin jadi kuotasi (harga USDC per SOL, nilai dalam USD); pool MEME/SOL tetap SOL', () => {
+  await t('SOL/USDC pool: the stablecoin is the quote (USDC per SOL, value in USD); a MEME/SOL pool stays SOL', () => {
     const chain = fakeChain(new Store(':memory:'));
     assert.deepStrictEqual([chain.quoteSideOf(WSOL, USDC).side, chain.quoteSideOf(WSOL, USDC).symbol], [1, 'USDC']);
     assert.deepStrictEqual([chain.quoteSideOf(USDC, WSOL).side, chain.quoteSideOf(USDC, WSOL).symbol], [0, 'USDC']);
@@ -114,29 +114,29 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(chain.quoteSideOf(MEME, 'Other1111111111111111111111111111111111111'), null);
   });
 
-  await t('penilaian selalu dalam satuan kuotasi baris posisi (baris lama ber-SOL tetap benar walau kuotasi kini USDC)', () => {
+  await t('valuation is always in the position row’s quote units (an old SOL row stays right even though the quote is now USDC)', () => {
     const chain = fakeChain(new Store(':memory:'));
-    // pool SOL/USDC 113 USDC per SOL; posisi 1 SOL + 113 USDC = 226 USDC = 2 SOL
+    // SOL/USDC pool at 113 USDC per SOL; position 1 SOL + 113 USDC = 226 USDC = 2 SOL
     const args = { sqrtPriceX96: u.sqrtX96FromPrice(113 * 10 ** (6 - 9)), amount0: 10n ** 9n, amount1: 113n * 10n ** 6n, dec0: 9, dec1: 6, token0: WSOL, token1: USDC };
     assert.ok(Math.abs(chain.valueAs(args, 'USDC', 113) - 226) < 1e-6);
     assert.ok(Math.abs(chain.valueAs(args, 'SOL', 113) - 2) < 1e-9);
   });
 
-  // ---- pengamat ------------------------------------------------------------------------
-  await t('selisih potret: posisi baru = tambah, L naik = tambah, L turun = tarik sebanding, hilang = tutup', () => {
+  // ---- watcher -------------------------------------------------------------------------
+  await t('snapshot diff: new position = increase, L up = increase, L down = proportional withdrawal, gone = close', () => {
     const P = (L, a0 = '0', a1 = '0') => ({ venue: 'meteora', pool: POOL, token0: MEME, token1: WSOL, lower: -5, upper: 5, tickLower: -500, tickUpper: 600, liquidity: String(L), amount0: a0, amount1: a1 });
     const prev = { A: P(100), B: P(100), C: P(100), D: P(100) };
     const now = { A: P(100), B: P(150), C: P(25), E: P(40) };
     const acts = SolanaWatcher.diff(TARGET, prev, now);
     const by = Object.fromEntries(acts.map((a) => [a.id, a]));
-    assert.strictEqual(by.A, undefined, 'tidak berubah = tidak ada aksi');
+    assert.strictEqual(by.A, undefined, 'unchanged = no action');
     assert.deepStrictEqual([by.B.kind, by.B.delta, by.B.before], ['increase', 50n, 100n]);
     assert.deepStrictEqual([by.C.kind, by.C.delta, by.C.before], ['decrease', -75n, 100n]);
     assert.deepStrictEqual([by.D.kind, by.D.delta, by.D.before, by.D.gone], ['decrease', -100n, 100n, true]);
     assert.deepStrictEqual([by.E.kind, by.E.delta, by.E.before], ['increase', 40n, 0n]);
   });
 
-  await t('venue yang gagal dibaca TIDAK terbaca sebagai "semua posisinya ditutup"', async () => {
+  await t('a venue that fails to read does NOT read as "all its positions closed"', async () => {
     const store = new Store(':memory:');
     store.run("INSERT INTO targets(chain,address,enabled,added_ts) VALUES('solana',?,1,?)", TARGET, Date.now());
     const chain = fakeChain(store);
@@ -147,10 +147,10 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     w.saveSnap(TARGET, { sig: 'sig1', positions: { X: { venue: 'meteora', pool: POOL, liquidity: '500', amount0: '1', amount1: '1' } } });
     const acts = await w.scanTarget(TARGET);
     assert.deepStrictEqual(acts, []);
-    assert.ok(w.loadSnap(TARGET).positions.X, 'potret lama venue gagal tetap disimpan');
+    assert.ok(w.loadSnap(TARGET).positions.X, 'the failed venue’s old snapshot is kept');
   });
 
-  await t('pemindaian pertama target hanya membuat potret — posisi lama tidak disalin', async () => {
+  await t('a target’s first scan only takes a snapshot — existing positions are not copied', async () => {
     const store = new Store(':memory:');
     const chain = fakeChain(store);
     chain.adapters.meteora.listPositions = async () => [{ venue: 'meteora', id: 'P1', pool: POOL, token0: MEME, token1: WSOL, lower: 0, upper: 1, tickLower: 0, tickUpper: 1, liquidity: '9', amount0: 1n, amount1: 1n }];
@@ -161,7 +161,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.ok(w.loadSnap(TARGET).positions.P1);
   });
 
-  await t('venue yang gagal saat potret awal: begitu terbaca, posisinya jadi potret — TIDAK disalin massal', async () => {
+  await t('a venue that failed during the first snapshot: once read, its positions become snapshot — NOT copied en masse', async () => {
     const store = new Store(':memory:');
     const chain = fakeChain(store);
     let rayOk = false;
@@ -172,18 +172,18 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
       return [{ venue: 'raydium', id: 'OldRay', pool: POOL, token0: MEME, token1: WSOL, lower: 0, upper: 10, tickLower: 0, tickUpper: 10, liquidity: '500', amount0: 1n, amount1: 1n }];
     };
     const w = new SolanaWatcher({ rpc: { run: async (fn) => fn({ getSignaturesForAddress: async () => [{ signature: 'S' + Math.random(), slot: 1 }] }) }, store, chain, cfg: { rules: {} }, log: () => {} });
-    await w.scanTarget(TARGET);                   // potret awal: raydium gagal
+    await w.scanTarget(TARGET);                   // first snapshot: raydium fails
     rayOk = true;
-    assert.deepStrictEqual(await w.scanTarget(TARGET), [], 'posisi lama raydium bukan aksi baru');
+    assert.deepStrictEqual(await w.scanTarget(TARGET), [], 'old raydium positions are not new actions');
     assert.ok(w.loadSnap(TARGET).positions.OldRay);
-    // sesudahnya gerakan raydium sungguhan tetap terdeteksi
+    // afterwards a real raydium move is still detected
     chain.adapters.raydium.listPositions = async () => [];
     const acts = await w.scanTarget(TARGET);
     assert.strictEqual(acts.length, 1);
     assert.strictEqual(acts[0].gone, true);
   });
 
-  await t('tanda tangan terakhir tidak dikenal endpoint ("not found") → tetap terpindai, bukan macet selamanya', async () => {
+  await t('last signature unknown to the endpoint ("not found") → still scanned, not stuck forever', async () => {
     const store = new Store(':memory:');
     const chain = fakeChain(store);
     const w = new SolanaWatcher({ rpc: { run: async (fn) => fn({ getSignaturesForAddress: async (pk, o) => {
@@ -194,17 +194,17 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.deepStrictEqual(sigs.map((x) => x.signature), ['NEW2', 'NEW1']);
   });
 
-  await t('RPC: tanda tangan target tidak pernah dibaca dari endpoint tanpa riwayat (publicnode)', async () => {
+  await t('RPC: target signatures are never read from an endpoint without history (publicnode)', async () => {
     const { SolanaRpc } = require('../src/solana/rpc');
     const rpc = new SolanaRpc([{ url: 'https://solana-rpc.publicnode.com', no_gpa: true, no_history: true }, { url: 'https://api.mainnet-beta.solana.com' }], () => {});
     for (let i = 0; i < 4; i++) assert.deepStrictEqual(rpc.order({ needsHistory: true }).map((e) => new URL(e.url).hostname), ['api.mainnet-beta.solana.com']);
-    assert.strictEqual(rpc.order({}).length, 2, 'baca akun biasa tetap memakai keduanya');
+    assert.strictEqual(rpc.order({}).length, 2, 'plain account reads still use both');
     const hit = [];
     await rpc.run(async (c, e) => { hit.push(new URL(e.url).hostname); return 1; }, { needsHistory: true });
     assert.deepStrictEqual(hit, ['api.mainnet-beta.solana.com']);
   });
 
-  await t('gerakan saham remeh (<0,1%) bukan aksi; yang menumpuk tetap tertangkap sekali', async () => {
+  await t('trivial share moves (<0.1%) are not actions; ones that add up are still caught once', async () => {
     const store = new Store(':memory:');
     const chain = fakeChain(store);
     let L = 10n ** 26n;
@@ -213,27 +213,27 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     chain.adapters.raydium.listPositions = async () => [];
     const w = new SolanaWatcher({ rpc: { run: async (fn) => fn({ getSignaturesForAddress: async () => [{ signature: 'S' + Math.random() }] }) }, store, chain, cfg: { rules: {} }, log: () => {} });
     await w.scanTarget(TARGET);
-    const step = 10n ** 26n / 5000n;                 // 0,02% per putaran
-    for (let i = 0; i < 4; i++) { L -= step; assert.deepStrictEqual(await w.scanTarget(TARGET), [], `putaran ${i}`); }
-    L -= step;                                        // total 0,1% → lewat ambang
+    const step = 10n ** 26n / 5000n;                 // 0.02% per round
+    for (let i = 0; i < 4; i++) { L -= step; assert.deepStrictEqual(await w.scanTarget(TARGET), [], `round ${i}`); }
+    L -= step;                                        // total 0.1% → crosses the threshold
     const acts = await w.scanTarget(TARGET);
     assert.strictEqual(acts.length, 1);
-    assert.strictEqual(-acts[0].delta, step * 5n, 'seluruh geseran yang menumpuk');
+    assert.strictEqual(-acts[0].delta, step * 5n, 'all the accumulated drift');
   });
 
-  await t('jumlah yang bergerak = isi × ΔL/L di komposisi sekarang (bukan selisih isi yang ikut bergeser harga)', async () => {
+  await t('the amount that moved = contents × ΔL/L at the current composition (not the contents difference, which shifts with price)', async () => {
     const store = new Store(':memory:');
     const chain = fakeChain(store);
     const w = new SolanaWatcher({ rpc: {}, store, chain, cfg: { rules: {} }, log: () => {} });
     const P = (L, a0, a1) => ({ venue: 'meteora', pool: POOL, token0: MEME, token1: WSOL, lower: -3, upper: 3, tickLower: -300, tickUpper: 400, liquidity: String(L), amount0: String(a0), amount1: String(a1) });
-    // L 100 → 150, harga bergeser: isi sesudahnya 300 MEME + 0 SOL (sisi SOL "turun")
+    // L 100 → 150, price moved: contents afterwards 300 MEME + 0 SOL (the SOL side "fell")
     const [a] = SolanaWatcher.diff(TARGET, { X: P(100, 100, 200) }, { X: P(150, 300, 0) });
     const [row] = await w.persist([{ ...a, sig: 'S', slot: 1 }]);
     assert.strictEqual(row.amount0, '100', '300 × 50/150');
     assert.strictEqual(row.amount1, '0');
   });
 
-  await t('tarik sebagian yang bulat ke 0 bps tidak dikirim', async () => {
+  await t('a partial withdrawal that rounds to 0 bps is not sent', async () => {
     const pos = { venue: 'meteora', id: 'OurPos', pool: POOL, liquidity: '1000000', amount0: 1n, amount1: 1n, fee0: 0n, fee1: 0n };
     const { store, eng, sent } = engineHarness({ position: pos });
     store.run(`INSERT INTO positions(chain,venue,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,target,mirror_of,status,opened_ts,cost_quote,quote_symbol)
@@ -245,29 +245,29 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(sent.length, 0);
   });
 
-  // ---- perencana -----------------------------------------------------------------------
+  // ---- planner -------------------------------------------------------------------------
   const rulesSol = (over = {}) => rulesFor(deepMerge(solanaTemplate().rules, over));
   const act = (over = {}) => ({
     id: 1, target: TARGET, venue: 'meteora', kind: 'increase', tokenId: 'TPos', poolRef: POOL, token0: MEME, token1: WSOL,
     lower: -3, upper: 3, tickLower: u.binToTick(-3, BIN_STEP), tickUpper: u.binToTick(4, BIN_STEP),
-    amount0: String(3n * 10n ** 9n), amount1: String(4n * 10n ** 9n),   // target setor 3 MEME + 4 SOL = 7 SOL
+    amount0: String(3n * 10n ** 9n), amount1: String(4n * 10n ** 9n),   // target deposits 3 MEME + 4 SOL = 7 SOL
     valueQuote: 7, liquidity: '100', liquidityBefore: '0', ...over,
   });
   const ctx = (store, over = {}) => ({ chain: fakeChain(store), pool: poolState(), ethUsd: 100, openExposureUsd: 0, spentTodayUsd: 0, openCount: 0, cash: null, existingUsd: null, ...over });
 
-  await t('rentang exact: bin target disalin apa adanya dan komposisi X/Y target diskala', () => {
+  await t('exact range: the target’s bins are copied as is and its X/Y composition scaled', () => {
     const store = new Store(':memory:');
     const d = planEntrySol(act(), { ...ctx(store), rules: rulesSol({ sizing: { mode: 'fixed_quote', fixed_quote_eth: 0.7, max_quote_per_position_usd: 1e6, max_total_exposure_usd: 1e6, daily_budget_usd: 1e6 } }) });
     assert.strictEqual(d.verdict, 'copy', d.reason);
     assert.deepStrictEqual([d.plan.lower, d.plan.upper], [-3, 3]);
-    // 0,7 SOL = 1/10 dari posisi target → 0,3 MEME + 0,4 SOL (dibulatkan ke bawah, ≤ 1 satuan)
+    // 0.7 SOL = 1/10 of the target position → 0.3 MEME + 0.4 SOL (rounded down, ≤ 1 unit)
     const near = (x, want) => { const d0 = want - BigInt(x); return d0 >= 0n && d0 <= 1n; };
     assert.ok(near(d.plan.amount0, 3n * 10n ** 8n), d.plan.amount0);
     assert.ok(near(d.plan.amount1, 4n * 10n ** 8n), d.plan.amount1);
     assert.ok(Math.abs(d.plan.valueUsd - 70) < 0.01, `valueUsd ${d.plan.valueUsd}`);
   });
 
-  await t('mirror & pct menskala nilai tambahan target; plafon per posisi memotong', () => {
+  await t('mirror & pct scale the value the target added; the per-position cap trims', () => {
     const store = new Store(':memory:');
     const big = { max_quote_per_position_usd: 1e6, max_total_exposure_usd: 1e6, daily_budget_usd: 1e6 };
     const mir = planEntrySol(act(), { ...ctx(store), rules: rulesSol({ sizing: { mode: 'mirror', ...big } }) });
@@ -279,19 +279,19 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.match(cap.reason, /batas per posisi/);
   });
 
-  await t('filter: venue mati, daftar hitam (peka huruf), satu sisi = lewati, rentang DLMM > 1400 bin', () => {
+  await t('filters: disabled venue, blacklist (case-sensitive), one-sided = skip, DLMM range > 1400 bins', () => {
     const store = new Store(':memory:');
     const c = ctx(store);
     assert.match(planEntrySol(act(), { ...c, rules: rulesSol({ filters: { venues: ['orca'] } }) }).reason, /venue meteora dimatikan/);
     assert.match(planEntrySol(act(), { ...c, rules: rulesSol({ filters: { token_blacklist: [MEME] } }) }).reason, /daftar hitam/);
-    assert.strictEqual(planEntrySol(act(), { ...c, rules: rulesSol({ filters: { token_blacklist: [MEME.toLowerCase()] } }) }).verdict, 'copy', 'huruf kecil = alamat lain di Solana');
+    assert.strictEqual(planEntrySol(act(), { ...c, rules: rulesSol({ filters: { token_blacklist: [MEME.toLowerCase()] } }) }).verdict, 'copy', 'lower case = a different address on Solana');
     const above = act({ lower: 5, upper: 9, tickLower: u.binToTick(5, BIN_STEP), tickUpper: u.binToTick(10, BIN_STEP), amount1: '0' });
     assert.match(planEntrySol(above, { ...c, rules: rulesSol({ onesided: { policy: 'skip' } }) }).reason, /satu sisi/);
     const wide = act({ lower: -800, upper: 800 });
     assert.match(planEntrySol(wide, { ...c, rules: rulesSol() }).reason, /1400/);
   });
 
-  await t('kas: pool berkuotasi SOL, kas cuma USDC → ruang jembatan ikut dihitung', () => {
+  await t('cash: SOL-quoted pool, cash only in USDC → bridge room is accounted for', () => {
     const store = new Store(':memory:');
     const d = planEntrySol(act(), { ...ctx(store, { cash: { usd: 20, sol: 0 } }), rules: rulesSol({ sizing: { mode: 'mirror', max_quote_per_position_usd: 1e6, max_total_exposure_usd: 1e6, daily_budget_usd: 1e6 } }) });
     assert.strictEqual(d.verdict, 'copy');
@@ -299,7 +299,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.match(d.reason, /kas tersedia/);
   });
 
-  // ---- mesin ---------------------------------------------------------------------------
+  // ---- engine --------------------------------------------------------------------------
   function engineHarness({ dry = false, balances = new Map(), position = null, prices = { [MEME]: 100 } } = {}) {
     const store = new Store(':memory:');
     store.run("INSERT INTO targets(chain,address,enabled,added_ts) VALUES('solana',?,1,?)", TARGET, Date.now());
@@ -322,7 +322,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     return { store, chain, eng, sent, swaps };
   }
 
-  await t('tarik sebagian target 25% → cermin kita ditarik 25% (bps), hasil dibukukan, posisi tetap terbuka', async () => {
+  await t('target withdraws 25% → our mirror withdraws 25% (bps), proceeds booked, position stays open', async () => {
     const pos = { venue: 'meteora', id: 'OurPos', pool: POOL, liquidity: '1000', amount0: 4n * 10n ** 9n, amount1: 6n * 10n ** 9n, fee0: 0n, fee1: 0n };
     const { store, eng, sent } = engineHarness({ position: pos });
     store.run(`INSERT INTO positions(chain,venue,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,target,mirror_of,status,opened_ts,cost_quote,quote_symbol)
@@ -340,12 +340,12 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     const p = store.get('SELECT * FROM positions WHERE id=?', id);
     assert.strictEqual(p.status, 'open');
     assert.strictEqual(p.liquidity, '750');
-    assert.strictEqual(p.out0, String(10n ** 9n));          // 25% dari 4 MEME
-    assert.strictEqual(p.out1, String(15n * 10n ** 8n));    // 25% dari 6 SOL
-    assert.ok(Math.abs(p.out_quote - 2.5) < 1e-6, `out_quote ${p.out_quote}`);   // 1 MEME (1 SOL) + 1,5 SOL
+    assert.strictEqual(p.out0, String(10n ** 9n));          // 25% of 4 MEME
+    assert.strictEqual(p.out1, String(15n * 10n ** 8n));    // 25% of 6 SOL
+    assert.ok(Math.abs(p.out_quote - 2.5) < 1e-6, `out_quote ${p.out_quote}`);   // 1 MEME (1 SOL) + 1.5 SOL
   });
 
-  await t('target menutup → cermin ditutup penuh, fee ikut dihitung, memecoin dicatat sebagai sisa', async () => {
+  await t('target closes → mirror fully closed, fees counted, memecoin recorded as a leftover', async () => {
     const pos = { venue: 'meteora', id: 'OurPos', pool: POOL, liquidity: '1000', amount0: 2n * 10n ** 9n, amount1: 3n * 10n ** 9n, fee0: 10n ** 8n, fee1: 2n * 10n ** 8n };
     const { store, eng, sent } = engineHarness({ position: pos });
     store.run(`INSERT INTO positions(chain,venue,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,target,mirror_of,status,opened_ts,cost_quote,quote_symbol)
@@ -358,14 +358,14 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     const p = store.get('SELECT * FROM positions');
     assert.strictEqual(p.status, 'closed');
     assert.strictEqual(p.left_token, MEME);
-    assert.strictEqual(p.left_amount, String(21n * 10n ** 8n));   // 2 + 0,1 fee
-    assert.ok(Math.abs(p.out_quote - 5.3) < 1e-6, `out_quote ${p.out_quote}`);   // 2,1 MEME + 3,2 SOL
+    assert.strictEqual(p.left_amount, String(21n * 10n ** 8n));   // 2 + 0.1 fee
+    assert.ok(Math.abs(p.out_quote - 5.3) < 1e-6, `out_quote ${p.out_quote}`);   // 2.1 MEME + 3.2 SOL
   });
 
-  await t('mode simulasi: masuk diputuskan "dry" — transaksi disimulasikan, tidak ada yang dikirim', async () => {
+  await t('dry run: an entry is decided "dry" — the transaction is simulated, nothing is sent', async () => {
     const { store, eng } = engineHarness({ dry: true });
-    let kirim = 0;
-    eng.exec.sendGroups = async () => { kirim++; return { ok: true, hashes: ['X'] }; };
+    let sendCount = 0;
+    eng.exec.sendGroups = async () => { sendCount++; return { ok: true, hashes: ['X'] }; };
     eng.exec.simulateGroups = async () => ({ ok: true, cu: 12345 });
     store.run(`INSERT INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,amount0,amount1,value_quote,quote_symbol,ext)
       VALUES('solana',?,1,'s:TPos',0,?,'meteora','increase','TPos',?,?,?,?,?,'100',?,?,7,'SOL',?)`, Date.now(), TARGET, POOL, MEME, WSOL,
@@ -374,24 +374,24 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     const d = store.get('SELECT verdict, reason FROM decisions');
     assert.strictEqual(d.verdict, 'dry', d.reason);
     assert.match(d.reason, /simulasi OK \(12345 CU\)/);
-    assert.strictEqual(kirim, 0);
+    assert.strictEqual(sendCount, 0);
   });
 
-  await t('sisa entry: yang dijual kembali hanya token yang DIBELI entry ini — saldo lama pemilik tidak disentuh', async () => {
-    const { eng, swaps } = engineHarness({ balances: new Map([[MEME, 1000n * 10n ** 9n]]) });   // pemilik sudah pegang 1000 MEME
-    // entry membeli 5 MEME; sesudah mint, sisa di wallet 1002 MEME (3 masuk posisi)
+  await t('entry leftovers: only tokens BOUGHT by this entry are sold back — the owner’s existing balance is untouched', async () => {
+    const { eng, swaps } = engineHarness({ balances: new Map([[MEME, 1000n * 10n ** 9n]]) });   // the owner already holds 1000 MEME
+    // the entry buys 5 MEME; after the mint the wallet holds 1002 MEME (3 went into the position)
     eng.exec.balances = async () => new Map([[MEME, 1002n * 10n ** 9n]]);
     await eng.rescueTokens(new Map([[MEME, 5n * 10n ** 9n]]), new Map([[MEME, 1000n * 10n ** 9n]]), null);
     assert.strictEqual(swaps.length, 1);
-    assert.strictEqual(swaps[0].amount, 2n * 10n ** 9n, 'hanya 2 MEME sisa pembelian');
-    // saldo malah turun di bawah awal (dipakai posisi) → tidak ada yang dijual
+    assert.strictEqual(swaps[0].amount, 2n * 10n ** 9n, 'only the 2 MEME left over from the purchase');
+    // the balance even fell below the start (used by the position) → nothing is sold
     swaps.length = 0;
     eng.exec.balances = async () => new Map([[MEME, 998n * 10n ** 9n]]);
     await eng.rescueTokens(new Map([[MEME, 5n * 10n ** 9n]]), new Map([[MEME, 1000n * 10n ** 9n]]), null);
     assert.strictEqual(swaps.length, 0);
   });
 
-  await t('kas: SOL native + wSOL dikurangi cadangan; USDC+USDT dijumlah', async () => {
+  await t('cash: native SOL + wSOL minus the reserve; USDC+USDT summed', async () => {
     const { eng, chain } = engineHarness({ balances: new Map([['SOL', 300_000_000n], [WSOL, 50_000_000n], [USDC, 12_000_000n], [chain0usdt(), 3_000_000n]]) });
     const c = await eng.spendableCash();
     assert.ok(Math.abs(c.sol - 0.25) < 1e-9, `sol ${c.sol}`);
@@ -401,9 +401,9 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     void chain;
   });
 
-  await t('saldo sesudah swap: menunggu sampai token yang dibeli BENAR-BENAR terbaca, bukan dua bacaan basi yang sama', async () => {
+  await t('balances after a swap: wait until the bought token REALLY shows, not two identical stale reads', async () => {
     const { eng } = engineHarness();
-    const reads = [new Map(), new Map(), new Map([[MEME, 5n * 10n ** 9n]])];   // dua bacaan basi, lalu yang baru
+    const reads = [new Map(), new Map(), new Map([[MEME, 5n * 10n ** 9n]])];   // two stale reads, then the fresh one
     let i = 0;
     eng.exec.balances = async () => reads[Math.min(i++, reads.length - 1)];
     const b = await eng.balancesAfter(new Map(), MEME, 5n * 10n ** 9n);
@@ -411,7 +411,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(i, 3);
   });
 
-  await t('entry gagal di tengah (swap kedua) → token dari swap pertama dijual kembali, galat tetap dilaporkan', async () => {
+  await t('entry fails midway (second swap) → tokens from the first swap are sold back, the error is still reported', async () => {
     const { eng, swaps } = engineHarness({ balances: new Map([['SOL', 2n * 10n ** 9n]]) });
     let n = 0;
     eng.swap = async (inMint, outMint, amount, o) => {
@@ -419,7 +419,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
       if (++n === 2 && o.kind === 'entry_swap') throw new Error('rute tidak ada');
       return { hash: 'H' + n, out: 5n * 10n ** 9n };
     };
-    // Saldo mengikuti swap yang terjadi (bukan urutan panggilan).
+    // Balances follow the swaps that happened (not the call order).
     const wallet = new Map([['SOL', 2n * 10n ** 9n]]);
     const swap0 = eng.swap;
     eng.swap = async (inMint, outMint, amount, o) => { const r = await swap0(inMint, outMint, amount, o); if (n === 1) { wallet.set('SOL', 10n ** 9n); wallet.set(MEME, 5n * 10n ** 9n); } return r; };
@@ -430,12 +430,12 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     eng.chain.tokenCache.set(USDC, { address: USDC, symbol: 'USDC', decimals: 6 });
     await assert.rejects(eng.executeEntry(plan, { target: TARGET }), /rute tidak ada|kas tidak cukup/);
     const rescue = swaps.find((x) => x.kind === 'rescue_sell');
-    assert.ok(rescue, 'ada jual-kembali');
+    assert.ok(rescue, 'there is a sell-back');
     assert.strictEqual(rescue.inMint, MEME);
     assert.strictEqual(rescue.amount, 5n * 10n ** 9n);
   });
 
-  await t('Raydium: tarik sebagian ikut mengirim fee → fee masuk hasil; DLMM tidak', async () => {
+  await t('Raydium: a partial withdrawal also sends fees → fees go into proceeds; DLMM does not', async () => {
     for (const [venue, withFee] of [['raydium', true], ['meteora', false]]) {
       const pos = { venue, id: 'OurPos', pool: POOL, liquidity: '1000', amount0: 4n * 10n ** 9n, amount1: 4n * 10n ** 9n, fee0: 10n ** 9n, fee1: 0n };
       const { store, eng, chain } = engineHarness({ position: pos });
@@ -450,7 +450,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     }
   });
 
-  await t('sisa entry (rescue) yang terjual tidak dibukukan ke posisi lain yang memegang token sama', async () => {
+  await t('a sold entry leftover (rescue) is not booked to another position holding the same token', async () => {
     const { store, eng } = engineHarness();
     store.run(`INSERT INTO positions(chain,venue,token_id,pool_ref,token0,token1,liquidity,status,opened_ts,closed_ts,cost_quote,out_quote,quote_symbol,left_token,left_amount,left_quote)
       VALUES('solana','meteora','X',?,?,?,'0','closed',1,2,5,5,'SOL',?,'1000',1)`, POOL, MEME, WSOL, MEME);
@@ -461,7 +461,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(p.out_quote, 5);
   });
 
-  await t('pengamat: sesudah tanda tangan baru, posisi dibaca ulang ~30 dtk walau tidak ada tanda tangan lagi (node tertinggal)', async () => {
+  await t('watcher: after a new signature, positions are re-read for ~30 s even without further signatures (lagging node)', async () => {
     const store = new Store(':memory:');
     const chain = fakeChain(store);
     let L = '100';
@@ -470,48 +470,48 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     chain.adapters.raydium.listPositions = async () => [];
     let sigs = [];
     const w = new SolanaWatcher({ rpc: { run: async (fn) => fn({ getSignaturesForAddress: async () => sigs }) }, store, chain, cfg: { rules: {} }, log: () => {} });
-    await w.scanTarget(TARGET);                    // potret awal
+    await w.scanTarget(TARGET);                    // first snapshot
     sigs = [{ signature: 'S1', slot: 5 }];
-    assert.deepStrictEqual(await w.scanTarget(TARGET), [], 'tanda tangan terlihat, state belum');
+    assert.deepStrictEqual(await w.scanTarget(TARGET), [], 'signature visible, state not yet');
     sigs = [];
-    L = '300';                                     // state baru terbaca belakangan
+    L = '300';                                     // the new state is read later
     const acts = await w.scanTarget(TARGET);
     assert.strictEqual(acts.length, 1);
     assert.strictEqual(acts[0].kind, 'increase');
     assert.strictEqual(acts[0].delta, 200n);
   });
 
-  await t('entry sukses end-to-end: tanpa swap → buka → posisi dibukukan dari isi posisi sesungguhnya', async () => {
+  await t('successful entry end-to-end: no swap → open → position booked from its actual contents', async () => {
     const got = { venue: 'meteora', id: 'NewPos', pool: POOL, liquidity: '777', amount0: 29n * 10n ** 8n, amount1: 39n * 10n ** 8n, fee0: 0n, fee1: 0n, tickLower: -300, tickUpper: 400, ext: { binStep: BIN_STEP } };
     const { store, eng, sent, swaps } = engineHarness({ position: got, balances: new Map([['SOL', 10n * 10n ** 9n], [MEME, 10n * 10n ** 9n]]) });
     const plan = { venue: 'meteora', action: 'mint', poolRef: POOL, token0: MEME, token1: WSOL, lower: -3, upper: 3, tickLower: -300, tickUpper: 400,
       amount0: String(3n * 10n ** 9n), amount1: String(4n * 10n ** 9n), valueQuote: 7, quoteSymbol: 'SOL', quoteKind: 'eth', mirrorOf: 'TPos', target: TARGET };
     const r = await eng.executeEntry(plan, { target: TARGET });
-    assert.strictEqual(swaps.length, 0, 'kas cukup, tanpa swap');
+    assert.strictEqual(swaps.length, 0, 'enough cash, no swap');
     assert.strictEqual(sent[0].kind, 'open');
     assert.strictEqual(sent[0].amount0, 3n * 10n ** 9n);
     const p = store.get('SELECT * FROM positions WHERE id=?', r.positionId);
     assert.strictEqual(p.token_id, 'NewPos');
-    assert.strictEqual(p.cost0, String(29n * 10n ** 8n), 'modal = isi posisi yang terbaca, bukan rencana');
+    assert.strictEqual(p.cost0, String(29n * 10n ** 8n), 'capital = the position contents read, not the plan');
     assert.strictEqual(p.liquidity, '777');
     assert.ok(Math.abs(p.cost_quote - 6.8) < 1e-9, `cost_quote ${p.cost_quote}`);
     assert.strictEqual(JSON.parse(p.ext).lower, -3);
   });
 
-  await t('entry: simulasi gagal (harga bergeser) → disusun ulang sekali; gagal kedua kali → galat', async () => {
+  await t('entry: failed simulation (price moved) → rebuilt once; a second failure → error', async () => {
     const got = { venue: 'meteora', id: 'NewPos', pool: POOL, liquidity: '1', amount0: 1n, amount1: 1n, fee0: 0n, fee1: 0n, tickLower: 0, tickUpper: 1 };
     const { eng, sent } = engineHarness({ position: got, balances: new Map([['SOL', 10n * 10n ** 9n], [MEME, 10n * 10n ** 9n]]) });
     const plan = { venue: 'meteora', action: 'mint', poolRef: POOL, token0: MEME, token1: WSOL, lower: -3, upper: 3, amount0: '1000', amount1: '1000', valueQuote: 1, quoteSymbol: 'SOL', quoteKind: 'eth' };
     let n = 0;
     eng.exec.sendGroups = async () => { if (++n === 1) throw new Error('simulasi mint gagal: {"Custom":6017}'); return { ok: true, hashes: ['H'] }; };
     await eng.executeEntry(plan, { target: TARGET });
-    assert.strictEqual(sent.filter((x) => x.kind === 'open').length, 2, 'disusun dua kali');
+    assert.strictEqual(sent.filter((x) => x.kind === 'open').length, 2, 'built twice');
     n = 0;
     eng.exec.sendGroups = async () => { throw new Error('simulasi mint gagal: {"Custom":6017}'); };
     await assert.rejects(eng.executeEntry(plan, { target: TARGET }), /6017/);
   });
 
-  // ---- tahap 1: keamanan mesin -----------------------------------------------------------
+  // ---- stage 1: engine safety ----------------------------------------------------------
   const openRow = (store, over = {}) => {
     store.run(`INSERT INTO positions(chain,venue,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,target,mirror_of,status,opened_ts,cost_quote,quote_symbol)
       VALUES('solana','meteora',?,?,?,?,-300,400,?,?,?,'open',?,10,'SOL')`, over.token_id || 'OurPos', POOL, MEME, WSOL, over.liquidity || '1000',
@@ -520,7 +520,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
   };
   const POSV = { venue: 'meteora', id: 'OurPos', pool: POOL, liquidity: '1000', amount0: 2n * 10n ** 9n, amount1: 3n * 10n ** 9n, fee0: 0n, fee1: 0n };
 
-  await t('keluar yang belum terkirim (simulasi gagal) dicoba lagi; yang sudah terkirim tidak pernah dikirim ulang', async () => {
+  await t('an exit not yet sent (failed simulation) is retried; one already sent is never sent again', async () => {
     const { store, eng } = engineHarness({ position: POSV });
     eng.exitRetryWaits = [1, 1];
     eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { exit: { sell_leftover: false } }));
@@ -530,7 +530,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     await eng.executeExitRetry({ full: true, liquidity: '1000' }, row);
     assert.strictEqual(n, 3);
     assert.strictEqual(store.get('SELECT status FROM positions').status, 'closed');
-    // konfirmasi tak terbaca (timeout): TIDAK diulang, catatan tertunda ditinggal untuk sinkron
+    // confirmation unreadable (timeout): NOT retried, the pending note is left for the sync
     const { store: s2, eng: e2 } = engineHarness({ position: POSV });
     const r2 = openRow(s2);
     let m = 0;
@@ -538,10 +538,10 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     e2.exec.sendGroups = async () => { m++; return { ok: false, hashes: ['T'], last: { timeout: true } }; };
     await assert.rejects(e2.executeExitRetry({ full: true, liquidity: '1000' }, r2));
     assert.strictEqual(m, 1);
-    assert.ok(s2.getState(e2.pendingExitKey(r2.id)), 'catatan keluar tertunda disimpan');
+    assert.ok(s2.getState(e2.pendingExitKey(r2.id)), 'the pending exit note is stored');
   });
 
-  await t('keluar tertunda: posisi hilang di chain → dibukukan dari isi sebelum kirim; tidak berubah >3 mnt → dibuang', async () => {
+  await t('pending exit: position gone on chain → booked from the contents before sending; unchanged >3 min → dropped', async () => {
     const { store, eng } = engineHarness({ position: null });
     eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { exit: { sell_leftover: false } }));
     const row = openRow(store);
@@ -558,20 +558,20 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(s2.get('SELECT status FROM positions').status, 'open');
   });
 
-  await t('rekonsiliasi: posisi target hilang dua kali berturut-turut → cermin ditutup (sinyal keluar terlewat)', async () => {
+  await t('reconciliation: the target position missing twice in a row → mirror closed (missed exit signal)', async () => {
     const { store, eng, sent } = engineHarness();
     eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { exit: { sell_leftover: false } }));
     openRow(store);
     const ad = eng.chain.adapters.meteora;
     ad.getPositions = async (items) => new Map(items.map((it) => [it.id, it.id === 'TPos' ? null : POSV]));
     await eng.reconcileExits();
-    assert.strictEqual(sent.length, 0, 'sekali belum cukup');
+    assert.strictEqual(sent.length, 0, 'once is not enough');
     await eng.reconcileExits();
     assert.strictEqual(sent[0].close, true);
     assert.strictEqual(store.get('SELECT status FROM positions').status, 'closed');
   });
 
-  await t('entry yang terputus (proses mati sesudah kirim): adopsi menautkannya lagi ke target, bukan posisi yatim', async () => {
+  await t('an interrupted entry (process died after sending): adoption links it back to the target, not an orphan', async () => {
     const live = { venue: 'meteora', id: 'NewPos', pool: POOL, liquidity: '555', amount0: 10n ** 9n, amount1: 10n ** 9n, fee0: 0n, fee1: 0n, tickLower: -300, tickUpper: 400, lower: -3, upper: 3 };
     const { store, eng } = engineHarness();
     eng.chain.adapters.meteora.listPositions = async () => [live];
@@ -587,7 +587,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(store.getState(eng.sk('sol_pending_entry:NewPos')), null);
   });
 
-  await t('klaim fee: dibukukan ke claimed_quote; sisi memecoin dicatat di buku fee lalu dijual kalau diminta', async () => {
+  await t('fee claim: booked to claimed_quote; the memecoin side recorded in the fee ledger then sold when asked', async () => {
     const pos = { ...POSV, fee0: 10n ** 9n, fee1: 5n * 10n ** 8n };
     const { store, eng, swaps } = engineHarness({ position: pos });
     eng.chain.adapters.meteora.buildClaim = async () => ({ groups: [{ instructions: [] }] });
@@ -596,10 +596,10 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     const r = await eng.claimFees(row.id, { sell: true });
     assert.ok(r.ok);
     const p = store.get('SELECT claimed_quote FROM positions');
-    // klaim 1 MEME (≈1 SOL) + 0,5 SOL = 1,5; MEME terjual 0,9 SOL → taksiran diganti hasil jual: 1,4
+    // claim 1 MEME (≈1 SOL) + 0.5 SOL = 1.5; MEME sold for 0.9 SOL → the estimate is replaced by the sale: 1.4
     assert.ok(Math.abs(p.claimed_quote - 1.4) < 1e-9, `claimed ${p.claimed_quote}`);
     assert.strictEqual(swaps[0].i, MEME);
-    assert.strictEqual(swaps[0].o, WSOL, 'dijual ke aset kuotasi pool');
+    assert.strictEqual(swaps[0].o, WSOL, 'sold to the pool’s quote asset');
     assert.strictEqual(swaps[0].amt, 10n ** 9n);
   });
 
@@ -656,7 +656,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(claimed, null);
   });
 
-  await t('compound: fee diklaim lalu dimasukkan lagi; yang masuk = compound_runs, sisanya = klaim fee', async () => {
+  await t('compound: fees claimed then added back; what went in = compound_runs, the rest = fee claim', async () => {
     let reads = 0;
     const before = { ...POSV, fee0: 10n ** 9n, fee1: 10n ** 9n };
     const after = { ...POSV, liquidity: '1500', amount0: POSV.amount0 + 9n * 10n ** 8n, amount1: POSV.amount1 + 9n * 10n ** 8n, fee0: 0n, fee1: 0n };
@@ -672,13 +672,13 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.ok(ad.inc.amount0 > 0n && ad.inc.amount0 <= 10n ** 9n);
     const run = store.get('SELECT * FROM compound_runs');
     assert.strictEqual(run.liquidity, '500');
-    assert.ok(Math.abs(run.reinvested_quote - 1.8) < 1e-9, `masuk ${run.reinvested_quote}`);
+    assert.ok(Math.abs(run.reinvested_quote - 1.8) < 1e-9, `reinvested ${run.reinvested_quote}`);
     const p = store.get('SELECT claimed_quote FROM positions');
-    assert.ok(Math.abs(p.claimed_quote - 0.2) < 1e-9, `sisa ke wallet ${p.claimed_quote}`);
+    assert.ok(Math.abs(p.claimed_quote - 0.2) < 1e-9, `left to the wallet ${p.claimed_quote}`);
     assert.strictEqual(eng.compound.status(row).supported, true);
   });
 
-  await t('umur pool minimum & isi SOL: pool muda dilewati; SOL di bawah separuh cadangan dibeli dari USDC', async () => {
+  await t('minimum pool age & SOL top-up: young pools skipped; SOL below half the reserve bought with USDC', async () => {
     const { store, eng, swaps } = engineHarness({ dry: true });
     eng.chain.poolAgeMinutes = async () => 12;
     eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { filters: { min_pool_age_minutes: 60 } }));
@@ -693,7 +693,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     void swaps;
   });
 
-  await t('buka lagi: target masih di dalam & harga kembali dekat rentang → entry baru dinilai (reentry)', async () => {
+  await t('re-entry: target still in & price back near the range → a new entry is evaluated (reentry)', async () => {
     const tp = { venue: 'meteora', id: 'TPos', pool: POOL, liquidity: '100', amount0: 3n * 10n ** 9n, amount1: 4n * 10n ** 9n, fee0: 0n, fee1: 0n, tickLower: u.binToTick(-3, BIN_STEP), tickUpper: u.binToTick(4, BIN_STEP), lower: -3, upper: 3 };
     const { store, eng } = engineHarness({ dry: true, position: tp });
     eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { exit: { out_of_range_pct: 50, reenter_within_pct: 10 }, sizing: { max_quote_per_position_usd: 1e6, max_total_exposure_usd: 1e6, daily_budget_usd: 1e6 } }));
@@ -702,12 +702,12 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(eng.reentryWatches().length, 1);
     await eng.reentryTick();
     const a = store.get("SELECT * FROM actions WHERE kind='reentry'");
-    assert.ok(a, 'aksi reentry dibuat');
+    assert.ok(a, 'a reentry action is created');
     assert.strictEqual(store.get('SELECT verdict FROM decisions WHERE action_id=?', a.id).verdict, 'dry');
     assert.strictEqual(eng.reentryWatches().length, 0);
   });
 
-  await t('sapu wallet: token non-kuotasi bernilai ≥ minimum dijual; debu & aset kuotasi dibiarkan', async () => {
+  await t('wallet sweep: non-quote tokens worth ≥ the minimum are sold; dust & quote assets left alone', async () => {
     const DUST = 'Dust111111111111111111111111111111111111111';
     const { eng, swaps } = engineHarness({ balances: new Map([['SOL', 10n ** 9n], [USDC, 10n ** 6n], [MEME, 10n ** 9n], [DUST, 1n]]), prices: { [MEME]: 5, [DUST]: 1 } });
     eng.chain.tokenCache.set(DUST, { address: DUST, symbol: 'DUST', decimals: 9 });
@@ -717,7 +717,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.deepStrictEqual(swaps.map((x) => x.i), [MEME]);
   });
 
-  // ---- LP manual, swap, ikuti aksi (solana/manual.js) -------------------------------------
+  // ---- manual LP, swap, follow an action (solana/manual.js) -------------------------------
   const { SolanaManual } = require('../src/solana/manual');
   const { Manual } = require('../src/manual');
   function manualHarness({ balances = new Map(), pool = poolState(), prices = { [MEME]: 100, [WSOL]: 100, [USDC]: 1 } } = {}) {
@@ -731,24 +731,24 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     return { ...h, man };
   }
 
-  await t('LP manual DLMM: rentang ±% jadi bin, jumlah token dari nilai, satu sisi di atas harga = hanya token0', async () => {
+  await t('manual DLMM LP: ±% range becomes bins, token amounts from value, one-sided above price = token0 only', async () => {
     const { man } = manualHarness({ balances: new Map([['SOL', 10n ** 12n]]) });
     const r = await man.planLp({ poolRef: POOL, usd: 100, widthPct: 20 });
     assert.ok(!r.error, r.error);
-    assert.ok(r.plan.lower < 0 && r.plan.upper > 0, `bin ${r.plan.lower}..${r.plan.upper} mengapit bin aktif`);
+    assert.ok(r.plan.lower < 0 && r.plan.upper > 0, `bin ${r.plan.lower}..${r.plan.upper} straddles the active bin`);
     assert.strictEqual(r.preview.nativeUnit, 'bin');
-    assert.ok(Math.abs(r.plan.valueUsd - 100) < 1, `nilai $${r.plan.valueUsd}`);
+    assert.ok(Math.abs(r.plan.valueUsd - 100) < 1, `value $${r.plan.valueUsd}`);
     const one = await man.planLp({ poolRef: POOL, usd: 50, lowerPct: 0, upperPct: 30 });
     assert.ok(!one.error, one.error);
     assert.strictEqual(one.plan.side, 'token0_only');
-    assert.ok(one.plan.lower > 0, 'batas bawah di atas bin aktif');
+    assert.ok(one.plan.lower > 0, 'the lower bound is above the active bin');
     assert.strictEqual(one.plan.amount1, '0');
-    // pool yang tidak dikenal chain → galat jelas
+    // a pool the chain does not know → a clear error
     const none = await man.planLp({ poolRef: 'not-a-pool', usd: 10 });
     assert.match(none.error, /pool tidak dikenal/);
   });
 
-  await t('LP manual Orca: tick dibulatkan ke spacing; simulasi tukar membeli kekurangan dari USDC lewat Jupiter', async () => {
+  await t('manual Orca LP: ticks rounded to spacing; the swap simulation buys the shortfall with USDC through Jupiter', async () => {
     const orca = { venue: 'orca', id: POOL, token0: MEME, token1: USDC, dec0: 9, dec1: 6,
       sqrtX96: u.sqrtX96FromPrice(100 * 1e-3), tick: Math.floor(Math.log(0.1) / Math.log(1.0001)), current: Math.floor(Math.log(0.1) / Math.log(1.0001)), spacing: 64, tickSpacing: 64, fee: 3000, liquidity: 10n ** 12n, enabled: true };
     const { man } = manualHarness({ pool: orca, balances: new Map([['SOL', 10n ** 9n], [USDC, 1_000_000_000n]]), prices: { [MEME]: 100, [WSOL]: 100, [USDC]: 1 } });
@@ -756,24 +756,24 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.ok(!r.error, r.error);
     assert.strictEqual(Math.abs(r.plan.lower % 64), 0); assert.strictEqual(Math.abs(r.plan.upper % 64), 0);
     assert.strictEqual(r.preview.nativeUnit, 'tick');
-    assert.strictEqual(r.preview.swaps.length, 1, 'satu tukar: USDC → MEME');
+    assert.strictEqual(r.preview.swaps.length, 1, 'one swap: USDC → MEME');
     assert.strictEqual(r.preview.swaps[0].dari.token, USDC);
     assert.strictEqual(r.preview.swaps[0].ke.token, MEME);
     assert.strictEqual(r.preview.swaps[0].router, 'Jupiter');
     const usdcAfter = r.preview.saldo.tokens.find((x) => x.token === USDC).after;
-    assert.ok(usdcAfter > 790 && usdcAfter < 810, `USDC after ≈ 800, dapat ${usdcAfter}`);
+    assert.ok(usdcAfter > 790 && usdcAfter < 810, `USDC after ≈ 800, got ${usdcAfter}`);
   });
 
-  await t('swap manual: token kustom base58 disimpan apa adanya; SOL = native + wSOL dikurangi cadangan; swap lewat engine.swap', async () => {
+  await t('manual swap: custom base58 tokens stored as is; SOL = native + wSOL minus the reserve; swaps go through engine.swap', async () => {
     const { man, eng, store, swaps } = manualHarness({ balances: new Map([['SOL', 500_000_000n], [WSOL, 100_000_000n], [USDC, 5_000_000n]]) });
     const JUPM = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
     man.addCustomToken(JUPM);
     man.addCustomToken('0xe9c209fd02a1562761c99700fc3d126e64b981ee');
-    assert.deepStrictEqual(man.customTokens(), [JUPM], 'huruf dipertahankan; alamat EVM dibuang');
+    assert.deepStrictEqual(man.customTokens(), [JUPM], 'case kept; EVM addresses dropped');
     const held = await man.held();
     const sol = held.find((x) => x.address === WSOL);
     assert.strictEqual(sol.raw, '600000000');
-    assert.strictEqual(await man.amountRaw(WSOL, 'semua'), 500_000_000n, 'cadangan 0,1 SOL tidak ikut');
+    assert.strictEqual(await man.amountRaw(WSOL, 'semua'), 500_000_000n, 'the 0.1 SOL reserve is excluded');
     assert.strictEqual(await man.amountRaw(USDC, '1.5'), 1_500_000n);
     await assert.rejects(man.amountRaw(USDC, '10'), /saldo cuma/);
     eng.swap = async (i, o, amt, opt) => { swaps.push({ i, o, amt, kind: opt.kind }); store.run("INSERT INTO txs(chain,hash,ts,kind,status) VALUES('solana','SWX',?, 'swap_manual','ok')", Date.now()); return { hash: 'SWX', out: 12_000_000n, usdOut: 12 }; };
@@ -783,7 +783,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(JSON.parse(store.get("SELECT detail FROM txs WHERE hash='SWX'").detail).symbolOut, 'USDC');
   });
 
-  await t('ikuti aksi: aksi Solana yang dilewati bisa diikuti; mode exact memakai bin target apa adanya', async () => {
+  await t('follow an action: a skipped Solana action can be followed; exact mode uses the target’s bins as is', async () => {
     assert.strictEqual(Manual.followable({ kind: 'increase', venue: 'meteora', verdict: 'skip', token_id: 'TPos', pool_ref: POOL, tick_lower: -1, tick_upper: 1, target: TARGET }, new Set()), true);
     const { man, store, eng } = manualHarness({ balances: new Map([['SOL', 10n ** 12n]]) });
     eng.targetLiquidity = async () => ({ liquidity: 100n });
@@ -799,7 +799,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(r.plan.mirrorOf, 'TPos');
   });
 
-  // ---- modal, hasil token, kedalaman, holder, scout -------------------------------------
+  // ---- capital, token proceeds, depth, holders, scout -----------------------------------
   const { SolanaCapital } = require('../src/solana/capital');
   const { SolanaProceeds } = require('../src/solana/proceeds');
   const key = (k, signer = false) => ({ pubkey: { toBase58: () => k }, signer });
@@ -811,7 +811,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
   });
   const tb = (owner, mint, amount) => ({ owner, mint, uiTokenAmount: { amount: String(amount) } });
 
-  await t('modal Solana: USDC masuk dari luar = setoran; SOL keluar lewat transfer biasa = penarikan; tx dagang wallet dilewati', async () => {
+  await t('Solana capital: USDC in from outside = deposit; SOL out by a plain transfer = withdrawal; the wallet’s trading txs skipped', async () => {
     const store = new Store(':memory:');
     const chain = fakeChain(store, { prices: { [WSOL]: 100 } });
     const cap = new SolanaCapital({ engine: { ethUsd: 100 }, rpc: chain.rpc, store, chain, cfg: {}, log: () => {} });
@@ -827,7 +827,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.deepStrictEqual(rows.map((r) => [r.tx_hash, r.kind, r.symbol, Math.round(r.usd)]), [['dep', 'deposit', 'USDC', 50], ['wd', 'withdraw', 'SOL', 100]]);
   });
 
-  await t('hasil token Solana: keluar dengan USDC masuk di tx yang sama = jual (USD dari saldo tx); masuk dari luar = pasokan', async () => {
+  await t('Solana token proceeds: out with USDC in within the same tx = sale (USD from tx balances); in from outside = supply', async () => {
     const store = new Store(':memory:');
     const chain = fakeChain(store);
     const pr = new SolanaProceeds({ rpc: chain.rpc, store, chain, research: {}, log: () => {} });
@@ -835,7 +835,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
       sell: ptx({ keys: [key(ME, true)], programs: ['JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'], pre: [1e9], post: [1e9 - 5000], preTok: [tb(ME, MEME, 1000), tb(ME, USDC, 0)], postTok: [tb(ME, MEME, 400), tb(ME, USDC, 7_000_000)] }),
       gift: ptx({ keys: [key('Other1111111111111111111111111111111111111', true)], programs: ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'], pre: [1e9], post: [1e9], preTok: [tb(ME, MEME, 400)], postTok: [tb(ME, MEME, 900)] }),
     };
-    pr.tokenAccounts = async () => [TARGET];   // alamat sah apa saja: tanda tangannya dipalsukan
+    pr.tokenAccounts = async () => [TARGET];   // any valid address: its signatures are faked
     chain.rpc.run = async (fn) => fn({
       getSignaturesForAddress: async () => [{ signature: 'gift', slot: 20 }, { signature: 'sell', slot: 10 }],
       getParsedTransaction: async (sig) => txs[sig],
@@ -847,12 +847,12 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual((await pr.receivedIn(['gift'], ME, MEME)).get('gift'), 500n);
   });
 
-  await t('kedalaman DLMM: bin → L setara; membeli satu bin penuh di model = menukar isi bin itu', async () => {
+  await t('DLMM depth: bins → equivalent L; buying one full bin in the model = swapping that bin’s contents', async () => {
     const { poolDepthSol, uniformL } = require('../src/solana/pool-depth');
     const { makeCurve, buyToPrice } = await import('../web/src/liquidityRisk.mjs');
     const store = new Store(':memory:');
     const pool = poolState({ token1: USDC, dec1: 9 });
-    // tiap bin memuat 1000 token nilai Y (bin di atas: X saja, di bawah: Y saja, aktif: separuh)
+    // each bin holds 1000 tokens of Y value (bins above: X only, below: Y only, active: half)
     const bins = [];
     for (let b = -20; b <= 20; b++) {
       const p = (1 + BIN_STEP / 1e4) ** b;
@@ -864,16 +864,16 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     const d = await poolDepthSol({ rpc: { slot: async () => 9, run: async () => { throw new Error('x'); } }, chain, store, engine: { ethUsd: 100, exec: { address: () => null } } }, POOL);
     assert.ok(!d.error, d.error);
     const c = makeCurve(d);
-    assert.ok(c, 'kurva terbentuk');
-    // dari tengah bin aktif sampai atas bin +5 = ½ bin aktif + 5 bin penuh ≈ 5.500 USDC (+fee)
+    assert.ok(c, 'a curve is built');
+    // from the middle of the active bin to the top of bin +5 = ½ active bin + 5 full bins ≈ 5,500 USDC (+fee)
     const target = (1 + BIN_STEP / 1e4) ** 6;
     const r = buyToPrice(c, target);
     const q = r.quote * (1 - d.buyFee);
-    assert.ok(q > 5300 && q < 5700, `butuh ${q.toFixed(0)} USDC`);
+    assert.ok(q > 5300 && q < 5700, `needs ${q.toFixed(0)} USDC`);
     assert.ok(uniformL(0n, 10n ** 9n, -100, 100, 1) > 0);
   });
 
-  await t('holder Solana: RPC publik menolak daftar holder → jumlah & porsi top holder dari Jupiter', async () => {
+  await t('Solana holders: public RPC refuses the holder list → count & top-holder share from Jupiter', async () => {
     const { solanaHolders } = require('../src/solana/holders');
     const store = new Store(':memory:');
     const chain = fakeChain(store);
@@ -882,7 +882,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.deepStrictEqual([r.error, r.holderCount, r.top10Pct, r.source, r.items.length], [undefined, 1234, 41.5, 'Jupiter', 0]);
   });
 
-  await t('scout Solana: posisi hidup semua venue, nilai & fee dalam USD, venue yang gagal dicatat', async () => {
+  await t('Solana scout: live positions on all venues, value & fees in USD, failed venues recorded', async () => {
     const { scoutWalletSol } = require('../src/solana/scout');
     const store = new Store(':memory:');
     const pool = poolState({ token1: USDC, dec1: 9 });
@@ -894,13 +894,13 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     const r = await scoutWalletSol(rpc, chain, TARGET, { ethUsd: 100, store });
     assert.strictEqual(r.positionsAlive, 1);
     assert.deepStrictEqual(r.venuesFailed, ['raydium']);
-    assert.ok(Math.abs(r.totalValueUsd - 2) < 1e-6, `nilai ${r.totalValueUsd}`);
+    assert.ok(Math.abs(r.totalValueUsd - 2) < 1e-6, `value ${r.totalValueUsd}`);
     assert.ok(Math.abs(r.totalUnclaimedFeeUsd - 0.1) < 1e-6);
     assert.strictEqual(r.pairs['MEME/USDC'].n, 1);
   });
 
-  // ---- dasbor --------------------------------------------------------------------------
-  await t('dasbor Solana: target base58 disimpan apa adanya; scout, swap & riset wallet tersedia', async () => {
+  // ---- dashboard -----------------------------------------------------------------------
+  await t('Solana dashboard: base58 targets stored as is; scout, swap & wallet research available', async () => {
     const { createServer } = require('../src/server');
     const store = new Store(':memory:');
     const cfg = { mode: { dry_run: true }, rules: {}, gas: {}, loop: {}, prices: {}, chain: { endpoints: [] }, server: {}, notify: {}, wallet: {} };
@@ -918,18 +918,18 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     const post = async (p, body) => (await fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json();
     try {
       assert.deepStrictEqual(await post('/api/targets', { address: TARGET, label: 'dlmm' }), { ok: true });
-      assert.strictEqual(store.get('SELECT address FROM targets').address, TARGET, 'huruf tidak diubah');
+      assert.strictEqual(store.get('SELECT address FROM targets').address, TARGET, 'case unchanged');
       assert.match((await post('/api/targets', { address: '0xe9c209fd02a1562761c99700fc3d126e64b981ee' })).error, /tidak valid/);
       await post('/api/targets/toggle', { address: TARGET, enabled: false });
-      assert.strictEqual(store.get('SELECT enabled FROM targets').enabled, 0, 'toggle menemukan alamat base58');
-      // tidak ada lagi rute yang ditutup untuk Solana
+      assert.strictEqual(store.get('SELECT enabled FROM targets').enabled, 0, 'toggle finds the base58 address');
+      // no route is closed for Solana any more
       const r = await (await fetch(`${base}/api/scout?address=${TARGET}`)).json();
       assert.strictEqual(r.unsupported, undefined);
       assert.strictEqual(r.status, 'kosong');
       const tk = await (await fetch(`${base}/api/manual/tokens`)).json();
-      assert.ok(Array.isArray(tk.tokens) && tk.tokens.some((x) => x.address === WSOL && x.symbol === 'SOL'), 'daftar swap memuat SOL');
+      assert.ok(Array.isArray(tk.tokens) && tk.tokens.some((x) => x.address === WSOL && x.symbol === 'SOL'), 'the swap list includes SOL');
       assert.deepStrictEqual(await post('/api/manual/tokens/add', { address: '0xe9c209fd02a1562761c99700fc3d126e64b981ee' }), { error: 'alamat tidak valid — alamat Solana (base58, 32–44 karakter)' });
-      // riset wallet sekarang didukung di Solana (belum dipindai = found:false, bukan galat)
+      // wallet research is supported on Solana now (not scanned yet = found:false, not an error)
       const w = await (await fetch(`${base}/api/wallet?address=${TARGET}`)).json();
       assert.strictEqual(w.found, false);
       assert.strictEqual(w.unsupported, undefined);
@@ -1079,7 +1079,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     void first;
   });
 
-  console.log(`\n${pass} ok, ${fail} gagal`);
+  console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
 

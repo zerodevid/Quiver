@@ -1,44 +1,45 @@
 'use strict';
-// Pengamat target di Solana. Tidak ada log event yang bisa dipindai per blok seperti
-// di EVM, jadi gerakan target diturunkan dari SELISIH KEADAAN:
+// Target watcher on Solana. There are no event logs to scan per block like on EVM, so the
+// target's moves are derived from STATE DIFFERENCES:
 //
-//   1. tiap putaran, tanda tangan baru wallet target dicek (1 panggilan murah);
-//   2. kalau ada yang baru (atau sudah lama tidak dicek penuh), semua posisi target di
-//      ketiga venue didaftar ulang dan dibandingkan dengan potret sebelumnya:
-//        posisi baru            -> 'increase' (liquidityBefore 0 = mint)
-//        L naik                 -> 'increase'
-//        L turun                -> 'decrease' (liquidityBefore = L lama → porsi sebanding)
-//        posisi hilang          -> 'decrease' penuh
-//        fee dipanen, L tetap   -> 'claim' (lihat claimed())
+//   1. every round, the target wallet's new signatures are checked (1 cheap call);
+//   2. when there is something new (or it has not been fully checked for a while), all the
+//      target's positions on the three venues are listed again and compared with the previous
+//      snapshot:
+//        new position           -> 'increase' (liquidityBefore 0 = mint)
+//        L up                   -> 'increase'
+//        L down                 -> 'decrease' (liquidityBefore = old L → proportional share)
+//        position gone          -> full 'decrease'
+//        fees harvested, L same -> 'claim' (see claimed())
 //
-// Potret disimpan per target di state (bertahan restart). Pemindaian pertama sebuah
-// target hanya membuat potret — posisi yang SUDAH ada sebelum target ditambahkan tidak
-// disalin (sama dengan EVM: yang disalin hanya aksi sesudah kursor).
+// Snapshots are stored per target in state (they survive restarts). A target's first scan only
+// takes a snapshot — positions that ALREADY existed before the target was added are not
+// copied (same as EVM: only actions after the cursor are copied).
 //
-// Pagar: venue yang GAGAL dibaca tidak boleh terbaca "semua posisinya hilang" — potret
-// lama venue itu dipertahankan apa adanya dan tidak ada aksi yang dibuat untuknya.
+// Guard: a venue that FAILED to read must never read as "all its positions are gone" — that
+// venue's old snapshot is kept as is and no action is produced for it.
 const { PublicKey } = require('@solana/web3.js');
 
 const FULL_RESCAN_MS = 10 * 60_000;
-// Sesudah tanda tangan baru terlihat, potret dibaca ulang tiap putaran selama jendela
-// ini walau tidak ada tanda tangan baru lagi: tanda tangan bisa sudah terlihat di satu
-// endpoint sementara akun posisinya belum diperbarui di endpoint yang menjawab
-// pembacaan posisi — tanpa jendela ini perubahannya baru tertangkap di rescan 10 menit.
+// After a new signature is seen, the snapshot is re-read every round during this window even
+// without further signatures: the signature may already be visible on one endpoint while the
+// position account is not yet updated on the endpoint answering the position read — without
+// this window the change would only be caught by the 10-minute rescan.
 const HOT_MS = 30_000;
-// Perubahan saham di bawah 1/NOISE_DIV (0,1%) pada posisi yang tetap ada bukan sinyal:
-// bot target yang memadatkan fee atau pembulatan program menggeser saham DLMM sangat
-// sedikit di hampir tiap transaksi (terukur di mainnet: ~1e-14 relatif). Menyalinnya =
-// satu transaksi berbiaya per gerakan remeh. Nilai lama dipertahankan di potret, jadi
-// geseran kecil yang menumpuk tetap tertangkap begitu melewati ambang.
+// Share changes below 1/NOISE_DIV (0.1%) on a position that stays are not a signal: a target
+// bot compounding fees, or program rounding, nudges DLMM shares very slightly in almost every
+// transaction (measured on mainnet: ~1e-14 relative). Copying them = one paid transaction per
+// trivial move. The old value is kept in the snapshot, so small nudges that add up are still
+// caught once they cross the threshold.
 const NOISE_DIV = 1000n;
 
 class SolanaWatcher {
   constructor({ rpc, store, chain, cfg, log }) {
     this.rpc = rpc; this.store = store; this.chain = chain; this.cfg = cfg; this.log = log || console.log;
     this.unsupported = new Map();
-    this.lastScan = new Map();   // target -> ts pemindaian penuh terakhir
-    this.venueErr = new Map();   // `${target}:${venue}` -> pesan galat terakhir
-    this.hotUntil = new Map();   // target -> ts akhir jendela baca-ulang
+    this.lastScan = new Map();   // target -> ts of the last full scan
+    this.venueErr = new Map();   // `${target}:${venue}` -> last error message
+    this.hotUntil = new Map();   // target -> ts the re-read window ends
   }
 
   enabledSet() {
@@ -60,15 +61,15 @@ class SolanaWatcher {
     return Array.isArray(want) && want.length ? all.filter((v) => want.includes(v)) : all;
   }
 
-  // Tanda tangan baru sejak yang terakhir dilihat. null = gagal dibaca.
+  // New signatures since the last one seen. null = failed to read.
   async newSignatures(target, last) {
     const get = (until) => this.rpc.run((c) => c.getSignaturesForAddress(new PublicKey(target), { limit: 25, ...(until ? { until } : {}) }), { needsHistory: true });
     try {
       return await get(last);
     } catch (e) {
-      // Endpoint yang tidak menyimpan riwayat tanda tangan `last` menjawab "Transaction …
-      // not found" — SETIAP putaran, sehingga target tidak pernah dipindai lagi. Ambil
-      // tanpa `until`: kalau yang terbaru bukan `last`, ada yang baru.
+      // An endpoint that does not keep the history of signature `last` answers "Transaction …
+      // not found" — EVERY round, so the target would never be scanned again. Fetch
+      // without `until`: if the newest is not `last`, something is new.
       if (last && /not found/i.test(String(e.message))) {
         try {
           const all = await get(null);
@@ -81,7 +82,7 @@ class SolanaWatcher {
     }
   }
 
-  // Daftar posisi target per venue. Venue yang gagal: { ok:false } (potret lama dipakai).
+  // The target's positions per venue. A failed venue: { ok:false } (the old snapshot is used).
   async enumerate(target) {
     const out = {};
     await Promise.all(this.venuesOn().map(async (v) => {
@@ -123,7 +124,7 @@ class SolanaWatcher {
     return f0 * 5n <= o0 && f1 * 5n <= o1;
   }
 
-  // Bandingkan potret lama dan daftar baru -> aksi mentah (belum bernilai).
+  // Compare the old snapshot and the new list -> raw actions (not yet valued).
   static tiny(L0, L) {
     const d = L > L0 ? L - L0 : L0 - L;
     return L0 > 0n && L > 0n && d * NOISE_DIV < L0;
@@ -140,7 +141,7 @@ class SolanaWatcher {
       }
       if (o && SolanaWatcher.tiny(L0, L)) continue;
       if (!o || L > L0) {
-        if (L === 0n) continue;   // akun posisi kosong baru dibuat: belum ada likuiditas
+        if (L === 0n) continue;   // a freshly created empty position account: no liquidity yet
         acts.push({ target, id, kind: 'increase', delta: L - L0, before: L0, pos: p, prev: o || null });
       } else if (L < L0) {
         acts.push({ target, id, kind: 'decrease', delta: L - L0, before: L0, pos: p, prev: o });
@@ -168,9 +169,9 @@ class SolanaWatcher {
     const prevAll = snap?.positions || {};
     const nowAll = {};
     let anyOk = false;
-    // Venue yang sudah pernah terbaca untuk target ini. Venue yang BARU pertama kali
-    // terbaca (gagal saat potret awal, atau baru dinyalakan di filter) hanya menjadi
-    // potret — posisi lamanya tidak boleh terbaca sebagai posisi baru lalu disalin massal.
+    // Venues already read for this target. A venue read for the FIRST time (failed during the
+    // first snapshot, or just enabled in the filter) only becomes snapshot — its old positions
+    // must not read as new positions and get copied en masse.
     const seen = new Set(snap ? (snap.venues || Object.keys(this.chain.adapters)) : []);
     const fresh = new Set();
     for (const v of Object.keys(this.chain.adapters)) {
@@ -181,12 +182,12 @@ class SolanaWatcher {
         seen.add(v);
         for (const p of r.list) nowAll[p.id] = SolanaWatcher.slim(p);
       } else {
-        // venue gagal / dimatikan: potret lamanya dibawa apa adanya
+        // failed / disabled venue: its old snapshot is carried over as is
         for (const [id, p] of Object.entries(prevAll)) if (p.venue === v) nowAll[id] = p;
       }
     }
     if (!anyOk) return [];
-    // Geseran remeh tidak ikut potret (lihat NOISE_DIV): saham lama dipertahankan.
+    // Trivial nudges do not enter the snapshot (see NOISE_DIV): the old share is kept.
     for (const [id, p] of Object.entries(nowAll)) {
       const o = prevAll[id];
       if (o && SolanaWatcher.tiny(BigInt(o.liquidity), BigInt(p.liquidity))) nowAll[id] = { ...p, liquidity: o.liquidity };
@@ -204,7 +205,7 @@ class SolanaWatcher {
       .map((a) => ({ ...a, sig: newest, slot }));
   }
 
-  // Satu putaran semua target aktif. Galat satu target tidak menghentikan yang lain.
+  // One round over all enabled targets. One target's error does not stop the others.
   async scan() {
     const out = [];
     for (const t of this.enabledSet()) {
@@ -214,9 +215,9 @@ class SolanaWatcher {
     return out;
   }
 
-  // Aksi mentah -> baris actions (bernilai) + objek aksi untuk mesin. Kunci unik
-  // (tx_hash, log_index): tanda tangan terbaru + urutan, jadi putaran yang terulang
-  // tidak mencatat aksi yang sama dua kali.
+  // Raw actions -> actions rows (valued) + action objects for the engine. Unique key
+  // (tx_hash, log_index): the newest signature + order, so a repeated round never records
+  // the same action twice.
   async persist(raw) {
     const fresh = [];
     let i = 0;
@@ -225,12 +226,12 @@ class SolanaWatcher {
       const st = await this.chain.pool(p.venue, p.pool).catch(() => null);
       const dm = await this.chain.decimalsMap([p.token0, p.token1]).catch(() => new Map());
       const dec0 = st?.dec0 ?? dm.get(p.token0), dec1 = st?.dec1 ?? dm.get(p.token1);
-      // Nilai = nilai porsi yang bergerak (tambahan / tarikan).
+      // Value = the value of the share that moved (addition / withdrawal).
       let amt0 = BigInt(p.amount0 || '0'), amt1 = BigInt(p.amount1 || '0');
-      // Jumlah yang BERGERAK = porsi saham yang bergerak di komposisi harga SEKARANG:
-      // isi × |ΔL| / L. Bukan selisih isi sebelum/sesudah — itu ikut bergeser karena harga
-      // (satu sisi bisa terbaca negatif lalu terpotong ke nol). Posisi baru: seluruh isinya;
-      // posisi hilang: isi terakhirnya.
+      // The amount that MOVED = the share of contents that moved at the CURRENT price
+      // composition: contents × |ΔL| / L. Not the before/after difference — that shifts with the
+      // price too (one side can read negative and get clipped to zero). New position: all of
+      // it; gone position: its last contents.
       const dL = a.delta < 0n ? -a.delta : a.delta;
       const Lnow = BigInt(p.liquidity || '0');
       if (a.kind === 'claim') { amt0 = BigInt(a.prev.fee0 || '0'); amt1 = BigInt(a.prev.fee1 || '0'); }
@@ -239,8 +240,8 @@ class SolanaWatcher {
       const v = st && dec0 != null && dec1 != null
         ? this.chain.valueInQuote({ sqrtPriceX96: st.sqrtX96, amount0: amt0, amount1: amt1, dec0, dec1, token0: p.token0, token1: p.token1 })
         : null;
-      // Kunci unik per gerakan: tanda tangan yang sama bisa membawa lebih dari satu
-      // gerakan pada posisi yang sama (terbaca di jendela baca-ulang).
+      // Unique key per move: the same signature can carry more than one move on the same
+      // position (read within the re-read window).
       const hash = a.kind === 'claim'
         ? `${a.sig || 'snap'}:${a.id}:claim:${a.prev.fee0}:${a.prev.fee1}:${a.prev.feeMark || ''}`
         : `${a.sig || 'snap'}:${a.id}:${a.kind}:${a.delta}`;

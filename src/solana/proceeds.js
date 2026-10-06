@@ -1,20 +1,19 @@
 'use strict';
-// Terealisasi vs belum untuk posisi Solana yang sudah ditutup — antrean FIFO, alokasi,
-// dan pembukuan persis src/proceeds.js (diwarisi). Yang diganti hanya cara membaca
-// chain:
-//   - token yang sampai ke wallet di tx tarik: pre/post token balance tx itu
-//   - transfer keluar/masuk: tanda tangan akun token wallet untuk mint itu (ATA SPL /
-//     Token-2022 + akun lain yang sekarang dipegang), tiap tx dibaca sekali. Keluar
-//     dengan aset kuotasi masuk di tx yang sama = penjualan (hasilnya dari saldo tx,
-//     bukan harga pool); tanpa itu = dikirim ke luar (dinilai harga tutup).
-//   - "blok" = slot; harga pool lampau tidak tersedia → cadangan harga tutup.
+// Realized vs unrealized for closed Solana positions — FIFO queue, allocation and
+// bookkeeping exactly as src/proceeds.js (inherited). Only how the chain is read changes:
+//   - tokens that reached the wallet in the withdrawal tx: that tx's pre/post token balances
+//   - transfers out/in: signatures of the wallet's token accounts for that mint (SPL /
+//     Token-2022 ATA + other accounts held now), each tx read once. Out with a quote asset
+//     coming in within the same tx = a sale (proceeds from the tx balances, not the pool
+//     price); without it = sent away (valued at the close price).
+//   - "block" = slot; past pool prices are unavailable → fall back to the close price.
 const { PublicKey } = require('@solana/web3.js');
 const { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = require('@solana/spl-token');
 const { Proceeds } = require('../proceeds');
 const { WSOL } = require('../networks');
 
 const MAX_PAGES = 5;
-const MAX_TX = 400;   // batas tx yang dibaca per token per pindai
+const MAX_TX = 400;   // max txs read per token per scan
 
 class SolanaProceeds extends Proceeds {
   async getTx(sig) {
@@ -26,8 +25,8 @@ class SolanaProceeds extends Proceeds {
     return tx;
   }
 
-  // Perubahan saldo milik wallet di satu tx: Map mint -> delta (SOL = native + wSOL,
-  // biaya tx dikembalikan kalau wallet pembayarnya).
+  // The wallet's balance changes in one tx: Map mint -> delta (SOL = native + wSOL, the tx
+  // fee added back when the wallet paid it).
   static deltas(tx, wallet) {
     const out = new Map();
     const keys = tx.transaction.message.accountKeys.map((k) => (k.pubkey?.toBase58 ? k.pubkey.toBase58() : String(k.pubkey || k)));
@@ -57,7 +56,7 @@ class SolanaProceeds extends Proceeds {
     return out;
   }
 
-  // Tanpa saldo lampau: stok sebelum lot pertama dianggap nol (seperti EVM tanpa arsip).
+  // No historical balance: the stock before the first lot is taken as zero (like EVM without an archive node).
   async preBalance() { return 0n; }
 
   async sqrtNow(r) {
@@ -71,7 +70,7 @@ class SolanaProceeds extends Proceeds {
     try {
       const r = await this.rpc.run((c) => c.getTokenAccountsByOwner(owner, { mint }), { indexed: true });
       for (const a of r.value) set.add(a.pubkey.toBase58());
-    } catch { /* ATA cukup */ }
+    } catch { /* the ATA is enough */ }
     return [...set];
   }
 
@@ -96,7 +95,7 @@ class SolanaProceeds extends Proceeds {
       const tokD = d.get(token) || 0n;
       const ts = (tx.blockTime || s.blockTime || 0) * 1000;
       if (tokD < 0n) {
-        // Aset kuotasi yang masuk di tx yang sama = hasil jual (USD).
+        // A quote asset coming in within the same tx = sale proceeds (USD).
         let usd = 0;
         for (const [mint, v] of d) {
           const q = quotes[mint];

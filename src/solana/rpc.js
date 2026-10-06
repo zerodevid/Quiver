@@ -1,27 +1,27 @@
 'use strict';
-// Kolam RPC Solana: beberapa endpoint (Helius/Alchemy/QuickNode/publik), masing-masing
-// satu Connection @solana/web3.js. Setiap panggilan lewat `run(fn)`: endpoint yang
-// menjawab 429/timeout/galat jaringan diistirahatkan sebentar dan panggilan diulang di
-// endpoint berikutnya. Galat program (simulasi gagal, akun tidak ada) TIDAK diulang —
-// jawabannya sah, mengulang di node lain cuma membuang kuota.
+// Solana RPC pool: several endpoints (Helius/Alchemy/QuickNode/public), each one
+// @solana/web3.js Connection. Every call goes through `run(fn)`: an endpoint answering
+// 429/timeout/network error is rested briefly and the call is retried on the next endpoint.
+// Program errors (failed simulation, missing account) are NOT retried — the answer is
+// valid, retrying on another node only wastes quota.
 //
-// Bentuk stats() sama dengan RpcPool EVM supaya halaman Pengaturan menampilkan
-// endpoint Solana apa adanya.
+// stats() has the same shape as the EVM RpcPool so the Settings page shows Solana
+// endpoints as is.
 const { Connection } = require('@solana/web3.js');
 
 const TRANSIENT = /429|too many requests|rate limit|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up|502|503|504|Bad Gateway|Service Unavailable|Internal server error|node is behind|Block not available|Slot .* was skipped|failed to get info about account/i;
-// getProgramAccounts ditolak endpoint publik untuk program besar: bukan galat
-// sementara, tapi endpoint lain (berbayar) mungkin melayaninya.
-// Permintaan "terindeks" (akun token per pemilik, holder terbesar, getProgramAccounts)
-// ditolak endpoint gratis tertentu dengan 403. Ditandai no_indexed di config, atau
-// dipelajari saat galat ini muncul pertama kali.
+// getProgramAccounts refused by a public endpoint for a big program: not a transient
+// error, but another (paid) endpoint may serve it.
+// "Indexed" requests (token accounts by owner, largest holders, getProgramAccounts) are
+// refused with 403 by some free endpoints. Flagged no_indexed in the config, or learned
+// the first time this error shows up.
 const INDEXED_REFUSED = /Indexed requests require|personal token/i;
 const UNSUPPORTED = /excluded from account secondary indexes|getProgramAccounts.*(disabled|not available|not allowed)|method not found|Method not found|410 Gone|403 Forbidden|Request blocked|not available on free plan/i;
 
 class SolanaRpc {
   constructor(endpoints, log = console.log, opts = {}) {
     this.log = log;
-    // Endpoint yang ${VAR}-nya belum terisi dari .env dilewati (URL-nya pasti gagal).
+    // Endpoints whose ${VAR} is not filled from .env are skipped (their URL is bound to fail).
     const usable = (endpoints || []).filter((e) => {
       if (!/\$\{/.test(e.url)) return true;
       log(`endpoint Solana dilewati: variabel di ${e.url.replace(/\?.*$/, '')} belum diisi di .env`);
@@ -36,12 +36,12 @@ class SolanaRpc {
   makeEp(e) {
     return ({
       url: e.url, headers: e.headers || null, noGpa: !!e.no_gpa, noSend: !!e.no_send,
-      // no_history: riwayat tanda tangan terpotong/kosong (publicnode) — tidak dipakai
-      // untuk getSignaturesForAddress; jawaban kosongnya terbaca "target diam".
+      // no_history: truncated/empty signature history (publicnode) — not used for
+      // getSignaturesForAddress; its empty answer would read as "target idle".
       noHistory: !!e.no_history,
-      // no_indexed: tidak melayani getTokenAccountsByOwner/getTokenLargestAccounts. Panggilan
-      // itu tidak pernah dikirim ke sana — sebuah 403 di dalam SDK yang menjalankan dua
-      // permintaan paralel meninggalkan promise tak tertangani. publicnode dikenal begitu.
+      // no_indexed: does not serve getTokenAccountsByOwner/getTokenLargestAccounts. Those calls
+      // are never sent there — a 403 inside an SDK running two requests in parallel leaves an
+      // unhandled promise. publicnode is known to behave this way.
       noIndexed: e.no_indexed ?? /publicnode\.com/.test(e.url),
       conn: new Connection(e.url, {
         commitment: this.commitment,
@@ -67,8 +67,8 @@ class SolanaRpc {
     });
   }
 
-  // Connection utama (endpoint sehat pertama) — untuk SDK yang menyimpan Connection
-  // sendiri (DLMM, Whirlpool context, Raydium). Panggilan penting tetap lewat run().
+  // The main Connection (first healthy endpoint) — for SDKs that keep their own
+  // Connection (DLMM, Whirlpool context, Raydium). Important calls still go through run().
   primary() {
     const now = Date.now();
     return (this.eps.find((e) => e.cooldownUntil <= now && !e.noSend) || this.eps[0]).conn;
@@ -80,14 +80,14 @@ class SolanaRpc {
       && !(indexed && e.noIndexed));
     const warm = ok.filter((e) => e.cooldownUntil <= now);
     const cold = ok.filter((e) => e.cooldownUntil > now).sort((a, b) => a.cooldownUntil - b.cooldownUntil);
-    // Putar di antara yang sehat supaya beban tersebar; endpoint pertama di config tetap
-    // yang paling sering dipakai kalau hanya ia yang sehat.
+    // Rotate among the healthy ones to spread load; the first endpoint in the config is still
+    // the most used when it is the only healthy one.
     const start = warm.length ? this.rr++ % warm.length : 0;
     return [...warm.slice(start), ...warm.slice(0, start), ...cold];
   }
 
-  // fn(connection, endpoint) -> Promise. Diulang di endpoint lain kalau galatnya
-  // sementara; galat lain dilempar apa adanya.
+  // fn(connection, endpoint) -> Promise. Retried on another endpoint when the error is
+  // transient; other errors are thrown as is.
   async run(fn, { needsGpa = false, send = false, needsHistory = false, indexed = false, tries = null } = {}) {
     const list = this.order({ needsGpa, send, needsHistory, indexed });
     if (!list.length) throw new Error(needsGpa ? 'tidak ada endpoint Solana yang melayani getProgramAccounts (tambahkan RPC berbayar: Helius/QuickNode/Alchemy)' : 'tidak ada endpoint Solana');
@@ -117,7 +117,7 @@ class SolanaRpc {
   }
 
   async slot(commitment = 'confirmed') { return this.run((c) => c.getSlot(commitment)); }
-  // Antarmuka yang dipakai kode bersama (index.js, dasbor): "blok" = slot.
+  // Interface used by shared code (index.js, dashboard): "block" = slot.
   async blockNumber() { return this.slot(); }
   async safeHead() { const s = await this.slot(); return { min: s, max: s, spread: 0 }; }
   allCooling() { const now = Date.now(); return this.eps.every((e) => e.cooldownUntil > now); }

@@ -135,7 +135,7 @@ function WalletTab({ d, reload }) {
             try {
               const text = await ksFile.text();
               let j = null;
-              try { j = JSON.parse(text); } catch { /* biar ethers yang melapor */ }
+              try { j = JSON.parse(text); } catch { /* let ethers report it */ }
               if (isSolanaKeystore(j)) setKsResult(await openSolanaKeystore(j, ksPass));
               else {
                 const w = await EthersWallet.fromEncryptedJson(text, ksPass);

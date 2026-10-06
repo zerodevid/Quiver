@@ -1,13 +1,13 @@
 'use strict';
-// Matematika fee bersama Orca Whirlpools dan Raydium CLMM — keduanya salinan rumus
-// Uniswap v3 dalam titik tetap Q64 (bukan Q128): fee yang belum diklaim =
+// Fee math shared by Orca Whirlpools and Raydium CLMM — both copy the Uniswap v3 formula
+// in Q64 fixed point (not Q128): unclaimed fees =
 //   owed + (feeGrowthInside − checkpoint) × L >> 64
-// dengan semua pengurangan pertumbuhan modulo 2^128 (boleh "berputar").
+// with every growth subtraction modulo 2^128 (it may wrap around).
 const U128 = (1n << 128n) - 1n;
 const sub128 = (a, b) => (a - b) & U128;
 const big = (x) => (x == null ? 0n : BigInt(x.toString()));
 
-// global: pertumbuhan global pool; lowerOut/upperOut: feeGrowthOutside tick batas.
+// global: the pool's global growth; lowerOut/upperOut: feeGrowthOutside of the boundary ticks.
 function feeGrowthInside({ tickCurrent, tickLower, tickUpper, global, lowerOut, upperOut }) {
   const below = tickCurrent >= tickLower ? lowerOut : sub128(global, lowerOut);
   const above = tickCurrent < tickUpper ? upperOut : sub128(global, upperOut);

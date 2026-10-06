@@ -1,15 +1,15 @@
 'use strict';
-// LP manual, swap manual, dan "ikuti aksi" untuk Solana. Rute dasbor & alur Telegram
-// sama dengan EVM (src/manual.js, diwarisi): yang ditulis ulang di sini hanya bagian
-// yang menyentuh chain —
-//   pool      : pindai pool sebuah token lewat DexScreener/GeckoTerminal, dipastikan
-//               lewat pemilik akunnya (program Meteora DLMM / Orca / Raydium CLMM)
-//   rencana   : rentang dalam tick setara → satuan asli venue (bin / tick), jumlah
-//               token dari NILAI (sama dengan planner.js), bukan dari L v3
-//   saldo     : SOL native + wSOL digabung, USDC/USDT; tukar lewat Jupiter
-//   eksekusi  : engine.executeEntry & engine.swap Solana — jalur yang sama dengan salin
-//               otomatis
-// Alamat base58 PEKA HURUF: tidak pernah di-lowercase.
+// Manual LP, manual swap, and "follow an action" for Solana. Dashboard routes & Telegram flows
+// are the same as EVM (src/manual.js, inherited): only the parts that touch the chain are
+// rewritten here —
+//   pools     : scan a token's pools through DexScreener/GeckoTerminal, confirmed by the
+//               owner of each account (the Meteora DLMM / Orca / Raydium CLMM programs)
+//   plan      : range in equivalent ticks → the venue's native units (bins / ticks), token
+//               amounts from VALUE (same as planner.js), not from v3 L
+//   balances  : native SOL + wSOL merged, USDC/USDT; swaps through Jupiter
+//   execution : the Solana engine.executeEntry & engine.swap — the same path as automatic
+//               copying
+// base58 addresses are CASE-SENSITIVE: never lower-cased.
 const { Manual, ticksFromPct } = require('../manual');
 const m = require('../v3math');
 const u = require('./units');
@@ -23,9 +23,9 @@ const str = (a) => String(a || '').trim();
 const DLMM_MAX_BINS = 1400;
 
 class SolanaManual extends Manual {
-  // ---- pool ------------------------------------------------------------------------
-  // Pool yang belum tercatat (alamat ditempel dari DexScreener): venue dari pemilik
-  // akunnya, lalu state-nya dibaca sekali — chain.pools ikut menyimpannya ke tabel.
+  // ---- pools ------------------------------------------------------------------------
+  // A pool not recorded yet (address pasted from DexScreener): venue from its account owner,
+  // then its state is read once — chain.pools also stores it in the table.
   async poolByRef(poolRef) {
     const ref = str(poolRef);
     if (!isBase58(ref)) return null;
@@ -47,14 +47,14 @@ class SolanaManual extends Manual {
     return list;
   }
 
-  // Pool CLMM/DLMM yang memuat `token`. Tidak ada event "pool dibuat" yang bisa disaring
-  // per token lewat RPC publik (getProgramAccounts ditolak endpoint gratis), jadi daftar
-  // kandidatnya dari indeks DexScreener + GeckoTerminal, lalu tiap alamat dipastikan
-  // lewat pemilik akunnya dan state-nya dibaca dari chain — indeks luar hanya menunjuk.
+  // CLMM/DLMM pools holding `token`. There is no "pool created" event that can be filtered
+  // per token over public RPC (free endpoints refuse getProgramAccounts), so the candidate
+  // list comes from the DexScreener + GeckoTerminal indexes, then each address is confirmed
+  // by its account owner and its state read from the chain — the outside index only points.
   async scanPools(token, { onProgress = () => {}, fetchImpl = globalThis.fetch } = {}) {
     const t = str(token);
     if (!isBase58(t)) throw new Error('alamat token Solana harus base58 (32–44 karakter)');
-    const cand = new Map();   // alamat -> {createdAt, liquidityUsd}
+    const cand = new Map();   // address -> {createdAt, liquidityUsd}
     let ok = 0;
     const getJson = async (url) => {
       const r = await fetchImpl(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
@@ -87,7 +87,7 @@ class SolanaManual extends Manual {
     if (!ok) throw new Error('indeks pool (DexScreener & GeckoTerminal) tidak bisa dihubungi — coba lagi sebentar');
     if (!cand.size) return [];
 
-    // Venue dari program pemilik akun: satu getMultipleAccounts per 100 alamat.
+    // Venue from the account's owner program: one getMultipleAccounts per 100 addresses.
     const { PublicKey } = require('@solana/web3.js');
     const addrs = [...cand.keys()].filter(isBase58);
     const byProgram = new Map(Object.values(this.chain.adapters).map((a) => [a.program, a.key]));
@@ -152,9 +152,9 @@ class SolanaManual extends Manual {
     } catch { return null; }
   }
 
-  // ---- rencana LP manual --------------------------------------------------------------
-  // Masukan & bentuk balikan sama dengan Manual.planLp. Tambahan: `native` = rentang asli
-  // venue yang sudah pasti (ikuti aksi, mode exact: bin/tick target apa adanya).
+  // ---- manual LP plan --------------------------------------------------------------
+  // Input & return shape as Manual.planLp. Extra: `native` = the venue's native range already
+  // fixed (follow an action, exact mode: the target's bins/ticks as is).
   // strategy: Meteora DLMM shape (spot | curve | bidask); unset = the rules' choice, and
   // spot when that is 'mirror' (a manual LP has no target shape to follow).
   async planLp({ poolRef, usd, widthPct = 25, lowerPct = null, upperPct = null, tickLower = null, tickUpper = null, full = false,
@@ -178,7 +178,7 @@ class SolanaManual extends Manual {
     const ad = this.chain.adapter(p.venue);
     const cur = st.tick;
 
-    // 1) rentang dalam tick setara (sama persis dengan EVM), lalu ke satuan asli venue
+    // 1) range in equivalent ticks (exactly as EVM), then to the venue's native units
     let singleSide = null;
     if (!native && !full && tickLower == null && tickUpper == null && (lowerPct != null || upperPct != null)) {
       const r = ticksFromPct({ curTick: cur, quoteSide: p.quoteSide, lowerPct, upperPct });
@@ -196,7 +196,7 @@ class SolanaManual extends Manual {
       if (ranged && tickLower != null && tickUpper != null) ({ tickLower: tl, tickUpper: tu } = planRange(rules, actLike, cur));
       else if (tickLower != null && tickUpper != null) { tl = Math.min(tickLower, tickUpper); tu = Math.max(tickLower, tickUpper); }
       else {
-        // Rentang penuh: DLMM dibatasi 1400 bin per posisi, CLMM oleh batas tick program.
+        // Full range: DLMM is capped at 1400 bins per position, CLMM by the program's tick bounds.
         if (full && p.venue === 'meteora') {
           const half = Math.floor(DLMM_MAX_BINS / 2) - 1;
           ({ tickLower: tl, tickUpper: tu } = ad.ticksOf(st, st.current - half, st.current + half));
@@ -205,7 +205,7 @@ class SolanaManual extends Manual {
       }
       ({ lower, upper } = ad.nativeRange(st, tl, tu));
     }
-    // Satu sisi: batas dekat harga menjauh dari harga supaya token kedua tidak dibutuhkan.
+    // One-sided: the bound near the price moves away from it so the second token is not needed.
     if (p.venue === 'meteora') {
       if (singleSide === 'token0') { lower = Math.max(lower, st.current + 1); upper = Math.max(upper, lower); }
       if (singleSide === 'token1') { upper = Math.min(upper, st.current - 1); lower = Math.min(lower, upper); }
@@ -222,7 +222,7 @@ class SolanaManual extends Manual {
     if (strategy != null && strategy !== '' && !STRATEGIES.includes(strategy)) return { error: `strategi harus salah satu dari ${STRATEGIES.join(', ')}` };
     const shape = p.venue === 'meteora' ? resolveStrategy(strategy || rules.range.dlmm_strategy, null) : null;
 
-    // 2) jumlah token dari nilai (lihat planner.js)
+    // 2) token amounts from value (see planner.js)
     const q = this.chain.quoteSideOf(st.token0, st.token1);
     const quoteAmt = q.kind === 'eth' ? nominal / eng.ethUsd : nominal;
     const side = m.sideOfRange(cur, tl, tu);
@@ -430,14 +430,14 @@ class SolanaManual extends Manual {
     return { step, problems, after: s };
   }
 
-  // ---- ikuti aksi -----------------------------------------------------------------------
+  // ---- follow an action -----------------------------------------------------------------
   poolFromAction(a, toks) {
     const p = super.poolFromAction(a, toks);
     return { ...p, poolAddr: a.pool_ref, hooks: null, hasHooks: false, dynamicFee: false };
   }
 
-  // Mode exact: bin/tick asli target dipakai apa adanya (dari ext aksi), sama dengan
-  // salin otomatis. Mode lain: planRange dari tick setara target.
+  // Exact mode: the target's native bins/ticks are used as is (from the action's ext), the same
+  // as automatic copying. Other modes: planRange from the target's equivalent ticks.
   async planFollow({ actionId, usd }) {
     const c = await this.followContext(actionId);
     if (c.error) return c;
@@ -458,7 +458,7 @@ class SolanaManual extends Manual {
     return { ...r, follow: { ...c.info, usd: nominal } };
   }
 
-  // ---- swap manual ----------------------------------------------------------------------
+  // ---- manual swap ----------------------------------------------------------------------
   customTokens() {
     try {
       const v = JSON.parse(this.store.getState(this.sk('swap_tokens'), '[]'));
@@ -474,8 +474,8 @@ class SolanaManual extends Manual {
     this.store.setState(this.sk('swap_tokens'), JSON.stringify(this.customTokens().filter((x) => x !== str(a))));
   }
 
-  // Semua akun token wallet sudah terbaca oleh exec.balances (getParsedTokenAccountsByOwner),
-  // jadi tidak perlu memindai riwayat transfer seperti EVM.
+  // All the wallet's token accounts are already read by exec.balances (getParsedTokenAccountsByOwner),
+  // so there is no need to scan the transfer history like on EVM.
   async seenTokens() { return []; }
 
   async held() {
@@ -503,7 +503,7 @@ class SolanaManual extends Manual {
         isQuote: !!this.chain.QUOTES[a], native: a === WSOL, custom: custom.has(a) && !this.chain.QUOTES[a],
       };
     })
-      // NFT posisi (desimal 0) bukan token yang bisa ditukar
+      // Position NFTs (0 decimals) are not tradable tokens
       .filter((x) => x.decimals > 0 || x.custom)
       .sort((x, y) => (y.isQuote ? 1 : 0) - (x.isQuote ? 1 : 0) || y.amount - x.amount);
   }
@@ -590,11 +590,11 @@ class SolanaManual extends Manual {
     const rules = eng.rulesFrom(null);
     const [mi, mo] = await this.chain.tokens([ti, to]);
     const symIn = ti === WSOL ? 'SOL' : mi.symbol, symOut = to === WSOL ? 'SOL' : mo.symbol;
-    const masuk = Number(BigInt(amountRaw)) / 10 ** (mi.decimals ?? 9);
+    const amountIn = Number(BigInt(amountRaw)) / 10 ** (mi.decimals ?? 9);
     const r = await eng.swap(ti, to, BigInt(amountRaw), {
       slippageBps: rules.swap.max_slippage_bps, maxLossBps: rules.exit.sell_max_loss_bps, kind: 'swap_manual',
     });
-    const keluar = Number(r.out) / 10 ** (mo.decimals ?? 9);
+    const amountOut = Number(r.out) / 10 ** (mo.decimals ?? 9);
     try {
       eng.positions.recordTokenSale({ token: ti, amount: BigInt(amountRaw), quoteToken: to,
         txHash: r.hash, amountOut: r.out, usdOut: r.usdOut, ethUsd: eng.ethUsd });
@@ -603,10 +603,10 @@ class SolanaManual extends Manual {
       const row = this.store.get('SELECT detail FROM txs WHERE hash=?', r.hash);
       const d = row?.detail ? JSON.parse(row.detail) : {};
       this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify({
-        ...d, tokenIn: ti, tokenOut: to, symbolIn: symIn, symbolOut: symOut, amountIn: masuk, amountOut: keluar,
+        ...d, tokenIn: ti, tokenOut: to, symbolIn: symIn, symbolOut: symOut, amountIn, amountOut,
       }), r.hash);
-    } catch { /* riwayat saja — swap-nya sudah terkirim */ }
-    const note = `${masuk.toPrecision(6)} ${symIn} → ${keluar.toPrecision(6)} ${symOut}`;
+    } catch { /* history only — the swap was already sent */ }
+    const note = `${amountIn.toPrecision(6)} ${symIn} → ${amountOut.toPrecision(6)} ${symOut}`;
     eng.notify(`swap manual: ${note}`);
     return { txHash: r.hash, amountOut: r.out.toString(), note, dex: 'Jupiter' };
   }

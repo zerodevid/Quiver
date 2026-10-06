@@ -1,7 +1,7 @@
-// Membuka keystore Solana hasil ekspor Quiver (POST /api/settings/wallet/export di chain
-// Solana) sepenuhnya di peramban: PBKDF2-SHA256 → AES-256-GCM lewat WebCrypto. Isinya
-// kunci rahasia 64 byte (format solana-keygen); hasilnya base58, bentuk yang diterima
-// Phantom/Solflare untuk "Import private key".
+// Opens a Solana keystore exported by Quiver (POST /api/settings/wallet/export on the Solana
+// chain) entirely in the browser: PBKDF2-SHA256 → AES-256-GCM through WebCrypto. It holds
+// the 64-byte secret key (solana-keygen format); the result is base58, the form
+// Phantom/Solflare accept for "Import private key".
 const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
 export function base58(bytes) {

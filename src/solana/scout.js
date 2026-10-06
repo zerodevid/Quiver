@@ -1,12 +1,12 @@
 'use strict';
-// Scout Solana: potret posisi LP yang SEDANG dipegang sebuah wallet di Meteora DLMM,
-// Orca Whirlpools, dan Raydium CLMM. Bentuk balikannya sama dengan scoutWallet EVM
-// (src/scout.js) supaya dasbor & bot Telegram tidak perlu cabang.
+// Solana scout: a snapshot of the LP positions a wallet holds RIGHT NOW on Meteora DLMM,
+// Orca Whirlpools and Raydium CLMM. Same return shape as the EVM scoutWallet
+// (src/scout.js) so the dashboard & Telegram bot need no branch.
 //
-// Beda sumber: EVM menelusuri Transfer NFT posisi dalam jendela blok; di sini posisi
-// hidup dibaca langsung dari program (adapter.listPositions), dan umur posisi = waktu
-// tanda tangan TERTUA di akun posisinya. "Dilepas" diambil dari riset wallet kalau
-// wallet itu sudah pernah diriset (tanpa riwayat, jumlahnya tidak diketahui → 0).
+// Different source: EVM follows position NFT Transfers within a block window; here live
+// positions are read straight from the programs (adapter.listPositions), and a position's age =
+// the time of the OLDEST signature on its position account. "Released" comes from wallet research
+// when the wallet has been researched (without history the count is unknown → 0).
 const { PublicKey } = require('@solana/web3.js');
 const m = require('../v3math');
 
@@ -31,7 +31,7 @@ async function scoutWalletSol(rpc, chain, owner, { ethUsd = 150, onProgress = ()
   const venues = Object.values(chain.adapters);
   let step = 0;
   const total = venues.length + 2;
-  // RPC publik sering 429 untuk getProgramAccounts: tiap venue dicoba sampai 3 kali.
+  // Public RPC often 429s on getProgramAccounts: each venue is tried up to 3 times.
   for (const a of venues) {
     let ok = false;
     for (let i = 0; i < 3 && !ok; i++) {
@@ -43,7 +43,7 @@ async function scoutWalletSol(rpc, chain, owner, { ethUsd = 150, onProgress = ()
   }
   if (failed.length === venues.length) throw new Error(`posisi tidak terbaca dari RPC (${failed.join(', ')}) — endpoint butuh getProgramAccounts`);
 
-  // State pool & metadata token sekaligus
+  // Pool state & token metadata in one go
   const byVenue = new Map();
   for (const p of live) byVenue.set(p.venue, [...new Set([...(byVenue.get(p.venue) || []), p.pool])]);
   const states = new Map();
@@ -55,12 +55,12 @@ async function scoutWalletSol(rpc, chain, owner, { ethUsd = 150, onProgress = ()
   const metaBy = new Map(metas.filter(Boolean).map((t) => [t.address, t]));
   onProgress({ scanned: ++step, total });
 
-  // Umur: tanda tangan tertua akun posisi (paling banyak 40 posisi terbesar, 3 sekaligus).
+  // Age: the oldest signature of the position account (at most the 40 largest positions, 3 at a time).
   const ages = new Map();
   const queue = live.filter((p) => BigInt(p.liquidity || '0') > 0n).slice(0, MAX_AGE_LOOKUPS).map((p) => p.id);
   await Promise.all([0, 1, 2].map(async () => {
     for (let id = queue.shift(); id; id = queue.shift()) {
-      try { ages.set(id, await oldestTs(rpc, id)); } catch { /* umur tidak diketahui */ }
+      try { ages.set(id, await oldestTs(rpc, id)); } catch { /* age unknown */ }
     }
   }));
   onProgress({ scanned: ++step, total });

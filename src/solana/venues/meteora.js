@@ -1,8 +1,8 @@
 'use strict';
-// Adapter Meteora DLMM. Rentang asli = bin id (inklusif); dinormalkan ke tick setara
-// lewat units.js. "Likuiditas" posisi DLMM bukan satu angka L seperti v3 — yang dipakai
-// di sini adalah jumlah `positionLiquidity` semua bin posisi: naik saat ditambah, turun
-// proporsional saat ditarik, jadi cocok untuk menghitung porsi tarik sebagian (bps).
+// Meteora DLMM adapter. The native range = bin ids (inclusive); normalised to equivalent ticks
+// through units.js. A DLMM position's "liquidity" is not one L number like v3 — what is used
+// here is the sum of `positionLiquidity` over the position's bins: it rises on add and falls
+// proportionally on withdrawal, so it fits computing partial withdrawal shares (bps).
 const { PublicKey, Keypair } = require('@solana/web3.js');
 const BN = require('bn.js');
 const DLMM = require('@meteora-ag/dlmm');
@@ -11,8 +11,8 @@ const u = require('../units');
 const { dlmmShape } = require('../dlmm-shape');
 
 const PROGRAM = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
-// Satu posisi DLMM biasa menampung maksimal 70 bin; yang lebih lebar dibuat sebagai
-// posisi "diperluas" (createExtendedEmptyPosition) lalu diisi bertahap.
+// A plain DLMM position holds at most 70 bins; a wider one is created as an "extended"
+// position (createExtendedEmptyPosition) then filled in steps.
 const MAX_BINS_SIMPLE = Number(DLMM.DEFAULT_BIN_PER_POSITION?.toString?.() || 70);
 const MAX_BINS = 1400;
 const coder = new BorshAccountsCoder(DLMM.IDL);
@@ -23,14 +23,14 @@ class MeteoraVenue {
   constructor({ rpc, log }) {
     this.key = 'meteora'; this.program = PROGRAM; this.rpc = rpc; this.log = log || console.log;
     this.inst = new Map();   // pool -> {dlmm, at}
-    // Satuan rentang asli: 1 bin; tick setara per bin tergantung binStep pool.
+    // Native range unit: 1 bin; equivalent ticks per bin depend on the pool's binStep.
     this.nativeIsBin = true;
   }
 
-  // Instans SDK per (pool, endpoint): instans DLMM mengikat Connection tempat ia dibuat,
-  // jadi satu build transaksi seluruhnya berjalan di endpoint yang sama — kalau endpoint
-  // itu 429/403, rpc.run mengulang SELURUH build di endpoint berikutnya. Disegarkan kalau
-  // berumur > 20 detik (bin aktif bergerak tiap swap) atau diminta segar.
+  // SDK instance per (pool, endpoint): a DLMM instance binds the Connection it was created on,
+  // so a whole transaction build runs on the same endpoint — when that endpoint 429s/403s,
+  // rpc.run retries the WHOLE build on the next endpoint. Refreshed when older than
+  // 20 seconds (the active bin moves with every swap) or when asked for fresh.
   async dlmmOn(conn, pool, { fresh = false } = {}) {
     const key = `${pool}|${conn.rpcEndpoint}`;
     const hit = this.inst.get(key);
@@ -40,13 +40,13 @@ class MeteoraVenue {
     this.inst.set(key, { dlmm: d, at: Date.now() });
     return d;
   }
-  // Satu build/baca utuh di satu endpoint, dengan alih endpoint kalau gagal sementara.
+  // One whole build/read on one endpoint, failing over to another on transient errors.
   withPool(pool, fn, { fresh = true } = {}) {
     return this.rpc.run(async (c) => fn(await this.dlmmOn(c, pool, { fresh }), c));
   }
 
-  // State banyak pool dalam satu getMultipleAccounts. decimals dari cache token
-  // (`decimalsOf`), karena akun pair tidak memuatnya.
+  // State of many pools in one getMultipleAccounts. Decimals from the token cache
+  // (`decimalsOf`), because the pair account does not hold them.
   async pools(addrs, decimalsOf) {
     const out = new Map();
     if (!addrs.length) return out;
@@ -75,17 +75,17 @@ class MeteoraVenue {
         tick: u.binToTick(active, binStep),
         current: active, spacing: 1, binStep,
         ticksPerUnit: u.ticksPerBin(binStep),
-        // fee dasar dalam satuan Uniswap (1e-6): baseFactor·binStep·10·10^pow / 1e9 × 1e6
+        // base fee in Uniswap units (1e-6): baseFactor·binStep·10·10^pow / 1e9 × 1e6
         fee: Math.round((baseFactor * binStep * 10 * 10 ** powF) / 1000),
         tickSpacing: Math.max(1, Math.round(u.ticksPerBin(binStep))),
-        liquidity: null,   // DLMM tidak punya L aktif tunggal; harga dianggap layak kalau pool terbaca
+        liquidity: null,   // DLMM has no single active L; the price is considered sound when the pool reads
         enabled: Number(pick(r.d, 'status') ?? 0) === 0,
       });
     }
     return out;
   }
 
-  // LbPosition SDK -> bentuk posisi bersama.
+  // SDK LbPosition -> the shared position shape.
   // activeId: active bin of the pair, used to read the liquidity shape (ext.strategy).
   norm(pool, binStep, p, activeId = null) {
     const d = p.positionData;
@@ -108,7 +108,7 @@ class MeteoraVenue {
     return dlmmShape(bins, Number(activeId), binStep);
   }
 
-  // Semua posisi DLMM milik sebuah wallet (satu getProgramAccounts + pair + bin array).
+  // All DLMM positions of a wallet (one getProgramAccounts + pair + bin arrays).
   async listPositions(owner) {
     const m = await this.rpc.run((c) => DLMM.getAllLbPairPositionsByUser(c, new PublicKey(owner)), { needsGpa: true });
     const out = [];
@@ -123,8 +123,8 @@ class MeteoraVenue {
     return out;
   }
 
-  // Posisi tertentu (milik kita). null = akun posisi sudah tidak ada (ditutup).
-  // Galat baca dilempar — pemanggil TIDAK boleh menyamakannya dengan "kosong".
+  // Specific positions (ours). null = the position account no longer exists (closed).
+  // A read error is thrown — the caller must NOT treat it as "empty".
   async getPositions(items) {
     const out = new Map();
     const byPool = new Map();
@@ -148,9 +148,9 @@ class MeteoraVenue {
     return out;
   }
 
-  // ---- transaksi ------------------------------------------------------------
-  // SDK mengembalikan Transaction lama; yang diambil hanya instruksinya (instruksi
-  // ComputeBudget dibuang — pengirim memasang harga & batasnya sendiri).
+  // ---- transactions ---------------------------------------------------------
+  // The SDK returns legacy Transactions; only their instructions are taken (ComputeBudget
+  // instructions dropped — the sender sets its own price & limit).
   static groups(txs, signers = []) {
     return (Array.isArray(txs) ? txs : [txs]).filter(Boolean).map((t, i) => ({
       instructions: t.instructions, signers: i === 0 ? signers : [],
@@ -161,7 +161,7 @@ class MeteoraVenue {
     return { spot: DLMM.StrategyType.Spot, curve: DLMM.StrategyType.Curve, bidask: DLMM.StrategyType.BidAsk }[s] ?? DLMM.StrategyType.Spot;
   }
 
-  // lower/upper: bin id (inklusif). amount0/1: jumlah mentah token X/Y.
+  // lower/upper: bin ids (inclusive). amount0/1: raw amounts of token X/Y.
   async buildOpen({ pool, lower, upper, amount0, amount1, slippageBps, owner, strategy = 'spot' }) {
     const width = upper - lower + 1;
     if (width > MAX_BINS) throw new Error(`rentang ${width} bin melebihi batas posisi DLMM (${MAX_BINS} bin)`);
@@ -172,7 +172,7 @@ class MeteoraVenue {
       positionPubKey: pos.publicKey, user,
       totalXAmount: new BN(amount0.toString()), totalYAmount: new BN(amount1.toString()),
       strategy: { minBinId: lower, maxBinId: upper, strategyType: st },
-      slippage: Number(slippageBps) / 100,   // SDK: persen
+      slippage: Number(slippageBps) / 100,   // SDK: percent
     };
     const groups = await this.withPool(pool, async (d) => {
       if (width <= MAX_BINS_SIMPLE) return MeteoraVenue.groups(await d.initializePositionAndAddLiquidityByStrategy(params), [pos]);
@@ -183,7 +183,7 @@ class MeteoraVenue {
     return { groups, position: pos.publicKey.toBase58(), native: { lower, upper } };
   }
 
-  // Tambah ke posisi yang sudah ada, di rentang posisi itu sendiri.
+  // Add to an existing position, over that position's own range.
   // strategy null: keep the position's own shape (read from its bins; spot if unclear).
   async buildIncrease({ pool, position, amount0, amount1, slippageBps, owner, strategy = null }) {
     const groups = await this.withPool(pool, async (d) => {
@@ -199,8 +199,8 @@ class MeteoraVenue {
     return { groups };
   }
 
-  // Tarik bps/10000 dari seluruh rentang posisi; close = sekalian klaim fee & tutup akun
-  // (sewa akun posisi ~0,057 SOL kembali ke wallet).
+  // Withdraw bps/10000 from the position's whole range; close = also claim fees & close the
+  // account (the ~0.057 SOL position rent returns to the wallet).
   async buildDecrease({ pool, position, bps, close, owner }) {
     const groups = await this.withPool(pool, async (d) => {
       const p = await d.getPosition(new PublicKey(position));
@@ -224,14 +224,14 @@ class MeteoraVenue {
     return { groups };
   }
 
-  // Isi bin di sekitar bin aktif (mentah X & Y per bin) untuk kurva kedalaman pool
-  // (solana/pool-depth.js mengubahnya ke L setara per rentang tick bin).
+  // Bin contents around the active bin (raw X & Y per bin) for the pool depth curve
+  // (solana/pool-depth.js turns them into equivalent L per bin tick range).
   async depth(pool, left, right) {
     const r = await this.withPool(pool.id, (d) => d.getBinsAroundActiveBin(left, right));
     return r.bins.map((b) => ({ bin: Number(b.binId), x: BigInt(b.xAmount.toString()), y: BigInt(b.yAmount.toString()) }));
   }
 
-  // Rentang asli dari rentang tick setara (untuk rencana dengan mode selain 'exact').
+  // Native range from an equivalent tick range (for plans with a mode other than 'exact').
   nativeRange(poolState, tickLower, tickUpper) {
     const lower = u.tickToBin(tickLower, poolState.binStep);
     const upper = Math.max(lower, u.tickToBin(tickUpper, poolState.binStep) - 1);

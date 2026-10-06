@@ -1,7 +1,7 @@
 'use strict';
-// Jupiter: agregator swap Solana (peran Kyber di EVM), sumber harga USD, dan nama token.
-// Tanpa API key memakai lite-api.jup.ag (gratis, dibatasi laju); dengan
-// JUPITER_API_KEY memakai api.jup.ag.
+// Jupiter: the Solana swap aggregator (Kyber's role on EVM), the USD price source, and token
+// names. Without an API key it uses lite-api.jup.ag (free, rate-limited); with
+// JUPITER_API_KEY it uses api.jup.ag.
 const { VersionedTransaction } = require('@solana/web3.js');
 
 class Jupiter {
@@ -23,13 +23,13 @@ class Jupiter {
     try {
       const r = await this.fetch(`${this.base}${path}`, { method, headers: h, body: body ? JSON.stringify(body) : undefined, signal: ctl.signal });
       const text = await r.text();
-      let j = null; try { j = JSON.parse(text); } catch { /* bukan JSON */ }
+      let j = null; try { j = JSON.parse(text); } catch { /* not JSON */ }
       if (!r.ok) throw new Error(`jupiter ${r.status}: ${(j?.error || j?.message || text).toString().slice(0, 200)}`);
       return j;
     } finally { clearTimeout(t); }
   }
 
-  // Kutipan tukar tepat-masuk. amount: BigInt/str jumlah mentah token masuk.
+  // Exact-in swap quote. amount: BigInt/str raw amount of the input token.
   async quote(inMint, outMint, amount, { slippageBps = 100, onlyDirect = false } = {}) {
     const q = new URLSearchParams({
       inputMint: inMint, outputMint: outMint, amount: String(amount), slippageBps: String(slippageBps),
@@ -40,8 +40,8 @@ class Jupiter {
     return r;
   }
 
-  // Transaksi swap siap tanda tangan (v0). Biaya prioritas diatur Jupiter dalam batas
-  // maxLamports; SOL dibungkus/dibuka otomatis.
+  // A swap transaction ready to sign (v0). Jupiter sets the priority fee within
+  // maxLamports; SOL is wrapped/unwrapped automatically.
   async swapTx(quote, owner, { maxPriorityLamports = 2_000_000, priorityLevel = 'high' } = {}) {
     const r = await this.req('/swap/v1/swap', {
       method: 'POST',
@@ -55,7 +55,7 @@ class Jupiter {
     return { tx: VersionedTransaction.deserialize(Buffer.from(r.swapTransaction, 'base64')), lastValidBlockHeight: r.lastValidBlockHeight };
   }
 
-  // Harga USD banyak mint (maks 50 per panggilan), ditahan 30 detik.
+  // USD prices of many mints (max 50 per call), held for 30 seconds.
   async prices(mints) {
     const now = Date.now();
     const out = new Map(), miss = [];
@@ -74,8 +74,8 @@ class Jupiter {
     return out;
   }
 
-  // Nama & simbol token (maks 100 per panggilan). Mint yang tidak dikenal Jupiter
-  // tidak muncul di hasil.
+  // Token names & symbols (max 100 per call). Mints Jupiter does not know are absent
+  // from the result.
   async tokenInfo(mints) {
     const out = new Map(), miss = [];
     for (const m of new Set(mints)) { if (this.infoCache.has(m)) out.set(m, this.infoCache.get(m)); else miss.push(m); }
@@ -91,7 +91,7 @@ class Jupiter {
     return out;
   }
 
-  // Rekaman token Jupiter apa adanya (tanpa cache): holderCount, audit, dst.
+  // Jupiter's token record as is (no cache): holderCount, audit, etc.
   async tokenRecord(mint) {
     const r = await this.req(`/tokens/v2/search?query=${mint}`);
     return (Array.isArray(r) ? r : []).find((t) => t.id === mint) || null;

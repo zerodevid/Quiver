@@ -1,23 +1,23 @@
 'use strict';
-// Modal wallet di Solana (setoran & penarikan) — tabel deposits, ringkasan, dan rumus
-// PnL bersih sama dengan src/capital.js (diwarisi). Beda cara membaca:
+// Wallet capital on Solana (deposits & withdrawals) — the deposits table, summary, and net PnL
+// formula as in src/capital.js (inherited). Only how it is read differs:
 //
-//   baseline : nilai wallet SAAT pelacak pertama kali jalan (kas SOL/wSOL/USDC/USDT +
-//              nilai posisi terbuka). Solana tidak punya node arsip publik untuk saldo
-//              lampau, jadi tidak dihitung mundur ke titik ekuitas pertama.
-//   setoran  : tanda tangan baru di wallet DAN akun token (ATA) USDC/USDT/wSOL-nya —
-//              transfer SPL ke ATA tidak menyebut alamat wallet sama sekali. Tiap tx
-//              dibaca (pre/post balance): kenaikan SOL / kuotasi milik wallet = setoran,
-//              penurunan = penarikan.
-//   bukan    : tx bot sendiri (tabel txs) dan tx yang ditandatangani wallet sambil
-//              memanggil program lain (venue LP, Jupiter, …) — itu dagang, bukan
-//              pindah modal. Sewa akun yang dibuat/ditutup ikut tx itu juga.
+//   baseline : the wallet's value WHEN the tracker first runs (SOL/wSOL/USDC/USDT cash +
+//              open position value). Solana has no public archive node for past balances,
+//              so it is not computed back to the first equity point.
+//   deposits : new signatures on the wallet AND its USDC/USDT/wSOL token accounts (ATAs) —
+//              an SPL transfer to an ATA does not mention the wallet address at all. Each tx
+//              is read (pre/post balances): an increase in the wallet's SOL / quote = deposit,
+//              a decrease = withdrawal.
+//   not      : the bot's own txs (txs table) and txs the wallet signed while calling other
+//              programs (LP venues, Jupiter, …) — that is trading, not moving capital. Rent of
+//              accounts created/closed in those txs too.
 const { PublicKey } = require('@solana/web3.js');
 const { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 const { Capital } = require('../capital');
 const { WSOL } = require('../networks');
 
-// Program yang boleh ada di tx transfer biasa.
+// Programs allowed in a plain transfer tx.
 const PLAIN = new Set([
   '11111111111111111111111111111111',               // System
   'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',    // SPL Token
@@ -44,7 +44,7 @@ class SolanaCapital extends Capital {
 
   available() { return true; }
 
-  // Alamat yang dipantau: wallet + ATA kuotasi (termasuk wSOL).
+  // Watched addresses: the wallet + its quote ATAs (including wSOL).
   watched(wallet) {
     const owner = new PublicKey(wallet);
     const atas = [this.chain.ADDR.usdg, this.chain.ADDR.usdt, WSOL]
@@ -64,7 +64,7 @@ class SolanaCapital extends Capital {
     const positionsUsd = e.positions.summary(ethUsd).exposureUsd || 0;
     const cashUsd = usd + sol * ethUsd;
     const slot = await this.rpc.slot();
-    // Kursor tiap alamat = tanda tangan terbaru sekarang: yang lebih lama sudah masuk baseline.
+    // Each address's cursor = its newest signature now: anything older is already in the baseline.
     for (const a of this.watched(wallet)) {
       const top = await this.rpc.run((c) => c.getSignaturesForAddress(new PublicKey(a), { limit: 1 }), { needsHistory: true }).catch(() => []);
       this.store.setState(this.sk(`sol_cap_cursor:${a}`), top[0]?.signature || '');
@@ -75,8 +75,8 @@ class SolanaCapital extends Capital {
     return base;
   }
 
-  // Tanda tangan baru sebuah alamat sejak kursornya (terlama dulu). Kursor kosong = belum
-  // pernah ada tx: semuanya baru.
+  // New signatures of an address since its cursor (oldest first). An empty cursor = never
+  // had a tx: everything is new.
   async newSigs(addr) {
     const cursor = this.store.getState(this.sk(`sol_cap_cursor:${addr}`), '');
     const pages = async (until) => {
@@ -93,8 +93,8 @@ class SolanaCapital extends Capital {
     let out;
     try { out = await pages(cursor || undefined); }
     catch (e) {
-      // Endpoint yang tidak menyimpan tx kursor menjawab "Transaction … not found":
-      // ambil tanpa `until` lalu potong di kursor (sama dengan watcher).
+      // An endpoint that does not keep the cursor tx answers "Transaction … not found":
+      // fetch without `until` and cut at the cursor (same as the watcher).
       if (!cursor || !/not found/i.test(String(e.message))) throw e;
       const all = await pages(undefined);
       const i = all.findIndex((x) => x.signature === cursor);
@@ -108,7 +108,7 @@ class SolanaCapital extends Capital {
     this.lastSync = Date.now();
     await this.baseline(wallet);
     const ours = new Set(this.store.all('SELECT hash FROM txs WHERE chain=?', this.chain.network).map((r) => r.hash));
-    // Gabungan tanda tangan baru semua alamat, urut slot; tiap tx dibaca sekali.
+    // New signatures of all addresses merged, ordered by slot; each tx is read once.
     const perAddr = [];
     for (const a of this.watched(wallet)) perAddr.push([a, await this.newSigs(a)]);
     const all = new Map();
@@ -120,7 +120,7 @@ class SolanaCapital extends Capital {
     for (const s of batch) {
       if (!ours.has(s.signature)) added += await this.readTx(wallet, s);
     }
-    // Kursor maju hanya sampai tx terakhir yang sudah dibaca (sisanya sync berikutnya).
+    // The cursor only advances to the last tx actually read (the rest next sync).
     const doneSlot = batch.length ? batch[batch.length - 1].slot : Infinity;
     for (const [a, sigs] of perAddr) {
       const last = [...sigs].reverse().find((x) => x.slot <= doneSlot);
@@ -130,7 +130,7 @@ class SolanaCapital extends Capital {
     return { added };
   }
 
-  // Perubahan SOL & kuotasi milik wallet di satu tx → setoran / penarikan.
+  // The wallet's SOL & quote changes in one tx → deposit / withdrawal.
   async readTx(wallet, s) {
     const tx = await this.rpc.run((c) => c.getParsedTransaction(s.signature, { maxSupportedTransactionVersion: 1, commitment: 'confirmed' }), { needsHistory: true });
     if (!tx?.meta || tx.meta.err) return 0;
@@ -141,12 +141,12 @@ class SolanaCapital extends Capital {
       ...(tx.meta.innerInstructions || []).flatMap((x) => x.instructions.map((ix) => ix.programId?.toBase58?.() || String(ix.programId))),
     ]);
     const plain = [...programs].every((p) => PLAIN.has(p));
-    // Ditandatangani wallet bot + memanggil program lain = dagang (swap/LP di luar txs).
+    // Signed by the bot wallet + calling another program = trading (swap/LP outside txs).
     if (signers.has(wallet) && !plain) return 0;
     const ts = (tx.blockTime || s.blockTime || Math.floor(Date.now() / 1000)) * 1000;
     let added = 0;
-    // SOL = native + wSOL milik wallet (bungkus/buka bungkus bukan pindah modal). Biaya
-    // tx dikembalikan dulu kalau wallet pembayarnya.
+    // SOL = the wallet's native + wSOL (wrapping/unwrapping is not moving capital). The tx
+    // fee is added back first when the wallet paid it.
     const tokDelta = new Map();
     const i = keys.indexOf(wallet);
     if (i >= 0) {

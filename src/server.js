@@ -234,12 +234,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const scoutJobs = new Map();
   const poolScanJobs = new Map();
   const walletJobs = new Map();
-  // Riset wallet: EVM dari event log (wallet.js), Solana dari riwayat transaksi +
-  // event program Meteora/Orca/Raydium (solana/research.js) — tabel & bentuk sama.
+  // Wallet research: EVM from event logs (wallet.js), Solana from the transaction history +
+  // Meteora/Orca/Raydium program events (solana/research.js) — same tables & shape.
   const research = chain.kind === 'solana'
     ? new (require('./solana/research').SolanaWalletResearch)({ rpc, store, chain, log })
     : new WalletResearch({ rpc, store, chain, log });
-  // LP/swap manual: Solana lewat adapter venue + Jupiter (solana/manual.js), rute sama.
+  // Manual LP/swap: Solana through the venue adapters + Jupiter (solana/manual.js), same routes.
   const manual = chain.kind === 'solana'
     ? new (require('./solana/manual').SolanaManual)({ engine, store, chain, rpc, log })
     : new Manual({ engine, store, chain, rpc, log });
@@ -411,7 +411,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // token, so the tokens table does not get wallet addresses in it.
   const probeToken = async (a) => {
     if (SOL) {
-      // Solana: akun mint = token; selain itu dianggap wallet.
+      // Solana: a mint account = a token; anything else is taken as a wallet.
       const t = await chain.tokens([a]).then((x) => x[0]).catch(() => null);
       return t ? { kind: 'token', symbol: t.symbol || '?', name: t.name || '', decimals: t.decimals } : { kind: 'wallet' };
     }
@@ -1382,8 +1382,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const pools = [...new Set(canon(url.searchParams.get('pools') || '').split(',').filter((p) => isRef(p)))].sort().slice(0, 40);
       if (!pools.length) return { prices: {}, ts: Date.now() };
       return market.memo(`slot0many:${pools.join(',')}`, 2500, async () => {
-        // EVM: poolId v4 (66 karakter) vs alamat pool v3 (42). Solana: semua lewat slot0V3
-        // (SolanaChain memetakannya ke adapter venue pool itu).
+        // EVM: v4 poolId (66 chars) vs v3 pool address (42). Solana: everything through slot0V3
+        // (SolanaChain maps it to that pool's venue adapter).
         const v4 = SOL ? [] : pools.filter((p) => p.length === 66), v3 = SOL ? pools : pools.filter((p) => p.length === 42);
         const [s4, s3] = await Promise.all([
           v4.length ? chain.slot0V4Many(v4).catch(() => v4.map(() => null)) : [],
@@ -1921,8 +1921,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // pool, or researched wallet — all already in the local DB, so there is
     // no need to call the chain/DexScreener just to jump pages.
     'GET /api/search': async (req, url) => {
-      // LIKE di SQLite tidak peka huruf (ASCII): huruf kecil cocok dengan label/simbol,
-      // dan tetap cocok dengan alamat base58 Solana.
+      // SQLite LIKE is case-insensitive (ASCII): lower case matches labels/symbols,
+      // and still matches base58 Solana addresses.
       const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
       if (q.length < 2) return { results: [] };
       const like = `%${q}%`;

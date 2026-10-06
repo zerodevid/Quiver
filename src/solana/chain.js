@@ -1,10 +1,10 @@
 'use strict';
-// "Chain" versi Solana: objek yang dipakai dasbor, policy, dan pembukuan posisi di
-// tempat pools.js Chain di EVM. Nama field & metode yang dibaca kode bersama
+// The Solana "Chain": the object the dashboard, policy and position bookkeeping use in
+// place of pools.js Chain on EVM. Field & method names read by shared code
 // (network, ADDR, QUOTES, nativeSymbol, isEthLike, quoteSideOf, valueInQuote, tokens,
-// ethUsd, …) dipertahankan — "eth" di sini = SOL, aset native chain ini.
+// ethUsd, …) are kept — "eth" here = SOL, this chain's native asset.
 //
-// Beda penting dari EVM: alamat base58 PEKA HURUF, tidak pernah di-lowercase.
+// Key difference from EVM: base58 addresses are CASE-SENSITIVE, never lower-cased.
 const { PublicKey } = require('@solana/web3.js');
 const { build, WSOL } = require('../networks');
 const u = require('./units');
@@ -13,7 +13,7 @@ const { MeteoraVenue } = require('./venues/meteora');
 const { OrcaVenue } = require('./venues/orca');
 const { RaydiumVenue } = require('./venues/raydium');
 
-// Program Metadata Metaplex — nama/simbol token SPL lama yang tidak dikenal Jupiter.
+// Metaplex Metadata program — names/symbols of old SPL tokens Jupiter does not know.
 const METAPLEX = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
 
 class SolanaChain {
@@ -44,8 +44,8 @@ class SolanaChain {
     return a;
   }
 
-  // ---- identitas venue (antarmuka bersama) -----------------------------------
-  isV3Venue(v) { return false; }     // tidak ada NFT v3 EVM di sini
+  // ---- venue identity (shared interface) ---------------------------------------
+  isV3Venue(v) { return false; }     // there are no EVM v3 NFTs here
   isSolVenue(v) { return !!this.adapters[v]; }
   venueOf(v) { return this.venues.find((x) => x.key === v) || null; }
   npmFor() { return null; }
@@ -53,9 +53,9 @@ class SolanaChain {
 
   quoteSideOf(token0, token1) {
     const q0 = this.QUOTES[token0], q1 = this.QUOTES[token1];
-    // Kedua sisi aset kuotasi (SOL/USDC — termasuk pool DLMM terbesar): stablecoin yang
-    // jadi kuotasi, supaya harga tampil "USDC per SOL" (113), bukan kebalikannya, dan
-    // nilai dibukukan dalam USD.
+    // Both sides are quote assets (SOL/USDC — including the biggest DLMM pools): the stablecoin
+    // is the quote, so the price shows "USDC per SOL" (113), not the reverse, and value is
+    // booked in USD.
     if (q0 && q1 && q0.kind !== q1.kind) return q1.kind === 'usd' ? { side: 1, ...q1 } : { side: 0, ...q0 };
     if (q0) return { side: 0, ...q0 };
     if (q1) return { side: 1, ...q1 };
@@ -71,10 +71,10 @@ class SolanaChain {
     return { value: val, symbol: q.symbol, side: q.side, kind: q.kind };
   }
 
-  // Nilai dalam satuan `asSymbol` (kuotasi yang tercatat di baris posisi). Pembukuan
-  // sebuah posisi selalu dalam satuan barisnya; kalau kuotasi hasil penilaian lain
-  // (baris lama, atau aturan pemilihan kuotasi berubah), dikonversi lewat USD — tanpa
-  // ini nilai USDC terbaca sebagai SOL (×113) atau sebaliknya.
+  // Value in `asSymbol` units (the quote recorded on the position row). A position is always
+  // booked in its row's units; when the valuation lands in another quote (an old row, or the
+  // quote selection rule changed), it is converted through USD — without this a USDC value
+  // reads as SOL (×113) or the reverse.
   valueAs(args, asSymbol, ethUsd) {
     const v = this.valueInQuote(args);
     if (!v) return null;
@@ -83,10 +83,10 @@ class SolanaChain {
     return usd / (this.isEthLike(asSymbol) ? ethUsd : 1);
   }
 
-  // ---- token ------------------------------------------------------------------
-  // Desimal dari akun mint (sumber kebenaran — dipakai menilai uang); simbol/nama dari
-  // Jupiter, cadangannya metadata Metaplex, terakhir potongan alamat. Desimal yang
-  // gagal dibaca tidak pernah ditebak dan tidak disimpan (lihat pools.js tokens()).
+  // ---- tokens -----------------------------------------------------------------
+  // Decimals from the mint account (the source of truth — used to value money); symbol/name from
+  // Jupiter, falling back to Metaplex metadata, finally a slice of the address. Decimals that
+  // fail to read are never guessed and never stored (see pools.js tokens()).
   async tokens(addrs) {
     const want = [...new Set(addrs.filter(Boolean).map(String))];
     const miss = [];
@@ -95,8 +95,8 @@ class SolanaChain {
       const q = this.QUOTES[a];
       if (q) {
         this.tokenCache.set(a, { address: a, symbol: q.symbol, name: q.symbol, decimals: q.decimals });
-        // Tabel tokens juga dibaca langsung oleh dasbor (simbol di riset & pool): aset
-        // kuotasi ikut tercatat, kalau tidak tampil "?".
+        // The tokens table is also read directly by the dashboard (symbols in research & pools):
+        // quote assets are recorded too, otherwise they show "?".
         this.store.run('INSERT OR IGNORE INTO tokens(chain,address,symbol,name,decimals,seen_ts) VALUES(?,?,?,?,?,?)', this.network, a, q.symbol, q.symbol, q.decimals, Date.now());
         continue;
       }
@@ -112,10 +112,10 @@ class SolanaChain {
         const a = part[k];
         const parsed = infos.value[k]?.data?.parsed;
         const dec = parsed?.type === 'mint' ? Number(parsed.info.decimals) : null;
-        if (dec == null) continue;   // bukan mint / tidak terbaca: tidak disimpan, dibaca ulang nanti
+        if (dec == null) continue;   // not a mint / unreadable: not stored, read again later
         let symbol = meta.get(a)?.symbol || null, name = meta.get(a)?.name || null;
         if (!symbol) {
-          // Token-2022 dengan ekstensi metadata menyimpan nama/simbol di akun mint sendiri.
+          // Token-2022 with the metadata extension keeps the name/symbol in the mint account itself.
           const ext = (parsed.info.extensions || []).find((e) => e.extension === 'tokenMetadata');
           if (ext) { symbol = ext.state?.symbol || null; name = ext.state?.name || null; }
         }
@@ -138,16 +138,16 @@ class SolanaChain {
     const [pda] = PublicKey.findProgramAddressSync([Buffer.from('metadata'), METAPLEX.toBuffer(), new PublicKey(mint).toBuffer()], METAPLEX);
     const acc = await this.rpc.run((c) => c.getAccountInfo(pda));
     if (!acc) return null;
-    // key(1) updateAuthority(32) mint(32) name(4+32) symbol(4+10) — string borsh ber-padding \0
+    // key(1) updateAuthority(32) mint(32) name(4+32) symbol(4+10) — borsh strings padded with \0
     const d = acc.data;
     const str = (off) => { const n = d.readUInt32LE(off); return { s: d.subarray(off + 4, off + 4 + n).toString('utf8').replace(/\0+$/, '').trim(), next: off + 4 + n }; };
     const nm = str(65), sy = str(nm.next);
     return { name: nm.s, symbol: sy.s };
   }
 
-  // ---- pool -------------------------------------------------------------------
-  // State pool yang dinormalkan (lihat venues/*). Ditahan 3 detik: sinkron posisi,
-  // rencana entry, dan dasbor bisa menanyakan pool yang sama berdekatan.
+  // ---- pools -------------------------------------------------------------------
+  // Normalised pool state (see venues/*). Held 3 seconds: position sync, entry plans and the
+  // dashboard may ask for the same pool close together.
   async pools(venue, addrs, { maxAgeMs = 3000 } = {}) {
     const now = Date.now();
     const out = new Map(), miss = [];
@@ -158,7 +158,7 @@ class SolanaChain {
     if (miss.length) {
       const got = await this.adapter(venue).pools(miss, (m) => this.decimalsMap(m));
       for (const [a, st] of got) {
-        // decimals yang belum terbaca dari adapter (DLMM): isi dari cache token
+        // decimals not yet read by the adapter (DLMM): filled from the token cache
         if (st.dec0 == null || st.dec1 == null) {
           const dm = await this.decimalsMap([st.token0, st.token1]);
           st.dec0 ??= dm.get(st.token0); st.dec1 ??= dm.get(st.token1);
@@ -179,10 +179,10 @@ class SolanaChain {
     this.network, st.id, st.venue, st.token0, st.token1, st.fee ?? null, st.tickSpacing ?? null, st.id);
   }
 
-  // Antarmuka EVM yang dipanggil dasbor untuk harga pool. Di Solana pool_ref = alamat
-  // pool dan venue-nya tercatat di tabel pools; bentuk balikannya sama dengan slot0V3.
-  // Venue sebuah pool dari program pemilik akunnya (untuk pool yang belum tercatat —
-  // mis. dibuka dari tautan DexScreener). null kalau bukan pool ketiga venue.
+  // EVM interface the dashboard calls for pool prices. On Solana pool_ref = the pool address
+  // and its venue is recorded in the pools table; same return shape as slot0V3.
+  // A pool's venue from the program owning its account (for pools not recorded yet —
+  // e.g. opened from a DexScreener link). null when not a pool of the three venues.
   async venueOfPool(addr) {
     const row = this.store.get('SELECT venue FROM pools WHERE chain=? AND pool_ref=?', this.network, addr);
     if (row && this.adapters[row.venue]) return row.venue;
@@ -209,8 +209,8 @@ class SolanaChain {
   }
   async poolLiquidity(ref) { return (await this.poolLiquidityMany([ref]))[0] ?? 0n; }
   async markSqrtForPair() { return null; }
-  // Umur pool (menit) dari waktu pembuatan pasangan di DexScreener, disimpan di tabel
-  // pools (cukup sekali per pool). Tidak terbaca = melempar; pemanggil tidak menghalangi.
+  // Pool age (minutes) from the pair creation time on DexScreener, stored in the pools
+  // table (once per pool is enough). Unreadable = throws; the caller does not block on it.
   async poolAgeMinutes(pool) {
     const row = this.store.get('SELECT first_ts FROM pools WHERE chain=? AND pool_ref=?', this.network, pool);
     if (row?.first_ts) return (Date.now() - row.first_ts) / 60000;
@@ -224,17 +224,17 @@ class SolanaChain {
     return (Date.now() - ts) / 60000;
   }
 
-  // ---- harga SOL ----------------------------------------------------------------
-  // Dari Jupiter (agregat semua pool); jatuh ke nilai terakhir / cadangan config kalau
-  // gagal. Nilai di luar rentang wajar ditolak — satu balasan rusak tidak boleh
-  // menggeser semua batas dolar.
+  // ---- SOL price ------------------------------------------------------------------
+  // From Jupiter (aggregated over all pools); falls back to the last value / the config
+  // fallback on failure. Values outside a sane range are refused — one broken answer must
+  // not shift every dollar limit.
   async ethUsd(fallback = 150) {
     const now = Date.now();
     if (this._ethUsd && now - this._ethUsdAt < 60_000) return this._ethUsd;
     try {
       const p = (await this.jup.prices([WSOL])).get(WSOL);
       if (p > 1 && p < 100_000) { this._ethUsd = p; this._ethUsdAt = now; return p; }
-    } catch { /* cadangan */ }
+    } catch { /* fallback */ }
     return this._ethUsd ?? fallback;
   }
   async ethUsdAt(_block, fallback) { return this.ethUsd(fallback); }
