@@ -39,7 +39,7 @@ export function poolHealth({ pool = {}, pair, holders, open = [], gmgn, now = Da
     eligible = holders.items.filter((h) => !['pool_manager', 'burn'].includes(h.kind) && h.address.toLowerCase() !== pool.pool_ref?.toLowerCase());
     largest = eligible[0]?.percent ?? null;
     if (eligible.length >= 10 || !holders.hasMore) top10 = eligible.slice(0, 10).reduce((s, h) => s + h.percent, 0);
-    // Tanpa daftar (Solana lewat audit Jupiter): porsi top holder dari sumbernya.
+    // No list (Solana through Jupiter's audit): the top-holder share from the source.
     else if (!holders.items.length && finite(holders.top10Pct)) top10 = holders.top10Pct;
     if (largest >= 10) add(largest >= 20 ? 'risk' : 'warn', 'Satu alamat non-infrastruktur memegang {value}% suplai.', { value: largest.toFixed(1) });
     if (top10 >= 40) add(top10 >= 60 ? 'risk' : 'warn', '10 alamat non-infrastruktur terbesar memegang {value}% suplai.', { value: top10.toFixed(1) });

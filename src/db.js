@@ -403,9 +403,9 @@ function open(dbPath) {
   // Manual control ("take over"): the time a mirror position was released from its target. NULL =
   // automatic. See Manual.takeover.
   if (!posCols.has('takeover_ts')) db.exec('ALTER TABLE positions ADD COLUMN takeover_ts INTEGER');
-  // Data khusus venue non-EVM (JSON): rentang asli (bin DLMM / tick Orca-Raydium),
-  // binStep, mint NFT posisi, dan L target sebelum aksi. tick_lower/tick_upper tetap
-  // diisi tick setara Uniswap supaya dasbor & pemicu keluar berlaku apa adanya.
+  // Non-EVM venue data (JSON): the native range (DLMM bins / Orca-Raydium ticks), binStep,
+  // the position NFT mint, and the target's L before the action. tick_lower/tick_upper still
+  // hold the equivalent Uniswap ticks so the dashboard & exit triggers apply as is.
   if (!posCols.has('ext')) db.exec('ALTER TABLE positions ADD COLUMN ext TEXT');
   const actCols = new Set(db.prepare('PRAGMA table_info(actions)').all().map((c) => c.name));
   if (!actCols.has('ext')) db.exec('ALTER TABLE actions ADD COLUMN ext TEXT');

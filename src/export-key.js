@@ -51,9 +51,9 @@ async function main() {
   let wallet;
   try {
     let j = null;
-    try { j = JSON.parse(json); } catch { /* biar ethers yang melapor */ }
-    // Keystore Solana dari dasbor (PBKDF2 + AES-GCM, lihat settings.js) → kunci base58
-    // yang diterima Phantom/Solflare.
+    try { j = JSON.parse(json); } catch { /* let ethers report it */ }
+    // A Solana keystore from the dashboard (PBKDF2 + AES-GCM, see solana/wallet.js) → the base58
+    // key Phantom/Solflare accept.
     wallet = j?.format === 'quiver-solana-keystore' ? openSolana(j, pass) : await ethers.Wallet.fromEncryptedJson(json, pass);
   } catch (e) {
     console.error(`gagal membuka: ${e.shortMessage || e.message}`);
