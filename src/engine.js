@@ -13,6 +13,9 @@ const { Compound } = require('./compound');
 const { Capital } = require('./capital');
 const { Holdings } = require('./holdings');
 const { WalletResearch } = require('./wallet');
+
+// A wallet research older than this is refreshed in the background when equity sizing needs it.
+const TARGET_RESEARCH_STALE_MS = 5 * 60_000;
 const { rulesFor, planEntry, planExit, quoteToUsd, usdPerQuote } = require('./policy');
 const { enumerateV4, livePositions } = require('./scout');
 const { Market } = require('./market');
@@ -3216,8 +3219,13 @@ class Engine {
   // Non-quote tokens (memecoins) are not counted; sizing.equity_max_pct bounds that under-read.
   async targetEquity(act) {
     const w = String(act.target || '').toLowerCase();
-    const wallet = w && this.store.get('SELECT scanned_to FROM wallets WHERE chain=? AND lower(address)=?', this.network, w);
-    if (!wallet) return null;
+    const wallet = w && this.store.get('SELECT scanned_to, last_scan_ts FROM wallets WHERE chain=? AND lower(address)=?', this.network, w);
+    // Never researched: this entry cannot be sized from equity, but do not block it on a scan that
+    // takes minutes. Ask for the research in the background so the NEXT entry can.
+    if (!wallet) { this.onResearchNeeded?.(w, 'full'); return null; }
+    // A stale scan misses positions the target opened since (they are not "this action"):
+    // refresh in the background; this entry still uses what is stored.
+    if (Date.now() - (wallet.last_scan_ts || 0) > TARGET_RESEARCH_STALE_MS) this.onResearchNeeded?.(w, 'refresh');
     const { ADDR, usdgDecimals } = this.chain;
     this.holdings ??= new Holdings({ rpc: this.rpc, store: this.store, chain: this.chain, log: this.log });
     const b = await this.holdings.balances(w, [ADDR.native, ADDR.weth, ADDR.usdg]);

@@ -521,6 +521,19 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     }
   };
 
+  // Equity sizing needs the target's research (its open LP). An entry never waits for it: the
+  // engine asks here, the first scan / refresh runs in the background, and the entry that asked
+  // follows the equity fallback. Failed jobs are not retried on every entry (see maybeRefresh).
+  engine.onResearchNeeded = (addr, mode) => {
+    try {
+      if (mode === 'refresh') return maybeRefresh(addr, store.get('SELECT last_scan_ts FROM wallets WHERE chain=? AND address=?', chain.network, addr), 'equity');
+      const job = walletJobs.get(addr);
+      if (job?.status === 'jalan') return;
+      if (job?.status === 'gagal' && Date.now() - (job.finishedAt || 0) < RETRY_AFTER_FAIL_MS) return;
+      startWalletJob(addr, { mode: 'full', reason: 'equity' });
+    } catch (e) { log(`riset ${addr}: ${e.message}`); }
+  };
+
   // Token gate. This dashboard can switch on LIVE mode and close positions, so it
   // must not be simply open once exposed to the internet. The token is stored in
   // the config; if empty, the gate is off (safe for 127.0.0.1 only).

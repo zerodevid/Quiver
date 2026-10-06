@@ -90,14 +90,18 @@ const fake = {
   research: { refreshOpen: async () => {} },
   holdings: { balances: async () => new Map([[ADDR.native, 10n ** 18n], [ADDR.weth, 0n], [ADDR.usdg, 1000n * 10n ** 6n]]) },
 };
+const asked = [];
+fake.onResearchNeeded = (addr, mode) => asked.push([addr, mode]);
 const targetEquity = (a) => Engine.prototype.targetEquity.call(fake, a);
 (async () => {
   assert.strictEqual(await targetEquity({ ...act, target: T }), null, 'never researched → unknown');
+  assert.deepStrictEqual(asked.splice(0), [[T, 'full']], 'a first research is requested, not awaited');
   store.run("INSERT INTO wallets(chain,address,first_block,scanned_to,last_scan_ts) VALUES('robinhood',?,0,100,0)", T);
   store.run(`INSERT INTO wpositions(chain,wallet,venue,token_id,live_value_q,live_fee_q,status) VALUES('robinhood',?,'v4','1',4000,100,'open')`, T);
   store.run(`INSERT INTO wpositions(chain,wallet,venue,token_id,live_value_q,live_fee_q,status) VALUES('robinhood',?,'v4','2',9999,0,'closed')`, T);
   // cash 2500 + 1000, LP 4100, this position (2000) not scanned yet
   near(await targetEquity({ ...act, target: T.toUpperCase().replace('0X', '0x'), block: 150 }), 9600);
+  assert.deepStrictEqual(asked.splice(0), [[T, 'refresh']], 'a stale scan (last_scan_ts = 0) asks for a refresh');
   // the scan reached the block and knows the position -> not added twice
   near(await targetEquity({ ...act, target: T, tokenId: '1', block: 90 }), 7600);
   // an ADD to a known position after the last scan: the stored liquidity lacks it -> added once
