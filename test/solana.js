@@ -1059,6 +1059,26 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(f.plan.strategy, 'curve');
   });
 
+  await t('scan watchdog: a tick stuck past the limit is released and reported; the next scan records lastScanAt', async () => {
+    const { eng, store } = engineHarness();
+    eng.cfg.loop = { tick_stuck_seconds: 1 };
+    let hang = true;
+    eng.rpc.slot = async () => 5;
+    eng.watcher.scan = async () => { if (hang) await new Promise(() => {}); return []; };
+    eng.watcher.persist = async () => [];
+    const first = eng.tick();                      // never finishes
+    await new Promise((r) => setTimeout(r, 30));
+    assert.strictEqual(eng.lastScanAt, 0);
+    eng.busySince = Date.now() - 5000;             // pretend it has hung for 5 s
+    await eng.tick();                              // busy → unwedge
+    assert.strictEqual(eng.busy, false, 'released');
+    assert.match(store.get("SELECT msg FROM logs WHERE msg LIKE 'pemindaian macet%'")?.msg || '', /macet/);
+    hang = false;
+    await eng.tick();
+    assert.ok(eng.lastScanAt > 0, 'a successful scan is recorded');
+    void first;
+  });
+
   console.log(`\n${pass} ok, ${fail} gagal`);
   process.exit(fail ? 1 : 0);
 })();

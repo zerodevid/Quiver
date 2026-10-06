@@ -37,6 +37,8 @@ const BORROWED = [
   'reentryNearPct', 'reentryKey', 'watchReentry', 'reentryWatches', 'alertLeftover',
   // target fee harvests: noted, and followed with a mirror claim when exit.follow_claim is on
   'noteTargetClaim', 'followTargetClaim',
+  // scan watchdog: a tick hanging past loop.tick_stuck_seconds is released and reported
+  'tickStuckMs', 'unwedge',
 ];
 
 class SolanaEngine {
@@ -50,6 +52,9 @@ class SolanaEngine {
     this.ethUsd = cfg.prices?.eth_usd || 150;
     this.cursor = 0; this.head = 0; this.headSpread = 0;
     this.busy = false;
+    this.busySince = 0;            // when the running tick started (0 = none) — see Engine.unwedge
+    this.tickGen = 0;              // tick serial number; rises when a stuck tick is force-released
+    this.lastScanAt = 0;           // the LAST SUCCESSFUL scan (dashboard health, not just the last attempt)
     this.exiting = new Set();
     this.selling = new Set();
     this.troubles = new Map();
@@ -130,13 +135,28 @@ class SolanaEngine {
 
   // ---- satu putaran pemindaian ---------------------------------------------------
   async tick() {
-    if (this.stopping || this.busy) return;
+    if (this.stopping) return;
+    // A tick still running is usually just slow; past the limit it is released (Engine.unwedge)
+    // so one RPC call that never returns cannot blind the bot silently.
+    if (this.busy) return this.unwedge();
     if (this.rpc.allCooling()) return;
     this.busy = true;
+    this.busySince = Date.now();
+    const gen = ++this.tickGen;
+    const stale = () => gen !== this.tickGen;
     try {
+      this.tickStage = 'baca slot';
       this.head = await this.rpc.slot();
+      if (stale()) return;
       this.cursor = this.head;
+      this.tickStage = 'pindai target';
       const raw = await this.watcher.scan();
+      if (stale()) return;
+      this.lastScanAt = Date.now();
+      if (this.wedgeNotifiedAt) {
+        this.wedgeNotifiedAt = 0;
+        this.notify(`pemindaian pulih — target kembali terbaca di slot ${this.head}`, null, 'info');
+      }
       const fresh = await this.watcher.persist(raw);
       this.stats.actions += fresh.length;
       this.enqueue(fresh);
@@ -145,10 +165,14 @@ class SolanaEngine {
       }
       this.cleared('tick', `pemindaian target: kembali normal di slot ${this.head}`);
     } catch (e) {
+      if (stale()) return;
       this.stats.errors++;
       this.lastError = String(e.message).slice(0, 250);
       this.trouble('tick', `tick: ${e.message}`, { after: 5, afterMs: 3 * 60_000 });
-    } finally { this.busy = false; }
+    } finally {
+      // A stale tick does not release `busy`: the flag already belongs to the tick that replaced it.
+      if (!stale()) { this.busy = false; this.busySince = 0; this.tickStage = null; }
+    }
   }
 
   async staleEntry(act) {
