@@ -59,6 +59,30 @@ const router = (...aggregators) => new SwapRouter({ aggregators, log: () => {}, 
     await assert.rejects(r.swapTx(await r.quote(SOL, USDC, 1n), 'OWNER'), /every aggregator/);
   });
 
+  await t('mode "order" follows the configured order even when a later aggregator pays more', async () => {
+    const r = router(agg('jupiter', 100), agg('raydium', 120));
+    r.setConfig({ aggregators: { mode: 'order', order: ['jupiter', 'raydium'] } });
+    assert.strictEqual((await r.quote(SOL, USDC, 1n)).aggregator, 'jupiter');
+    r.setConfig({ aggregators: { mode: 'order', order: ['raydium', 'jupiter'] } });
+    assert.strictEqual((await r.quote(SOL, USDC, 1n)).aggregator, 'raydium');
+  });
+
+  await t('a disabled aggregator is never asked; all disabled is a clear error', async () => {
+    const r = router(agg('jupiter', 100), agg('raydium', 120));
+    r.setConfig({ aggregators: { raydium: { enabled: false } } });
+    assert.strictEqual((await r.quote(SOL, USDC, 1n)).aggregator, 'jupiter');
+    r.setConfig({ aggregators: { jupiter: { enabled: false }, raydium: { enabled: false } } });
+    await assert.rejects(r.quote(SOL, USDC, 1n), /dimatikan/);
+  });
+
+  await t('order() lists configured ids first and appends unmentioned ones; byId has settings-page fields', async () => {
+    const r = router(agg('jupiter', 1), agg('raydium', 1));
+    r.setConfig({ aggregators: { order: ['raydium', 'nonsense'] } });
+    assert.deepStrictEqual(r.order(), ['raydium', 'jupiter']);
+    assert.strictEqual(r.byId.get('jupiter').enabled(), true);
+    assert.strictEqual(r.mode(), 'best');
+  });
+
   // ---- Raydium adapter ----------------------------------------------------------------
   const resp = (body, status = 200) => ({ ok: status < 400, status, text: async () => (typeof body === 'string' ? body : JSON.stringify(body)) });
 

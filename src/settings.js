@@ -201,8 +201,8 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
   // ---- swap aggregators (swaprouter.js) ----
   // Secrets never go back to the browser whole: only whether they are set, a masked prefix,
   // and which .env variable supplies them (those cannot be edited here).
-  const AGG_FIELDS = { kyber: [], okx: ['api_key', 'secret_key', 'passphrase', 'project_id'], lifi: ['api_key'], zerox: ['api_key'], oneinch: ['api_key'], openocean: ['api_key'] };
-  const router = () => engine.kyber;
+  const AGG_FIELDS = { jupiter: [], raydium: [], kyber: [], okx: ['api_key', 'secret_key', 'passphrase', 'project_id'], lifi: ['api_key'], zerox: ['api_key'], oneinch: ['api_key'], openocean: ['api_key'] };
+  const router = () => (chain.kind === 'solana' ? chain.router : engine.kyber);
   const aggView = () => {
     const r = router();
     if (!r?.byId) return null;
@@ -225,7 +225,27 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
   // Quote caches and rate-limit cooldowns belong to the old settings: drop them in every
   // chain's router so a new key or switch takes effect on the next swap.
   const resetAggregators = () => {
+    for (const e of engines) e.chain?.router?.setConfig?.(cfg);
     for (const e of engines) for (const a of e.kyber?.adapters || []) { a.cache?.clear?.(); if ('cooldownUntil' in a) a.cooldownUntil = 0; a.warned?.clear?.(); }
+  };
+
+  // Solana: every aggregator quotes `usd` worth of USDC → SOL (prices from Jupiter).
+  const solanaAggregatorTest = async (r, ch, usd, onlyId) => {
+    const inMint = ch.ADDR.usdg, outMint = ch.ADDR.native;
+    const amountIn = BigInt(Math.round(usd * 10 ** ch.usdgDecimals));
+    const rows = await Promise.all((onlyId ? [onlyId] : r.order()).map(async (id) => {
+      const a = r.byId.get(id);
+      if (!a) return { id, error: 'tidak dikenal' };
+      if (!a.enabled()) return { id, label: a.label, skipped: a.blocker() };
+      const t0 = Date.now();
+      const q = await a.quote(inMint, outMint, amountIn).catch((e) => ({ error: e.message }));
+      const ms = Date.now() - t0;
+      if (!q || q.error) return { id, label: a.label, ms, error: q?.error || 'tidak ada rute' };
+      const dex = [...new Set((q.routePlan || []).map((p) => p.swapInfo?.label).filter(Boolean))].join(' → ');
+      return { id, label: a.label, ms, amountOut: Number(q.outAmount) / 10 ** 9, dex };
+    }));
+    const best = rows.filter((x) => x.amountOut > 0).sort((x, y) => y.amountOut - x.amountOut)[0];
+    return { ok: true, usd, symbolIn: ch.usdgSymbol, symbolOut: ch.nativeSymbol, rows, best: best?.id || null };
   };
 
   const rpcView = () => {
@@ -587,6 +607,7 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       const r = router();
       if (!r?.byId) return { error: 'Router swap belum siap.' };
       const usd = Math.min(1000, Math.max(1, Number(b.usd) || 10));
+      if (chain.kind === 'solana') return solanaAggregatorTest(r, chain, usd, b.id);
       const amountIn = BigInt(Math.round(usd * 10 ** chain.usdgDecimals));
       const ids = b.id ? [b.id] : r.order();
       resetAggregators();

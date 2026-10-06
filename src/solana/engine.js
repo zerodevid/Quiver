@@ -60,6 +60,7 @@ const BORROWED = [
 class SolanaEngine {
   constructor({ rpc, store, chain, cfg, log }) {
     this.rpc = rpc; this.store = store; this.chain = chain; this.cfg = cfg;
+    chain.router?.setConfig?.(cfg);
     this.log = log || console.log;
     this.exec = new SolanaExecutor({ rpc, store, chain, cfg, log: this.log });
     this.exec.ethUsd = () => this.ethUsd;

@@ -2242,6 +2242,8 @@ const EN = {
   'Masuk antrean jual dan dicoba lagi otomatis. {e}': 'Queued for sale and retried automatically. {e}',
   "Agregator swap": "Swap aggregators",
   "Kyber, OKX, LI.FI, 0x, 1inch, OpenOcean": "Kyber, OKX, LI.FI, 0x, 1inch, OpenOcean",
+  "Tanpa key (lite-api, ada batas laju). Agregator utama Solana: meroute lewat Meteora, Orca, Raydium, HumidiFi, dan lainnya.": "No key (lite-api, rate limited). The main Solana aggregator: routes through Meteora, Orca, Raydium, HumidiFi and more.",
+  "Tanpa key. Hanya rute lewat pool Raydium; dipakai sebagai cadangan kalau Jupiter gagal atau memberi hasil lebih kecil.": "No key. Routes through Raydium pools only; used as the fallback when Jupiter fails or pays less.",
   "Tanpa key. Calldata-nya dibaca dan dicocokkan kolom demi kolom sebelum dikirim — pengaman paling ketat.": "No key needed. Its calldata is decoded and checked field by field before sending — the strictest guard.",
   "Butuh API key, secret key, dan passphrase. Sekitar 1 permintaan per detik per key.": "Needs an API key, secret key and passphrase. About 1 request per second per key.",
   "Jalan tanpa key (batas laju ketat); key gratis menaikkan batasnya. LI.FI sendiri merutekan lewat agregator dan DEX lain.": "Works without a key (tight rate limit); a free key raises it. LI.FI itself routes through other aggregators and DEXes.",

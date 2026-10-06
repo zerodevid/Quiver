@@ -781,6 +781,8 @@ function SecurityTab({ d }) {
 
 // ---------------- swap aggregators ----------------
 const AGG_INFO = {
+  jupiter: ['Tanpa key (lite-api, ada batas laju). Agregator utama Solana: meroute lewat Meteora, Orca, Raydium, HumidiFi, dan lainnya.', 'https://portal.jup.ag'],
+  raydium: ['Tanpa key. Hanya rute lewat pool Raydium; dipakai sebagai cadangan kalau Jupiter gagal atau memberi hasil lebih kecil.', null],
   kyber: ['Tanpa key. Calldata-nya dibaca dan dicocokkan kolom demi kolom sebelum dikirim — pengaman paling ketat.', null],
   okx: ['Butuh API key, secret key, dan passphrase. Sekitar 1 permintaan per detik per key.', 'https://web3.okx.com/onchainos/dev-portal'],
   lifi: ['Jalan tanpa key (batas laju ketat); key gratis menaikkan batasnya. LI.FI sendiri merutekan lewat agregator dan DEX lain.', 'https://portal.li.fi'],
@@ -1119,12 +1121,15 @@ export default function Settings() {
             <Tabs selectedKey={tab} onSelectionChange={setTab} orientation="vertical" variant="secondary" className="flex flex-col gap-6 md:flex-row">
               <Tabs.ListContainer className="md:w-60 md:shrink-0">
                 <Tabs.List aria-label={t('Bagian pengaturan')} className="grid! grid-cols-2 md:flex! md:flex-col">
-                  {SETTINGS_NAV.map(([id, label, description, Icon]) => (
+                  {SETTINGS_NAV.map(([id, label, description0, Icon]) => {
+                    const description = id === 'aggregators' && isSolana() ? 'Jupiter, Raydium' : description0;
+                    return (
                     <Tabs.Tab key={id} id={id} className="min-h-16 justify-start gap-3 px-3 py-3 text-left">
                       <Icon className="size-5 shrink-0" aria-hidden="true" />
                       <span className="min-w-0 whitespace-normal"><span className="block font-medium">{t(label)}</span><span className="mt-0.5 block text-xs font-normal text-muted">{t(description)}</span></span><Tabs.Indicator />
                     </Tabs.Tab>
-                  ))}
+                    );
+                  })}
                 </Tabs.List>
               </Tabs.ListContainer>
               <div className="min-w-0 flex-1">
