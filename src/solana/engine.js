@@ -531,7 +531,7 @@ class SolanaEngine {
   // With a loss guard: the USD value in vs out at Jupiter prices may not differ by more than
   // maxLossBps (price impact + route fees). Returns {hash, out}.
   async swap(inMint, outMint, amount, { slippageBps = 100, maxLossBps = 500, kind = 'swap' } = {}) {
-    const q = await this.chain.jup.quote(inMint, outMint, amount, { slippageBps });
+    const q = await this.chain.router.quote(inMint, outMint, amount, { slippageBps });
     const [ti, to] = await this.chain.tokens([inMint, outMint]);
     const px = await this.chain.jup.prices([inMint, outMint]).catch(() => new Map());
     const usdIn = px.get(inMint) ? (Number(amount) / 10 ** ti.decimals) * px.get(inMint) : null;
@@ -544,20 +544,23 @@ class SolanaEngine {
         throw e;
       }
     }
-    const { tx, lastValidBlockHeight } = await this.chain.jup.swapTx(q, this.exec.address(), { maxPriorityLamports: Number(this.cfg.gas?.jupiter_max_priority_lamports ?? 2_000_000) });
-    const r = await this.exec.sendVersioned(tx, { kind, lastValidBlockHeight, detail: { in: inMint, out: outMint, amountIn: String(amount), quoteOut: q.outAmount, usdIn, usdOut } });
+    const built = await this.chain.router.swapTx(q, this.exec.address(), { maxPriorityLamports: Number(this.cfg.gas?.jupiter_max_priority_lamports ?? 2_000_000) });
+    const { tx, lastValidBlockHeight } = built;
+    // The fallback may have switched aggregator: the output expectation follows the quote used.
+    const used = built.quote || q;
+    const r = await this.exec.sendVersioned(tx, { kind, lastValidBlockHeight, detail: { in: inMint, out: outMint, amountIn: String(amount), quoteOut: used.outAmount, aggregator: used.aggregator || 'jupiter', usdIn, usdOut } });
     if (!r.ok) throw new Error(`swap ${ti.symbol}→${to.symbol} gagal (${r.hash})`);
     // the actual output from the tx meta (not the quote)
     // Tx meta unreadable (lagging node): use the quote. Without this guard an output
     // to SOL reads as "0 + fee" = 5000 lamports (found through a mainnet simulation).
-    let out = BigInt(q.outAmount);
+    let out = BigInt(used.outAmount);
     if (r.meta) {
       const dl = this.exec.deltas(r.meta);
       const got = outMint === WSOL ? (dl.get(WSOL) ?? 0n) + (dl.get('SOL') ?? 0n) + BigInt(r.fee || 0) : (dl.get(outMint) ?? 0n);
       if (got > 0n) out = got;
     }
     this.exec.noteTx(r.hash, { actualOut: out.toString() });
-    return { hash: r.hash, out, quoteOut: BigInt(q.outAmount), usdIn, usdOut };
+    return { hash: r.hash, out, quoteOut: BigInt(used.outAmount), usdIn, usdOut, aggregator: used.aggregator || 'jupiter' };
   }
 
   // Sell back non-quote tokens this entry BOUGHT that did not go into the position (entry

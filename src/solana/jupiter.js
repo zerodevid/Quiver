@@ -7,6 +7,7 @@ const { VersionedTransaction } = require('@solana/web3.js');
 class Jupiter {
   constructor({ log = console.log, apiKey = process.env.JUPITER_API_KEY || null, fetchImpl = globalThis.fetch } = {}) {
     this.log = log;
+    this.name = 'jupiter'; this.label = 'Jupiter';
     this.apiKey = apiKey;
     this.base = apiKey ? 'https://api.jup.ag' : 'https://lite-api.jup.ag';
     this.fetch = fetchImpl;
@@ -30,10 +31,10 @@ class Jupiter {
   }
 
   // Exact-in swap quote. amount: BigInt/str raw amount of the input token.
-  async quote(inMint, outMint, amount, { slippageBps = 100, onlyDirect = false } = {}) {
+  async quote(inMint, outMint, amount, { slippageBps = 100, onlyDirect = false, maxAccounts = null } = {}) {
     const q = new URLSearchParams({
       inputMint: inMint, outputMint: outMint, amount: String(amount), slippageBps: String(slippageBps),
-      restrictIntermediateTokens: 'true', ...(onlyDirect ? { onlyDirectRoutes: 'true' } : {}),
+      restrictIntermediateTokens: 'true', ...(onlyDirect ? { onlyDirectRoutes: 'true' } : {}), ...(maxAccounts ? { maxAccounts: String(maxAccounts) } : {}),
     });
     const r = await this.req(`/swap/v1/quote?${q}`);
     if (!r?.outAmount) throw new Error(`jupiter: tidak ada rute ${inMint.slice(0, 6)}→${outMint.slice(0, 6)}`);

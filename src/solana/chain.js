@@ -9,6 +9,7 @@ const { PublicKey } = require('@solana/web3.js');
 const { build, WSOL } = require('../networks');
 const u = require('./units');
 const { Jupiter } = require('./jupiter');
+const { SwapRouter } = require('./swap-router');
 const { MeteoraApi } = require('./meteora-api');
 const { MeteoraVenue } = require('./venues/meteora');
 const { OrcaVenue } = require('./venues/orca');
@@ -18,7 +19,7 @@ const { RaydiumVenue } = require('./venues/raydium');
 const METAPLEX = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
 
 class SolanaChain {
-  constructor(rpc, store, log = console.log, network = 'solana', { jupiter = null, meteoraApi = null } = {}) {
+  constructor(rpc, store, log = console.log, network = 'solana', { jupiter = null, meteoraApi = null, router = null } = {}) {
     this.rpc = rpc; this.store = store; this.log = log;
     const p = build(network);
     Object.assign(this, {
@@ -31,6 +32,9 @@ class SolanaChain {
     this.usdgSymbol = 'USDC'; this.usdgDecimals = 6; this.wethSymbol = 'SOL';
     this.tokenCache = new Map();
     this.jup = jupiter || new Jupiter({ log });
+    // Swaps go through the router (Jupiter + Raydium, best output wins); this.jup stays the
+    // price / token-info source.
+    this.router = router || new SwapRouter({ jupiter: this.jup, log, tokenAccount: (mint, owner) => this.tokenAccountOf(mint, owner) });
     // Meteora DLMM data API: pool stats, creation time, candles (see meteora-api.js).
     this.meteora = meteoraApi || new MeteoraApi({ log });
     this.adapters = {
@@ -132,6 +136,16 @@ class SolanaChain {
     return want.map((a) => this.tokenCache.get(a));
   }
   async token(a) { return (await this.tokens([a]))[0]; }
+
+  // The owner's fullest token account for a mint (legacy or Token-2022), for aggregators that
+  // need the input account spelled out.
+  async tokenAccountOf(mint, owner) {
+    const r = await this.rpc.run((c) => c.getParsedTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(mint) }));
+    const best = (r?.value || []).sort((a, b) =>
+      Number(b.account.data.parsed.info.tokenAmount.amount) - Number(a.account.data.parsed.info.tokenAmount.amount))[0];
+    if (!best) throw new Error(`no token account for ${mint}`);
+    return best.pubkey.toBase58();
+  }
   async decimalsMap(mints) {
     const ts = await this.tokens(mints);
     return new Map(ts.filter(Boolean).map((t) => [t.address, t.decimals]));

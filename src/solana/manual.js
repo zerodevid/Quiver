@@ -576,26 +576,31 @@ class SolanaManual extends Manual {
     if (!amountRaw || BigInt(amountRaw) <= 0n) return { error: 'jumlah nol' };
     const rules = eng.rulesFrom(null);
     const [mi, mo] = await this.chain.tokens([ti, to]);
-    let q;
-    try { q = await this.chain.jup.quote(ti, to, BigInt(amountRaw), { slippageBps: rules.swap.max_slippage_bps }); }
-    catch (e) { return { error: `Jupiter tidak menemukan rute: ${e.message}` }; }
+    const all = await this.chain.router.quoteAll(ti, to, BigInt(amountRaw), { slippageBps: rules.swap.max_slippage_bps });
+    const best = all.find((r) => r.state === 'ok');
+    if (!best) return { error: `Jupiter tidak menemukan rute: ${all.map((r) => `${r.label}: ${r.error}`).join('; ')}` };
     const px = await this.chain.jup.prices([ti, to]).catch(() => new Map());
     const amountIn = Number(BigInt(amountRaw)) / 10 ** (mi.decimals ?? 9);
-    const amountOut = Number(BigInt(q.outAmount)) / 10 ** (mo.decimals ?? 9);
-    const usdIn = px.get(ti) ? amountIn * px.get(ti) : null;
-    const usdOut = px.get(to) ? amountOut * px.get(to) : null;
-    const loss = usdIn && usdOut ? Math.round(((usdIn - usdOut) / usdIn) * 10_000) : null;
-    const dex = [...new Set((q.routePlan || []).map((r) => r.swapInfo?.label).filter(Boolean))].join(' → ') || 'Jupiter';
+    const maxLoss = rules.exit.sell_max_loss_bps;
+    const usdInOf = px.get(ti) ? amountIn * px.get(ti) : null;
+    const routes = all.map((r) => {
+      if (r.state !== 'ok') return { id: r.id, label: r.label, state: 'noroute', blocker: r.error, ms: r.ms, best: false };
+      const amountOut = Number(r.out) / 10 ** (mo.decimals ?? 9);
+      const usdOut = px.get(to) ? amountOut * px.get(to) : null;
+      const lossBps = usdInOf && usdOut ? Math.round(((usdInOf - usdOut) / usdInOf) * 10_000) : null;
+      const dex = [...new Set((r.q.routePlan || []).map((p) => p.swapInfo?.label).filter(Boolean))].join(' → ') || r.label;
+      return { id: r.id, label: r.label, state: 'ok', blocker: null, ms: r.ms, dex, amountOut, usdIn: usdInOf, usdOut,
+        lossBps, tooLossy: lossBps != null && lossBps > maxLoss, best: r === best,
+        priceImpactPct: r.q.priceImpactPct != null ? Number(r.q.priceImpactPct) * 100 : null };
+    });
+    const chosen = routes.find((r) => r.best);
     return {
       symbolIn: ti === WSOL ? 'SOL' : mi.symbol, symbolOut: to === WSOL ? 'SOL' : mo.symbol,
-      amountIn, amountOut, usdIn, usdOut, lossBps: loss, dex, router: 'Jupiter',
-      priceImpactPct: q.priceImpactPct != null ? Number(q.priceImpactPct) * 100 : null,
-      maxLossBps: rules.exit.sell_max_loss_bps, slippageBps: rules.swap.max_slippage_bps,
-      tooLossy: loss != null && loss > rules.exit.sell_max_loss_bps,
-      // Same shape as the EVM multi-aggregator quote; Solana has one aggregator (Jupiter).
-      aggregator: 'auto', chosen: 'jupiter', chosenLabel: 'Jupiter',
-      routes: [{ id: 'jupiter', label: 'Jupiter', state: 'ok', blocker: null, ms: null, dex, amountOut, usdIn, usdOut,
-        lossBps: loss, tooLossy: loss != null && loss > rules.exit.sell_max_loss_bps, best: true }],
+      amountIn, amountOut: chosen.amountOut, usdIn: usdInOf, usdOut: chosen.usdOut, lossBps: chosen.lossBps,
+      dex: chosen.dex, router: chosen.label, priceImpactPct: chosen.priceImpactPct,
+      maxLossBps: maxLoss, slippageBps: rules.swap.max_slippage_bps, tooLossy: chosen.tooLossy,
+      // Same shape as the EVM multi-aggregator quote.
+      aggregator: 'auto', chosen: chosen.id, chosenLabel: chosen.label, routes,
     };
   }
 
