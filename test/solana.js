@@ -1059,6 +1059,50 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(f.plan.strategy, 'curve');
   });
 
+  await t('equity sizing: the target’s share of its equity × our equity; unknown equity → pct or skip', () => {
+    const store = new Store(':memory:');
+    const big = { max_quote_per_position_usd: 1e6, max_total_exposure_usd: 1e6, daily_budget_usd: 1e6 };
+    // target adds 7 SOL = $700 out of $7,000 equity (10%) → 10% of our $500 = $50
+    const r = (sz) => rulesSol({ sizing: { mode: 'equity', pct: 20, ...big, ...sz } });
+    const d = planEntrySol(act(), { ...ctx(store), rules: r({}), targetEquityUsd: 7000, ourEquityUsd: 500, ourCashUsd: 200 });
+    assert.strictEqual(d.verdict, 'copy', d.reason);
+    assert.ok(Math.abs(d.plan.valueUsd - 50) < 0.5, `valueUsd ${d.plan.valueUsd}`);
+    assert.match(d.reason, /equity: target 10\.0%/);
+    // cash basis and the share cap
+    const c = planEntrySol(act(), { ...ctx(store), rules: r({ equity_our_basis: 'cash', equity_max_pct: 5 }), targetEquityUsd: 7000, ourEquityUsd: 500, ourCashUsd: 200 });
+    assert.ok(Math.abs(c.plan.valueUsd - 10) < 0.5, `5% of $200 cash, got ${c.plan.valueUsd}`);
+    // target equity unknown → pct (20% of $700 = $140), or skipped
+    const f = planEntrySol(act(), { ...ctx(store), rules: r({}), targetEquityUsd: null, ourEquityUsd: 500 });
+    assert.ok(Math.abs(f.plan.valueUsd - 140) < 0.5, `pct fallback, got ${f.plan.valueUsd}`);
+    assert.match(f.reason, /equity target tidak terbaca → pct 20%/);
+    assert.match(planEntrySol(act(), { ...ctx(store), rules: r({ equity_fallback: 'skip' }), targetEquityUsd: null, ourEquityUsd: 500 }).reason, /dilewati/);
+    // a manual target equity replaces the on-chain read
+    assert.ok(Math.abs(planEntrySol(act(), { ...ctx(store), rules: r({ equity_target_usd: 3500 }), targetEquityUsd: null, ourEquityUsd: 500 }).plan.valueUsd - 100) < 0.5);
+  });
+
+  await t('equity sizing (engine): target equity = quote cash + researched open LP + an uncovered action; never researched → asks for research', async () => {
+    const { eng, store } = engineHarness();
+    const asked = [];
+    eng.onResearchNeeded = (w, mode) => asked.push([w, mode]);
+    const a = { target: TARGET, venue: 'meteora', tokenId: 'TPos', token0: MEME, token1: WSOL, block: 500, valueQuote: 7 };
+    assert.strictEqual(await eng.targetEquity(a), null);
+    assert.deepStrictEqual(asked, [[TARGET, 'full']]);
+    store.run('INSERT INTO wallets(chain,address,first_block,scanned_to,last_scan_ts,stats,positions_n) VALUES(?,?,?,?,?,?,?)', 'solana', TARGET, 1, 400, Date.now(), '{}', 1);
+    store.run(`INSERT INTO wpositions(chain,wallet,venue,token_id,pool_ref,token0,token1,status,live_value_q,live_fee_q)
+      VALUES('solana',?,'meteora','Other',?,?,?,'open',300,20)`, TARGET, POOL, MEME, WSOL);
+    eng.holdings = { of: async () => [
+      { address: WSOL, isQuote: true, amount: 2 },                      // 2 SOL × $100
+      { address: USDC, isQuote: true, amount: 50 },
+      { address: MEME, isQuote: false, amount: 1e6 },                   // memecoins not counted
+    ] };
+    eng.research = { refreshOpen: async () => {} };
+    // $200 + $50 cash + $320 LP + this $700 action (the research stopped at slot 400 < 500)
+    assert.ok(Math.abs(await eng.targetEquity(a) - 1270) < 1e-6);
+    const s = await eng.sizingEquity(a, { exposureUsd: 100, leftoverUsd: 5, feeUsd: 3 }, { usd: 40, sol: 1 }, rulesFor({ sizing: { mode: 'equity' } }));
+    assert.strictEqual(s.ourCashUsd, 140);
+    assert.strictEqual(s.ourEquityUsd, 248);
+  });
+
   await t('scan watchdog: a tick stuck past the limit is released and reported; the next scan records lastScanAt', async () => {
     const { eng, store } = engineHarness();
     eng.cfg.loop = { tick_stuck_seconds: 1 };

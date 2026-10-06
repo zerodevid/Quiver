@@ -215,7 +215,7 @@ Global rules can be overridden for individual targets.
 
 | Group | Options |
 | --- | --- |
-| Sizing | `mirror`, `pct`, `multiplier`, or `fixed_quote`, with minimum entry, per-position, total-exposure, and daily-budget limits. |
+| Sizing | `mirror`, `pct`, `multiplier`, `fixed_quote`, or `equity` (the same share of our equity as the target put in of its own; falls back to `pct` when either equity is unknown), with minimum entry, per-position, total-exposure, and daily-budget limits. |
 | Range | `exact`, `recenter`, `scale`, `width_pct`, or `full`, aligned to pool tick spacing. |
 | One-sided positions | Copy, skip, or shift the range, with a separate size cap. |
 | Swaps | Enable automatic swaps and configure slippage and price-impact limits. |

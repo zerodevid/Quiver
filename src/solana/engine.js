@@ -17,6 +17,12 @@ const { SolanaPositions } = require('./positions');
 const { SolanaExecutor } = require('./executor');
 const { planEntrySol } = require('./planner');
 const { WSOL } = require('../networks');
+const { SolanaHoldings } = require('./holdings');
+const { SolanaWalletResearch } = require('./research');
+
+// A target's wallet research older than this is refreshed in the background for equity sizing
+// (the same limit as the EVM engine).
+const TARGET_RESEARCH_STALE_MS = 5 * 60_000;
 
 const fmtUnits = (raw, dec) => {
   const n = Number(raw) / 10 ** dec;
@@ -209,10 +215,11 @@ class SolanaEngine {
       return lv?.valueUsd ?? Math.max(0, (mp.cost_quote || 0) - (mp.out_quote || 0)) * usdPerQuote(mp.quote_symbol, this.ethUsd, this.chain);
     };
     const mirror = mirrors[0] || null;
+    const equity = rules.sizing.mode === 'equity' ? await this.sizingEquity(act, sum, cash, rules) : {};
     const d = planEntrySol(act, {
       chain: this.chain, rules, pool, ethUsd: this.ethUsd,
       openExposureUsd: sum.exposureUsd, spentTodayUsd: this.spentTodayUsd(), openCount: sum.openCount,
-      cash, existingUsd: mirror ? usdOf(mirror) : null,
+      cash, existingUsd: mirror ? usdOf(mirror) : null, ...equity,
     });
     if (d.verdict !== 'copy') return this.decide(act.id, 'skip', d.reason);
 
@@ -249,6 +256,44 @@ class SolanaEngine {
       this.decide(act.id, 'error', String(e.message).slice(0, 300), d.plan);
       this.store.log('error', `eksekusi masuk: ${e.message}`);
     } finally { this.activeEntries--; }
+  }
+
+  // Inputs for sizing mode "equity" — the Solana counterpart of Engine.sizingEquity. Unknown =
+  // null, which makes the planner fall back to pct (or skip, per equity_fallback). Our equity =
+  // cash (the spendable read just made, else the last refreshCash) + positions + leftovers + fees.
+  async sizingEquity(act, sum, cash, rules) {
+    const ourCash = cash ? cash.usd + cash.sol * this.ethUsd : this.cash?.usd;
+    const ourEquityUsd = ourCash == null ? null : ourCash + sum.exposureUsd + (sum.leftoverUsd || 0) + sum.feeUsd;
+    const targetEquityUsd = rules.sizing.equity_target_usd > 0 ? null : await this.targetEquity(act).catch((e) => {
+      this.log(`equity target ${act.target}: ${e.message}`);
+      return null;
+    });
+    return { ourEquityUsd, ourCashUsd: ourCash ?? null, targetEquityUsd };
+  }
+
+  // Target equity = its quote cash now (SOL + wSOL, USDC, USDT) + its open LP from wallet research
+  // (re-valued at the current price) + this action when the last research has not covered it.
+  // Never researched → null, and the research is requested in the background for the next entry.
+  // Memecoins in the wallet are not counted; sizing.equity_max_pct bounds that under-read.
+  async targetEquity(act) {
+    const w = String(act.target || '');
+    const wallet = w && this.store.get('SELECT scanned_to, last_scan_ts FROM wallets WHERE chain=? AND address=?', this.network, w);
+    if (!wallet) { this.onResearchNeeded?.(w, 'full'); return null; }
+    if (Date.now() - (wallet.last_scan_ts || 0) > TARGET_RESEARCH_STALE_MS) this.onResearchNeeded?.(w, 'refresh');
+    this.holdings ??= new SolanaHoldings({ rpc: this.rpc, chain: this.chain });
+    const rows = await this.holdings.of(w);
+    const cashUsd = rows.filter((r) => r.isQuote)
+      .reduce((t, r) => t + r.amount * (this.chain.QUOTES[r.address]?.kind === 'eth' ? this.ethUsd : 1), 0);
+    const open = this.store.all("SELECT * FROM wpositions WHERE chain=? AND wallet=? AND status='open'", this.network, w);
+    this.research ??= new SolanaWalletResearch({ rpc: this.rpc, store: this.store, chain: this.chain, log: this.log });
+    await this.research.refreshOpen(open, this.ethUsd).catch((e) => this.log(`equity target ${w}: LP re-value failed: ${e.message}`));
+    const lpUsd = open.reduce((t, r) => t + (r.live_value_q || 0) + (r.live_fee_q || 0), 0);
+    // Counted by the research only if it reached this action's slot AND knows the position.
+    const known = open.some((r) => r.venue === act.venue && r.token_id === String(act.tokenId ?? ''));
+    const covered = known && act.block != null && wallet.scanned_to != null && wallet.scanned_to >= act.block;
+    const q = this.chain.quoteSideOf(act.token0, act.token1);
+    const actUsd = q ? quoteToUsd(act.valueQuote || 0, q.kind, this.ethUsd) : 0;
+    return cashUsd + lpUsd + (covered ? 0 : actUsd);
   }
 
   // Simulate the entry transaction (dry run with a wallet): built through the adapter with the

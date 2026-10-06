@@ -15,8 +15,16 @@ const BRIDGE_MARGIN_BPS = 100;
 
 const DEFAULTS = {
   sizing: {
-    mode: 'pct',              // mirror | pct | multiplier | fixed_quote
+    mode: 'pct',              // mirror | pct | multiplier | fixed_quote | equity
     pct: 25,
+    // equity: the same share of OUR equity as the target put in of ITS equity.
+    // Falls back to `pct` when either equity is unknown.
+    equity_mult: 1,
+    equity_max_pct: 30,       // ceiling on the target's share (its equity is usually under-read)
+    equity_min_pct: 0,        // floor on OUR share after the multiplier (0 = none)
+    equity_target_usd: 0,     // manual target equity; > 0 replaces the on-chain read (memecoins, CEX, other wallets)
+    equity_our_basis: 'total', // our side: 'total' = cash + positions + leftovers + fees, 'cash' = spendable cash only
+    equity_fallback: 'pct',   // either equity unknown: 'pct' = use `pct`, 'skip' = skip the entry
     multiplier: 1,
     fixed_quote_usd: 50,
     fixed_quote_eth: 0.02,
@@ -95,8 +103,10 @@ const DEFAULTS = {
 //   [type, min, max]  type: num | int | bool | enum(list) | list
 const RULE_SPEC = {
   sizing: {
-    mode: ['enum', ['mirror', 'pct', 'multiplier', 'fixed_quote']],
+    mode: ['enum', ['mirror', 'pct', 'multiplier', 'fixed_quote', 'equity']],
     pct: ['num', 0, 100_000], multiplier: ['num', 0, 1000],
+    equity_mult: ['num', 0, 100], equity_max_pct: ['num', 0, 100], equity_min_pct: ['num', 0, 100],
+    equity_target_usd: ['num', 0, 1e12], equity_our_basis: ['enum', ['total', 'cash']], equity_fallback: ['enum', ['pct', 'skip']],
     fixed_quote_usd: ['num', 0, 1e9], fixed_quote_eth: ['num', 0, 1e6],
     min_quote_usd: ['num', 0, 1e9], force_min: ['bool'], force_min_usd: ['num', 0, 1e9],
     max_quote_per_position_usd: ['num', 0, 1e9],
@@ -262,7 +272,34 @@ function valueOfLiquidity(chain, act, L, tickLower, tickUpper, slot0, dec0, dec1
   return { amount0, amount1, value: v ? v.value : null, symbol: v ? v.symbol : null, kind: v ? v.kind : null };
 }
 
+const usdShort = (x) => (x >= 1000 ? `$${(x / 1000).toFixed(1)}k` : `$${x.toFixed(0)}`);
+
 // Convert a USD threshold to the pool's quote unit (ETH uses the rate from the config).
+// Sizing mode "equity": the same share of OUR equity as the target put in of ITS equity.
+// ctx: { targetEquityUsd, ourEquityUsd, ourCashUsd } (null = unknown). Returns { usd, note },
+// { fallback: true, note } (either equity unknown → the caller uses pct) or { skip }.
+// Shared by the EVM planEntry and the Solana planner.
+function equitySizing(s, ctx, targetUsd) {
+  const manual = s.equity_target_usd > 0;
+  const tEq = manual ? s.equity_target_usd : ctx.targetEquityUsd;
+  const ours = s.equity_our_basis === 'cash' ? ctx.ourCashUsd : ctx.ourEquityUsd;
+  if (tEq > 0 && ours > 0 && targetUsd > 0) {
+    const raw = targetUsd / tEq;
+    const capped = raw > s.equity_max_pct / 100;
+    const scaled = Math.min(raw, s.equity_max_pct / 100) * s.equity_mult;
+    const floored = s.equity_min_pct > 0 && scaled < s.equity_min_pct / 100;
+    const share = floored ? s.equity_min_pct / 100 : scaled;
+    if (!(share > 0)) return { skip: 'porsi equity nol (batas porsi atau pengali = 0)' };
+    const pc = (x) => `${(x * 100).toFixed(1)}%`;
+    const note = `equity: target ${pc(raw)} dari ${usdShort(tEq)}${manual ? ' (manual)' : ''}${capped ? ` (dibatasi ${s.equity_max_pct}%)` : ''}`
+      + ` → kita ${pc(share)} dari ${usdShort(ours)}${s.equity_our_basis === 'cash' ? ' (kas saja)' : ''}${floored ? ` (minimum ${s.equity_min_pct}%)` : ''}`;
+    return { usd: share * ours, note };
+  }
+  const who = tEq > 0 ? 'kita' : 'target';
+  if (s.equity_fallback === 'skip') return { skip: `equity ${who} tidak terbaca — dilewati` };
+  return { fallback: true, note: `equity ${who} tidak terbaca → pct ${s.pct}%` };
+}
+
 function usdToQuote(usd, quoteKind, ethUsd) {
   if (quoteKind === 'usd') return usd;
   if (quoteKind === 'eth') return ethUsd > 0 ? usd / ethUsd : 0;
@@ -328,11 +365,22 @@ function planEntry(act, ctx) {
   const Ltarget = BigInt(act.liquidity) < 0n ? -BigInt(act.liquidity) : BigInt(act.liquidity);
   let L;
   const s = rules.sizing;
-  if (s.mode === 'mirror') L = Ltarget;
-  else if (s.mode === 'pct') L = (Ltarget * BigInt(Math.round(s.pct * 1e6))) / 100000000n;
-  else if (s.mode === 'multiplier') L = (Ltarget * BigInt(Math.round(s.multiplier * 1e6))) / 1000000n;
-  else if (s.mode === 'fixed_quote') {
-    const wantQuote = q.kind === 'eth' ? s.fixed_quote_eth : s.fixed_quote_usd;
+  let mode = s.mode;
+  // equity: target share of its equity × our equity → a fixed amount in the quote asset.
+  // Either equity unknown (null/0) → plain pct, and the reason says so.
+  let wantQuote = null, eqNote = null;
+  if (mode === 'equity') {
+    const e = equitySizing(s, ctx, targetUsd);
+    if (e.skip) return skip(e.skip);
+    eqNote = e.note;
+    if (e.fallback) mode = 'pct';
+    else wantQuote = usdToQuote(e.usd, q.kind, ethUsd);
+  }
+  if (mode === 'fixed_quote') wantQuote = q.kind === 'eth' ? s.fixed_quote_eth : s.fixed_quote_usd;
+  if (mode === 'mirror') L = Ltarget;
+  else if (mode === 'pct') L = (Ltarget * BigInt(Math.round(s.pct * 1e6))) / 100000000n;
+  else if (mode === 'multiplier') L = (Ltarget * BigInt(Math.round(s.multiplier * 1e6))) / 1000000n;
+  else if (wantQuote != null) {
     const ref = valueOfLiquidity(chain, act, Ltarget, range.tickLower, range.tickUpper, slot0, dec0, dec1);
     if (!ref.value || ref.value <= 0) return skip('nilai referensi nol, tidak bisa menskala ke nominal tetap');
     L = (Ltarget * BigInt(Math.round(wantQuote * 1e9))) / BigInt(Math.round(ref.value * 1e9));
@@ -407,7 +455,9 @@ function planEntry(act, ctx) {
 
   return {
     verdict: 'copy',
-    reason: capNote || `${s.mode} → $${usd.toFixed(2)}`,
+    reason: eqNote
+      ? `${eqNote} → $${usd.toFixed(2)}${capNote ? ` — ${capNote}` : ''}`
+      : capNote || `${mode} → $${usd.toFixed(2)}`,
     plan: {
       venue: act.venue,
       action: 'mint',
@@ -466,4 +516,4 @@ function planExit(act, ourPos, ctx) {
   };
 }
 
-module.exports = { DEFAULTS, RULE_SPEC, validateRules, normalizeRules, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };
+module.exports = { DEFAULTS, RULE_SPEC, equitySizing, validateRules, normalizeRules, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };

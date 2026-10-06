@@ -8,13 +8,15 @@
 //   pct         : pct% of that
 //   multiplier  : ×multiplier
 //   fixed_quote : a fixed amount (fixed_quote_usd; SOL-quoted pools: fixed_quote_eth SOL)
+//   equity      : the target's share of its equity × our equity (policy.equitySizing; pct when
+//                 either equity is unknown)
 //
 // Token composition: when our range = the target's range (exact mode), the token amounts the
 // target ACTUALLY deposited are scaled — its X/Y split follows exactly. When the range
 // differs, the split is computed from the current price (and the DLMM shape, see share0).
 const m = require('../v3math');
 const u = require('./units');
-const { planRange, quoteToUsd } = require('../policy');
+const { planRange, quoteToUsd, equitySizing } = require('../policy');
 const { shapeWeight, resolveStrategy, strategyLabel } = require('./dlmm-shape');
 
 const BRIDGE_MARGIN_BPS = 100;
@@ -118,11 +120,19 @@ function planEntrySol(act, ctx) {
 
   // ---- size ----
   const s = rules.sizing;
-  let usd;
-  if (s.mode === 'mirror') usd = targetUsd;
-  else if (s.mode === 'pct') usd = (targetUsd * s.pct) / 100;
-  else if (s.mode === 'multiplier') usd = targetUsd * s.multiplier;
-  else if (s.mode === 'fixed_quote') usd = q.kind === 'eth' ? s.fixed_quote_eth * ethUsd : s.fixed_quote_usd;
+  let usd, mode = s.mode, eqNote = null;
+  if (mode === 'equity') {
+    const e = equitySizing(s, ctx, targetUsd);
+    if (e.skip) return skip(e.skip);
+    eqNote = e.note;
+    if (e.fallback) mode = 'pct';
+    else usd = e.usd;
+  }
+  if (usd != null) { /* sized by equity */ }
+  else if (mode === 'mirror') usd = targetUsd;
+  else if (mode === 'pct') usd = (targetUsd * s.pct) / 100;
+  else if (mode === 'multiplier') usd = targetUsd * s.multiplier;
+  else if (mode === 'fixed_quote') usd = q.kind === 'eth' ? s.fixed_quote_eth * ethUsd : s.fixed_quote_usd;
   else usd = targetUsd;
   if (!(usd > 0)) return skip('ukuran hasil hitung nol');
 
@@ -173,7 +183,7 @@ function planEntrySol(act, ctx) {
 
   return {
     verdict: 'copy',
-    reason: `${note || `${s.mode} → $${usd.toFixed(2)}`}${strategy ? ` · ${strategyLabel(strategy)}` : ''}`,
+    reason: `${eqNote ? `${eqNote} · ` : ''}${note || `${mode} → $${usd.toFixed(2)}`}${strategy ? ` · ${strategyLabel(strategy)}` : ''}`,
     plan: {
       venue: act.venue, action: adding ? 'increase' : 'mint',
       poolRef: pool.id, token0: pool.token0, token1: pool.token1, fee: pool.fee,

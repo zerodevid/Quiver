@@ -11,6 +11,11 @@ const { SwapRouter, aggLabel } = require('./swaprouter');
 const { pickSwapPool } = require('./swappool');
 const { Compound } = require('./compound');
 const { Capital } = require('./capital');
+const { Holdings } = require('./holdings');
+const { WalletResearch } = require('./wallet');
+
+// A wallet research older than this is refreshed in the background when equity sizing needs it.
+const TARGET_RESEARCH_STALE_MS = 5 * 60_000;
 const { rulesFor, planEntry, planExit, quoteToUsd, usdPerQuote } = require('./policy');
 const { enumerateV4, livePositions } = require('./scout');
 const { Market } = require('./market');
@@ -691,10 +696,11 @@ class Engine {
       return lv?.valueUsd ?? Math.max(0, (mp.cost_quote || 0) - (mp.out_quote || 0)) * usdPerQuote(mp.quote_symbol, this.ethUsd, this.chain);
     };
     let mirror = mirrors[0] || null;
+    const equity = rules.sizing.mode === 'equity' ? await this.sizingEquity(act, sum, cash, rules) : {};
     const ctx = {
       chain: this.chain, rules, slot0: act.slot0, dec0: toks[0].decimals, dec1: toks[1].decimals,
       ethUsd: this.ethUsd, openExposureUsd: sum.exposureUsd, spentTodayUsd: spent, openCount: sum.openCount,
-      cash, existingUsd: mirror ? usdOfMirror(mirror) : null,
+      cash, existingUsd: mirror ? usdOfMirror(mirror) : null, ...equity,
     };
     let d = planEntry(act, ctx);
     // The range from the rules (recenter/scale/…) is not the same as the first mirror: look for another mirror
@@ -3189,6 +3195,57 @@ class Engine {
     const maxUsd = Number(cfg?.gas?.topup_max_usd ?? 25);
     const usd = Math.min((Number(wei) / 1e18) * ethUsd * 1.03, Number.isFinite(maxUsd) && maxUsd > 0 ? maxUsd : 25);
     return BigInt(Math.ceil(usd * 10 ** usdgDecimals));
+  }
+
+  // Inputs for sizing mode "equity" (planEntry). Unknown = null, which makes planEntry fall
+  // back to pct — a failed read never loses the copy. Our equity is the snapshotEquity sum
+  // except that `cash` (live) is the spendable read just made (net of the gas reserve),
+  // otherwise the last refreshCash.
+  async sizingEquity(act, sum, cash, rules) {
+    const ourCash = cash ? cash.usdg + cash.eth * this.ethUsd : this.cash?.usd;
+    const ourEquityUsd = ourCash == null ? null : ourCash + sum.exposureUsd + (sum.leftoverUsd || 0) + sum.feeUsd;
+    // A manual target equity replaces the on-chain read, so skip its RPC calls.
+    const targetEquityUsd = rules.sizing.equity_target_usd > 0 ? null : await this.targetEquity(act).catch((e) => {
+      this.log(`equity target ${act.target}: ${e.message}`);
+      return null;
+    });
+    return { ourEquityUsd, ourCashUsd: ourCash ?? null, targetEquityUsd };
+  }
+
+  // Target equity = its quote cash read now + its open LP (wpositions, already USD, re-valued
+  // at the current price) + this action when the last wallet scan has not covered its block
+  // (its cash already dropped by that amount, but the stored liquidity does not include it yet).
+  // Never researched -> its LP is unknown -> null.
+  // Non-quote tokens (memecoins) are not counted; sizing.equity_max_pct bounds that under-read.
+  async targetEquity(act) {
+    const w = String(act.target || '').toLowerCase();
+    const wallet = w && this.store.get('SELECT scanned_to, last_scan_ts FROM wallets WHERE chain=? AND lower(address)=?', this.network, w);
+    // Never researched: this entry cannot be sized from equity, but do not block it on a scan that
+    // takes minutes. Ask for the research in the background so the NEXT entry can.
+    if (!wallet) { this.onResearchNeeded?.(w, 'full'); return null; }
+    // A stale scan misses positions the target opened since (they are not "this action"):
+    // refresh in the background; this entry still uses what is stored.
+    if (Date.now() - (wallet.last_scan_ts || 0) > TARGET_RESEARCH_STALE_MS) this.onResearchNeeded?.(w, 'refresh');
+    const { ADDR, usdgDecimals } = this.chain;
+    this.holdings ??= new Holdings({ rpc: this.rpc, store: this.store, chain: this.chain, log: this.log });
+    const b = await this.holdings.balances(w, [ADDR.native, ADDR.weth, ADDR.usdg]);
+    const ethLike = (b.get(ADDR.native) || 0n) + (b.get(ADDR.weth) || 0n);
+    const cashUsd = (Number(ethLike) / 1e18) * this.ethUsd + Number(b.get(ADDR.usdg) || 0n) / 10 ** usdgDecimals;
+    // The stored LP values date from the last scan, which may be hours old for a quiet target;
+    // re-read them so they are on the same footing as the cash read above. A failed re-read
+    // keeps the stored figures.
+    const rows = this.store.all("SELECT * FROM wpositions WHERE chain=? AND lower(wallet)=? AND status='open'", this.network, w);
+    this.research ??= new WalletResearch({ rpc: this.rpc, store: this.store, chain: this.chain, log: this.log });
+    await this.research.refreshOpen(rows, this.ethUsd).catch((e) => this.log(`equity target ${w}: LP re-value failed: ${e.message}`));
+    const lpUsd = rows.reduce((t, r) => t + (r.live_value_q || 0) + (r.live_fee_q || 0), 0);
+    // The scan counts this action only if it reached the action's block AND recorded the position.
+    // An add to a position the scan already knows is NOT in the stored liquidity until the next
+    // scan, so "position known" alone is not enough.
+    const known = rows.some((r) => r.venue === act.venue && r.token_id === String(act.tokenId ?? ''));
+    const covered = known && act.block != null && wallet.scanned_to != null && wallet.scanned_to >= act.block;
+    const q = this.chain.quoteSideOf(act.token0, act.token1);
+    const actUsd = q ? quoteToUsd(act.valueQuote || 0, q.kind, this.ethUsd) : 0;
+    return cashUsd + lpUsd + (covered ? 0 : actUsd);
   }
 
   // Cash that can be used to open positions: USDG, and ETH/WETH above the gas reserve (in

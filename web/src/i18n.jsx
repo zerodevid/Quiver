@@ -1461,6 +1461,29 @@ const EN = {
   'Persen dari target': 'Percent of the target',
   'Kelipatan dari target': 'Multiple of the target',
   'Nominal tetap': 'Fixed amount',
+  'Porsi equity target': 'Target\u2019s equity share',
+  'mirror = likuiditas identik; pct/multiplier = skala; nominal tetap = modal sama tiap posisi; porsi equity = % equity yang sama dengan target':
+    'mirror = identical liquidity; pct/multiplier = scaled; fixed = same capital every position; equity share = the same % of equity as the target',
+  'Pengali porsi equity': 'Equity share multiplier',
+  'Minimum porsi equity (%)': 'Equity share floor (%)',
+  'Porsi kita tidak turun di bawah angka ini (menang atas batas porsi). 0 = mati, disarankan': 'Our share never goes below this (it wins over the share cap). 0 = off, recommended',
+  'Equity target manual (USD)': 'Manual target equity (USD)',
+  'Isi per target kalau equity-nya terbaca terlalu kecil (memecoin, CEX, wallet lain). 0 = baca otomatis dari chain': 'Fill in per target when its equity reads too low (memecoins, CEX, other wallets). 0 = read it from the chain',
+  'Total = sama dengan grafik equity (disarankan). Kas saja: ukuran mengecil sendiri saat modal makin terpakai': 'Total = same as the equity chart (recommended). Cash only: the size shrinks by itself as capital gets used',
+  'Persen dari target tidak melihat ukuran equity kita. Lewati entri lebih aman untuk LIVE': 'Percent of the target ignores the size of our equity. Skipping the entry is safer for LIVE',
+  'Dasar equity kita': 'Our equity basis',
+  'Total (kas + posisi)': 'Total (cash + positions)',
+  'Kas saja': 'Cash only',
+  'Kalau equity tidak terbaca': 'When equity cannot be read',
+  'Pakai persen dari target': 'Use percent of the target',
+  'Lewati entri': 'Skip the entry',
+  'Target masuk 20% equity-nya, pengali 0,5 → kita masuk 10% equity kita':
+    'The target puts in 20% of its equity, multiplier 0.5 → we put in 10% of ours',
+  'Batas porsi equity (%)': 'Equity share cap (%)',
+  'Porsi target dibatasi angka ini — equity target sering terbaca lebih kecil (memecoin & wallet lain tidak terhitung)':
+    'The target\u2019s share is capped here — its equity is often under-read (memecoins and other wallets are not counted)',
+  'Di mode porsi equity: dipakai kalau equity target/kita tidak terbaca':
+    'In equity share mode: used when the target\u2019s or our equity cannot be read',
   'mirror = likuiditas identik; pct/multiplier = skala; nominal tetap = modal sama tiap posisi':
     'mirror = identical liquidity; pct/multiplier = scaled; fixed = same capital every position',
   'Persen dari target (%)': 'Percent of the target (%)',
