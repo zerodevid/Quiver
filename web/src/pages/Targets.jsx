@@ -9,6 +9,7 @@ import WalletDetail from '../components/WalletDetail';
 import WalletHoldings from '../components/WalletHoldings';
 import { usd, kUsd, tone, ago, short } from '../fmt';
 import { useI18n } from '../i18n';
+import { isAddr, canonAddr, isSolana } from '../chain';
 
 // Per-target rules editor — used in the card (collapsed) and on the detail page.
 function TargetRules({ tg, onChanged }) {
@@ -265,7 +266,7 @@ function EditableLabel({ tg, onChanged }) {
 // Detail page of a single target: copy status + full wallet research (same as the Wallet menu).
 function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
   const { t } = useI18n();
-  const tg = targets.find((x) => x.address === address.toLowerCase());
+  const tg = targets.find((x) => x.address === canonAddr(address));
   const [rulesOpen, setRulesOpen] = useState(false);
   if (!tg) {
     return (
@@ -335,8 +336,8 @@ export default function Targets({ param }) {
   const [label, setLabel] = useState('');
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
-  const valid = /^0x[0-9a-fA-F]{40}$/.test(addr.trim());
-  const existing = valid ? d?.targets?.find((x) => x.address.toLowerCase() === addr.trim().toLowerCase()) : null;
+  const valid = isAddr(canonAddr(addr));
+  const existing = valid ? d?.targets?.find((x) => canonAddr(x.address) === canonAddr(addr)) : null;
 
   if (param) return !d ? <Loading page /> : <TargetDetail address={param} targets={d.targets} reload={reload} enabledOf={enabledOf} onToggle={toggle} />;
 
@@ -363,9 +364,10 @@ export default function Targets({ param }) {
       {adding && (
         <Panel className="mb-4">
           <div className="grid items-start gap-3 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]">
-            <Text label="Alamat" mono placeholder="0x…" value={addr} onChange={setAddr}
+            <Text label="Alamat" mono placeholder={isSolana() ? 'base58…' : '0x…'} value={addr} onChange={setAddr}
               isInvalid={addr !== '' && (!valid || !!existing)}
-              error={existing ? t('Sudah tersimpan sebagai "{name}".', { name: existing.label || short(existing.address) }) : 'Alamat harus 0x diikuti 40 karakter hex.'} />
+              error={existing ? t('Sudah tersimpan sebagai "{name}".', { name: existing.label || short(existing.address) })
+                : isSolana() ? 'Alamat Solana harus base58, 32–44 karakter.' : 'Alamat harus 0x diikuti 40 karakter hex.'} />
             <Text label="Label (opsional)" placeholder="mis. LP pro #1" value={label} onChange={setLabel} />
             <Button className="md:mt-[1.6rem]" onPress={add} isDisabled={!valid || !!existing} isPending={busy}><Plus className="size-4" />{t('Tambah')}</Button>
           </div>

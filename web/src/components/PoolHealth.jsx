@@ -1,7 +1,7 @@
 import { ShieldCheck, TriangleAlert, CircleHelp, ExternalLink } from 'lucide-react';
 import { usePoll, useTick } from '../hooks';
 import { useI18n } from '../i18n';
-import { num, ago, short, price } from '../fmt';
+import { num, ago, short, price, addrHref, explorerName } from '../fmt';
 import { poolHealth } from '../poolHealth.mjs';
 import { GmgnSecurity } from './Gmgn';
 
@@ -16,7 +16,7 @@ export default function PoolHealth({ pool, pair, open = [] }) {
   const token = pool?.baseToken;
   const { data, error } = usePoll(token ? `/api/holders?token=${encodeURIComponent(token)}` : null, 15000);
   useTick(30000);
-  const holders = data?.token === token?.toLowerCase() && !error ? data : null;
+  const holders = String(data?.token || '').toLowerCase() === token?.toLowerCase() && !error ? data : null;
   // GMGN profile (contract security, dev/trader behaviour) — only when an API key exists.
   const { data: gm } = usePoll(token ? `/api/gmgn/token?address=${encodeURIComponent(token)}` : null, 60000);
   const gmgn = gm && gm.enabled !== false ? gm : undefined;
@@ -47,10 +47,10 @@ export default function PoolHealth({ pool, pair, open = [] }) {
           <p className="mt-2 text-xs leading-relaxed text-muted">{t('* Persentase total suplai, tanpa PoolManager, pool ini, dan alamat burn. Alamat belum tentu mewakili orang yang berbeda; kontrak lain tetap dihitung.')}</p>
           {items.length > 0 ? <details className="mt-3 text-xs">
             <summary className="cursor-pointer py-1 text-accent">{t('Lihat pemilik terbesar dan jenis alamat')}</summary>
-            <div className="mt-2 overflow-x-auto"><table className="w-full text-left"><thead className="text-muted"><tr><th className="py-2 font-normal">{t('Alamat')}</th><th className="font-normal">{t('Jenis')}</th><th className="text-right font-normal">{t('Suplai')}</th></tr></thead><tbody>{items.slice(0, 10).map((r) => <tr key={r.address} className="border-t border-border"><td className="py-2"><a className="text-accent" href={`https://robinhoodchain.blockscout.com/address/${r.address}`} target="_blank" rel="noreferrer">{short(r.address)}</a></td><td>{t(r.kind === 'pool_manager' || r.address === pool.pool_ref ? 'Likuiditas pool' : r.kind === 'burn' ? 'Burn' : r.isContract ? 'Kontrak' : 'Wallet')}</td><td className="text-right num">{num(r.percent, 2)}%</td></tr>)}</tbody></table></div>
+            <div className="mt-2 overflow-x-auto"><table className="w-full text-left"><thead className="text-muted"><tr><th className="py-2 font-normal">{t('Alamat')}</th><th className="font-normal">{t('Jenis')}</th><th className="text-right font-normal">{t('Suplai')}</th></tr></thead><tbody>{items.slice(0, 10).map((r) => <tr key={r.address} className="border-t border-border"><td className="py-2"><a className="text-accent" href={addrHref(r.address)} target="_blank" rel="noreferrer">{short(r.address)}</a></td><td>{t(r.kind === 'pool_manager' || r.address.toLowerCase() === pool.pool_ref?.toLowerCase() ? 'Likuiditas pool' : r.kind === 'burn' ? 'Burn' : r.isContract ? 'Kontrak' : 'Wallet')}</td><td className="text-right num">{num(r.percent, 2)}%</td></tr>)}</tbody></table></div>
           </details> : <p className="mt-3 text-xs text-muted">{t(holders?.queued ? 'Menunggu giliran pemindaian holder; data pasar tetap diperiksa.' : holders?.error === 'scanning' ? 'Memindai riwayat dan memverifikasi saldo holder…' : holders?.error === 'scan_limit' ? 'Riwayat melewati batas pemindaian; jumlah holder belum terverifikasi.' : holders?.error === 'incomplete' ? 'Saldo belum cocok dengan total suplai; data holder belum lengkap.' : 'Data holder belum tersedia. Pemeriksaan pasar tetap berjalan.')}</p>}
           {holders?.error === 'scanning' && holders.progress && <p className="mt-2 text-xs text-muted">{holders.progress.phase === 'balances' ? t('Saldo diperiksa: {n}/{total} alamat', { n: num(holders.progress.checked), total: num(holders.progress.total) }) : t('Riwayat: {n} halaman transfer', { n: num(holders.progress.pages) })}</p>}
-          {h.holdersOk && <p className="mt-3 text-xs text-muted">{holders.source} · {ago(holders.snapshotAt || holders.fetchedAt)}{holders.block ? ` · ${t('Blok')} ${num(holders.block)}` : ''} <a className="ml-2 inline-flex items-center gap-1 text-accent" href={holders.url} target="_blank" rel="noreferrer">Blockscout <ExternalLink size={11} /></a></p>}
+          {h.holdersOk && <p className="mt-3 text-xs text-muted">{holders.source} · {ago(holders.snapshotAt || holders.fetchedAt)}{holders.block ? ` · ${t('Blok')} ${num(holders.block)}` : ''} <a className="ml-2 inline-flex items-center gap-1 text-accent" href={holders.url} target="_blank" rel="noreferrer">{explorerName()} <ExternalLink size={11} /></a></p>}
         </div>
       </div>
       {gmgn && <div className="border-t border-border px-4 py-3"><h3 className="mb-2 text-xs font-medium text-muted">{t('Keamanan kontrak')}</h3><GmgnSecurity g={gmgn} /></div>}

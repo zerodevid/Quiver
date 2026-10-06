@@ -6,8 +6,8 @@
 </p>
 
 <p align="center">
-  <strong>Liquidity position copying for Robinhood Chain and BNB Smart Chain</strong><br />
-  Monitor target wallets, manage Uniswap v3/v4 (and PancakeSwap v3) positions, and track results<br />
+  <strong>Liquidity position copying for Robinhood Chain, BNB Smart Chain and Solana</strong><br />
+  Monitor target wallets, manage Uniswap v3/v4, PancakeSwap v3, Meteora DLMM, Orca and Raydium positions, and track results<br />
   through a bilingual dashboard and Telegram bot.
 </p>
 
@@ -17,10 +17,13 @@
   &nbsp;·&nbsp;
   <img src="public/bnb-chain.png" alt="" width="20" height="20" align="absmiddle" />
   <span>BNB Smart Chain</span>
+  &nbsp;·&nbsp;
+  <img src="public/solana.svg" alt="" width="20" height="20" align="absmiddle" />
+  <span>Solana</span>
 </p>
 
 <p align="center">
-  Node.js · SQLite · ethers · React · Vite
+  Node.js · SQLite · ethers · @solana/web3.js · React · Vite
 </p>
 
 <p align="center">
@@ -41,7 +44,7 @@
 
 ## Overview
 
-Quiver is a self-hosted application that watches target wallets on Robinhood Chain and BNB Smart Chain and copies supported Uniswap v3, Uniswap v4 and PancakeSwap v3 liquidity actions according to configurable rules. It also supports manual LP management, swaps, wallet and pool research, and PnL reporting.
+Quiver is a self-hosted application that watches target wallets on Robinhood Chain, BNB Smart Chain and Solana and copies supported Uniswap v3, Uniswap v4, PancakeSwap v3, Meteora DLMM, Orca Whirlpools and Raydium CLMM liquidity actions according to configurable rules. It also supports manual LP management, swaps, wallet and pool research, and PnL reporting.
 
 The example configuration starts in **simulation mode**, binds the dashboard to `127.0.0.1`, and contains no target wallets. Review simulated decisions before enabling live execution. Live mode can sign transactions and move funds from the configured wallet.
 
@@ -147,6 +150,37 @@ Chain profiles (chain id, contract addresses, quote assets, venues, block time) 
 
 On BNB Smart Chain the bot follows Uniswap v4, Uniswap v3, and PancakeSwap v3 (venue `pancakev3`). BNB/USD is read from the deepest PancakeSwap v3 USDT/WBNB pools; USDT (18 decimals) takes the stablecoin role that USDG has on Robinhood Chain. The seeded RPC list uses public endpoints that serve `eth_getLogs` up to 5000 blocks; add an Alchemy BNB endpoint from the Settings page once the network is enabled for your app.
 
+### Solana
+
+The `chains.solana` block is seeded **disabled** (and in simulation mode). Solana runs its own engine ([src/solana/](src/solana/)) behind the same dashboard, Telegram bot, rules and database; select it with the chain switcher like any other chain.
+
+| Item | Details |
+| --- | --- |
+| Venues | `meteora` (Meteora DLMM), `orca` (Orca Whirlpools), `raydium` (Raydium CLMM). Set `rules.filters.venues` to choose. |
+| Quote assets | USDC, USDT and SOL (wSOL). Pools without one of them are skipped. |
+| Detection | Each poll reads the target's newest signature; when it changed, all of the target's positions on the enabled venues are listed and diffed against the stored snapshot (new → mint, liquidity up → increase, down → proportional decrease, gone → close). A venue that fails to read keeps its previous snapshot, so an RPC error is never mistaken for a close. The first scan of a target only records a baseline. |
+| Execution | Venue SDKs build the instructions; the bot adds compute-budget and priority fees (percentile of recent fees on the written accounts, clamped by `gas.min_cu_price_micro`/`max_cu_price_micro`), simulates, signs, sends to every endpoint, and rebroadcasts until confirmed. Missing tokens are bought through Jupiter with the same loss guard as sells. |
+| Units | Positions are stored in Uniswap units so the dashboard, exit triggers and PnL code apply unchanged: Orca/Raydium ticks and Q64 prices map directly; DLMM bins map to the equivalent `1.0001` tick (native bin ids are kept in the `ext` column). |
+| Sizing | Rules are the same as on EVM, but sizes are value-based: `mirror`/`pct`/`multiplier` scale the value the target added, and in `exact` range mode the target's own token amounts are scaled, so the X/Y split is copied. |
+| DLMM shape | `rules.range.dlmm_strategy`: `mirror` (default) \| `spot` \| `curve` \| `bidask`. `mirror` reads the target position's shape from its value per bin (flat = spot, peaked at the price = curve, heavier at the edges = bid-ask; unclear = spot), no transaction history needed. The shape is stored on our position and reused for increases and compounding; manual LP picks its own. |
+| Wallet | A separate ed25519 key: `LPCOPY_SOLANA_PRIVATE_KEY` or `wallet.solana_key_file` (default `~/.lpcopy/solana-key`, base58 or a `solana-keygen` JSON array, `chmod 600`). It can also be generated or imported from the Settings page while the Solana chain is selected. |
+| Reserve | `gas.native_reserve_lamports` (default 0.15 SOL) is never used as capital: a DLMM position account costs ~0.057 SOL rent (refunded on close). |
+| RPC | Put a keyed endpoint first, e.g. `https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}`. The official public endpoint serves `getProgramAccounts` (needed to list DLMM positions) but rate-limits hard; publicnode refuses it and returns empty signature history for wallets that were not active recently (mark it `no_gpa: true, no_history: true`). Endpoints whose `${VAR}` is unset are skipped. |
+
+Every dashboard and Telegram feature works on Solana too; where the chain differs, the data source differs:
+
+| Feature | On Solana |
+| --- | --- |
+| Manual LP & follow | Pools of a token come from the DexScreener/GeckoTerminal index and are confirmed by the account's owner program; ranges are planned in equivalent ticks and rounded to bins/ticks; missing tokens are bought through Jupiter. |
+| Swap page | Jupiter quotes and swaps; SOL = native + wSOL, minus the reserve. |
+| Wallet research & scout | Transaction history plus Anchor events of the three programs; scout lists live positions per venue and dates them by the position account's oldest signature. Tokens still held after a close are followed like on EVM (sold / sent / held). |
+| Holder distribution | `getTokenLargestAccounts` when the endpoint allows it (Helius, paid RPC); public endpoints refuse it, and the holder count and top-holder share then come from Jupiter. |
+| Pool depth | Orca/Raydium tick arrays; DLMM bins are converted to an equivalent liquidity per bin range. |
+| Capital tracker | Baseline = wallet value when tracking starts (no archive balances on Solana); deposits and withdrawals are read from new signatures on the wallet and its USDC/USDT/wSOL token accounts. Trading transactions signed by the bot wallet are ignored. |
+| Key export | Encrypted keystore (PBKDF2 + AES-GCM); open it offline on the Settings page or with `npm run export-key`, which gives the base58 key Phantom/Solflare import. |
+
+Check the Solana profile against mainnet before going live: `node src/solana/verify.js [rpc-url]`.
+
 ### Credentials and environment variables
 
 [.env.example](.env.example) lists the supported credential variables. Non-empty process environment values take precedence over `.env`, which takes precedence over configuration values.
@@ -154,6 +188,8 @@ On BNB Smart Chain the bot follows Uniswap v4, Uniswap v3, and PancakeSwap v3 (v
 | Variable | Purpose |
 | --- | --- |
 | `LPCOPY_PRIVATE_KEY` | Signing key; overrides `wallet.key_file`. |
+| `LPCOPY_SOLANA_PRIVATE_KEY` | Solana signing key (base58 or JSON array); overrides `wallet.solana_key_file`. |
+| `JUPITER_API_KEY` | Optional Jupiter API key (uses `api.jup.ag` instead of the rate-limited `lite-api.jup.ag`). |
 | `LPCOPY_AUTH_TOKEN` | Dashboard access token. |
 | `LPCOPY_TELEGRAM_BOT_TOKEN` | Telegram bot token. |
 | `LPCOPY_NTFY_TOPIC` | Optional ntfy notification topic. |
@@ -339,6 +375,7 @@ Preserve and back up the database separately. Replacing it with a development co
 - Swaps and LP creation can involve separate transactions. A successful swap does not guarantee that a subsequent mint succeeds.
 - Hook and token behaviour can prevent swaps or withdrawals. Stop-loss and other exit triggers do not guarantee execution.
 - Scout reports cover their configured scan window. Historical results can change when additional data is reconciled.
+- On Solana, target moves are detected by polling position state, not per-transaction logs: several changes to one position between two polls are copied as their net effect. Proceeds of an exit are booked from the position's amounts read just before the exit transaction.
 
 ## Repository layout
 
@@ -349,6 +386,8 @@ src/                   Backend, execution, research, API, and Telegram
   setup-page.js        Setup wizard page (server-rendered, no build step)
   networks.js          Chain profiles (contracts, quote assets, venues)
   multichain.js        Per-chain configuration normalisation
+  solana/              Solana engine: RPC pool, watcher, planner, executor, Jupiter,
+                       and venue adapters (venues/meteora.js, orca.js, raydium.js)
   engine.js            Copy engine coordination
   watcher.js           Liquidity event detection
   policy.js            Copy rules and limits

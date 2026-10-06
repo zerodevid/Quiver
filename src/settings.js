@@ -14,6 +14,7 @@ const { ensureChain } = require('./networks');
 //  - The wallet cannot be changed while in LIVE mode — swapping the key in the middle of execution
 //    can leave an unrecorded position.
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const net = require('node:net');
@@ -78,6 +79,11 @@ function maskHeaders(h) {
 // Test an endpoint and suggest the flags that fit it. `chain` =
 // the expected chain profile (pools.js Chain): chain id, contract addresses for the test.
 async function probeRpc({ url, headers }, chain) {
+  if (chain?.kind === 'solana') {
+    try { await assertSafeRpcUrl(url); } catch (e) { return { url: maskUrl(url), usable: false, summary: e.message }; }
+    const r = await require('./solana/rpc').probeSolanaRpc({ url, headers });
+    return { ...r, url: maskUrl(url) };
+  }
   chain = ensureChain(chain);
   const { ADDR, CHAIN_ID } = chain;
   try { await assertSafeRpcUrl(url); } catch (e) { return { url: maskUrl(url), usable: false, summary: e.message }; }
@@ -132,6 +138,13 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
     return n ? { error: `Diatur lewat ${n} di .env — ubah di berkas itu lalu restart.` } : null;
   };
   const exec = engine.exec;
+  // Solana: a separate ed25519 key (~/.lpcopy/solana-key, LPCOPY_SOLANA_PRIVATE_KEY) —
+  // created/imported/detached through the same routes, in the Solana key form.
+  const SOL = chain.kind === 'solana';
+  const sol = SOL ? require('./solana/wallet') : null;
+  const keyFromEnv = () => (SOL ? sol.solanaKeyFromEnv() : privateKeyFromEnv());
+  const keyEnvName = SOL ? 'LPCOPY_SOLANA_PRIVATE_KEY' : 'LPCOPY_PRIVATE_KEY';
+  const walletStateKey = SOL ? `wallet_address:${chain.network}` : 'wallet_address';
 
   const backupKey = (p) => {
     if (!fs.existsSync(p)) return null;
@@ -139,6 +152,10 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
     fs.renameSync(p, bak);
     return bak;
   };
+  // The EVM and Solana engines of this process (either may be absent): a backup carries
+  // whichever keys are installed, a restore writes each to its own key file.
+  const evmEngine = () => engines.find((e) => e.chain?.kind !== 'solana') || null;
+  const solEngine = () => engines.find((e) => e.chain?.kind === 'solana') || null;
   const writeKey = (pk) => {
     const p = exec.keyPath();
     fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
@@ -147,12 +164,12 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
     fs.chmodSync(p, 0o600);
     resetWallets();
     const addr = exec.address();
-    if (addr) store.setState('wallet_address', addr);
+    if (addr) store.setState(walletStateKey, addr);
     log(`kunci wallet diganti -> ${addr}${bak ? ` (kunci lama dicadangkan: ${path.basename(bak)})` : ''}`);
     return { address: addr, backup: bak ? path.basename(bak) : null };
   };
   const refuseIfLive = () => {
-    if (privateKeyFromEnv()) return { error: 'Kunci wallet diatur lewat LPCOPY_PRIVATE_KEY di .env — ganti atau hapus di berkas itu lalu restart.' };
+    if (keyFromEnv()) return { error: `Kunci wallet diatur lewat ${keyEnvName} di .env — ganti atau hapus di berkas itu lalu restart.` };
     // The key is changed in the middle of an entry/exit/sale: the next transaction (mint, sale of the zap
     // token) is signed by ANOTHER wallet that does not hold the token.
     // (LIVE mode is already required to be off, but an entry started before the mode was switched off still
@@ -222,6 +239,8 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
         id, url: maskUrl(e.url), host: (() => { try { return new URL(e.url).hostname; } catch { return '?'; } })(),
         secret: hasSecret(e), headers: maskHeaders(e.headers),
         no_logs: !!e.no_logs, max_log_blocks: e.max_log_blocks || 0, archive: !!e.archive,
+        // Solana endpoint flags (src/solana/rpc.js)
+        no_gpa: !!e.no_gpa, no_history: !!e.no_history,
         max_batch: e.max_batch || 40, note: e.catatan || '',
         calls: st.calls || 0, errors: st.errors || 0, lastMs: st.lastMs || 0, cooling: !!st.cooling,
       };
@@ -275,7 +294,17 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       try { perms = (fs.statSync(p).mode & 0o777).toString(8); } catch { perms = null; }
       let balances = null;
       const { ADDR } = chain;
-      if (addr) {
+      if (addr && SOL) {
+        try {
+          const b = await exec.balances();
+          balances = {
+            eth: Number(b.get('SOL') || 0n) / 1e9,
+            usdg: (Number(b.get(ADDR.usdg) || 0n) + Number(b.get(ADDR.usdt) || 0n)) / 1e6,
+            weth: Number(b.get(ADDR.weth) || 0n) / 1e9,
+            symbols: { eth: 'SOL', usdg: 'USDC+USDT', weth: 'wSOL' },
+          };
+        } catch { balances = null; }
+      } else if (addr) {
         try {
           const b = await exec.balances([ADDR.native, ADDR.usdg, ADDR.weth]);
           balances = {
@@ -290,12 +319,13 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
         ? fs.readdirSync(path.dirname(p)).filter((f) => f.startsWith(path.basename(p) + '.bak-')).length : 0;
       return {
         chain: { key: chain.network, label: chain.label, chainId: chain.CHAIN_ID, nativeSymbol: chain.nativeSymbol, verified: chain.verified,
-          venues: ['v4', ...chain.venues.map((v) => v.key)] },
+          venues: [...(SOL ? [] : ['v4']), ...chain.venues.map((v) => v.key)] },
         wallet: {
-          address: addr, keyFile: cfg.wallet?.key_file || '~/.lpcopy/key',
-          hasKey: privateKeyFromEnv() || fs.existsSync(p), perms, balances, backups,
+          address: addr, keyFile: SOL ? (cfg.wallet?.solana_key_file || sol.DEFAULT_FILE) : (cfg.wallet?.key_file || '~/.lpcopy/key'),
+          hasKey: keyFromEnv() || fs.existsSync(p), perms, balances, backups,
           // A key from .env beats the key file; the replace/detach buttons do not apply.
-          fromEnv: privateKeyFromEnv() ? 'LPCOPY_PRIVATE_KEY' : null,
+          fromEnv: keyFromEnv() ? keyEnvName : null,
+          kind: SOL ? 'solana' : 'evm',
         },
         mode: { dry_run: engine.dryRun(), paused: engine.paused() },
         risk: {
@@ -306,7 +336,16 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
         // The RPC answer cache that is already final — displayed under the endpoint list
         // so it is visible how many unnecessary calls were not sent at all.
         rpcCache: rpc.cacheStats ? rpc.cacheStats() : null,
-        gas: {
+        gas: SOL ? {
+          // Solana: priority price (microLamports per CU) = 75th percentile of recent fees ×
+          // multiplier, clamped to min/max; a SOL reserve for fees & account rent.
+          price_multiplier: cfg.gas?.price_multiplier ?? 1.2,
+          min_cu_price_micro: cfg.gas?.min_cu_price_micro ?? 10_000,
+          max_cu_price_micro: cfg.gas?.max_cu_price_micro ?? 2_000_000,
+          jupiter_max_priority_sol: (cfg.gas?.jupiter_max_priority_lamports ?? 2_000_000) / 1e9,
+          reserve_sol: (cfg.gas?.native_reserve_lamports ?? 150_000_000) / 1e9,
+          topup_max_usd: cfg.gas?.topup_max_usd ?? 25,
+        } : {
           price_multiplier: cfg.gas?.price_multiplier ?? 1.5,
           priority_gwei: (cfg.gas?.priority_wei ?? 10_000_000) / 1e9,
           max_gas_limit: cfg.gas?.max_gas_limit ?? 4_000_000,
@@ -337,6 +376,12 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       const b = await readBody(req);
       const live = refuseIfLive(); if (live) return live;
       if (fs.existsSync(exec.keyPath()) && !b.replace) return { error: 'Sudah ada kunci. Centang "ganti kunci yang ada" untuk menggantinya (kunci lama dicadangkan).' };
+      if (SOL) {
+        // A Solana key has no recovery phrase: its file is its own backup
+        // (base58 — importable into Phantom/Solflare).
+        const kp = require('@solana/web3.js').Keypair.generate();
+        return { ok: true, ...writeKey(require('bs58').default.encode(kp.secretKey)) };
+      }
       const w = ethers.Wallet.createRandom();
       const res = writeKey(w.privateKey);
       // the recovery phrase is stored on the server beside the key, not sent to the browser
@@ -347,6 +392,13 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       const b = await readBody(req);
       const live = refuseIfLive(); if (live) return live;
       let pk = String(b.privateKey || '').trim();
+      if (SOL) {
+        let kp;
+        try { kp = sol.parseSecret(pk); } catch (e) { return { error: `Kunci Solana tidak valid: ${e.message}` }; }
+        if (!kp) return { error: 'Kunci Solana kosong.' };
+        if (fs.existsSync(exec.keyPath()) && !b.replace) return { error: 'Sudah ada kunci. Centang "ganti kunci yang ada" untuk menggantinya (kunci lama dicadangkan).' };
+        return { ok: true, ...writeKey(require('bs58').default.encode(kp.secretKey)) };
+      }
       if (!/^(0x)?[0-9a-fA-F]{64}$/.test(pk)) return { error: 'Kunci privat harus 64 karakter hex (boleh diawali 0x).' };
       if (!pk.startsWith('0x')) pk = '0x' + pk;
       try { new ethers.Wallet(pk); } catch { return { error: 'Kunci privat tidak valid.' }; }
@@ -358,10 +410,11 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       const live = refuseIfLive(); if (live) return live;
       const addr = exec.address();
       if (!addr) return { error: 'Tidak ada wallet terpasang.' };
-      if (String(b.confirm || '').toLowerCase() !== addr) return { error: 'Ketik alamat wallet persis untuk konfirmasi.' };
+      const typed = SOL ? String(b.confirm || '').trim() : String(b.confirm || '').toLowerCase();
+      if (typed !== addr) return { error: 'Ketik alamat wallet persis untuk konfirmasi.' };
       const bak = backupKey(exec.keyPath());
       resetWallets();
-      store.setState('wallet_address', '');
+      store.setState(walletStateKey, '');
       log(`kunci wallet dilepas (dicadangkan: ${bak ? path.basename(bak) : '-'})`);
       return { ok: true, backup: bak ? path.basename(bak) : null };
     },
@@ -378,6 +431,14 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       if (!addr) return { error: 'Tidak ada wallet terpasang.' };
       const pass = String(b.password || '');
       if (pass.length < 8) return { error: 'Password keystore minimal 8 karakter.' };
+      // Solana has no standard keystore format: see solana/wallet.js encryptKeystore — it can be
+      // opened in the browser (WebCrypto) through "Open keystore (offline)" on this page.
+      if (SOL) {
+        let kp;
+        try { kp = exec.loadWallet(); } catch (e) { return { error: e.message }; }
+        log(`wallet ${addr} diekspor sebagai keystore terenkripsi`);
+        return { ok: true, address: addr, keystore: sol.encryptKeystore(kp, pass) };
+      }
       let w;
       try { w = exec.loadWallet(); } catch (e) { return { error: e.message }; }
       const keystore = await w.encrypt(pass);
@@ -391,21 +452,26 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       const bad = retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa membuat cadangan.'); if (bad) return bad;
       const parts = { config: !!b.parts?.config, db: !!b.parts?.db, wallet: !!b.parts?.wallet };
       if (!parts.config && !parts.db && !parts.wallet) return { error: 'Pilih minimal satu bagian untuk dicadangkan.' };
-      let wallet = null;
+      let wallet = null, solanaKeypair = null;
       if (parts.wallet) {
-        if (!exec.address()) return { error: 'Tidak ada wallet terpasang.' };
+        const ev = evmEngine(), se = solEngine();
+        if (!ev?.exec.address() && !se?.exec.address()) return { error: 'Tidak ada wallet terpasang.' };
         if (String(b.password || '').length < 8) return { error: 'Password keystore minimal 8 karakter.' };
-        try { wallet = exec.loadWallet(); } catch (e) { return { error: e.message }; }
+        try {
+          if (ev?.exec.address()) wallet = ev.exec.loadWallet();
+          if (se?.exec.address()) solanaKeypair = se.exec.loadWallet();
+        } catch (e) { return { error: e.message }; }
       }
       const dbPath = cfg.db?.path;
       if (parts.db && !dbPath) return { error: 'Lokasi basis data tidak diketahui.' };
       try {
         const backup = await createBackup({
-          parts, cfgPath, db: store.db, dbPath, wallet, password: String(b.password || ''),
+          parts, cfgPath, db: store.db, dbPath, wallet, solanaKeypair, password: String(b.password || ''),
           meta: {
             instance: path.basename(path.dirname(path.resolve(cfgPath))),
             chains: engines.map((e) => e.chain?.network).filter(Boolean),
-            address: exec.address(),
+            address: evmEngine()?.exec.address() || null,
+            solanaAddress: solEngine()?.exec.address() || null,
           },
         });
         log(`cadangan dibuat: ${Object.keys(backup.parts).join(', ')}${backup.parts.db ? ` (basis data ${(backup.parts.db.bytes / 1e6).toFixed(1)} MB)` : ''}`);
@@ -422,7 +488,8 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       let backup;
       try { backup = parseBackup(b.backup); } catch (e) { return { error: e.message }; }
       const parts = { config: !!b.parts?.config, db: !!b.parts?.db, wallet: !!b.parts?.wallet };
-      for (const k of Object.keys(parts)) if (parts[k] && !backup.parts[k]) return { error: `Berkas cadangan tidak berisi bagian ${k}.` };
+      const inFile = (k) => (k === 'wallet' ? !!(backup.parts.wallet || backup.parts.solanaWallet) : !!backup.parts[k]);
+      for (const k of Object.keys(parts)) if (parts[k] && !inFile(k)) return { error: `Berkas cadangan tidak berisi bagian ${k}.` };
       if (!parts.config && !parts.db && !parts.wallet) return { error: 'Pilih minimal satu bagian untuk dipulihkan.' };
       if (engines.some((e) => !e.dryRun())) return { error: 'Matikan mode LIVE dulu sebelum memulihkan cadangan.' };
       const busy = busyNow(); if (busy) return busy;
@@ -431,20 +498,49 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
 
       // Wallet first: the only part that can fail because of input (a wrong password),
       // and its failure must not leave a half-finished pending config/db.
-      let walletRes = null;
+      let walletRes = null, solanaRes = null;
       if (parts.wallet) {
         const live = refuseIfLive(); if (live) return live;
-        let w;
-        try { w = await ethers.Wallet.fromEncryptedJson(JSON.stringify(backup.parts.wallet.keystore), String(b.password || '')); }
-        catch { return { error: 'Password keystore salah, atau keystore di berkas cadangan rusak.' }; }
-        walletRes = w.address.toLowerCase() === exec.address() ? { address: exec.address(), unchanged: true } : writeKey(w.privateKey);
+        // Both keys are decrypted before either is written: a wrong password changes nothing.
+        let w = null, kp = null;
+        if (backup.parts.wallet) {
+          try { w = await ethers.Wallet.fromEncryptedJson(JSON.stringify(backup.parts.wallet.keystore), String(b.password || '')); }
+          catch { return { error: 'Password keystore salah, atau keystore di berkas cadangan rusak.' }; }
+        }
+        if (backup.parts.solanaWallet) {
+          const solW = require('./solana/wallet');
+          try { kp = solW.decryptKeystore(backup.parts.solanaWallet.keystore, String(b.password || '')); }
+          catch { return { error: 'Password keystore salah, atau keystore Solana di berkas cadangan rusak.' }; }
+        }
+        const putKey = (p, content) => {
+          fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
+          const bak = backupKey(p);
+          fs.writeFileSync(p, content, { mode: 0o600 });
+          fs.chmodSync(p, 0o600);
+          return bak ? path.basename(bak) : null;
+        };
+        if (w && !privateKeyFromEnv()) {
+          const ev = evmEngine();
+          const cur = ev?.exec.address() || null;
+          const p = ev ? ev.exec.keyPath() : String(cfg.wallet?.key_file || '~/.lpcopy/key').replace(/^~/, os.homedir());
+          walletRes = w.address.toLowerCase() === cur ? { address: cur, unchanged: true } : { address: w.address.toLowerCase(), backup: putKey(p, w.privateKey) };
+        }
+        if (kp && !require('./solana/wallet').solanaKeyFromEnv()) {
+          const se = solEngine();
+          const addr = kp.publicKey.toBase58();
+          const cur = se?.exec.address() || null;
+          const p = se ? se.exec.keyPath() : require('./solana/wallet').keyFileOf(cfg);
+          solanaRes = addr === cur ? { address: cur, unchanged: true } : { address: addr, backup: putKey(p, (require('bs58').default || require('bs58')).encode(kp.secretKey)) };
+        }
+        resetWallets();
+        for (const e of engines) { const a = e.exec.address(); if (a) store.setState(e.chain?.kind === 'solana' ? `wallet_address:${e.chain.network}` : 'wallet_address', a); }
       }
       let staged = [];
       try { staged = await stageRestore({ backup, parts, cfgPath, dbPath }); }
       catch (e) { return { error: e.message, wallet: walletRes }; }
-      log(`pemulihan dari cadangan ${backup.createdAt}: ${[...(walletRes ? ['wallet'] : []), ...staged].join(', ')}${staged.length ? ' — bot dinyalakan ulang' : ''}`);
+      log(`pemulihan dari cadangan ${backup.createdAt}: ${[...(walletRes ? ['wallet'] : []), ...(solanaRes ? ['wallet Solana'] : []), ...staged].join(', ')}${staged.length ? ' — bot dinyalakan ulang' : ''}`);
       if (staged.length) setTimeout(restart, 1500).unref?.();
-      return { ok: true, wallet: walletRes, staged, restarting: staged.length > 0 };
+      return { ok: true, wallet: walletRes, solanaWallet: solanaRes, staged, restarting: staged.length > 0 };
     },
 
     // ---- swap aggregators ----
@@ -561,13 +657,18 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
         if (e.no_logs) out.no_logs = true;
         if (Number(e.max_log_blocks) > 0) out.max_log_blocks = num(e.max_log_blocks, 1, 100_000_000, 'max_log_blocks');
         if (e.archive) out.archive = true;
+        // Solana flags: sent by the dashboard after a test, otherwise kept from the stored endpoint.
+        for (const f of ['no_gpa', 'no_history', 'no_send', 'no_indexed']) {
+          const v = e[f] ?? base?.[f];
+          if (v) out[f] = true;
+        }
         if (base?.catatan && !e.url) out.catatan = base.catatan;
         next.push(out);
       }
       // Wallet research needs getLogs over a large range. On a chain whose public endpoints
       // all limit the range (BSC), this is a warning — scanning still runs in
       // chunks, only slower.
-      const warning = next.some((e) => !e.no_logs && !e.max_log_blocks) ? null
+      const warning = chain.kind === 'solana' || next.some((e) => !e.no_logs && !e.max_log_blocks) ? null
         : 'Tidak ada endpoint yang sanggup getLogs rentang besar (tanpa batas blok) — riset wallet akan berjalan per potongan dan lebih lambat.';
       cfg.chain.endpoints = next;
       saveCfg();
@@ -580,6 +681,21 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
     'POST /api/settings/gas': async (req) => {
       const b = await readBody(req);
       try {
+        if (SOL) {
+          const lo = Math.round(num(b.min_cu_price_micro, 0, 50_000_000, 'Harga prioritas minimum'));
+          const hi = Math.round(num(b.max_cu_price_micro, 1, 50_000_000, 'Harga prioritas maksimum'));
+          if (hi < lo) throw new Error('Harga prioritas maksimum harus ≥ minimum');
+          cfg.gas = {
+            ...(cfg.gas || {}),
+            price_multiplier: num(b.price_multiplier, 0.5, 10, 'Pengali harga prioritas'),
+            min_cu_price_micro: lo, max_cu_price_micro: hi,
+            jupiter_max_priority_lamports: Math.round(num(b.jupiter_max_priority_sol, 0, 0.1, 'Batas prioritas Jupiter') * 1e9),
+            native_reserve_lamports: Math.round(num(b.reserve_sol, 0.01, 100, 'Cadangan SOL') * 1e9),
+            topup_max_usd: num(b.topup_max_usd, 0, 1000, 'Isi ulang SOL maksimum'),
+          };
+          saveCfg();
+          return { ok: true };
+        }
         cfg.gas = {
           ...(cfg.gas || {}),
           price_multiplier: num(b.price_multiplier, 1, 5, 'Pengali harga gas'),

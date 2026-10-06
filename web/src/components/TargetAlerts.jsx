@@ -177,7 +177,7 @@ const verdictOf = (it) => (
           : translate('Bot sedang memproses…'));
 const descOf = (it) => [
   it.valueUsd != null && usd(it.valueUsd),
-  it.venue && `Uniswap ${String(it.venue).replace('pool', '').toUpperCase()}${it.fee != null ? ` · ${it.fee / 10000}%` : ''}`,
+  it.venue && `${({ meteora: 'Meteora DLMM', orca: 'Orca', raydium: 'Raydium CLMM', pancakev3: 'PancakeSwap V3' })[it.venue] || `Uniswap ${String(it.venue).replace('pool', '').toUpperCase()}`}${it.fee != null ? ` · ${it.fee / 10000}%` : ''}`,
   verdictOf(it),
 ].filter(Boolean).join(' · ');
 

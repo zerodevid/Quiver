@@ -29,12 +29,18 @@ export const short = (a) => (a ? a.slice(0, 6) + '…' + a.slice(-4) : '—');
 // The block explorer of the chain being shown (Blockscout / BscScan use the same /tx
 // and /address paths) — the transaction links in the position history and activity.
 export const txHref = (hash) => (hash ? `${chainInfo().explorer}/tx/${hash}` : null);
-export const addrHref = (a) => (a ? `${chainInfo().explorer}/address/${a}` : null);
+// Solscan calls the address page /account/, EVM explorers /address/.
+export const addrHref = (a) => (a ? `${chainInfo().explorer}/${chainInfo().kind === 'solana' ? 'account' : 'address'}/${a}` : null);
 // A wallet's LP portfolio on LPAgent — an external reference for our research figures.
-export const lpagentHref = (a) => (a ? `https://app.lpagent.io/portfolio?address=${a}&chain=${chainInfo().key === 'bsc' ? 'BSC' : 'ROBINHOOD'}` : null);
+// LPAgent is originally a Solana (Meteora) LP analytics tool: no chain parameter = Solana.
+export const lpagentHref = (a) => (!a ? null : chainInfo().kind === 'solana' ? `https://app.lpagent.io/portfolio?address=${a}`
+  : `https://app.lpagent.io/portfolio?address=${a}&chain=${chainInfo().key === 'bsc' ? 'BSC' : 'ROBINHOOD'}`);
+// This chain's block explorer name for link labels (Solscan / BscScan / Blockscout).
+export const explorerName = () => { const e = chainInfo().explorer || ''; return /solscan/.test(e) ? 'Solscan' : /bscscan/.test(e) ? 'BscScan' : 'Blockscout'; };
 // A wallet's holdings across chains on DeBank: tokens, DeFi positions, and their value on all chains
 // at once — what cannot be seen from this dashboard (one chain at a time).
-export const debankHref = (a) => (a ? `https://debank.com/profile/${a}` : null);
+// DeBank is EVM-only: on Solana the link is not shown.
+export const debankHref = (a) => (a && chainInfo().kind !== 'solana' ? `https://debank.com/profile/${a}` : null);
 // This chain's Etherscan (robin.etherscan.io on Robinhood) — its tx/token/NFT index
 // differs from Blockscout, so a wallet that is empty there often reads here.
 export const etherscanHref = (a) => (a && ETHERSCAN[chainInfo().key] ? `${ETHERSCAN[chainInfo().key]}/address/${a}` : null);

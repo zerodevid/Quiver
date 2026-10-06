@@ -41,6 +41,7 @@ const DEFAULTS = {
     width_pct: 25,
     align: 'nearest',         // nearest | down | up
     min_width_ticks: 0,
+    dlmm_strategy: 'mirror',  // Meteora DLMM only: mirror (follow the target's shape) | spot | curve | bidask
   },
   onesided: {
     policy: 'copy',           // copy | skip | recenter
@@ -115,6 +116,7 @@ const RULE_SPEC = {
     mode: ['enum', ['exact', 'recenter', 'scale', 'width_pct', 'full']],
     scale: ['num', 0.01, 100], width_pct: ['num', 0.01, 100_000],
     align: ['enum', ['nearest', 'down', 'up']], min_width_ticks: ['int', 0, 1_774_544],
+    dlmm_strategy: ['enum', ['mirror', 'spot', 'curve', 'bidask']],
   },
   onesided: { policy: ['enum', ['copy', 'skip', 'recenter']], max_quote_usd: ['num', 0, 1e9] },
   swap: { enabled: ['bool'], max_slippage_bps: ['int', 0, 5000], max_price_impact_bps: ['int', 0, 10_000] },
@@ -273,6 +275,31 @@ function valueOfLiquidity(chain, act, L, tickLower, tickUpper, slot0, dec0, dec1
 const usdShort = (x) => (x >= 1000 ? `$${(x / 1000).toFixed(1)}k` : `$${x.toFixed(0)}`);
 
 // Convert a USD threshold to the pool's quote unit (ETH uses the rate from the config).
+// Sizing mode "equity": the same share of OUR equity as the target put in of ITS equity.
+// ctx: { targetEquityUsd, ourEquityUsd, ourCashUsd } (null = unknown). Returns { usd, note },
+// { fallback: true, note } (either equity unknown → the caller uses pct) or { skip }.
+// Shared by the EVM planEntry and the Solana planner.
+function equitySizing(s, ctx, targetUsd) {
+  const manual = s.equity_target_usd > 0;
+  const tEq = manual ? s.equity_target_usd : ctx.targetEquityUsd;
+  const ours = s.equity_our_basis === 'cash' ? ctx.ourCashUsd : ctx.ourEquityUsd;
+  if (tEq > 0 && ours > 0 && targetUsd > 0) {
+    const raw = targetUsd / tEq;
+    const capped = raw > s.equity_max_pct / 100;
+    const scaled = Math.min(raw, s.equity_max_pct / 100) * s.equity_mult;
+    const floored = s.equity_min_pct > 0 && scaled < s.equity_min_pct / 100;
+    const share = floored ? s.equity_min_pct / 100 : scaled;
+    if (!(share > 0)) return { skip: 'porsi equity nol (batas porsi atau pengali = 0)' };
+    const pc = (x) => `${(x * 100).toFixed(1)}%`;
+    const note = `equity: target ${pc(raw)} dari ${usdShort(tEq)}${manual ? ' (manual)' : ''}${capped ? ` (dibatasi ${s.equity_max_pct}%)` : ''}`
+      + ` → kita ${pc(share)} dari ${usdShort(ours)}${s.equity_our_basis === 'cash' ? ' (kas saja)' : ''}${floored ? ` (minimum ${s.equity_min_pct}%)` : ''}`;
+    return { usd: share * ours, note };
+  }
+  const who = tEq > 0 ? 'kita' : 'target';
+  if (s.equity_fallback === 'skip') return { skip: `equity ${who} tidak terbaca — dilewati` };
+  return { fallback: true, note: `equity ${who} tidak terbaca → pct ${s.pct}%` };
+}
+
 function usdToQuote(usd, quoteKind, ethUsd) {
   if (quoteKind === 'usd') return usd;
   if (quoteKind === 'eth') return ethUsd > 0 ? usd / ethUsd : 0;
@@ -343,26 +370,11 @@ function planEntry(act, ctx) {
   // Either equity unknown (null/0) → plain pct, and the reason says so.
   let wantQuote = null, eqNote = null;
   if (mode === 'equity') {
-    const manual = s.equity_target_usd > 0;
-    const tEq = manual ? s.equity_target_usd : ctx.targetEquityUsd;
-    const ours = s.equity_our_basis === 'cash' ? ctx.ourCashUsd : ctx.ourEquityUsd;
-    if (tEq > 0 && ours > 0 && targetUsd > 0) {
-      const raw = targetUsd / tEq;
-      const capped = raw > s.equity_max_pct / 100;
-      const scaled = Math.min(raw, s.equity_max_pct / 100) * s.equity_mult;
-      const floored = s.equity_min_pct > 0 && scaled < s.equity_min_pct / 100;
-      const share = floored ? s.equity_min_pct / 100 : scaled;
-      if (!(share > 0)) return skip('porsi equity nol (batas porsi atau pengali = 0)');
-      wantQuote = usdToQuote(share * ours, q.kind, ethUsd);
-      const pc = (x) => `${(x * 100).toFixed(1)}%`;
-      eqNote = `equity: target ${pc(raw)} dari ${usdShort(tEq)}${manual ? ' (manual)' : ''}${capped ? ` (dibatasi ${s.equity_max_pct}%)` : ''}`
-        + ` → kita ${pc(share)} dari ${usdShort(ours)}${s.equity_our_basis === 'cash' ? ' (kas saja)' : ''}${floored ? ` (minimum ${s.equity_min_pct}%)` : ''}`;
-    } else {
-      const who = tEq > 0 ? 'kita' : 'target';
-      if (s.equity_fallback === 'skip') return skip(`equity ${who} tidak terbaca — dilewati`);
-      mode = 'pct';
-      eqNote = `equity ${who} tidak terbaca → pct ${s.pct}%`;
-    }
+    const e = equitySizing(s, ctx, targetUsd);
+    if (e.skip) return skip(e.skip);
+    eqNote = e.note;
+    if (e.fallback) mode = 'pct';
+    else wantQuote = usdToQuote(e.usd, q.kind, ethUsd);
   }
   if (mode === 'fixed_quote') wantQuote = q.kind === 'eth' ? s.fixed_quote_eth : s.fixed_quote_usd;
   if (mode === 'mirror') L = Ltarget;
@@ -504,4 +516,4 @@ function planExit(act, ourPos, ctx) {
   };
 }
 
-module.exports = { DEFAULTS, RULE_SPEC, validateRules, normalizeRules, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };
+module.exports = { DEFAULTS, RULE_SPEC, equitySizing, validateRules, normalizeRules, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };

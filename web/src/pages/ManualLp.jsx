@@ -12,6 +12,7 @@ import { useLivePrice, useLiveCandles } from '../liveCandles';
 import TokenIcon, { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, num, ago, price, tickPrice, locale } from '../fmt';
 import { useI18n } from '../i18n';
+import { isSolana, isAddr, canonAddr, chainInfo } from '../chain';
 
 // Quick range choices: [lower bound change %, upper bound change %, label],
 // signed from the current price. The percentages are in price, so "±50%" is really half
@@ -56,6 +57,96 @@ function Limit({ label, direction, onArah, value, onChange, harga: px, sym, inva
       </span>
       <span className="num h-4 truncate text-xs text-muted">{px != null ? `≈ ${price(px)}${sym ? ' ' + sym : ''}` : ''}</span>
     </label>
+  );
+}
+
+// ---- Meteora DLMM: liquidity shape -------------------------------------------------------
+const SHAPES = [
+  ['spot', 'Spot', [5, 5, 5, 5, 5, 5, 5], 'Spot: nilai sama rata di setiap bin.'],
+  ['curve', 'Curve', [2, 3, 4, 6, 4, 3, 2], 'Curve: menumpuk di sekitar harga kini — fee besar selama harga tenang, cepat habis kalau harga bergerak.'],
+  ['bidask', 'Bid-Ask', [6, 4, 3, 2, 3, 4, 6], 'Bid-Ask: menumpuk di tepi rentang — membeli saat turun dan menjual saat naik.'],
+];
+
+function ShapeIcon({ bars }) {
+  return (
+    <span aria-hidden="true" className="inline-flex h-3.5 items-end gap-px">
+      {bars.map((h, i) => <span key={i} className="w-0.5 rounded-sm bg-current" style={{ height: `${h * 2}px` }} />)}
+    </span>
+  );
+}
+
+function ShapePicker({ value, onChange }) {
+  const { t } = useI18n();
+  const cur = SHAPES.find((x) => x[0] === value) || SHAPES[0];
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-xs font-medium text-muted">{t('Bentuk likuiditas')}</span>
+      <div role="radiogroup" aria-label={t('Bentuk likuiditas')} className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-surface p-1">
+        {SHAPES.map(([id, label, bars]) => {
+          const on = value === id;
+          return (
+            <button key={id} type="button" role="radio" aria-checked={on} onClick={() => onChange(id)}
+              className={`flex h-9 items-center justify-center gap-2 rounded-md text-[0.8125rem] font-medium transition-colors ${on ? 'bg-default text-foreground' : 'text-muted hover:text-foreground'}`}>
+              <ShapeIcon bars={bars} />{t(label)}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-xs text-muted">{t(cur[3])}</p>
+    </div>
+  );
+}
+
+// Per-bin value of the planned position: token0 above the pool price, token1 below,
+// the active bin half of each. Left = lower price in the pair's display orientation.
+const MAX_BARS = 120;
+function BinDistribution({ p }) {
+  const { t } = useI18n();
+  const d = p.distribution;
+  if (!d?.bins?.length) return null;
+  const tpb = Math.log(1 + d.binStep / 10_000) / Math.log(1.0001);
+  const priceOf = (b) => tickPrice(b * tpb, p.dec0, p.dec1, p.quoteSide);
+  const ordered = p.quoteSide === 0 ? [...d.bins].reverse() : d.bins;
+  // Wide ranges: neighbouring bins merged into one bar (mean weight).
+  const size = Math.ceil(ordered.length / MAX_BARS);
+  const bars = [];
+  for (let i = 0; i < ordered.length; i += size) {
+    const g = ordered.slice(i, i + size);
+    const ids = g.map((x) => x[0]);
+    bars.push({ w: g.reduce((a, x) => a + x[1], 0) / g.length, lo: Math.min(...ids), hi: Math.max(...ids), first: g[0][0], last: g[g.length - 1][0] });
+  }
+  const col0 = 'var(--bin-0)', col1 = 'var(--bin-1)';
+  const fill = (b) => (b.lo > d.active ? col0 : b.hi < d.active ? col1 : `linear-gradient(to right, ${p.quoteSide === 0 ? col0 : col1} 50%, ${p.quoteSide === 0 ? col1 : col0} 50%)`);
+  const activeIdx = bars.findIndex((b) => b.lo <= d.active && d.active <= b.hi);
+  const labels = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(f * (bars.length - 1)));
+  const sym = (s) => <span className="inline-flex items-center gap-1.5"><span className="size-2 rounded-full" style={{ background: s === 0 ? col0 : col1 }} />{s === 0 ? p.symbol0 : p.symbol1}</span>;
+  return (
+    <div className="rounded-md border border-border p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
+        <span className="font-medium text-foreground">{t('Sebaran per bin')}</span>
+        <span className="flex gap-3">{sym(0)}{sym(1)}</span>
+      </div>
+      <div className="relative">
+        {activeIdx >= 0 && (
+          <div className="pointer-events-none absolute inset-y-0 z-10 border-l border-dashed border-foreground/70"
+            style={{ left: `${((activeIdx + 0.5) / bars.length) * 100}%` }}>
+            <span className="num absolute -top-0.5 left-1 whitespace-nowrap rounded bg-default px-1 text-[0.6875rem] text-foreground">
+              {t('Harga pool')} {price(priceOf(d.active))}
+            </span>
+          </div>
+        )}
+        <div className="flex h-28 items-end gap-px pt-5" role="img"
+          aria-label={t('Sebaran likuiditas di {n} bin', { n: d.bins.length })}>
+          {bars.map((b, i) => (
+            <div key={i} className="min-w-0 flex-1 rounded-t-[1px]" style={{ height: `${Math.max(4, b.w * 100)}%`, background: fill(b) }} />
+          ))}
+        </div>
+      </div>
+      <div className="num mt-1.5 flex justify-between text-[0.6875rem] text-muted">
+        {labels.map((i, k) => <span key={k}>{price(priceOf(k < 2 ? bars[i].first : bars[i].last))}</span>)}
+      </div>
+      {activeIdx < 0 && <p className="mt-1.5 text-xs text-muted">{t('Harga pool di luar rentang ini — posisi satu sisi.')}</p>}
+    </div>
   );
 }
 
@@ -106,7 +197,7 @@ function Balance({ saldo: balance, pool }) {
   const { t } = useI18n();
   if (!balance) return null;
   if (balance.wallet === false) return <p className="text-xs text-muted">{t('Belum ada wallet — saldo tidak bisa dibaca.')}</p>;
-  const inPool = (a) => pool && (a === pool.token0?.toLowerCase() || a === pool.token1?.toLowerCase());
+  const inPool = (a) => pool && (a === canonAddr(pool.token0 || '') || a === canonAddr(pool.token1 || ''));
   const rows = balance.tokens.filter((x) => x.amount > 0 || x.native || inPool(x.token) || x.after > 0);
   const after = rows.some((x) => x.after != null);
   return (
@@ -150,7 +241,7 @@ function Balance({ saldo: balance, pool }) {
         </table>
       </div>
       <p className="border-t border-border px-3 py-2 text-xs text-muted">
-        {t('{e} ETH ditahan untuk gas dan tidak ikut dipakai.', { e: num(balance.gasReserveEth, 4) })}
+        {t('{e} {s} ditahan untuk biaya transaksi dan tidak ikut dipakai.', { e: num(balance.gasReserveEth, 4), s: balance.nativeSymbol || chainInfo().nativeSymbol })}
       </p>
     </div>
   );
@@ -187,7 +278,7 @@ function AutoSwap({ p }) {
               <div className="flex items-center gap-2 text-xs text-muted">
                 <span className="flex size-4 items-center justify-center rounded-full border border-border text-[0.625rem]">{i + 1}</span>
                 <span className="font-medium text-foreground">{t(KIND[s.jenis] || s.jenis, { s: s.ke.symbol })}</span>
-                {s.jenis === 'zap' || s.jenis === 'jembatan' ? <span>· {t('Agregator swap')}</span> : <span>· {t('1:1, tanpa slippage')}</span>}
+                {s.jenis === 'zap' || s.jenis === 'jembatan' ? <span>· {s.router || t('Agregator swap')}</span> : <span>· {t('1:1, tanpa slippage')}</span>}
               </div>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                 <span className="flex items-center gap-1.5">
@@ -204,7 +295,7 @@ function AutoSwap({ p }) {
               {s.maxLossBps != null && (
                 <div className="text-xs text-muted">
                   {t('dibatalkan kalau rugi rute lebih dari {r}%', { r: num(s.maxLossBps / 100, 2) })}
-                  {s.estimate ? ' · ' + t('jumlah pasti dari kutipan agregator saat eksekusi') : ''}
+                  {s.estimate ? ' · ' + (s.router ? t('jumlah pasti dari kutipan {r} saat eksekusi', { r: s.router }) : t('jumlah pasti dari kutipan agregator saat eksekusi')) : ''}
                 </div>
               )}
             </li>
@@ -299,8 +390,8 @@ function PoolPicker({ pools, onPick }) {
   const [scan, setScan] = useState(null);     // scan result from the token address
   const [every, setAll] = useState(false);
   const timer = useRef(null);
-  const token = q.trim().toLowerCase();
-  const isAddress = /^0x[0-9a-f]{40}$/.test(token);
+  const token = canonAddr(q);
+  const isAddress = isAddr(token);
   useEffect(() => () => clearInterval(timer.current), []);
 
   const take = async (tok, all) => {
@@ -358,15 +449,15 @@ function PoolPicker({ pools, onPick }) {
       )}
       {useScan && !!scan.hidden && !every && (
         <p className="text-xs text-muted">
-          {t('Yang disembunyikan: pool tanpa likuiditas, berfee dinamis, atau tidak dipasangkan USDG/ETH — masuk ke sana sama saja membuang gas.')}
+          {t(isSolana() ? 'Yang disembunyikan: pool tanpa likuiditas, pool nonaktif, atau tidak dipasangkan USDC/USDT/SOL.' : 'Yang disembunyikan: pool tanpa likuiditas, berfee dinamis, atau tidak dipasangkan USDG/ETH — masuk ke sana sama saja membuang gas.')}
         </p>
       )}
 
       <div className="max-h-80 overflow-y-auto rounded-md border border-border">
         {!result.length ? (
           <div>
-            <Empty title={isAddress ? 'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki' : 'Tidak ada pool yang cocok'}
-              sub={isAddress ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.' : 'Tempel alamat token untuk mencari poolnya langsung dari chain.'} />
+            <Empty title={isAddress ? (isSolana() ? 'Tidak ada pool Meteora DLMM / Orca / Raydium CLMM yang bisa dimasuki' : 'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki') : 'Tidak ada pool yang cocok'}
+              sub={isAddress ? (isSolana() ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDC, USDT, atau SOL.' : 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.') : 'Tempel alamat token untuk mencari poolnya langsung dari chain.'} />
             {useScan && scan.others?.length > 0 && (
               <div className="border-t border-border px-3 py-3 text-sm">
                 <div className="mb-1.5 font-medium">{t('Diperdagangkan di tempat lain')}</div>
@@ -376,7 +467,7 @@ function PoolPicker({ pools, onPick }) {
                     <span className="num shrink-0">{usd(x.reserveUsd, 0)}</span>
                   </div>
                 ))}
-                <p className="mt-2 text-xs text-muted">{t('Bot hanya bisa membuka LP di Uniswap v3/v4 (likuiditas terkonsentrasi dengan rentang harga). Pool gaya v2 tidak punya rentang maupun NFT posisi.')}</p>
+                <p className="mt-2 text-xs text-muted">{t(isSolana() ? 'Di Solana bot membuka LP di Meteora DLMM, Orca Whirlpools, dan Raydium CLMM (likuiditas terkonsentrasi dengan rentang harga). AMM biasa tidak punya rentang.' : 'Bot hanya bisa membuka LP di Uniswap v3/v4 (likuiditas terkonsentrasi dengan rentang harga). Pool gaya v2 tidak punya rentang maupun NFT posisi.')}</p>
               </div>
             )}
           </div>
@@ -414,6 +505,7 @@ export default function ManualLp({ param }) {
   const [dirDown, setDirDown] = useState(-1);
   const [dirUp, setDirUp] = useState(1);
   const [full, setFull] = useState(false);
+  const [shape, setShape] = useState('spot');   // Meteora DLMM: spot | curve | bidask
   const [plan, setPlan] = useState(null);      // { preview, warnings } | { error }
   const [compute, setCompute] = useState(false);
   const [confirm, setConfirm] = useState(false);
@@ -473,7 +565,8 @@ export default function ManualLp({ param }) {
   const ladder = useLadder({ pool, usdNum: Number.isFinite(usdNum) ? usdNum : 0, enabled: mode === 'ladder',
     onOpened: () => { reloadStatus(); loadBalance(pool?.poolRef); } });
   const stepsDone = mode === 'ladder' ? ladder.ready : ready;
-  const body = { poolRef: pool?.poolRef, usd: usdNum, ...(full ? { full: true } : { lowerPct: -lo, upperPct: up }) };
+  const dlmm = pool?.venue === 'meteora';
+  const body = { poolRef: pool?.poolRef, usd: usdNum, ...(full ? { full: true } : { lowerPct: -lo, upperPct: up }), ...(dlmm ? { strategy: shape } : {}) };
 
   // The preview is recomputed by itself every time a choice changes — there is no "compute"
   // button. Replies that arrive late are discarded via a sequence number.
@@ -488,7 +581,7 @@ export default function ManualLp({ param }) {
       setPlan({ ...r, _ref: body.poolRef }); setCompute(false);
     }, 350);
     return () => { clearTimeout(id); };
-  }, [pool?.poolRef, usdNum, lo, up, full, ready]);
+  }, [pool?.poolRef, usdNum, lo, up, full, ready, dlmm, shape]);
 
   const cash = plan?.preview?.walletCashUsd ?? balance?.walletCashUsd ?? null;
   // The largest amount that still passes every limit — so the "Max" button does not
@@ -618,6 +711,8 @@ export default function ManualLp({ param }) {
               )} />
             ) : (
             <div className="flex flex-col gap-3">
+              {dlmm && <ShapePicker value={shape} onChange={setShape} />}
+              {dlmm && p && !plan?.error && <BinDistribution p={p} />}
               {pool && (
                 <ChartRange pool={pool} lo={lo} up={up} full={full} rangeOk={rangeOk} currentPrice={currentPrice}
                   preview={pReady && !compute ? pReady : null}
@@ -662,7 +757,7 @@ export default function ManualLp({ param }) {
                 </p>
               )}
               {!full && p && !plan?.error && (Math.abs(-p.lowerPct - lo) >= 0.05 || Math.abs(p.upperPct - up) >= 0.05) && (
-                <p className="text-xs text-muted">{t('Dibulatkan ke tick pool: {a} / {b}.', { a: flagged(-p.lowerPct), b: flagged(p.upperPct) })}</p>
+                <p className="text-xs text-muted">{t(p.nativeUnit === 'bin' ? 'Dibulatkan ke bin pool: {a} / {b}.' : 'Dibulatkan ke tick pool: {a} / {b}.', { a: flagged(-p.lowerPct), b: flagged(p.upperPct) })}</p>
               )}
               <p className="text-xs text-muted">
                 {t('Fee hanya mengalir selama harga ada di dalam rentang. Sempit = fee lebih besar tapi lebih cepat keluar; lebar = lebih aman tapi encer.')}

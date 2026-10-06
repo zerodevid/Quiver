@@ -22,8 +22,8 @@ const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { ethers } = require('ethers');
-const { NETWORKS, build } = require('./networks');
-const { normalizeCfg, bscTemplate, PRIMARY } = require('./multichain');
+const { NETWORKS, build, normAddr, isSolana } = require('./networks');
+const { normalizeCfg, bscTemplate, solanaTemplate, PRIMARY } = require('./multichain');
 const { probeRpc, maskUrl, hasSecret } = require('./settings');
 const { CURRENCIES, CURRENCIES_EN } = require('./fx');
 const { SETUP_PAGE } = require('./setup-page');
@@ -96,6 +96,9 @@ function writeEnvFile({ envPath, examplePath, vals }) {
 
 // ---- wallet key writer -------------------------------------------------
 const keyPathOf = (cfg) => String(cfg?.wallet?.key_file || '~/.lpcopy/key').replace(/^~/, process.env.HOME || '');
+// Solana (ed25519) key: a separate file, the same one src/solana/wallet.js reads.
+const solKeyPathOf = (cfg) => String(cfg?.wallet?.solana_key_file || '~/.lpcopy/solana-key').replace(/^~/, process.env.HOME || '');
+const defaultBlock = (key) => (key === 'bsc' ? bscTemplate() : isSolana(key) ? solanaTemplate() : null);
 
 // An old key is never silently overwritten — the same rule as the Settings page:
 // moved to a dated backup file first.
@@ -127,6 +130,9 @@ function cleanEndpoint(e) {
   if (e.no_logs) out.no_logs = true;
   if (Number(e.max_log_blocks) > 0) out.max_log_blocks = Math.round(Number(e.max_log_blocks));
   if (e.archive) out.archive = true;
+  // Solana endpoint flags (src/solana/rpc.js)
+  if (e.no_gpa) out.no_gpa = true;
+  if (e.no_history) out.no_history = true;
   if (e.headers && typeof e.headers === 'object') {
     const h = {};
     for (const [k, v] of Object.entries(e.headers)) if (String(v || '').trim()) h[String(k).slice(0, 64)] = String(v);
@@ -163,7 +169,7 @@ function buildConfig({ template, base = null, answers }) {
   const aktif = [];
   for (const key of Object.keys(NETWORKS)) {
     const want = answers.chains?.[key] || {};
-    const block = cfg.chains[key] || tpl.chains?.[key] || (key === 'bsc' ? bscTemplate() : null);
+    const block = cfg.chains[key] || tpl.chains?.[key] || defaultBlock(key);
     if (!block) continue;
     cfg.chains[key] = block;
     block.enabled = !!want.enabled;
@@ -199,12 +205,13 @@ function buildConfig({ template, base = null, answers }) {
     }
 
     // Targets: added, not overwritten — the list in the config is only a seed for the targets
-    // table in SQLite (INSERT OR IGNORE at boot).
-    const owns = new Set((block.targets || []).map((t) => String(t.address || '').toLowerCase()));
+    // table in SQLite (INSERT OR IGNORE at boot). Addresses in the chain's canonical form:
+    // EVM lower-case, Solana base58 untouched (case-sensitive).
+    const owns = new Set((block.targets || []).map((t) => normAddr(key, t.address) || String(t.address || '')));
     for (const t of answers.targets || []) {
       if ((t.chain || PRIMARY) !== key) continue;
-      const addr = String(t.address || '').toLowerCase();
-      if (!/^0x[0-9a-f]{40}$/.test(addr)) throw new Error(`Alamat target tidak valid: ${String(t.address).slice(0, 20)}`);
+      const addr = normAddr(key, t.address);
+      if (!addr) throw new Error(`Alamat target tidak valid: ${String(t.address).slice(0, 20)}`);
       if (owns.has(addr)) continue;
       owns.add(addr);
       block.targets = [...(block.targets || []), { address: addr, label: String(t.label || '').slice(0, 60) || null, enabled: true }];
@@ -248,12 +255,24 @@ function applySetup({ root, cfgPath, envPath, answers, log = () => {} }) {
     wallet = { address: w.address.toLowerCase(), keyFile: p, backup: bak, mnemonicFile: answers.wallet.mnemonic ? `${p}.mnemonic` : null };
     log(`pemasangan: kunci wallet ditulis (${wallet.address})${bak ? ` — kunci lama dicadangkan: ${path.basename(bak)}` : ''}`);
   }
+  let solanaWallet = null;
+  if (answers.solanaWallet?.secret) {
+    const { parseSecret } = require('./solana/wallet');
+    const bs58 = require('bs58').default || require('bs58');
+    const kp = parseSecret(answers.solanaWallet.secret);
+    const p = solKeyPathOf(cfg);
+    let same = false;
+    try { same = parseSecret(fs.readFileSync(p, 'utf8')).publicKey.equals(kp.publicKey); } catch { /* missing / not a key */ }
+    const bak = same ? null : writeKeyFile(p, bs58.encode(kp.secretKey));
+    solanaWallet = { address: kp.publicKey.toBase58(), keyFile: p, backup: bak };
+    log(`pemasangan: kunci wallet Solana ditulis (${solanaWallet.address})${bak ? ` — kunci lama dicadangkan: ${path.basename(bak)}` : ''}`);
+  }
 
   fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
   fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
   try { fs.chmodSync(cfgPath, 0o600); } catch { /* abaikan */ }
   log(`pemasangan: config.json ditulis (${cfgPath})`);
-  return { cfg, wallet };
+  return { cfg, wallet, solanaWallet };
 }
 
 // ---- restore from a backup ----------------------------------------------
@@ -308,15 +327,20 @@ async function applyRestore({ root, cfgPath, envPath, backup: raw, parts = {}, p
   const p = Number(port);
   if (!Number.isInteger(p) || p < 1 || p > 65535) throw new Error('Port dasbor harus angka 1–65535.');
   const want = { db: !!parts.db, wallet: !!parts.wallet };
-  for (const k of ['db', 'wallet']) if (want[k] && !backup.parts[k]) throw new Error(`Berkas cadangan tidak berisi bagian ${k}.`);
+  if (want.db && !backup.parts.db) throw new Error('Berkas cadangan tidak berisi bagian db.');
+  if (want.wallet && !backup.parts.wallet && !backup.parts.solanaWallet) throw new Error('Berkas cadangan tidak berisi bagian wallet.');
 
   const template = JSON.parse(fs.readFileSync(path.join(root, 'config.example.json'), 'utf8'));
   const cfg = restoredConfig({ backup, template, port: p, root });
 
-  let w = null;
-  if (want.wallet && !process.env.LPCOPY_PRIVATE_KEY) {
+  let w = null, solKp = null;
+  if (want.wallet && backup.parts.wallet && !process.env.LPCOPY_PRIVATE_KEY) {
     try { w = await ethers.Wallet.fromEncryptedJson(JSON.stringify(backup.parts.wallet.keystore), String(password)); }
     catch { throw new Error('Password keystore salah, atau keystore di berkas cadangan rusak.'); }
+  }
+  if (want.wallet && backup.parts.solanaWallet && !process.env.LPCOPY_SOLANA_PRIVATE_KEY) {
+    try { solKp = require('./solana/wallet').decryptKeystore(backup.parts.solanaWallet.keystore, password); }
+    catch { throw new Error('Password keystore salah, atau keystore Solana di berkas cadangan rusak.'); }
   }
   // Database: checked (hash, integrity, tables) in a pending file first, then installed.
   const dbPath = path.isAbsolute(cfg.db.path) ? cfg.db.path : path.join(root, cfg.db.path);
@@ -344,12 +368,23 @@ async function applyRestore({ root, cfgPath, envPath, backup: raw, parts = {}, p
     wallet = { address: w.address.toLowerCase(), keyFile: kp, backup: bak };
     log(`pemulihan: wallet ${wallet.address}${same ? ' (berkas kunci sudah sama)' : ' ditulis'}${bak ? ` — kunci lama dicadangkan: ${path.basename(bak)}` : ''}`);
   }
+  let solanaWallet = null;
+  if (solKp) {
+    const { parseSecret } = require('./solana/wallet');
+    const bs58 = require('bs58').default || require('bs58');
+    const kp = solKeyPathOf(cfg);
+    let same = false;
+    try { same = parseSecret(fs.readFileSync(kp, 'utf8')).publicKey.equals(solKp.publicKey); } catch { /* missing / not a key */ }
+    const bak = same ? null : writeKeyFile(kp, bs58.encode(solKp.secretKey));
+    solanaWallet = { address: solKp.publicKey.toBase58(), keyFile: kp, backup: bak };
+    log(`pemulihan: wallet Solana ${solanaWallet.address}${same ? ' (berkas kunci sudah sama)' : ' ditulis'}${bak ? ` — kunci lama dicadangkan: ${path.basename(bak)}` : ''}`);
+  }
 
   fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
   fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
   try { fs.chmodSync(cfgPath, 0o600); } catch { /* abaikan */ }
   log(`pemulihan: config.json dari cadangan ${backup.createdAt || '?'} ditulis (${cfgPath})${want.db ? ', basis data dipasang' : ''}`);
-  return { cfg, wallet, db: want.db };
+  return { cfg, wallet, solanaWallet, db: want.db };
 }
 
 // ---- wizard server --------------------------------------------------------
@@ -420,10 +455,11 @@ function runSetup({ root, cfgPath, envPath, requested = false, log = console.log
   // The private key never returns to the browser: it is generated/validated here,
   // held in memory, and only written to the key file when the wizard is finished.
   let pending = null;
+  let pendingSol = null;   // the same for the Solana key: { secret, address, mode }
 
   const chainKeys = Object.keys(NETWORKS);
   const srcEndpoints = (key) => {
-    const block = sourceCfg.chains?.[key] || (key === 'bsc' ? bscTemplate() : null) || {};
+    const block = sourceCfg.chains?.[key] || defaultBlock(key) || {};
     return (block.chain?.endpoints || []).map((e) => ({ ...e }));
   };
   // Endpoints whose URL contains a secret (an old config, a repeated setup) are sent
@@ -436,7 +472,7 @@ function runSetup({ root, cfgPath, envPath, requested = false, log = console.log
     return {
       ref: i, url: hidden ? maskUrl(e.url) : e.url, host: hostname, secret: hidden,
       max_batch: e.max_batch || 40, no_logs: !!e.no_logs, max_log_blocks: e.max_log_blocks || 0,
-      archive: !!e.archive, catatan: e.catatan || '',
+      archive: !!e.archive, no_gpa: !!e.no_gpa, no_history: !!e.no_history, catatan: e.catatan || '',
     };
   };
   const resolveEps = (key, list) => {
@@ -445,7 +481,7 @@ function runSetup({ root, cfgPath, envPath, requested = false, log = console.log
       if (e && e.ref != null && e.url == null) {
         const original = src[Number(e.ref)];
         if (!original) throw new Error('endpoint tidak dikenal');
-        return { ...original, ...(e.no_logs != null ? { no_logs: !!e.no_logs } : {}), ...(e.archive != null ? { archive: !!e.archive } : {}), ...(e.max_log_blocks != null ? { max_log_blocks: Number(e.max_log_blocks) } : {}) };
+        return { ...original, ...(e.no_logs != null ? { no_logs: !!e.no_logs } : {}), ...(e.archive != null ? { archive: !!e.archive } : {}), ...(e.max_log_blocks != null ? { max_log_blocks: Number(e.max_log_blocks) } : {}), ...(e.no_gpa != null ? { no_gpa: !!e.no_gpa } : {}), ...(e.no_history != null ? { no_history: !!e.no_history } : {}) };
       }
       return e;
     }).filter(Boolean);
@@ -453,20 +489,22 @@ function runSetup({ root, cfgPath, envPath, requested = false, log = console.log
 
   const state = () => ({
     ok: true,
-    paths: { config: cfgPath, env: envPath, key: keyPathOf(sourceCfg) },
+    paths: { config: cfgPath, env: envPath, key: keyPathOf(sourceCfg), solanaKey: solKeyPathOf(sourceCfg) },
     existing: {
       config: fs.existsSync(cfgPath), env: fs.existsSync(envPath),
       key: fs.existsSync(keyPathOf(sourceCfg)), privateKeyFromEnv: !!process.env.LPCOPY_PRIVATE_KEY,
+      solanaKey: fs.existsSync(solKeyPathOf(sourceCfg)), solanaKeyFromEnv: !!process.env.LPCOPY_SOLANA_PRIVATE_KEY,
     },
     server: { port, host, url: openUrl(host, port) },
     suggestToken: crypto.randomBytes(18).toString('base64url'),
     currencies: Object.entries(CURRENCIES).map(([passcode, nameVal]) => ({ code: passcode, name: nameVal, nameEn: CURRENCIES_EN[passcode] || nameVal })),
     display: { currency: sourceCfg.display?.currency ?? 'IDR' },
     wallet: pending ? { address: pending.address, mode: pending.mode } : null,
+    solanaWallet: pendingSol ? { address: pendingSol.address, mode: pendingSol.mode } : null,
     chains: chainKeys.map((key) => {
       const p = build(key);
       return {
-        key, label: p.label, chainId: p.CHAIN_ID, nativeSymbol: p.nativeSymbol, alchemy: !!NETWORKS[key].alchemyHost,
+        key, kind: p.kind || 'evm', label: p.label, chainId: p.CHAIN_ID, nativeSymbol: p.nativeSymbol, alchemy: !!NETWORKS[key].alchemyHost,
         enabled: sourceCfg.chains?.[key] ? sourceCfg.chains[key].enabled !== false : key === PRIMARY,
         endpoints: srcEndpoints(key).map(epView),
       };
@@ -491,6 +529,7 @@ function runSetup({ root, cfgPath, envPath, requested = false, log = console.log
       json(res, 200, {
         ok: true,
         address: result.wallet?.address || null,
+        solanaAddress: result.solanaWallet?.address || null,
         restored: !!result.cfg.setup?.restored_from,
         port: finalPort,
         samePort: finalPort === port,
@@ -544,6 +583,23 @@ function runSetup({ root, cfgPath, envPath, requested = false, log = console.log
           return json(res, 200, { ok: true, wallet: { address: pending.address, mode: 'import' } });
         }
 
+        // Solana wallet: a separate ed25519 key, generated/checked now, written at finish.
+        if (key === 'POST /api/setup/solana-wallet') {
+          const b = await readJson(req);
+          if (b.mode === 'none') { pendingSol = null; return json(res, 200, { ok: true, wallet: null }); }
+          const { Keypair } = require('@solana/web3.js');
+          const { parseSecret } = require('./solana/wallet');
+          const bs58 = require('bs58').default || require('bs58');
+          let kp;
+          if (b.mode === 'generate') kp = Keypair.generate();
+          else {
+            try { kp = parseSecret(String(b.secret || '')); } catch { kp = null; }
+            if (!kp) return json(res, 200, { error: 'Kunci Solana harus base58 (ekspor Phantom/Solflare) atau larik JSON solana-keygen.' });
+          }
+          pendingSol = { mode: b.mode === 'generate' ? 'generate' : 'import', secret: bs58.encode(kp.secretKey), address: kp.publicKey.toBase58() };
+          return json(res, 200, { ok: true, wallet: { address: pendingSol.address, mode: pendingSol.mode } });
+        }
+
         // Test one endpoint — the same test as the Settings page, including the
         // flag suggestions (no_logs / max_log_blocks / archive).
         if (key === 'POST /api/setup/rpc') {
@@ -588,8 +644,14 @@ function runSetup({ root, cfgPath, envPath, requested = false, log = console.log
             answers.chains[ck] = { enabled: true, endpoints: resolveEps(ck, want.endpoints) };
           }
           answers.wallet = pending ? { privateKey: pending.privateKey, mnemonic: pending.mnemonic } : null;
-          if (b.capital?.dry_run === false && !pending && !fs.existsSync(keyPathOf(sourceCfg)) && !process.env.LPCOPY_PRIVATE_KEY) {
+          answers.solanaWallet = pendingSol ? { secret: pendingSol.secret } : null;
+          const evmOn = chainKeys.some((ck) => !isSolana(ck) && answers.chains[ck].enabled);
+          const solOn = chainKeys.some((ck) => isSolana(ck) && answers.chains[ck].enabled);
+          if (b.capital?.dry_run === false && evmOn && !pending && !fs.existsSync(keyPathOf(sourceCfg)) && !process.env.LPCOPY_PRIVATE_KEY) {
             return json(res, 200, { error: 'Mode LIVE butuh wallet — pasang wallet dulu di langkah Wallet.' });
+          }
+          if (b.capital?.dry_run === false && solOn && !pendingSol && !fs.existsSync(solKeyPathOf(sourceCfg)) && !process.env.LPCOPY_SOLANA_PRIVATE_KEY) {
+            return json(res, 200, { error: 'Mode LIVE di Solana butuh wallet Solana — pasang dulu di langkah Wallet.' });
           }
           let result;
           try { result = applySetup({ root, cfgPath, envPath, answers, log }); }

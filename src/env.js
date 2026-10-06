@@ -9,6 +9,8 @@
 //
 // What can be set (see .env.example):
 //   LPCOPY_PRIVATE_KEY          the bot wallet's private key (replaces wallet.key_file)
+//   LPCOPY_SOLANA_PRIVATE_KEY   the Solana wallet key, base58 or a JSON array
+//                               (replaces wallet.solana_key_file)
 //   LPCOPY_AUTH_TOKEN           dashboard sign-in token      -> server.auth_token
 //   LPCOPY_TELEGRAM_BOT_TOKEN   bot token from @BotFather    -> telegram.bot_token
 //   LPCOPY_NTFY_TOPIC           ntfy.sh topic                -> notify.ntfy_topic
@@ -73,7 +75,7 @@ function loadDotEnv(file) {
   const loose = (st.mode & 0o077) !== 0;
   // A private key in a file readable by other users = leaked. Just as strict
   // as the wallet.key_file check in the executor.
-  if (loose && vars.LPCOPY_PRIVATE_KEY) throw new Error(`izin ${file} terlalu longgar untuk menyimpan kunci privat — jalankan: chmod 600 ${file}`);
+  if (loose && (vars.LPCOPY_PRIVATE_KEY || vars.LPCOPY_SOLANA_PRIVATE_KEY)) throw new Error(`izin ${file} terlalu longgar untuk menyimpan kunci privat — jalankan: chmod 600 ${file}`);
   const keys = [], external = [];
   for (const [k, v] of Object.entries(vars)) {
     if (v === '') continue;                                   // empty = not set

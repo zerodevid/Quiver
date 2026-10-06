@@ -16,6 +16,7 @@ import WalletPositionHistory from '../components/WalletPositionHistory';
 import { MarketPanel, kUsd } from './PositionDetail';
 import { usd, pct, tone, num, age, short, price, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
+import { canonAddr } from '../chain';
 
 const TFS = [['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam'], ['1d', '1 hari']];
 // Roughly one day at 5 minutes, ten days at 1 hour, a month at 4 hours.
@@ -40,7 +41,7 @@ function TokenChart({ m, tf, poolRef }) {
 
 export default function TokenDetail({ param }) {
   const { t } = useI18n();
-  const a = String(param || '').toLowerCase();
+  const a = canonAddr(param);
   const { data: d, loading, reload } = usePoll(`/api/token?a=${encodeURIComponent(a)}`, 30000);
   const [poolPick, setPool] = useState(null);
   const [tf, setTf] = useState('1h');

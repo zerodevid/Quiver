@@ -14,6 +14,7 @@ import { usePoll } from '../hooks';
 import { useI18n } from '../i18n';
 import { num, price } from '../fmt';
 import { gmgnSignals } from '../poolHealth.mjs';
+import { canonAddr } from '../chain';
 
 const Ctx = createContext(null);
 
@@ -22,7 +23,7 @@ const Ctx = createContext(null);
 // with other instances on the same IP.
 export function GmgnProvider({ tokens, children }) {
   const list = useMemo(() => [...new Set((tokens || [])
-    .filter(Boolean).map((a) => String(a).toLowerCase()))].sort().slice(0, 25), [tokens]);
+    .filter(Boolean).map((a) => canonAddr(a)))].sort().slice(0, 25), [tokens]);
   const { data } = usePoll(list.length ? `/api/gmgn/tokens?addresses=${list.join(',')}` : null, 180000);
   // Without a GMGN API key this whole feature does not exist — not a grey dot on every
   // row that never changes colour.
@@ -45,7 +46,7 @@ const TONE = {
 export function useGmgn(token) {
   const map = useContext(Ctx);
   if (!map || !token) return null;
-  const g = map[String(token).toLowerCase()];
+  const g = map[canonAddr(token)];
   return g && !g.error ? g : null;
 }
 
@@ -53,7 +54,7 @@ export function GmgnDot({ token, className = '' }) {
   const map = useContext(Ctx);
   const { t } = useI18n();
   if (!map) return null;
-  const g = token ? map[String(token).toLowerCase()] : null;
+  const g = token ? map[canonAddr(token)] : null;
   if (!g) return null;
   const { level, signals } = g.error ? { level: 'unknown', signals: [] } : gmgnSignals(g);
   const [Icon, color, heading] = TONE[level];

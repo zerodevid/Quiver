@@ -14,6 +14,7 @@ import { usd, kUsd, tone, num, pct, age, ago, short, txHref, aprOf, aprText, loc
 import { isHidden, MASK } from '../privacy';
 import { useI18n, reason } from '../i18n';
 import { useClosePosition } from '../useClosePosition';
+import { canonAddr } from '../chain';
 
 const RANGES = [['24h', '24 jam'], ['7d', '7 hari'], ['30d', '30 hari'], ['all', 'Semua']];
 const VIEWS = [['pnl', 'PnL kumulatif'], ['value', 'Nilai']];
@@ -370,7 +371,7 @@ export default function Overview() {
   // a minute is enough — this is market context, not a position figure that must tick.
   const pools = useMemo(() => [...new Set((pos?.positions || [])
     .filter((x) => !x.empty)
-    .map((x) => String(x.pool_ref || '').toLowerCase())
+    .map((x) => canonAddr(x.pool_ref || ''))
     .filter(Boolean))].sort(), [pos]);
   const { data: mk } = usePoll(pools.length ? `/api/monitor/market?pools=${pools.join(',')}` : null, 60000);
   // One chain sync refreshes the WHOLE page, not just the table: the portfolio total
@@ -398,7 +399,7 @@ export default function Overview() {
   // A position not yet synced with the chain: the value is still the capital estimate, fee & PnL do not exist yet.
   const pendingSync = open.filter((x) => x.syncing).length;
   const dash = (x, node) => (x.syncing ? <span className="text-muted">—</span> : node);
-  const pairOf = (x) => mk?.pairs?.[String(x.pool_ref || '').toLowerCase()] || null;
+  const pairOf = (x) => mk?.pairs?.[canonAddr(x.pool_ref || '')] || null;
   const cal = p ? dailyOf(p.closed) : null;
   // LP health is computed from the same position list as the table below, not
   // from the engine summary: two figures for the same thing with different ages on one

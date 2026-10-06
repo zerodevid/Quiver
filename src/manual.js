@@ -91,6 +91,8 @@ function duration(ms) {
   const j = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
   return m ? `${j} jam ${m} mnt` : `${j} jam`;
 }
+// Solana venues (src/solana/manual.js) — their actions can be followed by hand too.
+const SOL_VENUES = new Set(['meteora', 'orca', 'raydium']);
 const dynamicFeeVal = (f) => f != null && (Number(f) & DYNAMIC_FEE) !== 0;
 const feePctOf = (f) => (f == null || dynamicFeeVal(f) ? null : Number(f) / 10000);
 
@@ -731,7 +733,7 @@ class Manual {
 
   // Conditions for an action that may be followed, without RPC — also used by the Activity list.
   static followable(a, openMirrors) {
-    return (a.kind === 'increase' || a.kind === 'mint') && (a.venue === 'v4' || String(a.venue).endsWith('v3'))
+    return (a.kind === 'increase' || a.kind === 'mint') && (a.venue === 'v4' || String(a.venue).endsWith('v3') || SOL_VENUES.has(a.venue))
       && (a.verdict === 'skip' || a.verdict === 'error') && !!a.token_id && !!a.pool_ref
       && a.tick_lower != null && a.tick_upper != null
       && !openMirrors.has(`${a.target}|${a.token_id}`);

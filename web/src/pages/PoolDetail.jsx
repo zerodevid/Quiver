@@ -18,13 +18,14 @@ import { GmgnWallets } from '../components/Gmgn';
 import { BAND_COLORS } from '../components/CandleChart';
 import { usd, pct, tone, num, price, sqrtPrice, tickPrice } from '../fmt';
 import { useI18n } from '../i18n';
+import { canonAddr } from '../chain';
 
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
 const DYNAMIC_FEE = 0x800000;   // v4 dynamic fee marker (set by the hook)
 
 export default function PoolDetail({ param }) {
   const { t } = useI18n();
-  const ref = String(param || '').toLowerCase();
+  const ref = canonAddr(param);
   const { data: d, loading, reload } = usePoll(`/api/pool?ref=${encodeURIComponent(ref)}`, 15000);
   // undefined = automatic choice (latest open position), null = no position on the chart.
   const [focusPick, setFocus] = useState(undefined);

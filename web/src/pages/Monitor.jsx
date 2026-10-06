@@ -34,6 +34,7 @@ import { useAlertPrefs, alarm, bumpTitle } from '../components/TargetAlerts';
 import { orientCandles, tfFor, SECS, LiveBadge, kUsd } from './PositionDetail';
 import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice } from '../fmt';
 import { useI18n } from '../i18n';
+import { canonAddr } from '../chain';
 
 const TFS = [['auto', 'Otomatis'], ['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam']];
 const SORTS = [['risk', 'Paling berisiko'], ['pnl', 'PnL'], ['value', 'Nilai'], ['age', 'Umur']];
@@ -409,7 +410,7 @@ export default function Monitor() {
   useTick(1000);   // the "time out of range" bar and the freshness clock tick
 
   const open = useMemo(() => d?.positions || [], [d]);
-  const pools = useMemo(() => [...new Set(open.map((p) => String(p.pool_ref || '').toLowerCase()).filter(Boolean))].sort(), [open]);
+  const pools = useMemo(() => [...new Set(open.map((p) => canonAddr(p.pool_ref)).filter(Boolean))].sort(), [open]);
   const { data: px } = usePoll(pools.length ? `/api/prices?pools=${pools.join(',')}` : null, 3000);
   // Market statistics per pool (DexScreener) — rarely, because only for the Δ/volume chips.
   const { data: mk } = usePoll(pools.length ? `/api/monitor/market?pools=${pools.join(',')}` : null, 60000);
@@ -418,7 +419,7 @@ export default function Monitor() {
   const now = Date.now();
   // One item per position: its pool's live price, distance to the edge, trigger, risk.
   const items = useMemo(() => open.map((p) => {
-    const ref = String(p.pool_ref || '').toLowerCase();
+    const ref = canonAddr(p.pool_ref);
     const s = fresh?.prices?.[ref];
     const price_ = s ? sqrtPrice(s.sqrt, p.dec0, p.dec1, p.quoteSide) : null;
     const live = price_ > 0 ? { price: price_, ts: fresh.ts, tick: s.tick } : null;

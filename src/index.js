@@ -13,7 +13,14 @@ const { loadDotEnv, applyEnv, defaultEnvPath, writeCfg } = require('./env');
 const { normalizeCfg, chainView, enabledChains, PRIMARY } = require('./multichain');
 const { setupNeeded, runSetup } = require('./setup');
 const { applyPendingRestore } = require('./backup');
-const { NETWORKS } = require('./networks');
+const { NETWORKS, isSolana, normAddr, addrHint } = require('./networks');
+// The Solana engine is loaded only when a Solana chain is enabled: its SDKs (Meteora/Orca/
+// Raydium) are heavy and an EVM-only instance does not need them.
+const solanaStack = () => ({
+  SolanaRpc: require('./solana/rpc').SolanaRpc,
+  SolanaChain: require('./solana/chain').SolanaChain,
+  SolanaEngine: require('./solana/engine').SolanaEngine,
+});
 
 const ROOT = path.join(__dirname, '..');
 // .env is loaded FIRST: it may also contain LPCOPY_CONFIG.
@@ -36,8 +43,8 @@ function otherInstanceAlive() {
   try { process.kill(pid, 0); return pid; } catch { return 0; }
 }
 const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
-// Short chain label before the log line, so logs of two engines in one process are readable.
-const TAG = { robinhood: 'RH', bsc: 'BSC' };
+// Short chain label before the log line, so logs of several engines in one process are readable.
+const TAG = { robinhood: 'RH', bsc: 'BSC', solana: 'SOL' };
 const tagOf = (key) => TAG[key] || key.toUpperCase().slice(0, 4);
 
 async function main() {
@@ -108,19 +115,29 @@ async function main() {
     const view = chainView(cfg, key);
     const clog = logFor(key);
     if (!view.chain.endpoints.length) { clog('tidak ada endpoint RPC di config — chain ini dilewati'); continue; }
-    const rpc = new RpcPool(view.chain.endpoints, clog, {
-      max_inflight: view.chain.max_inflight || 3,
-      dns_over_https: view.chain.dns_over_https !== false,
-      // Answers that are already final (past blocks) are stored in the same database —
-      // the limits & depth can be tuned via chains.<name>.chain.cache.
-      cache: { ...(view.chain.cache || {}), store, chain: key },
-    });
-    const chain = new Chain(rpc, store, clog, key);
+    let rpc, chain;
+    if (isSolana(key)) {
+      const S = solanaStack();
+      try { rpc = new S.SolanaRpc(view.chain.endpoints, clog); }
+      catch (e) { clog(`${e.message} — chain ini dilewati`); continue; }
+      chain = new S.SolanaChain(rpc, store, clog, key);
+    } else {
+      rpc = new RpcPool(view.chain.endpoints, clog, {
+        max_inflight: view.chain.max_inflight || 3,
+        dns_over_https: view.chain.dns_over_https !== false,
+        // Answers that are already final (past blocks) are stored in the same database —
+        // the limits & depth can be tuned via chains.<name>.chain.cache.
+        cache: { ...(view.chain.cache || {}), store, chain: key },
+      });
+      chain = new Chain(rpc, store, clog, key);
+    }
     nets[key] = { key, label: chain.label, cfg: view, rpc, chain, log: clog };
-    // seed targets from the config (only if not present yet)
+    // seed targets from the config (only if not present yet). Solana addresses are case-sensitive.
     for (const t of view.targets || []) {
+      const a = normAddr(key, t.address);
+      if (!a) { clog(`target ${t.address} dilewati: bukan ${addrHint(key)}`); continue; }
       store.run('INSERT OR IGNORE INTO targets(chain,address,label,enabled,added_ts,rules) VALUES(?,?,?,?,?,?)',
-        key, String(t.address).toLowerCase(), t.label || null, t.enabled === false ? 0 : 1, Date.now(),
+        key, a, t.label || null, t.enabled === false ? 0 : 1, Date.now(),
         t.rules ? JSON.stringify(t.rules) : null);
     }
   }
@@ -131,17 +148,19 @@ async function main() {
   const argv = process.argv.filter((a) => !a.startsWith('--chain='));
   if (cmd === 'scout') {
     const net = nets[cliChain]; if (!net) { console.error(`chain ${cliChain} tidak aktif`); process.exit(1); }
-    const addr = (argv[3] || '').toLowerCase();
-    if (!/^0x[0-9a-f]{40}$/.test(addr)) { console.error('pakai: lp scout <alamat> [blok] [--chain=bsc]'); process.exit(1); }
+    const sol = isSolana(cliChain);
+    const addr = normAddr(cliChain, argv[3]);
+    if (!addr) { console.error(`pakai: lp scout <alamat> [blok] [--chain=bsc|solana] — ${addrHint(cliChain)}`); process.exit(1); }
     const blocks = Number(argv[4] || net.cfg.scout?.blocks || 900_000);
     const ethUsd = await net.chain.ethUsd(net.cfg.prices?.eth_usd || 2500);
     process.stderr.write('memindai…');
-    const r = await scoutWallet(net.rpc, net.chain, addr, {
-      blocks, ethUsd, onProgress: (p) => process.stderr.write(`\rmemindai ${Math.round(p.scanned / p.total * 100)}%   `),
-    });
+    const onProgress = (p) => process.stderr.write(`\rmemindai ${Math.round(p.scanned / p.total * 100)}%   `);
+    const r = sol
+      ? await require('./solana/scout').scoutWalletSol(net.rpc, net.chain, addr, { ethUsd, store, onProgress })
+      : await scoutWallet(net.rpc, net.chain, addr, { blocks, ethUsd, onProgress });
     process.stderr.write('\r                       \r');
     console.log(`\nRAPOR WALLET ${addr} (${net.label})`);
-    console.log(`  jendela pindai   : ${blocks.toLocaleString('id')} blok (~${(blocks * net.chain.blockMs / 1000 / 3600).toFixed(1)} jam)`);
+    if (!sol) console.log(`  jendela pindai   : ${blocks.toLocaleString('id')} blok (~${(blocks * net.chain.blockMs / 1000 / 3600).toFixed(1)} jam)`);
     console.log(`  posisi hidup     : ${r.positionsAlive} (pernah dilepas: ${r.positionsClosed})`);
     console.log(`  nilai posisi     : $${r.totalValueUsd.toFixed(2)}`);
     console.log(`  fee belum klaim  : $${r.totalUnclaimedFeeUsd.toFixed(2)}  (${r.feeRatioPct.toFixed(2)}% dari nilai)`);
@@ -157,9 +176,9 @@ async function main() {
   }
 
   if (cmd === 'add') {
-    const addr = (argv[3] || '').toLowerCase();
-    if (!/^0x[0-9a-f]{40}$/.test(addr)) { console.error('pakai: lp add <alamat> [label] [--chain=bsc]'); process.exit(1); }
     if (!NETWORKS[cliChain]) { console.error(`chain ${cliChain} tidak dikenal`); process.exit(1); }
+    const addr = normAddr(cliChain, argv[3]);
+    if (!addr) { console.error(`pakai: lp add <alamat> [label] [--chain=bsc|solana] — ${addrHint(cliChain)}`); process.exit(1); }
     store.run('INSERT OR IGNORE INTO targets(chain,address,label,enabled,added_ts) VALUES(?,?,?,1,?)', cliChain, addr, argv[4] || null, Date.now());
     console.log(`ditambahkan (${cliChain}):`, addr);
     return process.exit(0);
@@ -180,7 +199,8 @@ async function main() {
   process.on('exit', cleanup);
 
   for (const net of Object.values(nets)) {
-    net.engine = new Engine({ rpc: net.rpc, store, chain: net.chain, cfg: net.cfg, log: net.log });
+    const E = isSolana(net.key) ? solanaStack().SolanaEngine : Engine;
+    net.engine = new E({ rpc: net.rpc, store, chain: net.chain, cfg: net.cfg, log: net.log });
   }
   const engines = Object.values(nets).map((n) => n.engine);
 

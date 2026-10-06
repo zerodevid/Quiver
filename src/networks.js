@@ -113,7 +113,71 @@ const BSC = {
   uniswap: 'bnb',
 };
 
-const NETWORKS = { robinhood: ROBINHOOD, bsc: BSC };
+// Solana: not EVM at all — its own engine (src/solana/), not pools.js/
+// watcher.js/executor.js. The profile still uses the same slot names (usdg = USDC,
+// weth = wSOL) so the dashboard, policy and PnL bookkeeping reading `chain.ADDR.usdg`
+// / `chain.QUOTES` need not know the difference. Solana addresses = base58 and CASE-SENSITIVE —
+// never lower-cased (see normAddr).
+//
+// `venues`: three concentrated-liquidity LP programs. Positions on all three are normalised to
+// Uniswap units (1.0001 ticks, sqrtPriceX96) in their adapters (src/solana/venues/),
+// so the tick_lower/tick_upper/entry_sqrt columns and the dashboard price formula apply as
+// is. Orca & Raydium really use 1.0001 ticks + Q64.64 sqrt; Meteora DLMM bins are
+// converted (see src/solana/units.js).
+const WSOL = 'So11111111111111111111111111111111111111112';
+const SOLANA = {
+  key: 'solana',
+  kind: 'solana',
+  label: 'Solana',
+  chainId: null,
+  nativeSymbol: 'SOL',
+  kyberPath: null,
+  blockMs: 400,   // ~0,4 detik per slot
+  addr: {
+    usdg: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC, 6 desimal
+    usdt: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT, 6 desimal
+    weth: WSOL,   // wSOL — the mint pools use for SOL
+    native: WSOL, // native SOL has no mint; the lamport balance is valued the same as wSOL
+  },
+  quoteMeta: {
+    usdg: { symbol: 'USDC', decimals: 6, kind: 'usd' },
+    usdt: { symbol: 'USDT', decimals: 6, kind: 'usd' },
+    weth: { symbol: 'SOL', decimals: 9, kind: 'eth' },
+  },
+  venues: [
+    { key: 'meteora', program: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', label: 'Meteora DLMM' },
+    { key: 'orca', program: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc', label: 'Orca Whirlpools' },
+    { key: 'raydium', program: 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK', label: 'Raydium CLMM' },
+  ],
+  nativeUsd: { mode: 'jupiter' },
+  // Program IDs from the official SDKs (@meteora-ag/dlmm, @orca-so/whirlpools-sdk,
+  // @raydium-io/raydium-sdk-v2) and the USDC/USDT/wSOL mints from the official token registry;
+  // checked against mainnet with `node src/solana/verify.js`.
+  verified: true,
+  explorerApiV2: null,
+  explorerTokenUrl: (a) => `https://solscan.io/token/${a}#holders`,
+  alchemyHost: 'solana-mainnet.g.alchemy.com',
+  explorer: 'https://solscan.io',
+  dexscreener: 'solana',
+  geckoterminal: 'solana',
+  gmgn: 'sol',
+  uniswap: null,
+};
+
+const NETWORKS = { robinhood: ROBINHOOD, bsc: BSC, solana: SOLANA };
+
+const isSolana = (key) => NETWORKS[key]?.kind === 'solana';
+const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+// An address in its chain's canonical form: EVM lower-cased (as throughout the old
+// code), Solana left as is (base58 is case-sensitive). null when invalid.
+function normAddr(key, a) {
+  const s = String(a ?? '').trim();
+  if (isSolana(key)) return BASE58.test(s) ? s : null;
+  const l = s.toLowerCase();
+  return /^0x[0-9a-f]{40}$/.test(l) ? l : null;
+}
+// An address error message that fits the chain.
+const addrHint = (key) => (isSolana(key) ? 'alamat Solana (base58, 32–44 karakter)' : 'alamat harus 0x diikuti 40 karakter hex');
 
 function profile(key) {
   const p = NETWORKS[key];
@@ -132,10 +196,12 @@ function build(key) {
   }
   const venues = p.venues.map((v) => ({
     key: v.key,
-    npmV3: ADDR[v.npmV3Slot],
+    npmV3: v.npmV3Slot ? ADDR[v.npmV3Slot] : null,
     factory: v.factory ? ADDR[v.factory] : null,
+    ...(v.program ? { program: v.program, label: v.label } : {}),
   }));
   return {
+    kind: p.kind || 'evm',
     network: key, label: p.label, ADDR, QUOTES, CHAIN_ID: p.chainId, venues,
     nativeSymbol: p.nativeSymbol, kyberPath: p.kyberPath, nativeUsd: p.nativeUsd || { mode: 'v4pool' }, verified: p.verified,
     explorerApiV2: p.explorerApiV2, explorerTokenUrl: p.explorerTokenUrl, alchemyHost: p.alchemyHost,
@@ -177,4 +243,4 @@ function ensureChain(x) {
   return target;
 }
 
-module.exports = { NETWORKS, profile, build, ensureChain };
+module.exports = { NETWORKS, profile, build, ensureChain, isSolana, normAddr, addrHint, WSOL };

@@ -778,8 +778,11 @@ export function ExtLink({ href, muted, children }) {
 // it is seen, the token is one click from buying/selling. The logo becomes the marker, not
 // text, because all three are already familiar to users. Based Bot reads the chain from
 // the address; GMGN, fomo, and Uniswap need the chain slug (chain.js).
+// `kinds`: the chain kinds an app applies to (default: EVM only). Solana: GMGN +
+// Jupiter; Based Bot, fomo and Uniswap do not serve Solana.
 export const TRADE_APPS = [
-  { key: 'gmgn', label: 'GMGN', icon: '/gmgn.png', brand: '#5ec26a', href: (a) => `https://gmgn.ai/${chainInfo().gmgn || chainInfo().key}/token/${a}` },
+  { key: 'jupiter', label: 'Jupiter', icon: '/jupiter.svg', brand: '#c7f284', kinds: ['solana'], href: (a) => `https://jup.ag/swap/SOL-${a}` },
+  { key: 'gmgn', kinds: ['evm', 'solana'], label: 'GMGN', icon: '/gmgn.png', brand: '#5ec26a', href: (a) => `https://gmgn.ai/${chainInfo().gmgn || chainInfo().key}/token/${a}` },
   { key: 'basedbot', label: 'Based', icon: '/basedbot.jpg', brand: '#3b82f6', href: (a) => `https://t.me/based_eth_bot?start=b_${a}` },
   { key: 'fomo', label: 'fomo', icon: '/fomo.png', brand: '#8b7cf6', href: (a) => `https://fomo.family/tokens/${chainInfo().gmgn || chainInfo().key}/${a}` },
   // Uniswap: the pool's own page if the pool is known (chart, liquidity, swap
@@ -843,7 +846,9 @@ export function WalletLinks({ address, compact = false, explorer = !compact, cla
 }
 export function TradeLinks({ token, pool = null, compact = false, className = '' }) {
   if (!token) return null;
-  const links = TRADE_APPS.map((app) => ({ ...app, href: pool && app.poolHref ? app.poolHref(pool) : app.href(token) }));
+  const kind = chainInfo().kind || 'evm';
+  const links = TRADE_APPS.filter((app) => (app.kinds || ['evm']).includes(kind))
+    .map((app) => ({ ...app, href: pool && app.poolHref ? app.poolHref(pool) : app.href(token) }));
   return <LinkBar tag="Trade" links={links} compact={compact} className={className} />;
 }
 // Third-party market data (DexScreener, GeckoTerminal) — the pool page if the pool

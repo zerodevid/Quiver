@@ -529,8 +529,10 @@ function svgOf(kind, data, opts = {}) {
     } finally { tz = null; T = THEMES.dark; G = null; chainNow = CHAIN_BADGE.robinhood; }
   });
 }
-// Venue name for the card: v4/v3 = Uniswap, pancakev3 = PancakeSwap.
-const venueName = (v) => (v === 'pancakev3' ? 'PancakeSwap V3' : `Uniswap ${String(v || '').toUpperCase()}`);
+// Venue name for the card: v4/v3 = Uniswap, pancakev3 = PancakeSwap, Solana venues by
+// their program name.
+const VENUE_NAME = { pancakev3: 'PancakeSwap V3', meteora: 'Meteora DLMM', orca: 'Orca Whirlpools', raydium: 'Raydium CLMM' };
+const venueName = (v) => VENUE_NAME[v] || `Uniswap ${String(v || '').toUpperCase()}`;
 function renderPng(svg, size) {
   const r = new Resvg(svg, {
     fitTo: { mode: 'width', value: SIZES[sizeKey(size)].W * SCALE },

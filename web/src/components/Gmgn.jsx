@@ -16,6 +16,7 @@ import { usePoll } from '../hooks';
 import { useI18n } from '../i18n';
 import { Panel, KV, DataTable, Empty, Loading, Segmented, ExtLink } from './ui';
 import { usd, pct, num, ago, age, short, tone, addrHref } from '../fmt';
+import { isAddr, canonAddr } from '../chain';
 
 // Large numbers: $1.2M / $340.0k / $12.34 — same as kUsd on the positions page.
 const kUsd = (v) => (v == null ? '—' : Math.abs(v) >= 1e6 ? usd(v / 1e6, 2) + 'M' : Math.abs(v) >= 1e4 ? usd(v / 1e3, 1) + 'k' : usd(v));
@@ -23,7 +24,7 @@ const kUsd = (v) => (v == null ? '—' : Math.abs(v) >= 1e6 ? usd(v / 1e6, 2) + 
 const W = ['1m', '5m', '1h', '6h', '24h'];
 const WL = { '1m': '1 mnt', '5m': '5 mnt', '1h': '1 jam', '6h': '6 jam', '24h': '24 jam' };
 const fmtPx = (v) => (v == null ? '—' : usd(v, v < 0.01 ? 6 : 4));
-const okAddr = (a) => /^0x[0-9a-f]{40}$/i.test(String(a || ''));
+const okAddr = (a) => isAddr(canonAddr(a));
 
 // Wallet tags per GMGN -> short label + colour.
 const TAG = {

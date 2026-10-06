@@ -1,4 +1,4 @@
-# Quiver — copy-LP untuk Robinhood Chain & BNB Smart Chain
+# Quiver — copy-LP untuk Robinhood Chain, BNB Smart Chain & Solana
 
 <p align="center">
   <a href="docs/quiver-demo-en.mp4">
@@ -9,7 +9,8 @@
 
 Mencermin posisi likuiditas (LP) Uniswap **v4 dan v3** dari satu atau banyak wallet
 target di Robinhood Chain (chainId 4663) dan BNB Smart Chain (chainId 56 — Uniswap v4/v3
-plus PancakeSwap v3), dengan dashboard untuk memantau dan menyetel semuanya. Default-nya
+plus PancakeSwap v3), serta Meteora DLMM, Orca Whirlpools, dan Raydium CLMM di Solana,
+dengan dashboard untuk memantau dan menyetel semuanya. Default-nya
 **mode simulasi** — tidak mengirim transaksi sampai kamu menyalakannya sendiri.
 
 ## Dua chain, satu proses
@@ -36,6 +37,64 @@ pool PancakeSwap v3 USDT/WBNB terdalam, dan USDT (18 desimal) mengambil peran US
 RPC bawaan BSC memakai endpoint publik yang sanggup `eth_getLogs` sampai 5000 blok
 (bloXroute, 48Club); endpoint Alchemy BNB bisa ditambah dari halaman Pengaturan setelah
 jaringan BNB diaktifkan untuk app-nya di dasbor Alchemy.
+
+## Solana
+
+Blok `chains.solana` dibuat otomatis dalam keadaan **MATI** (dan simulasi). Solana punya
+mesin sendiri (`src/solana/`), tapi dasbor, bot Telegram, aturan, dan database-nya sama —
+pilih lewat pemilih chain seperti chain lain.
+
+- **Venue:** `meteora` (DLMM), `orca` (Whirlpools), `raydium` (CLMM) — atur di
+  `rules.filters.venues`. Aset kuotasi: USDC, USDT, SOL (wSOL).
+- **Deteksi:** tiap putaran dicek tanda tangan terbaru wallet target; kalau berubah, semua
+  posisinya di venue yang aktif didaftar ulang dan dibandingkan dengan potret tersimpan
+  (baru → buka, L naik → tambah, L turun → tarik sebanding, hilang → tutup). Venue yang
+  gagal dibaca memakai potret lamanya — galat RPC tidak pernah terbaca "posisi ditutup".
+  Pindai pertama sebuah target hanya membuat potret (posisi lamanya tidak disalin).
+- **Satuan:** posisi disimpan dalam satuan Uniswap supaya dasbor, pemicu keluar, dan PnL
+  berlaku apa adanya. Tick & harga Q64 Orca/Raydium dipetakan langsung; bin DLMM ke tick
+  `1.0001` setara (bin aslinya di kolom `ext`).
+- **Ukuran:** aturannya sama dengan EVM, tapi dinyatakan dalam nilai: `mirror`/`pct`/
+  `multiplier` menskala nilai yang ditambahkan target, dan di mode rentang `exact` jumlah
+  token target sendiri yang diskala — pembagian X/Y ikut sama.
+- **Bentuk DLMM:** `rules.range.dlmm_strategy` = `mirror` (bawaan) | `spot` | `curve` |
+  `bidask`. `mirror` membaca bentuk posisi target dari nilai per bin (rata = spot, menumpuk
+  di tengah = curve, menumpuk di tepi = bid-ask; tidak jelas = spot) tanpa riwayat
+  transaksi. Bentuknya disimpan di posisi kita dan dipakai lagi saat tambah & compound.
+  LP manual bisa memilih bentuknya sendiri.
+- **Eksekusi:** instruksi disusun SDK venue; bot memasang compute budget + biaya prioritas
+  (persentil fee terkini akun yang ditulis, diapit `gas.min_cu_price_micro`/
+  `max_cu_price_micro`), simulasi, tanda tangan, kirim ke semua endpoint, siarkan ulang
+  sampai terkonfirmasi. Token yang kurang dibeli lewat Jupiter dengan pagar rugi yang sama.
+- **Wallet:** kunci ed25519 terpisah — `LPCOPY_SOLANA_PRIVATE_KEY` atau berkas
+  `wallet.solana_key_file` (bawaan `~/.lpcopy/solana-key`, base58 atau larik JSON
+  `solana-keygen`, `chmod 600`). Bisa juga dibuat/diimpor dari halaman Pengaturan saat
+  chain Solana dipilih. `gas.native_reserve_lamports` (bawaan 0,15 SOL) tidak pernah
+  dipakai sebagai modal — sewa akun posisi DLMM ~0,057 SOL (kembali saat ditutup).
+- **RPC:** taruh endpoint berkunci paling atas, mis.
+  `https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}`. Endpoint publik resmi
+  melayani `getProgramAccounts` (dipakai mendaftar posisi DLMM) tapi 429 cepat;
+  publicnode menolaknya dan riwayat tanda tangannya kosong untuk wallet yang tidak baru aktif (tandai `no_gpa: true, no_history: true`). Endpoint yang `${VAR}`-nya kosong dilewati.
+
+Semua fitur dasbor & bot Telegram juga jalan di Solana; yang beda hanya sumber datanya:
+
+- **LP manual & ikuti aksi:** pool sebuah token dari indeks DexScreener/GeckoTerminal,
+  dipastikan lewat program pemilik akunnya; rentang dihitung dalam tick setara lalu
+  dibulatkan ke bin/tick; token yang kurang dibeli lewat Jupiter.
+- **Swap:** kutipan & tukar lewat Jupiter; SOL = native + wSOL dikurangi cadangan.
+- **Riset wallet & scout:** riwayat transaksi + event Anchor ketiga program; scout membaca
+  posisi hidup per venue, umurnya dari tanda tangan tertua akun posisi. Token yang masih
+  dipegang sesudah tutup dilacak seperti EVM (dijual / dikirim / dipegang).
+- **Distribusi pemegang:** `getTokenLargestAccounts` kalau endpoint mengizinkan (Helius,
+  RPC berbayar); endpoint publik menolaknya — jumlah holder & porsi top holder lalu dari Jupiter.
+- **Kedalaman pool:** tick array Orca/Raydium; bin DLMM diubah jadi likuiditas setara per bin.
+- **Pelacak setoran modal:** baseline = nilai wallet saat pelacakan mulai (Solana tidak
+  punya saldo arsip); setoran/penarikan dari tanda tangan baru di wallet dan akun token
+  USDC/USDT/wSOL-nya. Transaksi dagang yang ditandatangani wallet bot dilewati.
+- **Ekspor kunci:** keystore terenkripsi (PBKDF2 + AES-GCM); buka offline di halaman
+  Pengaturan atau `npm run export-key` → kunci base58 untuk Phantom/Solflare.
+
+Periksa profil Solana ke mainnet sebelum LIVE: `node src/solana/verify.js [url-rpc]`.
 
 ```
 ./lp                       # jalankan mesin + dashboard (http://127.0.0.1:8799)
@@ -516,6 +575,9 @@ menyentuh jaringan). Uji: `node test/rpc-cache.js`.
 
 ## Batasan yang perlu diketahui
 
+- **Solana dideteksi lewat selisih keadaan posisi**, bukan log per transaksi: beberapa
+  perubahan pada satu posisi di antara dua putaran disalin sebagai efek bersihnya. Hasil
+  keluar dibukukan dari isi posisi yang dibaca tepat sebelum transaksi keluar.
 - **Pool v4 dengan hook tidak dicermin** secara default. Hook bisa menolak penarikan.
   Bisa dinyalakan di saringan kalau kamu paham risikonya.
 - LP yang dibuat lewat kontrak hook (mis. `DopplerHookInitializer` milik launchpad)
@@ -846,6 +908,8 @@ src/server.js     API + penyaji dashboard (server.api = pintu yang sama untuk bo
 src/manual.js     LP manual & swap manual (memakai jalur eksekusi yang sama)
 src/market.js     data pasar pihak ketiga (DexScreener, lilin GeckoTerminal) untuk detail posisi, di-cache
 src/telegram.js   bot Telegram: seluruh dasbor lewat obrolan
+src/solana/       mesin Solana: kolam RPC, pengamat, perencana, pengirim, Jupiter, dan
+                  adapter venue (venues/meteora.js, orca.js, raydium.js)
 web/              tampilan React + HeroUI v3 (sumber); web/dist = hasil build
                   halaman: Ringkasan, Posisi, Aktivitas, Target, Aturan,
                   LP manual, Swap, Wallet, Pengaturan

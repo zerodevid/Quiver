@@ -305,7 +305,34 @@ var EN = {
   "URL tidak valid": "invalid URL",
   "host tidak diizinkan": "host not allowed",
   "alamat link-local tidak diizinkan": "link-local addresses are not allowed",
-  "host mengarah ke alamat link-local": "the host resolves to a link-local address"
+  "host mengarah ke alamat link-local": "the host resolves to a link-local address",
+  "Wallet Solana (opsional)": "Solana wallet (optional)",
+  "Dibuatkan di server ini; kunci tidak lewat peramban.": "Generated on this server; the key never passes through the browser.",
+  "Hanya dipakai kalau chain Solana dinyalakan. Kunci ed25519 terpisah dari wallet EVM di atas, disimpan di <code>{p}</code> dengan mode 600.": "Only used when the Solana chain is enabled. A separate ed25519 key from the EVM wallet above, stored in <code>{p}</code> with mode 600.",
+  "Tanpa wallet Solana": "No Solana wallet",
+  "Buat wallet Solana baru": "Create a new Solana wallet",
+  "Impor kunci Solana": "Import a Solana key",
+  "Tempel kunci base58 dari Phantom/Solflare, atau larik JSON dari solana-keygen.": "Paste the base58 key from Phantom/Solflare, or the JSON array from solana-keygen.",
+  "Kunci Solana": "Solana key",
+  "Pakai kunci Solana": "Use Solana key",
+  "Buat wallet Solana": "Create Solana wallet",
+  "Wallet Solana siap: {a}": "Solana wallet ready: {a}",
+  "Kunci Solana sudah diatur lewat <code>LPCOPY_SOLANA_PRIVATE_KEY</code> di .env.": "The Solana key is already set through <code>LPCOPY_SOLANA_PRIVATE_KEY</code> in .env.",
+  "Sudah ada berkas kunci Solana di mesin ini; kalau diganti, yang lama dicadangkan.": "A Solana key file already exists on this machine; if replaced, the old one is backed up.",
+  "Kunci Solana harus base58 (ekspor Phantom/Solflare) atau larik JSON solana-keygen.": "The Solana key must be base58 (Phantom/Solflare export) or a solana-keygen JSON array.",
+  "Mode LIVE di Solana butuh wallet Solana — pasang dulu di langkah Wallet.": "LIVE mode on Solana needs a Solana wallet — install one in the Wallet step first.",
+  "Alamat target ke-{n} bukan alamat Solana (base58) yang sah.": "Target address #{n} is not a valid Solana (base58) address.",
+  "tanpa getProgramAccounts": "no getProgramAccounts",
+  "tanpa riwayat": "no history",
+  "baca akun ✓": "account reads ✓",
+  "baca akun ✗": "account reads ✗",
+  "getProgramAccounts ✓": "getProgramAccounts ✓",
+  "getProgramAccounts ✗": "getProgramAccounts ✗",
+  "riwayat ✓": "history ✓",
+  "riwayat ✗": "history ✗",
+  "Wallet Solana": "Solana wallet",
+  "berkas kunci Solana yang sudah ada": "the existing Solana key file",
+  "dari LPCOPY_SOLANA_PRIVATE_KEY": "from LPCOPY_SOLANA_PRIVATE_KEY"
 };
 
 // Default English; a choice that was ever stored (here or in the dashboard) wins.
@@ -348,6 +375,7 @@ var S = {
   display: { currency: 'IDR' },
   secrets: { authToken: '', publicUrl: '', telegramToken: '', ntfyTopic: '', gmgnKey: '', alchemyKey: '' },
   wallet: { mode: 'generate', address: null },
+  solWallet: { mode: 'none', address: null },
   chains: {},
   capital: { dry_run: true, fixed_quote_usd: '', min_quote_usd: '', max_quote_per_position_usd: '', max_total_exposure_usd: '', daily_budget_usd: '' },
   targets: [],
@@ -433,7 +461,29 @@ function paneWallet() {
     + '<div class="row"><button type="button" id="mk">' + t(w.mode === 'import' ? 'Periksa & pakai' : w.mode === 'generate' ? 'Buat wallet' : 'Lanjut tanpa wallet') + '</button>'
     + '<span id="addr" class="hint mono" style="display:inline-block;margin-left:.5rem">' + (w.address ? '✓ ' + esc(w.address) : '') + '</span></div>'
     + (w.address && w.mode === 'generate' ? '<p class="warn">' + t('Frasa pemulihan akan ditulis ke <code>{p}.mnemonic</code> saat pemasangan disimpan. Salin ke tempat aman lalu hapus berkasnya.', { p: esc(S.st.paths.key) }) + '</p>' : '')
-    + (S.st.existing.key ? '<p class="warn">' + t('Sudah ada berkas kunci di mesin ini. Kalau wallet diganti, yang lama dipindah ke berkas cadangan bertanggal — tidak ada yang terhapus.') + '</p>' : '');
+    + (S.st.existing.key ? '<p class="warn">' + t('Sudah ada berkas kunci di mesin ini. Kalau wallet diganti, yang lama dipindah ke berkas cadangan bertanggal — tidak ada yang terhapus.') + '</p>' : '')
+    + paneSolWallet();
+}
+
+// The Solana key is separate (ed25519): only needed when the Solana chain is enabled.
+function paneSolWallet() {
+  if (!S.st.chains.some(function (c) { return c.kind === 'solana'; })) return '';
+  var w = S.solWallet;
+  var pick = function (v, judul, ket) {
+    return '<label class="pick' + (w.mode === v ? ' on' : '') + '"><input type="radio" name="swm" value="' + v + '"' + (w.mode === v ? ' checked' : '') + '>'
+      + '<span><span class="t">' + t(judul) + '</span><span class="d">' + t(ket) + '</span></span></label>';
+  };
+  return '<h3 style="margin-top:1.5rem">' + t('Wallet Solana (opsional)') + '</h3>'
+    + '<p class="hint">' + t('Hanya dipakai kalau chain Solana dinyalakan. Kunci ed25519 terpisah dari wallet EVM di atas, disimpan di <code>{p}</code> dengan mode 600.', { p: esc(S.st.paths.solanaKey || '~/.lpcopy/solana-key') }) + '</p>'
+    + (S.st.existing.solanaKeyFromEnv ? '<p class="warn">' + t('Kunci Solana sudah diatur lewat <code>LPCOPY_SOLANA_PRIVATE_KEY</code> di .env.') + '</p>' : '')
+    + pick('none', 'Tanpa wallet Solana', 'Bot jalan mode simulasi. Wallet bisa dipasang kapan saja dari Pengaturan.')
+    + pick('generate', 'Buat wallet Solana baru', 'Dibuatkan di server ini; kunci tidak lewat peramban.')
+    + pick('import', 'Impor kunci Solana', 'Tempel kunci base58 dari Phantom/Solflare, atau larik JSON dari solana-keygen.')
+    + '<div class="row" style="display:' + (w.mode === 'import' ? 'block' : 'none') + '">'
+    + '<label for="spk">' + t('Kunci Solana') + '</label><input id="spk" type="password" class="mono" autocomplete="off" spellcheck="false" placeholder="base58…"></div>'
+    + (w.mode !== 'none' ? '<div class="row"><button type="button" id="smk">' + t(w.mode === 'import' ? 'Pakai kunci Solana' : 'Buat wallet Solana') + '</button>'
+      + '<span class="hint mono" style="display:inline-block;margin-left:.5rem">' + (w.address ? '✓ ' + esc(w.address) : '') + '</span></div>' : '')
+    + (S.st.existing.solanaKey ? '<p class="warn">' + t('Sudah ada berkas kunci Solana di mesin ini; kalau diganti, yang lama dicadangkan.') + '</p>' : '');
 }
 
 function paneChain() {
@@ -442,7 +492,7 @@ function paneChain() {
     var c = S.st.chains[i], st = S.chains[c.key];
     h += '<div class="box"><h3><label style="display:flex;gap:.5rem;align-items:center;margin:0;font-weight:600">'
       + '<input type="checkbox" data-ch="' + c.key + '"' + (st.enabled ? ' checked' : '') + '> ' + esc(c.label) + '</label>'
-      + '<span class="tag">id ' + c.chainId + '</span><span class="tag">' + esc(c.nativeSymbol) + '</span></h3>';
+      + (c.chainId != null ? '<span class="tag">id ' + c.chainId + '</span>' : '') + '<span class="tag">' + esc(c.nativeSymbol) + '</span></h3>';
     if (st.enabled) {
       for (var j = 0; j < st.eps.length; j++) {
         var e = st.eps[j];
@@ -451,6 +501,8 @@ function paneChain() {
           + (e.archive ? '<span class="tag">' + t('arsip') + '</span>' : '')
           + (e.no_logs ? '<span class="tag">' + t('tanpa logs') + '</span>' : '')
           + (e.max_log_blocks ? '<span class="tag">' + t('logs {n}', { n: e.max_log_blocks }) + '</span>' : '')
+          + (e.no_gpa ? '<span class="tag">' + t('tanpa getProgramAccounts') + '</span>' : '')
+          + (e.no_history ? '<span class="tag">' + t('tanpa riwayat') + '</span>' : '')
           + '<button type="button" class="sm" data-test="' + c.key + ':' + j + '">' + t('Uji') + '</button>'
           + '<span class="r ' + (e.res ? e.resKind : '') + '" id="r-' + c.key + '-' + j + '">' + esc(e.res ? ts(e.res) : '') + '</span></div>';
       }
@@ -498,7 +550,7 @@ function paneModal() {
     var tg = S.targets[i], opt = '';
     for (var j = 0; j < aktif.length; j++) opt += '<option value="' + aktif[j].key + '"' + (tg.chain === aktif[j].key ? ' selected' : '') + '>' + esc(aktif[j].label.split(' ')[0]) + '</option>';
     h += '<div class="trow"><select data-tc="' + i + '">' + opt + '</select>'
-      + '<input class="mono" data-ta="' + i + '" placeholder="0x…" value="' + esc(tg.address) + '">'
+      + '<input class="mono" data-ta="' + i + '" placeholder="' + (chainKind(tg.chain) === 'solana' ? 'base58…' : '0x…') + '" value="' + esc(tg.address) + '">'
       + '<input data-tl="' + i + '" placeholder="' + t('nama') + '" value="' + esc(tg.label) + '">'
       + '<button type="button" class="sm" data-tx="' + i + '" title="' + t('hapus') + '">✕</button></div>';
   }
@@ -526,6 +578,7 @@ function paneRingkas() {
     + '<div class="sum">'
     + baris('Chain', chs.join(', ') || '—')
     + baris('Wallet', S.wallet.address ? '<span class="mono">' + esc(S.wallet.address) + '</span>' : (S.st.existing.privateKeyFromEnv ? t('dari LPCOPY_PRIVATE_KEY') : (S.st.existing.key ? t('berkas kunci yang sudah ada') : t('belum ada — simulasi'))))
+    + (S.chains.solana && S.chains.solana.enabled ? baris('Wallet Solana', S.solWallet.address ? '<span class="mono">' + esc(S.solWallet.address) + '</span>' : (S.st.existing.solanaKeyFromEnv ? t('dari LPCOPY_SOLANA_PRIVATE_KEY') : (S.st.existing.solanaKey ? t('berkas kunci Solana yang sudah ada') : t('belum ada — simulasi')))) : '')
     + baris('Mode', S.capital.dry_run ? t('SIMULASI') : '<b style="color:var(--danger)">LIVE</b>')
     + baris('Batas', batas || t('bawaan'))
     + baris('Target', tgt ? t('{n} wallet', { n: tgt }) : '—')
@@ -648,6 +701,7 @@ function wire() {
     else if (el.id === 'rf') bacaCadangan(el.files && el.files[0]);
     else if (el.dataset.part) { S.r.parts[el.dataset.part] = el.checked; render(); }
     else if (el.name === 'wm') { S.wallet.mode = el.value; S.wallet.address = null; render(); }
+    else if (el.name === 'swm') { S.solWallet.mode = el.value; S.solWallet.address = null; if (el.value === 'none') api('solana-wallet', { mode: 'none' }); render(); }
     else if (el.name === 'dry') { S.capital.dry_run = el.value === '1'; render(); }
     else if (el.dataset.ch) { S.chains[el.dataset.ch].enabled = el.checked; render(); }
     else if (el.dataset.use) { var p = el.dataset.use.split(':'); S.chains[p[0]].eps[+p[1]].use = el.checked; }
@@ -658,6 +712,7 @@ function wire() {
     if (!el) return;
     if (el.id === 'gen') { S.secrets.authToken = acak(); render(); }
     else if (el.id === 'mk') pasangWallet(el);
+    else if (el.id === 'smk') pasangSolWallet(el);
     else if (el.id === 'addt') { S.targets.push({ chain: aktifPertama(), address: '', label: '' }); render(); }
     else if (el.dataset.tx != null) { S.targets.splice(+el.dataset.tx, 1); render(); }
     else if (el.dataset.addbtn) tambahEp(el.dataset.addbtn);
@@ -694,6 +749,24 @@ function pasangWallet(btn) {
   });
 }
 
+function pasangSolWallet(btn) {
+  var mode = S.solWallet.mode;
+  btn.disabled = true;
+  var badan = { mode: mode };
+  if (mode === 'import') badan.secret = ($('#spk') || {}).value || '';
+  api('solana-wallet', badan).then(function (r) {
+    btn.disabled = false;
+    if (r.error) return say('bad', esc(ts(r.error)));
+    S.solWallet.address = r.wallet ? r.wallet.address : null;
+    say('good', t('Wallet Solana siap: {a}', { a: '<span class="mono">' + esc(S.solWallet.address || '') + '</span>' }));
+    render();
+  });
+}
+function chainKind(key) {
+  for (var i = 0; i < S.st.chains.length; i++) if (S.st.chains[i].key === key) return S.st.chains[i].kind || 'evm';
+  return 'evm';
+}
+
 function tambahEp(ck) {
   var inp = $('#body').querySelector('[data-add="' + ck + '"]');
   var u = (inp.value || '').trim();
@@ -718,7 +791,11 @@ function ujiEp(k, btn) {
       e.resKind = r.usable ? 'ok' : 'bad';
       // The flag suggested by the test is used directly — exactly what the
       // Settings page does after the Test button.
-      if (r.suggest) { e.no_logs = !!r.suggest.no_logs; e.max_log_blocks = r.suggest.max_log_blocks || 0; e.archive = !!r.suggest.archive; }
+      if (r.suggest) {
+        e.no_logs = !!r.suggest.no_logs; e.max_log_blocks = r.suggest.max_log_blocks || 0; e.archive = !!r.suggest.archive;
+        if (r.suggest.no_gpa != null) e.no_gpa = !!r.suggest.no_gpa;
+        if (r.suggest.no_history != null) e.no_history = true;
+      }
     }
     render();
   });
@@ -761,7 +838,9 @@ function periksa() {
   if (S.i === 5) {
     for (var i = 0; i < S.targets.length; i++) {
       var a = S.targets[i].address;
-      if (a && !/^0x[0-9a-fA-F]{40}$/.test(a)) return t('Alamat target ke-{n} bukan alamat 0x yang sah.', { n: i + 1 });
+      if (a && chainKind(S.targets[i].chain) === 'solana') {
+        if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a)) return t('Alamat target ke-{n} bukan alamat Solana (base58) yang sah.', { n: i + 1 });
+      } else if (a && !/^0x[0-9a-fA-F]{40}$/.test(a)) return t('Alamat target ke-{n} bukan alamat 0x yang sah.', { n: i + 1 });
     }
     return null;
   }
@@ -791,11 +870,12 @@ function muat() {
       S.chains[c.key] = {
         enabled: c.enabled,
         eps: c.endpoints.map(function (e) {
-          return { ref: e.ref, url: e.secret ? null : e.url, host: e.host, use: true, no_logs: e.no_logs, max_log_blocks: e.max_log_blocks, archive: e.archive, max_batch: e.max_batch };
+          return { ref: e.ref, url: e.secret ? null : e.url, host: e.host, use: true, no_logs: e.no_logs, max_log_blocks: e.max_log_blocks, archive: e.archive, max_batch: e.max_batch, no_gpa: e.no_gpa, no_history: e.no_history };
         })
       };
     }
     if (r.wallet) { S.wallet.mode = r.wallet.mode; S.wallet.address = r.wallet.address; }
+    if (r.solanaWallet) { S.solWallet.mode = r.solanaWallet.mode; S.solWallet.address = r.solanaWallet.address; }
     if (!S.r.port) S.r.port = String(r.server.port);
     S.i = 1;
     render();
@@ -813,8 +893,8 @@ function simpan() {
     chains[k] = {
       enabled: true,
       endpoints: st.eps.filter(function (e) { return e.use; }).map(function (e) {
-        if (e.ref != null && !e.url) return { ref: e.ref, no_logs: e.no_logs, archive: e.archive, max_log_blocks: e.max_log_blocks };
-        return { url: e.url, max_batch: e.max_batch || 40, no_logs: !!e.no_logs, archive: !!e.archive, max_log_blocks: e.max_log_blocks || 0 };
+        if (e.ref != null && !e.url) return { ref: e.ref, no_logs: e.no_logs, archive: e.archive, max_log_blocks: e.max_log_blocks, no_gpa: e.no_gpa, no_history: e.no_history };
+        return { url: e.url, max_batch: e.max_batch || 40, no_logs: !!e.no_logs, archive: !!e.archive, max_log_blocks: e.max_log_blocks || 0, no_gpa: !!e.no_gpa, no_history: !!e.no_history };
       })
     };
   }
@@ -910,6 +990,7 @@ document.addEventListener('keydown', function (e) {
   e.preventDefault();
   if (e.target.dataset.add) return tambahEp(e.target.dataset.add);
   if (e.target.id === 'pk') return pasangWallet($('#mk'));
+  if (e.target.id === 'spk') return pasangSolWallet($('#smk'));
   next();
 });
 wire();

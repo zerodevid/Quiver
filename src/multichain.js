@@ -66,6 +66,44 @@ function bscTemplate() {
   };
 }
 
+// Default Solana block: OFF (enabled:false) until a proper RPC is filled in.
+// The official public endpoint (api.mainnet-beta) serves the getProgramAccounts used to
+// enumerate DLMM positions, but is hard rate-limited (429 per method); publicnode refuses
+// getProgramAccounts (410) and some other calls (403). For real use put a keyed RPC
+// FIRST in the endpoint list, e.g.
+//   { "url": "https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}" }  (HELIUS_KEY in .env)
+// Not in the template: a ${VAR} missing from .env triggers a warning on every start.
+// Solana default rules: venues meteora/orca/raydium, quotes USDC/USDT/SOL.
+function solanaTemplate() {
+  return {
+    enabled: false,
+    chain: {
+      endpoints: [
+        { url: 'https://api.mainnet-beta.solana.com', catatan: 'resmi: getProgramAccounts OK tapi 429 cepat; cadangan' },
+        { url: 'https://solana-rpc.publicnode.com', no_gpa: true, no_history: true, catatan: 'publicnode: cepat untuk baca akun; getProgramAccounts ditolak (410), riwayat tanda tangan kosong untuk wallet yang tidak baru aktif' },
+      ],
+    },
+    targets: [],
+    rules: {
+      filters: { quote_whitelist: [], venues: ['meteora', 'orca', 'raydium'], max_fee_bps: 100000 },
+      sizing: { mode: 'fixed_quote', fixed_quote_usd: 10, fixed_quote_eth: 0.1, min_quote_usd: 5, max_quote_per_position_usd: 25, max_total_exposure_usd: 100, daily_budget_usd: 100 },
+      swap: { enabled: true, max_slippage_bps: 150, max_price_impact_bps: 500 },
+    },
+    mode: { dry_run: true, paused: false },
+    // poll 4 s: each round = 1 getSignaturesForAddress per target; positions are re-listed
+    // only when the target has new signatures (or every 10 minutes).
+    loop: { poll_ms: 4000, sync_seconds: 30, equity_seconds: 300, stale_action_seconds: 180 },
+    // 0.15 SOL reserve: DLMM position account rent (~0.057 SOL, refunded on close) + ATA +
+    // fees. The compute price (priority fee) is clamped to min/max microLamports per CU.
+    gas: { native_reserve_lamports: 150_000_000, min_cu_price_micro: 10_000, max_cu_price_micro: 2_000_000, price_multiplier: 1.2, jupiter_max_priority_lamports: 2_000_000, topup_max_usd: 25 },
+    prices: { eth_usd: 150, auto_eth_price: true },
+    scout: {},
+    risk: { max_daily_drawdown_pct: 0 },
+    swap: { enabled: true, max_slippage_bps: 150, max_price_impact_bps: 500 },
+    catatan: 'Blok Solana dibuat otomatis dalam keadaan MATI. Tambah RPC berkunci di urutan pertama (mis. https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}, HELIUS_KEY di .env), isi LPCOPY_SOLANA_PRIVATE_KEY di .env, set enabled:true, tambah target, lalu matikan simulasi kalau sudah yakin.',
+  };
+}
+
 // Old config -> chains shape. Mutates the object in place; returns a list of
 // notes (for the log) about what was normalised.
 function normalizeCfg(cfg) {
@@ -80,6 +118,7 @@ function normalizeCfg(cfg) {
   }
   for (const k of PER_CHAIN) if (cfg[k] !== undefined) { delete cfg[k]; notes.push(`kolom ${k} di tingkat atas dibuang (sudah per chain)`); }
   if (!cfg.chains.bsc) { cfg.chains.bsc = bscTemplate(); notes.push('blok chains.bsc dibuat (simulasi, tanpa target)'); }
+  if (!cfg.chains.solana) { cfg.chains.solana = solanaTemplate(); notes.push('blok chains.solana dibuat (MATI, simulasi, tanpa target)'); }
   for (const [key, c] of Object.entries(cfg.chains)) {
     if (!NETWORKS[key]) throw new Error(`config.chains.${key}: jaringan tidak dikenal (yang ada: ${Object.keys(NETWORKS).join(', ')})`);
     c.chain = c.chain && typeof c.chain === 'object' ? c.chain : { endpoints: [] };
@@ -119,4 +158,4 @@ function enabledChains(cfg) {
   return Object.keys(cfg.chains || {}).filter((k) => cfg.chains[k]?.enabled !== false);
 }
 
-module.exports = { PER_CHAIN, PRIMARY, normalizeCfg, chainView, enabledChains, bscTemplate };
+module.exports = { PER_CHAIN, PRIMARY, normalizeCfg, chainView, enabledChains, bscTemplate, solanaTemplate };

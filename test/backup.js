@@ -96,6 +96,55 @@ function instance({ token = 'tok-rahasia', port = 20180, pk = ethers.Wallet.crea
     assert.strictEqual(A.store.get('SELECT COUNT(*) n FROM rpc_cache').n, 1);
   });
 
+  // ---- Solana key next to the EVM key ----
+  // One process, two engines (EVM + Solana), each with its own key file.
+  const { Keypair } = require('@solana/web3.js');
+  const bs58 = require('bs58').default || require('bs58');
+  const solWallet = require('../src/solana/wallet');
+  const withSolana = (inst, kp = Keypair.generate()) => {
+    const solKey = path.join(inst.dir, 'data', 'solana.key');
+    fs.writeFileSync(solKey, bs58.encode(kp.secretKey), { mode: 0o600 });
+    let w = null;
+    const exec = {
+      keyPath: () => solKey,
+      loadWallet: () => { if (!w) w = solWallet.parseSecret(fs.readFileSync(solKey, 'utf8')); return w; },
+      address: () => { try { return exec.loadWallet().publicKey.toBase58(); } catch { return null; } },
+      resetWallet: () => { w = null; },
+    };
+    const sol = { dryRun: () => true, exec, chain: { network: 'solana', kind: 'solana' }, activeEntries: 0, exiting: new Set(), selling: new Set() };
+    const cfg = JSON.parse(fs.readFileSync(inst.cfgPath, 'utf8'));
+    const logs = [];
+    const r = createSettingsRoutes({
+      engine: inst.engine, engines: [inst.engine, sol], cfg, cfgPath: inst.cfgPath, store: inst.store, log: (m) => logs.push(m), readBody: async (req) => req.__body,
+      rpc: { stats: () => [], reconfigure() {} }, telegram: null, restart: () => {},
+    });
+    return { ...inst, solKey, sol, kp, call: (key, body) => r[key]({ __body: body, headers: {} }, new URL('http://x/'), {}) };
+  };
+
+  await t('Solana: the wallet part carries both keys, the Solana one as an encrypted keystore', async () => {
+    const S = withSolana(instance({ port: 30500, token: 'tok-s' }));
+    const r = await S.call('POST /api/settings/backup', { token: 'tok-s', parts: { wallet: true }, password: 'password-kuat' });
+    assert.ok(r.ok, r.error);
+    const b = JSON.parse(JSON.stringify(r.backup));
+    assert.strictEqual(b.parts.wallet.address, S.engine.exec.address());
+    assert.strictEqual(b.parts.solanaWallet.address, S.kp.publicKey.toBase58());
+    assert.strictEqual(b.solanaAddress, S.kp.publicKey.toBase58());
+    assert.ok(!JSON.stringify(b).includes(bs58.encode(S.kp.secretKey)), 'raw Solana key leaked into the file');
+    assert.ok(solWallet.decryptKeystore(b.parts.solanaWallet.keystore, 'password-kuat').publicKey.equals(S.kp.publicKey));
+    parseBackup(b);
+    // restore elsewhere: both keys replaced, the old ones backed up; a wrong password writes nothing
+    const T = withSolana(instance({ port: 30600, token: 'tok-t' }));
+    const before = fs.readFileSync(T.solKey, 'utf8');
+    assert.match((await T.call('POST /api/settings/restore', { token: 'tok-t', backup: b, parts: { wallet: true }, password: 'salah-sekali' })).error, /Password/);
+    assert.strictEqual(fs.readFileSync(T.solKey, 'utf8'), before);
+    const rr = await T.call('POST /api/settings/restore', { token: 'tok-t', backup: b, parts: { wallet: true }, password: 'password-kuat' });
+    assert.ok(rr.ok, rr.error);
+    assert.strictEqual(T.sol.exec.address(), S.kp.publicKey.toBase58());
+    assert.strictEqual(T.engine.exec.address(), S.engine.exec.address());
+    assert.ok(rr.solanaWallet.backup, 'old Solana key backed up');
+    assert.ok(fs.existsSync(path.join(T.dir, 'data', rr.solanaWallet.backup)));
+  });
+
   await t('restore while LIVE: rejected, nothing is written', async () => {
     const B = instance({ live: true, port: 30000, token: 'tok-b' });
     const r = await B.call('POST /api/settings/restore', { token: 'tok-b', parts: { db: true }, backup: full });

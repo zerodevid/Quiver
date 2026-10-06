@@ -1,5 +1,5 @@
 'use strict';
-const { ensureChain } = require('./networks');
+const { ensureChain, normAddr, addrHint } = require('./networks');
 // HTTP API + dashboard server.
 const http = require('node:http');
 const fs = require('node:fs');
@@ -194,7 +194,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const { QUOTES } = chain;
   // Which side of the pool is the quote asset (0 or 1); null if unknown.
   // Determines the direction of the displayed price: always "speculative token price in quote".
-  const quoteSideOf = (t0, t1) => (QUOTES[(t0 || '').toLowerCase()] ? 0 : QUOTES[(t1 || '').toLowerCase()] ? 1 : null);
+  const quoteSideOf = (t0, t1) => chain.quoteSideOf(t0, t1)?.side ?? null;
+  // Addresses in this chain's canonical form: EVM lower-cased (the whole EVM DB stores
+  // lower case), Solana left as is (base58 is case-sensitive). isAddr: a valid account/token
+  // address; isRef: a valid pool reference (EVM: v3 address or 32-byte v4 poolId; Solana: address).
+  const SOL = chain.kind === 'solana';
+  const canon = (x) => (SOL ? String(x ?? '').trim() : String(x ?? '').trim().toLowerCase());
+  const isAddr = (x) => (SOL ? !!normAddr(chain.network, x) : /^0x[0-9a-f]{40}$/.test(String(x ?? '')));
+  const isRef = (x) => (SOL ? !!normAddr(chain.network, x) : /^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(String(x ?? '')));
   // Symbol & decimals of every token ever seen, from the `tokens` table, PLUS
   // the chain's quote assets. Native (0x0) is not an ERC-20: symbol()/decimals() cannot be
   // called, so Chain#tokens never stores its row — without this addition
@@ -217,7 +224,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     let cash = null;
     try { cash = n.engine.freshCash ? await n.engine.freshCash() : n.engine.cash; } catch { cash = n.engine.cash || null; }
     return {
-      key: n.key || n.chain.network, label: n.label || n.chain.label, chainId: n.chain.CHAIN_ID, nativeSymbol: n.chain.nativeSymbol,
+      key: n.key || n.chain.network, kind: n.chain.kind || 'evm', label: n.label || n.chain.label, chainId: n.chain.CHAIN_ID, nativeSymbol: n.chain.nativeSymbol,
       stableSymbol: n.chain.usdgSymbol,
       dryRun: n.engine.dryRun(), paused: n.engine.paused(), verified: n.chain.verified, head: n.engine.head, cursor: n.engine.cursor,
       targets: n.engine.watcher.enabledSet().size, current: n.chain.network === chain.network,
@@ -227,10 +234,20 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const scoutJobs = new Map();
   const poolScanJobs = new Map();
   const walletJobs = new Map();
-  const research = new WalletResearch({ rpc, store, chain, log });
-  const manual = new Manual({ engine, store, chain, rpc, log });
+  // Wallet research: EVM from event logs (wallet.js), Solana from the transaction history +
+  // Meteora/Orca/Raydium program events (solana/research.js) — same tables & shape.
+  const research = chain.kind === 'solana'
+    ? new (require('./solana/research').SolanaWalletResearch)({ rpc, store, chain, log })
+    : new WalletResearch({ rpc, store, chain, log });
+  // Manual LP/swap: Solana through the venue adapters + Jupiter (solana/manual.js), same routes.
+  const manual = chain.kind === 'solana'
+    ? new (require('./solana/manual').SolanaManual)({ engine, store, chain, rpc, log })
+    : new Manual({ engine, store, chain, rpc, log });
   const compound = engine.compound || new Compound(engine);
-  const holdings = new Holdings({ rpc, store, chain, log });
+  // Wallet holdings: EVM through eth_call + DexScreener, Solana through token accounts + Jupiter prices.
+  const holdings = chain.kind === 'solana'
+    ? new (require('./solana/holdings').SolanaHoldings)({ rpc, chain })
+    : new Holdings({ rpc, store, chain, log });
   // A wallet's portfolio is cached briefly: the target detail page is polled, and
   // each computation means dozens of eth_calls + DexScreener.
   const holdingsCache = new Map();
@@ -375,7 +392,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const leftoverRows = () => {
     const toks = tokenMeta();
     return engine.leftovers().map((it) => {
-      const t = toks.get(String(it.token).toLowerCase());
+      const t = toks.get(canon(it.token));
       return { ...it, symbol: t?.symbol || null, decimals: t?.decimals ?? 18, amountNum: Number(it.amount || 0) / 10 ** (t?.decimals ?? 18) };
     });
   };
@@ -384,15 +401,20 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // becomes NaN, which would never match the null in the queue.
   const leftoverKey = (b) => ({
     posId: b?.posId == null || b.posId === '' ? null : Number(b.posId),
-    token: String(b?.token || '').toLowerCase(),
+    token: canon(b?.token || ''),
   });
-  const sameLeftover = (x, k) => (x.posId ?? null) === k.posId && String(x.token).toLowerCase() === k.token;
+  const sameLeftover = (x, k) => (x.posId ?? null) === k.posId && canon(x.token) === k.token;
 
   // A token or not? A large LP wallet is often a CONTRACT (smart wallet, Safe),
   // so "has code" does not yet mean a token — what decides is whether symbol() and
   // decimals() answer. The metadata is stored (chain.tokens) only if it really is a
   // token, so the tokens table does not get wallet addresses in it.
   const probeToken = async (a) => {
+    if (SOL) {
+      // Solana: a mint account = a token; anything else is taken as a wallet.
+      const t = await chain.tokens([a]).then((x) => x[0]).catch(() => null);
+      return t ? { kind: 'token', symbol: t.symbol || '?', name: t.name || '', decimals: t.decimals } : { kind: 'wallet' };
+    }
     const code = await rpc.call('eth_getCode', [a, 'latest']);
     if (!code || code === '0x') return { kind: 'wallet' };
     const [sym, dec] = await rpc.ethCallMany([{ to: a, data: '0x95d89b41' }, { to: a, data: '0x313ce567' }]);
@@ -424,8 +446,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     const hit = holdingsCache.get(addr);
     if (hit && !refresh && Date.now() - hit.ts < maxAge) return hit.data;
     const tokens = await holdings.of(addr);
+    const batch = holdings.prices ? await holdings.prices(tokens.map((x) => x.address)) : null;
     await Promise.all(tokens.map(async (x) => {
-      x.priceUsd = x.amount > 0 ? await usdPrice(x.address) : null;
+      x.priceUsd = x.amount > 0 ? (batch ? batch.get(x.address) ?? null : await usdPrice(x.address)) : null;
       x.usd = x.priceUsd != null ? x.amount * x.priceUsd : null;
     }));
     const totalUsd = tokens.reduce((a, x) => a + (x.usd || 0), 0);
@@ -817,10 +840,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           // last SUCCESSFUL scan is the honest figure.
           lastScan: engine.lastScanAt || null, stuckSec: Math.round((engine.tickStuckMs?.() || 0) / 1000),
           // identity of this view's chain — the dashboard uses it for labels, symbols, and explorer links
-          key: chain.network, label: chain.label, chainId: chain.CHAIN_ID, nativeSymbol: chain.nativeSymbol,
+          key: chain.network, kind: chain.kind || 'evm', label: chain.label, chainId: chain.CHAIN_ID, nativeSymbol: chain.nativeSymbol,
           usdgSymbol: chain.usdgSymbol, wethSymbol: chain.wethSymbol, verified: chain.verified,
           explorer: chain.explorer, dexscreener: chain.dexscreener, geckoterminal: chain.geckoterminal, gmgn: chain.gmgn, uniswap: chain.uniswap,
-          venues: ['v4', ...chain.venues.map((v) => v.key)],
+          venues: [...(SOL ? [] : ['v4']), ...chain.venues.map((v) => v.key)],
         },
         stats: { ...engine.stats, uptimeSec: Math.round((Date.now() - engine.stats.startedAt) / 1000), lastError: engine.lastError },
         totals: tot,
@@ -1256,10 +1279,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     },
     // Pool stats (DexScreener) and price candles (GeckoTerminal) for the detail page.
     'GET /api/market': async (req, url) => {
-      const pool = String(url.searchParams.get('pool') || '').toLowerCase();
-      if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(pool)) return { error: 'pool tidak valid' };
+      const pool = canon(url.searchParams.get('pool') || '');
+      if (!isRef(pool)) return { error: 'pool tidak valid' };
       const tf = TF[url.searchParams.get('tf')] ? url.searchParams.get('tf') : '1h';
-      const token = String(url.searchParams.get('token') || '').toLowerCase();
+      const token = canon(url.searchParams.get('token') || '');
       const limit = Number(url.searchParams.get('limit') || 300);
       const before = Number(url.searchParams.get('before')) || null;
       // The token page uses the USD price; the position page uses the price in the pool's
@@ -1268,8 +1291,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // src=gmgn: candles from the GMGN OpenAPI (needs an API key + token address); if
       // GMGN fails (key empty/rejected/limit with no fallback), it falls back to GeckoTerminal
       // and the UI is told via ohlcv.fallback so it is not silent.
-      const wantGmgn = url.searchParams.get('src') === 'gmgn' && /^0x[0-9a-f]{40}$/.test(token);
-      const gt = () => market.candles(pool, tf, { limit, token: /^0x[0-9a-f]{40}$/.test(token) ? token : null, before, currency });
+      const wantGmgn = url.searchParams.get('src') === 'gmgn' && isAddr(token);
+      const gt = () => market.candles(pool, tf, { limit, token: isAddr(token) ? token : null, before, currency });
       const [pair, ohlcv] = await Promise.all([
         url.searchParams.get('pair') === '0' ? null : market.pair(pool),
         wantGmgn
@@ -1281,13 +1304,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // Latest swap transactions in the pool (GeckoTerminal) — the "running trade" tape
     // below the chart. Known wallets are given names: the target copied, or the bot.
     'GET /api/trades': async (req, url) => {
-      const pool = String(url.searchParams.get('pool') || '').toLowerCase();
-      if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(pool)) return { error: 'pool tidak valid' };
-      const token = String(url.searchParams.get('token') || '').toLowerCase();
-      const r = await market.trades(pool, { token: /^0x[0-9a-f]{40}$/.test(token) ? token : null, limit: Number(url.searchParams.get('limit') || 80) });
+      const pool = canon(url.searchParams.get('pool') || '');
+      if (!isRef(pool)) return { error: 'pool tidak valid' };
+      const token = canon(url.searchParams.get('token') || '');
+      const r = await market.trades(pool, { token: isAddr(token) ? token : null, limit: Number(url.searchParams.get('limit') || 80) });
       if (!r?.trades) return r;
       const labels = new Map(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label || null]));
-      const me = String(engine.exec.address() || '').toLowerCase();
+      const me = canon(engine.exec.address() || '');
       return {
         ...r,
         trades: r.trades.map((x) => ({ ...x, target: labels.has(x.wallet), label: labels.get(x.wallet) || null, mine: !!me && x.wallet === me })),
@@ -1296,15 +1319,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // Wallet names for the trade tape fetched by the browser directly from
     // GeckoTerminal: the target wallets copied and the bot's own wallet.
     'GET /api/trade-labels': () => ({
-      me: String(engine.exec.address() || '').toLowerCase() || null,
+      me: canon(engine.exec.address() || '') || null,
       targets: Object.fromEntries(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label || null])),
     }),
     // ---- GMGN OpenAPI (needs an API key; without a key all answer { enabled: false }) ----
     // Token profile: info + contract security — the "Per GMGN" card and extra signals
     // in pool health.
     'GET /api/gmgn/token': async (req, url) => {
-      const a = String(url.searchParams.get('address') || '').toLowerCase();
-      if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat token tidak valid' };
+      const a = canon(url.searchParams.get('address') || '');
+      if (!isAddr(a)) return { error: 'alamat token tidak valid' };
       return market.gmgnToken(a);
     },
     // Multi-token version for the indicator dots in the positions list: only the blocks
@@ -1313,8 +1336,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // ten tokens means twenty GMGN calls if not held back.
     'GET /api/gmgn/tokens': async (req, url) => {
       if (!market.gmgnEnabled()) return { enabled: false, tokens: {} };
-      const list = [...new Set(String(url.searchParams.get('addresses') || '').toLowerCase().split(',')
-        .map((x) => x.trim()).filter((a) => /^0x[0-9a-f]{40}$/.test(a)))].slice(0, 25);
+      const list = [...new Set(String(url.searchParams.get('addresses') || '').split(',')
+        .map((x) => canon(x)).filter((a) => isAddr(a)))].slice(0, 25);
       const rs = await Promise.all(list.map((a) => market.memo(`gmgn-lite:${a}`, 300_000, async () => {
         const g = await market.gmgnToken(a);
         if (!g || g.error || g.enabled === false) return { error: g?.error || 'tidak tersedia' };
@@ -1325,35 +1348,39 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     },
     // Top holders / traders, with the wallet names the bot knows.
     'GET /api/gmgn/wallets': async (req, url) => {
-      const a = String(url.searchParams.get('address') || '').toLowerCase();
-      if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat token tidak valid' };
+      const a = canon(url.searchParams.get('address') || '');
+      if (!isAddr(a)) return { error: 'alamat token tidak valid' };
       const kind = url.searchParams.get('kind') === 'traders' ? 'traders' : 'holders';
       const orderBy = ['amount_percentage', 'profit', 'unrealized_profit', 'buy_volume_cur', 'sell_volume_cur'].includes(url.searchParams.get('order')) ? url.searchParams.get('order') : null;
       const r = await market.gmgnWallets(a, { kind, limit: Number(url.searchParams.get('limit') || 50), orderBy });
       if (!r?.rows) return r;
       const labels = new Map(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label || null]));
-      const me = String(engine.exec.address() || '').toLowerCase();
+      const me = canon(engine.exec.address() || '');
       return { ...r, rows: r.rows.map((x) => ({ ...x, target: labels.has(x.address), label: labels.get(x.address) || null, mine: !!me && x.address === me })) };
     },
     // Trading statistics of one wallet (target / research wallet) per GMGN.
     'GET /api/gmgn/wallet': async (req, url) => {
-      const a = String(url.searchParams.get('address') || '').toLowerCase();
-      if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat wallet tidak valid' };
+      const a = canon(url.searchParams.get('address') || '');
+      if (!isAddr(a)) return { error: 'alamat wallet tidak valid' };
       return market.gmgnWallet(a, { period: url.searchParams.get('period') || '7d' });
     },
     'GET /api/pool-depth': async (req, url) => {
-      const ref = String(url.searchParams.get('ref') || '').toLowerCase();
-      if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(ref)) return { error: 'pool tidak valid' };
-      return market.memo(`depth:${ref}`, 30000, () => require('./pool-depth').poolDepth({ rpc, chain, store, engine }, ref));
+      const ref = canon(url.searchParams.get('ref') || '');
+      if (!isRef(ref)) return { error: 'pool tidak valid' };
+      return market.memo(`depth:${ref}`, 30000, () => (SOL
+        ? require('./solana/pool-depth').poolDepthSol({ rpc, chain, store, engine }, ref)
+        : require('./pool-depth').poolDepth({ rpc, chain, store, engine }, ref)));
     },
-    'GET /api/holders': async (req, url) => require('./holders').alchemyHolders(chain, market, cfg, url.searchParams.get('token')),
+    'GET /api/holders': async (req, url) => (SOL
+      ? require('./solana/holders').solanaHolders({ rpc, chain }, canon(url.searchParams.get('token') || ''))
+      : require('./holders').alchemyHolders(chain, market, cfg, url.searchParams.get('token'))),
     // Pool price straight from the chain (slot0) for the realtime chart. GeckoTerminal candles
     // lag by up to a minute; this price is what moves the last candle in the UI.
     // Stored 2.5 seconds per pool: many tabs opening the same pool share one
     // eth_call, and the RPC used by the bot is not drained.
     'GET /api/price': async (req, url) => {
-      const ref = String(url.searchParams.get('pool') || '').toLowerCase();
-      if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(ref)) return { error: 'pool tidak valid' };
+      const ref = canon(url.searchParams.get('pool') || '');
+      if (!isRef(ref)) return { error: 'pool tidak valid' };
       return market.memo(`slot0:${ref}`, 2500, async () => {
         const slot = ref.length === 66 ? (await chain.slot0V4Many([ref]))[0] : await chain.slot0V3(ref);
         if (slot?.sqrtPriceX96 == null || BigInt(slot.sqrtPriceX96) === 0n) return { error: 'harga pool tidak terbaca' };
@@ -1365,10 +1392,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // (10 positions = 200 eth_calls/minute to the RPC that the bot also uses). Memoised per
     // set of pools; a pool that fails to read is answered null, not failing everything.
     'GET /api/prices': async (req, url) => {
-      const pools = [...new Set(String(url.searchParams.get('pools') || '').toLowerCase().split(',').filter((p) => /^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(p)))].sort().slice(0, 40);
+      const pools = [...new Set(canon(url.searchParams.get('pools') || '').split(',').filter((p) => isRef(p)))].sort().slice(0, 40);
       if (!pools.length) return { prices: {}, ts: Date.now() };
       return market.memo(`slot0many:${pools.join(',')}`, 2500, async () => {
-        const v4 = pools.filter((p) => p.length === 66), v3 = pools.filter((p) => p.length === 42);
+        // EVM: v4 poolId (66 chars) vs v3 pool address (42). Solana: everything through slot0V3
+        // (SolanaChain maps it to that pool's venue adapter).
+        const v4 = SOL ? [] : pools.filter((p) => p.length === 66), v3 = SOL ? pools : pools.filter((p) => p.length === 42);
         const [s4, s3] = await Promise.all([
           v4.length ? chain.slot0V4Many(v4).catch(() => v4.map(() => null)) : [],
           Promise.all(v3.map((p) => chain.slot0V3(p).catch(() => null))),
@@ -1409,7 +1438,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // as the Summary page). The Monitor card adds it to the open positions' PnL
       // as "since the start": a pool that looks profitable now may well
       // have lost three times before.
-      const refs = [...new Set(engine.positions.live.map((p) => String(p.pool_ref || '').toLowerCase()).filter(Boolean))];
+      const refs = [...new Set(engine.positions.live.map((p) => canon(p.pool_ref || '')).filter(Boolean))];
       const k = (q) => (chain.isEthLike(q) ? engine.ethUsd : 1);
       const pools = {};
       for (const ref of refs) {
@@ -1431,15 +1460,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // volume, liquidity on the Monitor card). market.pair() is already memoised per pool,
     // so this just merges; a pool that fails is answered null.
     'GET /api/monitor/market': async (req, url) => {
-      const pools = [...new Set(String(url.searchParams.get('pools') || '').toLowerCase().split(',').filter((p) => /^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(p)))].slice(0, 40);
+      const pools = [...new Set(canon(url.searchParams.get('pools') || '').split(',').filter((p) => isRef(p)))].slice(0, 40);
       const rs = await Promise.all(pools.map((p) => market.pair(p).catch(() => null)));
       return { pairs: Object.fromEntries(pools.map((p, i) => [p, rs[i] && !rs[i].error ? rs[i] : null])), ts: Date.now() };
     },
     // Detail of one token: metadata, all its pools (DexScreener), the bot positions
     // that use it, researched wallet positions, and target moves in that token.
     'GET /api/token': async (req, url) => {
-      const a = String(url.searchParams.get('a') || '').trim().toLowerCase();
-      if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat token tidak valid' };
+      const a = canon(url.searchParams.get('a') || '');
+      if (!isAddr(a)) return { error: 'alamat token tidak valid' };
       const market$ = market.token(a).catch((e) => ({ error: e.message }));
       let meta = QUOTES[a] ? { address: a, symbol: QUOTES[a].symbol, name: a === chain.ADDR.native ? chain.nativeSymbol : null, decimals: QUOTES[a].decimals } : null;
       meta = store.get('SELECT address,symbol,name,decimals FROM tokens WHERE chain=? AND address=?', chain.network, a) || meta;
@@ -1474,8 +1503,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // wallet positions, and target moves. A pool never touched by the bot/research can still
     // be opened as long as DexScreener knows it.
     'GET /api/pool': async (req, url) => {
-      const ref = String(url.searchParams.get('ref') || '').trim().toLowerCase();
-      if (!/^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(ref)) return { error: 'pool tidak valid' };
+      const ref = canon(url.searchParams.get('ref') || '');
+      if (!isRef(ref)) return { error: 'pool tidak valid' };
       const cols = 'pool_ref, venue, token0, token1, fee, tick_spacing, hooks';
       // A pools row may exist but not yet hold its token pair (e.g. written by the
       // pool age checker). The first row that HAS token0/token1 is used —
@@ -1495,17 +1524,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         const pr = await market.pair(ref);
         if (!pr || pr.error) return { error: 'pool tidak dikenal — belum tersentuh bot/riset dan belum terindeks DexScreener' };
         // DexScreener uses base/quote order; Uniswap orders by address.
-        const [t0, t1] = [pr.base.address, pr.quote.address].map((a) => String(a || '').toLowerCase()).sort();
-        pool = { pool_ref: ref, venue: ref.length === 42 ? 'v3' : 'v4', token0: t0, token1: t1, fee: null, tick_spacing: null, hooks: null };
+        const [t0, t1] = [pr.base.address, pr.quote.address].map((a) => canon(a || '')).sort();
+        pool = { pool_ref: ref, venue: SOL ? (await chain.venueOfPool(ref).catch(() => null)) || 'solana' : ref.length === 42 ? 'v3' : 'v4', token0: t0, token1: t1, fee: null, tick_spacing: null, hooks: null };
       }
-      // Addresses are lower-cased: an old table may store them checksummed,
-      // while QUOTES and the token cache are keyed lowercase.
-      pool.token0 = pool.token0 ? String(pool.token0).toLowerCase() : null;
-      pool.token1 = pool.token1 ? String(pool.token1).toLowerCase() : null;
+      // Addresses in canonical form: an old table may store them checksummed,
+      // while QUOTES and the token cache are keyed lowercase (EVM).
+      pool.token0 = pool.token0 ? canon(pool.token0) : null;
+      pool.token1 = pool.token1 ? canon(pool.token1) : null;
       // chain.tokens() drops empty and duplicate addresses, so the result is matched
       // by address — not by order.
       const metas = await chain.tokens([pool.token0, pool.token1]).catch(() => []);
-      const byAddr = new Map(metas.filter(Boolean).map((m) => [String(m.address).toLowerCase(), m]));
+      const byAddr = new Map(metas.filter(Boolean).map((m) => [canon(m.address), m]));
       const m0 = byAddr.get(pool.token0) || QUOTES[pool.token0];
       const m1 = byAddr.get(pool.token1) || QUOTES[pool.token1];
       const quoteSide = quoteSideOf(pool.token0, pool.token1);
@@ -1564,8 +1593,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     },
     'POST /api/targets': async (req) => {
       const b = await readBody(req);
-      const addr = String(b.address || '').toLowerCase().trim();
-      if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
+      const addr = canon(b.address || '');
+      if (!isAddr(addr)) return { error: 'alamat tidak valid' };
       const v = validateRules(b.rules || null);
       if (v.error) return { error: v.error };
       store.run('INSERT OR IGNORE INTO targets(chain,address,label,enabled,added_ts,rules,notes) VALUES(?,?,?,?,?,?,?)',
@@ -1574,7 +1603,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     },
     'POST /api/targets/toggle': async (req) => {
       const b = await readBody(req);
-      store.run('UPDATE targets SET enabled=? WHERE chain=? AND address=?', b.enabled ? 1 : 0, chain.network, String(b.address).toLowerCase());
+      store.run('UPDATE targets SET enabled=? WHERE chain=? AND address=?', b.enabled ? 1 : 0, chain.network, canon(b.address));
       return { ok: true };
     },
     'POST /api/targets/rules': async (req) => {
@@ -1582,12 +1611,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const v = validateRules(b.rules || null);
       if (v.error) return { error: v.error };
       store.run('UPDATE targets SET rules=?, label=COALESCE(?,label) WHERE chain=? AND address=?',
-        v.rules ? JSON.stringify(v.rules) : null, b.label ?? null, chain.network, String(b.address).toLowerCase());
+        v.rules ? JSON.stringify(v.rules) : null, b.label ?? null, chain.network, canon(b.address));
       return { ok: true };
     },
     'POST /api/targets/label': async (req) => {
       const b = await readBody(req);
-      const addr = String(b.address || '').toLowerCase();
+      const addr = canon(b.address || '');
       const label = String(b.label ?? '').trim().slice(0, 60) || null;
       const r = store.run('UPDATE targets SET label=? WHERE chain=? AND address=?', label, chain.network, addr);
       if (!r.changes) return { error: 'target tidak ditemukan' };
@@ -1595,21 +1624,21 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     },
     'POST /api/targets/delete': async (req) => {
       const b = await readBody(req);
-      store.run('DELETE FROM targets WHERE chain=? AND address=?', chain.network, String(b.address).toLowerCase());
+      store.run('DELETE FROM targets WHERE chain=? AND address=?', chain.network, canon(b.address));
       return { ok: true };
     },
     // Drawings & indicators of the advanced chart (trend line, fibonacci, etc.) per pool —
     // stored on the server so they are still there when the page is opened again, not just in
     // the localStorage of the browser that one person used.
     'GET /api/chart/overlays': (req, url) => {
-      const ref = String(url.searchParams.get('pool') || '').trim().toLowerCase();
+      const ref = canon(url.searchParams.get('pool') || '');
       if (!ref) return { error: 'pool tidak valid' };
       const raw = store.getState(`chart_overlays:${ref}`);
       return { data: raw ? JSON.parse(raw) : null };
     },
     'POST /api/chart/overlays': async (req) => {
       const b = await readBody(req);
-      const ref = String(b.pool || '').trim().toLowerCase();
+      const ref = canon(b.pool || '');
       if (!ref) return { error: 'pool tidak valid' };
       store.setState(`chart_overlays:${ref}`, JSON.stringify(b.data || {}));
       return { ok: true };
@@ -1744,21 +1773,22 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     'GET /api/txs': () => ({ txs: store.all('SELECT * FROM txs WHERE chain=? ORDER BY ts DESC LIMIT 100', chain.network) }),
     'POST /api/scout': async (req) => {
       const b = await readBody(req);
-      const addr = String(b.address || '').toLowerCase();
-      if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
+      const addr = canon(b.address || '');
+      if (!isAddr(addr)) return { error: 'alamat tidak valid' };
       if (scoutJobs.get(addr)?.status === 'jalan') return { ok: true, status: 'jalan' };
       const job = { status: 'jalan', progress: 0, startedAt: Date.now(), result: null, error: null };
       scoutJobs.set(addr, job);
       const blocks = Number(b.blocks || cfg.scout?.blocks || 900_000);
-      scoutWallet(rpc, chain, addr, {
-        blocks, ethUsd: engine.ethUsd,
-        onProgress: (p) => { job.progress = Math.round((p.scanned / p.total) * 100); },
-      }).then((r) => { job.result = r; job.status = 'selesai'; })
+      const onProgress = (p) => { job.progress = Math.round((p.scanned / p.total) * 100); };
+      (SOL
+        ? require('./solana/scout').scoutWalletSol(rpc, chain, addr, { ethUsd: engine.ethUsd, store, onProgress })
+        : scoutWallet(rpc, chain, addr, { blocks, ethUsd: engine.ethUsd, onProgress })
+      ).then((r) => { job.result = r; job.status = 'selesai'; })
         .catch((e) => { job.error = e.message; job.status = 'gagal'; });
       return { ok: true, status: 'jalan' };
     },
     'GET /api/scout': (req, url) => {
-      const addr = String(url.searchParams.get('address') || '').toLowerCase();
+      const addr = canon(url.searchParams.get('address') || '');
       const j = scoutJobs.get(addr);
       if (!j) return { status: 'kosong' };
       return { status: j.status, progress: j.progress, error: j.error, result: j.result };
@@ -1766,8 +1796,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // ---- wallet research ----
     'POST /api/wallet/scan': async (req) => {
       const b = await readBody(req);
-      const addr = String(b.address || '').toLowerCase().trim();
-      if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
+      const addr = canon(b.address || '');
+      if (!isAddr(addr)) return { error: 'alamat tidak valid' };
       const mode = b.mode === 'refresh' ? 'refresh' : 'full';
       // force: also rebuild closed positions already stored (after a formula fix)
       const job = startWalletJob(addr, { mode, blocks: Number(b.blocks || 900_000), reason: 'manual', force: b.force === true });
@@ -1775,8 +1805,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     },
 
     'GET /api/wallet': async (req, url) => {
-      const addr = String(url.searchParams.get('address') || '').toLowerCase();
-      if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
+      const addr = canon(url.searchParams.get('address') || '');
+      if (!isAddr(addr)) return { error: 'alamat tidak valid' };
       const w = store.get('SELECT * FROM wallets WHERE chain=? AND address=?', chain.network, addr);
       // Scanned before but stale -> update in the background; the page still immediately
       // shows stored data and sees the progress via `job`.
@@ -1883,7 +1913,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // the research drawer is opened precisely to assess one target position, and the first
     // question after seeing the result is always "do we follow or not, why".
     'GET /api/wallet/events': (req, url) => {
-      const addr = String(url.searchParams.get('address') || '').toLowerCase();
+      const addr = canon(url.searchParams.get('address') || '');
       const id = String(url.searchParams.get('token_id') || '');
       const venue = String(url.searchParams.get('venue') || '') || null;
       return {
@@ -1895,8 +1925,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // Wallet contents (portfolio) — the tokens held + their USD value. For any
     // wallet, not just the bot's; used by the target detail page.
     'GET /api/wallet/holdings': async (req, url) => {
-      const addr = String(url.searchParams.get('address') || '').toLowerCase();
-      if (!/^0x[0-9a-f]{40}$/.test(addr)) return { error: 'alamat tidak valid' };
+      const addr = canon(url.searchParams.get('address') || '');
+      if (!isAddr(addr)) return { error: 'alamat tidak valid' };
       return holdingsOf(addr, { refresh: url.searchParams.get('refresh') === '1' });
     },
 
@@ -1904,6 +1934,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // pool, or researched wallet — all already in the local DB, so there is
     // no need to call the chain/DexScreener just to jump pages.
     'GET /api/search': async (req, url) => {
+      // SQLite LIKE is case-insensitive (ASCII): lower case matches labels/symbols,
+      // and still matches base58 Solana addresses.
       const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
       if (q.length < 2) return { results: [] };
       const like = `%${q}%`;
@@ -1950,8 +1982,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // full-range scan takes a dozen seconds, too long for one HTTP reply.
     'POST /api/manual/pools/scan': async (req) => {
       const b = await readBody(req);
-      const token = String(b.token || '').toLowerCase().trim();
-      if (!/^0x[0-9a-f]{40}$/.test(token)) return { error: 'alamat token harus 0x diikuti 40 karakter hex' };
+      const token = canon(b.token || '');
+      if (!isAddr(token)) return { error: `alamat token tidak valid — ${addrHint(chain.network)}` };
       if (poolScanJobs.get(token)?.status === 'jalan') return { ok: true, status: 'jalan' };
       const job = { status: 'jalan', progress: 0, startedAt: Date.now(), pools: null, error: null };
       poolScanJobs.set(token, job);
@@ -1965,7 +1997,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       return { ok: true, status: 'jalan' };
     },
     'GET /api/manual/pools/scan': (req, url) => {
-      const token = String(url.searchParams.get('token') || '').toLowerCase();
+      const token = canon(url.searchParams.get('token') || '');
       const j = poolScanJobs.get(token);
       if (!j) return { status: 'kosong' };
       const out = { status: j.status, progress: j.progress, error: j.error };
@@ -1988,7 +2020,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         upperPct: b.upperPct != null ? Number(b.upperPct) : null,
         tickLower: b.tickLower != null ? Math.round(Number(b.tickLower)) : null,
         tickUpper: b.tickUpper != null ? Math.round(Number(b.tickUpper)) : null,
-        full: !!b.full,
+        full: !!b.full, strategy: b.strategy || null,
       });
     },
     // Layered entry: one budget over several adjacent ranges below the price (see manual.ladderLayers).
@@ -2001,7 +2033,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     'POST /api/manual/ladder/open': async (req) => {
       const b = await readBody(req);
       if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
-      const lockKey = String(b.poolRef || '').toLowerCase();
+      const lockKey = canon(b.poolRef || '');
       if (manualOpening.has(lockKey)) return { error: 'pembukaan LP di pool ini masih diproses — tunggu hasilnya' };
       const args = ladderBody(b);
       const spec = ladderLayers(args);
@@ -2027,7 +2059,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
       // A double click (the dashboard slow to respond, a Telegram button pressed twice) used to open
       // TWO positions — the second plan was built before the first position was recorded.
-      const lockKey = String(b.poolRef || '').toLowerCase();
+      const lockKey = canon(b.poolRef || '');
       if (manualOpening.has(lockKey)) return { error: 'pembukaan LP di pool ini masih diproses — tunggu hasilnya' };
       manualOpening.add(lockKey);
       try {
@@ -2038,7 +2070,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           upperPct: b.upperPct != null ? Number(b.upperPct) : null,
           tickLower: b.tickLower != null ? Math.round(Number(b.tickLower)) : null,
           tickUpper: b.tickUpper != null ? Math.round(Number(b.tickUpper)) : null,
-          full: !!b.full,
+          full: !!b.full, strategy: b.strategy || null,
         });
         if (d.error) return d;
         try {
@@ -2074,7 +2106,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     'POST /api/manual/prices': async (req) => {
       const b = await readBody(req);
       const list = [...new Set((Array.isArray(b.addresses) ? b.addresses : [])
-        .map((x) => String(x || '').toLowerCase()).filter((x) => /^0x[0-9a-f]{40}$/.test(x)))].slice(0, 100);
+        .map((x) => canon(x || '')).filter((x) => isAddr(x)))].slice(0, 100);
       const prices = {};
       await Promise.all(list.map(async (a) => { prices[a] = await usdPrice(a).catch(() => null); }));
       return { prices };
@@ -2083,8 +2115,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // really is an ERC-20 token — a wallet/other contract address is rejected.
     'POST /api/manual/tokens/add': async (req) => {
       const b = await readBody(req);
-      const a = String(b.address || '').trim().toLowerCase();
-      if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat harus 0x diikuti 40 karakter hex' };
+      const a = canon(b.address || '');
+      if (!isAddr(a)) return { error: `alamat tidak valid — ${addrHint(chain.network)}` };
       if (QUOTES[a]) return { ok: true, token: { address: a, symbol: QUOTES[a].symbol } };
       try {
         const t = await probeToken(a);
@@ -2115,8 +2147,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // An address pasted by the user: a token (to be given an LP) or a wallet (to be
     // researched / made a target)? See probeToken.
     'GET /api/address': async (req, url) => {
-      const a = String(url.searchParams.get('a') || '').trim().toLowerCase();
-      if (!/^0x[0-9a-f]{40}$/.test(a)) return { error: 'alamat harus 0x diikuti 40 karakter hex' };
+      const a = canon(url.searchParams.get('a') || '');
+      if (!isAddr(a)) return { error: `alamat tidak valid — ${addrHint(chain.network)}` };
       const tgt = store.get('SELECT label FROM targets WHERE chain=? AND address=?', chain.network, a);
       const study = store.get('SELECT address FROM wallets WHERE chain=? AND address=?', chain.network, a);
       const base = { address: a, isTarget: !!tgt, targetLabel: tgt?.label || null, researched: !!study };
@@ -2286,6 +2318,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     return { ok: true, chain: want };
   };
 
+
   // The same door for callers inside the process (the Telegram bot). Deliberately through the
   // route table exactly as the browser uses: whatever the dashboard can do can be
   // done by the bot, and its validation/guards are only written once. The token gate
@@ -2315,7 +2348,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // Pair logo: the quote asset from the dashboard files, the rest from the GeckoTerminal cache.
       const local = chain.network === 'robinhood' ? { [chain.ADDR.usdg]: 'usdg.png', [chain.ADDR.weth]: 'weth.png' } : {};
       const iconOf = (a) => {
-        const k = String(a || '').toLowerCase();
+        const k = canon(a || '');
         // On the VPS only web/dist exists (Vite copies public/tokens there); during
         // development without a build, web/public.
         if (local[k]) {
@@ -2373,7 +2406,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     const after = closed ? 3 : 0;
     const limit = Math.max(30, Math.min(140, Math.ceil(spanS / secs) + after + 2));
     const oh = await market.candles(p.pool_ref, tf, {
-      limit, currency: 'token', token: /^0x[0-9a-f]{40}$/.test(String(p.baseToken || '')) ? p.baseToken : null,
+      limit, currency: 'token', token: isAddr(String(p.baseToken || '')) ? p.baseToken : null,
       before: closed && p.closed_ts ? p.closed_ts + after * secs * 1000 : null,
     });
     const candles = oh?.candles || [];
@@ -2412,7 +2445,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // `patient`: this image was requested via a button, not polled — better to wait a
     // bit longer than reply with an error when the second attempt would certainly have passed.
     const oh = await market.candles(p.pool_ref, frame, {
-      limit, currency: 'token', token: /^0x[0-9a-f]{40}$/.test(String(p.baseToken || '')) ? p.baseToken : null,
+      limit, currency: 'token', token: isAddr(String(p.baseToken || '')) ? p.baseToken : null,
       before: closed && p.closed_ts ? p.closed_ts + 6 * 3600_000 : null, patient: true,
     }).catch((e) => ({ error: e.message }));
     if (oh?.error) {

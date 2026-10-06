@@ -1,4 +1,5 @@
-import { chainInfo } from '../chain';
+import { chainInfo, isSolana } from '../chain';
+import { isSolanaKeystore, openSolanaKeystore } from '../solKeystore';
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Chip, Checkbox, Separator, Tabs, toast } from '@heroui/react';
 import { Pencil, Activity as Pulse, Trash2, KeyRound, Unlock, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck, ShieldAlert, ChartCandlestick, Coins, RefreshCw, DatabaseBackup, Download, ArchiveRestore, Shuffle, Trophy } from 'lucide-react';
@@ -85,7 +86,9 @@ function WalletTab({ d, reload }) {
           <div className="flex flex-col gap-3 rounded-md border border-border p-4">
             <div className="font-medium">{t('Ekspor wallet')}</div>
             <p className="text-sm text-muted">
-              {t('Menghasilkan berkas keystore terenkripsi (format sama dengan geth/MetaMask) yang bisa diimpor ke wallet lain lewat "Import via JSON". Kunci privat mentah tidak pernah dikirim — tanpa password di bawah, isi berkasnya tidak berguna. Butuh token dashboard, diketik ulang di sini, bukan diambil dari sesi login.')}
+              {t(w.kind === 'solana'
+                ? 'Menghasilkan berkas keystore terenkripsi (PBKDF2 + AES-GCM). Dompet Solana tidak punya format keystore baku: buka berkasnya di "Buka keystore (offline)" di bawah untuk mendapat kunci base58 yang bisa diimpor ke Phantom/Solflare. Butuh token dashboard, diketik ulang di sini, bukan diambil dari sesi login.'
+                : 'Menghasilkan berkas keystore terenkripsi (format sama dengan geth/MetaMask) yang bisa diimpor ke wallet lain lewat "Import via JSON". Kunci privat mentah tidak pernah dikirim — tanpa password di bawah, isi berkasnya tidak berguna. Butuh token dashboard, diketik ulang di sini, bukan diambil dari sesi login.')}
             </p>
             <div className="grid gap-3 sm:grid-cols-3">
               <Text label="Token dashboard" type="password" mono placeholder="token" value={expToken} onChange={setExpToken} autoComplete="off" />
@@ -131,8 +134,13 @@ function WalletTab({ d, reload }) {
             setKsBusy(true); setKsResult(null);
             try {
               const text = await ksFile.text();
-              const w = await EthersWallet.fromEncryptedJson(text, ksPass);
-              setKsResult({ address: w.address, pk: w.privateKey });
+              let j = null;
+              try { j = JSON.parse(text); } catch { /* let ethers report it */ }
+              if (isSolanaKeystore(j)) setKsResult(await openSolanaKeystore(j, ksPass));
+              else {
+                const w = await EthersWallet.fromEncryptedJson(text, ksPass);
+                setKsResult({ address: w.address, pk: w.privateKey });
+              }
             } catch (e) {
               toast.danger(e.shortMessage || e.message || tt('Gagal membuka keystore.'));
             } finally { setKsBusy(false); setKsPass(''); }
@@ -174,7 +182,7 @@ function WalletTab({ d, reload }) {
           <div className="grid gap-6 md:grid-cols-2">
             <div className="flex flex-col gap-3">
               <div className="font-medium">{t('Impor kunci privat')}</div>
-              <Text label="Kunci privat" type="password" mono placeholder="0x… (64 karakter hex)" value={pk} onChange={setPk} autoComplete="off" />
+              <Text label="Kunci privat" type="password" mono placeholder={w.kind === 'solana' ? 'base58 (ekspor Phantom/Solflare) atau [larik JSON solana-keygen]' : '0x… (64 karakter hex)'} value={pk} onChange={setPk} autoComplete="off" />
               <Button variant="outline" className="w-fit" isDisabled={!pk} isPending={busy === 'imp'}
                 onPress={async () => { const r = await act('imp', '/api/settings/wallet/import', { privateKey: pk, replace }, (x) => tt('Wallet {a} terpasang', { a: x.address })); if (!r.error) setPk(''); }}>
                 <KeyRound className="size-4" />{t('Impor')}</Button>
@@ -195,7 +203,7 @@ function WalletTab({ d, reload }) {
               <div className="font-medium">{t('Lepas wallet')}</div>
               <div className="flex flex-wrap items-end gap-2">
                 <Text label="Konfirmasi alamat wallet" mono placeholder="ketik alamat wallet untuk konfirmasi" value={rm} onChange={setRm} className="w-full min-w-0 flex-1" />
-                <Button variant="danger" isDisabled={rm.toLowerCase() !== w.address} isPending={busy === 'rm'}
+                <Button variant="danger" isDisabled={(w.kind === 'solana' ? rm.trim() : rm.toLowerCase()) !== w.address} isPending={busy === 'rm'}
                   onPress={() => act('rm', '/api/settings/wallet/remove', { confirm: rm }, 'Wallet dilepas, kunci dicadangkan')}>{t('Lepas')}</Button>
               </div>
             </div>
@@ -372,7 +380,8 @@ function RpcTab({ d, setD }) {
   };
   const add = async () => {
     const r = await saveList([...current(), { url: tested.url, headers: tested.headers || undefined, no_logs: tested.no_logs,
-      max_log_blocks: tested.max_log_blocks, archive: tested.archive, max_batch: 40 }], 'Endpoint ditambahkan dan langsung dipakai');
+      max_log_blocks: tested.max_log_blocks, archive: tested.archive, max_batch: 40,
+      no_gpa: tested.no_gpa, no_history: tested.no_history }], 'Endpoint ditambahkan dan langsung dipakai');
     if (!r.error) { setUrl(''); setKey(''); setHname(''); setTested(null); }
   };
 
@@ -1086,7 +1095,14 @@ export default function Settings() {
                 <Tabs.Panel id="rpc"><RpcTab d={d} setD={setD} /></Tabs.Panel>
                 <Tabs.Panel id="gas" shouldForceMount className="data-[inert]:hidden">
                   <SimpleForm title="Gas" desc="Berlaku untuk transaksi berikutnya, tanpa restart." url="/api/settings/gas" okText="Pengaturan gas tersimpan"
-                    onSaved={(gas) => setD((prev) => ({ ...prev, gas }))} initial={d.gas} fields={[
+                    onSaved={(gas) => setD((prev) => ({ ...prev, gas }))} initial={d.gas} fields={isSolana() ? [
+                      ['price_multiplier', 'Pengali harga prioritas', 'Fee prioritas terkini (persentil 75 untuk akun yang ditulis transaksi) × angka ini.'],
+                      ['min_cu_price_micro', 'Harga prioritas minimum (µlamport/CU)', 'Tidak pernah di bawah ini, walau jaringan sepi. 10.000 µlamport × 200.000 CU = 0,000002 SOL.'],
+                      ['max_cu_price_micro', 'Harga prioritas maksimum (µlamport/CU)', 'Batas atas saat jaringan padat — melindungi dari lonjakan fee prioritas.'],
+                      ['jupiter_max_priority_sol', 'Batas prioritas swap Jupiter (SOL)', 'Fee prioritas maksimum per swap yang dikirim lewat Jupiter.'],
+                      ['reserve_sol', 'Cadangan SOL untuk biaya', 'SOL sebanyak ini tidak pernah dipakai untuk LP maupun swap — untuk biaya transaksi dan sewa akun posisi.'],
+                      ['topup_max_usd', 'Isi ulang SOL maksimum (USD)', 'Kalau SOL di bawah separuh cadangan, bot membeli SOL dari USDC paling banyak senilai ini per kali.'],
+                    ] : [
                       ['price_multiplier', 'Pengali harga gas', 'Harga gas jaringan × angka ini. 1,5 = 50% di atas harga saat itu.'],
                       ['priority_gwei', 'Priority fee (gwei)', 'Biaya prioritas tambahan per unit gas, dalam gwei. Ini bukan total biaya transaksi.'],
                       ['max_gas_limit', 'Batas gas per transaksi', 'Jumlah maksimum unit gas untuk satu transaksi, bukan jumlah ETH. Batas terlalu kecil dapat membuat transaksi gagal.'],

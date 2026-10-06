@@ -9,7 +9,8 @@
 //             rpc_cache table: 90%+ of the file size, just a cache that refills by itself.
 //             Gzipped then base64.
 //   wallet  — a password-encrypted V3 keystore, same as the wallet export. The raw private key
-//             never enters the file.
+//             never enters the file. A Solana key, when installed, rides along under
+//             parts.solanaWallet (quiver-solana-keystore, same password).
 //
 // Restoring config & db is NOT overwritten in place: the running process holds the
 // database connection and an in-memory copy of the config (which other routes write back).
@@ -87,13 +88,17 @@ async function snapshotDb(db, tmpDir) {
   }
 }
 
-async function createBackup({ parts, cfgPath, db, dbPath, wallet, password, meta = {} }) {
+async function createBackup({ parts, cfgPath, db, dbPath, wallet, solanaKeypair = null, password, meta = {} }) {
   const out = { format: FORMAT, version: VERSION, createdAt: new Date().toISOString(), ...meta, parts: {} };
   if (parts.config) out.parts.config = { json: JSON.parse(fs.readFileSync(cfgPath, 'utf8')) };
   if (parts.db) out.parts.db = await snapshotDb(db, path.dirname(dbPath));
-  if (parts.wallet) {
+  if (parts.wallet && wallet) {
     const keystore = JSON.parse(await wallet.encrypt(password));
     out.parts.wallet = { address: wallet.address.toLowerCase(), keystore };
+  }
+  if (parts.wallet && solanaKeypair) {
+    const keystore = require('./solana/wallet').encryptKeystore(solanaKeypair, password);
+    out.parts.solanaWallet = { address: keystore.address, keystore };
   }
   return out;
 }
@@ -106,6 +111,7 @@ function parseBackup(b) {
   if (p.config && (typeof p.config.json !== 'object' || !p.config.json || Array.isArray(p.config.json))) throw new Error('Bagian pengaturan di berkas cadangan rusak.');
   if (p.db && (typeof p.db.gz !== 'string' || !/^[0-9a-f]{64}$/.test(p.db.sha256 || ''))) throw new Error('Bagian basis data di berkas cadangan rusak.');
   if (p.wallet && (typeof p.wallet.keystore !== 'object' || !p.wallet.keystore)) throw new Error('Bagian wallet di berkas cadangan rusak.');
+  if (p.solanaWallet && (typeof p.solanaWallet.keystore !== 'object' || p.solanaWallet.keystore?.format !== 'quiver-solana-keystore')) throw new Error('Bagian wallet Solana di berkas cadangan rusak.');
   return b;
 }
 
@@ -119,6 +125,7 @@ function mergeConfig(restored, current) {
     if (current[k] !== undefined) out[k] = current[k]; else delete out[k];
   }
   if (current.wallet?.key_file !== undefined) out.wallet = { ...(out.wallet || {}), key_file: current.wallet.key_file };
+  if (current.wallet?.solana_key_file !== undefined) out.wallet = { ...(out.wallet || {}), solana_key_file: current.wallet.solana_key_file };
   out.mode = { ...(out.mode || {}), dry_run: true };
   return out;
 }

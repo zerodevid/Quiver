@@ -31,6 +31,7 @@ const answer = (extra = {}) => ({
   },
   targets: extra.targets || [{ chain: 'robinhood', address: '0x' + '11'.repeat(20), label: 'target satu' }],
   wallet: extra.wallet || null,
+  solanaWallet: extra.solanaWallet || null,
 });
 
 (async () => {
@@ -137,6 +138,28 @@ const answer = (extra = {}) => ({
     assert.equal(cfg.chains.bsc.targets[0].address, '0x' + 'ab'.repeat(20));
     assert.equal(cfg.chains.bsc.targets[0].label, 'di bsc');
   });
+  await t('Solana: default endpoints, base58 target kept as typed, a 0x address refused there', () => {
+    const SOL_T = '6mch5rCLBtZ9DCnM2mx18Ud1XXhXAip7otw9LkrTXwTD';
+    const cfg = buildConfig({
+      template: TEMPLATE,
+      answers: answer({
+        chains: { robinhood: { enabled: false }, bsc: { enabled: false }, solana: { enabled: true } },
+        targets: [{ chain: 'solana', address: SOL_T, label: 'dlmm' }],
+      }),
+    });
+    assert.equal(cfg.chains.solana.enabled, true);
+    assert.ok(cfg.chains.solana.chain.endpoints.length > 0, 'template endpoints kept');
+    assert.equal(cfg.chains.solana.targets[0].address, SOL_T, 'base58 is case-sensitive');
+    assert.throws(() => buildConfig({
+      template: TEMPLATE,
+      answers: answer({ chains: { robinhood: { enabled: false }, bsc: { enabled: false }, solana: { enabled: true } }, targets: [{ chain: 'solana', address: '0x' + 'ab'.repeat(20) }] }),
+    }), /tidak valid/);
+    const flags = buildConfig({
+      template: TEMPLATE,
+      answers: answer({ chains: { robinhood: { enabled: false }, bsc: { enabled: false }, solana: { enabled: true, endpoints: [{ url: 'https://s.contoh/rpc', no_gpa: true, no_history: true }] } } }),
+    });
+    assert.deepEqual(flags.chains.solana.chain.endpoints[0], { url: 'https://s.contoh/rpc', no_gpa: true, no_history: true });
+  });
   await t('a target already in the old config is not duplicated', () => {
     const base = JSON.parse(JSON.stringify(TEMPLATE));
     base.chains.robinhood.targets = [{ address: '0x' + '11'.repeat(20), label: 'lama' }];
@@ -221,6 +244,32 @@ const answer = (extra = {}) => ({
     } finally { process.env.HOME = originalHome; }
   });
 
+  await t('Solana key: written base58 with mode 600 next to the EVM key; an old different key is backed up', () => {
+    const d = tmpdir();
+    fs.copyFileSync(path.join(ROOT, 'config.example.json'), path.join(d, 'config.example.json'));
+    fs.copyFileSync(path.join(ROOT, '.env.example'), path.join(d, '.env.example'));
+    const home = tmpdir();
+    const originalHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const { Keypair } = require('@solana/web3.js');
+      const bs58 = require('bs58').default || require('bs58');
+      const old = Keypair.generate(), kp = Keypair.generate();
+      fs.mkdirSync(path.join(home, '.lpcopy'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.lpcopy', 'solana-key'), bs58.encode(old.secretKey), { mode: 0o600 });
+      const r = applySetup({
+        root: d, cfgPath: path.join(d, 'config.json'), envPath: path.join(d, '.env'),
+        answers: answer({ solanaWallet: { secret: JSON.stringify([...kp.secretKey]) } }),
+      });
+      const file = path.join(home, '.lpcopy', 'solana-key');
+      assert.equal((fs.statSync(file).mode & 0o777).toString(8), '600');
+      assert.equal(fs.readFileSync(file, 'utf8'), bs58.encode(kp.secretKey), 'a JSON array is stored as base58');
+      assert.equal(r.solanaWallet.address, kp.publicKey.toBase58());
+      const bak = fs.readdirSync(path.join(home, '.lpcopy')).filter((f) => f.startsWith('solana-key.bak-'));
+      assert.equal(bak.length, 1);
+    } finally { process.env.HOME = originalHome; }
+  });
+
   console.log('\nbilingual wizard page');
   await t('the default is English, and the choice is shared with the dashboard', () => {
     const src = fs.readFileSync(path.join(ROOT, 'src', 'setup-page.js'), 'utf8');
@@ -274,7 +323,8 @@ const answer = (extra = {}) => ({
       assert.equal((await get('/api/setup/state', 'salah123')).status, 401);
       const st = await (await get('/api/setup/state', code)).json();
       assert.equal(st.ok, true);
-      assert.equal(st.chains.length, 2);
+      assert.equal(st.chains.length, 3);
+      assert.ok(st.chains.find((c) => c.key === 'solana' && c.kind === 'solana' && c.endpoints.length > 0), 'Solana offered with its default endpoints');
       assert.ok(st.suggestToken.length >= 20);
       assert.ok(st.chains[0].endpoints.length > 0);
 

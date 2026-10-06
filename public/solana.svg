@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Solana">
+  <defs>
+    <linearGradient id="g" x1="8" y1="56" x2="56" y2="8" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9945FF"/>
+      <stop offset="1" stop-color="#14F195"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0b0b12"/>
+  <g fill="url(#g)">
+    <path d="M18 17h32l-6 6H12z"/>
+    <path d="M12 29h32l6 6H18z"/>
+    <path d="M18 41h32l-6 6H12z"/>
+  </g>
+</svg>
