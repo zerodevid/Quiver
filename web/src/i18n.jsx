@@ -504,6 +504,7 @@ const EN = {
   'kosong': 'empty',
   'Nyalakan LIVE dulu': 'Switch to LIVE first',
   'Belum ada aset yang bisa ditukar': 'Nothing to swap yet',
+  'Sementara itu kamu tetap bisa mengutip rute dan mengecek harga.': 'Meanwhile you can still quote routes and check prices.',
   'Wallet bot kosong. Isi dengan ETH atau USDG dulu — alamatnya ada di Pengaturan.': 'The bot wallet is empty. Fund it with ETH or USDG first — the address is under Settings.',
   'Buka Pengaturan': 'Open Settings',
   'Token yang ditukar': 'Token to swap from',
