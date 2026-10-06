@@ -2011,6 +2011,11 @@ const EN = {
   'Kolom keamanan yang dipakai penilaian belum terisi di GMGN. Belum dinilai bukan berarti aman.':
     'The security fields this check relies on are empty at GMGN. Not judged does not mean safe.',
   'Penilaian dari data GMGN, bukan audit kontrak.': 'A reading of GMGN data, not a contract audit.',
+  'Fee 24 jam / likuiditas': '24h fees / liquidity',
+  'Fee pool 24 jam': 'Pool fees 24h',
+  'Fee / likuiditas 24 jam': 'Fees / liquidity 24h',
+  'APR pool': 'Pool APR',
+  'Bin step · fee': 'Bin step · fee',
   'Seluruh isi pool menurut DexScreener. Bagian kita dihitung dari nilai posisi terhadap angka itu — bukan terhadap likuiditas yang aktif di rentang harga sekarang.':
     "The pool's entire contents per DexScreener. Our share is the position's value against that figure — not against the liquidity active in the current price range.",
   'Pool ini belum terindeks di DexScreener.': 'This pool is not indexed by DexScreener yet.',

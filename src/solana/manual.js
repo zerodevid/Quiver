@@ -17,6 +17,7 @@ const { planRange, quoteToUsd } = require('../policy');
 const { share0, amountsForValue, CLMM_MAX_TICK } = require('./planner');
 const { WSOL } = require('../networks');
 const { resolveStrategy, shapeWeight, STRATEGIES } = require('./dlmm-shape');
+const { poolStats } = require('./meteora-api');
 
 const isBase58 = (a) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(a || ''));
 const str = (a) => String(a || '').trim();
@@ -49,12 +50,14 @@ class SolanaManual extends Manual {
 
   // CLMM/DLMM pools holding `token`. There is no "pool created" event that can be filtered
   // per token over public RPC (free endpoints refuse getProgramAccounts), so the candidate
-  // list comes from the DexScreener + GeckoTerminal indexes, then each address is confirmed
-  // by its account owner and its state read from the chain — the outside index only points.
+  // list comes from the Meteora DLMM API + DexScreener + GeckoTerminal indexes, then each address
+  // is confirmed by its account owner and its state read from the chain — the outside index only
+  // points. Meteora also supplies the pool statistics (TVL, volume, fees, APR) for DLMM pools.
   async scanPools(token, { onProgress = () => {}, fetchImpl = globalThis.fetch } = {}) {
     const t = str(token);
     if (!isBase58(t)) throw new Error('alamat token Solana harus base58 (32–44 karakter)');
     const cand = new Map();   // address -> {createdAt, liquidityUsd}
+    const meteoraStats = new Map();   // DLMM pool address -> poolStats()
     let ok = 0;
     const getJson = async (url) => {
       const r = await fetchImpl(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
@@ -69,7 +72,7 @@ class SolanaManual extends Manual {
       }
       ok++;
     } catch (e) { this.log(`pindai pool ${t}: DexScreener ${e.message}`); }
-    onProgress({ done: 1, total: 3 });
+    onProgress({ done: 1, total: 4 });
     try {
       const j = await getJson(`https://api.geckoterminal.com/api/v2/networks/solana/tokens/${t}/pools?page=1`);
       for (const d of j.data || []) {
@@ -83,8 +86,19 @@ class SolanaManual extends Manual {
       }
       ok++;
     } catch (e) { this.log(`pindai pool ${t}: GeckoTerminal ${e.message}`); }
-    onProgress({ done: 2, total: 3 });
-    if (!ok) throw new Error('indeks pool (DexScreener & GeckoTerminal) tidak bisa dihubungi — coba lagi sebentar');
+    onProgress({ done: 2, total: 4 });
+    // Meteora's numbers are exact for DLMM pools: they win over the other indexes.
+    try {
+      const { pools } = await this.chain.meteora.pools({ query: t, sortBy: 'tvl:desc', pageSize: 100 });
+      for (const mp of pools) {
+        const prev = cand.get(mp.address) || {};
+        cand.set(mp.address, { createdAt: mp.createdAt ?? prev.createdAt ?? null, liquidityUsd: mp.tvlUsd ?? prev.liquidityUsd ?? null });
+        meteoraStats.set(mp.address, poolStats(mp));
+      }
+      ok++;
+    } catch (e) { this.log(`pindai pool ${t}: Meteora ${e.message}`); }
+    onProgress({ done: 3, total: 4 });
+    if (!ok) throw new Error('indeks pool (Meteora, DexScreener & GeckoTerminal) tidak bisa dihubungi — coba lagi sebentar');
     if (!cand.size) return [];
 
     // Venue from the account's owner program: one getMultipleAccounts per 100 addresses.
@@ -105,7 +119,7 @@ class SolanaManual extends Manual {
       const got = await this.chain.pools(venue, list, { maxAgeMs: 0 }).catch(() => new Map());
       for (const st of got.values()) if (st && (st.token0 === t || st.token1 === t)) states.push(st);
     }
-    onProgress({ done: 3, total: 3 });
+    onProgress({ done: 4, total: 4 });
     if (!states.length) return [];
 
     const metas = await this.chain.tokens([...new Set(states.flatMap((s) => [s.token0, s.token1]))]);
@@ -126,6 +140,7 @@ class SolanaManual extends Manual {
         dec0: st.dec0 ?? byAddr.get(st.token0)?.decimals ?? 9, dec1: st.dec1 ?? byAddr.get(st.token1)?.decimals ?? 9,
         feePct: st.fee != null ? st.fee / 10000 : null, dynamicFee: false, hasHooks: false,
         quoteSymbol: qs?.symbol || null, quoteSide: qs?.side ?? null,
+        stats: meteoraStats.get(st.id) || null,
         liquidity: liq != null ? String(liq) : null,
         kosong: liq != null ? liq === 0n || (c.liquidityUsd != null && c.liquidityUsd < 1) : null,
         enabled: st.enabled !== false,

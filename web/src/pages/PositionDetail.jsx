@@ -416,6 +416,14 @@ export function MarketPanel({ pair, pool }) {
         <KV label="Volume 24 jam">{kUsd(pair.volume?.h24)}</KV>
         <KV label="Transaksi 24 jam">{tx ? <><span className="text-success">{num(tx.buys)}</span> <span className="font-normal text-muted">{t('beli')}</span> · <span className="text-danger">{num(tx.sells)}</span> <span className="font-normal text-muted">{t('jual')}</span></> : '—'}</KV>
         <KV label="Likuiditas pool">{kUsd(pair.liquidityUsd)}</KV>
+        {pair.meteora && (
+          <>
+            <KV label="Fee pool 24 jam">{kUsd(pair.meteora.fees?.h24)}</KV>
+            <KV label="Fee / likuiditas 24 jam">{pair.meteora.feeTvl?.h24 != null ? `${num(pair.meteora.feeTvl.h24, 2)}%` : '—'}</KV>
+            <KV label="APR pool">{aprText(pair.meteora.aprPct)}</KV>
+            <KV label="Bin step · fee">{pair.meteora.binStep != null ? `${pair.meteora.binStep} · ${num((pair.meteora.baseFeePct ?? 0) + (pair.meteora.dynamicFeePct ?? 0), 2)}%` : '—'}</KV>
+          </>
+        )}
         <KV label="FDV">{kUsd(pair.fdv)}</KV>
         <KV label="Pool dibuat">{pair.pairCreatedAt ? age((Date.now() - pair.pairCreatedAt) / 3600000) + ' ' + t('lalu') : '—'}</KV>
       </div>

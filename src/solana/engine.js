@@ -29,6 +29,14 @@ const fmtUnits = (raw, dec) => {
   return n >= 1 ? n.toFixed(2) : String(Number(n.toPrecision(3)));
 };
 const fmtPct = (x) => (x >= 1000 ? '999+' : x.toFixed(0));
+// Large amounts for decision reasons ("$12.3rb", "$1.45jt") — same wording as the EVM engine.
+const compactMoney = (v) => {
+  const a = Math.abs(Number(v) || 0);
+  if (a >= 1e9) return `$${(a / 1e9).toFixed(2)}m`;
+  if (a >= 1e6) return `$${(a / 1e6).toFixed(2)}jt`;
+  if (a >= 1000) return `$${(a / 1000).toFixed(1)}rb`;
+  return `$${a.toFixed(2)}`;
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const minB = (a, b) => (a < b ? a : b);
 
@@ -44,6 +52,8 @@ const BORROWED = [
   'noteTargetClaim', 'followTargetClaim',
   // scan watchdog: a tick hanging past loop.tick_stuck_seconds is released and reported
   'tickStuckMs', 'unwedge',
+  // pool liquidity/volume for the entry filter (Market: Meteora API first on Solana)
+  'poolStats',
 ];
 
 class SolanaEngine {
@@ -205,6 +215,22 @@ class SolanaEngine {
     const pool = await this.chain.pool(act.venue, act.poolRef, { maxAgeMs: 0 });
     const sum = this.positions.summary(this.ethUsd);
     const live = !this.dryRun() && this.exec.address();
+    // Market filter: a pool whose TVL or volume is thin pays no fees however much the target
+    // earns there. Figures: Meteora DLMM API for DLMM pools, DexScreener for the rest. A pool
+    // with no figures at all is let through — the filter rejects a pool PROVEN quiet.
+    const fMin = rules.filters;
+    if (fMin.min_liquidity_usd > 0 || fMin.min_volume24h_usd > 0) {
+      const pair = await this.poolStats(act.poolRef);
+      if (pair) {
+        const liq = pair.liquidityUsd, vol = pair.volume?.h24;
+        if (fMin.min_liquidity_usd > 0 && liq != null && liq < fMin.min_liquidity_usd) {
+          return this.decide(act.id, 'skip', `likuiditas pool ${compactMoney(liq)} (< ${compactMoney(fMin.min_liquidity_usd)})`);
+        }
+        if (fMin.min_volume24h_usd > 0 && vol != null && vol < fMin.min_volume24h_usd) {
+          return this.decide(act.id, 'skip', `volume 24 jam ${compactMoney(vol)} (< ${compactMoney(fMin.min_volume24h_usd)})`);
+        }
+      }
+    }
     const cash = live ? await this.spendableCash().catch(() => null) : null;
     const mirrors = this.store.all("SELECT * FROM positions WHERE chain=? AND status='open' AND mirror_of=? AND target=? AND token_id IS NOT NULL ORDER BY id",
       this.network, act.tokenId ?? '', act.target);

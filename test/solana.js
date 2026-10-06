@@ -44,13 +44,15 @@ const poolState = (over = {}) => ({
 });
 
 // The real Solana chain with a fake RPC, adapters and Jupiter.
-function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}) {
+// Meteora data API: offline by default (every address is "not a DLMM pool").
+const noMeteora = () => ({ pool: async () => null, pools: async () => ({ total: 0, pools: [] }), ohlcv: async () => null });
+function fakeChain(store, { pool = poolState(), adapter = {}, prices = {}, meteoraApi = noMeteora() } = {}) {
   const rpc = { run: async () => { throw new Error('rpc palsu'); }, primary: () => null, slot: async () => 1, allCooling: () => false, stats: () => [] };
   const jup = {
     prices: async (mints) => new Map(mints.filter((x) => prices[x] != null).map((x) => [x, prices[x]])),
     tokenInfo: async () => new Map(), quote: async () => { throw new Error('tidak dipakai'); },
   };
-  const chain = new SolanaChain(rpc, store, () => {}, 'solana', { jupiter: jup });
+  const chain = new SolanaChain(rpc, store, () => {}, 'solana', { jupiter: jup, meteoraApi });
   chain.tokenCache.set(MEME, { address: MEME, symbol: 'MEME', name: 'Meme', decimals: 9 });
   chain.pools = async (venue, addrs) => new Map(addrs.map((a) => [a, { ...pool, id: a }]));
   chain.adapters.meteora = Object.assign(chain.adapters.meteora, adapter);
