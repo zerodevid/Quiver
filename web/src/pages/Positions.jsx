@@ -52,7 +52,7 @@ export function Pair({ p, link = true }) {
             : p.inRange != null && <><span>·</span><Dot tone={p.inRange ? 'success' : 'warning'} />
               <span className={p.inRange ? 'text-success' : 'text-warning'}>{t(p.inRange ? 'in-range' : 'di luar')}</span></>}
         </div>
-        <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} compact className="mt-1" />
+        <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} venue={p.venue} compact className="mt-1" />
       </div>
     </div>
   );
@@ -281,7 +281,7 @@ export default function Positions({ param }) {
                 <TokenPair token0={c.token0} token1={c.token1} symbol0={c.symbol0} symbol1={c.symbol1} size={20} />
                 <div><PairName token0={c.token0} token1={c.token1} symbol0={c.symbol0} symbol1={c.symbol1} pool={c.pool_ref} sep="/" className="font-medium" />
                   <div className="mono mt-0.5 text-xs text-muted">{String(c.venue || '').toUpperCase()} · #{c.token_id}</div>
-                  <TradeLinks token={baseTokenOf(c)} pool={c.pool_ref} compact className="mt-1" /></div>
+                  <TradeLinks token={baseTokenOf(c)} pool={c.pool_ref} venue={c.venue} compact className="mt-1" /></div>
               </div>) },
             { key: 'tgt', label: 'Sumber', sort: (c) => c.targetLabel || c.target,
               search: (c) => `${c.targetLabel || ''} ${c.target || ''}`, render: (c) => <Source p={c} /> },

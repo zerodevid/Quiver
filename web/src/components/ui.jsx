@@ -844,11 +844,14 @@ export function WalletLinks({ address, compact = false, explorer = !compact, cla
   }
   return <LinkBar tag="Wallet" links={links.filter((x) => x.href)} compact={compact} className={className} />;
 }
-export function TradeLinks({ token, pool = null, compact = false, className = '' }) {
+// A Meteora DLMM pool has its own page; its link leads the stack when the row's venue is known.
+const METEORA_APP = { key: 'meteora', label: 'Meteora', icon: '/meteora.png', brand: '#f06f2c', href: () => '' };
+export function TradeLinks({ token, pool = null, venue = null, compact = false, className = '' }) {
   if (!token) return null;
   const kind = chainInfo().kind || 'evm';
   const links = TRADE_APPS.filter((app) => (app.kinds || ['evm']).includes(kind))
     .map((app) => ({ ...app, href: pool && app.poolHref ? app.poolHref(pool) : app.href(token) }));
+  if (venue === 'meteora' && pool) links.unshift({ ...METEORA_APP, href: `https://app.meteora.ag/dlmm/${pool}` });
   return <LinkBar tag="Trade" links={links} compact={compact} className={className} />;
 }
 // Identifier of one position in a table/drawer. A Meteora position is an anonymous account

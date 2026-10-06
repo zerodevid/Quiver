@@ -216,7 +216,7 @@ export function TargetMoves({ rows, className = '' }) {
           { key: 'pair', label: 'Pasangan', sort: (x) => `${x.symbol0}/${x.symbol1}`, render: (x) => (
             <div>
               <PairName token0={x.token0} token1={x.token1} symbol0={x.symbol0} symbol1={x.symbol1} pool={x.pool_ref} sep="/" className="block font-medium" />
-              <TradeLinks token={baseTokenOf(x)} pool={x.pool_ref} compact className="mt-1" />
+              <TradeLinks token={baseTokenOf(x)} pool={x.pool_ref} venue={x.venue} compact className="mt-1" />
             </div>) },
           { key: 'val', label: 'Nilai', align: 'end', sort: (x) => x.value_quote, render: (x) => (
             x.value_quote == null ? <span className="text-muted">—</span>

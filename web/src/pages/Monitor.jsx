@@ -238,7 +238,7 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
               <a href={'#positions/' + p.id} className="text-muted hover:text-foreground" title={t('Buka detail posisi {tag}', { tag: sel.tag })} aria-label={t('Buka detail posisi {tag}', { tag: sel.tag })}><ArrowUpRight className="size-3.5" /></a>
               {/* Logo stack: GMGN / Based / fomo / Uniswap, then DexScreener / GeckoTerminal —
                   one click from the card to an outside terminal for this token & pool. */}
-              <TradeLinks token={baseTokenOf(p0)} pool={p0.pool_ref} compact className="ml-2" />
+              <TradeLinks token={baseTokenOf(p0)} pool={p0.pool_ref} venue={p0.venue} compact className="ml-2" />
               <DataLinks pool={p0.pool_ref} dexUrl={g.pair?.url} className="ml-1.5" compact />
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.6875rem] text-muted">

@@ -126,7 +126,7 @@ export default function Activity() {
                   <TokenPair token0={a.token0} token1={a.token1} symbol0={a.symbol0} symbol1={a.symbol1} size={24} />
                   <div>
                     <PairName token0={a.token0} token1={a.token1} symbol0={a.symbol0} symbol1={a.symbol1} pool={a.pool_ref} sep=" / " className="block font-medium" />
-                    <TradeLinks token={baseTokenOf(a)} pool={a.pool_ref} compact className="mt-1" />
+                    <TradeLinks token={baseTokenOf(a)} pool={a.pool_ref} venue={a.venue} compact className="mt-1" />
                   </div>
                 </div> : <span className="text-muted">—</span>) },
             { key: 'range', label: 'Rentang harga', className: 'min-w-44', sortable: false, render: (a) => (a.tick_lower != null
