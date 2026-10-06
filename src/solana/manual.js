@@ -493,7 +493,10 @@ class SolanaManual extends Manual {
   // so there is no need to scan the transfer history like on EVM.
   async seenTokens() { return []; }
 
-  async held() {
+  // fresh: a swap decides amounts from this, so the balance must be read now (retried on
+  // rate limits, never stale). Otherwise (page list, quotes) a recent cached balance is fine
+  // when the RPC refuses, and an empty one beats failing the whole page.
+  async held({ fresh = false } = {}) {
     const eng = this.engine;
     const set = new Set([WSOL, this.chain.ADDR.usdg, this.chain.ADDR.usdt]);
     const custom = new Set(this.customTokens());
@@ -503,7 +506,19 @@ class SolanaManual extends Manual {
     }
     for (const it of eng.leftovers()) if (it.token) set.add(it.token);
     for (const a of custom) set.add(a);
-    const bal = eng.exec.address() ? await eng.exec.balances() : new Map();
+    let bal = new Map();
+    if (eng.exec.address()) {
+      for (let i = 0; ; i++) {
+        try { bal = await eng.exec.balances(); break; } catch (e) {
+          if (fresh && i < 2) { await new Promise((r) => setTimeout(r, 2000)); continue; }
+          if (fresh) throw new Error('RPC Solana sedang membatasi permintaan (429) — saldo belum bisa dibaca, tidak ada transaksi dikirim. Coba lagi sebentar.');
+          const stale = eng.exec.staleBalances(10 * 60_000);
+          this.log(`saldo wallet tidak terbaca (${String(e.message).slice(0, 80)}) — ${stale ? 'pakai saldo terakhir' : 'ditampilkan kosong'}`);
+          bal = stale || new Map();
+          break;
+        }
+      }
+    }
     for (const [k, v] of bal) if (k !== 'SOL' && isBase58(k) && v > 0n) set.add(k);
     const list = [...set];
     const metas = await this.chain.tokens(list).catch(() => []);
@@ -525,9 +540,9 @@ class SolanaManual extends Manual {
 
   // The same parse as amountRaw WITHOUT the balance check (the swap page still quotes an
   // amount above the balance, with the button disabled). SOL = native + wSOL minus the reserve.
-  async amountInfo(token, input) {
+  async amountInfo(token, input, { fresh = false } = {}) {
     const tok = str(token);
-    const h = (await this.held()).find((x) => x.address === tok);
+    const h = (await this.held({ fresh })).find((x) => x.address === tok);
     const dec = h?.decimals ?? 9;
     const bal = BigInt(h?.raw || '0');
     const reserve = this.gasReserve();
@@ -549,7 +564,7 @@ class SolanaManual extends Manual {
   }
 
   async amountRaw(token, input) {
-    const { raw, maxVal, dec, symbol } = await this.amountInfo(token, input);
+    const { raw, maxVal, dec, symbol } = await this.amountInfo(token, input, { fresh: true });
     if (raw > maxVal) throw new Error(`saldo cuma ${(Number(maxVal) / 10 ** dec).toPrecision(6)} ${symbol}`.trim());
     return raw;
   }

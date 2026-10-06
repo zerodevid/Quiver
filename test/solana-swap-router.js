@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const { SwapRouter } = require('../src/solana/swap-router');
 const { RaydiumSwap } = require('../src/solana/swap-raydium');
 const { LifiSwap, OkxSwap, OpenOceanSwap, DflowSwap, decodeTx } = require('../src/solana/swap-adapters');
+const { SolanaManual } = require('../src/solana/manual');
 const { Keypair, VersionedTransaction, TransactionMessage } = require('@solana/web3.js');
 const bs58 = require('bs58').default;
 
@@ -219,6 +220,49 @@ const router = (...aggregators) => new SwapRouter({ aggregators, log: () => {}, 
     assert.strictEqual(routes[1].blocker, 'butuh API key');
     assert.deepStrictEqual(asked, []);
     assert.strictEqual(r.byId.get('okx').enabled(), false);
+  });
+
+  // ---- balance reads under RPC rate limits -------------------------------------------------
+  const WSOL_ = SOL;
+  const fakeManual = (balances) => {
+    const m = Object.create(SolanaManual.prototype);
+    const calls = { n: 0 };
+    m.log = () => {}; m.network = 'solana';
+    m.engine = { exec: { address: () => OWNER, balances: async () => { calls.n++; return balances(calls.n); },
+      staleBalances: (age) => (m.cache && Date.now() - m.cache.at <= age ? m.cache.map : null) },
+      leftovers: () => [] };
+    m.chain = { ADDR: { usdg: USDC, usdt: USDC }, QUOTES: {}, tokens: async () => [] };
+    m.store = { all: () => [] };
+    m.customTokens = () => [];
+    m.rawOf = (bal, a) => bal.get(a) || 0n;
+    m.cache = { at: Date.now(), map: new Map([[WSOL_, 5n * 10n ** 9n]]) };
+    return { m, calls };
+  };
+  const E429 = () => new Error('429 Too Many Requests');
+
+  await t('a quote still works from the cached balance when the RPC answers 429', async () => {
+    const { m } = fakeManual(() => { throw E429(); });
+    const held = await m.held();
+    assert.strictEqual(held.find((x) => x.address === WSOL_).raw, String(5n * 10n ** 9n));
+  });
+
+  await t('with no cache and a 429, the page list is empty instead of failing', async () => {
+    const { m } = fakeManual(() => { throw E429(); });
+    m.cache = null;
+    assert.strictEqual((await m.held()).find((x) => x.address === WSOL_).raw, '0');
+  });
+
+  await t('a real swap needs a FRESH balance: retried, then refused (never the stale one)', async () => {
+    const { m, calls } = fakeManual(() => { throw E429(); });
+    const t0 = Date.now();
+    await assert.rejects(m.held({ fresh: true }), /429.*tidak ada transaksi dikirim/);
+    assert.strictEqual(calls.n, 3, 'tried three times');
+    assert.ok(Date.now() - t0 >= 3900, 'waited between tries');
+  });
+
+  await t('a real swap recovers when the RPC answers on the retry', async () => {
+    const { m } = fakeManual((n) => { if (n < 2) throw E429(); return new Map([[WSOL_, 7n]]); });
+    assert.strictEqual((await m.held({ fresh: true })).find((x) => x.address === WSOL_).raw, '7');
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);
