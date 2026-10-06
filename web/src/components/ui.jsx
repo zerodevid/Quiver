@@ -857,7 +857,7 @@ export function TradeLinks({ token, pool = null, compact = false, className = ''
 export function PositionRef({ p, id = p.token_id }) {
   if (p.venue === 'meteora' && p.pool_ref) {
     return (
-      <span className="trade-bar" onClick={(e) => e.stopPropagation()}>
+      <span className="trade-stack" onClick={(e) => e.stopPropagation()}>
         <a href={`https://app.meteora.ag/dlmm/${p.pool_ref}`} target="_blank" rel="noreferrer" className="trade-link"
           style={{ '--brand': '#f06f2c' }} title={t('Buka {app}', { app: 'Meteora' })} aria-label={t('Buka {app}', { app: 'Meteora' })}>
           <img src="/meteora.png" alt="" /><ArrowUpRight />
