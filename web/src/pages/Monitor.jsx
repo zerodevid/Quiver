@@ -32,7 +32,7 @@ import { TokenPair, PairName } from '../components/TokenIcon';
 import { GmgnDot, GmgnProvider } from '../components/GmgnDot';
 import { useAlertPrefs, alarm, bumpTitle } from '../components/TargetAlerts';
 import { orientCandles, tfFor, SECS, LiveBadge, kUsd } from './PositionDetail';
-import { usd, pct, tone, num, age, ago, short, price, tickPrice, sqrtPrice } from '../fmt';
+import { usd, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice } from '../fmt';
 import { useI18n } from '../i18n';
 import { canonAddr } from '../chain';
 
@@ -238,7 +238,7 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
               <a href={'#positions/' + p.id} className="text-muted hover:text-foreground" title={t('Buka detail posisi {tag}', { tag: sel.tag })} aria-label={t('Buka detail posisi {tag}', { tag: sel.tag })}><ArrowUpRight className="size-3.5" /></a>
               {/* Logo stack: GMGN / Based / fomo / Uniswap, then DexScreener / GeckoTerminal —
                   one click from the card to an outside terminal for this token & pool. */}
-              <TradeLinks token={baseTokenOf(p0)} pool={p0.pool_ref} compact className="ml-2" />
+              <TradeLinks token={baseTokenOf(p0)} pool={p0.pool_ref} venue={p0.venue} compact className="ml-2" />
               <DataLinks pool={p0.pool_ref} dexUrl={g.pair?.url} className="ml-1.5" compact />
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.6875rem] text-muted">
@@ -443,7 +443,7 @@ export default function Monitor() {
     const m = mon?.positions?.[p.id] || null;
     const trig = triggersOf(p, m, live?.tick ?? null, now, t);
     // Short position name: its NFT number if present (that is what shows on Uniswap), otherwise the bot id.
-    const tag = p.token_id ? `#${p.token_id}` : `#${p.id}`;
+    const tag = p.token_id ? `#${shortId(p.token_id)}` : `#${p.id}`;
     return { p, ref, mon: m, live, edge, full, lo, hi, tag, trig, risk: riskOf(p, trig, edge) };
   }), [open, fresh, mon, now, t]);
 

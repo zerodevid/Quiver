@@ -29,7 +29,11 @@ function research({ pools = {}, live = [] } = {}) {
   chain.pool = async (venue, addr) => pools[addr] || null;
   chain.tokens = async (list) => list.map((a) => ({ address: a, symbol: a === WSOL ? 'SOL' : a === USDC ? 'USDC' : 'X', decimals: a === WSOL ? 9 : 6 }));
   for (const a of Object.values(chain.adapters)) a.listPositions = async () => live.filter((p) => p.venue === a.key);
-  return { r: new SolanaWalletResearch({ rpc: { slot: async () => 1 }, store, chain, log: () => {} }), store };
+  // The token tracker (proceeds) reads transfer history: answer "no transfers" so a scan is
+  // complete — a refused read would (rightly) leave the tokens counted as still held.
+  const conn = { getSignaturesForAddress: async () => [], getTokenAccountsByOwner: async () => ({ value: [] }), getParsedTransaction: async () => null };
+  const rpc = { slot: async () => 1, run: async (fn) => fn(conn) };
+  return { r: new SolanaWalletResearch({ rpc, store, chain, log: () => {} }), store };
 }
 const ev = (r, name) => { const f = fx(name); return r.extract({ sig: f.signature, tx: f.tx }); };
 
@@ -96,7 +100,10 @@ const ev = (r, name) => { const f = fx(name); return r.extract({ sig: f.signatur
     assert.ok(p.invested_q > 7 && p.invested_q < 8.5, `capital $${p.invested_q}`);   // 0.0336 SOL + 3.79 USDC ≈ $7.6
     assert.ok(p.returned_q > 7 && p.returned_q < 8.5, `proceeds $${p.returned_q}`);
     assert.ok(p.fees_q > 0);
-    assert.ok(Math.abs(p.pnl_q - (p.returned_q - p.invested_q)) < 1e-9);
+    // The token tracker owns the PnL of a closed position: the SOL side that came back is tracked
+    // like any non-quote side (as ETH is on EVM), realized where sold and valued now where held.
+    assert.ok(p.realized_q != null && p.unrealized_q != null, 'tracked');
+    assert.ok(Math.abs(p.pnl_q - (p.realized_q + p.unrealized_q - p.invested_q)) < 1e-9);
     assert.deepStrictEqual([p.tick_lower, p.tick_upper], [-21596, -21192]);
     assert.deepStrictEqual(store.all('SELECT kind FROM wevents ORDER BY block, log_index').map((x) => x.kind), ['mint', 'decrease', 'collect']);
     const w = JSON.parse(store.get('SELECT stats FROM wallets').stats);

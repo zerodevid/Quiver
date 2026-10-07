@@ -201,8 +201,8 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
   // ---- swap aggregators (swaprouter.js) ----
   // Secrets never go back to the browser whole: only whether they are set, a masked prefix,
   // and which .env variable supplies them (those cannot be edited here).
-  const AGG_FIELDS = { kyber: [], okx: ['api_key', 'secret_key', 'passphrase', 'project_id'], lifi: ['api_key'], zerox: ['api_key'], oneinch: ['api_key'], openocean: ['api_key'] };
-  const router = () => engine.kyber;
+  const AGG_FIELDS = { jupiter: [], raydium: [], dflow: ['api_key'], kyber: [], okx: ['api_key', 'secret_key', 'passphrase', 'project_id'], lifi: ['api_key'], zerox: ['api_key'], oneinch: ['api_key'], openocean: ['api_key'] };
+  const router = () => (chain.kind === 'solana' ? chain.router : engine.kyber);
   const aggView = () => {
     const r = router();
     if (!r?.byId) return null;
@@ -225,7 +225,27 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
   // Quote caches and rate-limit cooldowns belong to the old settings: drop them in every
   // chain's router so a new key or switch takes effect on the next swap.
   const resetAggregators = () => {
+    for (const e of engines) e.chain?.router?.setConfig?.(cfg);
     for (const e of engines) for (const a of e.kyber?.adapters || []) { a.cache?.clear?.(); if ('cooldownUntil' in a) a.cooldownUntil = 0; a.warned?.clear?.(); }
+  };
+
+  // Solana: every aggregator quotes `usd` worth of USDC → SOL (prices from Jupiter).
+  const solanaAggregatorTest = async (r, ch, usd, onlyId) => {
+    const inMint = ch.ADDR.usdg, outMint = ch.ADDR.native;
+    const amountIn = BigInt(Math.round(usd * 10 ** ch.usdgDecimals));
+    const rows = await Promise.all((onlyId ? [onlyId] : r.order()).map(async (id) => {
+      const a = r.byId.get(id);
+      if (!a) return { id, error: 'tidak dikenal' };
+      if (!a.enabled()) return { id, label: a.label, skipped: a.blocker() };
+      const t0 = Date.now();
+      const q = await a.quote(inMint, outMint, amountIn).catch((e) => ({ error: e.message }));
+      const ms = Date.now() - t0;
+      if (!q || q.error) return { id, label: a.label, ms, error: q?.error || 'tidak ada rute' };
+      const dex = [...new Set((q.routePlan || []).map((p) => p.swapInfo?.label).filter(Boolean))].join(' → ');
+      return { id, label: a.label, ms, amountOut: Number(q.outAmount) / 10 ** 9, dex };
+    }));
+    const best = rows.filter((x) => x.amountOut > 0).sort((x, y) => y.amountOut - x.amountOut)[0];
+    return { ok: true, usd, symbolIn: ch.usdgSymbol, symbolOut: ch.nativeSymbol, rows, best: best?.id || null };
   };
 
   const rpcView = () => {
@@ -327,7 +347,11 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
           fromEnv: keyFromEnv() ? keyEnvName : null,
           kind: SOL ? 'solana' : 'evm',
         },
-        mode: { dry_run: engine.dryRun(), paused: engine.paused() },
+        mode: {
+          dry_run: engine.dryRun(), paused: engine.paused(),
+          // Simulation with a virtual balance (paper.js): the configured balance and how it is doing.
+          sim: engine.paper ? { balance_usd: Number(cfg.mode?.sim_balance_usd) || 0, friction_pct: engine.paper.frictionPct(), status: engine.paper.status() } : null,
+        },
         risk: {
           max_daily_drawdown_pct: cfg.risk?.max_daily_drawdown_pct ?? 0,
           status: { ...engine.drawdownStatus(), equityUsd: await equityNow() },
@@ -583,6 +607,7 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       const r = router();
       if (!r?.byId) return { error: 'Router swap belum siap.' };
       const usd = Math.min(1000, Math.max(1, Number(b.usd) || 10));
+      if (chain.kind === 'solana') return solanaAggregatorTest(r, chain, usd, b.id);
       const amountIn = BigInt(Math.round(usd * 10 ** chain.usdgDecimals));
       const ids = b.id ? [b.id] : r.order();
       resetAggregators();
@@ -610,8 +635,33 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       cfg.mode = cfg.mode || {};
       cfg.mode.dry_run = !b.live;
       saveCfg();
+      engine.paper?.settle();     // LIVE on: the simulated positions are set aside, not mixed with real ones
       log(`mode diubah ke ${b.live ? 'LIVE' : 'SIMULASI'} dari halaman Pengaturan`);
       return { ok: true, dry_run: cfg.mode.dry_run };
+    },
+
+    // ---- simulation balance (paper trading) ----
+    // balance_usd > 0 turns the simulation into a paper-trading book: open follows open, close
+    // follows close, with a virtual cash balance and profit. 0 = the plain simulation (decisions
+    // are only recorded). `reset` starts the book over from the balance.
+    'POST /api/settings/sim': async (req) => {
+      const b = await readBody(req);
+      let balance, friction;
+      try {
+        balance = b.balance_usd == null ? (Number(cfg.mode?.sim_balance_usd) || 0) : num(b.balance_usd, 0, 100_000_000, 'Saldo simulasi');
+        friction = b.friction_pct == null ? null : num(b.friction_pct, 0, 10, 'Biaya simulasi');
+      } catch (e) { return { error: e.message }; }
+      cfg.mode = cfg.mode || {};
+      cfg.mode.sim_balance_usd = balance;
+      if (friction != null) cfg.mode.sim_friction_pct = friction;
+      saveCfg();
+      if (!engine.paper) return { error: 'engine ini belum mendukung simulasi dengan saldo' };
+      let retired = 0;
+      if (b.reset) retired = engine.paper.reset();
+      else if (engine.paper.on()) engine.paper.ensureSince();
+      retired += engine.paper.settle();
+      log(`saldo simulasi diatur ke $${balance}${b.reset ? ' (diulang dari awal)' : ''} dari halaman Pengaturan`);
+      return { ok: true, balance_usd: balance, retired, status: engine.paper.status() };
     },
 
     // ---- risk ----

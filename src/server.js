@@ -805,6 +805,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     topPct: b.topPct != null ? Number(b.topPct) : 0, bottomPct: Number(b.bottomPct),
     layers: Number(b.layers), method: String(b.method || 'linear'),
   });
+  // Wallet capital for net PnL: the virtual balance in simulation (paper.js), else the tracked deposits.
+  const capitalOf = () => (engine.paper?.on?.() ? engine.paper.capital() : engine.capital?.summary?.() || null);
+  const capitalRows = () => (engine.paper?.on?.() ? [] : engine.capital.rows());
   const routes = {
     'GET /api/overview': async () => {
       // Cash is re-read if a tx has landed in a block since the last read (see
@@ -826,11 +829,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // without the curve/calendar, so it is cheap enough to be polled every 5 seconds (the tab title).
       const value = (cash?.usd || 0) + s.exposureUsd + (s.leftoverUsd || 0) + s.feeUsd;
       const pnl = s.realizedUsd + s.unrealizedUsd;
-      const capital = engine.capital?.summary?.() || null;
+      const capital = capitalOf();
       const wallet = engine.positions.lastSync ? { value, pnl, netPnl: capital && cash ? value - capital.capitalUsd : null } : null;
       return {
         // auth: the token gate is on → the dashboard shows a logout button.
-        mode: { dry_run: engine.dryRun(), paused: engine.paused(), wallet: engine.exec.address(), auth: !!tokenNow(), drawdown: engine.drawdownStatus() },
+        mode: { dry_run: engine.dryRun(), paused: engine.paused(), wallet: engine.exec.address(), auth: !!tokenNow(), drawdown: engine.drawdownStatus(), sim: engine.paper?.status?.() ?? null },
         wallet,
         chain: {
           head: engine.head, cursor: engine.cursor, lag: engine.head - engine.cursor, ethUsd: engine.ethUsd, headSpread: engine.headSpread,
@@ -890,9 +893,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // Wallet net PnL = total − capital(t); capital(t) = baseline + deposits − withdrawals
       // up to t (see capital.js). An equity point without cash (NULL) has no legitimate
       // total, so its net is not computed either.
-      const capital = engine.capital?.summary?.() || null;
+      const capital = capitalOf();
       if (capital) {
-        const deps = engine.capital.rows();
+        const deps = capitalRows();
         const capAt = (ts) => capital.baselineUsd + deps.filter((d) => d.ts <= ts).reduce((a, d) => a + (d.kind === 'deposit' ? d.usd : -d.usd), 0);
         // The "now" point without cash is also not legitimate: right after a restart cash is not yet
         // read, total = positions only, and the chart end plunges by the whole cash amount.
@@ -982,7 +985,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           // Gas + swap slippage of copy attempts that never became a position, all targets.
           failedCopyUsd: [...costs.failed(engine.ethUsd).values()].reduce((a, f) => a + f.totalUsd, 0),
         },
-        capital: capital ? { ...capital, deposits: engine.capital.rows().map((d) => ({
+        capital: capital ? { ...capital, deposits: capitalRows().map((d) => ({
           ts: d.ts, kind: d.kind, symbol: d.symbol, amount: Number(d.amount) / (d.symbol === chain.usdgSymbol ? 10 ** chain.usdgDecimals : 1e18), usd: d.usd, ethUsd: d.eth_usd, txHash: d.tx_hash, counterparty: d.counterparty,
         })) } : null,
         stats: {
@@ -1765,6 +1768,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         if (b.dry_run === false && !engine.exec.address()) return { error: 'Pasang wallet dulu sebelum menyalakan LIVE.' };
         if (b.dry_run === false && String(b.confirm || '') !== 'LIVE') return { error: 'Ketik LIVE untuk konfirmasi.' };
         cfg.mode = cfg.mode || {}; cfg.mode.dry_run = b.dry_run; saveCfg();
+        engine.paper?.settle?.();   // LIVE on: simulated positions are set aside, not mixed with real ones
       }
       if (typeof b.paused === 'boolean') { if (engine.setPaused) engine.setPaused(b.paused); else store.setState('paused', b.paused ? '1' : '0'); }
       return { ok: true, mode: { dry_run: engine.dryRun(), paused: engine.paused() } };
@@ -2277,6 +2281,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const force = b.force === true;
       const pos = store.get("SELECT * FROM positions WHERE chain=? AND id=? AND status='open'", chain.network, Number(b.id));
       if (!pos) return { error: 'posisi tidak ditemukan' };
+      // A virtual position (simulation with a balance) is closed in the books at the current price.
+      if (engine.paper?.on?.() && require('./paper').isSim(pos)) {
+        try {
+          const r = await engine.paper.close(pos, { full: true, liquidity: pos.liquidity });
+          store.log('info', `tutup manual: ${r.note}`);
+          return { ok: true, tx: null, outUsd: r.outUsd, pnlUsd: r.outUsd - r.costUsd, sold: null };
+        } catch (e) { return { error: e.message }; }
+      }
       if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
       try {
         let r;

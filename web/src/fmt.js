@@ -25,6 +25,9 @@ export const kUsd = (v) => {
 export const pct = (v, d = 1) => (v == null ? '—'
   : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d }) + '%');
 export const num = (v, d = 0) => (v == null ? '—' : Number(v).toLocaleString(loc(), { maximumFractionDigits: d }));
+// Position ids: EVM NFT ids are short numbers and stay as they are; Solana position
+// addresses (32–44 base58 characters) are shortened like wallet addresses.
+export const shortId = (id) => (id == null ? '' : String(id).length > 12 ? short(String(id)) : String(id));
 export const short = (a) => (a ? a.slice(0, 6) + '…' + a.slice(-4) : '—');
 // The block explorer of the chain being shown (Blockscout / BscScan use the same /tx
 // and /address paths) — the transaction links in the position history and activity.

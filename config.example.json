@@ -136,6 +136,7 @@
       },
       "mode": {
         "dry_run": true,
+        "sim_balance_usd": 0,
         "paused": false
       },
       "gas": {
@@ -208,6 +209,7 @@
       },
       "mode": {
         "dry_run": true,
+        "sim_balance_usd": 0,
         "paused": false
       },
       "loop": {
@@ -287,6 +289,7 @@
       },
       "mode": {
         "dry_run": true,
+        "sim_balance_usd": 0,
         "paused": false
       },
       "loop": {

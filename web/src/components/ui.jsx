@@ -6,7 +6,7 @@ import {
   Switch, Table, Spinner, Alert, Pagination, AlertDialog, Button,
 } from '@heroui/react';
 import { Inbox, Search, ArrowLeft, ArrowUpRight, Copy, Check, ExternalLink, RefreshCw } from 'lucide-react';
-import { price, tickPrice, sqrtPrice, widthPct, pct, short, txHref, addrHref, debankHref, lpagentHref, etherscanHref, ago } from '../fmt';
+import { price, tickPrice, sqrtPrice, widthPct, pct, short, shortId, txHref, addrHref, debankHref, lpagentHref, etherscanHref, ago } from '../fmt';
 import { breakEven } from '../breakeven';
 import { useTick } from '../hooks';
 import { translate as t } from '../i18n';
@@ -844,12 +844,31 @@ export function WalletLinks({ address, compact = false, explorer = !compact, cla
   }
   return <LinkBar tag="Wallet" links={links.filter((x) => x.href)} compact={compact} className={className} />;
 }
-export function TradeLinks({ token, pool = null, compact = false, className = '' }) {
+// A Meteora DLMM pool has its own page; its link leads the stack when the row's venue is known.
+const METEORA_APP = { key: 'meteora', label: 'Meteora', icon: '/meteora.png', brand: '#f06f2c', href: () => '' };
+export function TradeLinks({ token, pool = null, venue = null, compact = false, className = '' }) {
   if (!token) return null;
   const kind = chainInfo().kind || 'evm';
   const links = TRADE_APPS.filter((app) => (app.kinds || ['evm']).includes(kind))
     .map((app) => ({ ...app, href: pool && app.poolHref ? app.poolHref(pool) : app.href(token) }));
+  if (venue === 'meteora' && pool) links.unshift({ ...METEORA_APP, href: `https://app.meteora.ag/dlmm/${pool}` });
   return <LinkBar tag="Trade" links={links} compact={compact} className={className} />;
+}
+// Identifier of one position in a table/drawer. A Meteora position is an anonymous account
+// address, useless to read: show a button to the pool on Meteora instead. Other venues keep
+// the "#id" they always had.
+export function PositionRef({ p, id = p.token_id }) {
+  if (p.venue === 'meteora' && p.pool_ref) {
+    return (
+      <span className="trade-stack" onClick={(e) => e.stopPropagation()}>
+        <a href={`https://app.meteora.ag/dlmm/${p.pool_ref}`} target="_blank" rel="noreferrer" className="trade-link"
+          style={{ '--brand': '#f06f2c' }} title={t('Buka {app}', { app: 'Meteora' })} aria-label={t('Buka {app}', { app: 'Meteora' })}>
+          <img src="/meteora.png" alt="" /><ArrowUpRight />
+        </a>
+      </span>
+    );
+  }
+  return <span className="mono" title={String(id)}>#{shortId(id)}</span>;
 }
 // Third-party market data (DexScreener, GeckoTerminal) — the pool page if the pool
 // is known, the token page if only the token. dexUrl: the DexScreener URL already

@@ -17,6 +17,7 @@ const { planRange, quoteToUsd } = require('../policy');
 const { share0, amountsForValue, CLMM_MAX_TICK } = require('./planner');
 const { WSOL } = require('../networks');
 const { resolveStrategy, shapeWeight, STRATEGIES } = require('./dlmm-shape');
+const { poolStats } = require('./meteora-api');
 
 const isBase58 = (a) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(a || ''));
 const str = (a) => String(a || '').trim();
@@ -49,12 +50,14 @@ class SolanaManual extends Manual {
 
   // CLMM/DLMM pools holding `token`. There is no "pool created" event that can be filtered
   // per token over public RPC (free endpoints refuse getProgramAccounts), so the candidate
-  // list comes from the DexScreener + GeckoTerminal indexes, then each address is confirmed
-  // by its account owner and its state read from the chain — the outside index only points.
+  // list comes from the Meteora DLMM API + DexScreener + GeckoTerminal indexes, then each address
+  // is confirmed by its account owner and its state read from the chain — the outside index only
+  // points. Meteora also supplies the pool statistics (TVL, volume, fees, APR) for DLMM pools.
   async scanPools(token, { onProgress = () => {}, fetchImpl = globalThis.fetch } = {}) {
     const t = str(token);
     if (!isBase58(t)) throw new Error('alamat token Solana harus base58 (32–44 karakter)');
     const cand = new Map();   // address -> {createdAt, liquidityUsd}
+    const meteoraStats = new Map();   // DLMM pool address -> poolStats()
     let ok = 0;
     const getJson = async (url) => {
       const r = await fetchImpl(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
@@ -69,7 +72,7 @@ class SolanaManual extends Manual {
       }
       ok++;
     } catch (e) { this.log(`pindai pool ${t}: DexScreener ${e.message}`); }
-    onProgress({ done: 1, total: 3 });
+    onProgress({ done: 1, total: 4 });
     try {
       const j = await getJson(`https://api.geckoterminal.com/api/v2/networks/solana/tokens/${t}/pools?page=1`);
       for (const d of j.data || []) {
@@ -83,8 +86,19 @@ class SolanaManual extends Manual {
       }
       ok++;
     } catch (e) { this.log(`pindai pool ${t}: GeckoTerminal ${e.message}`); }
-    onProgress({ done: 2, total: 3 });
-    if (!ok) throw new Error('indeks pool (DexScreener & GeckoTerminal) tidak bisa dihubungi — coba lagi sebentar');
+    onProgress({ done: 2, total: 4 });
+    // Meteora's numbers are exact for DLMM pools: they win over the other indexes.
+    try {
+      const { pools } = await this.chain.meteora.pools({ query: t, sortBy: 'tvl:desc', pageSize: 100 });
+      for (const mp of pools) {
+        const prev = cand.get(mp.address) || {};
+        cand.set(mp.address, { createdAt: mp.createdAt ?? prev.createdAt ?? null, liquidityUsd: mp.tvlUsd ?? prev.liquidityUsd ?? null });
+        meteoraStats.set(mp.address, poolStats(mp));
+      }
+      ok++;
+    } catch (e) { this.log(`pindai pool ${t}: Meteora ${e.message}`); }
+    onProgress({ done: 3, total: 4 });
+    if (!ok) throw new Error('indeks pool (Meteora, DexScreener & GeckoTerminal) tidak bisa dihubungi — coba lagi sebentar');
     if (!cand.size) return [];
 
     // Venue from the account's owner program: one getMultipleAccounts per 100 addresses.
@@ -105,7 +119,7 @@ class SolanaManual extends Manual {
       const got = await this.chain.pools(venue, list, { maxAgeMs: 0 }).catch(() => new Map());
       for (const st of got.values()) if (st && (st.token0 === t || st.token1 === t)) states.push(st);
     }
-    onProgress({ done: 3, total: 3 });
+    onProgress({ done: 4, total: 4 });
     if (!states.length) return [];
 
     const metas = await this.chain.tokens([...new Set(states.flatMap((s) => [s.token0, s.token1]))]);
@@ -126,6 +140,7 @@ class SolanaManual extends Manual {
         dec0: st.dec0 ?? byAddr.get(st.token0)?.decimals ?? 9, dec1: st.dec1 ?? byAddr.get(st.token1)?.decimals ?? 9,
         feePct: st.fee != null ? st.fee / 10000 : null, dynamicFee: false, hasHooks: false,
         quoteSymbol: qs?.symbol || null, quoteSide: qs?.side ?? null,
+        stats: meteoraStats.get(st.id) || null,
         liquidity: liq != null ? String(liq) : null,
         kosong: liq != null ? liq === 0n || (c.liquidityUsd != null && c.liquidityUsd < 1) : null,
         enabled: st.enabled !== false,
@@ -478,7 +493,10 @@ class SolanaManual extends Manual {
   // so there is no need to scan the transfer history like on EVM.
   async seenTokens() { return []; }
 
-  async held() {
+  // fresh: a swap decides amounts from this, so the balance must be read now (retried on
+  // rate limits, never stale). Otherwise (page list, quotes) a recent cached balance is fine
+  // when the RPC refuses, and an empty one beats failing the whole page.
+  async held({ fresh = false } = {}) {
     const eng = this.engine;
     const set = new Set([WSOL, this.chain.ADDR.usdg, this.chain.ADDR.usdt]);
     const custom = new Set(this.customTokens());
@@ -488,7 +506,19 @@ class SolanaManual extends Manual {
     }
     for (const it of eng.leftovers()) if (it.token) set.add(it.token);
     for (const a of custom) set.add(a);
-    const bal = eng.exec.address() ? await eng.exec.balances() : new Map();
+    let bal = new Map();
+    if (eng.exec.address()) {
+      for (let i = 0; ; i++) {
+        try { bal = await eng.exec.balances(); break; } catch (e) {
+          if (fresh && i < 2) { await new Promise((r) => setTimeout(r, 2000)); continue; }
+          if (fresh) throw new Error('RPC Solana sedang membatasi permintaan (429) — saldo belum bisa dibaca, tidak ada transaksi dikirim. Coba lagi sebentar.');
+          const stale = eng.exec.staleBalances(10 * 60_000);
+          this.log(`saldo wallet tidak terbaca (${String(e.message).slice(0, 80)}) — ${stale ? 'pakai saldo terakhir' : 'ditampilkan kosong'}`);
+          bal = stale || new Map();
+          break;
+        }
+      }
+    }
     for (const [k, v] of bal) if (k !== 'SOL' && isBase58(k) && v > 0n) set.add(k);
     const list = [...set];
     const metas = await this.chain.tokens(list).catch(() => []);
@@ -510,9 +540,9 @@ class SolanaManual extends Manual {
 
   // The same parse as amountRaw WITHOUT the balance check (the swap page still quotes an
   // amount above the balance, with the button disabled). SOL = native + wSOL minus the reserve.
-  async amountInfo(token, input) {
+  async amountInfo(token, input, { fresh = false } = {}) {
     const tok = str(token);
-    const h = (await this.held()).find((x) => x.address === tok);
+    const h = (await this.held({ fresh })).find((x) => x.address === tok);
     const dec = h?.decimals ?? 9;
     const bal = BigInt(h?.raw || '0');
     const reserve = this.gasReserve();
@@ -534,7 +564,7 @@ class SolanaManual extends Manual {
   }
 
   async amountRaw(token, input) {
-    const { raw, maxVal, dec, symbol } = await this.amountInfo(token, input);
+    const { raw, maxVal, dec, symbol } = await this.amountInfo(token, input, { fresh: true });
     if (raw > maxVal) throw new Error(`saldo cuma ${(Number(maxVal) / 10 ** dec).toPrecision(6)} ${symbol}`.trim());
     return raw;
   }
@@ -561,26 +591,32 @@ class SolanaManual extends Manual {
     if (!amountRaw || BigInt(amountRaw) <= 0n) return { error: 'jumlah nol' };
     const rules = eng.rulesFrom(null);
     const [mi, mo] = await this.chain.tokens([ti, to]);
-    let q;
-    try { q = await this.chain.jup.quote(ti, to, BigInt(amountRaw), { slippageBps: rules.swap.max_slippage_bps }); }
-    catch (e) { return { error: `Jupiter tidak menemukan rute: ${e.message}` }; }
+    const all = await this.chain.router.quoteAll(ti, to, BigInt(amountRaw), { slippageBps: rules.swap.max_slippage_bps });
+    const best = all.find((r) => r.state === 'ok');
+    if (!best) return { error: `Jupiter tidak menemukan rute: ${all.filter((r) => r.state === 'error').map((r) => `${r.label}: ${r.error}`).join('; ') || 'semua agregator mati'}` };
     const px = await this.chain.jup.prices([ti, to]).catch(() => new Map());
     const amountIn = Number(BigInt(amountRaw)) / 10 ** (mi.decimals ?? 9);
-    const amountOut = Number(BigInt(q.outAmount)) / 10 ** (mo.decimals ?? 9);
-    const usdIn = px.get(ti) ? amountIn * px.get(ti) : null;
-    const usdOut = px.get(to) ? amountOut * px.get(to) : null;
-    const loss = usdIn && usdOut ? Math.round(((usdIn - usdOut) / usdIn) * 10_000) : null;
-    const dex = [...new Set((q.routePlan || []).map((r) => r.swapInfo?.label).filter(Boolean))].join(' → ') || 'Jupiter';
+    const maxLoss = rules.exit.sell_max_loss_bps;
+    const usdInOf = px.get(ti) ? amountIn * px.get(ti) : null;
+    const routes = all.map((r) => {
+      if (r.state === 'off') return { id: r.id, label: r.label, state: 'off', blocker: r.blocker, ms: null, best: false };
+      if (r.state !== 'ok') return { id: r.id, label: r.label, state: 'noroute', blocker: r.error, ms: r.ms, best: false };
+      const amountOut = Number(r.out) / 10 ** (mo.decimals ?? 9);
+      const usdOut = px.get(to) ? amountOut * px.get(to) : null;
+      const lossBps = usdInOf && usdOut ? Math.round(((usdInOf - usdOut) / usdInOf) * 10_000) : null;
+      const dex = [...new Set((r.q.routePlan || []).map((p) => p.swapInfo?.label).filter(Boolean))].join(' → ') || r.label;
+      return { id: r.id, label: r.label, state: 'ok', blocker: null, ms: r.ms, dex, amountOut, usdIn: usdInOf, usdOut,
+        lossBps, tooLossy: lossBps != null && lossBps > maxLoss, best: r === best,
+        priceImpactPct: r.q.priceImpactPct != null ? Number(r.q.priceImpactPct) * 100 : null };
+    });
+    const chosen = routes.find((r) => r.best);
     return {
       symbolIn: ti === WSOL ? 'SOL' : mi.symbol, symbolOut: to === WSOL ? 'SOL' : mo.symbol,
-      amountIn, amountOut, usdIn, usdOut, lossBps: loss, dex, router: 'Jupiter',
-      priceImpactPct: q.priceImpactPct != null ? Number(q.priceImpactPct) * 100 : null,
-      maxLossBps: rules.exit.sell_max_loss_bps, slippageBps: rules.swap.max_slippage_bps,
-      tooLossy: loss != null && loss > rules.exit.sell_max_loss_bps,
-      // Same shape as the EVM multi-aggregator quote; Solana has one aggregator (Jupiter).
-      aggregator: 'auto', chosen: 'jupiter', chosenLabel: 'Jupiter',
-      routes: [{ id: 'jupiter', label: 'Jupiter', state: 'ok', blocker: null, ms: null, dex, amountOut, usdIn, usdOut,
-        lossBps: loss, tooLossy: loss != null && loss > rules.exit.sell_max_loss_bps, best: true }],
+      amountIn, amountOut: chosen.amountOut, usdIn: usdInOf, usdOut: chosen.usdOut, lossBps: chosen.lossBps,
+      dex: chosen.dex, router: chosen.label, priceImpactPct: chosen.priceImpactPct,
+      maxLossBps: maxLoss, slippageBps: rules.swap.max_slippage_bps, tooLossy: chosen.tooLossy,
+      // Same shape as the EVM multi-aggregator quote.
+      aggregator: 'auto', chosen: chosen.id, chosenLabel: chosen.label, routes,
     };
   }
 

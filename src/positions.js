@@ -8,6 +8,7 @@ const { computePoolId, priceUsable } = require('./pools');
 const { unclaimedV4, unclaimedV3 } = require('./fees');
 const m = require('./v3math');
 const { usdPerQuote } = require('./policy');
+const { isSim, simFee } = require('./paper');
 
 const IF_POSM = new ethers.Interface(ABI.posmV4);
 const IF_NPM = new ethers.Interface(ABI.npmV3);
@@ -463,8 +464,9 @@ class Positions {
     if (!rows.length) { this.live = []; this.lastSync = Date.now(); return []; }
 
     // 1. current liquidity
-    const v4 = rows.filter((r) => r.venue === 'v4' && r.token_id);
-    const v3 = rows.filter((r) => this.chain.isV3Venue(r.venue) && r.token_id);
+    // Simulated positions (paper.js) are not on chain: their liquidity and fees come from the books.
+    const v4 = rows.filter((r) => r.venue === 'v4' && r.token_id && !isSim(r));
+    const v3 = rows.filter((r) => this.chain.isV3Venue(r.venue) && r.token_id && !isSim(r));
     const liqCalls = [
       ...v4.map((r) => ({ to: this.chain.ADDR.posmV4, data: IF_POSM.encodeFunctionData('getPositionLiquidity', [BigInt(r.token_id)]) })),
       ...v3.map((r) => ({ to: this.chain.npmFor(r.venue), data: IF_NPM.encodeFunctionData('positions', [BigInt(r.token_id)]) })),
@@ -488,6 +490,8 @@ class Positions {
       if (w && w !== '0x') { try { L = BigInt(IF_NPM.decodeFunctionResult('positions', w)[7]); } catch { L = null; } }
       if (L != null) liqBy.set(r.id, L); else keepOld(r);
     });
+
+    for (const r of rows) if (isSim(r)) liqBy.set(r.id, BigInt(r.liquidity || '0'));
 
     // 2. pool state — price AND active liquidity. Zero liquidity means the price
     //    cannot be trusted (see markSqrtForPair), so they are read together.
@@ -526,6 +530,7 @@ class Positions {
       }
     }
     for (const r of v3) if (!feeBy.has(r.id)) feeBy.set(r.id, { fee0: 0n, fee1: 0n });
+    for (const r of rows) if (isSim(r)) feeBy.set(r.id, simFee(this.chain, r));
 
     // 4. token metadata
     const toks = new Set();

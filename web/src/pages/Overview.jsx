@@ -420,6 +420,16 @@ export default function Overview() {
       {/* Daily PnL card: the day clicked in the calendar. The server assembles its data itself. */}
       <ShareDialog card={shareDay && cal ? dailyCard({ day: shareDay, pnl: cal.daily[shareDay] }) : null} onClose={() => setShareDay(null)} />
       <PositionHistory id={hist} onClose={() => setHist(null)} />
+      {/* Simulation with a virtual balance (paper.js): where the virtual book stands. */}
+      {d.mode.sim && (
+        <div className="mb-4">
+          <Notice title="Simulasi dengan saldo virtual">
+            {t('saldo awal {s} · kas {c} · ekuitas {e} · profit {p} ({pp}) · {o} terbuka, {n} selesai', {
+              s: usd(d.mode.sim.startUsd), c: usd(d.mode.sim.cashUsd), e: usd(d.mode.sim.equityUsd),
+              p: usd(d.mode.sim.pnlUsd), pp: pct(d.mode.sim.pnlPct, 2), o: d.mode.sim.openCount, n: d.mode.sim.closedCount })}
+          </Notice>
+        </div>
+      )}
       {/* One summary block, two tiers: the two numbers looked for every time the page is
           opened (what it is worth, how much profit) stand alone in a big card on the
           left; four LP health measures become tiles beside it. Four equally sized cards

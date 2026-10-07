@@ -10,7 +10,7 @@ import { PageHeader, Notice, PriceRange, Empty, KV, Segmented } from '../compone
 import { orientCandles, TFS, SECS, LiveBadge } from './PositionDetail';
 import { useLivePrice, useLiveCandles } from '../liveCandles';
 import TokenIcon, { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
-import { usd, num, ago, price, tickPrice, locale } from '../fmt';
+import { usd, kUsd, num, ago, price, tickPrice, locale } from '../fmt';
 import { useI18n } from '../i18n';
 import { isSolana, isAddr, canonAddr, chainInfo } from '../chain';
 
@@ -481,6 +481,13 @@ function PoolPicker({ pools, onPick }) {
               {p.hasHooks && <Anchor className="size-3.5 shrink-0 text-warning" aria-label={t('pool memakai hook')} />}
             </span>
             <span className="flex shrink-0 items-center gap-4 text-xs text-muted">
+              {p.stats && (
+                <>
+                  <span className="num hidden w-16 text-end md:inline" title={t('Likuiditas')}>{p.stats.tvlUsd != null ? kUsd(p.stats.tvlUsd) : '—'}</span>
+                  <span className="num hidden w-16 text-end md:inline" title={t('Volume 24 jam')}>{p.stats.volume24hUsd != null ? kUsd(p.stats.volume24hUsd) : '—'}</span>
+                  <span className="num hidden w-14 text-end md:inline" title={t('Fee 24 jam / likuiditas')}>{p.stats.feeTvl24Pct != null ? `${num(p.stats.feeTvl24Pct, 2)}%` : '—'}</span>
+                </>
+              )}
               <span className="num w-12 text-end">{fee(p)}</span>
               <span className="hidden w-20 text-end sm:inline">{p.kosong === true ? t('kosong') : p.lastTs ? ago(p.lastTs) : '—'}</span>
             </span>

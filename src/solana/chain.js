@@ -9,6 +9,8 @@ const { PublicKey } = require('@solana/web3.js');
 const { build, WSOL } = require('../networks');
 const u = require('./units');
 const { Jupiter } = require('./jupiter');
+const { SwapRouter } = require('./swap-router');
+const { MeteoraApi } = require('./meteora-api');
 const { MeteoraVenue } = require('./venues/meteora');
 const { OrcaVenue } = require('./venues/orca');
 const { RaydiumVenue } = require('./venues/raydium');
@@ -17,7 +19,7 @@ const { RaydiumVenue } = require('./venues/raydium');
 const METAPLEX = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
 
 class SolanaChain {
-  constructor(rpc, store, log = console.log, network = 'solana', { jupiter = null } = {}) {
+  constructor(rpc, store, log = console.log, network = 'solana', { jupiter = null, meteoraApi = null, router = null } = {}) {
     this.rpc = rpc; this.store = store; this.log = log;
     const p = build(network);
     Object.assign(this, {
@@ -30,6 +32,12 @@ class SolanaChain {
     this.usdgSymbol = 'USDC'; this.usdgDecimals = 6; this.wethSymbol = 'SOL';
     this.tokenCache = new Map();
     this.jup = jupiter || new Jupiter({ log });
+    // Swaps go through the router (Jupiter + Raydium, best output wins); this.jup stays the
+    // price / token-info source.
+    this.router = router || new SwapRouter({ jupiter: this.jup, log, tokenAccount: (mint, owner) => this.tokenAccountOf(mint, owner),
+      decimalsOf: async (mint) => (await this.token(mint))?.decimals ?? 9 });
+    // Meteora DLMM data API: pool stats, creation time, candles (see meteora-api.js).
+    this.meteora = meteoraApi || new MeteoraApi({ log });
     this.adapters = {
       meteora: new MeteoraVenue({ rpc, log }),
       orca: new OrcaVenue({ rpc, log }),
@@ -129,6 +137,16 @@ class SolanaChain {
     return want.map((a) => this.tokenCache.get(a));
   }
   async token(a) { return (await this.tokens([a]))[0]; }
+
+  // The owner's fullest token account for a mint (legacy or Token-2022), for aggregators that
+  // need the input account spelled out.
+  async tokenAccountOf(mint, owner) {
+    const r = await this.rpc.run((c) => c.getParsedTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(mint) }));
+    const best = (r?.value || []).sort((a, b) =>
+      Number(b.account.data.parsed.info.tokenAmount.amount) - Number(a.account.data.parsed.info.tokenAmount.amount))[0];
+    if (!best) throw new Error(`no token account for ${mint}`);
+    return best.pubkey.toBase58();
+  }
   async decimalsMap(mints) {
     const ts = await this.tokens(mints);
     return new Map(ts.filter(Boolean).map((t) => [t.address, t.decimals]));
@@ -209,16 +227,21 @@ class SolanaChain {
   }
   async poolLiquidity(ref) { return (await this.poolLiquidityMany([ref]))[0] ?? 0n; }
   async markSqrtForPair() { return null; }
-  // Pool age (minutes) from the pair creation time on DexScreener, stored in the pools
-  // table (once per pool is enough). Unreadable = throws; the caller does not block on it.
+  // Pool age (minutes), stored in the pools table (once per pool is enough). Source: the
+  // creation time of the Meteora DLMM API for a DLMM pool, else the DexScreener pair creation
+  // time. Unreadable = throws; the caller does not block on it.
   async poolAgeMinutes(pool) {
     const row = this.store.get('SELECT first_ts FROM pools WHERE chain=? AND pool_ref=?', this.network, pool);
     if (row?.first_ts) return (Date.now() - row.first_ts) / 60000;
-    const r = await fetch(`https://api.dexscreener.com/latest/dex/pairs/solana/${pool}`, { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) throw new Error(`DexScreener HTTP ${r.status}`);
-    const j = await r.json();
-    const ts = Number((j.pairs || [j.pair]).filter(Boolean)[0]?.pairCreatedAt);
-    if (!(ts > 0)) throw new Error('umur pool tidak diketahui DexScreener');
+    let ts = null;
+    try { ts = (await this.meteora.pool(pool))?.createdAt ?? null; } catch { /* fall through to DexScreener */ }
+    if (!(ts > 0)) {
+      const r = await fetch(`https://api.dexscreener.com/latest/dex/pairs/solana/${pool}`, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) throw new Error(`DexScreener HTTP ${r.status}`);
+      const j = await r.json();
+      ts = Number((j.pairs || [j.pair]).filter(Boolean)[0]?.pairCreatedAt);
+    }
+    if (!(ts > 0)) throw new Error('umur pool tidak diketahui (Meteora/DexScreener)');
     this.store.run(`INSERT INTO pools(chain,pool_ref,venue,first_ts) VALUES(?,?,?,?)
       ON CONFLICT(chain,pool_ref) DO UPDATE SET first_ts=excluded.first_ts`, this.network, pool, (await this.venueOfPool(pool).catch(() => null)) || 'solana', ts);
     return (Date.now() - ts) / 60000;

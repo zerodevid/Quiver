@@ -53,6 +53,7 @@ class SolanaExecutor {
       this.rpc.run((c) => c.getParsedTokenAccountsByOwner(pk, { programId: TOKEN_2022_PROGRAM_ID }), { indexed: true }),
     ]);
     out.set('SOL', BigInt(lamports));
+    this.balCache = { at: Date.now(), map: out };
     for (const { account } of [...a.value, ...b.value]) {
       const info = account.data?.parsed?.info;
       if (!info) continue;
@@ -61,6 +62,12 @@ class SolanaExecutor {
     }
     if (mints) for (const m of mints) if (!out.has(m)) out.set(m, 0n);
     return out;
+  }
+
+  // The last balances read successfully, if no older than maxAgeMs. For display and quotes
+  // when the RPC is rate limiting — never for deciding how much to spend.
+  staleBalances(maxAgeMs) {
+    return this.balCache && Date.now() - this.balCache.at <= maxAgeMs ? this.balCache.map : null;
   }
 
   // SOL reserve for transaction fees + account rent (DLMM position ~0.06 SOL, ATA ~0.002)

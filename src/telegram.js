@@ -1764,7 +1764,7 @@ class Telegram {
       [null, this.txRow(d.txHash)],
     ].filter(([, v]) => v).map(([ic, v]) => (ic ? `${ic} ${v}` : v));
     if (trail.length) { L.push(''); L.push(...trail); }
-    L.push(tr("<i>posisi #{0}{1}</i>", [esc(d.positionId), p?.token_id ? ` · NFT #${esc(p.token_id)}` : '']));
+    L.push(tr("<i>posisi #{0}{1}</i>", [esc(d.positionId), p?.token_id && !String(p.token_id).startsWith('sim:') ? ` · NFT #${esc(p.token_id)}` : '']));
     return [cut(L.filter((x) => x != null).join('\n')), kb([
       [btn(tr("💼 Lihat posisi"), `p:${d.positionId}`), btn(tr("📈 Grafik"), `pg:${d.positionId}`)],
       ...tradeRows(this.net().chain, p?.baseToken, p?.pool_ref),

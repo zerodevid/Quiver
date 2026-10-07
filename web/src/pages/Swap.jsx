@@ -69,7 +69,7 @@ function TokenPicker({ value, onChange, list, all, exclude, side, onImport }) {
   const pick = (a) => { onChange(a); close(); };
   const importKey = async () => {
     setAdd(true);
-    const ok = await onImport(qq, side);
+    const ok = await onImport(qa, side);   // canonical form: Solana base58 is case-sensitive
     setAdd(false);
     if (ok) close();
   };
@@ -527,7 +527,8 @@ export default function Swap() {
     // If the "to" side is chosen without looking at the "from" side, both can land on the same
     // token (USDG has the largest balance and is also the default quote) — the page then
     // goes silent with no quote and no explanation.
-    const d0 = list.find((x) => x.amount > 0)?.address || '';
+    // An empty wallet still gets a usable pair (a quote asset) so quotes and prices work.
+    const d0 = list.find((x) => x.amount > 0)?.address || list.find((x) => x.isQuote)?.address || '';
     const k0 = list.find((x) => x.isQuote && x.address !== d0)?.address
       || list.find((x) => x.address !== d0)?.address || '';
     setFrom((v) => v || d0);
@@ -661,27 +662,6 @@ export default function Swap() {
     );
   }
 
-  // Not a single asset with a balance: the swap card cannot be used at all,
-  // so it is more honest to explain why than to display empty fields.
-  if (!has.length) {
-    return (
-      <>
-        {header}
-        <Card className="mx-auto max-w-lg">
-          <Card.Content className="items-center gap-4 py-10 text-center">
-            <div>
-              <div className="font-medium">{t('Belum ada aset yang bisa ditukar')}</div>
-              <p className="mt-1 text-sm text-muted">
-                {t(isSolana() ? 'Wallet bot kosong. Isi dengan SOL atau USDC dulu — alamatnya ada di Pengaturan.' : 'Wallet bot kosong. Isi dengan ETH atau USDG dulu — alamatnya ada di Pengaturan.')}
-              </p>
-            </div>
-            <Button variant="outline" onPress={() => { location.hash = 'settings'; }}>{t('Buka Pengaturan')}</Button>
-          </Card.Content>
-        </Card>
-      </>
-    );
-  }
-
   const usdIn = quote && !quote.error ? quote.usdIn : (tFrom?.priceUsd != null && Number(qty) > 0 ? Number(qty) * tFrom.priceUsd : null);
   const rate = quote && !quote.error && quote.amountIn > 0 && quote.amountOut > 0
     ? (flipRate ? `1 ${quote.symbolOut} = ${num(quote.amountIn / quote.amountOut, 6)} ${quote.symbolIn}`
@@ -696,6 +676,13 @@ export default function Swap() {
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,28rem)_minmax(0,1fr)] xl:gap-6">
         {/* kolom kiri: kartu swap */}
         <div className="flex min-w-0 flex-col gap-3">
+          {!has.length && (
+            <Notice status="accent" title={t('Belum ada aset yang bisa ditukar')}>
+              {t(isSolana() ? 'Wallet bot kosong. Isi dengan SOL atau USDC dulu — alamatnya ada di Pengaturan.' : 'Wallet bot kosong. Isi dengan ETH atau USDG dulu — alamatnya ada di Pengaturan.')}
+              {' '}{t('Sementara itu kamu tetap bisa mengutip rute dan mengecek harga.')}
+              {' '}<button type="button" className="underline hover:text-accent" onClick={() => { location.hash = 'settings'; }}>{t('Buka Pengaturan')}</button>
+            </Notice>
+          )}
           {dry && (
             <Notice status="warning" title={t('Mode simulasi')}>
               {t('Kutipan tetap diambil, tapi transaksi tidak akan dikirim. Nyalakan LIVE di Pengaturan kalau memang mau menukar.')}
@@ -713,7 +700,7 @@ export default function Swap() {
                 <input value={qty} onChange={(e) => setAmount(e.target.value)} placeholder="0" inputMode="decimal"
                   aria-label={t('Jumlah yang ditukar')}
                   className="num h-10 min-w-0 flex-1 bg-transparent text-[1.75rem] font-semibold tracking-tight outline-none placeholder:text-muted/60" />
-                <TokenPicker side="from" value={from} onChange={setFrom} list={has} all={tokens} exclude={ke} onImport={importKey} />
+                <TokenPicker side="from" value={from} onChange={setFrom} list={has.length ? has : (tokens || []).filter((x) => x.isQuote)} all={tokens} exclude={ke} onImport={importKey} />
               </div>
               <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                 <span className="num text-xs text-muted">{usdIn != null ? `≈ ${usd(usdIn)}` : ''}</span>

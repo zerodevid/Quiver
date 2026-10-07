@@ -46,6 +46,10 @@ class Market {
     this.gmgnNext = 0;        // ms — the earliest the next GMGN call may go (spacing between calls)
     this.gmgnQueue = null;    // promise chain of the GMGN queue
     this.network = chain?.network || 'robinhood';
+    // Solana only: the Meteora DLMM data API (src/solana/meteora-api.js). Preferred for DLMM pools —
+    // exact TVL/volume/fees/creation time and candles in the pool's own quote — with
+    // DexScreener/GeckoTerminal as the fallback and for every other venue.
+    this.meteora = chain?.meteora || null;
     // Alamat EVM dibandingkan dalam huruf kecil; alamat Solana (base58) peka huruf.
     this.lc = chain?.kind === 'solana' ? (x) => String(x || '') : (x) => String(x || '').toLowerCase();
     this.DS = dsBase(chain?.dexscreener || 'robinhood');
@@ -135,6 +139,8 @@ class Market {
   pair(ref) {
     const key = `ds:${this.lc(ref)}`;
     return this.memo(key, 30_000, async () => {
+      const mp = this.meteora ? await this.meteora.pool(ref).catch(() => null) : null;
+      if (mp) return this.pairFromMeteora(mp, ref);
       const j = await this.json(this.DS + ref);
       const p = j?.pairs?.[0] || j?.pair;
       if (!p) return { error: 'pool ini belum terindeks di DexScreener' };
@@ -154,12 +160,44 @@ class Market {
     });
   }
 
+  // A Meteora DLMM pool in the DexScreener `pair()` shape, so every consumer keeps working.
+  // Meteora is authoritative for what it knows exactly (TVL, volume, fees, creation time);
+  // DexScreener (best effort, never required) only adds price changes, trade counts and the
+  // token image/links, which the Meteora API does not have.
+  async pairFromMeteora(mp, ref) {
+    const ds = await this.json(this.DS + ref).then((j) => j?.pairs?.[0] || j?.pair || null).catch(() => null);
+    const x = mp.tokenX, y = mp.tokenY;
+    return {
+      url: `https://app.meteora.ag/dlmm/${ref}`, dexId: 'meteora',
+      labels: ['DLMM', ...(mp.binStep != null ? [`bin ${mp.binStep}`] : [])],
+      base: { address: x?.address, symbol: x?.symbol }, quote: { address: y?.address, symbol: y?.symbol },
+      priceUsd: x?.priceUsd ?? (Number(ds?.priceUsd) || null), priceNative: mp.currentPrice ?? (Number(ds?.priceNative) || null),
+      priceChange: ds?.priceChange || {}, txns: ds?.txns || {},
+      // h6 is not offered by Meteora (windows: 30m 1h 2h 4h 12h 24h); the rest map straight over.
+      volume: { ...(ds?.volume || {}), m30: mp.volume.m30, h1: mp.volume.h1, h2: mp.volume.h2, h4: mp.volume.h4, h12: mp.volume.h12, h24: mp.volume.h24 },
+      liquidityUsd: mp.tvlUsd, fdv: ds?.fdv ?? null, marketCap: x?.marketCap ?? ds?.marketCap ?? null,
+      pairCreatedAt: mp.createdAt ?? ds?.pairCreatedAt ?? null,
+      imageUrl: ds?.info?.imageUrl || null,
+      websites: (ds?.info?.websites || []).map((w) => w.url).filter(Boolean).slice(0, 3),
+      meteora: {
+        binStep: mp.binStep, baseFeePct: mp.baseFeePct, dynamicFeePct: mp.dynamicFeePct, maxFeePct: mp.maxFeePct,
+        fees: mp.fees, feeTvl: mp.feeTvl, aprPct: mp.aprPct, apyPct: mp.apyPct, farmAprPct: mp.hasFarm ? mp.farmAprPct : null,
+        blacklisted: mp.blacklisted,
+      },
+      fetchedAt: Date.now(),
+    };
+  }
+
   // All of a token's pools from DexScreener, the largest liquidity first — the material for
   // the token detail page. The first pool becomes the source of its price chart.
   token(address) {
     const a = this.lc(address);
     return this.memo(`dst:${a}`, 30_000, async () => {
-      const j = await this.json(this.DS_TOKEN + a);
+      // Solana: the Meteora DLMM list runs alongside DexScreener; either may fail on its own.
+      const [j, mps] = await Promise.all([
+        this.json(this.DS_TOKEN + a).catch((e) => (this.meteora ? null : Promise.reject(e))),
+        this.meteora ? this.meteora.pools({ query: a, sortBy: 'tvl:desc', pageSize: 50 }).then((r) => r.pools).catch(() => []) : [],
+      ]);
       const list = Array.isArray(j) ? j : j?.pairs || [];
       const lc = this.lc;
       const pairs = list.filter((p) => p?.pairAddress).map((p) => ({
@@ -172,7 +210,30 @@ class Market {
         pairCreatedAt: p.pairCreatedAt ?? null,
         websites: (p.info?.websites || []).map((w) => w.url).filter(Boolean).slice(0, 3),
         socials: (p.info?.socials || []).filter((x) => x?.url).map((x) => ({ type: x.type, url: x.url })).slice(0, 4),
-      })).sort((x, y) => (y.liquidityUsd || 0) - (x.liquidityUsd || 0));
+      }));
+      // Overlay what Meteora knows exactly onto DexScreener's rows; pools DexScreener has not
+      // indexed (new DLMM pools) are added.
+      const byPool = new Map(pairs.map((p) => [p.pool, p]));
+      for (const mp of mps) {
+        const row = byPool.get(mp.address);
+        const x = mp.tokenX, y = mp.tokenY;
+        const vol = { m30: mp.volume.m30, h1: mp.volume.h1, h2: mp.volume.h2, h4: mp.volume.h4, h12: mp.volume.h12, h24: mp.volume.h24 };
+        if (row) {
+          Object.assign(row, { dexId: 'meteora', url: `https://app.meteora.ag/dlmm/${mp.address}`, liquidityUsd: mp.tvlUsd ?? row.liquidityUsd,
+            volume: { ...row.volume, ...vol }, pairCreatedAt: mp.createdAt ?? row.pairCreatedAt });
+        } else {
+          pairs.push({
+            pool: mp.address, url: `https://app.meteora.ag/dlmm/${mp.address}`, dexId: 'meteora', labels: ['DLMM'],
+            base: { address: x?.address, symbol: x?.symbol, name: x?.name }, quote: { address: y?.address, symbol: y?.symbol, name: y?.name },
+            priceUsd: x?.priceUsd ?? null, priceNative: mp.currentPrice, priceChange: {}, volume: vol, txns: {},
+            liquidityUsd: mp.tvlUsd, fdv: null, marketCap: x?.marketCap ?? null, pairCreatedAt: mp.createdAt,
+            websites: [], socials: [],
+          });
+        }
+        (row || pairs[pairs.length - 1]).meteora = { binStep: mp.binStep, baseFeePct: mp.baseFeePct, feeTvl: mp.feeTvl, aprPct: mp.aprPct };
+      }
+      pairs.sort((x, y) => (y.liquidityUsd || 0) - (x.liquidityUsd || 0));
+      if (!pairs.length && !j) return { error: 'tidak ada pool untuk token ini' };
       return { pairs, fetchedAt: Date.now() };
     });
   }
@@ -193,6 +254,12 @@ class Market {
     // still visibly moves without flooding GeckoTerminal. History that has already
     // passed (before) no longer changes — store it longer.
     return this.memo(key, beforeS ? 10 * 60_000 : Math.min(60_000, Math.max(15_000, (secs * 1000) / 2)), async () => {
+      // Solana DLMM pool: Meteora's own candles, in the pool's quote asset (the 'token' currency).
+      // GeckoTerminal still serves USD prices, timeframes Meteora lacks (1m, 15m) and other venues.
+      if (this.meteora && currency === 'token') {
+        const mc = await this.meteora.ohlcv(ref, tf, { limit: n, endMs: beforeS ? beforeS * 1000 : null }).catch(() => null);
+        if (mc?.candles?.length) return this.candlesFromMeteora(ref, mc, token);
+      }
       const q = new URLSearchParams({ aggregate: String(agg), limit: String(n), currency });
       if (token) q.set('token', token);
       if (beforeS) q.set('before_timestamp', String(beforeS));
@@ -209,6 +276,22 @@ class Market {
         fetchedAt: Date.now(),
       };
     });
+  }
+
+  // Meteora candles price token X in token Y. The caller names the price base (`token`): when
+  // that is token Y the series is inverted so the direction matches the position range.
+  async candlesFromMeteora(ref, mc, token) {
+    const mp = await this.meteora.pool(ref).catch(() => null);
+    const invert = !!(token && mp?.tokenY?.address === token);
+    const candles = invert
+      ? mc.candles.map((c) => ({ t: c.t, o: 1 / c.o, h: 1 / c.l, l: 1 / c.h, c: 1 / c.c, v: c.v }))
+      : mc.candles;
+    const [b, q] = invert ? [mp.tokenY, mp.tokenX] : [mp?.tokenX, mp?.tokenY];
+    return {
+      tf: mc.tf, secs: mc.secs, candles, source: 'meteora',
+      base: b ? { address: b.address, symbol: b.symbol } : null, quote: q ? { address: q.address, symbol: q.symbol } : null,
+      fetchedAt: Date.now(),
+    };
   }
 
   // GMGN call queue: one at a time, with a gap of weight/5 seconds

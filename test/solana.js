@@ -44,13 +44,15 @@ const poolState = (over = {}) => ({
 });
 
 // The real Solana chain with a fake RPC, adapters and Jupiter.
-function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}) {
+// Meteora data API: offline by default (every address is "not a DLMM pool").
+const noMeteora = () => ({ pool: async () => null, pools: async () => ({ total: 0, pools: [] }), ohlcv: async () => null });
+function fakeChain(store, { pool = poolState(), adapter = {}, prices = {}, meteoraApi = noMeteora() } = {}) {
   const rpc = { run: async () => { throw new Error('rpc palsu'); }, primary: () => null, slot: async () => 1, allCooling: () => false, stats: () => [] };
   const jup = {
     prices: async (mints) => new Map(mints.filter((x) => prices[x] != null).map((x) => [x, prices[x]])),
     tokenInfo: async () => new Map(), quote: async () => { throw new Error('tidak dipakai'); },
   };
-  const chain = new SolanaChain(rpc, store, () => {}, 'solana', { jupiter: jup });
+  const chain = new SolanaChain(rpc, store, () => {}, 'solana', { jupiter: jup, meteoraApi });
   chain.tokenCache.set(MEME, { address: MEME, symbol: 'MEME', name: 'Meme', decimals: 9 });
   chain.pools = async (venue, addrs) => new Map(addrs.map((a) => [a, { ...pool, id: a }]));
   chain.adapters.meteora = Object.assign(chain.adapters.meteora, adapter);
@@ -194,14 +196,24 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.deepStrictEqual(sigs.map((x) => x.signature), ['NEW2', 'NEW1']);
   });
 
-  await t('RPC: target signatures are never read from an endpoint without history (publicnode)', async () => {
+  await t('RPC: full history never comes from a day-of-history endpoint; target polling prefers it, the full one is the fallback', async () => {
     const { SolanaRpc } = require('../src/solana/rpc');
-    const rpc = new SolanaRpc([{ url: 'https://solana-rpc.publicnode.com', no_gpa: true, no_history: true }, { url: 'https://api.mainnet-beta.solana.com' }], () => {});
-    for (let i = 0; i < 4; i++) assert.deepStrictEqual(rpc.order({ needsHistory: true }).map((e) => new URL(e.url).hostname), ['api.mainnet-beta.solana.com']);
+    const rpc = new SolanaRpc([{ url: 'https://api.mainnet-beta.solana.com' }, { url: 'https://solana-rpc.publicnode.com', no_gpa: true, no_history: true }], () => {});
+    const hosts = (list) => list.map((e) => new URL(e.url).hostname);
+    for (let i = 0; i < 4; i++) assert.deepStrictEqual(hosts(rpc.order({ needsHistory: true })), ['api.mainnet-beta.solana.com']);
+    for (let i = 0; i < 4; i++) assert.deepStrictEqual(hosts(rpc.order({ recentHistory: true })), ['solana-rpc.publicnode.com', 'api.mainnet-beta.solana.com']);
     assert.strictEqual(rpc.order({}).length, 2, 'plain account reads still use both');
+    // the watcher's signature poll lands on publicnode; when it is resting, mainnet-beta answers
+    const store = new Store(':memory:');
+    store.run("INSERT INTO targets(chain,address,enabled,added_ts) VALUES('solana',?,1,?)", TARGET, Date.now());
+    const chain = fakeChain(store);
+    const w = new SolanaWatcher({ rpc, store, chain, cfg: { rules: solanaTemplate().rules }, log: () => {} });
     const hit = [];
-    await rpc.run(async (c, e) => { hit.push(new URL(e.url).hostname); return 1; }, { needsHistory: true });
-    assert.deepStrictEqual(hit, ['api.mainnet-beta.solana.com']);
+    for (const e of rpc.eps) e.conn = { getSignaturesForAddress: async () => { hit.push(new URL(e.url).hostname); return []; } };
+    await w.newSignatures(TARGET, null);
+    rpc.eps[1].cooldownUntil = Date.now() + 60_000;
+    await w.newSignatures(TARGET, null);
+    assert.deepStrictEqual(hit, ['solana-rpc.publicnode.com', 'api.mainnet-beta.solana.com']);
   });
 
   await t('trivial share moves (<0.1%) are not actions; ones that add up are still caught once', async () => {
@@ -375,6 +387,43 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.strictEqual(d.verdict, 'dry', d.reason);
     assert.match(d.reason, /simulasi OK \(12345 CU\)/);
     assert.strictEqual(sendCount, 0);
+  });
+
+  await t('simulation with a virtual balance: the entry is booked from virtual cash, synced from the books, and the target exit closes it', async () => {
+    const { store, eng } = engineHarness({ dry: true });
+    eng.exec.address = () => null;
+    eng.cfg.mode.sim_balance_usd = 1000;
+    eng.cfg.mode.sim_friction_pct = 0;
+    eng.notify = () => {};
+    let sendCount = 0;
+    eng.exec.sendGroups = async () => { sendCount++; return { ok: true, hashes: ['X'] }; };
+    const entry = (id, kind, liq, extra) => store.run(`INSERT INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,tick_lower,tick_upper,liquidity,amount0,amount1,value_quote,quote_symbol,ext)
+      VALUES('solana',?,1,?,0,?,'meteora',?,'TPos',?,?,?,?,?,?,?,?,7,'SOL',?)`, Date.now(), `s:${id}`, TARGET, kind, POOL, MEME, WSOL,
+    u.binToTick(-3, BIN_STEP), u.binToTick(4, BIN_STEP), liq, String(3n * 10n ** 9n), String(4n * 10n ** 9n), JSON.stringify(extra));
+    entry('in', 'increase', '100', { lower: -3, upper: 3, liquidityBefore: '0' });
+    await eng.handle(SolanaWatcher.actFromRow(store.get("SELECT * FROM actions WHERE tx_hash='s:in'")));
+    const d = store.get('SELECT verdict, reason FROM decisions');
+    assert.strictEqual(d.verdict, 'copy', d.reason);
+    assert.match(d.reason, /\[simulasi\]/);
+    const p = store.get('SELECT * FROM positions');
+    assert.ok(p.token_id.startsWith('sim:'));
+    assert.strictEqual(p.status, 'open');
+    assert.ok(BigInt(p.liquidity) > 0n);
+    const cash = eng.paper.cashUsd();
+    assert.ok(cash < 1000 && cash > 0, `cash ${cash}`);
+    // sync reads the position from the books at the pool price — never from the chain
+    eng.chain.adapters.meteora.getPositions = async () => { throw new Error('a simulated position must not be read from the chain'); };
+    const live = await eng.positions.sync(eng.ethUsd);
+    assert.strictEqual(live.length, 1);
+    assert.ok(Math.abs(live[0].valueUsd - (1000 - cash)) < 1, `value ${live[0].valueUsd} vs spent ${1000 - cash}`);
+    assert.strictEqual(live[0].empty, false);
+    // the target closes
+    entry('out', 'decrease', '-100', { liquidityBefore: '100', gone: true });
+    await eng.handle(SolanaWatcher.actFromRow(store.get("SELECT * FROM actions WHERE tx_hash='s:out'")));
+    assert.strictEqual(store.get("SELECT verdict FROM decisions WHERE action_id=(SELECT id FROM actions WHERE tx_hash='s:out')").verdict, 'copy');
+    assert.strictEqual(store.get('SELECT status FROM positions').status, 'closed');
+    assert.ok(Math.abs(eng.paper.cashUsd() - 1000) < 1, `cash back to about the balance (no price move, no friction): ${eng.paper.cashUsd()}`);
+    assert.strictEqual(sendCount, 0, 'nothing is sent');
   });
 
   await t('entry leftovers: only tokens BOUGHT by this entry are sold back — the owner’s existing balance is untouched', async () => {
@@ -845,6 +894,50 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {} } = {}
     assert.deepStrictEqual(known.map((k) => [k.tx_hash, k.tok_out, k.quote_usd]), [['sell', '600', 7]]);
     assert.strictEqual(store.get('SELECT tok_in FROM wflows').tok_in, '500');
     assert.strictEqual((await pr.receivedIn(['gift'], ME, MEME)).get('gift'), 500n);
+  });
+
+  await t('Solana token proceeds: a refused RPC read (429) is reported incomplete, not cached, and the window is not marked covered', async () => {
+    const store = new Store(':memory:');
+    const chain = fakeChain(store);
+    const pr = new SolanaProceeds({ rpc: chain.rpc, store, chain, research: {}, log: () => {} });
+    const sale = ptx({ keys: [key(ME, true)], programs: ['JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'], pre: [1e9], post: [1e9 - 5000], preTok: [tb(ME, MEME, 1000), tb(ME, USDC, 0)], postTok: [tb(ME, MEME, 0), tb(ME, USDC, 7_000_000)] });
+    pr.tokenAccounts = async () => [TARGET];
+    const scan = () => { const known = []; return pr.scanTransfers(ME, MEME, 1, 100, { ethUsd: 100, known, seenTx: new Set(), lpTx: new Set() }).then((ok) => ({ ok, known })); };
+
+    // 1. the signature list is refused
+    chain.rpc.run = async () => { throw new Error('429 Too Many Requests'); };
+    assert.strictEqual((await scan()).ok, false);
+
+    // 2. the list works but the transaction read is refused: still incomplete, nothing cached
+    let refuseTx = true;
+    chain.rpc.run = async (fn) => fn({
+      getSignaturesForAddress: async () => [{ signature: 'sell', slot: 10 }],
+      getParsedTransaction: async () => { if (refuseTx) throw new Error('429 Too Many Requests'); return sale; },
+    });
+    assert.strictEqual((await scan()).ok, false);
+
+    // 3. the same window read again once the RPC answers: complete, and the sale is found
+    refuseTx = false;
+    const r = await scan();
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(r.known.map((k) => [k.tx_hash, k.tok_out, k.quote_usd]), [['sell', '1000', 7]]);
+  });
+
+  await t('trackToken keeps the scanned span unset after an incomplete scan, so the next pass reads the window again', async () => {
+    const store = new Store(':memory:');
+    const chain = fakeChain(store);
+    const pr = new SolanaProceeds({ rpc: chain.rpc, store, chain, research: {}, log: () => {} });
+    const lots = [{ closed_block: 50, token_id: 'P1', pool_ref: POOL, wallet: ME, venue: 'meteora', outN: 10n, out0: '10', out1: '0', tracked_to: null, held_tok: '0', sold_tok: '0', s: { side: 0 } }];
+    let ok = false;
+    pr.receivedIn = async () => new Map();
+    pr.allocate = async () => {};
+    pr.scanTransfers = async () => ok;
+    const key2 = `wflow_span:${pr.network}:${ME}:${MEME}`;
+    await pr.trackToken(ME, MEME, lots, { head: 100, ethUsd: 100 });
+    assert.strictEqual(store.getState(key2), null, 'incomplete scan: window not remembered');
+    ok = true;
+    await pr.trackToken(ME, MEME, lots, { head: 100, ethUsd: 100 });
+    assert.deepStrictEqual(JSON.parse(store.getState(key2)), { from: 50, to: 100 });
   });
 
   await t('DLMM depth: bins → equivalent L; buying one full bin in the model = swapping that bin’s contents', async () => {

@@ -9,6 +9,7 @@
 // when the wallet has been researched (without history the count is unknown → 0).
 const { PublicKey } = require('@solana/web3.js');
 const m = require('../v3math');
+const { poolStats } = require('./meteora-api');
 
 const MAX_AGE_LOOKUPS = 40;
 
@@ -53,6 +54,12 @@ async function scoutWalletSol(rpc, chain, owner, { ethUsd = 150, onProgress = ()
   }
   const metas = await chain.tokens([...new Set([...states.values()].flatMap((s) => [s.token0, s.token1]))]).catch(() => []);
   const metaBy = new Map(metas.filter(Boolean).map((t) => [t.address, t]));
+  // Meteora DLMM pools: TVL, volume, fee/TVL and APR from the Meteora API (best effort — a
+  // position without these numbers is still listed).
+  const mstats = new Map();
+  await Promise.all([...new Set(live.filter((p) => p.venue === 'meteora').map((p) => p.pool))].map(async (pool) => {
+    try { const s = poolStats(await chain.meteora?.pool(pool)); if (s) mstats.set(pool, s); } catch { /* no stats */ }
+  }));
   onProgress({ scanned: ++step, total });
 
   // Age: the oldest signature of the position account (at most the 40 largest positions, 3 at a time).
@@ -88,6 +95,7 @@ async function scoutWalletSol(rpc, chain, owner, { ethUsd = 150, onProgress = ()
       valueQuote: v?.value ?? 0, feeQuote: vf?.value ?? 0, quoteSymbol: v?.symbol ?? null, quoteKind: v?.kind ?? null,
       widthTicks: p.tickUpper - p.tickLower,
       sinceTs: since, sinceBlock: null,
+      poolStats: mstats.get(p.pool) || null,
       ageHours: since ? (now - since) / 3_600_000 : null,
     };
     r.widthPct = (1.0001 ** r.widthTicks - 1) * 100;

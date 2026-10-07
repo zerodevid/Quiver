@@ -19,6 +19,7 @@ const { planEntrySol } = require('./planner');
 const { WSOL } = require('../networks');
 const { SolanaHoldings } = require('./holdings');
 const { SolanaWalletResearch } = require('./research');
+const { PaperBook } = require('../paper');
 
 // A target's wallet research older than this is refreshed in the background for equity sizing
 // (the same limit as the EVM engine).
@@ -27,6 +28,14 @@ const TARGET_RESEARCH_STALE_MS = 5 * 60_000;
 const fmtUnits = (raw, dec) => {
   const n = Number(raw) / 10 ** dec;
   return n >= 1 ? n.toFixed(2) : String(Number(n.toPrecision(3)));
+};
+// Large amounts for decision reasons ("$12.3rb", "$1.45jt") — same wording as the EVM engine.
+const compactMoney = (v) => {
+  const a = Math.abs(Number(v) || 0);
+  if (a >= 1e9) return `$${(a / 1e9).toFixed(2)}m`;
+  if (a >= 1e6) return `$${(a / 1e6).toFixed(2)}jt`;
+  if (a >= 1000) return `$${(a / 1000).toFixed(1)}rb`;
+  return `$${a.toFixed(2)}`;
 };
 const fmtPct = (x) => (x >= 1000 ? '999+' : x.toFixed(0));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -44,11 +53,14 @@ const BORROWED = [
   'noteTargetClaim', 'followTargetClaim',
   // scan watchdog: a tick hanging past loop.tick_stuck_seconds is released and reported
   'tickStuckMs', 'unwedge',
+  // pool liquidity/volume for the entry filter (Market: Meteora API first on Solana)
+  'poolStats',
 ];
 
 class SolanaEngine {
   constructor({ rpc, store, chain, cfg, log }) {
     this.rpc = rpc; this.store = store; this.chain = chain; this.cfg = cfg;
+    chain.router?.setConfig?.(cfg);
     this.log = log || console.log;
     this.exec = new SolanaExecutor({ rpc, store, chain, cfg, log: this.log });
     this.exec.ethUsd = () => this.ethUsd;
@@ -67,6 +79,7 @@ class SolanaEngine {
     this.stats = { scanned: 0, actions: 0, copied: 0, skipped: 0, errors: 0, startedAt: Date.now() };
     this.lastError = null;
     this.cash = null; this.cashSeq = -1;
+    this.paper = new PaperBook(this);   // simulation mode's virtual balance (paper.js)
     // Deposits/withdrawals → wallet capital & net PnL (same tables and formula as EVM).
     this.capital = new (require('./capital').SolanaCapital)({ engine: this, rpc, store, chain, cfg, log: this.log });
     // Automatic fee harvesting: settings & schedule as on EVM (src/compound.js), the
@@ -87,6 +100,9 @@ class SolanaEngine {
     if (this.cfg.prices?.auto_eth_price !== false) this.ethUsd = await this.chain.ethUsd(this.ethUsd);
     this.log(`mulai di slot ${this.head}; wallet ${addr || '(belum diisi — mode simulasi)'}; SOL $${this.ethUsd.toFixed(2)}`);
     if (addr) await this.adoptOwnPositions(addr).catch((e) => this.log(`adopsi posisi sendiri: ${e.message}`));
+    if (this.paper.on()) this.paper.ensureSince();
+    // Started LIVE with simulated positions still open: retired before any action is handled.
+    this.paper.settle();
     await this.backfillDecisions();
   }
 
@@ -96,7 +112,7 @@ class SolanaEngine {
     const rows = this.store.all(`SELECT a.* FROM actions a LEFT JOIN decisions d ON d.action_id = a.id
       WHERE d.id IS NULL AND a.chain=? ORDER BY a.ts ASC LIMIT 500`, this.network);
     for (const r of rows) {
-      if (Date.now() - r.ts > stale && !this.dryRun()) { this.decide(r.id, 'skip', 'aksi lampau — mesin sedang mati saat itu'); continue; }
+      if (Date.now() - r.ts > stale && (!this.dryRun() || this.paper.on())) { this.decide(r.id, 'skip', 'aksi lampau — mesin sedang mati saat itu'); continue; }
       try { await this.handle(SolanaWatcher.actFromRow(r)); } catch (e) { this.decide(r.id, 'error', String(e.message).slice(0, 200)); }
     }
   }
@@ -181,7 +197,7 @@ class SolanaEngine {
   }
 
   async staleEntry(act) {
-    if (this.dryRun()) return null;
+    if (this.dryRun() && !this.paper.on()) return null;
     const max = (this.cfg.loop?.stale_action_seconds ?? 300) * 1000;
     const age = Date.now() - (act.ts || Date.now());
     return age > max ? `sinyal masuk sudah ${Math.round(age / 60000)} menit — terlalu basi untuk disalin` : null;
@@ -202,10 +218,27 @@ class SolanaEngine {
         if (age < rules.filters.min_pool_age_minutes) return this.decide(act.id, 'skip', `pool baru ${age.toFixed(0)} menit (< ${rules.filters.min_pool_age_minutes})`);
       } catch { /* unreadable: do not block — same as EVM */ }
     }
+    // Market filter: a pool whose TVL or volume is thin pays no fees however much the target
+    // earns there. Figures: Meteora DLMM API for DLMM pools, DexScreener for the rest. A pool
+    // with no figures at all is let through — the filter rejects a pool PROVEN quiet.
+    const fMin = rules.filters;
+    if (fMin.min_liquidity_usd > 0 || fMin.min_volume24h_usd > 0) {
+      const pair = await this.poolStats(act.poolRef);
+      if (pair) {
+        const liq = pair.liquidityUsd, vol = pair.volume?.h24;
+        if (fMin.min_liquidity_usd > 0 && liq != null && liq < fMin.min_liquidity_usd) {
+          return this.decide(act.id, 'skip', `likuiditas pool ${compactMoney(liq)} (< ${compactMoney(fMin.min_liquidity_usd)})`);
+        }
+        if (fMin.min_volume24h_usd > 0 && vol != null && vol < fMin.min_volume24h_usd) {
+          return this.decide(act.id, 'skip', `volume 24 jam ${compactMoney(vol)} (< ${compactMoney(fMin.min_volume24h_usd)})`);
+        }
+      }
+    }
     const pool = await this.chain.pool(act.venue, act.poolRef, { maxAgeMs: 0 });
     const sum = this.positions.summary(this.ethUsd);
     const live = !this.dryRun() && this.exec.address();
-    const cash = live ? await this.spendableCash().catch(() => null) : null;
+    // Simulation with a virtual balance is limited by that balance, like live is by the wallet.
+    const cash = live || this.paper.on() ? await this.spendableCash().catch(() => null) : null;
     const mirrors = this.store.all("SELECT * FROM positions WHERE chain=? AND status='open' AND mirror_of=? AND target=? AND token_id IS NOT NULL ORDER BY id",
       this.network, act.tokenId ?? '', act.target);
     const held = mirrors.find((mp) => mp.takeover_ts != null);
@@ -235,6 +268,7 @@ class SolanaEngine {
       d.plan.action = 'increase'; d.plan.tokenId = mirror.token_id; d.plan.positionId = mirror.id;
       d.reason = `${d.reason} (menambah posisi #${mirror.id})`;
     }
+    if (this.paper.on()) return this.paper.copyEntry(d, act, { sqrt: pool.sqrtX96 });
     if (this.dryRun() || !this.exec.address()) {
       // With a wallet: the entry transaction is simulated on mainnet (not sent), as on EVM.
       const sim = this.exec.address() ? await this.simulateEntry(d.plan).catch((e) => ({ ok: false, error: e.message })) : null;
@@ -316,8 +350,15 @@ class SolanaEngine {
     }
   }
 
+  // The wallet research instance shared by equity sizing and the simulation's fee following.
+  paperResearch() {
+    this.research ??= new SolanaWalletResearch({ rpc: this.rpc, store: this.store, chain: this.chain, log: this.log });
+    return this.research;
+  }
+
   // Spendable cash: stablecoins (USDC+USDT) and SOL (native + wSOL) above the reserve.
   async spendableCash() {
+    if (this.paper.on()) return { usd: this.paper.cashUsd(), sol: 0 };
     const b = await this.exec.balances();
     const reserve = this.exec.gasReserveCached();
     const solAll = (b.get('SOL') || 0n) + (b.get(WSOL) || 0n);
@@ -493,7 +534,7 @@ class SolanaEngine {
   // With a loss guard: the USD value in vs out at Jupiter prices may not differ by more than
   // maxLossBps (price impact + route fees). Returns {hash, out}.
   async swap(inMint, outMint, amount, { slippageBps = 100, maxLossBps = 500, kind = 'swap' } = {}) {
-    const q = await this.chain.jup.quote(inMint, outMint, amount, { slippageBps });
+    const q = await this.chain.router.quote(inMint, outMint, amount, { slippageBps });
     const [ti, to] = await this.chain.tokens([inMint, outMint]);
     const px = await this.chain.jup.prices([inMint, outMint]).catch(() => new Map());
     const usdIn = px.get(inMint) ? (Number(amount) / 10 ** ti.decimals) * px.get(inMint) : null;
@@ -506,20 +547,23 @@ class SolanaEngine {
         throw e;
       }
     }
-    const { tx, lastValidBlockHeight } = await this.chain.jup.swapTx(q, this.exec.address(), { maxPriorityLamports: Number(this.cfg.gas?.jupiter_max_priority_lamports ?? 2_000_000) });
-    const r = await this.exec.sendVersioned(tx, { kind, lastValidBlockHeight, detail: { in: inMint, out: outMint, amountIn: String(amount), quoteOut: q.outAmount, usdIn, usdOut } });
+    const built = await this.chain.router.swapTx(q, this.exec.address(), { maxPriorityLamports: Number(this.cfg.gas?.jupiter_max_priority_lamports ?? 2_000_000) });
+    const { tx, lastValidBlockHeight } = built;
+    // The fallback may have switched aggregator: the output expectation follows the quote used.
+    const used = built.quote || q;
+    const r = await this.exec.sendVersioned(tx, { kind, lastValidBlockHeight, detail: { in: inMint, out: outMint, amountIn: String(amount), quoteOut: used.outAmount, aggregator: used.aggregator || 'jupiter', usdIn, usdOut } });
     if (!r.ok) throw new Error(`swap ${ti.symbol}→${to.symbol} gagal (${r.hash})`);
     // the actual output from the tx meta (not the quote)
     // Tx meta unreadable (lagging node): use the quote. Without this guard an output
     // to SOL reads as "0 + fee" = 5000 lamports (found through a mainnet simulation).
-    let out = BigInt(q.outAmount);
+    let out = BigInt(used.outAmount);
     if (r.meta) {
       const dl = this.exec.deltas(r.meta);
       const got = outMint === WSOL ? (dl.get(WSOL) ?? 0n) + (dl.get('SOL') ?? 0n) + BigInt(r.fee || 0) : (dl.get(outMint) ?? 0n);
       if (got > 0n) out = got;
     }
     this.exec.noteTx(r.hash, { actualOut: out.toString() });
-    return { hash: r.hash, out, quoteOut: BigInt(q.outAmount), usdIn, usdOut };
+    return { hash: r.hash, out, quoteOut: BigInt(used.outAmount), usdIn, usdOut, aggregator: used.aggregator || 'jupiter' };
   }
 
   // Sell back non-quote tokens this entry BOUGHT that did not go into the position (entry
@@ -560,6 +604,11 @@ class SolanaEngine {
     // than the target's trivial move, and still paying a transaction fee.
     if (!d.plan.full && (BigInt(d.plan.liquidity) * 10_000n) / BigInt(pos.liquidity || '1') === 0n) {
       return this.decide(act.id, 'skip', 'porsi tarik < 0,01% — terlalu kecil untuk dicermin');
+    }
+    if (this.paper.on()) {
+      try { this.decide(act.id, 'copy', await this.paper.copyExit(d.plan, pos, d.reason, act), d.plan, null, pos.id); }
+      catch (e) { this.stats.errors++; this.decide(act.id, 'error', String(e.message).slice(0, 300), d.plan); this.store.log('error', `simulasi keluar #${pos.id}: ${e.message}`); }
+      return;
     }
     if (this.dryRun() || !this.exec.address()) return this.decide(act.id, 'dry', d.reason, d.plan);
     try {
@@ -935,6 +984,7 @@ class SolanaEngine {
     if (this.syncBusy) return;
     this.syncBusy = true;
     try {
+      this.paper.settle();
       if (this.cfg.prices?.auto_eth_price !== false) this.ethUsd = await this.chain.ethUsd(this.ethUsd);
       const addr = this.exec.address();
       const guarded = (key, label, p) => p.then(() => this.cleared(key, `${label}: berhasil lagi`))
@@ -947,6 +997,7 @@ class SolanaEngine {
         await guarded('modal', 'pelacakan setoran', this.capital.sync(addr));
       }
       await guarded('rekon', 'rekonsiliasi keluar', this.reconcileExits());
+      await guarded('simulasi', 'fee simulasi', this.paper.accrue());
       await this.positions.sync(this.ethUsd);
       await guarded('buku-keluar', 'pembukuan keluar tertunda', this.bookPendingExits());
       await guarded('kas', 'saldo kas', this.refreshCash());
@@ -958,6 +1009,7 @@ class SolanaEngine {
         if (this.exiting.has(pos.id)) continue;
         if (!pos.empty && this.store.get('SELECT takeover_ts FROM positions WHERE id=?', pos.id)?.takeover_ts != null) continue;
         if (pos.empty) { await this.closeEmptyPosition(pos).catch((e) => this.store.log('warn', `tutup #${pos.id} yang kosong: ${e.message}`, { quiet: true })); continue; }
+        if (this.paper.on()) { await this.paper.autoExit(t); continue; }
         if (this.dryRun() || !addr) { this.store.log('info', `[simulasi] keluar #${pos.id}: ${reason}`, { quiet: true }); continue; }
         try {
           const r = await this.executeExitRetry({ full: true, liquidity: pos.liquidity }, pos);
@@ -976,6 +1028,8 @@ class SolanaEngine {
   // ---- cash ----------------------------------------------------------------------------
   // Same shape as EVM: usdg = stablecoin, eth = native SOL, weth = wSOL.
   async refreshCash() {
+    // Simulation: the virtual cash comes from the books — no RPC, always current.
+    if (this.paper.on()) { this.cash = this.paper.cashObj(); return this.cash; }
     if (!this.exec.address()) { this.cash = null; return null; }
     const seq = this.exec.txSeq;
     const b = await this.exec.balances();

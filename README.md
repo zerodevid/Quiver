@@ -144,6 +144,17 @@ One process runs every enabled chain at once. Global sections apply to all chain
 | `chains.<name>.mode` | per chain | Simulation/live execution and pause state — BSC can stay in simulation while Robinhood is live. |
 | `chains.<name>.loop`, `gas`, `prices`, `scout`, `risk` | per chain | Polling and scan windows, gas pricing and native reserve, native-token valuation, research window, daily drawdown breaker. |
 
+#### Simulation with a virtual balance (paper trading)
+
+Plain simulation only records what the bot would do. Set `chains.<name>.mode.sim_balance_usd` (or Settings → Wallet & mode → Simulation balance) to a starting balance in USD and the simulation becomes a paper-trading book: a target entry opens a virtual position sized by your rules and limited by the virtual cash, a target exit closes (or partly withdraws) it, standalone exits (stop loss, out of range, …) apply, and the dashboard, Telegram and equity curve show the virtual profit. Nothing is ever sent to the chain.
+
+- **Fees** follow the target: our share of the fees its mirrored position earned since we opened (needs the target's wallet research, which the bot requests by itself), counted only while our range is in range.
+- **Costs**: every entry and exit pays `mode.sim_friction_pct` (default `0.3`) for the swaps, slippage and fees a real zap would cost.
+- **Valuation**: a position is liquidity over its tick range valued at the live pool price. On Meteora DLMM the bins are treated as one uniform range — close for the `spot` shape, rougher for `curve` / `bid-ask`.
+- **Switching to LIVE** (or setting the balance back to `0`) sets the virtual positions aside; they are never mixed with real ones. *Start over* in Settings resets the book.
+
+Checks: `node test/paper.js`.
+
 RPC answers that can no longer change are cached in the same database ([src/rpccache.js](src/rpccache.js), table `rpc_cache`). Only calls pinned to a past block qualify — receipts, transactions, block headers, `eth_getBalance` / `eth_getCode` / `eth_getStorageAt` / `eth_call` at a numeric block, `eth_getLogs` over a numeric range, and `eth_chainId`. Live reads (`latest`, `pending`, block height, gas) are never stored, and a block only counts as settled once it is `confirmations` blocks (default 64) behind the last chain head seen; errors, `null` results and oversized answers are skipped. The cache survives restarts, is keyed per chain, and is swept hourly. Tune it under `chains.<name>.chain.cache` (`enabled`, `confirmations`, `ttl_days`, `max_rows`, `max_mb`, `max_entry_kb`); Settings → RPC reports rows, size and hit rate. Checks: `node test/rpc-cache.js`.
 
 Chain profiles (chain id, contract addresses, quote assets, venues, block time) live in [src/networks.js](src/networks.js). `node src/verify-chain.js bsc` checks a profile against the live chain: chain id, bytecode of every contract, `NonfungiblePositionManager.factory()` for each v3 venue, `PositionManager.poolManager()`, and the quote tokens' symbol and decimals.

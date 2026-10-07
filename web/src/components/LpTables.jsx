@@ -2,12 +2,12 @@
 // researched wallet positions, and target moves. The data comes from lpRows on the server.
 import { chainInfo, isEthLike } from '../chain';
 import { Button } from '@heroui/react';
-import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing, TradeLinks, WalletLinks, baseTokenOf } from './ui';
+import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing, TradeLinks, WalletLinks, PositionRef, baseTokenOf } from './ui';
 import { TokenPair, PairName } from './TokenIcon';
 import { Pair } from '../pages/Positions';
 import { GmgnProvider } from './GmgnDot';
 import { usePairs, tokenColumn } from './TokenCell';
-import { usd, pct, tone, ago, short, locale as fmtLocale, ACTIONS, DECISIONS } from '../fmt';
+import { usd, pct, tone, ago, short, shortId, locale as fmtLocale, ACTIONS, DECISIONS } from '../fmt';
 import { useI18n, reason } from '../i18n';
 import { useClosePosition } from '../useClosePosition';
 
@@ -50,7 +50,7 @@ function CopiedFrom({ p }) {
       <a href={'#targets/' + p.target} className="group block" title={p.target}>
         {p.targetLabel && <div className="truncate font-medium group-hover:underline">{p.targetLabel}</div>}
         <div className="mono text-xs whitespace-nowrap text-muted group-hover:text-foreground">
-          {short(p.target)}{p.mirror_of ? ` · #${p.mirror_of}` : ''}
+          {short(p.target)}{p.mirror_of ? ` · #${shortId(p.mirror_of)}` : ''}
         </div>
       </a>
       <WalletLinks address={p.target} compact className="mt-0.5" />
@@ -115,7 +115,7 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, w
             <div className="flex flex-wrap items-center justify-end gap-2">
               {sourceOf(p) && (
                 <Button size="sm" variant="outline" onPress={() => onSource(sourceOf(p))}
-                  aria-label={t('Ke posisi asli #{id} di tabel wallet yang diriset', { id: p.mirror_of })}>
+                  aria-label={t('Ke posisi asli #{id} di tabel wallet yang diriset', { id: shortId(p.mirror_of) })}>
                   {t('Posisi asli')}
                 </Button>)}
               {onFocus && (p.id === focusId
@@ -161,7 +161,7 @@ export function WalletPositions({ rows, onHist, jumpTo, loading = false, classNa
               <div>
                 <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} className="block font-medium" />
                 <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
-                  <span className="uppercase">{p.venue}</span><span>·</span><span className="mono">#{p.token_id}</span>
+                  <span className="uppercase">{p.venue}</span><span>·</span><PositionRef p={p} />
                   <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} compact className="ml-2" />
                 </div>
               </div>
@@ -216,7 +216,7 @@ export function TargetMoves({ rows, className = '' }) {
           { key: 'pair', label: 'Pasangan', sort: (x) => `${x.symbol0}/${x.symbol1}`, render: (x) => (
             <div>
               <PairName token0={x.token0} token1={x.token1} symbol0={x.symbol0} symbol1={x.symbol1} pool={x.pool_ref} sep="/" className="block font-medium" />
-              <TradeLinks token={baseTokenOf(x)} pool={x.pool_ref} compact className="mt-1" />
+              <TradeLinks token={baseTokenOf(x)} pool={x.pool_ref} venue={x.venue} compact className="mt-1" />
             </div>) },
           { key: 'val', label: 'Nilai', align: 'end', sort: (x) => x.value_quote, render: (x) => (
             x.value_quote == null ? <span className="text-muted">—</span>

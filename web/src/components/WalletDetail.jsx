@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Card, ProgressBar, Spinner, toast } from '@heroui/react';
 import { RefreshCw, Plus, Check } from 'lucide-react';
 import { get, post } from '../api';
-import { Panel, DataTable, Empty, Loading, PriceRange, Pick, Notice, Stat, KV, Refreshing, TradeLinks, baseTokenOf } from './ui';
+import { Panel, DataTable, Empty, Loading, PriceRange, Pick, Notice, Stat, KV, Refreshing, TradeLinks, PositionRef, baseTokenOf } from './ui';
 import { GmgnWalletCard } from './Gmgn';
 import { TokenPair, PairName } from './TokenIcon';
 import PnlCalendar from './PnlCalendar';
@@ -143,7 +143,7 @@ const posCols = (open, pairOf) => [
         <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} className="block font-medium" />
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
           <span className="uppercase">{String(p.venue || 'v4')}</span><span>·</span>
-          <span className="mono">#{p.token_id}</span>
+          <PositionRef p={p} />
           {p.incomplete ? <span className="text-xs text-warning" title={tt(p.incomplete === 2 ? 'Harga saat kejadian belum terbaca' : 'Sebagian riwayat di luar jendela pindai')}>{tt('parsial')}</span> : null}
           <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} compact className="ml-2" />
         </div>
