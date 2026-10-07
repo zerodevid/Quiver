@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, Minus, ArrowLeftRight, CircleDollarSign, UserPlus, ExternalLink } from 'lucide-react';
+import { Plus, Minus, ArrowLeftRight, CircleDollarSign, UserPlus, ExternalLink, RefreshCw } from 'lucide-react';
 import { Button } from '@heroui/react';
 import { usePoll } from '../hooks';
 import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Pick, Dot, TradeLinks, WalletLinks, baseTokenOf } from '../components/ui';
@@ -10,8 +10,8 @@ import { useI18n, reason } from '../i18n';
 import FollowDialog from '../components/FollowDialog';
 
 // Icon per action type: the direction of the move reads without reading the label.
-const ICON = { increase: Plus, mint: Plus, reentry: Plus, decrease: Minus, collect: CircleDollarSign };
-const COLOR = { increase: 'text-accent', mint: 'text-accent', reentry: 'text-accent', decrease: 'text-warning', collect: 'text-success' };
+const ICON = { increase: Plus, mint: Plus, reentry: Plus, decrease: Minus, collect: CircleDollarSign, rebalance: RefreshCw };
+const COLOR = { increase: 'text-accent', mint: 'text-accent', reentry: 'text-accent', decrease: 'text-warning', collect: 'text-success', rebalance: 'text-accent' };
 
 // Our position size in USD from the decision plan (only entry plans have one).
 function ourSize(a) {
@@ -77,7 +77,7 @@ export default function Activity() {
   const baseK = all.filter((a) => byVerdict(a) && byTarget(a));
   const nk = (k) => baseK.filter((a) => (k === 'mint' ? (a.kind === 'mint' || a.kind === 'increase' || a.kind === 'reentry') : a.kind === k)).length;
   const kinds = [['all', 'Semua aksi', baseK.length], ['mint', 'Tambah / buka', nk('mint')], ['decrease', 'Kurangi', nk('decrease')],
-    ['collect', 'Klaim fee', nk('collect')]].filter(([id, , c]) => id === 'all' || c > 0 || id === kind);
+    ['rebalance', 'Rebalance', nk('rebalance')], ['collect', 'Klaim fee', nk('collect')]].filter(([id, , c]) => id === 'all' || c > 0 || id === kind);
   const targets = [...new Map(all.map((a) => [a.target, a.targetLabel])).entries()]
     .sort((x, y) => (x[1] || x[0]).localeCompare(y[1] || y[0]))
     .map(([addr, label]) => [addr, label ? `${label} · ${short(addr)}` : short(addr)]);

@@ -47,6 +47,7 @@ const flatAccounts = (list) => (list || []).flatMap((a) => (a.accounts ? flatAcc
 const big = (x) => (x == null ? 0n : BigInt(x.toString()));
 const num = (x) => (x == null ? null : Number(x.toString()));
 const b58 = (k) => (k?.toBase58 ? k.toBase58() : String(k));
+const DECODER_V = 2;
 const pick = (o, ...ks) => { for (const k of ks) if (o?.[k] !== undefined) return o[k]; return undefined; };
 
 class SolanaWalletResearch {
@@ -280,6 +281,8 @@ class SolanaWalletResearch {
         const k = `${pos}:${f0}:${f1}`;
         if (seenClaim.has(k)) { if (bin != null) { const prev = out.find((e) => e.kind === 'collect' && e.id === pos && e.f0 === f0 && e.f1 === f1); if (prev) prev.activeBin = num(bin); } continue; }
         seenClaim.add(k);
+        // claim_fee runs before every withdrawal of an automation, mostly with nothing to claim
+        if (f0 === 0n && f1 === 0n) continue;
         push({ venue: 'meteora', id: pos, pool, kind: 'collect', f0, f1, activeBin: bin != null ? num(bin) : null });
       } else if (name === 'PositionClose') push({ venue: 'meteora', id: pos, kind: 'close' });
       else if (name === 'IncreasePositionLength' || name === 'DecreasePositionLength') {
@@ -546,6 +549,9 @@ class SolanaWalletResearch {
   }
 
   stateKey(wallet) { return `sol_research:${this.network}:${wallet}`; }
+  // Bumped when the decoder reads the same transactions differently (v2: Meteora
+  // rebalance_liquidity folds into one 'rebalance', range resizes, zero claims dropped): a
+  // wallet scanned by an older decoder is rebuilt once on its next refresh.
 
   // ---- full scan ------------------------------------------------------------------
   async scan(wallet, { blocks = 900_000, ethUsd = 150, onProgress } = {}) {
@@ -560,7 +566,7 @@ class SolanaWalletResearch {
     this.store.run('DELETE FROM wevents WHERE chain=? AND wallet=?', this.network, wallet);
     const fromSlot = sigs.length ? sigs[sigs.length - 1].slot : head;
     const stats = await this.persist(wallet, positions, { fromSlot, head, ethUsd });
-    this.store.setState(this.stateKey(wallet), JSON.stringify({ newest: sigs[0]?.signature || null, sinceMs, capped, pending: txs.missing }));
+    this.store.setState(this.stateKey(wallet), JSON.stringify({ newest: sigs[0]?.signature || null, sinceMs, capped, pending: txs.missing, v: DECODER_V }));
     if (txs.missing.length) this.log(`riset ${wallet.slice(0, 6)}…: ${txs.missing.length} transaksi belum tersedia — dibaca pada pembaruan berikutnya`);
     if (txs.oldUnread) this.log(`riset ${wallet.slice(0, 6)}…: ${txs.oldUnread} transaksi lama tidak terbaca dari RPC publik — posisinya ditandai tidak lengkap`);
     if (capped) this.log(`riset ${wallet.slice(0, 6)}…: dibatasi ${MAX_TX} transaksi terbaru — posisi yang lebih tua tidak lengkap`);
@@ -572,6 +578,10 @@ class SolanaWalletResearch {
     let st = null;
     try { st = JSON.parse(this.store.getState(this.stateKey(wallet)) || 'null'); } catch { st = null; }
     if (!st) return this.scan(wallet, { ethUsd, onProgress });
+    if ((st.v || 1) < DECODER_V) {
+      this.log(`riset ${wallet.slice(0, 6)}…: dibaca ulang penuh (cara baca transaksi diperbarui)`);
+      return this.scan(wallet, { ethUsd, onProgress, blocks: st.sinceMs ? Math.ceil((Date.now() - st.sinceMs) / WINDOW_BLOCK_MS) : undefined });
+    }
     const head = await this.rpc.slot();
     const { sigs } = await this.signatures(wallet, { stopSig: st.newest, sinceMs: st.sinceMs });
     const pending = (st.pending || []).filter((sg) => !sigs.some((x) => x.signature === sg)).map((signature) => ({ signature }));

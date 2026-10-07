@@ -83,7 +83,7 @@ const sum = (rows, pick) => (rows || []).reduce((a, r) => a + (pick(r) || 0), 0)
 // Human-readable names for the contents of the actions/decisions tables — the same as the dashboard (fmt.js).
 const ACTIONS = {
   mint: 'Buka posisi', increase: 'Tambah likuiditas', decrease: 'Kurangi likuiditas',
-  collect: 'Klaim fee', claim: 'Target panen fee', claim_fees: 'Klaim fee', rebalance: 'Geser rentang', resize: 'Ubah panjang rentang', compound: 'Auto-compound',
+  collect: 'Klaim fee', claim: 'Target panen fee', claim_fees: 'Klaim fee', rebalance: 'Rebalance', resize: 'Ubah panjang rentang', compound: 'Auto-compound',
   reentry: 'Buka lagi (harga mendekat)', transfer_in: 'Terima posisi', transfer_out: 'Kirim posisi',
   custody_out: 'Titip ke otomasi', custody_in: 'Kembali dari otomasi',
 };
