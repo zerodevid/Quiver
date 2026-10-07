@@ -317,14 +317,18 @@ export function PriceRange({
   // Logarithmic axis: range + padding, widened if the entry/current price is outside the
   // range so the marker stays visible, not stuck to the edge.
   const L = Math.log;
-  const pts = [pLo, pHi, pEntry, pNow, bepPrice].filter((x) => x != null && x > 0);
+  // A BEP far off the range (orders of magnitude) would squash the range into a sliver: it
+  // stays in the text but does not stretch the axis.
+  const bepOnAxis = bepPrice != null && bepPrice > pLo / 20 && bepPrice < pHi * 20 ? bepPrice : null;
+  const pts = [pLo, pHi, pEntry, pNow, bepOnAxis].filter((x) => x != null && x > 0);
   const dataLo = Math.min(...pts), dataHi = Math.max(...pts);
   const pad = (L(pHi) - L(pLo) || 1) * 0.5;
   const min = Math.min(L(pLo) - pad, L(dataLo) - pad * 0.4);
   const max = Math.max(L(pHi) + pad, L(dataHi) + pad * 0.4);
   const at100 = (p) => Math.max(0, Math.min(100, ((L(p) - min) / (max - min)) * 100));
 
-  const inRange = pNow != null && pNow >= pLo && pNow <= pHi;
+  // the upper tick is exclusive (DLMM: the price AT it sits in the next bin up — out of range)
+  const inRange = pNow != null && pNow >= pLo && pNow < pHi;
   const move = pEntry != null && pNow != null ? (pNow / pEntry - 1) * 100 : null;
   // Closed position or without a current price: the in/out status does not apply, neutral band.
   const band = closed || pNow == null ? 'bg-accent/25 border-accent'
@@ -367,7 +371,7 @@ export function PriceRange({
         <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-default" />
         <div className={`absolute top-1/2 h-2 -translate-y-1/2 rounded-[1px] border-x-2 ${band}`}
           style={{ left: `${at100(pLo)}%`, width: `${Math.max(2, at100(pHi) - at100(pLo))}%` }} />
-        {bepPrice && <div className="absolute inset-y-0 z-10 w-0 -translate-x-1/2 border-l-2 border-dashed border-warning" style={{ left: `${at100(bepPrice)}%` }} title={`${t('Harga BEP')}: ${price(bepPrice)} ${quote || ''}`} />}
+        {bepOnAxis && <div className="absolute inset-y-0 z-10 w-0 -translate-x-1/2 border-l-2 border-dashed border-warning" style={{ left: `${at100(bepPrice)}%` }} title={`${t('Harga BEP')}: ${price(bepPrice)} ${quote || ''}`} />}
         {/* masuk: garis tipis & redup; kini/keluar: titik tegas berbingkai warna kartu */}
         {pEntry != null && <div className="absolute inset-y-0.5 w-0.5 -translate-x-1/2 rounded-full bg-muted" style={{ left: `${at100(pEntry)}%` }} title={t('harga masuk')} />}
         {pNow != null && <div className="absolute top-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground ring-2 ring-surface" style={{ left: `${at100(pNow)}%` }} title={t(closed ? 'harga keluar' : 'harga kini')} />}

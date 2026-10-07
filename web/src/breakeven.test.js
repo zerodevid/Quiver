@@ -12,3 +12,11 @@ test('inverse quote and mixed decimals preserve BEP', () => near(breakEven({ ...
 test('hide inactive and reject stale data', () => { assert.equal(breakEven({ ...p, inRange: true }), null); assert.equal(breakEven({ ...p, status: 'closed' }), null); assert.ok(breakEven({ ...p, valueStale: true }).reason); });
 
 test('depth panel can request BEP for an in-range open position', () => near(breakEven({ ...p, inRange: true, status: 'open' }, { all: true }).price, breakEven(p).price));
+
+test('Meteora DLMM: liquidity is bin shares — L comes from the contents at the current price', () => {
+  // a v3 range L=100 over [1, 4] holds x = 100(1/√2 − 1/2), y = 100(√2 − 1) at price 2
+  const dlmm = { ...p, venue: 'meteora', liquidity: '987654321987654321', curTick: tick(2),
+    amount0: String(100 * (1 / Math.SQRT2 - 0.5)), amount1: String(100 * (Math.SQRT2 - 1)) };
+  near(breakEven(dlmm).price, breakEven(p).price);
+  assert.ok(breakEven({ ...dlmm, amount0: undefined, amount1: undefined }).reason, 'no contents = unavailable');
+});

@@ -12,8 +12,18 @@ export function breakEven(p, { all = false } = {}) {
   };
   const lo = Math.min(at(p.tick_lower), at(p.tick_upper));
   const hi = Math.max(at(p.tick_lower), at(p.tick_upper));
-  const L = Number(p.liquidity) * 10 ** (-(p.dec0 + p.dec1) / 2);
   const baseSide = 1 - p.quoteSide;
+  let L = Number(p.liquidity) * 10 ** (-(p.dec0 + p.dec1) / 2);
+  if (p.venue === 'meteora') {
+    // A DLMM position's "liquidity" is a sum of bin shares, not a concentrated-liquidity L:
+    // use the L of a v3 range over the same bins that holds the same value at the current price.
+    const now = p.curTick != null ? at(p.curTick) : null;
+    const base = Number(p[`amount${baseSide}`] ?? NaN) / 10 ** p[`dec${baseSide}`];
+    const quote = Number(p[`amount${p.quoteSide}`] ?? NaN) / 10 ** p[`dec${p.quoteSide}`];
+    const s = Math.sqrt(Math.max(lo, Math.min(hi, now)));
+    const perL = (1 / s - 1 / Math.sqrt(hi)) * now + s - Math.sqrt(lo);
+    L = now > 0 && perL > 0 ? (base * now + quote) / perL : NaN;
+  }
   const baseFee = Number(p[`fee${baseSide}`]) / 10 ** p[`dec${baseSide}`];
   const quoteFee = Number(p[`fee${p.quoteSide}`]) / 10 ** p[`dec${p.quoteSide}`];
   const target = Number(p.cost_quote) - Number(p.claimed_quote ?? 0) - Number(p.out_quote ?? 0) - quoteFee;
