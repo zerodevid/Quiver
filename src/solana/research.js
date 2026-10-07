@@ -47,7 +47,9 @@ const flatAccounts = (list) => (list || []).flatMap((a) => (a.accounts ? flatAcc
 const big = (x) => (x == null ? 0n : BigInt(x.toString()));
 const num = (x) => (x == null ? null : Number(x.toString()));
 const b58 = (k) => (k?.toBase58 ? k.toBase58() : String(k));
-const DECODER_V = 2;
+const DECODER_V = 3;
+// A deposit this close (in slots, ~1 min) after a withdrawal of the same position is its capital put back.
+const RECYCLE_SLOTS = 150;
 const pick = (o, ...ks) => { for (const k of ks) if (o?.[k] !== undefined) return o[k]; return undefined; };
 
 class SolanaWalletResearch {
@@ -410,7 +412,17 @@ class SolanaWalletResearch {
     const a0 = e.a0 || 0n, a1 = e.a1 || 0n, f0 = e.f0 || 0n, f1 = e.f1 || 0n;
     let valueUsd = null;
     if (e.kind === 'increase') {
-      p.in0 += a0; p.in1 += a1; valueUsd = usdOf(a0, a1); p.investedUsd += valueUsd || 0;
+      p.in0 += a0; p.in1 += a1; valueUsd = usdOf(a0, a1);
+      // Principal withdrawn moments ago and put back (a bot re-laying its range with a remove +
+      // add pair) is the same capital, not a new deposit: the recycled part is neither invested
+      // again nor counted as returned, so capital and PnL stay true to what the owner put in.
+      const rc = p.recycle;
+      let fresh = valueUsd || 0;
+      if (rc && rc.usd > 0 && e.slot - rc.slot <= RECYCLE_SLOTS && valueUsd != null) {
+        const take = Math.min(fresh, rc.usd);
+        rc.usd -= take; fresh -= take; p.returnedUsd -= take;
+      }
+      p.investedUsd += fresh;
     } else if (e.kind === 'rebalance') {
       // a0/a1 are net and signed: the part added counts as invested, the part taken as returned.
       const pos0 = a0 > 0n ? a0 : 0n, pos1 = a1 > 0n ? a1 : 0n, neg0 = a0 < 0n ? -a0 : 0n, neg1 = a1 < 0n ? -a1 : 0n;
@@ -421,6 +433,10 @@ class SolanaWalletResearch {
     } else if (e.kind === 'decrease' || e.kind === 'collect') {
       p.out0 += a0 + f0; p.out1 += a1 + f1; p.fee0 += f0; p.fee1 += f1;
       valueUsd = usdOf(a0 + f0, a1 + f1);
+      if (e.kind === 'decrease' && (a0 > 0n || a1 > 0n)) {
+        const principal = usdOf(a0, a1) || 0;
+        p.recycle = p.recycle && e.slot - p.recycle.slot <= RECYCLE_SLOTS ? { usd: p.recycle.usd + principal, slot: e.slot } : { usd: principal, slot: e.slot };
+      }
       p.returnedUsd += valueUsd || 0;
       p.feesUsd += usdOf(f0, f1) || 0;
     }
@@ -549,7 +565,8 @@ class SolanaWalletResearch {
   }
 
   stateKey(wallet) { return `sol_research:${this.network}:${wallet}`; }
-  // Bumped when the decoder reads the same transactions differently (v2: Meteora
+  // Bumped when the decoder reads the same transactions differently (v3: capital put back right
+  // after a withdrawal is not counted as invested again; v2: Meteora
   // rebalance_liquidity folds into one 'rebalance', range resizes, zero claims dropped): a
   // wallet scanned by an older decoder is rebuilt once on its next refresh.
 

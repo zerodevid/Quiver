@@ -326,9 +326,15 @@ class Proceeds {
         q.left -= take; rem -= take;
         if (!q.r) continue;
         q.sold += take;
-        if (k.quote_usd != null) { q.usd += k.quote_usd * Number(take) / Number(total); continue; }
         const sq = await this.sqrtAt(q.r, k.block);
-        q.usd += sq ? this.usdOf(q.r, sq, take, ethUsd) : q.r.closeUnit * Number(take);
+        const priced = sq ? this.usdOf(q.r, sq, take, ethUsd) : q.r.closeUnit * Number(take);
+        if (k.quote_usd != null) {
+          // Backstop for a swap whose quote also paid for something else: proceeds far above what
+          // the tokens were worth at the close price are not theirs.
+          const share = k.quote_usd * Number(take) / Number(total);
+          if (!(priced > 0) || share <= priced * Proceeds.SALE_PLAUSIBLE_X + 1) { q.usd += share; continue; }
+        }
+        q.usd += priced;
       }
     }
 
@@ -372,5 +378,8 @@ class Proceeds {
     }
   }
 }
+
+// A sale's quote above this many times the tokens' close-price value (plus $1) is not trusted.
+Proceeds.SALE_PLAUSIBLE_X = 20;
 
 module.exports = { Proceeds };

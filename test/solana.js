@@ -896,6 +896,22 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {}, meteo
     assert.strictEqual((await pr.receivedIn(['gift'], ME, MEME)).get('gift'), 500n);
   });
 
+  await t('Solana token proceeds: a swap that also moves SOL out is not this token\'s sale — no price, valued at close', async () => {
+    const store = new Store(':memory:');
+    const chain = fakeChain(store);
+    const pr = new SolanaProceeds({ rpc: chain.rpc, store, chain, research: {}, log: () => {} });
+    const txs = {
+      // 600 MEME and 0.07 wSOL out, 17.85 USDC in
+      mixed: ptx({ keys: [key(ME, true)], programs: ['JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'], pre: [1e9], post: [1e9 - 5000], preTok: [tb(ME, MEME, 1000), tb(ME, USDC, 0), tb(ME, WSOL, 70_000_000)], postTok: [tb(ME, MEME, 400), tb(ME, USDC, 17_850_000), tb(ME, WSOL, 0)] }),
+    };
+    pr.tokenAccounts = async () => [TARGET];
+    chain.rpc.run = async (fn) => fn({ getSignaturesForAddress: async () => [{ signature: 'mixed', slot: 10 }], getParsedTransaction: async (sig) => txs[sig] });
+    const known = [];
+    await pr.scanTransfers(ME, MEME, 1, 100, { ethUsd: 100, known, seenTx: new Set(), lpTx: new Set() });
+    assert.deepStrictEqual(known.map((k) => [k.tok_out, k.quote_usd]), [['600', null]]);
+    assert.strictEqual(store.get('SELECT kind FROM wsales').kind, 'send');
+  });
+
   await t('Solana token proceeds: a refused RPC read (429) is reported incomplete, not cached, and the window is not marked covered', async () => {
     const store = new Store(':memory:');
     const chain = fakeChain(store);

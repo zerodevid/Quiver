@@ -74,6 +74,28 @@ const ev = (r, name) => { const f = fx(name); return r.extract({ sig: f.signatur
     assert.strictEqual(p.out1, 0n);
   });
 
+  await t('remove + add pair a few slots apart (a bot re-laying its range) is the same capital, not a new deposit', () => {
+    const { r } = research();
+    const pool = { token0: 'X', token1: WSOL, dec0: 6, dec1: 9, binStep: 80, sqrtX96: 1n << 96n };
+    const p = r.newPos({ venue: 'meteora', id: 'P1', pool: 'POOL' });
+    const mk = (kind, slot, a1, f1 = 0n) => ({ kind, slot, a0: 0n, a1, f0: 0n, f1, activeBin: 0, sig: `s${slot}`, idx: 0 });
+    r.chain.valueInQuote = ({ amount0, amount1 }) => ({ value: Number(amount1) / 1e9, kind: 'quote' });
+    r.apply(p, mk('increase', 100, 1_000_000_000n), pool, 100);
+    for (const base of [200, 400]) {   // two re-lays: out at `base`, back in 13 slots later
+      r.apply(p, mk('decrease', base, 1_000_000_000n, 1_000_000n), pool, 100);
+      r.apply(p, mk('increase', base + 13, 1_000_000_000n), pool, 100);
+    }
+    r.apply(p, mk('decrease', 600, 1_000_000_000n), pool, 100);   // the final exit
+    assert.ok(Math.abs(p.investedUsd - 1) < 1e-9, `invested ${p.investedUsd}`);
+    assert.ok(Math.abs(p.returnedUsd - 1.002) < 1e-9, `returned ${p.returnedUsd}`);
+    // a deposit long after a withdrawal is new money
+    const q = r.newPos({ venue: 'meteora', id: 'P2', pool: 'POOL' });
+    r.apply(q, mk('increase', 100, 1_000_000_000n), pool, 100);
+    r.apply(q, mk('decrease', 200, 1_000_000_000n), pool, 100);
+    r.apply(q, mk('increase', 5000, 1_000_000_000n), pool, 100);
+    assert.ok(Math.abs(q.investedUsd - 2) < 1e-9, `invested ${q.investedUsd}`);
+  });
+
   await t('a wallet scanned by an older decoder is rebuilt by a full scan on its next refresh; a current one is refreshed incrementally', async () => {
     const { r, store } = research();
     const calls = [];
@@ -83,7 +105,7 @@ const ev = (r, name) => { const f = fx(name); return r.extract({ sig: f.signatur
     r.rpc.slot = async () => 1;
     store.setState(r.stateKey('W1'), JSON.stringify({ newest: 'x', sinceMs: Date.now() - 1000 * 101 }));
     await r.refresh('W1', {});
-    store.setState(r.stateKey('W2'), JSON.stringify({ newest: 'x', sinceMs: Date.now(), v: 2 }));
+    store.setState(r.stateKey('W2'), JSON.stringify({ newest: 'x', sinceMs: Date.now(), v: 3 }));
     await r.refresh('W2', {}).catch(() => {});
     assert.deepStrictEqual(calls.map((c) => c[0]), ['scan', 'inc']);
     assert.ok(calls[0][1] >= 1000 && calls[0][1] < 1100, `same window: ${calls[0][1]}`);
