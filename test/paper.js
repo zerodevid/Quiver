@@ -165,15 +165,24 @@ function targetFees(store, feeUsd, valueUsd = 5000, status = 'open') {
     targetFees(w.store, 60);                  // the target earns $50 more on a $5000 position; we hold $200 = 4%
     await w.eng.paper.accrue();
     near(JSON.parse(row().ext).sim.fq, 2, 0.05, 'fee = 50 × 200/5000');
-    // The target claimed (pending falls to 5): what is pending is new since the claim.
+    // Pending falls to 5 (a claim, or just the token price dropping): nothing is added, the baseline follows.
     targetFees(w.store, 5);
     await w.eng.paper.accrue();
-    near(JSON.parse(row().ext).sim.fq, 2 + 0.2, 0.05, 'after a claim');
+    near(JSON.parse(row().ext).sim.fq, 2, 0.05, 'a fall adds nothing');
+    // It oscillates back up to 60: only the growth from 5 counts once, not 60 again.
+    targetFees(w.store, 25);
+    await w.eng.paper.accrue();
+    near(JSON.parse(row().ext).sim.fq, 2.8, 0.05, 'growth after the fall: 20 × 4%');
+    targetFees(w.store, 5);
+    await w.eng.paper.accrue();
+    targetFees(w.store, 25);
+    await w.eng.paper.accrue();
+    near(JSON.parse(row().ext).sim.fq, 3.6, 0.05, 'jitter does not re-add the whole pending fee');
     // Out of range: no fee even though the target earns.
     w.pool.tick = 9000;
     targetFees(w.store, 105);
     await w.eng.paper.accrue();
-    near(JSON.parse(row().ext).sim.fq, 2.2, 0.05, 'out of range accrues nothing');
+    near(JSON.parse(row().ext).sim.fq, 3.6, 0.05, 'out of range accrues nothing');
   });
 
   await t('fees show in the position sync, and come back at close', async () => {

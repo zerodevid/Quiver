@@ -268,8 +268,10 @@ class PaperBook {
     const sim = extOf(r).sim || {};
     const tfNow = Number(w.live_fee_q) || 0, tvNow = Number(w.live_value_q) || 0;
     if (sim.tf == null) { this.patchSim(r.id, { tf: tfNow }); return; }
-    // The target claimed (its pending fee fell): what is pending now is new since the claim.
-    const delta = tfNow >= sim.tf ? tfNow - sim.tf : tfNow;
+    // The pending fee is token amounts valued at the live price, so it also falls when the price
+    // does — a fall is NOT a claim. Only growth counts; after a fall the baseline just follows it
+    // (the fee earned before a real claim was already accrued by the earlier syncs).
+    const delta = tfNow - sim.tf;
     if (!(delta > 0)) { if (tfNow !== sim.tf) this.patchSim(r.id, { tf: tfNow }); return; }
     let share = 0;
     const s = await this.e.positions.markSlotFor(r).catch(() => null);
