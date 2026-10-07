@@ -101,6 +101,8 @@ class SolanaEngine {
     this.log(`mulai di slot ${this.head}; wallet ${addr || '(belum diisi — mode simulasi)'}; SOL $${this.ethUsd.toFixed(2)}`);
     if (addr) await this.adoptOwnPositions(addr).catch((e) => this.log(`adopsi posisi sendiri: ${e.message}`));
     if (this.paper.on()) this.paper.ensureSince();
+    // Started LIVE with simulated positions still open: retired before any action is handled.
+    this.paper.settle();
     await this.backfillDecisions();
   }
 

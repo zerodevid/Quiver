@@ -143,6 +143,9 @@ class Engine {
     this.log(`mulai di blok ${this.cursor}; wallet ${addr || '(belum diisi — mode simulasi)'}; ${this.chain.nativeSymbol} $${this.ethUsd.toFixed(2)}`);
     if (addr) { this.lastAdopt = Date.now(); await this.adoptOwnPositions(addr); }
     if (this.paper.on()) this.paper.ensureSince();
+    // Started LIVE (or without a simulation balance) with simulated positions still open: retire
+    // them BEFORE any action is handled, so an exit signal can never reach a `sim:` position.
+    this.paper.settle();
     await this.backfillDecisions();
   }
 
