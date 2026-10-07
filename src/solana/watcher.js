@@ -13,6 +13,8 @@
 //        fees harvested, L same -> 'claim' (see claimed())
 //        bins moved, same id    -> 'rebalance' (Meteora rebalance_liquidity: the liquidity is
 //                                  re-laid over a new bin range in the same position)
+//        range resized, same L  -> 'resize' (increase/decrease_position_length: empty bins added
+//          and same filled bins    or dropped at an edge — no liquidity moved)
 //
 // Snapshots are stored per target in state (they survive restarts). A target's first scan only
 // takes a snapshot — positions that ALREADY existed before the target was added are not
@@ -135,6 +137,13 @@ class SolanaWatcher {
     return L0 > 0n && L > 0n && d * NOISE_DIV < L0;
   }
 
+  // Only the range edges moved: same liquidity, same bins holding it.
+  static resized(o, p) {
+    const lo0 = o.ext?.liqLo, hi0 = o.ext?.liqHi, lo = p.ext?.liqLo, hi = p.ext?.liqHi;
+    if (lo0 == null || lo == null) return false;
+    return BigInt(o.liquidity) === BigInt(p.liquidity) && Number(lo0) === Number(lo) && Number(hi0) === Number(hi);
+  }
+
   static diff(target, prev, now) {
     const acts = [];
     for (const [id, p] of Object.entries(now)) {
@@ -144,6 +153,10 @@ class SolanaWatcher {
       // with the re-layout, so no increase/decrease is derived from it. Fees claimed in the same
       // transaction still count as a claim.
       if (o && L > 0n && L0 > 0n && o.lower != null && p.lower != null && (Number(o.lower) !== Number(p.lower) || Number(o.upper) !== Number(p.upper))) {
+        if (SolanaWatcher.resized(o, p)) {
+          acts.push({ target, id, kind: 'resize', delta: 0n, before: L0, pos: p, prev: o });
+          continue;
+        }
         acts.push({ target, id, kind: 'rebalance', delta: 0n, before: L0, pos: p, prev: o });
         if (SolanaWatcher.claimed(o, p)) acts.push({ target, id, kind: 'claim', delta: 0n, before: L0, pos: p, prev: o });
         continue;
@@ -248,7 +261,7 @@ class SolanaWatcher {
       const dL = a.delta < 0n ? -a.delta : a.delta;
       const Lnow = BigInt(p.liquidity || '0');
       if (a.kind === 'claim') { amt0 = BigInt(a.prev.fee0 || '0'); amt1 = BigInt(a.prev.fee1 || '0'); }
-      else if (a.kind === 'rebalance') { /* the whole position, as now laid over its new range */ }
+      else if (a.kind === 'rebalance' || a.kind === 'resize') { /* the whole position, as now laid over its new range */ }
       else if (a.gone && a.prev) { amt0 = BigInt(a.prev.amount0 || '0'); amt1 = BigInt(a.prev.amount1 || '0'); }
       else if (a.before > 0n && Lnow > 0n) { amt0 = (amt0 * dL) / Lnow; amt1 = (amt1 * dL) / Lnow; }
       const v = st && dec0 != null && dec1 != null
@@ -258,11 +271,13 @@ class SolanaWatcher {
       // position (read within the re-read window).
       const hash = a.kind === 'claim'
         ? `${a.sig || 'snap'}:${a.id}:claim:${a.prev.fee0}:${a.prev.fee1}:${a.prev.feeMark || ''}`
-        : a.kind === 'rebalance'
-          ? `${a.sig || 'snap'}:${a.id}:rebalance:${a.prev.lower}:${a.prev.upper}:${p.lower}:${p.upper}`
+        : a.kind === 'rebalance' || a.kind === 'resize'
+          ? `${a.sig || 'snap'}:${a.id}:${a.kind}:${a.prev.lower}:${a.prev.upper}:${p.lower}:${p.upper}`
           : `${a.sig || 'snap'}:${a.id}:${a.kind}:${a.delta}`;
       const ext = { lower: p.lower, upper: p.upper, liquidityBefore: a.before.toString(), ...(p.ext || {}), gone: !!a.gone,
-        ...(a.kind === 'rebalance' ? { prevLower: a.prev.lower, prevUpper: a.prev.upper } : {}) };
+        ...(a.kind === 'rebalance' || a.kind === 'resize' ? { prevLower: a.prev.lower, prevUpper: a.prev.upper,
+          // the contents before: a move may also take capital out (or add some) — the mirror follows the ratio
+          prevAmount0: String(a.prev.amount0 ?? '0'), prevAmount1: String(a.prev.amount1 ?? '0') } : {}) };
       const r = this.store.run(`INSERT OR IGNORE INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_spacing,
           tick_lower,tick_upper,liquidity,amount0,amount1,value_quote,quote_symbol,ext) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       this.chain.network, Date.now(), a.slot || 0, hash, i++, a.target, p.venue, a.kind, a.id, p.pool, p.token0, p.token1,

@@ -1223,6 +1223,19 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {}, meteo
     assert.deepStrictEqual(acts.map((a) => `${a.id}:${a.kind}`), ['A:rebalance', 'B:rebalance', 'B:claim']);
   });
 
+  await t('snapshot diff: range edges resized with the same filled bins = resize (mirror untouched), not a rebalance', async () => {
+    const R = (lower, upper, L, liqLo, liqHi) => ({ venue: 'meteora', pool: POOL, token0: MEME, token1: WSOL, lower, upper, tickLower: lower * 100, tickUpper: (upper + 1) * 100, liquidity: String(L), amount0: '1', amount1: '1', fee0: '0', fee1: '0', feeMark: null, ext: { liqLo, liqHi } });
+    const acts = SolanaWatcher.diff(TARGET, { A: R(-5, 5, 100, -5, 5), B: R(-5, 5, 100, -5, 5) }, { A: R(-5, 20, 100, -5, 5), B: R(-2, 8, 100, -2, 8) });
+    assert.deepStrictEqual(acts.map((x) => `${x.id}:${x.kind}`), ['A:resize', 'B:rebalance']);
+    const h = engineHarness({ position: POSV });
+    openRow(h.store);
+    h.store.run(`INSERT INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,liquidity,ext)
+      VALUES('solana',?,1,'s:rs',0,?,'meteora','resize','TPos',?,?,?,'0','{}')`, Date.now(), TARGET, POOL, MEME, WSOL);
+    await h.eng.handle(SolanaWatcher.actFromRow(h.store.get('SELECT * FROM actions')));
+    assert.match(h.store.get('SELECT reason FROM decisions').reason, /panjang rentang/);
+    assert.strictEqual(h.sent.length, 0);
+  });
+
   await t('per-bin weights: X above the active bin, Y below, half each in it; each side sums to 10000 bps', () => {
     const { binWeights, weightDistribution, weightShare0 } = require('../src/solana/dlmm-shape');
     // a bid-ask-like custom shape: heavy at the far edges, 5 bins around active 0, binStep 100
@@ -1253,10 +1266,10 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {}, meteo
     assert.strictEqual(d.plan.strategy, 'bidask');
   });
 
-  const insertRebalance = (store, n = 1) => {
+  const insertRebalance = (store, n = 1, extra = {}) => {
     store.run(`INSERT INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,liquidity,amount0,amount1,ext)
       VALUES('solana',?,1,?,0,?,'meteora','rebalance','TPos',?,?,?,'0',?,?,?)`, Date.now(), `s:reb${n}`, TARGET, POOL, MEME, WSOL,
-    String(3n * 10n ** 9n), String(4n * 10n ** 9n), JSON.stringify({ lower: -2, upper: 4, prevLower: -3, prevUpper: 3, liquidityBefore: '100', binStep: BIN_STEP }));
+    String(3n * 10n ** 9n), String(4n * 10n ** 9n), JSON.stringify({ lower: -2, upper: 4, prevLower: -3, prevUpper: 3, liquidityBefore: '100', binStep: BIN_STEP, ...extra }));
     return SolanaWatcher.actFromRow(store.get('SELECT * FROM actions WHERE tx_hash=?', `s:reb${n}`));
   };
 
@@ -1302,6 +1315,21 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {}, meteo
     assert.strictEqual(n.mirror_of, 'TPos');
     // sized at what the close returned: 2 MEME (=2 SOL) + 3 SOL = 5 SOL, ±rounding
     const gap = h.sent[1].amount0 + h.sent[1].amount1 - 5n * 10n ** 9n;
+    assert.ok((gap < 0n ? -gap : gap) < 10n ** 7n, `${h.sent[1].amount0} + ${h.sent[1].amount1}`);
+  });
+
+  await t('target rebalance that also withdraws half: the mirror reopens with half of what came back', async () => {
+    const got = { ...POSV, id: 'NewPos', liquidity: '900', tickLower: -200, tickUpper: 500, ext: { binStep: BIN_STEP } };
+    const h = engineHarness({ position: POSV, balances: new Map([['SOL', 10n * 10n ** 9n], [MEME, 10n * 10n ** 9n]]) });
+    h.chain.adapters.meteora.getPositions = async (items) => new Map(items.map((it) => [it.id, it.id === 'NewPos' ? got : POSV]));
+    h.eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { range: { follow_rebalance: 'always' }, sizing: { max_quote_per_position_usd: 1e6, max_total_exposure_usd: 1e6, daily_budget_usd: 1e6 } }));
+    openRow(h.store);
+    // before: 6 MEME + 8 SOL = 14 SOL; now 3 MEME + 4 SOL = 7 SOL
+    await h.eng.handle(insertRebalance(h.store, 2, { prevAmount0: String(6n * 10n ** 9n), prevAmount1: String(8n * 10n ** 9n) }));
+    const d = h.store.get('SELECT verdict, reason FROM decisions');
+    assert.strictEqual(d.verdict, 'copy', d.reason);
+    assert.match(d.reason, /nilai target -50%/);
+    const gap = h.sent[1].amount0 + h.sent[1].amount1 - 25n * 10n ** 8n;
     assert.ok((gap < 0n ? -gap : gap) < 10n ** 7n, `${h.sent[1].amount0} + ${h.sent[1].amount1}`);
   });
 

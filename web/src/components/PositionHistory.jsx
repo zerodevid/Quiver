@@ -216,7 +216,7 @@ function Notes({ notes }) {
             <div className="min-w-0 w-full flex-1">
               <div className="flex flex-wrap items-center gap-1.5">
                 {v && <Chip size="sm" variant="soft" color={v[1]}>{t(v[0])}</Chip>}
-                {n.actionKind && <span className="text-xs text-muted">{t('aksi target: {k}', { k: t(({ mint: 'Buka posisi', increase: 'Tambah likuiditas', decrease: 'Penarikan likuiditas', burn: 'Tutup posisi', collect: 'Klaim fee', rebalance: 'Geser rentang', transfer_out: 'Transfer posisi' })[n.actionKind] || n.actionKind) })}</span>}
+                {n.actionKind && <span className="text-xs text-muted">{t('aksi target: {k}', { k: t(({ mint: 'Buka posisi', increase: 'Tambah likuiditas', decrease: 'Penarikan likuiditas', burn: 'Tutup posisi', collect: 'Klaim fee', rebalance: 'Geser rentang', resize: 'Ubah panjang rentang', transfer_out: 'Transfer posisi' })[n.actionKind] || n.actionKind) })}</span>}
                 {!v && <span className="text-xs text-muted">{t(({ info: 'Informasi', warn: 'Peringatan', error: 'Kesalahan' })[n.level] || n.level)}</span>}
               </div>
               <div className={`mt-0.5 break-words ${cls}`}>{reason(n.msg)}</div>

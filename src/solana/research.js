@@ -282,6 +282,12 @@ class SolanaWalletResearch {
         seenClaim.add(k);
         push({ venue: 'meteora', id: pos, pool, kind: 'collect', f0, f1, activeBin: bin != null ? num(bin) : null });
       } else if (name === 'PositionClose') push({ venue: 'meteora', id: pos, kind: 'close' });
+      else if (name === 'IncreasePositionLength' || name === 'DecreasePositionLength') {
+        // Range edges only (side 0 = lower, 1 = upper); no token moves.
+        const n = num(pick(d, 'length_to_add', 'length_to_remove')) * (name === 'IncreasePositionLength' ? 1 : -1);
+        const lowerSide = Number(pick(d, 'side')) === 0;
+        push({ venue: 'meteora', id: pos, pool, kind: 'resize', dLower: lowerSide ? -n : 0, dUpper: lowerSide ? 0 : n });
+      }
     }
 
     for (const r of rebal.values()) {
@@ -382,6 +388,11 @@ class SolanaWalletResearch {
     if (p.lastSlot == null || e.slot >= p.lastSlot) { p.lastSlot = e.slot; p.lastTs = e.ts; }
     if (e.kind === 'open') { p.sawOpen = true; return; }
     if (e.kind === 'close') { p.sawClose = true; return; }
+    if (e.kind === 'resize') {
+      if (p.lowerBin != null) { p.lowerBin += e.dLower; p.upperBin += e.dUpper; }
+      p.events.push({ ...e, sqrt: p.lastSqrt, valueUsd: 0 });
+      return;
+    }
     // event price
     let sqrt = e.sqrtX96 || null;
     if (!sqrt && e.activeBin != null && st?.binStep) sqrt = u.binSqrtX96(e.activeBin, st.binStep);

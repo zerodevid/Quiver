@@ -143,6 +143,7 @@ export const ACTIONS = {
   transfer_in: ['Terima posisi', 'default'], transfer_out: ['Kirim posisi', 'warning'],
   mint: ['Buka posisi', 'accent'], collect: ['Klaim fee', 'success'], claim: ['Target panen fee', 'default'],
   reentry: ['Buka lagi (harga mendekat)', 'accent'], rebalance: ['Geser rentang', 'default'],
+  resize: ['Ubah panjang rentang', 'default'],
 };
 export const DECISIONS = {
   copy: ['Disalin', 'success'], dry: ['Simulasi', 'accent'], skip: ['Dilewati', 'default'], error: ['Gagal', 'danger'],

@@ -89,8 +89,12 @@ class MeteoraVenue {
   // activeId: active bin of the pair, used to read the liquidity shape (ext.strategy).
   norm(pool, binStep, p, activeId = null) {
     const d = p.positionData;
-    let L = 0n;
-    for (const b of d.positionBinData || []) L += BigInt(b.positionLiquidity || '0');
+    let L = 0n, liqLo = null, liqHi = null;
+    for (const b of d.positionBinData || []) {
+      const l = BigInt(b.positionLiquidity || '0');
+      L += l;
+      if (l > 0n) { liqLo = liqLo == null ? b.binId : Math.min(liqLo, b.binId); liqHi = liqHi == null ? b.binId : Math.max(liqHi, b.binId); }
+    }
     const { tickLower, tickUpper } = u.binRangeToTicks(d.lowerBinId, d.upperBinId, binStep);
     return {
       venue: this.key, id: b58(p.publicKey), pool, owner: b58(d.owner),
@@ -98,7 +102,9 @@ class MeteoraVenue {
       liquidity: L.toString(),
       amount0: BigInt(d.totalXAmount || '0'), amount1: BigInt(d.totalYAmount || '0'),
       fee0: BigInt(d.feeX?.toString() || '0'), fee1: BigInt(d.feeY?.toString() || '0'),
-      ext: { binStep, lowerBin: d.lowerBinId, upperBin: d.upperBinId, strategy: MeteoraVenue.shapeOf(d, activeId, binStep)?.strategy ?? null,
+      // liqLo/liqHi: the bins that actually hold liquidity — a resize (increase/decrease_position_length)
+      // changes lower/upper but not these, a rebalance moves them.
+      ext: { binStep, lowerBin: d.lowerBinId, upperBin: d.upperBinId, liqLo, liqHi, strategy: MeteoraVenue.shapeOf(d, activeId, binStep)?.strategy ?? null,
         // exact per-bin shape, for a mirror that copies it bin for bin (by-weight deposit: one position ≤ 70 bins)
         weights: d.upperBinId - d.lowerBinId + 1 <= MAX_BINS_SIMPLE ? binWeights(MeteoraVenue.binsOf(d), d.lowerBinId, d.upperBinId, binStep) : null },
     };

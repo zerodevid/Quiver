@@ -559,6 +559,7 @@ class Engine {
     if (act.kind === 'claim') return this.noteTargetClaim(act, rules);
     // The target moved its position's range in place (Meteora rebalance_liquidity) — only the
     // Solana engine can follow it; EVM positions have fixed ticks.
+    if (act.kind === 'resize') return this.decide(act.id, 'skip', 'target mengubah panjang rentang tanpa memindah likuiditas — cermin tetap');
     if (act.kind === 'rebalance') return this.handleRebalance ? this.handleRebalance(act, rules) : this.decide(act.id, 'skip', 'target menggeser rentang — tidak dicermin di chain ini');
     return this.decide(act.id, 'skip', `jenis aksi ${act.kind} tidak dicermin`);
   }

@@ -602,7 +602,7 @@ class SolanaEngine {
   // range, so a bot shifting every few minutes does not cost a close+open each time) | always | off.
   async handleRebalance(act, rules) {
     const rng = `bin ${act.ext?.prevLower}…${act.ext?.prevUpper} → ${act.lower}…${act.upper}`;
-    const what = `target menggeser rentang ${rng}`;
+    let what = `target menggeser rentang ${rng}`;
     const pos = this.store.get("SELECT * FROM positions WHERE chain=? AND status='open' AND mirror_of=? AND target=? ORDER BY id LIMIT 1",
       this.network, act.tokenId ?? '', act.target);
     if (!pos) return this.decide(act.id, 'skip', `${what} — kita tidak punya cermin posisi ini`);
@@ -622,8 +622,18 @@ class SolanaEngine {
     const live = !this.dryRun() && this.exec.address();
     if (!live && !this.paper.on()) return this.decide(act.id, 'dry', `${what} — cermin #${pos.id} akan dipindah ke rentang baru`, exitPlan);
 
-    // Reopen sized at what the close returned; the new range and composition follow the target.
-    const reopen = async (usd) => {
+    // A move can also take capital out or add some (a withdrawal of edge bins in the same tx):
+    // the reopen follows the change in the target's value, both read at the current price.
+    const val = (a0, a1) => this.chain.valueInQuote({ sqrtPriceX96: pool.sqrtX96, amount0: BigInt(a0 || '0'), amount1: BigInt(a1 || '0'), dec0: pool.dec0, dec1: pool.dec1, token0: pool.token0, token1: pool.token1 })?.value;
+    const before = act.ext?.prevAmount0 != null ? val(act.ext.prevAmount0, act.ext.prevAmount1) : null;
+    const after = val(act.amount0, act.amount1);
+    const ratio = before > 0 && after != null ? Math.min(2, after / before) : 1;
+    if (Math.abs(ratio - 1) >= 0.02) what += ` (nilai target ${ratio > 1 ? '+' : ''}${((ratio - 1) * 100).toFixed(0)}%)`;
+
+    // Reopen sized at what the close returned (× the target's change); the new range and
+    // composition follow the target.
+    const reopen = async (usd0) => {
+      const usd = usd0 * ratio;
       const sizing = { ...rules.sizing, mode: 'fixed_quote', fixed_quote_usd: usd, fixed_quote_eth: usd / this.ethUsd, min_quote_usd: 0, force_min: false };
       const entryAct = { ...act, kind: 'increase', liquidityBefore: '0' };
       const sum = this.positions.summary(this.ethUsd);
