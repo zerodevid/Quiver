@@ -8,7 +8,7 @@ const BN = require('bn.js');
 const DLMM = require('@meteora-ag/dlmm');
 const { BorshAccountsCoder } = require('@coral-xyz/anchor');
 const u = require('../units');
-const { dlmmShape, binWeights, weightDistribution } = require('../dlmm-shape');
+const { dlmmShape, binWeights, weightDistribution, rebalanceDeposits } = require('../dlmm-shape');
 
 const PROGRAM = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 // A plain DLMM position holds at most 70 bins; a wider one is created as an "extended"
@@ -244,6 +244,47 @@ class MeteoraVenue {
       }));
     });
     return { groups };
+  }
+
+  // Move a position in place (rebalance_liquidity) — what a trailing bot does: everything is
+  // withdrawn and re-laid over the target's bins (`weights`, one per bin from `lower`) in ONE
+  // instruction, same position account, no close/open. `ratio` scales the value laid out against
+  // what the position holds now (the target took some out or put some in). Fees are claimed
+  // along (claimFee). The net flow is settled with the wallet: more of a token deposited than
+  // withdrawn is pulled from it, the rest is returned to it.
+  // Returns { groups, deposit0, deposit1, withdraw0, withdraw1 } — net raw amounts from the SDK
+  // simulation — or throws when the shape cannot be expressed.
+  async buildRebalance({ pool, position, owner, lower, weights, ratio = 1, slippageBps, claimFee = true }) {
+    return this.withPool(pool, async (d) => {
+      const p = await d.getPosition(new PublicKey(position));
+      const active = Number(d.lbPair.activeId), binStep = Number(d.lbPair.binStep);
+      // current value in Y raw units, per bin (same units as binWeights)
+      const r = 1 + binStep / 10_000;
+      let value = 0;
+      for (const b of p.positionData.positionBinData || []) value += Number(b.positionXAmount || 0) * r ** Number(b.binId) + Number(b.positionYAmount || 0);
+      const deps = rebalanceDeposits(weights, lower, active, value * ratio);
+      if (!deps) throw new Error('bentuk rentang baru tidak terbaca');
+      const deposits = deps.map((x) => ({
+        minDeltaId: new BN(x.minDeltaId), maxDeltaId: new BN(x.maxDeltaId),
+        x0: new BN(x.x0.toString()), y0: new BN(x.y0.toString()), deltaX: new BN(x.deltaX.toString()), deltaY: new BN(x.deltaY.toString()),
+        favorXInActiveBin: false,
+      }));
+      const { lowerBinId, upperBinId } = p.positionData;
+      const withdraws = [{ minBinId: new BN(lowerBinId), maxBinId: new BN(upperBinId), bps: new BN(10_000) }];
+      const sim = await d.simulateRebalancePosition(new PublicKey(position), p.positionData, !!claimFee, !!claimFee, deposits, withdraws);
+      // The active bin may drift this many bins between build and execution (about the slippage).
+      const drift = Math.max(3, Math.ceil(Number(slippageBps) / binStep));
+      const built = await d.rebalancePosition(sim, new BN(drift), new PublicKey(owner), Number(slippageBps) / 100);
+      const s = sim.simulationResult;
+      const groups = [];
+      if (built.initBinArrayInstructions.length) groups.push({ instructions: built.initBinArrayInstructions, signers: [] });
+      groups.push({ instructions: built.rebalancePositionInstruction, signers: [] });
+      return {
+        groups, active,
+        deposit0: BigInt(s.actualAmountXDeposited.toString()), deposit1: BigInt(s.actualAmountYDeposited.toString()),
+        withdraw0: BigInt(s.actualAmountXWithdrawn.toString()), withdraw1: BigInt(s.actualAmountYWithdrawn.toString()),
+      };
+    });
   }
 
   async buildClaim({ pool, position, owner }) {

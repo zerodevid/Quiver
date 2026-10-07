@@ -112,13 +112,19 @@ class SolanaProceeds extends Proceeds {
       const ts = (tx.blockTime || s.blockTime || 0) * 1000;
       if (tokD < 0n) {
         // A quote asset coming in within the same tx = sale proceeds (USD).
-        let usd = 0;
+        let usd = 0, otherOutUsd = 0, otherToken = false;
         for (const [mint, v] of d) {
+          if (mint === token) continue;
           const q = quotes[mint];
-          if (!q || v <= 0n || mint === token) continue;
-          usd += (Number(v) / 10 ** q.decimals) * (q.kind === 'eth' ? ethUsd : 1);
+          if (!q) { if (v < 0n) otherToken = true; continue; }
+          const val = (Number(v < 0n ? -v : v) / 10 ** q.decimals) * (q.kind === 'eth' ? ethUsd : 1);
+          if (v > 0n) usd += val; else if (v < 0n) otherOutUsd += val;
         }
-        const sale = usd > 0 ? usd : null;
+        // A swap that also moved other assets out of the wallet (the position's own SOL, another
+        // token) pays one lump of quote for all of them, so the quote that came in is not this
+        // token's proceeds. Such a sale is left without a price (NULL) and valued at the close price.
+        const mixed = otherToken || otherOutUsd > Math.max(0.05, usd * 0.02);
+        const sale = usd > 0 && !mixed ? usd : null;
         this.store.run('INSERT OR REPLACE INTO wsales(chain,wallet,token,tx_hash,block,ts,tok_out,quote_usd,kind) VALUES(?,?,?,?,?,?,?,?,?)',
           this.network, wallet, token, s.signature, s.slot, ts, (-tokD).toString(), sale, sale != null ? 'sell' : 'send');
         known.push({ tx_hash: s.signature, block: s.slot, tok_out: (-tokD).toString(), quote_usd: sale });

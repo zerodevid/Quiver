@@ -596,10 +596,12 @@ class SolanaEngine {
   // ---- exit -------------------------------------------------------------------------
   // The target re-laid its position over new bins (Meteora rebalance_liquidity): same position,
   // same capital, a range that follows the price. Our mirror would otherwise stay in the old bins
-  // and drift out of range while the target keeps earning. Following it = close the mirror and
-  // reopen it over the target's new range with what came back (the memecoin side is redeposited,
+  // and drift out of range while the target keeps earning. Following it = the same move on our
+  // mirror: rebalance_liquidity in place over the target's bins (rebalanceInPlace). Only when that
+  // cannot be done (no per-bin shape, the wallet short of a token, the build fails) the mirror is
+  // closed and reopened over the new range with what came back (the memecoin side is redeposited,
   // not sold). range.follow_rebalance: out_of_range (default — only once the mirror has left its
-  // range, so a bot shifting every few minutes does not cost a close+open each time) | always | off.
+  // range, so a bot shifting every few minutes does not pay a move each time) | always | off.
   async handleRebalance(act, rules) {
     const rng = `bin ${act.ext?.prevLower}…${act.ext?.prevUpper} → ${act.lower}…${act.upper}`;
     let what = `target menggeser rentang ${rng}`;
@@ -657,6 +659,12 @@ class SolanaEngine {
       }
     }
 
+    // Meteora: moved in place with rebalance_liquidity like the target — same position, one
+    // transaction, no second position rent. Close + reopen below only when that cannot be done.
+    const inPlace = await this.rebalanceInPlace(act, pos, rules, { ratio, what, rng });
+    if (inPlace.done) return;
+    if (inPlace.why) what += ` (geser di tempat tidak bisa: ${inPlace.why})`;
+
     let closed;
     try { closed = await this.executeExitRetry(exitPlan, pos); }
     catch (e) {
@@ -688,6 +696,116 @@ class SolanaEngine {
       await fallback(`gagal: ${String(e.message).slice(0, 120)}`);
       this.decide(act.id, 'error', `${what} — cermin #${pos.id} ditutup, buka ulang gagal: ${String(e.message).slice(0, 200)}`, d.plan, closed.txHash, pos.id);
     } finally { this.activeEntries--; }
+  }
+
+  // The mirror moved in place over the target's new bins (Meteora rebalance_liquidity). Returns
+  // { done: true } once decided (copied, or an error after something may have been sent), or
+  // { done: false, why } when nothing was sent and the caller falls back to close + reopen.
+  async rebalanceInPlace(act, pos, rules, { ratio, what, rng }) {
+    const ad = this.chain.adapter(pos.venue);
+    if (typeof ad?.buildRebalance !== 'function') return { done: false };
+    const weights = act.ext?.weights, lower = Number(act.lower), upper = Number(act.upper);
+    if (!Array.isArray(weights) || weights.length !== upper - lower + 1 || !weights.some((w) => w > 0)) return { done: false, why: 'bentuk per-bin target tidak terbaca' };
+    if (this.exiting.has(pos.id)) return { done: false, why: 'posisi sedang diproses' };
+    this.exiting.add(pos.id);
+    try {
+      const owner = this.exec.address();
+      await this.topUpGas([]);
+      const read = async () => (await ad.getPositions([{ id: pos.token_id, pool: pos.pool_ref }], (mm) => this.chain.decimalsMap(mm))).get(pos.token_id);
+      const before = await read().catch(() => undefined);
+      if (!before) return { done: false, why: 'posisi kita tidak terbaca' };
+      let built;
+      try {
+        built = await ad.buildRebalance({ pool: pos.pool_ref, position: pos.token_id, owner, lower, weights, ratio, slippageBps: rules.swap.max_slippage_bps, claimFee: true });
+      } catch (e) { return { done: false, why: String(e?.message || e).slice(0, 120) }; }
+      // What goes in beyond what comes out is pulled from the wallet; a shortfall would need a
+      // swap first — that is what the close + reopen path does.
+      const bal = await this.exec.balances();
+      const [t0, t1] = await this.chain.tokens([pos.token0, pos.token1]);
+      for (const [mint, need, t] of [[pos.token0, built.deposit0, t0], [pos.token1, built.deposit1, t1]]) {
+        if (need > 0n && this.availOf(bal, mint) < need) return { done: false, why: `saldo ${t.symbol} kurang ${fmtUnits(need - this.availOf(bal, mint), t.decimals)}` };
+      }
+      let sent;
+      try { sent = await this.exec.sendGroups(built.groups, { kind: 'rebalance', detail: { venue: pos.venue, position: pos.id } }); }
+      catch (e) {
+        if (/^simulasi |ditolak semua endpoint/.test(String(e.message))) return { done: false, why: String(e.message).slice(0, 120) };
+        throw e;
+      }
+      const hash = sent.hashes[sent.hashes.length - 1] || null;
+      if (!sent.ok) {
+        if (sent.last?.expired) return { done: false, why: 'transaksi tidak masuk (blockhash kedaluwarsa)' };
+        this.stats.errors++;
+        this.decide(act.id, 'error', `${what} — geser cermin #${pos.id} di tempat gagal${hash ? ` (${hash})` : ''}`, null, hash, pos.id);
+        return { done: true };
+      }
+      // The new contents: read until the chain shows the new range (another endpoint may lag).
+      let after = null;
+      for (let i = 0; i < 5; i++) {
+        after = await read().catch(() => null);
+        if (after && (Number(after.lower) !== Number(before.lower) || Number(after.upper) !== Number(before.upper))) break;
+        await sleep(1500);
+      }
+      const r = await this.bookRebalance(pos, before, after, built, hash, rules);
+      this.decide(act.id, 'copy', `${what} — cermin #${pos.id} digeser di tempat ke bin ${r.lower}…${r.upper}${r.note ? ` · ${r.note}` : ''}`, null, hash, pos.id);
+      this.notify(`LP digeser mengikuti target: #${pos.id} (${rng})`, {
+        kind: 'entry', positionId: pos.id, txHash: hash, pair: `${t0.symbol}/${t1.symbol}`, valueUsd: r.valueUsd,
+        target: act.target, mirrorOf: act.tokenId, reason: what,
+      });
+      return { done: true };
+    } finally { this.exiting.delete(pos.id); }
+  }
+
+  // Book an in-place move: fees claimed along go to fee_claims; the principal that came back
+  // counts as withdrawn (the memecoin part is a leftover, sold when exit.sell_leftover is on),
+  // the principal pulled from the wallet counts as added capital; range & shape from the chain.
+  async bookRebalance(pos, before, after, built, hash, rules) {
+    const fee0 = BigInt(before.fee0 || 0n), fee1 = BigInt(before.fee1 || 0n);
+    const claim = fee0 > 0n || fee1 > 0n ? await this.bookFeeClaim(pos, fee0, fee1, hash) : null;
+    // principal moved = contents after − contents before (the SDK estimate if the read failed)
+    const d0 = after ? BigInt(after.amount0) - BigInt(before.amount0) : built.deposit0 - (built.withdraw0 > fee0 ? built.withdraw0 - fee0 : 0n);
+    const d1 = after ? BigInt(after.amount1) - BigInt(before.amount1) : built.deposit1 - (built.withdraw1 > fee1 ? built.withdraw1 - fee1 : 0n);
+    const st = await this.chain.pool(pos.venue, pos.pool_ref, { maxAgeMs: 0 }).catch(() => null);
+    const [t0, t1] = await this.chain.tokens([pos.token0, pos.token1]);
+    const val = (x0, x1) => (st ? this.chain.valueAs({ sqrtPriceX96: st.sqrtX96, amount0: x0, amount1: x1, dec0: t0.decimals, dec1: t1.decimals, token0: pos.token0, token1: pos.token1 }, pos.quote_symbol, this.ethUsd) ?? 0 : 0);
+    const k = usdPerQuote(pos.quote_symbol, this.ethUsd, this.chain);
+    const notes = [];
+    const in0 = d0 > 0n ? d0 : 0n, in1 = d1 > 0n ? d1 : 0n, out0 = d0 < 0n ? -d0 : 0n, out1 = d1 < 0n ? -d1 : 0n;
+    const L = after ? String(after.liquidity) : String(pos.liquidity);
+    if (in0 || in1) {
+      const add = val(in0, in1);
+      this.store.run('UPDATE positions SET cost0=?, cost1=?, cost_quote=COALESCE(cost_quote,0)+? WHERE id=?',
+        (BigInt(pos.cost0 || '0') + in0).toString(), (BigInt(pos.cost1 || '0') + in1).toString(), add, pos.id);
+      notes.push(`tambah $${(add * k).toFixed(2)}`);
+    }
+    let sale = null;
+    if (out0 || out1) {
+      const q = this.chain.quoteSideOf(pos.token0, pos.token1);
+      const memeMint = q.side === 0 ? pos.token1 : pos.token0;
+      const memeAmt = q.side === 0 ? out1 : out0;
+      const meme = memeAmt > 0n && !this.chain.QUOTES[memeMint]
+        ? { token: memeMint, amount: memeAmt.toString(), quote: q.side === 0 ? val(0n, out1) : val(out0, 0n) } : null;
+      const outQuote = val(out0, out1);
+      this.positions.markDecreased(pos.id, { liquidity: L, out0, out1, outQuote, txHash: hash, left: meme });
+      notes.push(`kembali $${(outQuote * k).toFixed(2)}`);
+      if (meme) sale = { posId: pos.id, token: memeMint, amount: memeAmt.toString(), label: q.side === 0 ? t1.symbol : t0.symbol, target: pos.target, quote: q.side === 0 ? pos.token0 : pos.token1 };
+    }
+    let ext = {};
+    try { ext = JSON.parse(pos.ext || '{}') || {}; } catch { ext = {}; }
+    const lower = after?.lower ?? ext.lower, upper = after?.upper ?? ext.upper;
+    if (after) {
+      ext = { ...ext, ...(after.ext || {}), lower: after.lower, upper: after.upper, strategy: ext.strategy ?? after.ext?.strategy ?? null };
+      this.store.run('UPDATE positions SET tick_lower=?, tick_upper=?, liquidity=?, ext=? WHERE id=?', after.tickLower, after.tickUpper, L, JSON.stringify(ext), pos.id);
+    }
+    if (claim) notes.push(`fee $${claim.usd.toFixed(2)} diklaim`);
+    if (sale && rules.exit.sell_leftover) await this.sellLeftover(sale).catch((e) => this.log(`jual sisa #${pos.id}: ${e.message}`));
+    if (claim?.meme && this.sellFeeWanted(pos.id, null)) {
+      this.positions.noteFeeLeftover({ posId: pos.id, token: claim.meme.token, amount: claim.meme.amount, estQuote: claim.meme.quoteValue, txHash: hash });
+      await this.sellLeftover({ posId: pos.id, target: pos.target, token: claim.meme.token, quote: claim.meme.quote, amount: claim.meme.amount, kind: 'fee', label: claim.meme.symbol })
+        .catch((e) => this.log(`jual fee #${pos.id}: ${e.message}`));
+    }
+    this.positions.resync(this.ethUsd).catch(() => {});
+    const valueUsd = after ? val(BigInt(after.amount0), BigInt(after.amount1)) * k : null;
+    return { lower, upper, valueUsd, note: notes.join(' · ') };
   }
 
   async handleExit(act, rules) {

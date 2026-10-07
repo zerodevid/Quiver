@@ -112,6 +112,14 @@ class SolanaPositions extends Positions {
       if (!stale) {
         this.store.run('UPDATE positions SET liquidity=?, fees_quote=?, last_sync=? WHERE id=?', L.toString(), feeQuote ?? 0, Date.now(), r.id);
       }
+      // A position moved in place (Meteora rebalance_liquidity) has a new range on chain: the
+      // books follow it even when the move itself was not booked (process died after sending).
+      if (r.venue === 'meteora' && cp && !cp.sim && L > 0n && cp.tickLower != null && (cp.tickLower !== r.tick_lower || cp.tickUpper !== r.tick_upper)) {
+        const own = SolanaPositions.extOf(r);
+        const ext = { ...own, ...(cp.ext || {}), lower: cp.lower, upper: cp.upper, strategy: own.strategy ?? cp.ext?.strategy ?? null };
+        this.store.run('UPDATE positions SET tick_lower=?, tick_upper=?, ext=? WHERE id=?', cp.tickLower, cp.tickUpper, JSON.stringify(ext), r.id);
+        r.tick_lower = cp.tickLower; r.tick_upper = cp.tickUpper; r.ext = JSON.stringify(ext);
+      }
       const inRange = st && L > 0n ? st.tick >= r.tick_lower && st.tick < r.tick_upper : null;
       out.push({
         ...r, liquidity: L.toString(),

@@ -106,4 +106,66 @@ function weightShare0(weights, lower, activeId) {
 
 const strategyLabel = (s) => ({ spot: 'spot', curve: 'curve', bidask: 'bid-ask' }[s] || 'spot');
 
-module.exports = { dlmmShape, shapeWeight, binWeights, weightDistribution, weightShare0, resolveStrategy, strategyLabel, STRATEGIES, CURVE_MAX, BIDASK_MIN };
+// Value weights -> the deposits of a Meteora rebalance_liquidity at `activeId`. A rebalance
+// deposit is linear in the distance from the active bin: Y side (bins <= active)
+// y = y0 + deltaY·(active − bin), X side (bins > active) x·price = x0 + deltaX·(bin − active),
+// both in Y raw units — the same value units as binWeights. So each side is cut into the fewest
+// straight segments that stay within a tolerance of the weights (a preset shape is 1 segment per
+// side), loosened until it fits `maxSegments`: the instruction carries every segment and has to
+// fit one transaction. `value` = total value to lay out (Y raw units). Zero bins at the edges
+// are dropped (the program shrinks the position to the bins that hold liquidity anyway).
+// Returns [{ minDeltaId, maxDeltaId, x0, y0, deltaX, deltaY }] (BigInt amounts, signed) or null.
+function rebalanceDeposits(weights, lower, activeId, value, { maxSegments = 8 } = {}) {
+  if (!Array.isArray(weights) || !weights.some((w) => w > 0) || !(Number(value) > 0)) return null;
+  const sum = weights.reduce((s, w) => s + w, 0);
+  const v = weights.map((w) => (Number(value) * w) / sum);
+  const max = Math.max(...v);
+  // sides as points [t = distance from active, value, bin]; Y side includes the active bin
+  const bid = [], ask = [];
+  v.forEach((x, k) => {
+    const b = lower + k;
+    if (b <= activeId) bid.push([activeId - b, x, b]); else ask.push([b - activeId, x, b]);
+  });
+  const trim = (pts) => {
+    let i = 0, j = pts.length - 1;
+    while (i <= j && !(pts[i][1] > 0)) i++;
+    while (j >= i && !(pts[j][1] > 0)) j--;
+    return pts.slice(i, j + 1);
+  };
+  const sides = [trim(bid.sort((a, b) => a[0] - b[0])), trim(ask.sort((a, b) => a[0] - b[0]))];
+  const cut = (pts, tol) => {
+    const segs = [];
+    for (let i = 0; i < pts.length;) {
+      let j = i;
+      while (j + 1 < pts.length) {
+        const [t0, v0] = pts[i], [t1, v1] = pts[j + 1];
+        const ok = pts.slice(i + 1, j + 1).every(([t, x]) => Math.abs(v0 + ((v1 - v0) * (t - t0)) / (t1 - t0) - x) <= tol);
+        if (!ok) break;
+        j++;
+      }
+      segs.push([i, j]);
+      i = j + 1;
+    }
+    return segs;
+  };
+  let segs = null;
+  for (const f of [0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 1]) {
+    const s = sides.map((pts) => cut(pts, f * max));
+    if (s[0].length + s[1].length <= maxSegments || f === 1) { segs = s; break; }
+  }
+  const out = [];
+  sides.forEach((pts, side) => {
+    for (const [i, j] of segs[side]) {
+      const [t0, v0] = pts[i], [t1, v1] = pts[j];
+      const slope = t1 > t0 ? Math.round((v1 - v0) / (t1 - t0)) : 0;
+      const base = Math.round(v0 - slope * t0);   // value at distance 0; the line passes through the first bin
+      const lo = Math.min(pts[i][2], pts[j][2]) - activeId, hi = Math.max(pts[i][2], pts[j][2]) - activeId;
+      out.push(side === 0
+        ? { minDeltaId: lo, maxDeltaId: hi, x0: 0n, y0: BigInt(base), deltaX: 0n, deltaY: BigInt(slope) }
+        : { minDeltaId: lo, maxDeltaId: hi, x0: BigInt(base), y0: 0n, deltaX: BigInt(slope), deltaY: 0n });
+    }
+  });
+  return out.length ? out.sort((a, b) => a.minDeltaId - b.minDeltaId) : null;
+}
+
+module.exports = { dlmmShape, shapeWeight, binWeights, weightDistribution, weightShare0, rebalanceDeposits, resolveStrategy, strategyLabel, STRATEGIES, CURVE_MAX, BIDASK_MIN };
