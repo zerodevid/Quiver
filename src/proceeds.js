@@ -312,6 +312,7 @@ class Proceeds {
       ...lots.map((r) => ({ block: r.closed_block, r, left: r.lot, sold: 0n, usd: 0 })),
       ...extra.map((e) => ({ block: e.block, left: big(e.tok_in) })),
     ].sort((a, b) => a.block - b.block);
+    const nowSqrt = new Map();
     for (const k of known) {
       let rem = big(k.tok_out);
       const total = rem;
@@ -327,12 +328,20 @@ class Proceeds {
         if (!q.r) continue;
         q.sold += take;
         const sq = await this.sqrtAt(q.r, k.block);
-        const priced = sq ? this.usdOf(q.r, sq, take, ethUsd) : q.r.closeUnit * Number(take);
+        let priced = sq ? this.usdOf(q.r, sq, take, ethUsd) : q.r.closeUnit * Number(take);
         if (k.quote_usd != null) {
           // Backstop for a swap whose quote also paid for something else: proceeds far above what
-          // the tokens were worth at the close price are not theirs.
+          // the tokens are worth (at the close price, or the current pool price when the close
+          // price is unknown) are not theirs. With no price at all there is nothing to judge by.
           const share = k.quote_usd * Number(take) / Number(total);
-          if (!(priced > 0) || share <= priced * Proceeds.SALE_PLAUSIBLE_X + 1) { q.usd += share; continue; }
+          let ref = priced, known = priced > 0;
+          if (share > ref * Proceeds.SALE_PLAUSIBLE_X + 1) {
+            if (!nowSqrt.has(q.r.pool_ref)) nowSqrt.set(q.r.pool_ref, await this.sqrtNow(q.r));
+            const sn = nowSqrt.get(q.r.pool_ref);
+            if (sn) { ref = Math.max(ref, this.usdOf(q.r, sn, take, ethUsd)); known = true; }
+          }
+          if (!known || share <= ref * Proceeds.SALE_PLAUSIBLE_X + 1) { q.usd += share; continue; }
+          priced = ref;
         }
         q.usd += priced;
       }

@@ -88,6 +88,7 @@ const ev = (r, name) => { const f = fx(name); return r.extract({ sig: f.signatur
     r.apply(p, mk('decrease', 600, 1_000_000_000n), pool, 100);   // the final exit
     assert.ok(Math.abs(p.investedUsd - 1) < 1e-9, `invested ${p.investedUsd}`);
     assert.ok(Math.abs(p.returnedUsd - 1.002) < 1e-9, `returned ${p.returnedUsd}`);
+    assert.deepStrictEqual([p.in1, p.out1], [1_000_000_000n, 1_002_000_000n], 'raw totals net out the recycled capital too');
     // a deposit long after a withdrawal is new money
     const q = r.newPos({ venue: 'meteora', id: 'P2', pool: 'POOL' });
     r.apply(q, mk('increase', 100, 1_000_000_000n), pool, 100);
@@ -105,7 +106,7 @@ const ev = (r, name) => { const f = fx(name); return r.extract({ sig: f.signatur
     r.rpc.slot = async () => 1;
     store.setState(r.stateKey('W1'), JSON.stringify({ newest: 'x', sinceMs: Date.now() - 1000 * 101 }));
     await r.refresh('W1', {});
-    store.setState(r.stateKey('W2'), JSON.stringify({ newest: 'x', sinceMs: Date.now(), v: 3 }));
+    store.setState(r.stateKey('W2'), JSON.stringify({ newest: 'x', sinceMs: Date.now(), v: 4 }));
     await r.refresh('W2', {}).catch(() => {});
     assert.deepStrictEqual(calls.map((c) => c[0]), ['scan', 'inc']);
     assert.ok(calls[0][1] >= 1000 && calls[0][1] < 1100, `same window: ${calls[0][1]}`);

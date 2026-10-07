@@ -47,7 +47,7 @@ const flatAccounts = (list) => (list || []).flatMap((a) => (a.accounts ? flatAcc
 const big = (x) => (x == null ? 0n : BigInt(x.toString()));
 const num = (x) => (x == null ? null : Number(x.toString()));
 const b58 = (k) => (k?.toBase58 ? k.toBase58() : String(k));
-const DECODER_V = 3;
+const DECODER_V = 4;
 // A deposit this close (in slots, ~1 min) after a withdrawal of the same position is its capital put back.
 const RECYCLE_SLOTS = 150;
 const pick = (o, ...ks) => { for (const k of ks) if (o?.[k] !== undefined) return o[k]; return undefined; };
@@ -421,6 +421,9 @@ class SolanaWalletResearch {
       if (rc && rc.usd > 0 && e.slot - rc.slot <= RECYCLE_SLOTS && valueUsd != null) {
         const take = Math.min(fresh, rc.usd);
         rc.usd -= take; fresh -= take; p.returnedUsd -= take;
+        // the same capital in raw amounts, so what came back and went in again nets out
+        const r0 = a0 < rc.a0 ? a0 : rc.a0, r1 = a1 < rc.a1 ? a1 : rc.a1;
+        rc.a0 -= r0; rc.a1 -= r1; p.in0 -= r0; p.in1 -= r1; p.out0 -= r0; p.out1 -= r1;
       }
       p.investedUsd += fresh;
     } else if (e.kind === 'rebalance') {
@@ -435,7 +438,8 @@ class SolanaWalletResearch {
       valueUsd = usdOf(a0 + f0, a1 + f1);
       if (e.kind === 'decrease' && (a0 > 0n || a1 > 0n)) {
         const principal = usdOf(a0, a1) || 0;
-        p.recycle = p.recycle && e.slot - p.recycle.slot <= RECYCLE_SLOTS ? { usd: p.recycle.usd + principal, slot: e.slot } : { usd: principal, slot: e.slot };
+        const prev = p.recycle && e.slot - p.recycle.slot <= RECYCLE_SLOTS ? p.recycle : { usd: 0, a0: 0n, a1: 0n };
+        p.recycle = { usd: prev.usd + principal, a0: prev.a0 + a0, a1: prev.a1 + a1, slot: e.slot };
       }
       p.returnedUsd += valueUsd || 0;
       p.feesUsd += usdOf(f0, f1) || 0;
@@ -565,7 +569,7 @@ class SolanaWalletResearch {
   }
 
   stateKey(wallet) { return `sol_research:${this.network}:${wallet}`; }
-  // Bumped when the decoder reads the same transactions differently (v3: capital put back right
+  // Bumped when the decoder reads the same transactions differently (v3/v4: capital put back right
   // after a withdrawal is not counted as invested again; v2: Meteora
   // rebalance_liquidity folds into one 'rebalance', range resizes, zero claims dropped): a
   // wallet scanned by an older decoder is rebuilt once on its next refresh.
