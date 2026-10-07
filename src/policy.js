@@ -42,6 +42,10 @@ const DEFAULTS = {
     align: 'nearest',         // nearest | down | up
     min_width_ticks: 0,
     dlmm_strategy: 'mirror',  // Meteora DLMM only: mirror (follow the target's shape) | spot | curve | bidask
+    // Meteora DLMM only: the target moves its position's bins in place (rebalance_liquidity).
+    // out_of_range = move our mirror to the new range only once it has left its own range;
+    // always = move it on every shift; off = leave the mirror where it is.
+    follow_rebalance: 'out_of_range',
   },
   onesided: {
     policy: 'copy',           // copy | skip | recenter
@@ -117,6 +121,7 @@ const RULE_SPEC = {
     scale: ['num', 0.01, 100], width_pct: ['num', 0.01, 100_000],
     align: ['enum', ['nearest', 'down', 'up']], min_width_ticks: ['int', 0, 1_774_544],
     dlmm_strategy: ['enum', ['mirror', 'spot', 'curve', 'bidask']],
+    follow_rebalance: ['enum', ['out_of_range', 'always', 'off']],
   },
   onesided: { policy: ['enum', ['copy', 'skip', 'recenter']], max_quote_usd: ['num', 0, 1e9] },
   swap: { enabled: ['bool'], max_slippage_bps: ['int', 0, 5000], max_price_impact_bps: ['int', 0, 10_000] },

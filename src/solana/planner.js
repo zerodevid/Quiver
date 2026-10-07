@@ -17,7 +17,7 @@
 const m = require('../v3math');
 const u = require('./units');
 const { planRange, quoteToUsd, equitySizing } = require('../policy');
-const { shapeWeight, resolveStrategy, strategyLabel } = require('./dlmm-shape');
+const { shapeWeight, resolveStrategy, strategyLabel, weightShare0 } = require('./dlmm-shape');
 
 const BRIDGE_MARGIN_BPS = 100;
 // Orca & Raydium: the program's tick bounds (narrower than Uniswap's).
@@ -117,6 +117,10 @@ function planEntrySol(act, ctx) {
   if (act.venue === 'meteora' && upper - lower + 1 > 1400) return skip(`rentang ${upper - lower + 1} bin melebihi batas posisi DLMM (1400)`);
   const sameRange = exact && Number(act.lower) === lower && Number(act.upper) === upper;
   const strategy = act.venue === 'meteora' ? resolveStrategy(rules.range.dlmm_strategy, act.ext?.strategy) : null;
+  // 'mirror' over the target's own bins: copy its per-bin shape exactly (by-weight deposit) — a
+  // preset only approximates it, and an automation's custom weights match none of them.
+  const tw = act.ext?.weights;
+  const weights = strategy && rules.range.dlmm_strategy === 'mirror' && sameRange && !adding && Array.isArray(tw) && tw.length === upper - lower + 1 && tw.some((w) => w > 0) ? tw : null;
 
   // ---- size ----
   const s = rules.sizing;
@@ -174,7 +178,8 @@ function planEntrySol(act, ctx) {
     const f = BigInt(Math.floor((quoteAmt / tv.value) * 1e12));
     amount0 = (t0 * f) / 10n ** 12n; amount1 = (t1 * f) / 10n ** 12n;
   } else {
-    ({ amount0, amount1 } = amountsForValue(pool, q, quoteAmt, share0(act.venue, pool, tl, tu, lower, upper, strategy || 'spot')));
+    const s0 = weights ? weightShare0(weights, lower, pool.current) : share0(act.venue, pool, tl, tu, lower, upper, strategy || 'spot');
+    ({ amount0, amount1 } = amountsForValue(pool, q, quoteAmt, s0));
   }
   if (side === 'token0_only') amount1 = 0n;
   if (side === 'token1_only') amount0 = 0n;
@@ -183,12 +188,12 @@ function planEntrySol(act, ctx) {
 
   return {
     verdict: 'copy',
-    reason: `${eqNote ? `${eqNote} · ` : ''}${note || `${mode} → $${usd.toFixed(2)}`}${strategy ? ` · ${strategyLabel(strategy)}` : ''}`,
+    reason: `${eqNote ? `${eqNote} · ` : ''}${note || `${mode} → $${usd.toFixed(2)}`}${strategy ? ` · ${weights ? 'bentuk per-bin target' : strategyLabel(strategy)}` : ''}`,
     plan: {
       venue: act.venue, action: adding ? 'increase' : 'mint',
       poolRef: pool.id, token0: pool.token0, token1: pool.token1, fee: pool.fee,
       tickSpacing: pool.tickSpacing, tickLower: tl, tickUpper: tu,
-      lower, upper, binStep: pool.binStep ?? null, strategy,
+      lower, upper, binStep: pool.binStep ?? null, strategy, weights,
       amount0: amount0.toString(), amount1: amount1.toString(),
       valueQuote: est.value, quoteSymbol: q.symbol, quoteKind: q.kind, quoteSide: q.side,
       valueUsd: quoteToUsd(est.value, q.kind, ethUsd),

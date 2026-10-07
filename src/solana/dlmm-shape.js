@@ -58,6 +58,52 @@ function resolveStrategy(rule, detected) {
   return STRATEGIES.includes(detected) ? detected : 'spot';
 }
 
+// The VALUE per bin of a position, lower..upper (Y raw units: x × bin price + y), scaled to
+// 0..65535. This is the position's exact shape — an automation that deposits by weight (no
+// spot/curve/bid-ask preset) is copied bin for bin from it. null when there is nothing to read.
+function binWeights(bins, lower, upper, binStep) {
+  const r = 1 + Number(binStep) / 10_000;
+  const v = new Array(upper - lower + 1).fill(0);
+  for (const b of bins || []) {
+    const k = Number(b.binId) - lower;
+    if (k < 0 || k >= v.length) continue;
+    v[k] = Number(b.x || 0) * r ** Number(b.binId) + Number(b.y || 0);
+  }
+  const max = Math.max(...v);
+  if (!(max > 0) || !Number.isFinite(max)) return null;
+  return v.map((x) => Math.round((x / max) * 65535));
+}
+
+// Value weights -> the SDK's by-weight distribution at the CURRENT active bin: bins above it
+// take X, below it Y, the active bin half of each. Each side in bps of that side's total
+// (summing to 10000, the rounding remainder on its largest bin); X bps are by amount, so a
+// bin's value weight is divided by its price.
+function weightDistribution(weights, lower, activeId, binStep) {
+  const r = 1 + Number(binStep) / 10_000;
+  const xs = [], ys = [];
+  weights.forEach((w, k) => {
+    const b = lower + k;
+    xs.push(b > activeId ? w / r ** (b - activeId) : b === activeId ? w / 2 : 0);
+    ys.push(b < activeId ? w : b === activeId ? w / 2 : 0);
+  });
+  const bps = (a) => {
+    const sum = a.reduce((s, x) => s + x, 0);
+    if (!(sum > 0)) return a.map(() => 0);
+    const out = a.map((x) => Math.floor((x / sum) * 10_000));
+    out[a.indexOf(Math.max(...a))] += 10_000 - out.reduce((s, x) => s + x, 0);
+    return out;
+  };
+  const bx = bps(xs), by = bps(ys);
+  return weights.map((_, k) => ({ binId: lower + k, x: bx[k], y: by[k] }));
+}
+
+// Share of value in X for the weights at the active bin (the planner's X/Y split).
+function weightShare0(weights, lower, activeId) {
+  let x = 0, all = 0;
+  weights.forEach((w, k) => { const b = lower + k; all += w; if (b > activeId) x += w; else if (b === activeId) x += w / 2; });
+  return all > 0 ? x / all : 0.5;
+}
+
 const strategyLabel = (s) => ({ spot: 'spot', curve: 'curve', bidask: 'bid-ask' }[s] || 'spot');
 
-module.exports = { dlmmShape, shapeWeight, resolveStrategy, strategyLabel, STRATEGIES, CURVE_MAX, BIDASK_MIN };
+module.exports = { dlmmShape, shapeWeight, binWeights, weightDistribution, weightShare0, resolveStrategy, strategyLabel, STRATEGIES, CURVE_MAX, BIDASK_MIN };
