@@ -1374,6 +1374,114 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {}, meteo
     assert.ok((gap < 0n ? -gap : gap) < 10n ** 7n, `${h.sent[1].amount0} + ${h.sent[1].amount1}`);
   });
 
+  await t('rebalance deposits: a linear side is one segment, a bent one two; each bin lands within tolerance of the weights', () => {
+    const { rebalanceDeposits } = require('../src/solana/dlmm-shape');
+    const binStep = 100, r = 1 + binStep / 10_000;
+    // value the program lays in bin b for a set of deposits at `active` (Y side: y, X side: x·price)
+    const laid = (deps, active) => {
+      const out = new Map();
+      for (const d of deps) {
+        for (let b = active + d.minDeltaId; b <= active + d.maxDeltaId; b++) {
+          const v = b <= active ? Number(d.y0 + d.deltaY * BigInt(active - b)) : Number(d.x0 + d.deltaX * BigInt(b - active));
+          out.set(b, v);
+        }
+      }
+      return out;
+    };
+    // curve-like Y side only (a trailing bot's single-sided SOL): rises linearly toward the active bin
+    const lin = Array.from({ length: 69 }, (_, k) => 1000 + 500 * k);
+    let deps = rebalanceDeposits(lin, -477, -409, 1e9);
+    assert.strictEqual(deps.length, 1);
+    assert.deepStrictEqual([deps[0].minDeltaId, deps[0].maxDeltaId], [-68, 0]);
+    const sum = lin.reduce((s, w) => s + w, 0);
+    for (const [b, v] of laid(deps, -409)) {
+      const want = (1e9 * lin[b + 477]) / sum;
+      assert.ok(Math.abs(v - want) <= 1e9 * 0.005 + 70, `bin ${b}: ${v} vs ${want}`);
+    }
+    // both sides, X side bent (a peak 5 bins above active): Y 1 segment, X 2
+    const both = [...Array.from({ length: 10 }, (_, k) => 100 + 10 * k), 200, ...[300, 400, 500, 600, 700, 600, 500, 400, 300, 200]];
+    deps = rebalanceDeposits(both, 0, 10, 1e8);
+    assert.strictEqual(deps.filter((d) => d.maxDeltaId <= 0).length, 1);
+    assert.strictEqual(deps.filter((d) => d.minDeltaId > 0).length, 2);
+    const total = both.reduce((s, w) => s + w, 0);
+    for (const [b, v] of laid(deps, 10)) assert.ok(Math.abs(v - (1e8 * both[b]) / total) <= 1e8 * 0.005 + 20, `bin ${b}`);
+    // noisy shape: loosened until it fits the segment cap; empty edge bins dropped
+    const noisy = [0, 0, ...Array.from({ length: 40 }, (_, k) => 1000 + (k % 2) * 300 + k * 10), 0];
+    deps = rebalanceDeposits(noisy, -50, -5, 1e8, { maxSegments: 4 });
+    assert.ok(deps.length <= 4);
+    assert.strictEqual(-5 + deps[0].minDeltaId, -48, 'zero bins at the edge are not laid');
+    assert.strictEqual(rebalanceDeposits([0, 0], 0, 0, 1e8), null);
+  });
+
+  const W7 = [10000, 20000, 30000, 40000, 50000, 60000, 65535];
+  const rebalanceHarness = ({ balances = new Map([['SOL', 10n * 10n ** 9n]]), build = {} } = {}) => {
+    const before = { ...POSV, lower: -3, upper: 3, tickLower: -300, tickUpper: 400, fee0: 10n ** 8n, fee1: 2n * 10n ** 8n, ext: { binStep: BIN_STEP } };
+    const after = { ...POSV, lower: -2, upper: 4, tickLower: -200, tickUpper: 500, liquidity: '990', amount0: 0n, amount1: 49n * 10n ** 8n, fee0: 0n, fee1: 0n, ext: { binStep: BIN_STEP, weights: W7 } };
+    const h = engineHarness({ position: before, balances });
+    let moved = false;
+    h.chain.adapters.meteora.getPositions = async (items) => new Map(items.map((it) => [it.id, moved ? after : before]));
+    h.chain.adapters.meteora.buildRebalance = async (p) => {
+      h.sent.push({ kind: 'rebalance', ...p });
+      return { groups: [{ instructions: [] }], deposit0: 0n, deposit1: 0n, withdraw0: 2n * 10n ** 9n + 10n ** 8n, withdraw1: 10n ** 8n, ...build };
+    };
+    h.eng.exec.sendGroups = async () => { moved = true; return { ok: true, hashes: ['RebTx'] }; };
+    h.eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { exit: { sell_leftover: false, follow_claim: true }, range: { follow_rebalance: 'always' }, sizing: { max_quote_per_position_usd: 1e6, max_total_exposure_usd: 1e6, daily_budget_usd: 1e6 } }));
+    return h;
+  };
+
+  await t('target rebalance with a per-bin shape: mirror moved in place (rebalance_liquidity) — same position, new range, fees booked, nothing closed', async () => {
+    const h = rebalanceHarness();
+    const old = openRow(h.store);
+    await h.eng.handle(insertRebalance(h.store, 1, { weights: W7 }));
+    const d = h.store.get('SELECT verdict, reason, tx_hash, position_id FROM decisions');
+    assert.strictEqual(d.verdict, 'copy', d.reason);
+    assert.match(d.reason, /digeser di tempat ke bin -2…4/);
+    assert.deepStrictEqual(h.sent.map((x) => x.kind), ['rebalance']);
+    assert.deepStrictEqual([h.sent[0].lower, h.sent[0].weights], [-2, W7]);
+    assert.strictEqual(h.sent[0].claimFee, true);
+    assert.strictEqual(d.tx_hash, 'RebTx');
+    assert.strictEqual(d.position_id, old.id);
+    const p = h.store.get('SELECT * FROM positions WHERE id=?', old.id);
+    assert.strictEqual(p.status, 'open');
+    assert.strictEqual(h.store.get('SELECT COUNT(*) c FROM positions').c, 1);
+    assert.deepStrictEqual([p.tick_lower, p.tick_upper, p.liquidity], [-200, 500, '990']);
+    assert.deepStrictEqual([JSON.parse(p.ext).lower, JSON.parse(p.ext).upper], [-2, 4]);
+    // fees claimed along: 0.1 MEME + 0.2 SOL; principal: 2 MEME and 3 → 4.9 SOL (−2 MEME, +1.9 SOL)
+    const fc = h.store.get('SELECT * FROM fee_claims');
+    assert.deepStrictEqual([fc.position_id, fc.amount0, fc.amount1], [old.id, String(10n ** 8n), String(2n * 10n ** 8n)]);
+    assert.strictEqual(p.out0, String(2n * 10n ** 9n));
+    assert.strictEqual(p.left_token, MEME, 'the memecoin that came back is a leftover');
+    assert.ok(Math.abs(p.cost_quote - 11.9) < 1e-6, `cost ${p.cost_quote}`);
+  });
+
+  await t('target rebalance, wallet short of what the new shape needs: falls back to close + reopen, reason says why', async () => {
+    const h = rebalanceHarness({ balances: new Map([['SOL', 10n * 10n ** 9n], [MEME, 10n * 10n ** 9n]]), build: { deposit1: 50n * 10n ** 9n } });
+    h.eng.exec.sendGroups = async () => ({ ok: true, hashes: ['TxHash1'] });
+    const got = { ...POSV, id: 'NewPos', liquidity: '900', tickLower: -200, tickUpper: 500, ext: { binStep: BIN_STEP } };
+    h.chain.adapters.meteora.getPositions = async (items) => new Map(items.map((it) => [it.id, it.id === 'NewPos' ? got : POSV]));
+    openRow(h.store);
+    await h.eng.handle(insertRebalance(h.store, 1, { weights: W7 }));
+    const d = h.store.get('SELECT verdict, reason FROM decisions');
+    assert.strictEqual(d.verdict, 'copy', d.reason);
+    assert.match(d.reason, /geser di tempat tidak bisa: saldo SOL kurang/);
+    assert.deepStrictEqual(h.sent.map((x) => x.kind), ['rebalance', 'decrease', 'open']);
+  });
+
+  await t('target claim riding on a rebalance we followed: not claimed again (our move claimed the mirror fees)', async () => {
+    const h = rebalanceHarness();
+    openRow(h.store);
+    await h.eng.handle(insertRebalance(h.store, 1, { weights: W7 }));
+    h.store.run(`INSERT INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,liquidity,amount0,amount1,ext)
+      VALUES('solana',?,1,'s:TPos:claim:5:6:',1,?,'meteora','claim','TPos',?,?,?,'0','5','6','{}')`, Date.now(), TARGET, POOL, MEME, WSOL);
+    let claimed = 0;
+    h.eng.claimFees = async () => { claimed++; return { ok: true }; };
+    await h.eng.handle(SolanaWatcher.actFromRow(h.store.get("SELECT * FROM actions WHERE kind='claim'")));
+    const d = h.store.get("SELECT verdict, reason FROM decisions d JOIN actions a ON a.id=d.action_id WHERE a.kind='claim'");
+    assert.strictEqual(d.verdict, 'skip');
+    assert.match(d.reason, /sudah ikut diklaim saat rentangnya digeser/);
+    assert.strictEqual(claimed, 0);
+  });
+
   await t('target rebalance in a dry run: decided "dry", nothing sent', async () => {
     const h = engineHarness({ position: POSV, dry: true });
     h.eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { range: { follow_rebalance: 'always' } }));

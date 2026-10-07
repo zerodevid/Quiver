@@ -121,6 +121,11 @@ const rules = [
   [/^klaim tidak dicermin$/, 'claim not mirrored', 'klaim tidak dicermin'],
   [/^posisi #(\d+) dalam kendali manual$/, 'Position #{1} is under manual control', 'Posisi #{1} dalam kendali manual'],
   [/^klaim tidak diikuti$/, 'claim not followed', 'klaim tidak diikuti'],
+  [/^fee cermin #(\d+) sudah ikut diklaim saat rentangnya digeser$/, 'fees on position #{1} were already claimed when its range was moved', 'fee posisi #{1} sudah ikut diklaim saat rentangnya digeser'],
+  [/^target menggeser rentang bin (\S+)…(\S+) → (\S+)…(\S+)(.*)$/s, 'The target shifted its range from bins {1}…{2} to {3}…{4}{5}', 'Target menggeser rentang dari bin {1}…{2} ke {3}…{4}{5}'],
+  [/^cermin #(\d+) digeser di tempat ke bin (\S+)…(\S+) · (.+)$/s, 'position #{1} moved in place to bins {2}…{3} · {4}', 'posisi #{1} digeser di tempat ke bin {2}…{3} · {4}'],
+  [/^cermin #(\d+) digeser di tempat ke bin (\S+)…(\S+)$/, 'position #{1} moved in place to bins {2}…{3}', 'posisi #{1} digeser di tempat ke bin {2}…{3}'],
+  [/^geser cermin #(\d+) di tempat gagal(.*)$/s, 'Moving position #{1} in place failed{2}', 'Penggeseran posisi #{1} di tempat gagal{2}'],
   [/^coba ulang jual sisa #(\d+): (.+)$/s, 'Retrying the leftover sale for position #{1}: {2}', 'Mencoba kembali penjualan sisa posisi #{1}: {2}'],
 ];
 const orderedFragments = Object.entries(fragments).sort((a,b)=>b[0].length-a[0].length);

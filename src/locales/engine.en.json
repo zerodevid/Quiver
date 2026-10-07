@@ -50,5 +50,14 @@
   "jumlah posisi terbuka sudah mentok": "open position limit reached",
   "state pool tidak terbaca": "pool state unreadable",
   "venue": "venue",
-  "dimatikan": "disabled"
+  "dimatikan": "disabled",
+  " (nilai target ": " (target value ",
+  " (geser di tempat tidak bisa: ": " (in-place move not possible: ",
+  "bentuk per-bin target tidak terbaca": "target's per-bin shape unreadable",
+  "posisi kita tidak terbaca": "our position unreadable",
+  "bentuk rentang baru tidak terbaca": "new range shape unreadable",
+  "posisi sedang diproses": "position is being processed",
+  "tambah $": "added $",
+  "kembali $": "returned $",
+  " diklaim": " claimed"
 }

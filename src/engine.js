@@ -584,7 +584,14 @@ class Engine {
     const mirror = this.store.get(`SELECT id, takeover_ts FROM positions WHERE chain=? AND status='open' AND target=? AND mirror_of=?`,
       this.network, act.target, String(act.tokenId ?? ''));
     const what = `target panen fee${n > 1 ? ` (ke-${n} dalam 24 jam)` : ''}`;
-    if (mirror && rules?.exit?.follow_claim) await this.followTargetClaim(act, mirror, what);
+    // A claim riding on a target rebalance (Solana: same signature) that we already followed:
+    // our move claimed the mirror's fees too, so another claim would only pay a fee for nothing.
+    const sig = String(act.txHash || '').split(':')[0];
+    const moved = mirror && sig && String(act.txHash).includes(':') && this.store.get(`SELECT 1 FROM actions a JOIN decisions d ON d.action_id=a.id
+      WHERE a.chain=? AND a.kind='rebalance' AND a.token_id=? AND a.tx_hash LIKE ? AND d.verdict='copy' LIMIT 1`,
+    this.network, String(act.tokenId ?? ''), `${sig}:%`);
+    if (moved) this.decide(act.id, 'skip', `${what} — fee cermin #${mirror.id} sudah ikut diklaim saat rentangnya digeser`);
+    else if (mirror && rules?.exit?.follow_claim) await this.followTargetClaim(act, mirror, what);
     else this.decide(act.id, 'skip', `${what}${mirror ? ` — cermin posisi #${mirror.id}` : ''} — klaim tidak dicermin`);
     if (!mirror || n < Engine.CLAIM_SIGNAL_MIN) return;
     const key = this.sk(`claim_signal:${act.tokenId}`);
