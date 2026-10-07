@@ -1236,6 +1236,31 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {}, meteo
     assert.strictEqual(h.sent.length, 0);
   });
 
+  await t('trailing bot: position emptied (still open) is held; refilled on new bins = one rebalance, still empty after 90 s = exit', () => {
+    const R = (lower, upper, L, fee0 = '0') => ({ venue: 'meteora', pool: POOL, token0: MEME, token1: WSOL, lower, upper, tickLower: lower * 100, tickUpper: (upper + 1) * 100, liquidity: String(L), amount0: '0', amount1: L ? '100' : '0', fee0, fee1: '0', feeMark: null, ext: { liqLo: L ? lower : null, liqHi: L ? upper : null } });
+    const t0 = 1_000_000;
+    // withdraw all + claim: nothing yet, the state before is kept
+    const s1 = { A: R(-30, -1, 0) };
+    assert.deepStrictEqual(SolanaWatcher.diff(TARGET, { A: R(-30, -1, 500, '70') }, s1, { at: t0 }), []);
+    assert.strictEqual(s1.A.held.liquidity, '500');
+    // redeposited 2 s later over shifted bins: one rebalance (+ the claim), compared with the state before
+    const s2 = { A: R(-23, 6, 480) };
+    const acts = SolanaWatcher.diff(TARGET, s1, s2, { at: t0 + 2000 });
+    assert.deepStrictEqual(acts.map((x) => x.kind), ['rebalance', 'claim']);
+    assert.strictEqual(acts[0].prev.lower, -30);
+    // emptied and left empty: an exit once the hold runs out
+    const e1 = { A: R(-30, -1, 0) };
+    SolanaWatcher.diff(TARGET, { A: R(-30, -1, 500) }, e1, { at: t0 });
+    const e2 = { A: R(-30, -1, 0) };
+    assert.deepStrictEqual(SolanaWatcher.diff(TARGET, e1, e2, { at: t0 + 30_000 }), []);
+    const e3 = { A: R(-30, -1, 0) };
+    const out = SolanaWatcher.diff(TARGET, e2, e3, { at: t0 + 95_000 });
+    assert.deepStrictEqual(out.map((x) => [x.kind, x.delta, x.gone]), [['decrease', -500n, true]]);
+    // emptied then closed during the hold: exit against the state before
+    const gone = SolanaWatcher.diff(TARGET, e1, {}, { at: t0 + 5000 });
+    assert.deepStrictEqual(gone.map((x) => [x.kind, x.delta]), [['decrease', -500n]]);
+  });
+
   await t('per-bin weights: X above the active bin, Y below, half each in it; each side sums to 10000 bps', () => {
     const { binWeights, weightDistribution, weightShare0 } = require('../src/solana/dlmm-shape');
     // a bid-ask-like custom shape: heavy at the far edges, 5 bins around active 0, binStep 100

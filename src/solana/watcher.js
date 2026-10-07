@@ -13,6 +13,8 @@
 //        fees harvested, L same -> 'claim' (see claimed())
 //        bins moved, same id    -> 'rebalance' (Meteora rebalance_liquidity: the liquidity is
 //                                  re-laid over a new bin range in the same position)
+//        emptied, still open    -> held up to HOLD_MS: refilled = compared with the state before
+//                                  (a move → 'rebalance'), still empty = full 'decrease'
 //        range resized, same L  -> 'resize' (increase/decrease_position_length: empty bins added
 //          and same filled bins    or dropped at an edge — no liquidity moved)
 //
@@ -25,6 +27,10 @@
 const { PublicKey } = require('@solana/web3.js');
 
 const FULL_RESCAN_MS = 10 * 60_000;
+// A position emptied to zero but still open is held this long before it counts as an exit:
+// trailing bots withdraw everything, shift the range and redeposit seconds later in the same
+// position — that is one move (rebalance), not an exit followed by a fresh entry.
+const HOLD_MS = 90_000;
 // After a new signature is seen, the snapshot is re-read every round during this window even
 // without further signatures: the signature may already be visible on one endpoint while the
 // position account is not yet updated on the endpoint answering the position read — without
@@ -144,11 +150,18 @@ class SolanaWatcher {
     return BigInt(o.liquidity) === BigInt(p.liquidity) && Number(lo0) === Number(lo) && Number(hi0) === Number(hi);
   }
 
-  static diff(target, prev, now) {
+  static diff(target, prev, now, { at = Date.now() } = {}) {
     const acts = [];
     for (const [id, p] of Object.entries(now)) {
-      const o = prev[id];
+      const raw = prev[id];
+      const o = raw?.held || raw;   // a held position compares with its state before emptying
       const L = BigInt(p.liquidity), L0 = o ? BigInt(o.liquidity) : 0n;
+      if (o && L === 0n && L0 > 0n) {
+        const since = raw.emptySince ?? at;
+        if (at - since < HOLD_MS) { p.held = o; p.emptySince = since; continue; }
+        acts.push({ target, id, kind: 'decrease', delta: -L0, before: L0, pos: { ...p, amount0: '0', amount1: '0' }, prev: o, gone: true });
+        continue;
+      }
       // Same position, new bin range: a move, not capital in or out — the share count changes
       // with the re-layout, so no increase/decrease is derived from it. Fees claimed in the same
       // transaction still count as a claim.
@@ -173,8 +186,9 @@ class SolanaWatcher {
         acts.push({ target, id, kind: 'decrease', delta: L - L0, before: L0, pos: p, prev: o });
       }
     }
-    for (const [id, o] of Object.entries(prev)) {
+    for (const [id, raw] of Object.entries(prev)) {
       if (now[id]) continue;
+      const o = raw.held || raw;
       const L0 = BigInt(o.liquidity);
       if (L0 > 0n) acts.push({ target, id, kind: 'decrease', delta: -L0, before: L0, pos: { ...o, liquidity: '0', amount0: '0', amount1: '0' }, prev: o, gone: true });
     }
@@ -220,13 +234,17 @@ class SolanaWatcher {
     }
     const newest = sigs[0]?.signature || snap?.sig || null;
     const slot = sigs[0]?.slot || snap?.slot || 0;
+    // diff before saving: it marks emptied positions as held in nowAll
+    const acts = snap ? SolanaWatcher.diff(target, prevAll, nowAll) : [];
+    // a held position must be re-read before its hold runs out, even without new signatures
+    if (Object.values(nowAll).some((p) => p.held)) this.hotUntil.set(target, Math.max(this.hotUntil.get(target) || 0, Date.now() + HOLD_MS + 30_000));
     this.saveSnap(target, { sig: newest, slot, ts: Date.now(), positions: nowAll, venues: [...seen] });
     if (!snap) {
       this.log(`target ${target.slice(0, 6)}…: potret awal ${Object.keys(nowAll).length} posisi (tidak disalin — hanya gerakan sesudah ini)`);
       return [];
     }
     if (fresh.size && snap) this.log(`target ${target.slice(0, 6)}…: venue ${[...fresh].join(', ')} baru terbaca — dijadikan potret, tidak disalin`);
-    return SolanaWatcher.diff(target, prevAll, nowAll)
+    return acts
       .filter((a) => !fresh.has(a.pos.venue))
       .map((a) => ({ ...a, sig: newest, slot }));
   }

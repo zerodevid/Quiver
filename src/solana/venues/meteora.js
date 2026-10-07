@@ -15,6 +15,8 @@ const PROGRAM = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 // position (createExtendedEmptyPosition) then filled in steps.
 const MAX_BINS_SIMPLE = Number(DLMM.DEFAULT_BIN_PER_POSITION?.toString?.() || 70);
 const MAX_BINS = 1400;
+// Per-bin weights are captured (and copied) up to this width; wider shapes use a preset.
+const WEIGHT_MAX_BINS = 200;
 const coder = new BorshAccountsCoder(DLMM.IDL);
 const pick = (o, ...ks) => { for (const k of ks) if (o?.[k] !== undefined) return o[k]; return undefined; };
 const b58 = (k) => (k?.toBase58 ? k.toBase58() : String(k));
@@ -105,8 +107,8 @@ class MeteoraVenue {
       // liqLo/liqHi: the bins that actually hold liquidity — a resize (increase/decrease_position_length)
       // changes lower/upper but not these, a rebalance moves them.
       ext: { binStep, lowerBin: d.lowerBinId, upperBin: d.upperBinId, liqLo, liqHi, strategy: MeteoraVenue.shapeOf(d, activeId, binStep)?.strategy ?? null,
-        // exact per-bin shape, for a mirror that copies it bin for bin (by-weight deposit: one position ≤ 70 bins)
-        weights: d.upperBinId - d.lowerBinId + 1 <= MAX_BINS_SIMPLE ? binWeights(MeteoraVenue.binsOf(d), d.lowerBinId, d.upperBinId, binStep) : null },
+        // exact per-bin shape, for a mirror that copies it bin for bin (by-weight deposit)
+        weights: d.upperBinId - d.lowerBinId + 1 <= WEIGHT_MAX_BINS ? binWeights(MeteoraVenue.binsOf(d), d.lowerBinId, d.upperBinId, binStep) : null },
     };
   }
 
@@ -174,7 +176,7 @@ class MeteoraVenue {
 
   // lower/upper: bin ids (inclusive). amount0/1: raw amounts of token X/Y.
   // weights (one per bin, lower..upper): deposit by weight — the target's exact shape — instead
-  // of a spot/curve/bid-ask preset; only for a single position (≤ 70 bins).
+  // of a spot/curve/bid-ask preset (up to WEIGHT_MAX_BINS).
   async buildOpen({ pool, lower, upper, amount0, amount1, slippageBps, owner, strategy = 'spot', weights = null }) {
     const width = upper - lower + 1;
     if (width > MAX_BINS) throw new Error(`rentang ${width} bin melebihi batas posisi DLMM (${MAX_BINS} bin)`);
@@ -188,13 +190,20 @@ class MeteoraVenue {
       slippage: Number(slippageBps) / 100,   // SDK: percent
     };
     const groups = await this.withPool(pool, async (d) => {
-      if (weights && weights.length === width && width <= MAX_BINS_SIMPLE) {
+      if (weights && weights.length === width && width <= WEIGHT_MAX_BINS) {
         const dist = weightDistribution(weights, lower, Number(d.lbPair.activeId), Number(d.lbPair.binStep))
           .map((b) => ({ binId: b.binId, xAmountBpsOfTotal: new BN(b.x), yAmountBpsOfTotal: new BN(b.y) }));
-        return MeteoraVenue.groups(await d.initializePositionAndAddLiquidityByWeight({
-          positionPubKey: pos.publicKey, user, totalXAmount: params.totalXAmount, totalYAmount: params.totalYAmount,
-          xYAmountDistribution: dist, slippage: params.slippage,
-        }), [pos]);
+        const wp = { positionPubKey: pos.publicKey, user, totalXAmount: params.totalXAmount, totalYAmount: params.totalYAmount, xYAmountDistribution: dist, slippage: params.slippage };
+        if (width <= MAX_BINS_SIMPLE) return MeteoraVenue.groups(await d.initializePositionAndAddLiquidityByWeight(wp), [pos]);
+        // Wider: an extended position, then the by-weight add in chunks. The SDK reads the
+        // position account only to check the bin range — it does not exist yet (it is created by
+        // the first group), so that read is answered with the range being created.
+        const create = await d.createExtendedEmptyPosition(lower, upper, pos.publicKey, user);
+        const acc = d.program.account.positionV2, fetch0 = acc.fetch;
+        acc.fetch = async (k, ...rest) => (k.equals(pos.publicKey) ? { lowerBinId: lower, upperBinId: upper } : fetch0.call(acc, k, ...rest));
+        let adds;
+        try { adds = await d.addLiquidityByWeight2(wp); } finally { acc.fetch = fetch0; }
+        return [...MeteoraVenue.groups(create, [pos]), ...MeteoraVenue.groups(adds)];
       }
       if (width <= MAX_BINS_SIMPLE) return MeteoraVenue.groups(await d.initializePositionAndAddLiquidityByStrategy(params), [pos]);
       const create = await d.createExtendedEmptyPosition(lower, upper, pos.publicKey, user);
