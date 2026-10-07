@@ -294,6 +294,26 @@ function targetFees(store, feeUsd, valueUsd = 5000, status = 'open') {
     near(w.eng.paper.cashUsd(), 1000, 1e-9, 'cash back to the balance');
   });
 
+  await t('switching LIVE on drops the virtual equity points and the virtual drawdown peak; real history stays', async () => {
+    const w = world({ friction: 0 });
+    w.store.run('INSERT INTO equity(chain,ts,total_quote) VALUES(?,?,?)', 'robinhood', Date.now() - 86400_000, 0);   // real history ($0 wallet)
+    w.eng.paper.ensureSince();
+    await open(w);
+    await w.eng.positions.sync(w.eng.ethUsd);
+    await w.eng.snapshotEquity();
+    assert.ok(Number(w.store.getState(w.eng.sk('dd_peak'))) > 900, 'the virtual peak is recorded while simulating');
+    w.cfg.mode.dry_run = false;                      // LIVE on (the settings route then calls settle)
+    w.eng.paper.settle();
+    assert.deepStrictEqual(w.store.all('SELECT total_quote FROM equity').map((x) => x.total_quote), [0], 'no fake $1,000 → $0 drawdown');
+    assert.strictEqual(w.store.getState(w.eng.sk('dd_peak')), null, 'the breaker starts from the real equity');
+    assert.strictEqual(w.store.getState(w.eng.sk('sim_since')), null);
+    assert.strictEqual(w.eng.positions.open().length, 0);
+    // a later settle (every sync) is a no-op
+    w.store.run('INSERT INTO equity(chain,ts,total_quote) VALUES(?,?,?)', 'robinhood', Date.now() + 1000, 5);
+    w.eng.paper.settle();
+    assert.strictEqual(w.store.all('SELECT * FROM equity').length, 2, 'real LIVE points are kept');
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

@@ -298,7 +298,23 @@ class PaperBook {
   settle() {
     if (this.on()) return 0;
     const has = this.store.get("SELECT 1 AS x FROM positions WHERE chain=? AND token_id LIKE 'sim:%' AND status IN ('open','closed') LIMIT 1", this.net);
-    return has ? this.retire() : 0;
+    const n = has ? this.retire() : 0;
+    this.endPeriod();
+    return n;
+  }
+
+  // The simulation is over: its equity points were virtual money, not real history. Left in
+  // place, the chart joins a ~$1,000 virtual curve to the real (often $0) wallet and shows a
+  // fake drawdown, and the daily drawdown breaker keeps the virtual peak — tripping on the first
+  // real snapshot. Both go; equity from before the simulation is untouched (see reset()).
+  endPeriod() {
+    const k = this.e.sk('sim_since');
+    const since = Number(this.store.getState(k, 0)) || 0;
+    if (!since) return;
+    const n = this.store.run('DELETE FROM equity WHERE chain=? AND ts >= ?', this.net, since).changes;
+    this.store.run('DELETE FROM state WHERE k=?', k);
+    for (const key of ['dd_peak', 'dd_day', 'dd_tripped']) this.store.run('DELETE FROM state WHERE k=?', this.e.sk(key));
+    this.e.log(`simulasi selesai: ${Number(n || 0)} titik ekuitas virtual dibuang dari riwayat`);
   }
 
   // When this simulation began. Equity points before it belong to real trading and are never
