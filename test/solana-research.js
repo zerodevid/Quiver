@@ -74,6 +74,21 @@ const ev = (r, name) => { const f = fx(name); return r.extract({ sig: f.signatur
     assert.strictEqual(p.out1, 0n);
   });
 
+  await t('a wallet scanned by an older decoder is rebuilt by a full scan on its next refresh; a current one is refreshed incrementally', async () => {
+    const { r, store } = research();
+    const calls = [];
+    r.scan = async (w, o) => { calls.push(['scan', o.blocks]); return {}; };
+    r.signatures = async () => { calls.push(['inc']); return { sigs: [] }; };
+    r.transactions = async () => Object.assign([], { missing: [] });
+    r.rpc.slot = async () => 1;
+    store.setState(r.stateKey('W1'), JSON.stringify({ newest: 'x', sinceMs: Date.now() - 1000 * 101 }));
+    await r.refresh('W1', {});
+    store.setState(r.stateKey('W2'), JSON.stringify({ newest: 'x', sinceMs: Date.now(), v: 2 }));
+    await r.refresh('W2', {}).catch(() => {});
+    assert.deepStrictEqual(calls.map((c) => c[0]), ['scan', 'inc']);
+    assert.ok(calls[0][1] >= 1000 && calls[0][1] < 1100, `same window: ${calls[0][1]}`);
+  });
+
   await t('Orca: open + add (ticks & L from events); close: withdraw + collect_fees from vault transfers + close', () => {
     const { r } = research();
     const o = ev(r, 'orca-open');
