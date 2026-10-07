@@ -47,6 +47,9 @@ export const SCHEMA = [
     { path: 'range.dlmm_strategy', label: 'Bentuk likuiditas DLMM (Meteora)', type: 'select', options: [
       ['mirror', 'Ikuti bentuk target'], ['spot', 'Spot (rata)'], ['curve', 'Curve (menumpuk di tengah)'], ['bidask', 'Bid-Ask (menumpuk di tepi)']],
       when: () => isSolana() },
+    { path: 'range.follow_rebalance', label: 'Ikut geser rentang (rebalance) target', type: 'select', options: [
+      ['out_of_range', 'Hanya kalau cermin sudah di luar rentang'], ['always', 'Setiap kali target menggeser'], ['off', 'Jangan ikut']],
+      when: () => isSolana() },
   ] },
   { group: 'Posisi satu sisi', icon: 'ti-arrow-bar-to-right', fields: [
     { path: 'onesided.policy', label: 'Kalau rentang di luar harga kini', type: 'select', options: [
@@ -105,6 +108,7 @@ export const RULE_HELP = {
   "range.mode": "Pilih rentang harga tempat likuiditas bekerja: ikuti target, pusatkan ulang, ubah lebar, gunakan persentase, atau seluruh rentang. Posisi di luar rentang hanya berisi satu token.",
   "range.scale": "Mengalikan lebar rentang target dengan faktor ini, dengan titik tengah target tetap. 2 berarti dua kali lebih lebar.",
   "range.width_pct": "Lebar dihitung dari harga kini dalam tick logaritmik lalu dibulatkan ke tick pool. Batas harga akhir dapat berbeda dari persentase sederhana.",
+  "range.follow_rebalance": "Meteora DLMM: target (biasanya bot otomasi) memindah likuiditas posisi yang sama ke bin baru supaya tetap di sekitar harga. Ikut = cermin ditutup lalu dibuka lagi di rentang baru target dengan hasil penutupannya (token meme ikut disetor lagi, tidak dijual). Hanya kalau di luar rentang = cermin dipindah begitu harga sudah keluar dari rentangnya — hemat biaya transaksi bila target menggeser setiap beberapa menit. Butuh 'Ikut keluar saat target keluar' aktif.",
   "range.dlmm_strategy": "Cara likuiditas disebar ke bin di posisi Meteora DLMM. Ikuti bentuk target = dibaca dari isi bin posisi target (spot, curve, atau bid-ask); kalau tidak terbaca jelas, dipakai spot. Orca dan Raydium tidak punya pilihan bentuk.",
   "range.min_width_ticks": "Memperlebar rentang yang lebih sempit dari jumlah tick ini. Tick adalah langkah harga Uniswap, bukan persen. 0 = tanpa lebar minimum.",
   "onesided.max_quote_usd": "Batas modal untuk posisi yang hanya berisi satu token. Batas per posisi dan sisa anggaran tetap berlaku.",

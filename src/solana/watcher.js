@@ -11,6 +11,8 @@
 //        L down                 -> 'decrease' (liquidityBefore = old L → proportional share)
 //        position gone          -> full 'decrease'
 //        fees harvested, L same -> 'claim' (see claimed())
+//        bins moved, same id    -> 'rebalance' (Meteora rebalance_liquidity: the liquidity is
+//                                  re-laid over a new bin range in the same position)
 //
 // Snapshots are stored per target in state (they survive restarts). A target's first scan only
 // takes a snapshot — positions that ALREADY existed before the target was added are not
@@ -138,6 +140,14 @@ class SolanaWatcher {
     for (const [id, p] of Object.entries(now)) {
       const o = prev[id];
       const L = BigInt(p.liquidity), L0 = o ? BigInt(o.liquidity) : 0n;
+      // Same position, new bin range: a move, not capital in or out — the share count changes
+      // with the re-layout, so no increase/decrease is derived from it. Fees claimed in the same
+      // transaction still count as a claim.
+      if (o && L > 0n && L0 > 0n && o.lower != null && p.lower != null && (Number(o.lower) !== Number(p.lower) || Number(o.upper) !== Number(p.upper))) {
+        acts.push({ target, id, kind: 'rebalance', delta: 0n, before: L0, pos: p, prev: o });
+        if (SolanaWatcher.claimed(o, p)) acts.push({ target, id, kind: 'claim', delta: 0n, before: L0, pos: p, prev: o });
+        continue;
+      }
       if (o && L > 0n && (L === L0 || SolanaWatcher.tiny(L0, L)) && SolanaWatcher.claimed(o, p)) {
         acts.push({ target, id, kind: 'claim', delta: 0n, before: L0, pos: p, prev: o });
         continue;
@@ -238,6 +248,7 @@ class SolanaWatcher {
       const dL = a.delta < 0n ? -a.delta : a.delta;
       const Lnow = BigInt(p.liquidity || '0');
       if (a.kind === 'claim') { amt0 = BigInt(a.prev.fee0 || '0'); amt1 = BigInt(a.prev.fee1 || '0'); }
+      else if (a.kind === 'rebalance') { /* the whole position, as now laid over its new range */ }
       else if (a.gone && a.prev) { amt0 = BigInt(a.prev.amount0 || '0'); amt1 = BigInt(a.prev.amount1 || '0'); }
       else if (a.before > 0n && Lnow > 0n) { amt0 = (amt0 * dL) / Lnow; amt1 = (amt1 * dL) / Lnow; }
       const v = st && dec0 != null && dec1 != null
@@ -247,8 +258,11 @@ class SolanaWatcher {
       // position (read within the re-read window).
       const hash = a.kind === 'claim'
         ? `${a.sig || 'snap'}:${a.id}:claim:${a.prev.fee0}:${a.prev.fee1}:${a.prev.feeMark || ''}`
-        : `${a.sig || 'snap'}:${a.id}:${a.kind}:${a.delta}`;
-      const ext = { lower: p.lower, upper: p.upper, liquidityBefore: a.before.toString(), ...(p.ext || {}), gone: !!a.gone };
+        : a.kind === 'rebalance'
+          ? `${a.sig || 'snap'}:${a.id}:rebalance:${a.prev.lower}:${a.prev.upper}:${p.lower}:${p.upper}`
+          : `${a.sig || 'snap'}:${a.id}:${a.kind}:${a.delta}`;
+      const ext = { lower: p.lower, upper: p.upper, liquidityBefore: a.before.toString(), ...(p.ext || {}), gone: !!a.gone,
+        ...(a.kind === 'rebalance' ? { prevLower: a.prev.lower, prevUpper: a.prev.upper } : {}) };
       const r = this.store.run(`INSERT OR IGNORE INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,fee,tick_spacing,
           tick_lower,tick_upper,liquidity,amount0,amount1,value_quote,quote_symbol,ext) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       this.chain.network, Date.now(), a.slot || 0, hash, i++, a.target, p.venue, a.kind, a.id, p.pool, p.token0, p.token1,

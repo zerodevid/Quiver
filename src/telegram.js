@@ -429,6 +429,9 @@ const RULE_GROUPS = [
       F.pick('dlmm_strategy', 'Bentuk likuiditas DLMM', [
         ['mirror', 'Ikuti bentuk target'], ['spot', 'Spot (rata)'], ['curve', 'Curve (menumpuk di tengah)'], ['bidask', 'Bid-Ask (menumpuk di tepi)']],
       { help: 'Khusus Meteora DLMM di Solana: cara likuiditas disebar ke bin.' }),
+      F.pick('follow_rebalance', 'Ikut geser rentang (rebalance) target', [
+        ['out_of_range', 'Hanya kalau cermin sudah di luar rentang'], ['always', 'Setiap kali target menggeser'], ['off', 'Jangan ikut']],
+      { help: 'Target memindah likuiditas posisinya ke bin baru (rebalance Meteora). Cermin ditutup lalu dibuka lagi di rentang baru dengan hasil penutupan.' }),
     ],
   },
   {

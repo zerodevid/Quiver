@@ -337,7 +337,7 @@ class SolanaEngine {
     const owner = this.exec.address();
     const built = plan.action === 'increase'
       ? await ad.buildIncrease({ pool: plan.poolRef, position: plan.tokenId, amount0: BigInt(plan.amount0), amount1: BigInt(plan.amount1), slippageBps: plan.slippageBps ?? 150, owner, strategy: plan.strategy || null })
-      : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: BigInt(plan.amount0), amount1: BigInt(plan.amount1), slippageBps: plan.slippageBps ?? 150, owner, strategy: plan.strategy || 'spot' });
+      : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: BigInt(plan.amount0), amount1: BigInt(plan.amount1), slippageBps: plan.slippageBps ?? 150, owner, strategy: plan.strategy || 'spot', weights: plan.weights || null });
     return this.exec.simulateGroups(built.groups);
   }
 
@@ -447,7 +447,7 @@ class SolanaEngine {
       try {
         built = plan.action === 'increase'
           ? await ad.buildIncrease({ pool: plan.poolRef, position: plan.tokenId, amount0: a0, amount1: a1, slippageBps: slip, owner, strategy: plan.strategy || null })
-          : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: a0, amount1: a1, slippageBps: slip, owner, strategy: plan.strategy || 'spot' });
+          : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: a0, amount1: a1, slippageBps: slip, owner, strategy: plan.strategy || 'spot', weights: plan.weights || null });
         // The new position is noted "pending" before sending: if the process dies after the tx
         // lands but before booking, the next adoption links it to the target again.
         if (plan.action !== 'increase') {
@@ -594,6 +594,92 @@ class SolanaEngine {
   }
 
   // ---- exit -------------------------------------------------------------------------
+  // The target re-laid its position over new bins (Meteora rebalance_liquidity): same position,
+  // same capital, a range that follows the price. Our mirror would otherwise stay in the old bins
+  // and drift out of range while the target keeps earning. Following it = close the mirror and
+  // reopen it over the target's new range with what came back (the memecoin side is redeposited,
+  // not sold). range.follow_rebalance: out_of_range (default — only once the mirror has left its
+  // range, so a bot shifting every few minutes does not cost a close+open each time) | always | off.
+  async handleRebalance(act, rules) {
+    const rng = `bin ${act.ext?.prevLower}…${act.ext?.prevUpper} → ${act.lower}…${act.upper}`;
+    const what = `target menggeser rentang ${rng}`;
+    const pos = this.store.get("SELECT * FROM positions WHERE chain=? AND status='open' AND mirror_of=? AND target=? ORDER BY id LIMIT 1",
+      this.network, act.tokenId ?? '', act.target);
+    if (!pos) return this.decide(act.id, 'skip', `${what} — kita tidak punya cermin posisi ini`);
+    if (pos.takeover_ts != null) return this.decide(act.id, 'skip', `${what} — posisi #${pos.id} dalam kendali manual`);
+    const mode = rules.range.follow_rebalance;
+    if (mode === 'off') return this.decide(act.id, 'skip', `${what} — ikut-geser rentang dimatikan`);
+    if (!rules.exit.follow_target) return this.decide(act.id, 'skip', `${what} — ikut-keluar dimatikan, cermin tidak dipindah`);
+    let ext = {};
+    try { ext = JSON.parse(pos.ext || '{}') || {}; } catch { ext = {}; }
+    if (Number(ext.lower) === Number(act.lower) && Number(ext.upper) === Number(act.upper)) return this.decide(act.id, 'skip', `${what} — cermin #${pos.id} sudah di rentang itu`);
+    const pool = await this.chain.pool(act.venue, act.poolRef, { maxAgeMs: 0 }).catch(() => null);
+    if (!pool) return this.decide(act.id, 'skip', `${what} — state pool tidak terbaca`);
+    if (mode === 'out_of_range' && m.sideOfRange(pool.tick, pos.tick_lower, pos.tick_upper) === 'both') {
+      return this.decide(act.id, 'skip', `${what} — cermin #${pos.id} masih di dalam rentangnya, tidak dipindah`);
+    }
+    const exitPlan = { full: true, liquidity: pos.liquidity, move: true };
+    const live = !this.dryRun() && this.exec.address();
+    if (!live && !this.paper.on()) return this.decide(act.id, 'dry', `${what} — cermin #${pos.id} akan dipindah ke rentang baru`, exitPlan);
+
+    // Reopen sized at what the close returned; the new range and composition follow the target.
+    const reopen = async (usd) => {
+      const sizing = { ...rules.sizing, mode: 'fixed_quote', fixed_quote_usd: usd, fixed_quote_eth: usd / this.ethUsd, min_quote_usd: 0, force_min: false };
+      const entryAct = { ...act, kind: 'increase', liquidityBefore: '0' };
+      const sum = this.positions.summary(this.ethUsd);
+      const cash = await this.spendableCash().catch(() => null);
+      return planEntrySol(entryAct, {
+        chain: this.chain, rules: { ...rules, sizing, filters: { ...rules.filters, min_target_quote_usd: 0 } }, pool, ethUsd: this.ethUsd,
+        openExposureUsd: sum.exposureUsd, spentTodayUsd: 0, openCount: Math.max(0, sum.openCount - 1), cash, existingUsd: null,
+      });
+    };
+
+    if (this.paper.on()) {
+      try {
+        const out = await this.paper.close(pos, exitPlan);
+        const d = await reopen(out.outUsd);
+        if (d.verdict !== 'copy') return this.decide(act.id, 'copy', `[simulasi] ${what} — cermin #${pos.id} ditutup; buka ulang dilewati: ${d.reason}`, exitPlan, null, pos.id);
+        const r = await this.paper.open(d.plan, act, { sqrt: pool.sqrtX96 });
+        return this.decide(act.id, 'copy', `[simulasi] ${what} — cermin #${pos.id} dipindah → #${r.positionId}`, d.plan, null, r.positionId);
+      } catch (e) {
+        this.stats.errors++;
+        return this.decide(act.id, 'error', `${what} — ${String(e.message).slice(0, 250)}`, exitPlan);
+      }
+    }
+
+    let closed;
+    try { closed = await this.executeExitRetry(exitPlan, pos); }
+    catch (e) {
+      this.stats.errors++;
+      this.store.log('error', `pindah cermin #${pos.id}: ${e.message}`);
+      return this.decide(act.id, 'error', `${what} — menutup cermin #${pos.id} gagal: ${String(e.message).slice(0, 220)}`, exitPlan);
+    }
+    // The memecoin that came back is redeposited; if the reopen does not happen, it is handled
+    // like any exit's leftover (sold when exit.sell_leftover is on).
+    const fallback = async (why) => {
+      if (closed.sale && rules.exit.sell_leftover) await this.sellLeftover(closed.sale).catch((e) => this.log(`jual sisa #${pos.id}: ${e.message}`));
+      this.notify(`LP ditutup (target menggeser rentang): ${closed.note} — buka ulang ${why}`, { kind: 'exit', positionId: pos.id, txHash: closed.txHash, full: true, target: pos.target });
+    };
+    const d = await reopen(closed.outUsd || 0);
+    if (d.verdict !== 'copy') {
+      await fallback(`dilewati: ${d.reason}`);
+      return this.decide(act.id, 'copy', `${what} — cermin #${pos.id} ditutup; buka ulang dilewati: ${d.reason}`, exitPlan, closed.txHash, pos.id);
+    }
+    this.activeEntries = (this.activeEntries || 0) + 1;
+    try {
+      const r = await this.executeEntry(d.plan, act);
+      this.decide(act.id, 'copy', `${what} — cermin #${pos.id} dipindah → #${r.positionId} (${r.note})`, d.plan, r.txHash, r.positionId);
+      this.notify(`LP dipindah mengikuti target: #${pos.id} → #${r.positionId} (${rng})`, {
+        kind: 'entry', positionId: r.positionId, txHash: r.txHash, pair: r.pair, valueUsd: r.valueUsd,
+        target: act.target, mirrorOf: act.tokenId, reason: what,
+      });
+    } catch (e) {
+      this.stats.errors++;
+      await fallback(`gagal: ${String(e.message).slice(0, 120)}`);
+      this.decide(act.id, 'error', `${what} — cermin #${pos.id} ditutup, buka ulang gagal: ${String(e.message).slice(0, 200)}`, d.plan, closed.txHash, pos.id);
+    } finally { this.activeEntries--; }
+  }
+
   async handleExit(act, rules) {
     const pos = this.store.get("SELECT * FROM positions WHERE chain=? AND status='open' AND mirror_of=? AND target=? ORDER BY id LIMIT 1",
       this.network, act.tokenId ?? '', act.target);
@@ -647,7 +733,9 @@ class SolanaEngine {
       });
       // The position contents before exiting are recorded BEFORE sending: if the process dies or
       // the confirmation is unreadable, the next sync books the result from this note.
-      const pend = { ts: Date.now(), full, bps, ourL: ourL.toString(), before: SolanaEngine.slimPos(before) };
+      // move: closed only to be reopened over the target's new range (handleRebalance) — the tokens
+      // that come back are redeposited, so they are neither queued nor sold as leftovers.
+      const pend = { ts: Date.now(), full, bps, ourL: ourL.toString(), before: SolanaEngine.slimPos(before), move: !!plan.move };
       this.store.setState(this.pendingExitKey(pos.id), JSON.stringify(pend));
       let sent;
       try { sent = await this.exec.sendGroups(built.groups, { kind: full ? 'burn' : 'decrease', detail: { venue: pos.venue, position: pos.id } }); }
@@ -698,18 +786,20 @@ class SolanaEngine {
     const memeQuote = q.side === 0 ? val(0n, out1) : val(out0, 0n);
     // A "memecoin" side that turns out to be a quote asset too (SOL in a SOL/USDC pool) is cash,
     // not a leftover to sell.
-    const left = memeAmt > 0n && !this.chain.QUOTES[memeMint] ? { token: memeMint, amount: memeAmt.toString(), quote: memeQuote } : null;
+    const meme = memeAmt > 0n && !this.chain.QUOTES[memeMint] ? { token: memeMint, amount: memeAmt.toString(), quote: memeQuote } : null;
+    const left = pend.move ? null : meme;
     if (full) this.positions.markClosed(pos.id, { out0, out1, outQuote, txHash: hash, exitSqrt: sqrt, left });
     else this.positions.markDecreased(pos.id, { liquidity: (ourL - takeL).toString(), out0, out1, outQuote, txHash: hash, left });
     const k = usdPerQuote(pos.quote_symbol, this.ethUsd, this.chain);
     const note = `${full ? 'tutup' : `tarik ${(bps / 100).toFixed(1)}%`} #${pos.id} ${t0.symbol}/${t1.symbol} → $${(outQuote * k).toFixed(2)}`;
-    this.notify(`LP ${full ? 'ditutup' : 'dikurangi'}: ${note}`, {
+    if (!pend.move) this.notify(`LP ${full ? 'ditutup' : 'dikurangi'}: ${note}`, {
       kind: 'exit', positionId: pos.id, txHash: hash, full, pair: `${t0.symbol}/${t1.symbol}`,
       outUsd: outQuote * k, costUsd: (pos.cost_quote || 0) * k, target: pos.target,
     });
-    if (left && rules.exit.sell_leftover) await this.sellLeftover({ posId: pos.id, token: memeMint, amount: memeAmt.toString(), label: q.side === 0 ? t1.symbol : t0.symbol, target: pos.target, quote: q.side === 0 ? pos.token0 : pos.token1 });
+    const sale = meme && { posId: pos.id, token: memeMint, amount: memeAmt.toString(), label: q.side === 0 ? t1.symbol : t0.symbol, target: pos.target, quote: q.side === 0 ? pos.token0 : pos.token1 };
+    if (left && rules.exit.sell_leftover) await this.sellLeftover(sale);
     this.positions.resync(this.ethUsd).catch(() => {});
-    return { note, txHash: hash };
+    return { note, txHash: hash, outUsd: outQuote * k, sale };
   }
 
   // An exit NOT yet sent (failed simulation, refused by endpoints, expired blockhash) is

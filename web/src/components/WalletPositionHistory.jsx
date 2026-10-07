@@ -21,6 +21,7 @@ const KIND = {
   increase: ['Tambah likuiditas', 'success'],
   decrease: ['Tarik likuiditas', 'warning'],
   collect: ['Klaim fee', 'accent'],
+  rebalance: ['Geser rentang', 'default'],
   close: ['Tutup posisi', 'danger'],
 };
 const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
@@ -128,7 +129,7 @@ function Events({ events, p }) {
 const VERDICT = { copy: ['Disalin', 'success'], dry: ['Simulasi', 'accent'], skip: ['Dilewati', 'default'], error: ['Gagal', 'danger'] };
 const ACTIONS = {
   mint: 'buka posisi', increase: 'tambah likuiditas', decrease: 'tarik likuiditas', burn: 'tutup posisi',
-  collect: 'klaim fee', claim: 'klaim fee', transfer_in: 'terima posisi', transfer_out: 'kirim posisi',
+  collect: 'klaim fee', claim: 'klaim fee', rebalance: 'geser rentang', transfer_in: 'terima posisi', transfer_out: 'kirim posisi',
   custody_in: 'ambil dari otomasi', custody_out: 'titip ke otomasi',
 };
 const STATUS = { open: ['Terbuka', 'success'], closed: ['Ditutup', 'danger'], pending: ['Menunggu', 'warning'], failed: ['Gagal', 'danger'] };

@@ -53,6 +53,27 @@ const ev = (r, name) => { const f = fx(name); return r.extract({ sig: f.signatur
     assert.strictEqual(inc.a1, 52483529n);
   });
 
+  await t('Meteora rebalance_liquidity (automation): claim + one "rebalance" with the new bins and net flow — not a withdrawal', () => {
+    const { r } = research();
+    const e = ev(r, 'meteora-rebalance-liquidity');
+    assert.deepStrictEqual(e.map((x) => x.kind), ['collect', 'rebalance']);
+    const [col, rb] = e;
+    assert.deepStrictEqual([col.f0, col.f1], [15740678n, 167517n]);
+    assert.deepStrictEqual([rb.prevLower, rb.prevUpper, rb.lowerBin, rb.upperBin, rb.activeBin], [-515, -447, -509, -441, -440]);
+    assert.deepStrictEqual([rb.w1, rb.d1], [85315402n, 85437870n], 'remove_liquidity2 folded in');
+    assert.deepStrictEqual([rb.a0, rb.a1], [0n, 122468n], 'net: a little more went back in');
+    const o = ev(r, 'meteora-open-by-weight');
+    assert.deepStrictEqual(o.map((x) => x.kind), ['open', 'increase']);
+    assert.deepStrictEqual([o[0].lowerBin, o[0].upperBin], [-531, -463]);
+    // apply: the range follows, only the net counts as capital
+    const p = r.newPos(rb);
+    r.apply(p, { ...o[1], slot: 1 }, null, 100);
+    r.apply(p, { ...rb, slot: 2 }, null, 100);
+    assert.deepStrictEqual([p.lowerBin, p.upperBin], [-509, -441]);
+    assert.strictEqual(p.in1, 85384929n + 122468n);
+    assert.strictEqual(p.out1, 0n);
+  });
+
   await t('Orca: open + add (ticks & L from events); close: withdraw + collect_fees from vault transfers + close', () => {
     const { r } = research();
     const o = ev(r, 'orca-open');

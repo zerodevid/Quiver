@@ -8,7 +8,7 @@ const BN = require('bn.js');
 const DLMM = require('@meteora-ag/dlmm');
 const { BorshAccountsCoder } = require('@coral-xyz/anchor');
 const u = require('../units');
-const { dlmmShape } = require('../dlmm-shape');
+const { dlmmShape, binWeights, weightDistribution } = require('../dlmm-shape');
 
 const PROGRAM = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 // A plain DLMM position holds at most 70 bins; a wider one is created as an "extended"
@@ -98,14 +98,19 @@ class MeteoraVenue {
       liquidity: L.toString(),
       amount0: BigInt(d.totalXAmount || '0'), amount1: BigInt(d.totalYAmount || '0'),
       fee0: BigInt(d.feeX?.toString() || '0'), fee1: BigInt(d.feeY?.toString() || '0'),
-      ext: { binStep, lowerBin: d.lowerBinId, upperBin: d.upperBinId, strategy: MeteoraVenue.shapeOf(d, activeId, binStep)?.strategy ?? null },
+      ext: { binStep, lowerBin: d.lowerBinId, upperBin: d.upperBinId, strategy: MeteoraVenue.shapeOf(d, activeId, binStep)?.strategy ?? null,
+        // exact per-bin shape, for a mirror that copies it bin for bin (by-weight deposit: one position ≤ 70 bins)
+        weights: d.upperBinId - d.lowerBinId + 1 <= MAX_BINS_SIMPLE ? binWeights(MeteoraVenue.binsOf(d), d.lowerBinId, d.upperBinId, binStep) : null },
     };
+  }
+
+  static binsOf(positionData) {
+    return (positionData.positionBinData || []).map((b) => ({ binId: b.binId, x: b.positionXAmount, y: b.positionYAmount }));
   }
 
   static shapeOf(positionData, activeId, binStep) {
     if (activeId == null) return null;
-    const bins = (positionData.positionBinData || []).map((b) => ({ binId: b.binId, x: b.positionXAmount, y: b.positionYAmount }));
-    return dlmmShape(bins, Number(activeId), binStep);
+    return dlmmShape(MeteoraVenue.binsOf(positionData), Number(activeId), binStep);
   }
 
   // All DLMM positions of a wallet (one getProgramAccounts + pair + bin arrays).
@@ -162,7 +167,9 @@ class MeteoraVenue {
   }
 
   // lower/upper: bin ids (inclusive). amount0/1: raw amounts of token X/Y.
-  async buildOpen({ pool, lower, upper, amount0, amount1, slippageBps, owner, strategy = 'spot' }) {
+  // weights (one per bin, lower..upper): deposit by weight — the target's exact shape — instead
+  // of a spot/curve/bid-ask preset; only for a single position (≤ 70 bins).
+  async buildOpen({ pool, lower, upper, amount0, amount1, slippageBps, owner, strategy = 'spot', weights = null }) {
     const width = upper - lower + 1;
     if (width > MAX_BINS) throw new Error(`rentang ${width} bin melebihi batas posisi DLMM (${MAX_BINS} bin)`);
     const pos = Keypair.generate();
@@ -175,6 +182,14 @@ class MeteoraVenue {
       slippage: Number(slippageBps) / 100,   // SDK: percent
     };
     const groups = await this.withPool(pool, async (d) => {
+      if (weights && weights.length === width && width <= MAX_BINS_SIMPLE) {
+        const dist = weightDistribution(weights, lower, Number(d.lbPair.activeId), Number(d.lbPair.binStep))
+          .map((b) => ({ binId: b.binId, xAmountBpsOfTotal: new BN(b.x), yAmountBpsOfTotal: new BN(b.y) }));
+        return MeteoraVenue.groups(await d.initializePositionAndAddLiquidityByWeight({
+          positionPubKey: pos.publicKey, user, totalXAmount: params.totalXAmount, totalYAmount: params.totalYAmount,
+          xYAmountDistribution: dist, slippage: params.slippage,
+        }), [pos]);
+      }
       if (width <= MAX_BINS_SIMPLE) return MeteoraVenue.groups(await d.initializePositionAndAddLiquidityByStrategy(params), [pos]);
       const create = await d.createExtendedEmptyPosition(lower, upper, pos.publicKey, user);
       const adds = await d.addLiquidityByStrategyChunkable(params);

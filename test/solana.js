@@ -1216,6 +1216,104 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {}, meteo
     void first;
   });
 
+  // ---- target range shift (Meteora rebalance_liquidity) & per-bin mirror ---------------
+  await t('snapshot diff: same position over new bins = rebalance (not a withdrawal); fees claimed with it = claim too', () => {
+    const R = (lower, upper, L, fee0 = '0', fee1 = '0') => ({ venue: 'meteora', pool: POOL, token0: MEME, token1: WSOL, lower, upper, tickLower: lower * 100, tickUpper: (upper + 1) * 100, liquidity: String(L), amount0: '1', amount1: '1', fee0, fee1, feeMark: null });
+    const acts = SolanaWatcher.diff(TARGET, { A: R(-5, 5, 100), B: R(-5, 5, 100, '900', '50') }, { A: R(-2, 8, 140), B: R(0, 10, 90, '0', '0') });
+    assert.deepStrictEqual(acts.map((a) => `${a.id}:${a.kind}`), ['A:rebalance', 'B:rebalance', 'B:claim']);
+  });
+
+  await t('per-bin weights: X above the active bin, Y below, half each in it; each side sums to 10000 bps', () => {
+    const { binWeights, weightDistribution, weightShare0 } = require('../src/solana/dlmm-shape');
+    // a bid-ask-like custom shape: heavy at the far edges, 5 bins around active 0, binStep 100
+    const w = binWeights([{ binId: -2, y: 400 }, { binId: -1, y: 100 }, { binId: 0, x: 50, y: 50 }, { binId: 1, x: 100 / 1.01 }, { binId: 2, x: 400 / 1.01 ** 2 }], -2, 2, 100);
+    assert.deepStrictEqual(w.map((x) => Math.round(x / 655.35)), [100, 25, 25, 25, 100]);
+    const d = weightDistribution(w, -2, 0, 100);
+    assert.deepStrictEqual(d.map((b) => b.binId), [-2, -1, 0, 1, 2]);
+    assert.strictEqual(d.reduce((s, b) => s + b.x, 0), 10000);
+    assert.strictEqual(d.reduce((s, b) => s + b.y, 0), 10000);
+    assert.deepStrictEqual([d[0].x, d[1].x, d[3].y, d[4].y], [0, 0, 0, 0]);
+    assert.ok(d[0].y > 3 * d[1].y, 'the far bin keeps its weight');
+    assert.ok(Math.abs(weightShare0(w, -2, 0) - 0.5) < 1e-9);
+  });
+
+  await t('dlmm_strategy mirror on the target’s own bins: its per-bin weights are copied; other rules or ranges use a preset', () => {
+    const store = new Store(':memory:');
+    const weights = [65535, 30000, 10000, 5000, 10000, 30000, 65535];
+    const sizing = { mode: 'fixed_quote', fixed_quote_eth: 0.7, max_quote_per_position_usd: 1e6, max_total_exposure_usd: 1e6, daily_budget_usd: 1e6 };
+    const a = act({ ext: { strategy: 'bidask', weights } });
+    let d = planEntrySol(a, { ...ctx(store), rules: rulesSol({ sizing, range: { dlmm_strategy: 'mirror' } }) });
+    assert.strictEqual(d.verdict, 'copy', d.reason);
+    assert.deepStrictEqual(d.plan.weights, weights);
+    assert.match(d.reason, /bentuk per-bin target/);
+    d = planEntrySol(a, { ...ctx(store), rules: rulesSol({ sizing, range: { dlmm_strategy: 'spot' } }) });
+    assert.strictEqual(d.plan.weights, null);
+    d = planEntrySol(a, { ...ctx(store), rules: rulesSol({ sizing, range: { dlmm_strategy: 'mirror', mode: 'width_pct', width_pct: 10 } }) });
+    assert.strictEqual(d.plan.weights, null, 'a different range cannot take the target’s bins');
+    assert.strictEqual(d.plan.strategy, 'bidask');
+  });
+
+  const insertRebalance = (store, n = 1) => {
+    store.run(`INSERT INTO actions(chain,ts,block,tx_hash,log_index,target,venue,kind,token_id,pool_ref,token0,token1,liquidity,amount0,amount1,ext)
+      VALUES('solana',?,1,?,0,?,'meteora','rebalance','TPos',?,?,?,'0',?,?,?)`, Date.now(), `s:reb${n}`, TARGET, POOL, MEME, WSOL,
+    String(3n * 10n ** 9n), String(4n * 10n ** 9n), JSON.stringify({ lower: -2, upper: 4, prevLower: -3, prevUpper: 3, liquidityBefore: '100', binStep: BIN_STEP }));
+    return SolanaWatcher.actFromRow(store.get('SELECT * FROM actions WHERE tx_hash=?', `s:reb${n}`));
+  };
+
+  await t('target rebalance, mirror still in range: not moved by default (out_of_range); off = skipped; no mirror = skipped', async () => {
+    let h = engineHarness({ position: POSV });
+    openRow(h.store);
+    await h.eng.handle(insertRebalance(h.store));
+    let d = h.store.get('SELECT verdict, reason FROM decisions');
+    assert.strictEqual(d.verdict, 'skip');
+    assert.match(d.reason, /masih di dalam rentangnya/);
+    assert.strictEqual(h.sent.length, 0);
+    h = engineHarness({ position: POSV });
+    h.eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { range: { follow_rebalance: 'off' } }));
+    openRow(h.store);
+    await h.eng.handle(insertRebalance(h.store));
+    assert.match(h.store.get('SELECT reason FROM decisions').reason, /dimatikan/);
+    h = engineHarness({ position: POSV });
+    await h.eng.handle(insertRebalance(h.store));
+    assert.match(h.store.get('SELECT reason FROM decisions').reason, /tidak punya cermin/);
+  });
+
+  await t('target rebalance, out of range (or always): mirror closed and reopened over the new bins with what came back, memecoin not sold', async () => {
+    const got = { ...POSV, id: 'NewPos', liquidity: '900', tickLower: -200, tickUpper: 500, ext: { binStep: BIN_STEP } };
+    const h = engineHarness({ position: POSV, balances: new Map([['SOL', 10n * 10n ** 9n], [MEME, 10n * 10n ** 9n]]) });
+    h.chain.adapters.meteora.getPositions = async (items) => new Map(items.map((it) => [it.id, it.id === 'NewPos' ? got : POSV]));
+    h.eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { exit: { sell_leftover: true }, range: { follow_rebalance: 'always' }, sizing: { max_quote_per_position_usd: 1e6, max_total_exposure_usd: 1e6, daily_budget_usd: 1e6 } }));
+    const sold = [];
+    h.eng.sellLeftover = async (x) => { sold.push(x); };
+    const old = openRow(h.store);
+    await h.eng.handle(insertRebalance(h.store));
+    const d = h.store.get('SELECT verdict, reason, position_id FROM decisions');
+    assert.strictEqual(d.verdict, 'copy', d.reason);
+    assert.match(d.reason, /dipindah →/);
+    assert.deepStrictEqual(h.sent.map((x) => x.kind), ['decrease', 'open']);
+    assert.strictEqual(h.sent[0].close, true);
+    assert.deepStrictEqual([h.sent[1].lower, h.sent[1].upper], [-2, 4]);
+    const o = h.store.get('SELECT * FROM positions WHERE id=?', old.id);
+    assert.strictEqual(o.status, 'closed');
+    assert.strictEqual(o.left_token, null, 'redeposited, not a leftover');
+    assert.strictEqual(sold.length, 0);
+    const n = h.store.get("SELECT * FROM positions WHERE status='open'");
+    assert.strictEqual(n.token_id, 'NewPos');
+    assert.strictEqual(n.mirror_of, 'TPos');
+    // sized at what the close returned: 2 MEME (=2 SOL) + 3 SOL = 5 SOL, ±rounding
+    const gap = h.sent[1].amount0 + h.sent[1].amount1 - 5n * 10n ** 9n;
+    assert.ok((gap < 0n ? -gap : gap) < 10n ** 7n, `${h.sent[1].amount0} + ${h.sent[1].amount1}`);
+  });
+
+  await t('target rebalance in a dry run: decided "dry", nothing sent', async () => {
+    const h = engineHarness({ position: POSV, dry: true });
+    h.eng.rulesFrom = () => rulesFor(deepMerge(solanaTemplate().rules, { range: { follow_rebalance: 'always' } }));
+    openRow(h.store);
+    await h.eng.handle(insertRebalance(h.store));
+    assert.strictEqual(h.store.get('SELECT verdict FROM decisions').verdict, 'dry');
+    assert.strictEqual(h.sent.length, 0);
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

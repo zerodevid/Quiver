@@ -234,6 +234,22 @@ class SolanaWalletResearch {
         if (lo != null && w != null) dlmmRange.set(s.acc.position, { lowerBin: lo, upperBin: lo + w - 1 });
       }
     }
+    // rebalance_liquidity: the position stays, its liquidity is re-laid over new bins. The same tx
+    // usually also carries remove_liquidity / add_liquidity on it (an automation's "move range"),
+    // so all of them fold into ONE 'rebalance' event with the net flow — not a withdrawal.
+    const rebal = new Map();   // position -> the folded event
+    for (const s of seq) {
+      if (s.venue !== 'meteora' || s.event?.name !== 'Rebalancing') continue;
+      const d = s.event.data, pos = b58(pick(d, 'position'));
+      const r = rebal.get(pos) || { w0: 0n, w1: 0n, d0: 0n, d1: 0n, f0: 0n, f1: 0n };
+      r.pool = b58(pick(d, 'lb_pair', 'lbPair'));
+      r.w0 += big(d.x_withdrawn_amount); r.w1 += big(d.y_withdrawn_amount);
+      r.d0 += big(d.x_added_amount); r.d1 += big(d.y_added_amount);
+      r.f0 += big(d.x_fee_amount); r.f1 += big(d.y_fee_amount);
+      r.prevLower ??= num(d.old_min_id); r.prevUpper ??= num(d.old_max_id);
+      r.lowerBin = num(d.new_min_id); r.upperBin = num(d.new_max_id); r.activeBin = num(d.active_bin_id);
+      rebal.set(pos, r);
+    }
     const seenClaim = new Set();
     for (const s of seq) {
       if (s.venue !== 'meteora' || !s.event) continue;
@@ -241,7 +257,21 @@ class SolanaWalletResearch {
       const pos = b58(pick(d, 'position')), pool = pick(d, 'lb_pair', 'lbPair') ? b58(pick(d, 'lb_pair', 'lbPair')) : null;
       const bin = pick(d, 'active_bin_id', 'activeBinId');
       if (name === 'PositionCreate') push({ venue: 'meteora', id: pos, pool, kind: 'open', ...(dlmmRange.get(pos) || {}) });
-      else if (name === 'AddLiquidity' || name === 'RemoveLiquidity') {
+      else if ((name === 'AddLiquidity' || name === 'RemoveLiquidity') && rebal.has(pos)) {
+        const r = rebal.get(pos), [a0 = 0n, a1 = 0n] = (d.amounts || []).map(big);
+        if (name === 'AddLiquidity') { r.d0 += a0; r.d1 += a1; } else { r.w0 += a0; r.w1 += a1; }
+      } else if (name === 'Rebalancing') {
+        const r = rebal.get(pos);
+        if (r.emitted) continue;
+        r.emitted = true;
+        // Placed here, after any claim earlier in the tx; flows from later instructions still
+        // fold in because the object is shared until the loop ends.
+        push({ venue: 'meteora', id: pos, pool: r.pool, kind: 'rebalance', activeBin: r.activeBin,
+          lowerBin: r.lowerBin, upperBin: r.upperBin, prevLower: r.prevLower, prevUpper: r.prevUpper });
+        r.ev = out[out.length - 1];
+        // should_claim_fee: the claim rides inside the rebalance (no ClaimFee event of its own).
+        if (r.f0 > 0n || r.f1 > 0n) push({ venue: 'meteora', id: pos, pool: r.pool, kind: 'collect', f0: r.f0, f1: r.f1, activeBin: r.activeBin, viaRebalance: true });
+      } else if (name === 'AddLiquidity' || name === 'RemoveLiquidity') {
         const [a0, a1] = (d.amounts || []).map(big);
         push({ venue: 'meteora', id: pos, pool, kind: name === 'AddLiquidity' ? 'increase' : 'decrease', a0, a1, activeBin: num(bin), ...(dlmmRange.get(pos) || {}) });
       } else if (name === 'ClaimFee' || name === 'ClaimFee2') {
@@ -252,6 +282,13 @@ class SolanaWalletResearch {
         seenClaim.add(k);
         push({ venue: 'meteora', id: pos, pool, kind: 'collect', f0, f1, activeBin: bin != null ? num(bin) : null });
       } else if (name === 'PositionClose') push({ venue: 'meteora', id: pos, kind: 'close' });
+    }
+
+    for (const r of rebal.values()) {
+      if (!r.ev) continue;
+      // Net flow per token: positive = deposited into the position, negative = taken out of it.
+      r.ev.a0 = r.d0 - r.w0; r.ev.a1 = r.d1 - r.w1;
+      Object.assign(r.ev, { w0: r.w0, w1: r.w1, d0: r.d0, d1: r.d1 });
     }
 
     // --- Orca & Raydium: log events + instructions for what has no event ---
@@ -360,6 +397,13 @@ class SolanaWalletResearch {
     let valueUsd = null;
     if (e.kind === 'increase') {
       p.in0 += a0; p.in1 += a1; valueUsd = usdOf(a0, a1); p.investedUsd += valueUsd || 0;
+    } else if (e.kind === 'rebalance') {
+      // a0/a1 are net and signed: the part added counts as invested, the part taken as returned.
+      const pos0 = a0 > 0n ? a0 : 0n, pos1 = a1 > 0n ? a1 : 0n, neg0 = a0 < 0n ? -a0 : 0n, neg1 = a1 < 0n ? -a1 : 0n;
+      p.in0 += pos0; p.in1 += pos1; p.out0 += neg0; p.out1 += neg1;
+      const inUsd = pos0 || pos1 ? usdOf(pos0, pos1) : 0, outUsd = neg0 || neg1 ? usdOf(neg0, neg1) : 0;
+      p.investedUsd += inUsd || 0; p.returnedUsd += outUsd || 0;
+      valueUsd = inUsd == null || outUsd == null ? null : inUsd - outUsd;
     } else if (e.kind === 'decrease' || e.kind === 'collect') {
       p.out0 += a0 + f0; p.out1 += a1 + f1; p.fee0 += f0; p.fee1 += f1;
       valueUsd = usdOf(a0 + f0, a1 + f1);
@@ -469,8 +513,8 @@ class SolanaWalletResearch {
           t.held_tok, t.sold_tok, t.realized_q, t.unrealized_q, invested == null ? null : t.pnl_q, t.tracked_to, this.network, wallet, p.venue, p.id);
       }
       p.events.forEach((e, k) => {
-        const moved0 = e.kind === 'increase' ? e.a0 || 0n : (e.a0 || 0n) + (e.f0 || 0n);
-        const moved1 = e.kind === 'increase' ? e.a1 || 0n : (e.a1 || 0n) + (e.f1 || 0n);
+        const moved0 = e.kind === 'increase' || e.kind === 'rebalance' ? e.a0 || 0n : (e.a0 || 0n) + (e.f0 || 0n);
+        const moved1 = e.kind === 'increase' || e.kind === 'rebalance' ? e.a1 || 0n : (e.a1 || 0n) + (e.f1 || 0n);
         this.store.run(`INSERT OR REPLACE INTO wevents
           (chain,wallet,token_id,block,ts,tx_hash,log_index,kind,liq_delta,amount0,amount1,princ0,princ1,fee0,fee1,sqrt_price,value_q)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
