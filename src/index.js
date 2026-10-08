@@ -111,15 +111,18 @@ async function main() {
   if (!keys.length) { console.error('tidak ada chain yang aktif di config (chains.<nama>.enabled)'); process.exit(1); }
   const primaryKey = keys.includes(PRIMARY) ? PRIMARY : keys[0];
   const nets = {};
-  for (const key of keys) {
+  // Builds the {rpc, chain} half of one chain's stack; null (with a reason in `buildNet.why`)
+  // when it cannot be built. Used at boot and when a chain is switched on from Settings.
+  function buildNet(key) {
+    buildNet.why = '';
     const view = chainView(cfg, key);
     const clog = logFor(key);
-    if (!view.chain.endpoints.length) { clog('tidak ada endpoint RPC di config — chain ini dilewati'); continue; }
+    if (!view.chain.endpoints.length) { buildNet.why = 'tidak ada endpoint RPC'; clog('tidak ada endpoint RPC di config — chain ini dilewati'); return null; }
     let rpc, chain;
     if (isSolana(key)) {
       const S = solanaStack();
       try { rpc = new S.SolanaRpc(view.chain.endpoints, clog); }
-      catch (e) { clog(`${e.message} — chain ini dilewati`); continue; }
+      catch (e) { buildNet.why = e.message; clog(`${e.message} — chain ini dilewati`); return null; }
       chain = new S.SolanaChain(rpc, store, clog, key);
     } else {
       rpc = new RpcPool(view.chain.endpoints, clog, {
@@ -131,7 +134,7 @@ async function main() {
       });
       chain = new Chain(rpc, store, clog, key);
     }
-    nets[key] = { key, label: chain.label, cfg: view, rpc, chain, log: clog };
+    const net = { key, label: chain.label, cfg: view, rpc, chain, log: clog, timers: [], stopped: false };
     // seed targets from the config (only if not present yet). Solana addresses are case-sensitive.
     for (const t of view.targets || []) {
       const a = normAddr(key, t.address);
@@ -140,7 +143,9 @@ async function main() {
         key, a, t.label || null, t.enabled === false ? 0 : 1, Date.now(),
         t.rules ? JSON.stringify(t.rules) : null);
     }
+    return net;
   }
+  for (const key of keys) { const net = buildNet(key); if (net) nets[key] = net; }
   if (!nets[primaryKey]) { console.error(`chain utama ${primaryKey} tidak bisa dinyalakan (tidak ada RPC?)`); process.exit(1); }
 
   // ---- CLI commands (using a chain via --chain=<name>, default the main chain) ----
@@ -198,11 +203,13 @@ async function main() {
   const cleanup = () => { try { fs.unlinkSync(PID_FILE); } catch { /* already gone */ } };
   process.on('exit', cleanup);
 
-  for (const net of Object.values(nets)) {
+  const makeEngine = (net) => {
     const E = isSolana(net.key) ? solanaStack().SolanaEngine : Engine;
     net.engine = new E({ rpc: net.rpc, store, chain: net.chain, cfg: net.cfg, log: net.log });
-  }
-  const engines = Object.values(nets).map((n) => n.engine);
+  };
+  for (const net of Object.values(nets)) makeEngine(net);
+  // Live list: chains can be switched on and off while the bot runs.
+  const allEngines = () => Object.values(nets).map((n) => n.engine).filter(Boolean);
 
   // Stop in an orderly way. pm2 restart (every deploy) sends SIGINT; the process used to
   // exit right away — an entry that had zapped but not minted left a naked token,
@@ -216,6 +223,8 @@ async function main() {
     if (stopping) { log(`${sig} kedua — keluar paksa`); cleanup(); process.exit(1); }
     stopping = true;
     for (const t of timers) clearInterval(t);
+    for (const n of Object.values(nets)) { n.stopped = true; n.timers.forEach(clearInterval); }
+    const engines = allEngines();
     const busy = engines.some((e) => !e.idle());
     if (busy) log(`berhenti (${sig}) — menunggu transaksi yang sedang berjalan selesai…`);
     const clean = (await Promise.all(engines.map((e) => e.drain(100_000)))).every(Boolean);
@@ -256,9 +265,40 @@ async function main() {
 
   // The server is started FIRST: initialisation can take tens of seconds if the RPC
   // is slow, and the dashboard must stay openable during warm-up.
-  for (const net of Object.values(nets)) {
-    servers[net.key] = createServer({ engine: net.engine, store, cfg: net.cfg, cfgPath: CFG_PATH, chain: net.chain, rpc: net.rpc, log: net.log, telegram, nets });
-  }
+  // Switch a chain on or off while the bot runs (Settings → Chain), no restart. Switching on
+  // builds the stack and warms it up in the background; switching off stops its timers and waits
+  // for in-flight work (an entry that zapped but has not minted yet) before dropping it.
+  const chainControl = {
+    primaryKey,
+    async start(key) {
+      if (nets[key]) return { ok: true };
+      const net = buildNet(key);
+      if (!net) return { error: `${NETWORKS[key]?.label || key} belum bisa dinyalakan: ${buildNet.why}` };
+      nets[key] = net;
+      makeEngine(net);
+      makeServer(net);
+      log(`chain ${key} dinyalakan dari Pengaturan`);
+      runNet(net).catch((e) => net.log(`mesin gagal dinyalakan: ${e.message}`));
+      return { ok: true };
+    },
+    async stop(key) {
+      const net = nets[key];
+      if (!net) return { ok: true };
+      if (key === primaryKey) return { error: `${net.label} adalah chain utama dan tidak bisa dimatikan dari sini` };
+      net.stopped = true;
+      net.timers.forEach(clearInterval);
+      net.timers.length = 0;
+      const clean = await net.engine.drain(100_000);
+      delete nets[key];
+      delete servers[key];
+      log(`chain ${key} dimatikan dari Pengaturan${clean ? '' : ' (masih ada pekerjaan yang belum selesai, dilanjutkan saat chain dinyalakan lagi)'}`);
+      return { ok: true };
+    },
+  };
+  const makeServer = (net) => {
+    servers[net.key] = createServer({ engine: net.engine, store, cfg: net.cfg, cfgPath: CFG_PATH, chain: net.chain, rpc: net.rpc, log: net.log, telegram, nets, chainControl });
+  };
+  for (const net of Object.values(nets)) makeServer(net);
   const pickChain = (req, url) => {
     const q = url.searchParams.get('chain');
     if (q && servers[q]) return q;
@@ -285,7 +325,7 @@ async function main() {
   // The engines are started together — each chain has its own RPC pool, and warming up a
   // chain whose RPC is slow must not hold up the other chains. Each fails
   // on its own without bringing down the others.
-  await Promise.all(Object.values(nets).map(async (net) => {
+  async function runNet(net) {
     const { engine, cfg: view, log: clog } = net;
     clog('menyiapkan mesin…');
     // init() failing (that chain's RPC is down) must not bring down other chains,
@@ -301,15 +341,16 @@ async function main() {
         clog(`mode: ${engine.dryRun() ? 'SIMULASI (tidak mengirim transaksi)' : 'LIVE'} | target aktif: ${engine.watcher.enabledSet().size}${net.chain.verified ? '' : ' | alamat kontrak BELUM diverifikasi on-chain'}`);
       } catch (e) {
         clog(`mesin gagal dinyalakan: ${e.message} — dicoba lagi 60 detik lagi`);
-        if (!stopping) setTimeout(boot, 60_000).unref?.();
+        if (!stopping && !net.stopped) setTimeout(boot, 60_000).unref?.();
       }
     };
     await boot();
+    if (net.stopped) return;
     const pollMs = view.loop?.poll_ms || 1500;
     const syncMs = (view.loop?.sync_seconds || 30) * 1000;
     const eqMs = (view.loop?.equity_seconds || 300) * 1000;
     const when = (fn, what) => () => { if (net.ready) fn().catch((e) => clog(`${what}: ${e.message}`)); };
-    timers.push(
+    net.timers.push(
       setInterval(when(() => engine.tick(), 'tick'), pollMs),
       setInterval(when(() => engine.syncPositions(), 'sync'), syncMs),
       setInterval(when(() => engine.snapshotEquity(), 'equity'), eqMs),
@@ -317,7 +358,8 @@ async function main() {
       // the schedule (the `leftover_retry_sec` rule) has arrived; if so, it is re-quoted.
       setInterval(when(() => engine.retryLeftovers(), 'jual sisa'), 1000),
     );
-  }));
+  }
+  await Promise.all(Object.values(nets).map(runNet));
   timers.push(setInterval(() => {
     store.prune(30);
     // RPC cache: drop expired entries and those past the size limit.

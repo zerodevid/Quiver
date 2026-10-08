@@ -78,23 +78,30 @@ function SimBox({ sim, act, busy }) {
 }
 
 // ---------------- chains ----------------
-// Every network the bot knows, with an on/off switch. One engine per enabled chain is built at
-// boot, so a changed switch is saved right away but only takes effect after a restart.
+// Every network the bot knows, with an on/off switch. Switching takes effect right away: a chain
+// that is switched on warms up in the background (shown as "Menyiapkan…" until its first sync is done).
 function ChainsTab({ d, setD }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState('');
   const list = d.chains || [];
-  const pending = list.some((c) => c.enabled !== c.running);
+  const preparing = list.some((c) => c.enabled && !c.ready);
+  // While a chain is warming up, refresh the list so the status flips to "Berjalan" by itself.
+  useEffect(() => {
+    if (!preparing) return undefined;
+    const id = setInterval(async () => {
+      try { const r = await get('/api/settings/chains'); if (r.chains) setD((prev) => ({ ...prev, chains: r.chains })); } catch { /* next tick */ }
+    }, 3000);
+    return () => clearInterval(id);
+  }, [preparing, setD]);
   const flip = async (c, enabled) => {
     setBusy(c.key);
     const r = await post('/api/settings/chains', { key: c.key, enabled });
     setBusy('');
-    say(r, enabled ? 'Chain dinyalakan — restart bot supaya berlaku' : 'Chain dimatikan — restart bot supaya berlaku');
+    say(r, enabled ? 'Chain dinyalakan' : 'Chain dimatikan');
     if (!r.error) setD((prev) => ({ ...prev, chains: r.chains }));
   };
   return (
-    <Section title="Chain yang dijalankan" desc="Satu proses bot menjalankan semua chain yang dinyalakan dengan wallet yang sama. Chain baru mulai dalam mode simulasi tanpa target, jadi aman dinyalakan dulu untuk dicoba. Setiap chain yang aktif menambah pemakaian RAM dan permintaan RPC.">
-      {pending && <Notice status="warning" title="Perlu restart">{t('Ada perubahan yang belum berlaku. Restart bot (pm2 restart lpcopy) supaya chain yang dinyalakan atau dimatikan mulai berjalan.')}</Notice>}
+    <Section title="Chain yang dijalankan" desc="Nyalakan chain yang mau dipakai. Wallet-nya sama untuk semua chain, dan perubahannya langsung berlaku tanpa perlu menyalakan ulang bot. Chain baru mulai dalam mode simulasi tanpa target, jadi aman dicoba dulu. Setiap chain yang aktif menambah pemakaian memori dan koneksi RPC.">
       <div className="flex flex-col divide-y divide-border">
         {list.map((c) => (
           <div key={c.key} className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
@@ -104,15 +111,16 @@ function ChainsTab({ d, setD }) {
                 <span className="font-medium">{c.label}</span>
                 {c.chainId != null && <Chip size="sm" variant="soft">{t('id {n}', { n: c.chainId })}</Chip>}
                 <Chip size="sm" variant="soft">{c.nativeSymbol}</Chip>
-                {c.running && <Chip size="sm" variant="soft" color="success">{t('Berjalan')}</Chip>}
-                {c.enabled !== c.running && <Chip size="sm" variant="soft" color="warning">{t(c.enabled ? 'Mulai setelah restart' : 'Berhenti setelah restart')}</Chip>}
+                {c.enabled && c.running && c.ready && <Chip size="sm" variant="soft" color="success">{t('Berjalan')}</Chip>}
+                {c.enabled && !c.ready && <Chip size="sm" variant="soft" color="warning">{t('Menyiapkan…')}</Chip>}
+                {c.primary && <Chip size="sm" variant="soft">{t('Chain utama')}</Chip>}
               </div>
               <div className="mt-0.5 text-xs text-muted">
                 {c.venues.map((v) => ({ v3: 'Uniswap v3', v4: 'Uniswap v4', pancakev3: 'PancakeSwap v3', meteora: 'Meteora DLMM', orca: 'Orca', raydium: 'Raydium' }[v] || v)).join(' · ')}
                 {' · '}{c.stable}{' · '}{t('{n} target', { n: c.targets })}{' · '}{t(c.dryRun ? 'simulasi' : 'LIVE')}{' · '}{t('{n} RPC', { n: c.endpoints })}
               </div>
             </div>
-            <Toggle label={c.enabled ? 'Nyala' : 'Mati'} value={c.enabled} isDisabled={busy === c.key} onChange={(v) => flip(c, v)} />
+            <Toggle label={c.enabled ? 'Nyala' : 'Mati'} value={c.enabled} isDisabled={busy === c.key || c.primary} onChange={(v) => flip(c, v)} />
           </div>
         ))}
       </div>

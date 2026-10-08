@@ -188,7 +188,7 @@ function checkInitData(initData, botToken, { maxAgeSec = 86400, now = Date.now()
   return { user, authDate, look };
 }
 
-function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, nets = null }) {
+function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, nets = null, chainControl = null }) {
   chain = ensureChain(chain || engine?.chain);
   const pub = path.join(__dirname, '..', 'public');
   const { QUOTES } = chain;
@@ -2317,7 +2317,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     },
   };
 
-  Object.assign(routes, createSettingsRoutes({ engine, engines, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market, fx }));
+  Object.assign(routes, createSettingsRoutes({ engine, engines, nets, chainControl, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market, fx }));
   routes['GET /api/chains'] = async () => ({ chains: await chainList(), current: chain.network });
   // Chain picker: the lpcopy_chain cookie is read by the front door (index.js) to choose
   // which chain's server answers the next requests. This cookie is not a secret.
