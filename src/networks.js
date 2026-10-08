@@ -113,6 +113,104 @@ const BSC = {
   uniswap: 'bnb',
 };
 
+// ---- Uniswap-only chains (v4 + the canonical Uniswap v3 deployment) --------------------
+// Added 2026-10-08. Every address below was cross-checked on-chain (`node src/verify-chain.js
+// <chain>`): chain id, bytecode, NPM.factory() == factory, posmV4.poolManager() == PoolManager,
+// USDC/wrapped-native symbol & decimals. `usdg` = native USDC (6 decimals), `weth` = the wrapped
+// native token. Native price comes from the deepest USDC/wrapped-native Uniswap v3 pools.
+const PERMIT2 = '0x000000000022d473030f116ddee9f6b43ac78ba3';
+const KYBER_ROUTER = '0x6131b5fae19ea4f9d964eac0408e4408b66337b5'; // same address on every Kyber chain
+const lc = (a) => a.toLowerCase();
+
+function uniswapChain(o) {
+  return {
+    key: o.key,
+    label: o.label,
+    chainId: o.chainId,
+    nativeSymbol: o.nativeSymbol,
+    kyberPath: o.kyberPath || o.key,
+    blockMs: o.blockMs,
+    addr: {
+      poolManager: lc(o.poolManager), posmV4: lc(o.posmV4), universalRouter: lc(o.universalRouter),
+      npmV3: lc(o.npmV3), dexRouter: KYBER_ROUTER, permit2: PERMIT2,
+      usdg: lc(o.usdc), weth: lc(o.wrapped), native: NATIVE,
+      uniswapFactoryV3: lc(o.factoryV3),
+    },
+    quoteMeta: {
+      usdg: { symbol: 'USDC', decimals: 6, kind: 'usd' },
+      weth: { symbol: o.wrappedSymbol, decimals: 18, kind: 'eth' },
+      native: { symbol: o.nativeSymbol, decimals: 18, kind: 'eth' },
+    },
+    venues: [{ key: 'v3', npmV3Slot: 'npmV3', factory: 'uniswapFactoryV3' }],
+    nativeUsd: { mode: 'v3pools', pools: o.nativeUsdPools.map(lc) },
+    verified: true,
+    explorerApiV2: null,
+    explorerTokenUrl: null,
+    alchemyHost: o.alchemyHost || null,
+    explorer: o.explorer,
+    dexscreener: o.dexscreener || o.key,
+    geckoterminal: o.geckoterminal || o.key,
+    gmgn: o.gmgn || o.key,
+    uniswap: o.uniswap || o.key,
+  };
+}
+
+const ETHEREUM = uniswapChain({
+  key: 'ethereum', label: 'Ethereum', chainId: 1, nativeSymbol: 'ETH', blockMs: 12000,
+  poolManager: '0x000000000004444c5dc75cB358380D2e3dE08A90', posmV4: '0xbd216513d74c8cf14cf4747e6aaa6420ff64ee9e',
+  universalRouter: '0x23617e59A5925b2A4Bf75d73ff6711cD0b29De85',
+  npmV3: '0xC36442b4a4522E871399CD717aBDD847Ab11FE88', factoryV3: '0x1F98431c8aD98523631AE4a59f267346ea31F984',
+  usdc: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', wrapped: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', wrappedSymbol: 'WETH',
+  nativeUsdPools: ['0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640', '0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8'],
+  alchemyHost: 'eth-mainnet.g.alchemy.com', explorer: 'https://etherscan.io', geckoterminal: 'eth', gmgn: 'eth',
+});
+const BASE = uniswapChain({
+  key: 'base', label: 'Base', chainId: 8453, nativeSymbol: 'ETH', blockMs: 2000,
+  poolManager: '0x498581ff718922c3f8e6a244956af099b2652b2b', posmV4: '0x7c5f5a4bbd8fd63184577525326123b519429bdc',
+  universalRouter: '0xd6145b2D3F379919E8CdEda7B97e37c4b2Ca9c40',
+  npmV3: '0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1', factoryV3: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD',
+  usdc: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', wrapped: '0x4200000000000000000000000000000000000006', wrappedSymbol: 'WETH',
+  nativeUsdPools: ['0xd0b53d9277642d899df5c87a3966a349a798f224', '0x6c561b446416e1a00e8e93e221854d6ea4171372'],
+  alchemyHost: 'base-mainnet.g.alchemy.com', explorer: 'https://basescan.org',
+});
+const ARBITRUM = uniswapChain({
+  key: 'arbitrum', label: 'Arbitrum One', chainId: 42161, nativeSymbol: 'ETH', blockMs: 250,
+  poolManager: '0x360e68faccca8ca495c1b759fd9eee466db9fb32', posmV4: '0xd88f38f930b7952f2db2432cb002e7abbf3dd869',
+  universalRouter: '0x2d01411773c8C24805306E89A41F7855C3c4Fe65',
+  npmV3: '0xC36442b4a4522E871399CD717aBDD847Ab11FE88', factoryV3: '0x1F98431c8aD98523631AE4a59f267346ea31F984',
+  usdc: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', wrapped: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', wrappedSymbol: 'WETH',
+  nativeUsdPools: ['0xc6962004f452be9203591991d15f6b388e09e8d0', '0xc473e2aee3441bf9240be85eb122abb059a3b57c'],
+  alchemyHost: 'arb-mainnet.g.alchemy.com', explorer: 'https://arbiscan.io', geckoterminal: 'arbitrum', gmgn: 'arbitrum',
+});
+const OPTIMISM = uniswapChain({
+  key: 'optimism', label: 'Optimism', chainId: 10, nativeSymbol: 'ETH', blockMs: 2000,
+  poolManager: '0x9a13f98cb987694c9f086b1f5eb990eea8264ec3', posmV4: '0x3c3ea4b57a46241e54610e5f022e5c45859a1017',
+  universalRouter: '0xC09255D86DB563cBc11C2fCf4a0C512e160111B4',
+  npmV3: '0xC36442b4a4522E871399CD717aBDD847Ab11FE88', factoryV3: '0x1F98431c8aD98523631AE4a59f267346ea31F984',
+  usdc: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', wrapped: '0x4200000000000000000000000000000000000006', wrappedSymbol: 'WETH',
+  nativeUsdPools: ['0x1fb3cf6e48f1e7b10213e7b6d87d4c073c7fdb7b', '0xc1738d90e2e26c35784a0d3e3d8a9f795074bca4'],
+  alchemyHost: 'opt-mainnet.g.alchemy.com', explorer: 'https://optimistic.etherscan.io',
+});
+const POLYGON = uniswapChain({
+  key: 'polygon', label: 'Polygon', chainId: 137, nativeSymbol: 'POL', blockMs: 2000,
+  poolManager: '0x67366782805870060151383f4bbff9dab53e5cd6', posmV4: '0x1ec2ebf4f37e7363fdfe3551602425af0b3ceef9',
+  universalRouter: '0xDc264714F68d84CF29BC605589405E78bDBE7C9f',
+  npmV3: '0xC36442b4a4522E871399CD717aBDD847Ab11FE88', factoryV3: '0x1F98431c8aD98523631AE4a59f267346ea31F984',
+  usdc: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', wrapped: '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270', wrappedSymbol: 'WPOL',
+  nativeUsdPools: ['0xb6e57ed85c4c9dbfef2a68711e9d6f36c56e0fcb', '0x2db87c4831b2fec2e35591221455834193b50d1b'],
+  alchemyHost: 'polygon-mainnet.g.alchemy.com', explorer: 'https://polygonscan.com',
+  geckoterminal: 'polygon_pos', gmgn: 'polygon',
+});
+const AVALANCHE = uniswapChain({
+  key: 'avalanche', label: 'Avalanche C-Chain', chainId: 43114, nativeSymbol: 'AVAX', blockMs: 2000,
+  poolManager: '0x06380c0e0912312b5150364b9dc4542ba0dbbc85', posmV4: '0xb74b1f14d2754acfcbbe1a221023a5cf50ab8acd',
+  universalRouter: '0x94b75331ae8d42c1b61065089b7d48fe14aa73b7',
+  npmV3: '0x655C406EBFa14EE2006250925e54ec43AD184f8B', factoryV3: '0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD',
+  usdc: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E', wrapped: '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7', wrappedSymbol: 'WAVAX',
+  nativeUsdPools: ['0xfae3f424a0a47706811521e3ee268f00cfb5c45e', '0x0e663593657b064e1bae76d28625df5d0ebd4421'],
+  alchemyHost: 'avax-mainnet.g.alchemy.com', explorer: 'https://snowtrace.io', geckoterminal: 'avax', gmgn: 'avalanche',
+});
+
 // Solana: not EVM at all — its own engine (src/solana/), not pools.js/
 // watcher.js/executor.js. The profile still uses the same slot names (usdg = USDC,
 // weth = wSOL) so the dashboard, policy and PnL bookkeeping reading `chain.ADDR.usdg`
@@ -164,7 +262,7 @@ const SOLANA = {
   uniswap: null,
 };
 
-const NETWORKS = { robinhood: ROBINHOOD, bsc: BSC, solana: SOLANA };
+const NETWORKS = { robinhood: ROBINHOOD, bsc: BSC, ethereum: ETHEREUM, base: BASE, arbitrum: ARBITRUM, optimism: OPTIMISM, polygon: POLYGON, avalanche: AVALANCHE, solana: SOLANA };
 
 const isSolana = (key) => NETWORKS[key]?.kind === 'solana';
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;

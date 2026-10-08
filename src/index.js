@@ -44,7 +44,7 @@ function otherInstanceAlive() {
 }
 const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 // Short chain label before the log line, so logs of several engines in one process are readable.
-const TAG = { robinhood: 'RH', bsc: 'BSC', solana: 'SOL' };
+const TAG = { robinhood: 'RH', bsc: 'BSC', solana: 'SOL', ethereum: 'ETH', base: 'BASE', arbitrum: 'ARB', optimism: 'OP', polygon: 'POLY', avalanche: 'AVAX' };
 const tagOf = (key) => TAG[key] || key.toUpperCase().slice(0, 4);
 
 async function main() {

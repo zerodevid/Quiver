@@ -90,6 +90,9 @@ const CHAIN_BADGE = {
   robinhood: { label: 'Robinhood Chain', href: `data:image/jpeg;base64,${fs.readFileSync(path.join(__dirname, '..', 'public', 'robinhood-chain.jpg')).toString('base64')}` },
   bsc: { label: 'BNB Smart Chain', href: `data:image/png;base64,${fs.readFileSync(path.join(__dirname, '..', 'public', 'bnb-chain.png')).toString('base64')}` },
 };
+for (const [key, label] of [['ethereum', 'Ethereum'], ['base', 'Base'], ['arbitrum', 'Arbitrum One'], ['optimism', 'Optimism'], ['polygon', 'Polygon'], ['avalanche', 'Avalanche C-Chain']]) {
+  CHAIN_BADGE[key] = { label, href: `data:image/png;base64,${fs.readFileSync(path.join(__dirname, '..', 'public', `${key}-chain.png`)).toString('base64')}` };
+}
 let chainNow = CHAIN_BADGE.robinhood;
 const chainName = () => chainNow.label;
 // Fox mascot, its expression follows the PnL (public/mascots/*.png, transparent PNG,

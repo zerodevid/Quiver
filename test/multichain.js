@@ -192,6 +192,31 @@ const rpcStub = { blockNumber: async () => 100, ethCallMany: async (c) => c.map(
     }
   });
 
+  await t('Uniswap-only chains: profile shape, disabled template blocks, native pricing from v3 pools', () => {
+    const keys = ['ethereum', 'base', 'arbitrum', 'optimism', 'polygon', 'avalanche'];
+    const cfg = { chains: { robinhood: {} } };
+    normalizeCfg(cfg);
+    assert.deepStrictEqual(enabledChains(cfg).sort(), ['bsc', 'robinhood']);
+    for (const key of keys) {
+      const p = build(key);
+      assert.strictEqual(p.ADDR.usdg.length, 42);
+      assert.strictEqual(p.QUOTES[p.ADDR.usdg].decimals, 6);
+      assert.strictEqual(p.nativeUsd.mode, 'v3pools');
+      assert.ok(p.nativeUsd.pools.length >= 1);
+      assert.deepStrictEqual(p.venues.map((v) => v.key), ['v3']);
+      const block = cfg.chains[key];
+      assert.strictEqual(block.enabled, false, `${key} must start disabled`);
+      assert.ok(block.chain.endpoints.length >= 1 && block.mode.dry_run === true && block.targets.length === 0);
+      assert.ok(block.loop.max_block_span >= 50 && block.loop.max_block_span <= 4500);
+      assert.ok(block.prices.eth_usd > 0);
+      const c = new Chain({}, {}, () => {}, key);
+      assert.strictEqual(c.isEthLike(p.nativeSymbol), true);
+      assert.strictEqual(c.usdgDecimals, 6);
+    }
+    assert.strictEqual(build('polygon').nativeSymbol, 'POL');
+    assert.strictEqual(chainView(cfg, 'base').network, 'base');
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

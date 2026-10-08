@@ -19,7 +19,7 @@
 // to chains.<name> and other fields to the parent config. So existing code
 // (`cfg.rules`, `cfg.mode.dry_run = …`, `cfg.chain.endpoints`) keeps working as
 // it is, and writeCfg(view) still writes the complete parent config.
-const { NETWORKS } = require('./networks');
+const { NETWORKS, build } = require('./networks');
 
 const PER_CHAIN = ['chain', 'targets', 'rules', 'mode', 'gas', 'prices', 'loop', 'scout', 'risk', 'swap'];
 const PRIMARY = 'robinhood';
@@ -104,6 +104,93 @@ function solanaTemplate() {
   };
 }
 
+// Defaults for the Uniswap-only chains added 2026-10-08. Public RPCs tested from the VPS
+// side on 2026-10-08 (eth_getLogs probes): the limits below are what each one served.
+//   - publicnode: getLogs up to 5000+ blocks but only recent history (old ranges need a token),
+//     except Polygon where it also serves old ranges
+//   - mainnet.base.org: 500-block getLogs, old history readable
+//   - arb1.arbitrum.io / mainnet.optimism.io / api.avax.network: 10000-block getLogs (5000 on
+//     Avalanche is the safe size), old history readable
+// Ethereum has no free archive getLogs endpoint, so history older than a few days needs an
+// Alchemy key (added from Settings once the network is enabled for the app).
+const EP = (url, extra = {}) => ({ url, max_batch: 20, ...extra });
+const CHAIN_DEFAULTS = {
+  ethereum: {
+    endpoints: [EP('https://ethereum-rpc.publicnode.com', { max_log_blocks: 5000, catatan: 'publicnode: getLogs 5000 blok, hanya riwayat terbaru' })],
+    gas: { price_multiplier: 1.2, priority_wei: 1_000_000_000, max_gas_limit: 4_000_000, native_reserve_wei: 10_000_000_000_000_000, max_fee_gwei: 60, topup_max_usd: 25 },
+    ethUsd: 2570,
+  },
+  base: {
+    endpoints: [
+      EP('https://base-rpc.publicnode.com', { max_log_blocks: 5000, catatan: 'publicnode: getLogs 5000 blok, hanya riwayat terbaru' }),
+      EP('https://mainnet.base.org', { max_log_blocks: 500, catatan: 'resmi Base: getLogs maks 500 blok, riwayat lama terbaca' }),
+    ],
+    gas: { price_multiplier: 1.2, priority_wei: 1_000_000, max_gas_limit: 4_000_000, native_reserve_wei: 2_000_000_000_000_000, max_fee_gwei: 5, topup_max_usd: 25 },
+    ethUsd: 2570,
+  },
+  arbitrum: {
+    endpoints: [EP('https://arb1.arbitrum.io/rpc', { max_log_blocks: 10000, catatan: 'resmi Arbitrum: getLogs 10000 blok, riwayat lama terbaca' })],
+    gas: { price_multiplier: 1.3, priority_wei: 0, max_gas_limit: 20_000_000, native_reserve_wei: 2_000_000_000_000_000, max_fee_gwei: 5, topup_max_usd: 25 },
+    ethUsd: 2570,
+  },
+  optimism: {
+    endpoints: [
+      EP('https://mainnet.optimism.io', { max_log_blocks: 10000, catatan: 'resmi Optimism: getLogs 10000 blok, riwayat lama terbaca' }),
+      EP('https://optimism-rpc.publicnode.com', { max_log_blocks: 5000, catatan: 'publicnode: getLogs 5000 blok, hanya riwayat terbaru' }),
+    ],
+    gas: { price_multiplier: 1.2, priority_wei: 1_000_000, max_gas_limit: 4_000_000, native_reserve_wei: 2_000_000_000_000_000, max_fee_gwei: 5, topup_max_usd: 25 },
+    ethUsd: 2570,
+  },
+  polygon: {
+    endpoints: [EP('https://polygon-bor-rpc.publicnode.com', { max_log_blocks: 5000, catatan: 'publicnode: getLogs 5000 blok, riwayat lama terbaca' })],
+    // Polygon enforces a ~25 gwei minimum priority fee.
+    gas: { price_multiplier: 1.3, priority_wei: 30_000_000_000, max_gas_limit: 4_000_000, native_reserve_wei: 5_000_000_000_000_000_000, max_fee_gwei: 500, topup_max_usd: 25 },
+    ethUsd: 0.1,
+  },
+  avalanche: {
+    endpoints: [
+      EP('https://api.avax.network/ext/bc/C/rpc', { max_log_blocks: 5000, catatan: 'resmi Avalanche: getLogs 5000 blok, riwayat lama terbaca' }),
+      EP('https://avalanche-c-chain-rpc.publicnode.com', { max_log_blocks: 5000, catatan: 'publicnode: getLogs 5000 blok, hanya riwayat terbaru' }),
+    ],
+    gas: { price_multiplier: 1.2, priority_wei: 1_000_000_000, max_gas_limit: 4_000_000, native_reserve_wei: 200_000_000_000_000_000, max_fee_gwei: 60, topup_max_usd: 25 },
+    ethUsd: 11,
+  },
+};
+
+// Default block for a Uniswap-only chain: simulation, no targets, the public RPCs above.
+// Loop timing is derived from the block time: ~20 minutes of blocks per catch-up chunk
+// (capped at 4500 blocks so one getLogs fits every endpoint), wallet adoption and scout
+// windows of ~2 days (capped at 300k blocks).
+function uniswapTemplate(key) {
+  const d = CHAIN_DEFAULTS[key];
+  const { label, blockMs, nativeSymbol } = build(key);
+  const span = Math.max(50, Math.min(4500, Math.round(1_200_000 / blockMs)));
+  const twoDays = Math.min(300_000, Math.round(172_800_000 / blockMs));
+  return {
+    enabled: false,
+    chain: { endpoints: d.endpoints.map((e) => ({ ...e })), max_inflight: 3, dns_over_https: false },
+    targets: [],
+    rules: { filters: { quote_whitelist: [], venues: ['v4', 'v3'] } },
+    mode: { dry_run: true, paused: false },
+    loop: { poll_ms: Math.max(3000, blockMs), max_block_span: span, sync_seconds: 30, equity_seconds: 300, stale_action_seconds: 300, adopt_blocks: twoDays },
+    gas: { ...d.gas },
+    // Native price is automatic from the Uniswap v3 USDC/wrapped-native pools (networks.js); eth_usd = fallback.
+    prices: { eth_usd: d.ethUsd, auto_eth_price: true },
+    scout: { blocks: twoDays },
+    risk: { max_daily_drawdown_pct: 0 },
+    swap: { enabled: true, max_slippage_bps: 150, max_price_impact_bps: 500 },
+    catatan: `Blok ${label} dibuat otomatis: nonaktif, mode simulasi, belum ada target. Aktifkan lewat Pengaturan (harga cadangan ${nativeSymbol} dan RPC bisa disesuaikan), tambah target, lalu matikan simulasi kalau sudah yakin.`,
+  };
+}
+
+// Default config block for any chain except Robinhood (which is the primary and always exists).
+function chainTemplate(key) {
+  if (key === 'bsc') return bscTemplate();
+  if (key === 'solana') return solanaTemplate();
+  if (CHAIN_DEFAULTS[key]) return uniswapTemplate(key);
+  return null;
+}
+
 // Old config -> chains shape. Mutates the object in place; returns a list of
 // notes (for the log) about what was normalised.
 function normalizeCfg(cfg) {
@@ -119,6 +206,10 @@ function normalizeCfg(cfg) {
   for (const k of PER_CHAIN) if (cfg[k] !== undefined) { delete cfg[k]; notes.push(`kolom ${k} di tingkat atas dibuang (sudah per chain)`); }
   if (!cfg.chains.bsc) { cfg.chains.bsc = bscTemplate(); notes.push('blok chains.bsc dibuat (simulasi, tanpa target)'); }
   if (!cfg.chains.solana) { cfg.chains.solana = solanaTemplate(); notes.push('blok chains.solana dibuat (MATI, simulasi, tanpa target)'); }
+  // Newer chains are created disabled: no extra engine (RAM, RPC) until someone enables them.
+  for (const key of Object.keys(CHAIN_DEFAULTS)) {
+    if (!cfg.chains[key]) { cfg.chains[key] = uniswapTemplate(key); notes.push(`blok chains.${key} dibuat (nonaktif, simulasi, tanpa target)`); }
+  }
   for (const [key, c] of Object.entries(cfg.chains)) {
     if (!NETWORKS[key]) throw new Error(`config.chains.${key}: jaringan tidak dikenal (yang ada: ${Object.keys(NETWORKS).join(', ')})`);
     c.chain = c.chain && typeof c.chain === 'object' ? c.chain : { endpoints: [] };
@@ -158,4 +249,4 @@ function enabledChains(cfg) {
   return Object.keys(cfg.chains || {}).filter((k) => cfg.chains[k]?.enabled !== false);
 }
 
-module.exports = { PER_CHAIN, PRIMARY, normalizeCfg, chainView, enabledChains, bscTemplate, solanaTemplate };
+module.exports = { PER_CHAIN, PRIMARY, normalizeCfg, chainView, enabledChains, bscTemplate, solanaTemplate, chainTemplate };

@@ -312,11 +312,11 @@ class Manual {
   // Rather than just "no pool", say where — the data comes from GeckoTerminal.
   async otherMarket(token, fetchImpl = globalThis.fetch) {
     try {
-      const r = await fetchImpl(`https://api.geckoterminal.com/api/v2/networks/robinhood/tokens/${lc(token)}/pools?page=1`,
+      const r = await fetchImpl(`https://api.geckoterminal.com/api/v2/networks/${this.chain.geckoterminal || 'robinhood'}/tokens/${lc(token)}/pools?page=1`,
         { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
       if (!r.ok) return null;
       const j = await r.json();
-      const nameVal = (id) => String(id || '?').replace(/-robinhood$/, '').split('-')
+      const nameVal = (id) => String(id || '?').replace(new RegExp(`-${this.chain.geckoterminal || 'robinhood'}$`), '').split('-')
         .map((w) => (/^v\d$/i.test(w) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
       return (j.data || []).slice(0, 5).map((d) => ({
         dex: nameVal(d.relationships?.dex?.data?.id), dexId: d.relationships?.dex?.data?.id || null,

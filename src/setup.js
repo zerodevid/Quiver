@@ -23,7 +23,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { ethers } = require('ethers');
 const { NETWORKS, build, normAddr, isSolana } = require('./networks');
-const { normalizeCfg, bscTemplate, solanaTemplate, PRIMARY } = require('./multichain');
+const { normalizeCfg, chainTemplate, PRIMARY } = require('./multichain');
 const { probeRpc, maskUrl, hasSecret } = require('./settings');
 const { CURRENCIES, CURRENCIES_EN } = require('./fx');
 const { SETUP_PAGE } = require('./setup-page');
@@ -98,7 +98,7 @@ function writeEnvFile({ envPath, examplePath, vals }) {
 const keyPathOf = (cfg) => String(cfg?.wallet?.key_file || '~/.lpcopy/key').replace(/^~/, process.env.HOME || '');
 // Solana (ed25519) key: a separate file, the same one src/solana/wallet.js reads.
 const solKeyPathOf = (cfg) => String(cfg?.wallet?.solana_key_file || '~/.lpcopy/solana-key').replace(/^~/, process.env.HOME || '');
-const defaultBlock = (key) => (key === 'bsc' ? bscTemplate() : isSolana(key) ? solanaTemplate() : null);
+const defaultBlock = (key) => chainTemplate(key);
 
 // An old key is never silently overwritten — the same rule as the Settings page:
 // moved to a dated backup file first.

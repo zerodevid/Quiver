@@ -85,7 +85,7 @@ class Costs {
     const sig = this.store.get('SELECT COUNT(*) n, COALESCE(MAX(ts),0) last, COALESCE(SUM(gas_used),0) gas FROM txs WHERE chain=?', this.network);
     // The ETH price is rounded to a whole dollar: it is only used for old transactions that
     // have not stored gas in USD, so there is no need to recompute every cent.
-    const key = `${sig?.n}:${sig?.last}:${sig?.gas}:${Math.round(ethUsd || 0)}`;
+    const key = `${sig?.n}:${sig?.last}:${sig?.gas}:${Number(ethUsd || 0).toPrecision(4)}`;
     if (this.cache?.key === key) return this.cache.map;
     const map = this.compute(ethUsd || 0);
     this.cache = { key, map };

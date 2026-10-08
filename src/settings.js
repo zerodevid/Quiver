@@ -1,5 +1,6 @@
 'use strict';
-const { ensureChain } = require('./networks');
+const { ensureChain, NETWORKS, build, isSolana } = require('./networks');
+const { enabledChains, chainTemplate } = require('./multichain');
 // Settings page routes: the bot wallet, RPC endpoints (including ones using an API key),
 // gas, notifications, engine, and the dashboard access token.
 //
@@ -130,6 +131,22 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
   chain = ensureChain(chain || engine?.chain);
   // Via writeCfg: values from .env must not get written to config.json.
   const saveCfg = () => writeCfg(cfgPath, cfg);
+  // Every known network with its on/off switch. `running` = an engine exists in this process;
+  // engines are created at boot, so a changed switch only takes effect after a restart.
+  const chainsView = () => {
+    const running = new Set(engines.map((e) => e?.chain?.network).filter(Boolean));
+    return Object.keys(NETWORKS).map((key) => {
+      const p = build(key);
+      const block = cfg.chains?.[key];
+      return {
+        key, label: p.label, chainId: p.chainId, nativeSymbol: p.nativeSymbol,
+        stable: p.QUOTES[p.ADDR.usdg]?.symbol, venues: [...(isSolana(key) ? [] : ['v4']), ...p.venues.map((v) => v.key)],  // v4 is scanned on every EVM chain
+        enabled: !!block && block.enabled !== false, running: running.has(key),
+        endpoints: (block?.chain?.endpoints || []).length, dryRun: block?.mode?.dry_run !== false,
+        targets: (block?.targets || []).length, current: key === chain.network,
+      };
+    });
+  };
   const resetWallets = () => { for (const e of engines) e.exec.resetWallet(); };
   // Fields governed by .env would be overwritten again on restart — changing them from the dashboard
   // would just mislead, so it is refused with a hint of where to change them.
@@ -376,6 +393,7 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
           max_fee_gwei: cfg.gas?.max_fee_gwei ?? 10,
           reserve_eth: (cfg.gas?.native_reserve_wei ?? 2e15) / 1e18,
         },
+        chains: chainsView(),
         notify: { ntfy_topic: cfg.notify?.ntfy_topic || '', fromEnv: envName(cfg, 'notify.ntfy_topic') },
         authFromEnv: envName(cfg, 'server.auth_token'),
         telegram: tgView(),
@@ -824,6 +842,24 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
         return { ok: true, candles: n, summary: n ? `API key diterima — ${n} lilin ${chain.wethSymbol} diterima dari GMGN` : 'API key diterima, tetapi GMGN tidak mengembalikan lilin untuk chain ini' };
       } catch (e) { return { error: e.message }; }
     },
+    // Switch a chain on or off. Engines are built at boot, so the change needs a restart; the
+    // block is created from its template if the config does not have one yet.
+    'POST /api/settings/chains': async (req) => {
+      const b = await readBody(req);
+      const key = String(b.key || '');
+      if (!NETWORKS[key]) return { error: 'Chain tidak dikenal' };
+      const want = !!b.enabled;
+      if (want) {
+        if (!cfg.chains[key]) cfg.chains[key] = chainTemplate(key) || {};
+        if (!(cfg.chains[key].chain?.endpoints || []).length) return { error: `${build(key).label}: belum ada endpoint RPC` };
+      } else if (cfg.chains[key]) {
+        if (enabledChains(cfg).filter((k) => k !== key).length === 0) return { error: 'Minimal satu chain harus tetap aktif' };
+      }
+      if (cfg.chains[key]) cfg.chains[key].enabled = want;
+      saveCfg();
+      log(`chain ${key}: ${want ? 'dinyalakan' : 'dimatikan'} dari Pengaturan (berlaku setelah restart)`);
+      return { ok: true, restartNeeded: true, chains: chainsView() };
+    },
     'POST /api/settings/loop': async (req) => {
       const b = await readBody(req);
       try {
@@ -833,7 +869,7 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
           max_block_span: Math.round(num(b.max_block_span, 100, 3000, 'Rentang blok per pindai')),
           sync_seconds: Math.round(num(b.sync_seconds, 10, 600, 'Interval sinkron posisi')),
         };
-        cfg.prices = { ...(cfg.prices || {}), eth_usd: num(b.eth_usd, 100, 100_000, 'Harga ETH cadangan'), auto_eth_price: !!b.auto_eth_price };
+        cfg.prices = { ...(cfg.prices || {}), eth_usd: num(b.eth_usd, 0.0001, 1_000_000, 'Harga ETH cadangan'), auto_eth_price: !!b.auto_eth_price };
       } catch (e) { return { error: e.message }; }
       saveCfg();
       return { ok: true, restartNeeded: true };
