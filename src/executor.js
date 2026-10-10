@@ -35,7 +35,9 @@ class Executor {
     this.log = log || console.log;
     this.wallet = null;
     this.nonce = null;
-    this.approved = new Set();
+    // key -> ms timestamp until which the cached "already approved" answer holds. A Permit2 allowance
+    // carries an expiry; caching it forever made a long-lived process keep skipping the renewal.
+    this.approved = new Map();
     // Marker of the last tx recorded as landed in a block (see waitReceipt): how many times
     // it has happened, and at which block. A cached balance reader (engine.cash)
     // compares its count to know its read has gone stale.
@@ -329,8 +331,9 @@ class Executor {
     const owner = this.address();
     const npm = this.chain.npmFor(venue);
     const key = `${token}|${forV4 ? 'v4' : venue}`;
-    if (this.approved.has(key)) return [];
+    if (this.isApproved(key)) return [];
     const txs = [];
+    let permit2ExpiryMs = Infinity;
     if (forV4) {
       const [a1] = await this.rpc.ethCallMany([{ to: token, data: IF_ERC20.encodeFunctionData('allowance', [owner, this.chain.ADDR.permit2]) }]);
       if (!a1 || BigInt(a1) < MAX_UINT256 / 2n) {
@@ -342,6 +345,7 @@ class Executor {
         try {
           const d = IF_PERMIT2.decodeFunctionResult('allowance', a2);
           need = BigInt(d[0]) < MAX_UINT160 / 2n || BigInt(d[1]) < BigInt(Math.floor(Date.now() / 1000) + 86400);
+          permit2ExpiryMs = Number(d[1]) * 1000;
         } catch { need = true; }
       }
       if (need) {
@@ -353,8 +357,13 @@ class Executor {
         txs.push({ to: token, data: IF_ERC20.encodeFunctionData('approve', [npm, MAX_UINT256]), kind: 'approve_erc20' });
       }
     }
-    if (!txs.length) this.approved.add(key);
+    if (!txs.length) this.approved.set(key, permit2ExpiryMs - 3600_000);
     return txs;
+  }
+
+  isApproved(key) {
+    const until = this.approved.get(key);
+    return until !== undefined && Date.now() < until;
   }
 
   // Allowance for the UniversalRouter (swap) — also via Permit2.
@@ -362,8 +371,9 @@ class Executor {
     if (isNative(token)) return [];
     const owner = this.address();
     const key = `${token}|ur`;
-    if (this.approved.has(key)) return [];
+    if (this.isApproved(key)) return [];
     const txs = [];
+    let permit2ExpiryMs = Infinity;
     const [a1] = await this.rpc.ethCallMany([{ to: token, data: IF_ERC20.encodeFunctionData('allowance', [owner, this.chain.ADDR.permit2]) }]);
     if (!a1 || BigInt(a1) < MAX_UINT256 / 2n) {
       txs.push({ to: token, data: IF_ERC20.encodeFunctionData('approve', [this.chain.ADDR.permit2, MAX_UINT256]), kind: 'approve_erc20' });
@@ -374,10 +384,11 @@ class Executor {
       try {
         const d = IF_PERMIT2.decodeFunctionResult('allowance', a2);
         need = BigInt(d[0]) < MAX_UINT160 / 2n || BigInt(d[1]) < BigInt(Math.floor(Date.now() / 1000) + 86400);
+        permit2ExpiryMs = Number(d[1]) * 1000;
       } catch { need = true; }
     }
     if (need) txs.push({ to: this.chain.ADDR.permit2, data: IF_PERMIT2.encodeFunctionData('approve', [token, this.chain.ADDR.universalRouter, MAX_UINT160, MAX_UINT48]), kind: 'approve_permit2' });
-    if (!txs.length) this.approved.add(key);
+    if (!txs.length) this.approved.set(key, permit2ExpiryMs - 3600_000);
     return txs;
   }
 
