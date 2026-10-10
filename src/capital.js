@@ -132,12 +132,18 @@ class Capital {
     const saved = this.store.getState(bKey);
     if (saved) return JSON.parse(saved);
     const first = this.store.get('SELECT MIN(ts) ts FROM equity WHERE chain=?', this.chain.network)?.ts;
-    const ts = first || Date.now();
-    const block = await this.blockAt(ts);
+    // Without an archive endpoint (Ethereum: public nodes prune old state) the start-of-recording
+    // block cannot be read. Baseline at the current head instead; anything that moved
+    // the wallet before that is not recoverable there anyway.
+    const archive = !!this.rpc.hasArchive?.();
+    const ts = archive ? (first || Date.now()) : Date.now();
+    const block = archive ? await this.blockAt(ts) : (await this.rpc.blockNumber()) - 5;
+    const callAt = (to, d) => (archive ? this.rpc.callAt(to, d, block)
+      : this.rpc.call('eth_call', [{ to, data: d }, hex(block)]));
     const IF = new ethers.Interface(['function balanceOf(address) view returns (uint256)']);
     const data = IF.encodeFunctionData('balanceOf', [wallet]);
     const [usdgW, wethW, ethRaw] = await Promise.all([
-      this.rpc.callAt(this.chain.ADDR.usdg, data, block), this.rpc.callAt(this.chain.ADDR.weth, data, block),
+      callAt(this.chain.ADDR.usdg, data), callAt(this.chain.ADDR.weth, data),
       this.balanceAt(wallet, block),
     ]);
     const usdg = Number(BigInt(usdgW && usdgW !== '0x' ? usdgW : 0)) / 10 ** (this.ASSETS[this.chain.ADDR.usdg]?.decimals ?? 6);

@@ -35,7 +35,7 @@ const TRANSFER = ethers.id('Transfer(address,address,uint256)');
 // `logs`: token transfers; `eth`: ETH balance per block (a block without an entry = the previous
 // block's balance); `ourBlocks`: blocks where the bot's txs landed; `blockTxs`: block contents (wallet
 // txs that are not bot txs) — without it, the leftover difference is treated as an internal transfer.
-function world({ logs = [], senders = {}, code = {}, eth = {}, ourBlocks = {}, blockTxs = {}, batchEth = null, flatEquity = false } = {}) {
+function world({ archive = true, logs = [], senders = {}, code = {}, eth = {}, ourBlocks = {}, blockTxs = {}, batchEth = null, flatEquity = false } = {}) {
   const store = new Store(':memory:');
   store.run("INSERT INTO txs(hash,ts,kind,status) VALUES('0xown',1,'burn','sukses')");
   for (const [h, b] of Object.entries(ourBlocks)) store.run("INSERT INTO txs(hash,ts,kind,status) VALUES(?,?,'mint','sukses')", h, b * 1000 * 1000);
@@ -55,17 +55,18 @@ function world({ logs = [], senders = {}, code = {}, eth = {}, ourBlocks = {}, b
     if (method === 'eth_getTransactionReceipt') return ourBlocks[params[0]] ? { blockNumber: hex(ourBlocks[params[0]]) } : null;
     if (method === 'eth_getCode') return code[params[0]] ? '0x6080' : '0x';
     if (method === 'eth_getBalance') return hex(balAt(parseInt(params[1], 16)));
+    if (method === 'eth_call') return word(params[0].to === ADDR.usdg ? 12_000_000 : 0);
     throw new Error('rpc ' + method);
   };
   // `batchEth`: balance override that only the batched reads see (an archive node answering inconsistently).
   const rpc = {
     blockNumber: async () => 2005,
-    hasArchive: () => true,
+    hasArchive: () => archive,
     call: one,
     batch: async (calls) => Promise.all(calls.map(async (c) => { try {
       if (batchEth && c.method === 'eth_getBalance') return { result: hex(batchEth(parseInt(c.params[1], 16), balAt(parseInt(c.params[1], 16)))) };
       return { result: await one(c.method, c.params) }; } catch (e) { return { error: { message: e.message } }; } })),
-    callAt: async (to) => word(to === ADDR.usdg ? 12_000_000 : 0),
+    callAt: async (to) => { if (!archive) throw new Error('tidak ada endpoint arsip terdaftar'); return word(to === ADDR.usdg ? 12_000_000 : 0); },
     getLogs: async (f) => logs.filter((l) => f.address.includes(l.address) && (f.topics[1] == null || l.topics[1] === f.topics[1]) && (f.topics[2] == null || l.topics[2] === f.topics[2])
       && parseInt(l.blockNumber, 16) >= parseInt(f.fromBlock, 16) && parseInt(l.blockNumber, 16) <= parseInt(f.toBlock, 16)),
   };
@@ -89,6 +90,13 @@ const tr = ({ dir, asset = ADDR.usdg, value, block = 1500, hash, cp = EOA }) => 
     near(b.cashUsd, 12 + 0.002 * 2500, 'kas awal');
     near(b.positionsUsd, 12.46, 'hanya posisi yang sudah terbuka saat itu');
     near(d.cap.capitalAt(), b.usd, 'modal = baseline tanpa setoran');
+  });
+
+  await t('baseline without an archive endpoint: taken at the current head, no old-state reads', async () => {
+    const d = world({ archive: false });
+    const b = await d.cap.baseline(W);
+    assert.strictEqual(b.block, 2000);
+    near(b.cashUsd, 12 + 0.002 * 2500, 'starting cash');
   });
 
   await t('plain ETH deposit = the balance difference not explained by bot txs; own swap results & bot txs are skipped', async () => {
