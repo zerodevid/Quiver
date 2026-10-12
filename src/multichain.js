@@ -119,6 +119,9 @@ const CHAIN_DEFAULTS = {
     endpoints: [EP('https://ethereum-rpc.publicnode.com', { max_log_blocks: 5000, catatan: 'publicnode: getLogs 5000 blok, hanya riwayat terbaru' })],
     gas: { price_multiplier: 1.2, priority_wei: 1_000_000_000, max_gas_limit: 4_000_000, native_reserve_wei: 10_000_000_000_000_000, max_fee_gwei: 60, topup_max_usd: 25 },
     ethUsd: 2570,
+    // publicnode serves getLogs only ~1.5 days back (probed 2026-10-10: 10000 blocks ok, ~14000 refused);
+    // the default 2-day scan windows ended in "Archive requests require a personal token".
+    historyBlocks: 7200,
   },
   base: {
     endpoints: [
@@ -165,7 +168,7 @@ function uniswapTemplate(key) {
   const d = CHAIN_DEFAULTS[key];
   const { label, blockMs, nativeSymbol } = build(key);
   const span = Math.max(50, Math.min(4500, Math.round(1_200_000 / blockMs)));
-  const twoDays = Math.min(300_000, Math.round(172_800_000 / blockMs));
+  const twoDays = Math.min(300_000, Math.round(172_800_000 / blockMs), d.historyBlocks ?? Infinity);
   return {
     enabled: false,
     chain: { endpoints: d.endpoints.map((e) => ({ ...e })), max_inflight: 3, dns_over_https: false },
