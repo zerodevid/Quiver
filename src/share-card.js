@@ -551,4 +551,4 @@ function caption(kind, data, lang) {
   });
 }
 
-module.exports = { svgOf, renderPng, render, caption, sizeKey, themeKey, SIZES, THEMES, W: SIZES.wide.W, H: SIZES.wide.H, SCALE };
+module.exports = { svgOf, renderPng, render, caption, venueName, sizeKey, themeKey, SIZES, THEMES, W: SIZES.wide.W, H: SIZES.wide.H, SCALE };
