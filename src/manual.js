@@ -15,7 +15,7 @@ const { ensureChain } = require('./networks');
 const { ethers } = require('ethers');
 const m = require('./v3math');
 const { TOPIC } = require('./chain');
-const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd } = require('./policy');
+const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd, hookBlocked } = require('./policy');
 
 const isNative = (t) => /^0x0{40}$/.test(String(t).toLowerCase());
 const lc = (t) => String(t || '').toLowerCase();
@@ -344,7 +344,7 @@ class Manual {
     if (p.quoteSide == null) return { error: `pasangan ${p.pair} tidak punya aset kuotasi yang dikenal (USDG/ETH/WETH)` };
 
     const rules = eng.rulesFrom(target);
-    if (p.hasHooks && !rules.filters.allow_hooks) {
+    if (p.hasHooks && hookBlocked(p.hooks, rules)) {
       return { error: `pool ini memakai hook ${String(p.hooks).slice(0, 10)}… — hook bisa mengunci penarikan. Nyalakan "Izinkan pool ber-hook" di Aturan kalau memang disengaja.` };
     }
     if (dynamicFeeVal(p.fee)) {

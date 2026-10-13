@@ -1559,7 +1559,7 @@ const EN = {
   'Umur maksimum (jam, 0=mati)': 'Maximum age (hours, 0=off)',
   'Saringan': 'Filters',
   'Izinkan pool v4 dengan hook': 'Allow v4 pools with hooks',
-  'Hook bisa memblokir penarikan — default: tolak': 'A hook can block withdrawals — default: refuse',
+  'Mati: hanya hook yang bisa mengunci/memotong penarikan yang ditolak, hook pajak swap tetap diikuti. Nyala: semua hook diizinkan': 'Off: only hooks that can lock or skim withdrawals are refused; swap-tax hooks are still followed. On: every hook is allowed',
   'Abaikan posisi target di bawah (USD)': 'Ignore target positions below (USD)',
   'Likuiditas pool minimum (USD)': 'Minimum pool liquidity (USD)',
   'Pool tipis sulit ditutup tanpa rugi; 0 = mati': 'Thin pools are hard to exit without a loss; 0 = off',

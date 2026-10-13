@@ -100,7 +100,7 @@
   "Satu kutipan per token per interval; dijual begitu ruginya di bawah batas. Terlalu rapat bisa kena batas laju agregator.": "The bot requests one quote per token per interval and sells when the loss is within the limit. Short intervals may trigger Kyber rate limits.",
   "🧲 Saringan": "🧲 Filters",
   "Izinkan pool ber-hook": "Allow pools with hooks",
-  "Hook bisa mengunci penarikan. Hati-hati.": "Hooks may restrict withdrawals. Review the hook before enabling this option.",
+  "Mati: hanya hook yang bisa mengunci penarikan yang ditolak (hook pajak swap tetap boleh). Nyala: semua hook boleh.": "Off: only hooks that can lock withdrawals are refused (swap-tax hooks are still allowed). On: every hook is allowed.",
   "Aset kuotasi yang boleh": "Allowed quote assets",
   "Contoh: USDG, ETH, WETH": "Example: USDG, ETH, WETH",
   "Daftar hitam token": "Blocked tokens",

@@ -12,6 +12,7 @@ const { Engine } = require('../src/engine');
 const { Store } = require('../src/db');
 const { ADDR } = require('../src/chain');
 const m = require('../src/v3math');
+const { riskyHookFlags, hookBlocked } = require('../src/policy');
 
 const USDG = ADDR.usdg, ETH = ADDR.native;
 const MEME = '0x7a492b0a2d630b94791af846c1842db9e623420c';
@@ -256,6 +257,30 @@ async function t(name, fn) {
     const v = verdictOf(store);
     assert.strictEqual(v.verdict, 'skip', v.reason);
     assert.match(v.reason, /hook/i, v.reason);
+  });
+
+  await t('pool with a swap-only hook is followed while allow_hooks is off', async () => {
+    const { eng, store } = harness({ balances: RICH });
+    // Real GENIE/ETH hook on Robinhood: beforeInitialize + swap callbacks, no liquidity callbacks.
+    const hook = '0xbffde2c00a6a1957a5d7c6425ecac8a8780e20cc';
+    await eng.handle(rec(store, action({ hooks: hook, poolKey: { currency0: USDG, currency1: MEME, fee: 3000, tickSpacing: 60, hooks: hook } })));
+    const v = verdictOf(store);
+    assert.strictEqual(v.verdict, 'copy', v.reason);
+  });
+
+  await t('hook flags: only liquidity-touching permissions are risky', () => {
+    assert.deepStrictEqual(riskyHookFlags('0xbffde2c00a6a1957a5d7c6425ecac8a8780e20cc'), []);
+    assert.deepStrictEqual(riskyHookFlags(ADDR.native), []);
+    assert.deepStrictEqual(riskyHookFlags(null), []);
+    assert.deepStrictEqual(riskyHookFlags('0x0000000000000000000000000000000000000200'), ['beforeRemoveLiquidity']);
+    assert.deepStrictEqual(riskyHookFlags('0x0000000000000000000000000000000000000100'), ['afterRemoveLiquidity']);
+    assert.deepStrictEqual(riskyHookFlags('0x0000000000000000000000000000000000000002'), ['afterAddLiquidityReturnsDelta']);
+    assert.deepStrictEqual(riskyHookFlags('0x0000000000000000000000000000000000000001'), ['afterRemoveLiquidityReturnsDelta']);
+    // beforeAddLiquidity / afterAddLiquidity can only revert our own add — no money at risk
+    assert.deepStrictEqual(riskyHookFlags('0x0000000000000000000000000000000000000c00'), []);
+    const rules = { filters: { allow_hooks: false } };
+    assert.strictEqual(hookBlocked('0x0000000000000000000000000000000000000200', rules), true);
+    assert.strictEqual(hookBlocked('0x0000000000000000000000000000000000000200', { filters: { allow_hooks: true } }), false);
   });
 
   await t('the open position count limit is respected', async () => {

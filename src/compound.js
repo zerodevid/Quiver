@@ -3,7 +3,7 @@ const { ethers } = require('ethers');
 const { ABI } = require('./chain');
 const { ensureChain } = require('./networks');
 const { unclaimedV4, unclaimedV3 } = require('./fees');
-const { quoteToUsd } = require('./policy');
+const { quoteToUsd, hookBlocked } = require('./policy');
 const m = require('./v3math');
 const IF_POSM = new ethers.Interface(ABI.posmV4);
 const IF_NPM = new ethers.Interface(ABI.npmV3);
@@ -104,7 +104,7 @@ class Compound {
         tickUpper: pos.tick_upper, tokenId: pos.token_id }], new Map([[pos.pool_ref, slot.tick]]), e.rpc))[0];
     if (!fees) throw new Error('fee posisi belum terbaca');
     const rules = e.rulesFrom(pos.target);
-    if (pos.hooks && !/^0x0+$/i.test(pos.hooks) && !rules.filters.allow_hooks) return { skip: 'pool ber-hook belum diizinkan' };
+    if (hookBlocked(pos.hooks, rules)) return { skip: 'pool ber-hook belum diizinkan' };
     const slip = Number(rules.swap.max_slippage_bps);
     if (!Number.isInteger(slip) || slip < 0 || slip >= 10000) throw new Error('slippage tidak valid untuk compound');
     const usable = (n) => { const v = n * BigInt(10000 - slip) / 10000n; return v > 2n ? v - 2n : 0n; };

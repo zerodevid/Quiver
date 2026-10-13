@@ -13,6 +13,30 @@ const KNOWN_VENUES = ['v4', ...new Set(Object.values(NETWORKS).flatMap((n) => n.
 // (updated every 30 seconds). Measured ~0.05% in normal conditions; 1% for a moving market.
 const BRIDGE_MARGIN_BPS = 100;
 
+// Uniswap v4 encodes a hook's permissions in the low 14 bits of its address, and the
+// PoolManager only calls a hook for the callbacks those bits enable — the hook's code
+// cannot widen them. A hook can only trap or skim LP money through the remove-liquidity
+// callbacks or a delta returned after adding/removing, so those are the bits we refuse.
+// Swap-only hooks (taxes, anti-snipe, dynamic fees) cannot touch a withdrawal.
+const HOOK_FLAGS = {
+  beforeRemoveLiquidity: 1 << 9,
+  afterRemoveLiquidity: 1 << 8,
+  afterAddLiquidityReturnsDelta: 1 << 1,
+  afterRemoveLiquidityReturnsDelta: 1 << 0,
+};
+
+const hasHook = (hooks) => !!(hooks && !/^0x0+$/i.test(hooks));
+
+// Names of the LP-touching permissions a hook address carries ([] = safe for LPs).
+function riskyHookFlags(hooks) {
+  if (!hasHook(hooks)) return [];
+  const bits = Number(BigInt(hooks) & 0x3fffn);
+  return Object.entries(HOOK_FLAGS).filter(([, b]) => bits & b).map(([name]) => name);
+}
+
+// Whether a pool's hook blocks an entry under these rules. allow_hooks = allow every hook.
+const hookBlocked = (hooks, rules) => !rules.filters.allow_hooks && riskyHookFlags(hooks).length > 0;
+
 const DEFAULTS = {
   sizing: {
     mode: 'pct',              // mirror | pct | multiplier | fixed_quote | equity
@@ -330,7 +354,7 @@ function planEntry(act, ctx) {
 
   if (!slot0) return skip('state pool tidak terbaca');
   if (!rules.filters.venues.includes(act.venue)) return skip(`venue ${act.venue} dimatikan`);
-  if (act.venue === 'v4' && act.hooks && !/^0x0+$/.test(act.hooks) && !rules.filters.allow_hooks) {
+  if (act.venue === 'v4' && hookBlocked(act.hooks, rules)) {
     return skip(`pool memakai hook ${act.hooks.slice(0, 10)}… (hook bisa mengunci penarikan)`);
   }
   if (act.fee != null && act.fee > rules.filters.max_fee_bps) return skip(`fee tier ${act.fee} di atas batas`);
@@ -521,4 +545,4 @@ function planExit(act, ourPos, ctx) {
   };
 }
 
-module.exports = { DEFAULTS, RULE_SPEC, equitySizing, validateRules, normalizeRules, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };
+module.exports = { DEFAULTS, HOOK_FLAGS, riskyHookFlags, hookBlocked, RULE_SPEC, equitySizing, validateRules, normalizeRules, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };
