@@ -450,6 +450,23 @@ function pickMime() {
     .find((x) => MediaRecorder.isTypeSupported(x)) || null;
 }
 
+// MediaRecorder writes a fragmented MP4 (or a WebM) with no duration in its headers, which
+// phone players show as 00:00 and cannot seek. Remux the same encoded frames, no
+// re-encoding, into a regular file with the duration and index at the front. Falls back to
+// the raw recording if the remux fails.
+async function remux(blob) {
+  try {
+    const { Input, Output, Conversion, BlobSource, BufferTarget, Mp4OutputFormat, WebMOutputFormat, ALL_FORMATS } = await import('mediabunny');
+    const mp4 = blob.type.includes('mp4');
+    const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+    const output = new Output({ format: mp4 ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat(), target: new BufferTarget() });
+    const conv = await Conversion.init({ input, output });
+    if (conv.discardedTracks.length) return blob;
+    await conv.execute();
+    return new Blob([output.target.buffer], { type: blob.type });
+  } catch { return blob; }
+}
+
 function iconSrc(addr) {
   const a = canonAddr(addr);
   return KNOWN[a] || (isAddr(a) && !/^0x0+$/.test(a) ? `/api/icon?a=${a}` : null);
@@ -543,7 +560,8 @@ export default function ShareReplay({ id, hide, name }) {
   const make = async () => {
     setRec(0);
     try {
-      const blob = await record();
+      const raw = await record();
+      const blob = await remux(raw);
       setVideo({ blob, ext: blob.type.includes('mp4') ? 'mp4' : 'webm', url: URL.createObjectURL(blob) });
     } catch (e) {
       toast.danger(t('Video gagal direkam'), { description: String(e?.message || e) });
