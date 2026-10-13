@@ -323,7 +323,7 @@ const answer = (extra = {}) => ({
       assert.equal((await get('/api/setup/state', 'salah123')).status, 401);
       const st = await (await get('/api/setup/state', code)).json();
       assert.equal(st.ok, true);
-      assert.equal(st.chains.length, 3);
+      assert.equal(st.chains.length, Object.keys(require('../src/networks').NETWORKS).length);
       assert.ok(st.chains.find((c) => c.key === 'solana' && c.kind === 'solana' && c.endpoints.length > 0), 'Solana offered with its default endpoints');
       assert.ok(st.suggestToken.length >= 20);
       assert.ok(st.chains[0].endpoints.length > 0);

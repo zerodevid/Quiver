@@ -1,8 +1,8 @@
-import { chainInfo, isSolana } from '../chain';
+import { chainInfo, isSolana, CHAIN_ICON } from '../chain';
 import { isSolanaKeystore, openSolanaKeystore } from '../solKeystore';
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Chip, Checkbox, Separator, Tabs, toast } from '@heroui/react';
-import { Pencil, Activity as Pulse, Trash2, KeyRound, Unlock, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck, ShieldAlert, ChartCandlestick, Coins, RefreshCw, DatabaseBackup, Download, ArchiveRestore, Shuffle, Trophy } from 'lucide-react';
+import { Pencil, Activity as Pulse, Trash2, KeyRound, Unlock, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck, ShieldAlert, ChartCandlestick, Coins, RefreshCw, DatabaseBackup, Download, ArchiveRestore, Shuffle, Trophy, Link2 } from 'lucide-react';
 import { Wallet as EthersWallet } from 'ethers';
 import SettingInfo from '../components/SettingInfo';
 import { get, post } from '../api';
@@ -18,6 +18,7 @@ const amt = (v, d = 4) => (v == null ? '—' : Number(v).toLocaleString(fmtLocal
 const SETTINGS_NAV = [
   ['wallet', 'Wallet & mode', 'Dana dan mode transaksi', Wallet],
   ['risk', 'Drawdown harian', 'Jeda otomatis kalau rugi kebablasan', ShieldAlert],
+  ['chains', 'Chain', 'Jaringan mana yang dijalankan bot', Link2],
   ['rpc', 'RPC', 'Koneksi ke jaringan', Network],
   ['gas', 'Gas', 'Biaya dan cadangan transaksi', Fuel],
   ['notify', 'Notifikasi', 'Kabar ke ponsel lewat ntfy', Bell],
@@ -73,6 +74,57 @@ function SimBox({ sim, act, busy }) {
         </dl>
       )}
     </div>
+  );
+}
+
+// ---------------- chains ----------------
+// Every network the bot knows, with an on/off switch. Switching takes effect right away: a chain
+// that is switched on warms up in the background (shown as "Menyiapkan…" until its first sync is done).
+function ChainsTab({ d, setD }) {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState('');
+  const list = d.chains || [];
+  const preparing = list.some((c) => c.enabled && !c.ready);
+  // While a chain is warming up, refresh the list so the status flips to "Berjalan" by itself.
+  useEffect(() => {
+    if (!preparing) return undefined;
+    const id = setInterval(async () => {
+      try { const r = await get('/api/settings/chains'); if (r.chains) setD((prev) => ({ ...prev, chains: r.chains })); } catch { /* next tick */ }
+    }, 3000);
+    return () => clearInterval(id);
+  }, [preparing, setD]);
+  const flip = async (c, enabled) => {
+    setBusy(c.key);
+    const r = await post('/api/settings/chains', { key: c.key, enabled });
+    setBusy('');
+    say(r, enabled ? 'Chain dinyalakan' : 'Chain dimatikan');
+    if (!r.error) setD((prev) => ({ ...prev, chains: r.chains }));
+  };
+  return (
+    <Section title="Chain yang dijalankan" desc="Nyalakan chain yang mau dipakai. Wallet-nya sama untuk semua chain, dan perubahannya langsung berlaku tanpa perlu menyalakan ulang bot. Chain baru mulai dalam mode simulasi tanpa target, jadi aman dicoba dulu. Setiap chain yang aktif menambah pemakaian memori dan koneksi RPC.">
+      <div className="flex flex-col divide-y divide-border">
+        {list.map((c) => (
+          <div key={c.key} className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
+            <img src={CHAIN_ICON[c.key] || '/favicon.svg'} alt="" width="32" height="32" className="size-8 shrink-0 rounded-full" />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium">{c.label}</span>
+                {c.chainId != null && <Chip size="sm" variant="soft">{t('id {n}', { n: c.chainId })}</Chip>}
+                <Chip size="sm" variant="soft">{c.nativeSymbol}</Chip>
+                {c.enabled && c.running && c.ready && <Chip size="sm" variant="soft" color="success">{t('Berjalan')}</Chip>}
+                {c.enabled && !c.ready && <Chip size="sm" variant="soft" color="warning">{t('Menyiapkan…')}</Chip>}
+                {c.primary && <Chip size="sm" variant="soft">{t('Chain utama')}</Chip>}
+              </div>
+              <div className="mt-0.5 text-xs text-muted">
+                {c.venues.map((v) => ({ v3: 'Uniswap v3', v4: 'Uniswap v4', pancakev3: 'PancakeSwap v3', meteora: 'Meteora DLMM', orca: 'Orca', raydium: 'Raydium' }[v] || v)).join(' · ')}
+                {' · '}{c.stable}{' · '}{t('{n} target', { n: c.targets })}{' · '}{t(c.dryRun ? 'simulasi' : 'LIVE')}{' · '}{t('{n} RPC', { n: c.endpoints })}
+              </div>
+            </div>
+            <Toggle label={c.enabled ? 'Nyala' : 'Mati'} value={c.enabled} isDisabled={busy === c.key || c.primary} onChange={(v) => flip(c, v)} />
+          </div>
+        ))}
+      </div>
+    </Section>
   );
 }
 
@@ -1136,6 +1188,7 @@ export default function Settings() {
               <div className="min-w-0 flex-1">
                 <Tabs.Panel id="wallet"><WalletTab d={d} reload={load} /></Tabs.Panel>
                 <Tabs.Panel id="risk"><RiskTab d={d} setD={setD} /></Tabs.Panel>
+                <Tabs.Panel id="chains"><ChainsTab d={d} setD={setD} /></Tabs.Panel>
                 <Tabs.Panel id="rpc"><RpcTab d={d} setD={setD} /></Tabs.Panel>
                 <Tabs.Panel id="gas" shouldForceMount className="data-[inert]:hidden">
                   <SimpleForm title="Gas" desc="Berlaku untuk transaksi berikutnya, tanpa restart." url="/api/settings/gas" okText="Pengaturan gas tersimpan"

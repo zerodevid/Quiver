@@ -1,4 +1,4 @@
-import { chainInfo, ETHERSCAN } from './chain';
+import { chainInfo, ETHERSCAN, EXPLORER_NAME } from './chain';
 import { getLocale, translate as t } from './i18n';
 import { isHidden, MASK } from './privacy';
 
@@ -34,12 +34,13 @@ export const short = (a) => (a ? a.slice(0, 6) + '…' + a.slice(-4) : '—');
 export const txHref = (hash) => (hash ? `${chainInfo().explorer}/tx/${hash}` : null);
 // Solscan calls the address page /account/, EVM explorers /address/.
 export const addrHref = (a) => (a ? `${chainInfo().explorer}/${chainInfo().kind === 'solana' ? 'account' : 'address'}/${a}` : null);
+const LPAGENT_CHAIN = { bsc: 'BSC', ethereum: 'ETH', base: 'BASE', arbitrum: 'ARBITRUM', optimism: 'OPTIMISM', polygon: 'POLYGON', avalanche: 'AVALANCHE' };
 // A wallet's LP portfolio on LPAgent — an external reference for our research figures.
 // LPAgent is originally a Solana (Meteora) LP analytics tool: no chain parameter = Solana.
 export const lpagentHref = (a) => (!a ? null : chainInfo().kind === 'solana' ? `https://app.lpagent.io/portfolio?address=${a}`
-  : `https://app.lpagent.io/portfolio?address=${a}&chain=${chainInfo().key === 'bsc' ? 'BSC' : 'ROBINHOOD'}`);
+  : `https://app.lpagent.io/portfolio?address=${a}&chain=${LPAGENT_CHAIN[chainInfo().key] || 'ROBINHOOD'}`);
 // This chain's block explorer name for link labels (Solscan / BscScan / Blockscout).
-export const explorerName = () => { const e = chainInfo().explorer || ''; return /solscan/.test(e) ? 'Solscan' : /bscscan/.test(e) ? 'BscScan' : 'Blockscout'; };
+export const explorerName = () => { if (EXPLORER_NAME[chainInfo().key]) return EXPLORER_NAME[chainInfo().key]; const e = chainInfo().explorer || ''; return /solscan/.test(e) ? 'Solscan' : /bscscan/.test(e) ? 'BscScan' : 'Blockscout'; };
 // A wallet's holdings across chains on DeBank: tokens, DeFi positions, and their value on all chains
 // at once — what cannot be seen from this dashboard (one chain at a time).
 // DeBank is EVM-only: on Solana the link is not shown.

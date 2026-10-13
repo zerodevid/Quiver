@@ -1,5 +1,6 @@
 'use strict';
-const { ensureChain } = require('./networks');
+const { ensureChain, NETWORKS, build, isSolana } = require('./networks');
+const { enabledChains, chainTemplate } = require('./multichain');
 // Settings page routes: the bot wallet, RPC endpoints (including ones using an API key),
 // gas, notifications, engine, and the dashboard access token.
 //
@@ -125,12 +126,30 @@ async function probeRpc({ url, headers }, chain) {
 // the key must reset each engine's wallet). `chain` = the chain profile of this view.
 // `restart`: called after a config/database restore. Defaults to the orderly-stop path
 // of index.js (SIGINT) — pm2/systemd starts it again and boot swaps the files.
-function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market = null, fx = null,
+function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = null, chainControl = null, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market = null, fx = null,
   restart = () => process.kill(process.pid, 'SIGINT') }) {
   chain = ensureChain(chain || engine?.chain);
+  // Live list: chains can be switched on and off while the bot runs.
+  const liveEngines = () => (nets ? Object.values(nets).map((n) => n.engine).filter(Boolean) : enginesInit);
   // Via writeCfg: values from .env must not get written to config.json.
   const saveCfg = () => writeCfg(cfgPath, cfg);
-  const resetWallets = () => { for (const e of engines) e.exec.resetWallet(); };
+  // Every known network with its on/off switch. `running` = an engine exists in this process,
+  // `ready` = it finished warming up (first sync done).
+  const chainsView = () => {
+    return Object.keys(NETWORKS).map((key) => {
+      const p = build(key);
+      const block = cfg.chains?.[key];
+      return {
+        key, label: p.label, chainId: p.chainId, nativeSymbol: p.nativeSymbol,
+        stable: p.QUOTES[p.ADDR.usdg]?.symbol, venues: [...(isSolana(key) ? [] : ['v4']), ...p.venues.map((v) => v.key)],  // v4 is scanned on every EVM chain
+        enabled: !!block && block.enabled !== false, running: !!nets?.[key] || liveEngines().some((e) => e?.chain?.network === key),
+        ready: nets ? !!nets[key]?.ready : true, primary: !!chainControl && chainControl.primaryKey === key,
+        endpoints: (block?.chain?.endpoints || []).length, dryRun: block?.mode?.dry_run !== false,
+        targets: (block?.targets || []).length, current: key === chain.network,
+      };
+    });
+  };
+  const resetWallets = () => { for (const e of liveEngines()) e.exec.resetWallet(); };
   // Fields governed by .env would be overwritten again on restart — changing them from the dashboard
   // would just mislead, so it is refused with a hint of where to change them.
   const lockedByEnv = (dotted) => {
@@ -154,8 +173,8 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
   };
   // The EVM and Solana engines of this process (either may be absent): a backup carries
   // whichever keys are installed, a restore writes each to its own key file.
-  const evmEngine = () => engines.find((e) => e.chain?.kind !== 'solana') || null;
-  const solEngine = () => engines.find((e) => e.chain?.kind === 'solana') || null;
+  const evmEngine = () => liveEngines().find((e) => e.chain?.kind !== 'solana') || null;
+  const solEngine = () => liveEngines().find((e) => e.chain?.kind === 'solana') || null;
   const writeKey = (pk) => {
     const p = exec.keyPath();
     fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
@@ -195,7 +214,7 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
     req.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); } catch { reject(new Error('Berkas cadangan bukan JSON yang valid.')); } });
     req.on('error', reject);
   }));
-  const busyNow = () => (engines.some((e) => (e.activeEntries || 0) > 0 || e.exiting?.size > 0 || e.selling?.size > 0 || e.compound?.running)
+  const busyNow = () => (liveEngines().some((e) => (e.activeEntries || 0) > 0 || e.exiting?.size > 0 || e.selling?.size > 0 || e.compound?.running)
     ? { error: 'Bot sedang memproses transaksi (masuk/keluar/jual sisa) — tunggu sampai selesai, lalu coba lagi.' } : null);
 
   // ---- swap aggregators (swaprouter.js) ----
@@ -225,8 +244,8 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
   // Quote caches and rate-limit cooldowns belong to the old settings: drop them in every
   // chain's router so a new key or switch takes effect on the next swap.
   const resetAggregators = () => {
-    for (const e of engines) e.chain?.router?.setConfig?.(cfg);
-    for (const e of engines) for (const a of e.kyber?.adapters || []) { a.cache?.clear?.(); if ('cooldownUntil' in a) a.cooldownUntil = 0; a.warned?.clear?.(); }
+    for (const e of liveEngines()) e.chain?.router?.setConfig?.(cfg);
+    for (const e of liveEngines()) for (const a of e.kyber?.adapters || []) { a.cache?.clear?.(); if ('cooldownUntil' in a) a.cooldownUntil = 0; a.warned?.clear?.(); }
   };
 
   // Solana: every aggregator quotes `usd` worth of USDC → SOL (prices from Jupiter).
@@ -376,6 +395,7 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
           max_fee_gwei: cfg.gas?.max_fee_gwei ?? 10,
           reserve_eth: (cfg.gas?.native_reserve_wei ?? 2e15) / 1e18,
         },
+        chains: chainsView(),
         notify: { ntfy_topic: cfg.notify?.ntfy_topic || '', fromEnv: envName(cfg, 'notify.ntfy_topic') },
         authFromEnv: envName(cfg, 'server.auth_token'),
         telegram: tgView(),
@@ -493,7 +513,7 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
           parts, cfgPath, db: store.db, dbPath, wallet, solanaKeypair, password: String(b.password || ''),
           meta: {
             instance: path.basename(path.dirname(path.resolve(cfgPath))),
-            chains: engines.map((e) => e.chain?.network).filter(Boolean),
+            chains: liveEngines().map((e) => e.chain?.network).filter(Boolean),
             address: evmEngine()?.exec.address() || null,
             solanaAddress: solEngine()?.exec.address() || null,
           },
@@ -515,7 +535,7 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
       const inFile = (k) => (k === 'wallet' ? !!(backup.parts.wallet || backup.parts.solanaWallet) : !!backup.parts[k]);
       for (const k of Object.keys(parts)) if (parts[k] && !inFile(k)) return { error: `Berkas cadangan tidak berisi bagian ${k}.` };
       if (!parts.config && !parts.db && !parts.wallet) return { error: 'Pilih minimal satu bagian untuk dipulihkan.' };
-      if (engines.some((e) => !e.dryRun())) return { error: 'Matikan mode LIVE dulu sebelum memulihkan cadangan.' };
+      if (liveEngines().some((e) => !e.dryRun())) return { error: 'Matikan mode LIVE dulu sebelum memulihkan cadangan.' };
       const busy = busyNow(); if (busy) return busy;
       const dbPath = cfg.db?.path;
       if (parts.db && !dbPath) return { error: 'Lokasi basis data tidak diketahui.' };
@@ -557,7 +577,7 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
           solanaRes = addr === cur ? { address: cur, unchanged: true } : { address: addr, backup: putKey(p, (require('bs58').default || require('bs58')).encode(kp.secretKey)) };
         }
         resetWallets();
-        for (const e of engines) { const a = e.exec.address(); if (a) store.setState(e.chain?.kind === 'solana' ? `wallet_address:${e.chain.network}` : 'wallet_address', a); }
+        for (const e of liveEngines()) { const a = e.exec.address(); if (a) store.setState(e.chain?.kind === 'solana' ? `wallet_address:${e.chain.network}` : 'wallet_address', a); }
       }
       let staged = [];
       try { staged = await stageRestore({ backup, parts, cfgPath, dbPath }); }
@@ -824,6 +844,35 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
         return { ok: true, candles: n, summary: n ? `API key diterima — ${n} lilin ${chain.wethSymbol} diterima dari GMGN` : 'API key diterima, tetapi GMGN tidak mengembalikan lilin untuk chain ini' };
       } catch (e) { return { error: e.message }; }
     },
+    'GET /api/settings/chains': async () => ({ chains: chainsView() }),
+    // Switch a chain on or off. With a chainControl (the running bot) it takes effect right away:
+    // switching on builds the engine and warms it up in the background, switching off waits for
+    // in-flight work. Without one (tests, CLI) it is saved and applies on the next start.
+    'POST /api/settings/chains': async (req) => {
+      const b = await readBody(req);
+      const key = String(b.key || '');
+      if (!NETWORKS[key]) return { error: 'Chain tidak dikenal' };
+      const want = !!b.enabled;
+      const was = cfg.chains[key]?.enabled !== false && !!cfg.chains[key];
+      if (want) {
+        if (!cfg.chains[key]) cfg.chains[key] = chainTemplate(key) || {};
+        if (!(cfg.chains[key].chain?.endpoints || []).length) return { error: `${build(key).label}: belum ada endpoint RPC` };
+      } else if (cfg.chains[key]) {
+        if (enabledChains(cfg).filter((k) => k !== key).length === 0) return { error: 'Minimal satu chain harus tetap aktif' };
+      }
+      if (!want && chainControl) {
+        const r = await chainControl.stop(key);
+        if (r.error) return r;
+      }
+      if (cfg.chains[key]) cfg.chains[key].enabled = want;
+      saveCfg();
+      if (want && chainControl) {
+        const r = await chainControl.start(key);
+        if (r.error) { cfg.chains[key].enabled = was; saveCfg(); return r; }
+      }
+      log(`chain ${key}: ${want ? 'dinyalakan' : 'dimatikan'} dari Pengaturan${chainControl ? '' : ' (berlaku setelah restart)'}`);
+      return { ok: true, restartNeeded: !chainControl, chains: chainsView() };
+    },
     'POST /api/settings/loop': async (req) => {
       const b = await readBody(req);
       try {
@@ -833,7 +882,7 @@ function createSettingsRoutes({ engine, engines = [engine], store, cfg, cfgPath,
           max_block_span: Math.round(num(b.max_block_span, 100, 3000, 'Rentang blok per pindai')),
           sync_seconds: Math.round(num(b.sync_seconds, 10, 600, 'Interval sinkron posisi')),
         };
-        cfg.prices = { ...(cfg.prices || {}), eth_usd: num(b.eth_usd, 100, 100_000, 'Harga ETH cadangan'), auto_eth_price: !!b.auto_eth_price };
+        cfg.prices = { ...(cfg.prices || {}), eth_usd: num(b.eth_usd, 0.0001, 1_000_000, 'Harga ETH cadangan'), auto_eth_price: !!b.auto_eth_price };
       } catch (e) { return { error: e.message }; }
       saveCfg();
       return { ok: true, restartNeeded: true };

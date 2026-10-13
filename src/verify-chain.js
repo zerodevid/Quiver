@@ -1,6 +1,6 @@
 'use strict';
 // Verify a chain profile (networks.js) directly against the chain:
-//   node src/verify-chain.js bsc [https://rpc-url]
+//   node src/verify-chain.js <chain> [https://rpc-url]
 // Checks that the chain id matches, every contract address has bytecode, and the relations
 // between contracts are consistent (NPM.factory() == the recorded factory, posmV4.poolManager() ==
 // PoolManager, quote asset symbol/decimals). Run before switching off dry_run on a
@@ -9,7 +9,7 @@ const { ethers } = require('ethers');
 const { RpcPool } = require('./rpc');
 const { build, NETWORKS } = require('./networks');
 const { ABI } = require('./chain');
-const { bscTemplate } = require('./multichain');
+const { chainTemplate } = require('./multichain');
 
 const IF_NPM = new ethers.Interface(ABI.npmV3);
 const IF_POSM = new ethers.Interface(ABI.posmV4);
@@ -68,7 +68,7 @@ async function verify(key, urls, log = console.log) {
 
 if (require.main === module) {
   const key = process.argv[2] || 'bsc';
-  const urls = process.argv[3] ? [process.argv[3]] : (key === 'bsc' ? bscTemplate().chain.endpoints.filter((e) => !e.no_logs).map((e) => e.url) : []);
+  const urls = process.argv[3] ? [process.argv[3]] : (chainTemplate(key)?.chain.endpoints.filter((e) => !e.no_logs).map((e) => e.url) || []);
   if (!urls.length) { console.error('pakai: node src/verify-chain.js <chain> <https://rpc-url>'); process.exit(1); }
   verify(key, urls).then((r) => process.exit(r.ok ? 0 : 2)).catch((e) => { console.error('gagal:', e.message); process.exit(1); });
 }

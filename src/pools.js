@@ -373,7 +373,7 @@ Chain.prototype.ethUsdFromV3Pools = async function ethUsdFromV3Pools(fallback, n
       // priceFromSqrt = token1 per token0. USD per native = token0 per token1 if token0 is the stablecoin.
       const p1per0 = m.priceFromSqrt(s.sqrtPriceX96, usdIs0 ? usdDec : natDec, usdIs0 ? natDec : usdDec);
       const price = usdIs0 ? 1 / p1per0 : p1per0;
-      if (Number.isFinite(price) && price > 1 && price < 1_000_000) cands.push({ p: { poolId: a }, s, L, price });
+      if (Number.isFinite(price) && price > 0.0001 && price < 1_000_000) cands.push({ p: { poolId: a }, s, L, price });
     });
     const pick = Chain.pickEthPrice(cands);
     if (!pick) return this._ethUsd ?? fallback;

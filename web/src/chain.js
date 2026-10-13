@@ -27,6 +27,12 @@ export const CHAIN_ICON = {
   robinhood: '/robinhood-chain.jpg',
   bsc: '/bnb-chain.png',
   solana: '/solana.svg',
+  ethereum: '/ethereum-chain.png',
+  base: '/base-chain.png',
+  arbitrum: '/arbitrum-chain.png',
+  optimism: '/optimism-chain.png',
+  polygon: '/polygon-chain.png',
+  avalanche: '/avalanche-chain.png',
 };
 // Name of this chain's block explorer — used as the wallet button label (fmt.js/ui.jsx),
 // because "Blockscout" and "BscScan" are better known than the host name.
@@ -34,6 +40,12 @@ export const EXPLORER_NAME = {
   robinhood: 'Blockscout',
   bsc: 'BscScan',
   solana: 'Solscan',
+  ethereum: 'Etherscan',
+  base: 'BaseScan',
+  arbitrum: 'Arbiscan',
+  optimism: 'Optimistic Etherscan',
+  polygon: 'PolygonScan',
+  avalanche: 'Snowtrace',
 };
 // This chain's Etherscan, if any — its tx/token index differs from Blockscout, so
 // the two are useful side by side. On BSC the explorer IS already BscScan (Etherscan family),
