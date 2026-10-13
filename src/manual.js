@@ -15,7 +15,7 @@ const { ensureChain } = require('./networks');
 const { ethers } = require('ethers');
 const m = require('./v3math');
 const { TOPIC } = require('./chain');
-const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd, hookBlocked } = require('./policy');
+const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd, hookBlocked, riskyHookFlags } = require('./policy');
 
 const isNative = (t) => /^0x0{40}$/.test(String(t).toLowerCase());
 const lc = (t) => String(t || '').toLowerCase();
@@ -345,7 +345,7 @@ class Manual {
 
     const rules = eng.rulesFrom(target);
     if (p.hasHooks && hookBlocked(p.hooks, rules)) {
-      return { error: `pool ini memakai hook ${String(p.hooks).slice(0, 10)}… — hook bisa mengunci penarikan. Nyalakan "Izinkan pool ber-hook" di Aturan kalau memang disengaja.` };
+      return { error: `pool ini memakai hook ${String(p.hooks).slice(0, 10)}… yang bisa menahan atau memotong penarikan (${riskyHookFlags(p.hooks).join(', ')}). Nyalakan "Izinkan semua hook" di Aturan kalau memang disengaja.` };
     }
     if (dynamicFeeVal(p.fee)) {
       return { error: `pool ini memakai fee dinamis (ditentukan hook-nya saat transaksi berjalan) — tidak bisa dinilai di muka` };

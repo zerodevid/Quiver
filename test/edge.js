@@ -257,6 +257,7 @@ async function t(name, fn) {
     const v = verdictOf(store);
     assert.strictEqual(v.verdict, 'skip', v.reason);
     assert.match(v.reason, /hook/i, v.reason);
+    assert.match(v.reason, /afterRemoveLiquidity/, 'the reason names the risky permission');
   });
 
   await t('pool with a swap-only hook is followed while allow_hooks is off', async () => {

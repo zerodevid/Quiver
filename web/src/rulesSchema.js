@@ -80,7 +80,7 @@ export const SCHEMA = [
       help: 'Satu kutipan per token per interval; swap hanya dikirim kalau ruginya sudah di bawah batas. Minimal 1 — terlalu rapat bisa kena batas laju agregator yang juga dipakai zap' },
   ] },
   { group: 'Saringan', icon: 'ti-filter', fields: [
-    { path: 'filters.allow_hooks', label: 'Izinkan pool v4 dengan hook', type: 'bool', help: 'Mati: hanya hook yang bisa mengunci/memotong penarikan yang ditolak, hook pajak swap tetap diikuti. Nyala: semua hook diizinkan' },
+    { path: 'filters.allow_hooks', label: 'Izinkan semua hook (termasuk yang berisiko)', type: 'bool', help: 'Mati (disarankan): pool dengan hook pajak swap atau anti-bot tetap diikuti; yang ditolak hanya hook yang bisa menahan atau memotong penarikan. Nyala: semua hook diikuti tanpa dicek.' },
     { path: 'filters.min_target_quote_usd', label: 'Abaikan posisi target di bawah (USD)', type: 'number', step: 5 },
     { path: 'filters.max_open_positions', label: 'Maksimum posisi terbuka', type: 'number', step: 1 },
     { path: 'filters.cooldown_seconds', label: 'Jeda antar salinan di pool sama (detik)', type: 'number', step: 5 },

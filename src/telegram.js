@@ -467,7 +467,7 @@ const RULE_GROUPS = [
   },
   {
     g: 'filters', title: '🧲 Saringan', fields: [
-      F.bool('allow_hooks', 'Izinkan pool ber-hook', { help: 'Mati: hanya hook yang bisa mengunci penarikan yang ditolak (hook pajak swap tetap boleh). Nyala: semua hook boleh.' }),
+      F.bool('allow_hooks', 'Izinkan semua hook', { help: 'Mati (disarankan): hook pajak swap tetap diikuti, hanya hook yang bisa menahan penarikan yang ditolak. Nyala: semua hook diikuti tanpa dicek.' }),
       F.list('quote_whitelist', 'Aset kuotasi yang boleh', { help: 'Contoh: USDG, ETH, WETH' }),
       F.list('token_blacklist', 'Daftar hitam token', { help: 'Alamat, dipisah koma. "-" untuk kosongkan.' }),
       F.list('token_whitelist', 'Daftar putih token', { help: 'Kalau diisi, HANYA token ini yang diikuti.' }),

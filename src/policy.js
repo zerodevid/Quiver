@@ -355,7 +355,7 @@ function planEntry(act, ctx) {
   if (!slot0) return skip('state pool tidak terbaca');
   if (!rules.filters.venues.includes(act.venue)) return skip(`venue ${act.venue} dimatikan`);
   if (act.venue === 'v4' && hookBlocked(act.hooks, rules)) {
-    return skip(`pool memakai hook ${act.hooks.slice(0, 10)}… (hook bisa mengunci penarikan)`);
+    return skip(`pool memakai hook ${act.hooks.slice(0, 10)}… (hook bisa menahan atau memotong penarikan: ${riskyHookFlags(act.hooks).join(', ')})`);
   }
   if (act.fee != null && act.fee > rules.filters.max_fee_bps) return skip(`fee tier ${act.fee} di atas batas`);
 

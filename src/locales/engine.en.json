@@ -13,6 +13,7 @@
   "di atas batas": "above the limit",
   "pool memakai hook": "pool uses hook",
   "(hook bisa mengunci penarikan)": "(a hook can lock withdrawals)",
+  "(hook bisa menahan atau memotong penarikan:": "(the hook can hold back or skim withdrawals:",
   "posisi satu sisi": "one-sided position",
   "dan aturannya lewati": "and the rule says skip",
   "dipotong oleh": "capped by",
