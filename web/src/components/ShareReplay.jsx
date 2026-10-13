@@ -362,13 +362,91 @@ export function drawFrame(ctx, m, img, sec, t, hide, coins) {
   ctx.restore();
 }
 
+// ---- sound -------------------------------------------------------------------------
+
+const SR = 44100;
+const note = (semi) => 220 * 2 ** (semi / 12);   // A3 and up
+
+// The soundtrack is synthesized once per clip into an AudioBuffer, from the same timeline
+// as the picture: a quiet pad, a pop and a clink per fee coin, a thump when the range opens and
+// a two-note close. The summary chime rises for a profit and falls for a loss. It is mixed
+// into the recording only; the preview stays silent.
+async function renderSound(m, coins) {
+  const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const oc = new Offline(2, Math.ceil(SR * TL.end), SR);
+  const master = oc.createGain();
+  master.gain.value = 0.8;
+  master.connect(oc.destination);
+
+  // One enveloped tone: linear attack, exponential decay.
+  const tone = (at, freq, { dur = 0.5, gain = 0.1, type = 'sine', attack = 0.01, to = null, out = master } = {}) => {
+    const o = oc.createOscillator(); const g = oc.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, at);
+    if (to) o.frequency.exponentialRampToValueAtTime(to, at + dur);
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.linearRampToValueAtTime(gain, at + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    o.connect(g); g.connect(out);
+    o.start(at); o.stop(at + dur + 0.05);
+  };
+
+  // Pad: a soft Am9 chord under the whole clip, faded in and out.
+  const lp = oc.createBiquadFilter();
+  lp.type = 'lowpass'; lp.frequency.value = 900;
+  const padGain = oc.createGain();
+  padGain.gain.setValueAtTime(0.0001, 0);
+  padGain.gain.linearRampToValueAtTime(0.05, 2);
+  padGain.gain.setValueAtTime(0.05, TL.outro);
+  padGain.gain.linearRampToValueAtTime(0.0001, TL.end);
+  lp.connect(padGain); padGain.connect(master);
+  [-12, -5, 0, 3, 7].forEach((semi, i) => {
+    [-3, 3].forEach((detune) => {
+      const o = oc.createOscillator();
+      o.type = 'triangle'; o.frequency.value = note(semi); o.detune.value = detune + i;
+      o.connect(lp); o.start(0); o.stop(TL.end);
+    });
+  });
+
+  // Range opens: low thump and a click.
+  tone(TL.open, 140, { dur: 0.45, gain: 0.22, to: 55 });
+  tone(TL.open, 1500, { dur: 0.06, gain: 0.05, type: 'triangle' });
+
+  // Fee coins: a soft pop when a coin leaves the line, and a bright two-partial clink when
+  // it lands in the fee counter (1.1 s later, as in chartScene). The clink climbs a
+  // pentatonic scale so the stream of coins sounds like a melody, not a machine gun.
+  const scale = [12, 14, 16, 19, 21, 24];
+  coins.forEach((c) => {
+    tone(c.s, 520, { dur: 0.09, gain: 0.05, to: 300 });
+    const f = note(scale[c.k % scale.length] + 12);
+    const land = c.s + 1.1;
+    tone(land, f, { dur: 0.28, gain: 0.07, attack: 0.003 });
+    tone(land, f * 2.76, { dur: 0.12, gain: 0.03, attack: 0.002 });
+  });
+
+  // Close: two soft notes.
+  tone(TL.close, note(7), { dur: 0.7, gain: 0.1 });
+  tone(TL.close + 0.12, note(0), { dur: 0.9, gain: 0.1 });
+
+  // Summary: rising arpeggio for a profit, falling pair for a loss.
+  const win = (m.pnl ?? 0) >= 0;
+  (win ? [0, 4, 7, 12, 16] : [7, 3, -2]).forEach((semi, i) => {
+    tone(TL.summary + 0.35 + i * 0.14, note(semi + 12), { dur: win ? 1.1 : 1.3, gain: 0.08, attack: 0.02 });
+  });
+
+  // Outro: one long note.
+  tone(TL.outro, note(0), { dur: 2.2, gain: 0.1, attack: 0.08 });
+  tone(TL.outro, note(7), { dur: 2.2, gain: 0.06, attack: 0.08 });
+
+  return oc.startRendering();
+}
+
 // ---- recording ---------------------------------------------------------------------
 
 // MP4 where the browser can (Safari, recent Chrome) — X and Telegram take it as is;
-// otherwise WebM.
+// otherwise WebM. The audio codec goes in the type so the recorder accepts the audio track.
 function pickMime() {
   if (typeof MediaRecorder === 'undefined') return null;
-  return ['video/mp4;codecs=avc1.640028', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']
+  return ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
     .find((x) => MediaRecorder.isTypeSupported(x)) || null;
 }
 
@@ -435,16 +513,32 @@ export default function ShareReplay({ id, hide, name }) {
   }, [m, coins, t, hide]);
 
   const mime = pickMime();
-  const record = () => new Promise((resolve, reject) => {
+  const record = async () => {
     const stream = canvas.current.captureStream(FPS);
+    let actx = null; let source = null;
+    try {
+      // Synthesized soundtrack as an extra audio track. If audio is not available the
+      // clip is recorded silent rather than failing.
+      const buffer = await renderSound(m, coins);
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      await actx.resume();
+      const dest = actx.createMediaStreamDestination();
+      source = actx.createBufferSource();
+      source.buffer = buffer; source.connect(dest);
+      dest.stream.getAudioTracks().forEach((x) => stream.addTrack(x));
+    } catch { source = null; }
+    return new Promise((resolve, reject) => recordStream(stream, source, actx, resolve, reject));
+  };
+  const recordStream = (stream, source, actx, resolve, reject) => {
     const mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
     const chunks = [];
     mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
     mr.onerror = (e) => reject(e.error || new Error('MediaRecorder'));
-    mr.onstop = () => { stream.getTracks().forEach((x) => x.stop()); resolve(new Blob(chunks, { type: mime.split(';')[0] })); };
+    mr.onstop = () => { stream.getTracks().forEach((x) => x.stop()); actx?.close?.(); resolve(new Blob(chunks, { type: mime.split(';')[0] })); };
     mr.start(500);
+    source?.start();
     clock.current.recording = { start: performance.now(), stop: () => mr.stop() };
-  });
+  };
 
   const make = async () => {
     setRec(0);
