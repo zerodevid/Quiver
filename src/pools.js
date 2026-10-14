@@ -43,6 +43,9 @@ class Chain {
     this.nativeUsdMode = p.nativeUsd?.mode || 'v4pool'; this.nativeUsdPools = p.nativeUsd?.pools || []; this.verified = p.verified;
     this.legacyGasPricing = p.legacyGasPricing; this.blockMs = p.blockMs;
     this.dexscreener = p.dexscreener; this.geckoterminal = p.geckoterminal; this.explorer = p.explorer;
+    // chain slugs for the GMGN/fomo/Uniswap links; without them /api/chains left them out and
+    // the dashboard fell back to Robinhood's (an Ethereum row opened gmgn.ai/robinhood/…)
+    this.gmgn = p.gmgn; this.uniswap = p.uniswap;
     this.explorerApiV2 = p.explorerApiV2; this.explorerTokenUrl = p.explorerTokenUrl; this.alchemyHost = p.alchemyHost;
     // Generic slots "quote stablecoin" (usdg) and "wrapped native" (weth): the symbol and
     // decimals differ per chain (USDG 6 decimals vs BSC USDT 18 decimals).

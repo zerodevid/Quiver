@@ -318,7 +318,7 @@ function ensureChain(x) {
   const target = isRpc || !x ? { rpc: isRpc ? x : null } : x;
   const p = build('robinhood');
   for (const k of ['network', 'label', 'ADDR', 'QUOTES', 'CHAIN_ID', 'venues', 'nativeSymbol', 'kyberPath', 'verified',
-    'explorerApiV2', 'explorerTokenUrl', 'alchemyHost', 'legacyGasPricing', 'blockMs', 'dexscreener', 'geckoterminal', 'explorer']) {
+    'explorerApiV2', 'explorerTokenUrl', 'alchemyHost', 'legacyGasPricing', 'blockMs', 'dexscreener', 'geckoterminal', 'gmgn', 'uniswap', 'explorer']) {
     if (target[k] === undefined) target[k] = p[k];
   }
   if (target.usdgSymbol === undefined) target.usdgSymbol = target.QUOTES[target.ADDR.usdg]?.symbol || 'USDG';
