@@ -15,7 +15,7 @@ import { useId, useMemo } from 'react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, ReferenceDot, ReferenceArea,
 } from 'recharts';
-import { Empty } from './ui';
+import { Empty, Fx } from './ui';
 import { usd, tone, pct, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -185,6 +185,7 @@ export default function GrowthChart({ p, view, dim = false }) {
           <div className={`text-2xl leading-tight font-semibold tracking-tight ${tone(delta)}`}>
             {delta > 0 ? '+' : ''}{usd(delta)}
             {isPnl && cap > 0 && <span className="ml-2 text-sm font-medium">{pct((delta / cap) * 100, 2)}</span>}
+            <Fx v={delta} className="ml-2 text-sm" />
           </div>
           <div className="text-xs text-muted">
             {t(lbl)}{view === 'value' && <span> · {t('termasuk setoran & penarikan')}</span>}
