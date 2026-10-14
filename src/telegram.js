@@ -165,7 +165,7 @@ function otherMarketText(others) {
     tr("<b>Diperdagangkan di:</b>"),
     ...others.map((x) => tr("• {0} — {1} · likuiditas {2}", [esc(x.dex), esc(x.name), nf0(x.reserveUsd)])),
     '',
-    tr("<i>Bot hanya bisa membuka LP di Uniswap v3/v4 (likuiditas terkonsentrasi dengan rentang harga). Pool gaya v2 seperti Pons V2 tidak punya rentang, NFT posisi, maupun fee terpisah — cara kerjanya lain sama sekali.</i>"),
+    fold(tr("<i>Bot hanya bisa membuka LP di Uniswap v3/v4 (likuiditas terkonsentrasi dengan rentang harga). Pool gaya v2 seperti Pons V2 tidak punya rentang, NFT posisi, maupun fee terpisah — cara kerjanya lain sama sekali.</i>")),
   ];
 }
 
@@ -276,13 +276,24 @@ const tickPrice = (tick, dec0, dec1, quoteSide) => {
   const p1per0 = 1.0001 ** tick * 10 ** ((dec0 ?? 18) - (dec1 ?? 18));
   return quoteSide === 0 ? 1 / p1per0 : p1per0;
 };
-function price(p) {
+function price(p, sig = 3) {
   if (p == null || !Number.isFinite(p) || p <= 0) return '—';
   if (p >= 1e6) return p.toLocaleString(locale() === 'en' ? 'en-US' : 'id-ID', { maximumFractionDigits: 0 });
-  if (p >= 1) return p.toLocaleString(locale() === 'en' ? 'en-US' : 'id-ID', { maximumSignificantDigits: 6 });
-  if (p >= 1e-7) return p.toLocaleString(locale() === 'en' ? 'en-US' : 'id-ID', { maximumSignificantDigits: 3 });
-  return p.toExponential(2).replace('.', ',');
+  if (p >= 1) return p.toLocaleString(locale() === 'en' ? 'en-US' : 'id-ID', { maximumSignificantDigits: Math.max(6, sig) });
+  if (p >= 1e-7) return p.toLocaleString(locale() === 'en' ? 'en-US' : 'id-ID', { maximumSignificantDigits: sig });
+  return p.toExponential(sig - 1).replace('.', ',');
 }
+// Prices shown side by side need enough digits to tell them apart: a narrow range at 3 significant
+// digits reads "0.00000148 … 0.00000149" with the current price on the same figure as an edge.
+function priceSet(values, maxSig = 8) {
+  for (let sig = 3; sig <= maxSig; sig++) {
+    const shown = values.map((v) => price(v, sig));
+    if (new Set(shown).size === new Set(values.map((v) => v.toPrecision(15))).size) return shown;
+  }
+  return values.map((v) => price(v, maxSig));
+}
+// Percentages keep a decimal when small, so "0.4%" is not rounded down to "0%".
+const pctShort = (n) => nf(n, n < 1 ? 2 : n < 10 ? 1 : 0);
 
 // The price range as a bar: where the current price stands between the two edges,
 // and how many more percent before the position stops earning fees.
@@ -301,27 +312,38 @@ function band(p) {
 
   const W = 15;
   const L = Math.log;
-  let bar = '─'.repeat(W);
+  const inRange = nowPrice != null && Number.isFinite(nowPrice) && nowPrice > 0 && nowPrice >= lo && nowPrice <= hi;
+  const shown = priceSet(nowPrice != null && Number.isFinite(nowPrice) && nowPrice > 0 ? [lo, hi, nowPrice] : [lo, hi]);
+  let bar = `├${'─'.repeat(W)}┤`;
   let ket = null;
   if (nowPrice != null && Number.isFinite(nowPrice) && nowPrice > 0) {
     const f = (L(nowPrice) - L(lo)) / (L(hi) - L(lo) || 1);
     const i = Math.max(0, Math.min(W - 1, Math.round(f * (W - 1))));
-    bar = '─'.repeat(i) + '●' + '─'.repeat(W - 1 - i);
-    if (nowPrice >= lo && nowPrice <= hi) {
-      const toLower = (nowPrice / lo - 1) * 100, toUpper = (hi / nowPrice - 1) * 100;
-      ket = tr("di dalam, {0}% ke tepi {1}", [nf(Math.min(toLower, toUpper), 0), toLower < toUpper ? tr("bawah") : tr("atas")]);
+    // The range is fenced by ├ ┤. Inside it the dot sits on the track; outside it the dot is
+    // placed beyond the fence on the side the price left from.
+    const track = inRange ? '─'.repeat(i) + '●' + '─'.repeat(W - 1 - i) : '─'.repeat(W);
+    bar = nowPrice < lo ? `○ ├${track}┤` : nowPrice > hi ? `├${track}┤ ○` : `├${track}┤`;
+    if (inRange) {
+      ket = '🟢 ' + tr("Di dalam range · ↓{0}% ke bawah · ↑{1}% ke atas", [pctShort((nowPrice / lo - 1) * 100), pctShort((hi / nowPrice - 1) * 100)]);
     } else {
       const far = nowPrice < lo ? (lo / nowPrice - 1) * 100 : (nowPrice / hi - 1) * 100;
-      ket = tr("di luar rentang, {0}% di {1}", [nf(far, 0), nowPrice < lo ? tr("bawah") : tr("atas")]);
+      ket = '🔴 ' + tr("Di luar range · {0}% di {1} batas", [pctShort(far), nowPrice < lo ? tr("bawah") : tr("atas")]);
     }
   }
   return {
-    heading: tr("Rentang harga — {0} dalam {1}", [basis || '?', quoteAsset || '?']),
-    bar: `<pre>${esc(price(lo))} ${bar} ${esc(price(hi))}</pre>`,
-    nowPrice: nowPrice != null ? tr("harga kini {0}", [price(nowPrice)]) : null,
+    heading: tr("📐 Range · {0} dalam {1}", [basis || '?', quoteAsset || '?']),
+    bar: `<pre>${esc(shown[0])} ${bar} ${esc(shown[1])}</pre>`,
+    nowPrice: nowPrice != null ? tr("harga kini {0}", [shown[2] ?? price(nowPrice)]) : null,
     ket,
   };
 }
+// Telegram HTML blockquotes: `quote` sets an explanatory note apart from the data above it, `fold`
+// collapses a long one behind a tap so the card stays short.
+const plain = (html) => String(html).trim().replace(/<\/?i>/g, '');
+const quote = (html) => `<blockquote>${plain(html)}</blockquote>`;
+const fold = (html) => `<blockquote expandable>${plain(html)}</blockquote>`;
+// The lines under a range bar: current price, then the status on its own line.
+const bandLines = (r) => [r.nowPrice ? esc(r.nowPrice) : null, r.ket ? esc(r.ket) : null];
 const cut = (s, n = 3800) => (s.length <= n ? s : s.slice(0, n) + tr("\n…(dipotong)"));
 
 // Log line pushed to the chat. Engine messages are generally shaped "context: detail"
@@ -1398,7 +1420,7 @@ class Telegram {
         + '<code>25</code> → ±25%\n'
         + tr("<code>0 50</code> → mulai tepat di harga kini, naik sampai +50%\n")
         + tr("<code>-30 -10</code> → seluruhnya di bawah harga kini: hanya aset kuotasi (misal USDG) yang disetor\n\n")
-        + tr("<i>Makin sempit makin besar fee-nya, tapi makin cepat keluar rentang.</i>"));
+        + quote(tr("<i>Makin sempit makin besar fee-nya, tapi makin cepat keluar rentang.</i>")));
       case 'mlv': return out(...(await this.lpPreview(chatId)));
       case 'mlX': {
         const d = s.lp || {};
@@ -1756,7 +1778,7 @@ class Telegram {
       L.push('');
       L.push(`<b>${esc(r.heading)}</b>`);
       L.push(r.bar);
-      L.push(r.nowPrice ? `${esc(r.nowPrice)}${r.ket ? ` — ${esc(r.ket)}` : ''}` : null);
+      L.push(...bandLines(r));
     }
     const poolLine = this.poolLine(pool, p);
     if (poolLine.length) { L.push(''); L.push(...poolLine); }
@@ -1838,7 +1860,7 @@ class Telegram {
     if (poolLineOut.length) { L.push(''); L.push(...poolLineOut); }
     L.push(...this.targetBlock(d, p, targetSide.table));
     if (targetSide.table && targetSide.estimated) {
-      L.push(tr("<i>Angka target = pokok yang terpantau masuk & keluar; fee yang dia panen terpisah belum terhitung.</i>"));
+      L.push(quote(tr("<i>Angka target = pokok yang terpantau masuk & keluar; fee yang dia panen terpisah belum terhitung.</i>")));
     }
     const trail = [
       ['📝', d.reason ? esc(note(d.reason)) : null],
@@ -2033,7 +2055,7 @@ class Telegram {
       ] : []),
     ]));
     if (net != null) {
-      L.push(tr("<i>PnL bersih = nilai portofolio sekarang − modal yang pernah disetor, jadi gas dan selisih swap ikut terhitung. PnL posisi hanya membandingkan modal dengan hasil tiap posisi.</i>"));
+      L.push(fold(tr("<i>PnL bersih = nilai portofolio sekarang − modal yang pernah disetor, jadi gas dan selisih swap ikut terhitung. PnL posisi hanya membandingkan modal dengan hasil tiap posisi.</i>")));
     }
 
     // 1b. Remaining copy quota: the room still left under the general rule ceilings — the ceiling that
@@ -2069,9 +2091,9 @@ class Telegram {
         [tr("menang / kalah"), `${st.wins} / ${st.losses}`],
         [tr("impas"), st.flat ? String(st.flat) : null],
         [tr("win rate"), pct(st.winRatePct, 0).replace('+', '')],
-        [tr('rata-rata'), sgn(st.avgPnl)],
-        [tr("terbaik"), sgn(st.best)],
-        [tr("terburuk"), sgn(st.worst)],
+        [tr('PnL rata-rata'), sgn(st.avgPnl)],
+        [tr("PnL terbaik"), sgn(st.best)],
+        [tr("PnL terburuk"), sgn(st.worst)],
         [tr("rata-rata dipegang"), st.avgHoldHours != null ? dur(st.avgHoldHours * 3600) : null],
       ]));
     }
@@ -2141,7 +2163,7 @@ class Telegram {
         [tr("batas per posisi"), usd(o.room.perPositionUsd, 0)],
         [tr("sisa anggaran hari ini"), o.room.daily?.limit > 0 ? `${usd(o.room.daily.left, 0)} / ${usd(o.room.daily.limit, 0)}` : tr("tanpa batas")],
       ]) : null,
-      o.room?.cashUsd != null ? tr("<i>Kas siap pakai sudah dikurangi cadangan gas yang tidak pernah disentuh bot.</i>") : null,
+      o.room?.cashUsd != null ? quote(tr("<i>Kas siap pakai sudah dikurangi cadangan gas yang tidak pernah disentuh bot.</i>")) : null,
     ];
     return [L.filter((x) => x != null).join('\n'), kb([[btn(tr("🔄 Segarkan"), 'b'), btn(tr("💼 Posisi"), 'p')], [BACK_HOME]])];
   }
@@ -2194,7 +2216,7 @@ class Telegram {
     const r = band(p);
     const L = [
       `<b>${esc(p.symbol0)}/${esc(p.symbol1)}</b>  <code>#${esc(p.token_id)}</code>`,
-      `${p.inRange == null ? tr('⏳ Menunggu sinkronisasi') : p.inRange ? '🟢 in-range' : tr("🟡 di luar rentang")} · ${esc(p.venue)} · fee ${p.fee != null ? trimZ(nf(p.fee / 10000, 2)) + '%' : '—'} · ${esc(dur(p.ageHours * 3600))}`,
+      `${p.inRange == null ? tr('⏳ Menunggu sinkronisasi') : p.inRange ? tr("🟢 Dalam rentang") : tr("🟡 di luar rentang")} · ${esc(p.venue)} · fee ${p.fee != null ? trimZ(nf(p.fee / 10000, 2)) + '%' : '—'} · ${esc(dur(p.ageHours * 3600))}`,
       '',
       // The most sought-after figure is placed outside the table so it can be bolded:
       // the contents of a <pre> block are always plain.
@@ -2210,9 +2232,9 @@ class Telegram {
       ]),
     ];
     if (r) {
-      L.push(`<b>${esc(r.heading)}</b>`);
+      L.push('', `<b>${esc(r.heading)}</b>`);
       L.push(r.bar);
-      L.push(r.nowPrice ? `${esc(r.nowPrice)}${r.ket ? ` — ${esc(r.ket)}` : ''}` : (r.ket ? esc(r.ket) : null));
+      L.push(...bandLines(r));
     }
     const tokenQty = (raw, dec) => raw == null ? '—' : tok(Number(raw) / 10 ** (dec ?? 18));
     L.push('', tr('<b>🪙 Komposisi token</b>'));
@@ -2227,16 +2249,16 @@ class Telegram {
     const ong = costText(p.cost);
     if (ong) L.push('', ong);
     if (p.ilUsd != null) {
-      L.push(tr('<i>IL vs HODL: selisih nilai posisi ini dibanding kalau kedua tokennya cuma dipegang tanpa di-LP-kan. Minus artinya harga bergerak jauh dari rentang; fee-lah yang harus menutupnya.</i>'));
+      L.push(quote(tr('<i>IL vs HODL: selisih nilai dibanding kalau kedua token cuma dipegang. Minus = fee yang harus menutupnya.</i>')));
     }
-    if (p.inRange === false) L.push(tr('<i>Di luar rentang: posisi berhenti menghasilkan fee sampai harga kembali masuk. Bot tetap memantau dan menutup sesuai aturan keluar.</i>'));
+    if (p.inRange === false) L.push(quote(tr('<i>Di luar range: tidak menghasilkan fee sampai harga kembali masuk. Bot tetap memantau.</i>')));
     if (p.compound?.enabled) {
       L.push(tr('{0} Minimum {1} · periksa setiap {2} menit', [p.compound.mode === 'claim' ? '💰' : '♻️',
         usd(p.compound.minUsd), p.compound.intervalMinutes]));
     }
     L.push(tr('<i>Sinkronisasi terakhir: {0}</i>', [esc(d.syncedAt ? ago(d.syncedAt) : '—')]));
     const trail = table([
-      [tr("posisi"), `#${p.id}`],
+      [tr("ID posisi"), `#${p.id}`],
       [tr("cermin dari"), p.target ? `${shortA(p.target)} #${p.mirror_of || '—'}` : null],
       [tr("tx buka"), p.tx_open ? shortH(p.tx_open) : null],
     ]);
@@ -2434,7 +2456,7 @@ class Telegram {
       L.push(tr("\nBelum ada aksi target yang terbaca. Begitu target menambah atau menarik likuiditas, barisnya muncul di sini."));
     } else {
       L.push('');
-      L.push(tr("<i>✅ disalin · 🧪 simulasi · ⏭ dilewati aturan · ⛔ gagal dieksekusi. Baris miring adalah alasan bot — atur ambangnya di Aturan salin.</i>"));
+      L.push(fold(tr("<i>✅ disalin · 🧪 simulasi · ⏭ dilewati aturan · ⛔ gagal dieksekusi. Baris miring adalah alasan bot — atur ambangnya di Aturan salin.</i>")));
     }
     const nav = [];
     if (off > 0) nav.push(btn(tr("⬅️ Baru"), `a:${Math.max(0, off - 10)}`));
@@ -2470,7 +2492,7 @@ class Telegram {
       if (t.error) L.push(`  <i>${esc(note(String(t.error)).slice(0, 160))}</i>`);
     }
     if (!d.txs.length) L.push(tr("Belum ada transaksi. Bot baru mengirim transaksi saat menyalin posisi, memanen fee, atau menjual token sisa."));
-    else L.push(tr("\n<i>Gas {0} transaksi terakhir: {1}. Transaksi yang gagal pun tetap membayar gas.</i>", [d.txs.slice(0, 20).length, usd(gasTotal, 4)]));
+    else L.push(quote(tr("\n<i>Gas {0} transaksi terakhir: {1}. Transaksi yang gagal pun tetap membayar gas.</i>", [d.txs.slice(0, 20).length, usd(gasTotal, 4)])));
     return [cut(L.join('\n')), kb([[btn(tr("🔄 Segarkan"), 'x'), BACK_HOME]])];
   }
 
@@ -2574,7 +2596,7 @@ class Telegram {
         [b?.symbols?.usdg || 'USDG', b ? tok(b.usdg, 2) : null],
         [b?.symbols?.weth || 'WETH', b ? tok(b.weth) : null],
       ]),
-      tr("<i>Impor kunci privat lewat Telegram sengaja tidak disediakan — riwayat chat tersimpan di server Telegram. Pakai dasbor untuk itu.</i>"),
+      quote(tr("<i>Impor kunci privat lewat Telegram sengaja tidak disediakan — riwayat chat tersimpan di server Telegram. Pakai dasbor untuk itu.</i>")),
     ];
     return [L.filter((x) => x != null).join('\n'), kb([
       [btn(tr("🆕 Buat wallet baru"), 'wbg')],
@@ -2681,7 +2703,7 @@ class Telegram {
       if (it.why) L.push(`  <i>${esc(note(it.why))}</i>`);
     }
     L.push('');
-    L.push(tr("<i>Sisa muncul kalau memecoin hasil menutup posisi belum bisa dijual (rute rugi terlalu besar). Bot mengutip ulang tiap beberapa detik dan menjual begitu lolos batas.</i>"));
+    L.push(fold(tr("<i>Sisa muncul kalau memecoin hasil menutup posisi belum bisa dijual (rute rugi terlalu besar). Bot mengutip ulang tiap beberapa detik dan menjual begitu lolos batas.</i>")));
     return [L.join('\n'), kb([
       d.leftovers.length ? [btn(tr("🔁 Coba jual sekarang"), 'fr')] : null,
       ...d.leftovers.map((it) => [btn(tr("🗑 Keluarkan #{0} {1}", [it.posId, it.symbol || '']).slice(0, 38), `fd:${it.posId}:${it.token}`)]),
@@ -2786,7 +2808,7 @@ class Telegram {
         `<b>${esc(sym)}</b> <code>${esc(shortA(token))}</code>`,
         '',
         isSolana(this.chatChain(chatId)) ? tr("Belum ada pool Meteora DLMM / Orca / Raydium CLMM yang bisa dimasuki untuk token ini.") : tr("Belum ada pool Uniswap v3/v4 yang bisa dimasuki untuk token ini."),
-        j.total ? (isSolana(this.chatChain(chatId)) ? tr("<i>{0} pool ditemukan, tapi semuanya kosong, nonaktif, atau tidak dipasangkan USDC/USDT/SOL.</i>", [j.total]) : tr("<i>{0} pool ditemukan, tapi semuanya kosong, berfee dinamis, atau tidak dipasangkan USDG/ETH.</i>", [j.total])) : null,
+        j.total ? (isSolana(this.chatChain(chatId)) ? quote(tr("<i>{0} pool ditemukan, tapi semuanya kosong, nonaktif, atau tidak dipasangkan USDC/USDT/SOL.</i>", [j.total])) : quote(tr("<i>{0} pool ditemukan, tapi semuanya kosong, berfee dinamis, atau tidak dipasangkan USDG/ETH.</i>", [j.total]))) : null,
         ...otherMarketText(j.others),
       ].filter((x) => x != null).join('\n'), kb([[BACK_HOME]]));
     }
@@ -2842,7 +2864,7 @@ class Telegram {
         if (rg) {
           L.push(`<b>${esc(rg.heading)}</b>`);
           L.push(rg.bar);
-          if (rg.nowPrice) L.push(`${esc(rg.nowPrice)}${rg.ket ? ` — ${esc(rg.ket)}` : ''}`);
+          L.push(...bandLines(rg));
         }
         for (const w of r.warnings || []) L.push(`⚠️ ${esc(w)}`);
       }
@@ -2922,14 +2944,14 @@ class Telegram {
     const L = [tr("<b>🔎 Pool untuk</b> <code>{0}</code>", [esc(shortA(token))])];
     if (!list.length) {
       L.push(tr("\nTidak ada pool Uniswap v3/v4 yang bisa dimasuki untuk token ini."));
-      if (j.total) L.push(tr("<i>{0} pool ditemukan, semuanya tanpa likuiditas atau tanpa aset kuotasi.</i>", [j.total]));
+      if (j.total) L.push(quote(tr("<i>{0} pool ditemukan, semuanya tanpa likuiditas atau tanpa aset kuotasi.</i>", [j.total])));
       L.push(...otherMarketText(j.others));
     } else {
       L.push(tr("{0} pool bisa dimasuki{1} (dari {2} yang ada).", [list.length, j.hidden ? tr(" · {0} disembunyikan", [j.hidden]) : '', j.total]));
       L.push(column(list.slice(0, 10).map((p) => [
         p.pair, p.dynamicFee ? tr("dinamis") : `${trimZ(nf(p.feePct ?? 0, 2))}%`, p.hasHooks ? 'hook' : '',
       ]), 'lr'));
-      if (j.hidden) L.push(isSolana(this.chatChain(chatId)) ? tr("<i>Yang disembunyikan: pool tanpa likuiditas, nonaktif, atau tidak dipasangkan USDC/USDT/SOL.</i>") : tr("<i>Yang disembunyikan: pool tanpa likuiditas, berfee dinamis, atau tidak dipasangkan USDG/ETH — masuk ke sana sama saja membuang gas.</i>"));
+      if (j.hidden) L.push(isSolana(this.chatChain(chatId)) ? quote(tr("<i>Yang disembunyikan: pool tanpa likuiditas, nonaktif, atau tidak dipasangkan USDC/USDT/SOL.</i>")) : quote(tr("<i>Yang disembunyikan: pool tanpa likuiditas, berfee dinamis, atau tidak dipasangkan USDG/ETH — masuk ke sana sama saja membuang gas.</i>")));
     }
     const rows = list.slice(0, 10).map((p, i) => [btn(
       `${p.hasHooks ? '🪝 ' : ''}${p.pair} · ${p.dynamicFee ? tr("dinamis") : trimZ(nf(p.feePct ?? 0, 2)) + '%'}`.slice(0, 40), `mlP:${i}`)]);
@@ -2948,7 +2970,7 @@ class Telegram {
       '',
       tr("Sekarang: <b>{0}</b>", [d.full ? tr("seluruh rentang") : rangeText(d)]),
       '',
-      tr("<i>Batas bawah dan atas boleh berbeda — misal turun 10%, naik 30%.</i>"),
+      quote(tr("<i>Batas bawah dan atas boleh berbeda — misal turun 10%, naik 30%.</i>")),
       tr("Satu sisi: isi 25 0 atau 0 25. Hanya satu token disetor; fee mulai saat harga masuk rentang. Auto-swap bisa diperlukan untuk menyediakan token itu."),
       tr("Tanda +/− memindah batas ke sisi lain harga: <code>-30 -10</code> = seluruhnya di bawah harga (hanya aset kuotasi), <code>+10 +30</code> = seluruhnya di atas (hanya tokennya)."),
     ];
@@ -2983,13 +3005,13 @@ class Telegram {
     if (rg) {
       L.push(`<b>${esc(rg.heading)}</b>`);
       L.push(rg.bar);
-      if (rg.nowPrice) L.push(`${esc(rg.nowPrice)}${rg.ket ? ` — ${esc(rg.ket)}` : ''}`);
+      L.push(...bandLines(rg));
     }
     for (const w of r.warnings || []) L.push(`⚠️ ${esc(w)}`);
     const live = !this.engine.dryRun();
     L.push('');
     L.push(live
-      ? tr("Transaksi dikirim sungguhan dari wallet bot. Posisi ini tidak mencermin siapa pun — ia tidak akan ikut ditutup saat target keluar.")
+      ? tr("Dikirim sungguhan dari wallet bot. Posisi manual tidak ikut ditutup saat target keluar.")
       : tr("⚠️ Mode <b>simulasi</b>: tombol di bawah akan ditolak."));
     return [L.filter((x) => x != null).join('\n'), kb([
       [btn(tr("✅ Buka posisi sekarang"), 'mlX')],

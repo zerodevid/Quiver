@@ -964,7 +964,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.match(body, /🟢 LIVE/);
     assert.match(body, /<b>USDG\/MEME<\/b>/);
     assert.match(body, /\$200,00/);
-    assert.match(body, /Rentang harga — MEME dalam USDG/);
+    assert.match(body, /Range · MEME dalam USDG/);
     assert.match(body, /●/, 'the range bar must have a point (current price from the mint tick)');
     assert.match(body, /Bang GE/, 'the target name must show');
     assert.match(body, /NFT #777/);
@@ -1621,7 +1621,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     await w.bot.handle(cbq('mlv'));
     const preview = lastOut(w.sent).params.text;
     assert.match(preview, /Pratinjau/);
-    assert.match(preview, /Rentang harga/);
+    assert.match(preview, /Range · /);
     assert.match(preview, /simulasi/i, 'simulation mode must be stated before the open button');
   });
 
@@ -2076,7 +2076,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
       dec0: 18, dec1: 6, quoteSide: 1, symbol0: 'HOOKR', symbol1: 'USDG' });
     assert.ok(r, 'the range must be readable');
     assert.match(r.heading, /HOOKR dalam USDG/);
-    assert.match(r.ket, /di dalam/, `seharusnya in-range: ${r.ket}`);
+    assert.match(r.ket, /Di dalam range/, `seharusnya in-range: ${r.ket}`);
     assert.match(r.bar, /●/, 'the current price marker must be on the bar');
     // the bar must have a fixed length whatever the price
     const polos = r.bar.replace(/<\/?pre>/g, '');
@@ -2087,10 +2087,10 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     const { rentang: span } = require('../src/telegram');
     const upper = span({ tick_lower: -322900, tick_upper: -317900, curTick: -300000,
       dec0: 18, dec1: 6, quoteSide: 1, symbol0: 'HOOKR', symbol1: 'USDG' });
-    assert.match(upper.ket, /di luar rentang, [\d.,]+% di atas/, upper.ket);
+    assert.match(upper.ket, /Di luar range · [\d.,]+% di atas/, upper.ket);
     const lower = span({ tick_lower: -322900, tick_upper: -317900, curTick: -350000,
       dec0: 18, dec1: 6, quoteSide: 1, symbol0: 'HOOKR', symbol1: 'USDG' });
-    assert.match(lower.ket, /di luar rentang, [\d.,]+% di bawah/, lower.ket);
+    assert.match(lower.ket, /Di luar range · [\d.,]+% di bawah/, lower.ket);
     // incomplete data must not throw an error
     assert.strictEqual(span({ tick_lower: null, tick_upper: 1, quoteSide: 1 }), null);
     assert.strictEqual(span({ tick_lower: -1, tick_upper: 1, quoteSide: null }), null);
@@ -2105,8 +2105,9 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     await w.bot.handle(cbq('p:1'));
     const body = lastOut(w.sent).params.text;
     assert.ok(!/-322\.?900|rentang tick/i.test(body), `the raw tick still leaks onto the screen:\n${body}`);
-    assert.match(body, /Rentang harga/);
+    assert.match(body, /Range · /);
     assert.match(body, /harga kini/);
+    assert.match(body, /<blockquote>IL vs HODL|<blockquote><i>IL vs HODL/, 'the explanatory note should sit in a blockquote');
   });
 
   await t('the time unit is unambiguous', async () => {
