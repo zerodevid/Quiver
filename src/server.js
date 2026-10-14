@@ -312,22 +312,22 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       FROM actions WHERE chain=? AND target=? AND venue=? AND token_id=? ORDER BY ts, id`,
     chain.network, row.target, row.venue, row.mirror_of);
     if (!acts.length) return out;
-    let inUsd = 0, outUsd = 0, claims = 0, net = 0n;
+    let inUsd = 0, outUsd = 0, claims = 0, claimUsd = 0, net = 0n;
     for (const a of acts) {
       const v = (a.value_quote || 0) * (chain.isEthLike(a.quote_symbol) ? engine.ethUsd : 1);
       if (a.kind === 'increase') inUsd += v;
       else if (a.kind === 'decrease') outUsd += v;
-      else if (a.kind === 'claim') claims++;
+      else if (a.kind === 'claim') { claims++; claimUsd += v; }
       try { net += BigInt(a.liquidity || 0); } catch { /* action without an L delta */ }
     }
     const first = acts[0], last = acts[acts.length - 1];
     out.watch = {
-      inUsd, outUsd, claims, events: acts.length,
-      // Withdrawn − deposited: PRINCIPAL only. Fees they harvested separately are not
-      // counted (an 'claim' action has no value), so this figure is a floor, not a certain
+      inUsd, outUsd, claims, claimUsd, events: acts.length,
+      // Withdrawn + harvested − deposited. Only harvests the watcher could value are counted
+      // (a v4 claim in a single-position tx), so this is still a floor, not a certain
       // profit — whatever shows it must say so.
-      pnlUsd: outUsd > 0 && inUsd > 0 ? outUsd - inUsd : null,
-      pnlPct: outUsd > 0 && inUsd > 0 ? ((outUsd - inUsd) / inUsd) * 100 : null,
+      pnlUsd: outUsd > 0 && inUsd > 0 ? outUsd + claimUsd - inUsd : null,
+      pnlPct: outUsd > 0 && inUsd > 0 ? ((outUsd + claimUsd - inUsd) / inUsd) * 100 : null,
       open: net > 0n,
       openedTs: first.ts, lastTs: last.ts,
       heldSec: last.ts > first.ts ? (last.ts - first.ts) / 1000 : null,

@@ -17,6 +17,7 @@ const m = require('./v3math');
 
 const IF_POSM = new ethers.Interface(ABI.posmV4);
 const IF_NPM = new ethers.Interface(ABI.npmV3);
+const TRANSFER_TOPIC = ethers.id('Transfer(address,address,uint256)');
 const asAddr = (topic) => ('0x' + topic.slice(-40)).toLowerCase();
 const i24 = (v) => Number(BigInt.asIntN(24, v));
 const i256 = (v) => BigInt.asIntN(256, v);
@@ -287,15 +288,18 @@ class Watcher {
 
     const out = [];
     if (mineV4.length) out.push(...await this.enrichV4(mineV4));
-    // Target fee harvest: recorded as it is (without price/value — nothing is
-    // computed from it, so no extra RPC is needed).
+    // Target fee harvest. Nothing is mirrored from it, but its value is recorded so the close card can
+    // add it to the target's result — without it a target that earned its profit as fees
+    // reads as "+$0.00" next to our own fee-inclusive figure.
     for (const r of claimRows.filter((x) => targets.has(this.knownOwner('v4', x.tokenId) || ''))) {
+      const value = await this.valueClaim(r, modLiq);
       out.push({
         ts: await this.chain.blockTs(parseInt(r.l.blockNumber, 16)),
         block: parseInt(r.l.blockNumber, 16), txHash: r.l.transactionHash,
         logIndex: parseInt(r.l.logIndex, 16), target: this.knownOwner('v4', r.tokenId), venue: 'v4',
         kind: 'claim', tokenId: r.tokenId, poolRef: r.poolId,
         tickLower: r.tickLower, tickUpper: r.tickUpper,
+        ...value,
       });
     }
     for (const venue of new Set(mineV3.map((r) => r.venue))) {
@@ -316,6 +320,38 @@ class Watcher {
       if (!ids) return true;
       return (a.kind === 'decrease' || a.kind === 'transfer_out') && ids.has(String(a.tokenId));
     });
+  }
+
+  // What a v4 fee harvest paid out, valued in the pool's quote asset: the PoolManager's token
+  // transfers in the same tx. Only when that tx touched a single position — otherwise the
+  // transfers cannot be attributed to this one. Any failure returns {} (the claim stays unvalued).
+  async valueClaim(r, modLiq) {
+    try {
+      const hash = r.l.transactionHash;
+      if (modLiq.filter((x) => x.transactionHash === hash).length !== 1) return {};
+      const rc = await this.chain.rpc.call('eth_getTransactionReceipt', [hash]);
+      const pm = this.chain.ADDR.poolManager.toLowerCase();
+      const paid = new Map();
+      for (const log of rc?.logs || []) {
+        if (log.topics?.[0] !== TRANSFER_TOPIC || log.topics.length < 3 || asAddr(log.topics[1]) !== pm) continue;
+        const token = log.address.toLowerCase();
+        paid.set(token, (paid.get(token) || 0n) + BigInt(log.data));
+      }
+      if (!paid.size) return {};
+      const pk = await this.chain.poolKeyOfId(r.poolId, parseInt(r.l.blockNumber, 16), hash);
+      // A native-currency side pays out without an ERC20 transfer, so its amount would be missing.
+      if (!pk || /^0x0+$/.test(pk.currency0)) return {};
+      const [s] = await this.chain.slot0V4Many([r.poolId]);
+      if (!s) return {};
+      const [t0, t1] = await this.chain.tokens([pk.currency0, pk.currency1]);
+      const amount0 = paid.get(pk.currency0.toLowerCase()) || 0n, amount1 = paid.get(pk.currency1.toLowerCase()) || 0n;
+      const v = this.chain.valueInQuote({
+        sqrtPriceX96: s.sqrtPriceX96, amount0, amount1, dec0: t0?.decimals ?? 18, dec1: t1?.decimals ?? 18,
+        token0: pk.currency0, token1: pk.currency1,
+      });
+      if (!v) return {};
+      return { token0: pk.currency0, token1: pk.currency1, amount0: amount0.toString(), amount1: amount1.toString(), valueQuote: v.value, quoteSymbol: v.symbol };
+    } catch { return {}; }
   }
 
   // target disabled -> Set(tokenId of target positions we still mirror)

@@ -1660,12 +1660,13 @@ class Telegram {
       [tr("posisi dia"), nft ? `NFT #${nft}` : null, null],
       [tr("dia masuk"), w?.inUsd ? usd(w.inUsd) : scan ? usd(scan.costUsd) : null, null],
       [tr("dia tarik"), withdraw != null ? usd(withdraw) : null, null],
+      [tr("fee dia"), w?.claimUsd > 0 ? usd(w.claimUsd) : null, null],
       [tr("hasil dia"), pnlTheirs != null ? sgn(pnlTheirs) : null, pnlTheirs != null && pnlTheirsPct != null ? pct(pnlTheirsPct) : null],
       [tr("hasil kita"), ours?.pnl != null ? sgn(ours.pnl) : null, ours?.pnl != null && ours.pnlPct != null ? pct(ours.pnlPct, Math.abs(ours.pnlPct) < 0.1 ? 2 : 1) : null],
       [tr("dia pegang"), w?.heldSec ? dur(w.heldSec) : null, w?.open ? tr("masih terbuka") : null],
       [tr("kita pegang"), ours?.holdSec > 0 ? dur(ours.holdSec) : null, null],
     ].filter((r) => r[1] != null);
-    return { table: column(rows, 'lrl'), estimated: pnlTheirs != null && !scan };
+    return { table: column(rows, 'lrl'), estimated: pnlTheirs != null && !scan, feesCounted: w?.claimUsd > 0 };
   }
 
   // The target's ORIGINAL range, if the rules (recenter/scale/own width) make our
@@ -1860,7 +1861,9 @@ class Telegram {
     if (poolLineOut.length) { L.push(''); L.push(...poolLineOut); }
     L.push(...this.targetBlock(d, p, targetSide.table));
     if (targetSide.table && targetSide.estimated) {
-      L.push(quote(tr("<i>Angka target = pokok yang terpantau masuk & keluar; fee yang dia panen terpisah belum terhitung.</i>")));
+      L.push(quote(targetSide.feesCounted
+        ? tr("<i>Hasil target = penarikan + fee yang dipanen − modal masuk, sejauh terpantau.</i>")
+        : tr("<i>Angka target = pokok yang terpantau masuk & keluar; fee yang dia panen terpisah belum terhitung.</i>")));
     }
     const trail = [
       ['📝', d.reason ? esc(note(d.reason)) : null],
