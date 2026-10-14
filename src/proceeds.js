@@ -22,6 +22,7 @@ const { ensureChain } = require('./networks');
 const { ethers } = require('ethers');
 const { TOPIC } = require('./chain');
 const { getLogsSafe } = require('./scout');
+const { sqrtSane } = require('./pools');
 
 const IF_ERC20 = new ethers.Interface(['function balanceOf(address) view returns (uint256)']);
 const IF_POOL3 = new ethers.Interface(['function slot0() view returns (uint160 sqrtPriceX96, int24 tick)']);
@@ -59,10 +60,12 @@ class Proceeds {
     return v ? v.value * (s.q.kind === 'eth' ? ethUsd : 1) : 0;
   }
 
+  // A price pinned at a tick bound (a drained pool) is no price: null, so the caller falls
+  // back to the close price instead of valuing leftover tokens at e.g. 1e57 USD.
   async sqrtNow(r) {
     try {
       const s = this.chain.isV3Venue(r.venue) ? await this.chain.slot0V3(r.pool_ref) : await this.chain.slot0V4(r.pool_ref);
-      return s?.sqrtPriceX96 || null;
+      return sqrtSane(s?.sqrtPriceX96) ? s.sqrtPriceX96 : null;
     } catch { return null; }
   }
 
@@ -381,7 +384,9 @@ class Proceeds {
     const bySqrt = new Map();
     for (const r of held) {
       if (!bySqrt.has(r.pool_ref)) bySqrt.set(r.pool_ref, await this.sqrtNow(r));
-      const u = this.usdOf(r, bySqrt.get(r.pool_ref), big(r.held_tok), ethUsd);
+      const sq = bySqrt.get(r.pool_ref);
+      if (!sq) continue;                            // no usable price now: keep the stored value
+      const u = this.usdOf(r, sq, big(r.held_tok), ethUsd);
       r.unrealized_q = u;
       r.pnl_q = r.invested_q == null ? null : r.realized_q + u - r.invested_q;
     }
