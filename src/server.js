@@ -2194,6 +2194,29 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     //   kind=position&id=…  | kind=total | kind=daily&day=YYYY-MM-DD
     //   hide=1 hides the dollar amounts; lang=id|en; tz=the reader's IANA time zone
     //   (the calendar day is computed in that zone, the same as in the browser).
+    // Animated replay of one position (the "Video" tab of the share dialog). The browser
+    // draws and records it (web/src/components/ShareReplay.jsx); the server only hands over
+    // the same figures and price candles as the position share card.
+    'GET /api/share/replay': async (req, url) => {
+      const d = await callApi('GET', '/api/position', {}, { id: url.searchParams.get('id') });
+      if (d.error) return { error: d.error };
+      const p = d.position;
+      const chart = await positionSpark(p).catch(() => null);
+      if (!chart?.band) return { error: 'lilin harga belum tersedia untuk pool ini' };
+      const closed = p.status === 'closed';
+      return {
+        position: {
+          id: p.id, status: p.status, venue: shareCard.venueName(p.venue), chain: chain.label,
+          token0: p.token0, token1: p.token1, symbol0: p.symbol0, symbol1: p.symbol1, quoteSide: p.quoteSide,
+          opened_ts: p.opened_ts, closed_ts: p.closed_ts || null,
+          costUsd: p.costUsd, pnlUsd: p.pnlUsd, pnlPct: p.pnlPct,
+          // Fee actually earned: claimed + still in the position — for a closed one, the last
+          // synced fee that the close collected (the same figure as the positions list).
+          feeUsd: (p.claimedUsd || 0) + (closed ? (p.fees_quote || 0) * (p.quoteKind === 'eth' ? d.ethUsd || 0 : 1) : (p.feeUsd || 0)),
+        },
+        chart,
+      };
+    },
     'GET /api/share/telegram': () => ({
       ready: !!(telegram?.token() && telegram.chats().length), chats: telegram ? telegram.chats().length : 0,
     }),

@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, Modal, toast } from '@heroui/react';
 import { Share2, Copy, Download, Send } from 'lucide-react';
 import { Toggle, Segmented } from './ui';
+import ShareReplay from './ShareReplay';
 import { get, post } from '../api';
 import { useI18n } from '../i18n';
 import { usd, pct } from '../fmt';
@@ -46,9 +47,11 @@ export function ShareDialog({ card, onClose }) {
   const [url, setUrl] = useState(null);
   const [busy, setBusy] = useState(null);
   const [tg, setTg] = useState(null);           // { ready, chats } — is the Telegram bot ready?
+  const [mode, setMode] = useState('image');    // 'image' | 'video' (positions only)
   const last = useRef(null);                    // last card, still shown while the close animation runs
   if (card) last.current = card;
   const c = card || last.current;
+  const video = mode === 'video' && c?.kind === 'position';
 
   // Hide amounts is remembered: once hidden, it usually always is.
   useEffect(() => { try { setHide(localStorage.getItem('quiver-share-hide') === '1'); } catch { /* abaikan */ } }, []);
@@ -136,6 +139,12 @@ export function ShareDialog({ card, onClose }) {
               <Modal.Heading>{t('Bagikan')}</Modal.Heading>
             </Modal.Header>
             <Modal.Body>
+              {c?.kind === 'position' && (
+                <div className="mb-3">
+                  <Segmented size="sm" aria="Format" value={mode} onChange={setMode} options={[['image', 'Gambar'], ['video', 'Video']]} />
+                </div>
+              )}
+              {video ? <ShareReplay id={c.id} hide={hide} name={c.name} /> : <>
               {/* The preview follows the chosen size ratio; the story is capped in height so the dialog does not tower. */}
               <div className="flex justify-center overflow-hidden rounded-lg border border-border bg-[#0E1015]">
                 <div className={`relative w-full transition-opacity ${loading ? 'opacity-60' : ''}`} style={{ aspectRatio: ratio, maxHeight: '60vh' }}>
@@ -148,11 +157,12 @@ export function ShareDialog({ card, onClose }) {
                 <Segmented size="sm" aria="Ukuran kartu" value={size} onChange={pickSize} options={SIZES.map(([k, label]) => [k, label])} />
                 <Segmented size="sm" aria="Tema kartu" value={theme} onChange={pickTheme} options={THEMES.map(([k, label]) => [k, label])} />
               </div>
+              </>}
               <div className="mt-3">
                 <Toggle label="Sembunyikan nominal dolar" desc="Hanya persentase yang tampil; harga token tetap ditampilkan." value={hide} onChange={toggleHide} />
               </div>
             </Modal.Body>
-            <Modal.Footer className="flex-wrap gap-2">
+            {!video && <Modal.Footer className="flex-wrap gap-2">
               {typeof ClipboardItem !== 'undefined' && (
                 <Button variant="outline" {...act('copy')}><Copy className="size-4" />{t('Salin gambar')}</Button>
               )}
@@ -163,7 +173,7 @@ export function ShareDialog({ card, onClose }) {
               {canShare && (
                 <Button variant="primary" {...act('share')}><Share2 className="size-4" />{t('Bagikan')}</Button>
               )}
-            </Modal.Footer>
+            </Modal.Footer>}
           </Modal.Dialog>
         </Modal.Container>
       </Modal.Backdrop>
