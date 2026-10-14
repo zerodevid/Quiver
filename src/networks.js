@@ -341,4 +341,12 @@ function ensureChain(x) {
   return target;
 }
 
-module.exports = { NETWORKS, profile, build, ensureChain, isSolana, normAddr, addrHint, WSOL };
+// Scan windows from the dashboard (and the 900k-block defaults) are expressed in Robinhood
+// blocks (~0.101 s): 900,000 = ~1 day. Converts one to the same span of time on `chain`,
+// so "~1 day" on Ethereum (12 s blocks) is 7,600 blocks, not four months of history.
+const WINDOW_BLOCK_MS = 101;
+const windowBlocks = (chain, rhBlocks) => Math.max(1, Math.round(rhBlocks * WINDOW_BLOCK_MS / (chain?.blockMs || WINDOW_BLOCK_MS)));
+// The inverse: a span of `chain` blocks expressed in Robinhood blocks.
+const windowUnits = (chain, blocks) => Math.round(blocks * (chain?.blockMs || WINDOW_BLOCK_MS) / WINDOW_BLOCK_MS);
+
+module.exports = { NETWORKS, profile, build, ensureChain, isSolana, normAddr, addrHint, WSOL, windowBlocks, windowUnits };

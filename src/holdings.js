@@ -12,7 +12,7 @@
 // Then the balances are read once in a single batch, and only those with a balance are returned.
 const { ethers } = require('ethers');
 const { TOPIC, ABI } = require('./chain');
-const { ensureChain } = require('./networks');
+const { ensureChain, windowBlocks } = require('./networks');
 const { getLogsSafe } = require('./scout');
 
 const IF_ERC20 = new ethers.Interface(ABI.erc20);
@@ -39,7 +39,7 @@ class Holdings {
     if (st.block && Date.now() - st.ts < RESCAN_MS) return st.tokens;
     try {
       const head = await this.rpc.blockNumber();
-      const lo = st.block ? st.block + 1 : Math.max(0, head - FIRST_WINDOW);
+      const lo = st.block ? st.block + 1 : Math.max(0, head - windowBlocks(this.chain, FIRST_WINDOW));
       if (head >= lo) {
         const logs = await getLogsSafe(this.rpc, { topics: [TOPIC.transfer, null, ethers.zeroPadValue(wallet, 32)] }, lo, head);
         const set = new Set(st.tokens);

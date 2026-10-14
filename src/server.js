@@ -1,5 +1,5 @@
 'use strict';
-const { ensureChain, normAddr, addrHint } = require('./networks');
+const { ensureChain, normAddr, addrHint, windowBlocks, windowUnits } = require('./networks');
 // HTTP API + dashboard server.
 const http = require('node:http');
 const fs = require('node:fs');
@@ -506,15 +506,22 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       job.phase = p.phase; job.done = p.scanned; job.total = p.total;
       job.progress = p.total ? Math.round((p.scanned / p.total) * 100) : 0;
     };
+    // `blocks` is a dashboard window in Robinhood blocks; Solana research converts it itself.
     const run = mode === 'refresh'
       ? research.refresh(addr, { ethUsd: engine.ethUsd, onProgress })
-      : research.scan(addr, { blocks, ethUsd: engine.ethUsd, onProgress, force });
+      : research.scan(addr, { blocks: SOL ? blocks : windowBlocks(chain, blocks), ethUsd: engine.ethUsd, onProgress, force });
     if (reason !== 'manual') log(`riset ${addr}: pembaruan ${mode} dimulai (${reason})`);
     run.then((r) => {
       job.status = 'selesai'; job.finishedAt = Date.now();
       if (reason !== 'manual') log(`riset ${addr}: selesai ${((job.finishedAt - job.startedAt) / 1000).toFixed(0)} dtk, ${r?.positions?.length ?? 0} posisi dibaca`);
     })
-      .catch((e) => { job.error = e.message; job.status = 'gagal'; job.finishedAt = Date.now(); log(`riset wallet ${addr}: ${e.message}`); });
+      .catch((e) => {
+        // Free endpoints (publicnode on Ethereum) only serve recent getLogs; say what to do instead of the raw RPC text.
+        job.error = /archive|personal token/i.test(e.message)
+          ? `${e.message} — RPC gratis ini hanya menyimpan riwayat ~1 hari terakhir. Pilih jendela ~1 hari, atau tambah RPC arsip (mis. Alchemy) di Settings → Chain.`
+          : e.message;
+        job.status = 'gagal'; job.finishedAt = Date.now(); log(`riset wallet ${addr}: ${e.message}`);
+      });
     return job;
   };
 
@@ -1910,6 +1917,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       return {
         found: true, address: addr, label: w.label,
         scannedFrom: w.first_block, scannedTo: w.scanned_to, lastScanTs: w.last_scan_ts,
+        // the scanned span in dashboard window units (Robinhood blocks), for the window picker
+        scannedWindow: !SOL && w.first_block != null && w.scanned_to != null ? windowUnits(chain, w.scanned_to - w.first_block) : null,
         stats, open, closed, daily,
         isTarget: !!store.get('SELECT 1 FROM targets WHERE chain=? AND address=?', chain.network, addr),
         job: jobOut,

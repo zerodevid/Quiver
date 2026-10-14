@@ -1,5 +1,5 @@
 'use strict';
-const { ensureChain } = require('./networks');
+const { ensureChain, windowBlocks } = require('./networks');
 // Manual LP and manual swap.
 //
 // Both use the SAME execution path as automatic copying:
@@ -946,13 +946,13 @@ class Manual {
     return st.tokens;
   }
   // Staged per SEEN_STEP blocks and stored at each step, so an RPC that goes down
-  // midway does not throw away progress. The first scan goes back 900 thousand blocks,
-  // like wallet research.
+  // midway does not throw away progress. The first scan goes back ~1 day (900 thousand
+  // Robinhood blocks), like wallet research.
   async scanSeen(me) {
     const { getLogsSafe } = require('./scout');
     const head = await this.rpc.blockNumber();
     let st = this.seenState(me);
-    for (let lo = st.block ? st.block + 1 : Math.max(0, head - 900_000); lo <= head;) {
+    for (let lo = st.block ? st.block + 1 : Math.max(0, head - windowBlocks(this.chain, 900_000)); lo <= head;) {
       const hi = Math.min(head, lo + SEEN_STEP - 1);
       const logs = await getLogsSafe(this.rpc, { topics: [TOPIC.transfer, null, ethers.zeroPadValue(me, 32)] }, lo, hi);
       const set = new Set(st.tokens);

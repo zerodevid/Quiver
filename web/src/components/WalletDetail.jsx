@@ -272,7 +272,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
     if (!alive.current) return d;
     setData(d);
     // The dropdown follows the stored window, as long as the user has not touched it.
-    if (!touched.current && d.found && d.scannedFrom && d.scannedTo) setBlocks(windowFor(d.scannedTo - d.scannedFrom));
+    if (!touched.current && d.found && d.scannedFrom && d.scannedTo) setBlocks(windowFor(d.scannedWindow ?? (d.scannedTo - d.scannedFrom)));
     const running = d.job?.status === 'jalan';
     if (running && !timer.current) timer.current = setInterval(() => fetchWallet(), 2000);
     if (!running && timer.current) { stopPoll(); onChanged?.(); }
@@ -323,7 +323,7 @@ export default function WalletDetail({ address, autoScan = true, showTargetButto
   const pickWindow = (win) => {
     touched.current = true;
     setBlocks(win);
-    const scanned = (data?.scannedTo || 0) - (data?.scannedFrom || 0);
+    const scanned = data?.scannedWindow ?? ((data?.scannedTo || 0) - (data?.scannedFrom || 0));
     if (data?.found && !running && Number(win) > scanned * 1.1) startScan(win, 'full');
   };
 
