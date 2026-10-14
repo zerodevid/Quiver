@@ -4,6 +4,7 @@ const { ethers } = require('ethers');
 const { ABI } = require('./chain');
 const { build } = require('./networks');
 const m = require('./v3math');
+const { valueAnchoredUsd } = require('./usd-anchor');
 
 const coder = ethers.AbiCoder.defaultAbiCoder();
 const IF_EXT = new ethers.Interface(['function extsload(bytes32 slot) view returns (bytes32)']);
@@ -186,7 +187,12 @@ class Chain {
   // Total position value (both sides) in quote asset units.
   valueInQuote({ sqrtPriceX96, amount0, amount1, dec0, dec1, token0, token1 }) {
     const q = this.quoteSideOf(token0, token1);
-    if (!q) return null;
+    if (!q) {
+      // No quote asset: USD through a cached DexScreener anchor (usd-anchor.js), null if none.
+      const usd = valueAnchoredUsd(this, { sqrtPriceX96, amount0, amount1, dec0, dec1, token0, token1 });
+      const stable = this.QUOTES[this.ADDR.usdg];
+      return usd == null || !stable ? null : { value: usd, symbol: stable.symbol, side: null, kind: 'usd', anchored: true };
+    }
     const price1per0 = m.priceFromSqrt(sqrtPriceX96, dec0, dec1); // token1 per token0
     const a0 = Number(amount0) / 10 ** dec0;
     const a1 = Number(amount1) / 10 ** dec1;

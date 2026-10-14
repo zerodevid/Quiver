@@ -1,4 +1,5 @@
 'use strict';
+const { ensureAnchor, valueAnchoredUsd } = require('./usd-anchor');
 const { ensureChain } = require('./networks');
 // Wallet research: reconstruct a wallet's entire LP position history from the chain,
 // with capital, fees, and PnL — for positions still alive AND those
@@ -298,6 +299,16 @@ class WalletResearch {
       : null;
     const d0 = toks?.[0]?.decimals ?? 18, d1 = toks?.[1]?.decimals ?? 18;
     const q = info.poolKey ? this.chain.quoteSideOf(info.poolKey.currency0, info.poolKey.currency1) : null;
+    // Value of an amount pair at a pool price: in the quote asset, or — for a pair without
+    // one — in USD through a DexScreener anchor (usd-anchor.js). 0 when neither works.
+    if (info.poolKey && !q) await ensureAnchor(this.chain, info.poolKey.currency0, info.poolKey.currency1);
+    const val0 = (sqrtPriceX96, a0, a1) => {
+      if (!info.poolKey) return 0;
+      const args = { sqrtPriceX96, amount0: a0, amount1: a1, dec0: d0, dec1: d1,
+        token0: info.poolKey.currency0, token1: info.poolKey.currency1 };
+      const v = q ? this.chain.valueInQuote(args) : null;
+      return v ? v.value : (q ? 0 : (valueAnchoredUsd(this.chain, args) ?? 0));
+    };
 
     const agg = { in0: 0n, in1: 0n, out0: 0n, out1: 0n, fee0: 0n, fee1: 0n };
     let investedQ = 0, returnedQ = 0, feesQ = 0;
@@ -325,14 +336,7 @@ class WalletResearch {
         // edge, otherwise the memecoin fee is valued at "$1e55" (a real case of 4 target positions).
         const sqrtE = sqrtClampedToRange(exact.sqrtPriceX96, sa, sb);
         const pr = m.amountsForLiquidity(sqrtE, sa, sb, abs);
-        const valE = (a0, a1) => {
-          if (!q) return 0;
-          const v = this.chain.valueInQuote({
-            sqrtPriceX96: sqrtE, amount0: a0, amount1: a1, dec0: d0, dec1: d1,
-            token0: info.poolKey.currency0, token1: info.poolKey.currency1,
-          });
-          return v ? v.value : 0;
-        };
+        const valE = (a0, a1) => val0(sqrtE, a0, a1);
         const fv = valE(exact.fee0, exact.fee1);
         feesQ += fv;
         agg.fee0 += exact.fee0; agg.fee1 += exact.fee1;
@@ -388,14 +392,7 @@ class WalletResearch {
           princ = m.amountsForLiquidity(sqrt, sa, sb, abs);
         }
       }
-      const val = (a0, a1) => {
-        if (!sqrt || !q) return 0;
-        const v = this.chain.valueInQuote({
-          sqrtPriceX96: sqrt, amount0: a0, amount1: a1, dec0: d0, dec1: d1,
-          token0: info.poolKey.currency0, token1: info.poolKey.currency1,
-        });
-        return v ? v.value : 0;
-      };
+      const val = (a0, a1) => (sqrt ? val0(sqrt, a0, a1) : 0);
 
       let f0 = 0n, f1 = 0n, kind;
       if (ev.delta > 0n) {
@@ -450,13 +447,7 @@ class WalletResearch {
           const alt = await this.chain.markSqrtForPair(info.poolKey.currency0, info.poolKey.currency1, info.poolId);
           mark = alt ? alt.sqrtPriceX96 : sqrtClampedToRange(s0.sqrtPriceX96, sa0, sb0);
         }
-        const vq = (a0, a1) => {
-          const v = this.chain.valueInQuote({
-            sqrtPriceX96: mark, amount0: a0, amount1: a1, dec0: d0, dec1: d1,
-            token0: info.poolKey.currency0, token1: info.poolKey.currency1,
-          });
-          return v ? v.value : 0;
-        };
+        const vq = (a0, a1) => val0(mark, a0, a1);
         liveValueQ = vq(amt.amount0, amt.amount1);
         try {
           const [f] = await unclaimedV4(this.chain,
@@ -664,6 +655,8 @@ class WalletResearch {
     // Pool price: v4 one batch (pool_ref = poolId in PoolManager storage), v3 one by
     // one (pool_ref = its pool contract address).
     const slotBy = new Map(), poolLiqBy = new Map();
+    // Pairs without a quote asset are valued through a USD anchor (usd-anchor.js).
+    for (const r of fresh) await ensureAnchor(this.chain, r.token0, r.token1);
     const idV4 = [...new Set(fresh.filter((r) => !this.chain.isV3Venue(r.venue)).map((r) => r.pool_ref))];
     if (idV4.length) {
       try {
@@ -733,10 +726,13 @@ class WalletResearch {
           sqrtPriceX96: mark, amount0: a0, amount1: a1,
           dec0: r.dec0, dec1: r.dec1, token0: r.token0, token1: r.token1,
         });
-        return v ? v.value * (v.kind === 'eth' ? ethUsd : 1) : null;
+        if (v) return v.value * (v.kind === 'eth' ? ethUsd : 1);
+        return valueAnchoredUsd(this.chain, {
+          sqrtPriceX96: mark, amount0: a0, amount1: a1, dec0: r.dec0, dec1: r.dec1, token0: r.token0, token1: r.token1,
+        });
       };
       const value = vq(amt.amount0, amt.amount1);
-      if (value == null) continue;                       // a pool without a quote side: cannot be valued
+      if (value == null) continue;                       // no quote side and no USD price for the tokens: cannot be valued
       const fee = f ? (vq(f.fee0, f.fee1) ?? 0) : (r.live_fee_q || 0);
       const inRange = m.sideOfRange(s.tick, r.tick_lower, r.tick_upper) === 'both';
       this.liveCache.set(rowKey(r), { ts: now, value, fee, tick: s.tick, inRange });

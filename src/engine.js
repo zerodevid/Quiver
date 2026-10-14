@@ -17,6 +17,7 @@ const { PaperBook } = require('./paper');
 
 // A wallet research older than this is refreshed in the background when equity sizing needs it.
 const TARGET_RESEARCH_STALE_MS = 5 * 60_000;
+const { ensureAnchor } = require('./usd-anchor');
 const { rulesFor, planEntry, planExit, quoteToUsd, usdPerQuote } = require('./policy');
 const { enumerateV4, livePositions } = require('./scout');
 const { Market } = require('./market');
@@ -720,6 +721,15 @@ class Engine {
       ethUsd: this.ethUsd, openExposureUsd: sum.exposureUsd, spentTodayUsd: spent, openCount: sum.openCount,
       cash, existingUsd: mirror ? usdOfMirror(mirror) : null, ...equity,
     };
+    if (rules.filters.allow_no_quote && !this.chain.quoteSideOf(act.token0, act.token1)) {
+      await ensureAnchor(this.chain, act.token0, act.token1, undefined, { force: true });
+      if (act.valueQuote == null && act.slot0 && act.tickLower != null && act.tickUpper != null && act.liquidity != null) {
+        const L = BigInt(act.liquidity) < 0n ? -BigInt(act.liquidity) : BigInt(act.liquidity);
+        const amt = m.amountsForLiquidity(act.slot0.sqrtPriceX96, m.getSqrtRatioAtTick(act.tickLower), m.getSqrtRatioAtTick(act.tickUpper), L);
+        const v = this.chain.valueInQuote({ sqrtPriceX96: act.slot0.sqrtPriceX96, ...amt, dec0: toks[0].decimals, dec1: toks[1].decimals, token0: act.token0, token1: act.token1 });
+        if (v) { act.valueQuote = v.value; act.quoteSymbol = v.symbol; }
+      }
+    }
     let d = planEntry(act, ctx);
     // The range from the rules (recenter/scale/…) is not the same as the first mirror: look for another mirror
     // with the same range; if none, this is a NEW position with the new-position limit.
@@ -1497,6 +1507,54 @@ class Engine {
     return n;
   }
 
+  // Buy the tokens of a pair with no quote asset from USDG cash: ETH cash is bridged to USDG
+  // first (ensureQuoteAsset), then each short token is bought with one Kyber swap sized from its
+  // USD value at the pool price plus the slippage room. The zap loop in sendEntry still tops up
+  // a token that came out short (a moving price), paying with the other token.
+  async fundNoQuote(plan, rules) {
+    if (!rules.swap.enabled) throw new Error('pool tanpa aset kuotasi butuh auto-swap, dan auto-swap dimatikan');
+    const usdg = this.chain.ADDR.usdg;
+    const stable = this.chain.QUOTES[usdg];
+    await ensureAnchor(this.chain, plan.token0, plan.token1, undefined, { force: true });
+    const toks = await this.chain.tokens([plan.token0, plan.token1]);
+    const s = this.chain.isV3Venue(plan.venue) ? await this.chain.slot0V3(plan.poolRef) : await this.chain.slot0V4(plan.poolRef);
+    if (!s || s.sqrtPriceX96 <= 0n) throw new Error('gagal membaca harga pool dari RPC');
+    const sa = m.getSqrtRatioAtTick(plan.tickLower), sb = m.getSqrtRatioAtTick(plan.tickUpper);
+    const need = m.amountsForLiquidity(s.sqrtPriceX96, sa, sb, BigInt(plan.liquidity));
+    const bal = await this.exec.balances([plan.token0, plan.token1]);
+    const slip = rules.swap.max_slippage_bps;
+    const usdOf = (idx, raw) => this.chain.valueInQuote({ sqrtPriceX96: s.sqrtPriceX96,
+      amount0: idx === 0 ? raw : 0n, amount1: idx === 1 ? raw : 0n,
+      dec0: toks[0].decimals, dec1: toks[1].decimals, token0: plan.token0, token1: plan.token1 })?.value;
+    const buys = [];
+    for (const idx of [0, 1]) {
+      const tok = idx === 0 ? plan.token0 : plan.token1;
+      const want = idx === 0 ? need.amount0 : need.amount1;
+      const short = want - (bal.get(tok.toLowerCase()) || 0n);
+      if (short <= 0n) continue;
+      const usd = usdOf(idx, short);
+      if (!(usd > 0) || !Number.isFinite(usd)) throw new Error('harga dolar token belum terbaca — tidak bisa membeli token pool tanpa kuotasi');
+      buys.push({ idx, tok, usd });
+    }
+    if (!buys.length) return [];
+    // 1% over the slippage room: a token that arrives a hair short is topped up by the zap loop.
+    const payRawOf = (usd) => BigInt(Math.ceil(usd * (1 + slip / 10000) * 1.01 * 10 ** stable.decimals));
+    const totalRaw = buys.reduce((t, b) => t + payRawOf(b.usd), 0n);
+    const notes = await this.ensureQuoteAsset({ token0: usdg, token1: usdg, quoteSide: 0 }, rules, totalRaw);
+    const lossBps = rules.swap.max_price_impact_bps;
+    for (const b of buys) {
+      const before = (await this.exec.balances([b.tok])).get(b.tok.toLowerCase()) || 0n;
+      const r = await this.kyber.swap(usdg, b.tok, payRawOf(b.usd), {
+        slippageBps: slip, maxLossBps: lossBps, kind: 'zap_swap',
+        detail: { via: 'kyber', pool: plan.poolRef, buy: b.tok.toLowerCase(), pay: usdg.toLowerCase(), target: plan.target ?? null, noQuote: true },
+      });
+      if (!r) throw new Error(`tidak ada rute Kyber untuk membeli ${toks[b.idx].symbol || b.tok.slice(0, 8)} — LP belum dibuka`);
+      await this.balancesAfterSwap([plan.token0, plan.token1], b.tok, before, r.amountOut ?? null);
+      notes.push(`beli ${toks[b.idx].symbol || `token${b.idx}`} ~$${b.usd.toFixed(2)} via ${aggLabel(r?.quote)}`);
+    }
+    return notes;
+  }
+
   async sendEntry(plan, act, trace = {}, { resume = false } = {}) {
     const rules = this.rulesFrom(act.target);
     const pk = plan.poolKey;
@@ -1528,6 +1586,13 @@ class Engine {
         notes.push(...bridged);
         bal = await this.exec.balances([plan.token0, plan.token1]);
       }
+    }
+
+    // 0b. A pair with no quote asset: BOTH tokens are bought from cash (USDG/ETH) before minting.
+    if (!resume && plan.noQuote) {
+      const funded = await this.fundNoQuote(plan, rules);
+      notes.push(...funded);
+      if (funded.length) { trace.bridged = true; bal = await this.exec.balances([plan.token0, plan.token1]); }
     }
 
     const sa = m.getSqrtRatioAtTick(plan.tickLower), sb = m.getSqrtRatioAtTick(plan.tickUpper);
@@ -2047,8 +2112,18 @@ class Engine {
   // The non-quote side of a fee claim: { token, quote, amount, quoteValue } or null
   // for a pair that is money on both sides (ETH/USDG) or whose memecoin is zero.
   memeSideOf(pos, amount0, amount1, slot, toks) {
-    const q = this.chain.quoteSideOf(pos.token0, pos.token1);
-    if (!q) return null;
+    let q = this.chain.quoteSideOf(pos.token0, pos.token1);
+    if (!q) {
+      // No quote asset: both tokens are memecoins. The fee ledger has one slot per claim, so the
+      // larger side by value goes in; the other side stays in the wallet unsold.
+      const usd = (a0, a1) => (slot && this.chain.valueInQuote({ sqrtPriceX96: slot.sqrtPriceX96, amount0: a0, amount1: a1,
+        dec0: toks[0].decimals, dec1: toks[1].decimals, token0: pos.token0, token1: pos.token1 })?.value) || 0;
+      const v0 = amount0 > 0n ? usd(amount0, 0n) : 0, v1 = amount1 > 0n ? usd(0n, amount1) : 0;
+      if (!(v0 > 0 || v1 > 0)) return null;
+      const big = v0 >= v1 ? 0 : 1;
+      return { token: String(big === 0 ? pos.token0 : pos.token1).toLowerCase(), quote: this.chain.ADDR.usdg.toLowerCase(),
+        amount: (big === 0 ? amount0 : amount1).toString(), quoteValue: big === 0 ? v0 : v1 };
+    }
     const side = q.side === 0 ? 1 : 0;
     const token = String(side === 0 ? pos.token0 : pos.token1).toLowerCase();
     const quote = String(q.side === 0 ? pos.token0 : pos.token1).toLowerCase();
@@ -2446,27 +2521,49 @@ class Engine {
   // (position quote asset units). Its amount is from the Transfer log in the receipt — the same
   // as what sellLeftover will sell — not from the balance difference.
   async leftoverOf(pos, receipt, sqrt) {
+    const roles = this.leftoverRoles(pos);
+    if (!roles) return null;
+    const me = this.exec.address().toLowerCase();
+    const [t0, t1] = await this.chain.tokens([pos.token0, pos.token1]);
+    let best = null;
+    // A pair with no quote asset returns TWO memecoins; the position row has one leftover slot,
+    // so the larger one (by value) is the ledger entry and the other is only sold (sellLeftover).
+    for (const meme of roles.memes) {
+      const got = this.receivedFromLogs(receipt, meme, me);
+      if (got === 0n) continue;
+      let quote = 0;
+      if (sqrt) {
+        const is0 = meme === String(pos.token0).toLowerCase();
+        const v = this.chain.valueInQuote({
+          sqrtPriceX96: BigInt(sqrt), amount0: is0 ? got : 0n, amount1: is0 ? 0n : got,
+          dec0: t0?.decimals ?? 18, dec1: t1?.decimals ?? 18, token0: pos.token0, token1: pos.token1,
+        });
+        quote = v ? v.value : 0;
+      }
+      if (!best || quote > best.quote) best = { token: meme, amount: got, quote };
+    }
+    return best;
+  }
+
+  // Which tokens of a pair are "money" to sell INTO and which are memecoins to sell: a pair with
+  // a quote asset has one memecoin (null when both sides are money, e.g. ETH/USDG); a pair
+  // without one has two, sold into USDG. null = nothing to sell.
+  leftoverRoles(pos) {
     const q = this.chain.quoteSideOf(pos.token0, pos.token1);
-    if (!q) return null;
+    if (!q) return { quote: this.chain.ADDR.usdg.toLowerCase(), memes: [String(pos.token0).toLowerCase(), String(pos.token1).toLowerCase()] };
     const meme = String(q.side === 0 ? pos.token1 : pos.token0).toLowerCase();
     if (this.chain.quoteSideOf(meme, meme)) return null;
-    const me = this.exec.address().toLowerCase();
+    return { quote: String(q.side === 0 ? pos.token0 : pos.token1).toLowerCase(), memes: [meme] };
+  }
+
+  // Amount of `token` that Transfer logs in the receipt sent to `me`.
+  receivedFromLogs(receipt, token, me) {
     let got = 0n;
     for (const l of receipt?.logs || []) {
-      if (l.address.toLowerCase() !== meme || l.topics[0] !== TOPIC.transfer || l.topics.length !== 3) continue;
+      if (l.address.toLowerCase() !== token || l.topics[0] !== TOPIC.transfer || l.topics.length !== 3) continue;
       if (('0x' + l.topics[2].slice(-40)).toLowerCase() === me) got += BigInt(l.data);
     }
-    if (got === 0n) return null;
-    let quote = 0;
-    if (sqrt) {
-      const [t0, t1] = await this.chain.tokens([pos.token0, pos.token1]);
-      const v = this.chain.valueInQuote({
-        sqrtPriceX96: BigInt(sqrt), amount0: q.side === 0 ? 0n : got, amount1: q.side === 0 ? got : 0n,
-        dec0: t0?.decimals ?? 18, dec1: t1?.decimals ?? 18, token0: pos.token0, token1: pos.token1,
-      });
-      quote = v ? v.value : 0;
-    }
-    return { token: meme, amount: got, quote };
+    return got;
   }
 
   // ---- sell leftover memecoin --------------------------------------------
@@ -2478,21 +2575,24 @@ class Engine {
   async sellLeftover(pos, receipt, opts = {}) {
     const rules = this.rulesFrom(pos.target);
     if (!rules.exit.sell_leftover) return null;
-    // quoteSideOf returns an object {side, symbol, kind}, not a number.
-    const q = this.chain.quoteSideOf(pos.token0, pos.token1);
-    if (!q) return null;                            // a pair without a quote asset
-    const meme = String(q.side === 0 ? pos.token1 : pos.token0).toLowerCase();
-    const quote = String(q.side === 0 ? pos.token0 : pos.token1).toLowerCase();
-    // ETH/USDG, WETH/USDG, etc.: both are "money" — there is no memecoin to sell.
-    if (this.chain.quoteSideOf(meme, meme)) return null;
+    // ETH/USDG, WETH/USDG, etc.: both are "money" — there is no memecoin to sell (roles = null).
+    const roles = this.leftoverRoles(pos);
+    if (!roles) return null;
     const me = this.exec.address().toLowerCase();
-    let got = 0n;
-    for (const l of receipt?.logs || []) {
-      if (l.address.toLowerCase() !== meme || l.topics[0] !== TOPIC.transfer || l.topics.length !== 3) continue;
-      if (('0x' + l.topics[2].slice(-40)).toLowerCase() === me) got += BigInt(l.data);
+    const msgs = [];
+    let firstErr = null;
+    // Two memecoins (a pair with no quote asset) are sold one after the other; one failing
+    // goes to the retry queue by itself and must not block the other.
+    for (const meme of roles.memes) {
+      const got = this.receivedFromLogs(receipt, meme, me);
+      if (got === 0n) continue;
+      try {
+        const r = await this.sellToken({ posId: pos.id, target: pos.target, token: meme, quote: roles.quote, amount: got, tries: 0 }, opts);
+        if (r) msgs.push(r);
+      } catch (e) { firstErr ??= e; }
     }
-    if (got === 0n) return null;
-    return this.sellToken({ posId: pos.id, target: pos.target, token: meme, quote, amount: got, tries: 0 }, opts);
+    if (firstErr && !msgs.length) throw firstErr;
+    return msgs.length ? msgs.join(' · ') : null;
   }
 
   // Sell `amount` of a token into `quote` via Kyber. Failure -> recorded to be retried.

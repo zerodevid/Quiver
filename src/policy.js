@@ -103,6 +103,9 @@ const DEFAULTS = {
   },
   filters: {
     allow_hooks: false,
+    // Also copy pools with NO quote asset (memecoin / memecoin): valued in USD through a
+    // DexScreener anchor (usd-anchor.js), funded from USDG/ETH cash. Off = skipped.
+    allow_no_quote: false,
     // Empty = all quote assets the chain knows (chain.QUOTES: stablecoin +
     // native + wrapped-native). A fixed symbol list like ['USDG','ETH','WETH'] is no
     // longer the default because symbols differ per chain (BSC: USDT/BNB/WBNB).
@@ -157,7 +160,7 @@ const RULE_SPEC = {
     leftover_retry_sec: ['int', 1, 86_400],
   },
   filters: {
-    allow_hooks: ['bool'], quote_whitelist: ['list'], token_blacklist: ['list'], token_whitelist: ['list'],
+    allow_hooks: ['bool'], allow_no_quote: ['bool'], quote_whitelist: ['list'], token_blacklist: ['list'], token_whitelist: ['list'],
     min_pool_age_minutes: ['num', 0, 1e7], min_target_quote_usd: ['num', 0, 1e9],
     min_liquidity_usd: ['num', 0, 1e12], min_volume24h_usd: ['num', 0, 1e12],
     max_open_positions: ['int', 0, 100_000], cooldown_seconds: ['num', 0, 1e7],
@@ -359,16 +362,23 @@ function planEntry(act, ctx) {
   }
   if (act.fee != null && act.fee > rules.filters.max_fee_bps) return skip(`fee tier ${act.fee} di atas batas`);
 
-  const q = chain.quoteSideOf(act.token0, act.token1);
-  if (!q) return skip(`pool tanpa aset kuotasi yang dikenal (${Object.values(chain.QUOTES).map((x) => x.symbol).join('/')})`);
-  if (rules.filters.quote_whitelist.length && !rules.filters.quote_whitelist.includes(q.symbol)) {
+  let q = chain.quoteSideOf(act.token0, act.token1);
+  if (!q && !rules.filters.allow_no_quote) {
+    return skip(`pool tanpa aset kuotasi yang dikenal (${Object.values(chain.QUOTES).map((x) => x.symbol).join('/')})`);
+  }
+  // No quote asset (allowed): sized and booked in USD, like USDG. side null = no money side.
+  const noQuote = !q;
+  if (noQuote) {
+    const stable = chain.QUOTES[chain.ADDR.usdg];
+    q = { side: null, symbol: stable.symbol, decimals: stable.decimals, kind: 'usd' };
+  } else if (rules.filters.quote_whitelist.length && !rules.filters.quote_whitelist.includes(q.symbol)) {
     return skip(`kuotasi ${q.symbol} tidak diizinkan`);
   }
-  const other = (q.side === 0 ? act.token1 : act.token0).toLowerCase();
+  const memes = (noQuote ? [act.token0, act.token1] : [q.side === 0 ? act.token1 : act.token0]).map((x) => x.toLowerCase());
   const bl = rules.filters.token_blacklist.map((x) => x.toLowerCase());
   const wl = rules.filters.token_whitelist.map((x) => x.toLowerCase());
-  if (bl.includes(other)) return skip('token masuk daftar hitam');
-  if (wl.length && !wl.includes(other)) return skip('token di luar daftar putih');
+  if (memes.some((t) => bl.includes(t))) return skip('token masuk daftar hitam');
+  if (wl.length && !memes.every((t) => wl.includes(t))) return skip('token di luar daftar putih');
 
   const targetUsd = quoteToUsd(act.valueQuote || 0, q.kind, ethUsd);
   if (targetUsd < rules.filters.min_target_quote_usd) {
@@ -417,7 +427,7 @@ function planEntry(act, ctx) {
   if (L <= 0n) return skip('ukuran hasil hitung nol');
 
   let est = valueOfLiquidity(chain, act, L, range.tickLower, range.tickUpper, slot0, dec0, dec1);
-  if (est.value == null) return skip('tidak bisa menilai posisi');
+  if (est.value == null) return skip(noQuote ? 'harga dolar token belum terbaca (DexScreener) — tidak bisa menilai pool tanpa kuotasi' : 'tidak bisa menilai posisi');
   let usd = quoteToUsd(est.value, q.kind, ethUsd);
 
   // upper limits: all ceilings are collected first (not just the exceeded one), because
@@ -497,7 +507,7 @@ function planEntry(act, ctx) {
       liquidity: L.toString(),
       amount0: est.amount0.toString(), amount1: est.amount1.toString(),
       amount0Max: pad(est.amount0).toString(), amount1Max: pad(est.amount1).toString(),
-      valueQuote: est.value, quoteSymbol: q.symbol, quoteKind: q.kind, quoteSide: q.side,
+      valueQuote: est.value, quoteSymbol: q.symbol, quoteKind: q.kind, quoteSide: q.side, noQuote,
       valueUsd: usd,
       side: sideNow,
       mirrorOf: act.tokenId, target: act.target,

@@ -762,6 +762,14 @@ function DisplayTab({ d, reload }) {
     setBusy('');
     say(r, hidden ? 'Nilai portofolio kini tampil' : 'Nilai portofolio kini tersensor');
   };
+  const anchorOn = d.prices?.usd_anchor !== false;
+  const anchor = async (v) => {
+    setBusy('anchor');
+    const r = await post('/api/settings/usd-anchor', { enabled: v });
+    setBusy('');
+    say(r, v ? 'Pair tanpa aset kuotasi kini dinilai' : 'Pair tanpa aset kuotasi kembali tanpa nilai');
+    if (!r.error) reload();
+  };
   // An example is used so the choice shows its result before leaving the page.
   const sample = fx?.rate ? fxFormat(1234.56, fx) : null;
   return (
@@ -769,6 +777,10 @@ function DisplayTab({ d, reload }) {
     <Section title="Sensor nilai portofolio" desc="Menutup semua nilai dolar milik kita — saldo, modal, PnL, fee, dan jumlah token — dengan $•••••. Persen dan data pasar tetap terlihat. Berguna untuk berbagi layar, merekam, atau membuka dasbor di tempat umum.">
       <Toggle label="Sensor nilai" value={hidden} onChange={hide} isDisabled={busy === 'hide'}
         desc="Sama dengan ikon mata di sebelah tombol tema dan di mini app Telegram — satu sakelar untuk semuanya. Berlaku di semua tab dan perangkat, dan tetap tersimpan sampai dimatikan lagi." />
+    </Section>
+    <Section title="Nilai pair tanpa aset kuotasi" desc="Pool dua memecoin (tanpa USDG/ETH/WETH) tidak punya harga dolar bawaan, jadi nilainya tampil $0. Kalau dinyalakan, satu token dipatok ke harga dolar DexScreener dan token satunya dihitung lewat harga pool. Hanya untuk tampilan riset dan wallet — salin posisi tetap melewati pool seperti ini.">
+      <Toggle label="Hitung nilai dolar" value={anchorOn} onChange={anchor} isDisabled={busy === 'anchor'}
+        desc="Pakai harga DexScreener saat ini, juga untuk kejadian lama, jadi nilai masa lalu hanya perkiraan. Mati: pair seperti ini kembali tanpa nilai dan DexScreener tidak dipanggil. Berlaku langsung." />
     </Section>
     <Section title="Mata uang kedua" desc="Semua nominal di dasbor dihitung dalam dolar — itu satuan yang dipakai pool, harga token, dan seluruh perhitungan PnL. Pilihan di sini menambahkan nilai yang sama dalam mata uang lain, ditulis kecil di sebelah angka dolarnya, supaya nominalnya punya rasa besaran. Angka utamanya tidak berubah.">
       <div className="grid gap-5 md:grid-cols-2">

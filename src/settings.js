@@ -405,7 +405,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
           poll_ms: cfg.loop?.poll_ms ?? 1500, max_block_span: cfg.loop?.max_block_span ?? 1500,
           sync_seconds: cfg.loop?.sync_seconds ?? 30,
         },
-        prices: { eth_usd: cfg.prices?.eth_usd ?? 2500, auto_eth_price: cfg.prices?.auto_eth_price !== false },
+        prices: { eth_usd: cfg.prices?.eth_usd ?? 2500, auto_eth_price: cfg.prices?.auto_eth_price !== false, usd_anchor: cfg.prices?.usd_anchor !== false },
         display: {
           currency: currencyOf(cfg),
           hide_values: !!cfg.display?.hide_values,
@@ -812,6 +812,14 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
       // this page — not only appearing a few seconds later.
       if (code && fx) await fx.refresh().catch(() => {});
       return { ok: true, fx: code && fx ? fx.view(code) : null };
+    },
+    // Value pairs without a quote asset (memecoin / memecoin) in USD via DexScreener. Applies at once.
+    'POST /api/settings/usd-anchor': async (req) => {
+      const b = await readBody(req);
+      cfg.prices = { ...(cfg.prices || {}), usd_anchor: !!b.enabled };
+      require('./usd-anchor').setEnabled(!!b.enabled);
+      saveCfg();
+      return { ok: true, usd_anchor: !!b.enabled };
     },
     'POST /api/settings/display/refresh': async () => {
       if (!fx) return { error: 'Kurs belum tersedia.' };

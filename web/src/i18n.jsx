@@ -1285,6 +1285,16 @@ const EN = {
   'titip ke otomasi': 'hand over to automation',
 
   // portfolio value censoring
+  'Nilai pair tanpa aset kuotasi': 'Value pairs without a quote asset',
+  'Hitung nilai dolar': 'Compute dollar value',
+  'Pool dua memecoin (tanpa USDG/ETH/WETH) tidak punya harga dolar bawaan, jadi nilainya tampil $0. Kalau dinyalakan, satu token dipatok ke harga dolar DexScreener dan token satunya dihitung lewat harga pool. Hanya untuk tampilan riset dan wallet — salin posisi tetap melewati pool seperti ini.': 'A pool of two memecoins (no USDG/ETH/WETH) has no built-in dollar price, so it reads $0. When on, one token is anchored to its DexScreener dollar price and the other is converted through the pool price. Research and wallet views only — copy-trading still skips pools like this.',
+  'Pakai harga DexScreener saat ini, juga untuk kejadian lama, jadi nilai masa lalu hanya perkiraan. Mati: pair seperti ini kembali tanpa nilai dan DexScreener tidak dipanggil. Berlaku langsung.': 'Uses the current DexScreener price, also for old events, so past values are approximate. Off: such pairs go back to having no value and DexScreener is not called. Takes effect immediately.',
+  'Pair tanpa aset kuotasi kini dinilai': 'Pairs without a quote asset are now valued',
+  'Pair tanpa aset kuotasi kembali tanpa nilai': 'Pairs without a quote asset have no value again',
+  'Salin pool tanpa USDG/ETH': 'Copy pools without USDG/ETH',
+  'Mati: pool dua memecoin (tanpa aset kuotasi) dilewati. Nyala: ikut disalin; nilai dolarnya dihitung lewat harga DexScreener, jadi hanya sedekat harga itu.': 'Off: pools of two memecoins (no quote asset) are skipped. On: they are copied too; the dollar value comes from the DexScreener price, so it is only as close as that price.',
+  '@harga dolar token belum terbaca (DexScreener) — tidak bisa menilai pool tanpa kuotasi': 'token dollar price not readable (DexScreener) — cannot value a pool without a quote asset',
+  '@pool tanpa kuotasi baru bisa disalin di mode uji/simulasi — eksekusi live belum tersedia': 'a pool without a quote asset can only be copied in test/simulation mode — live execution is not available yet',
   'Sensor nilai portofolio': 'Hide portfolio values',
   'Tampilkan nilai portofolio': 'Show portfolio values',
   'Menutup semua nilai dolar milik kita — saldo, modal, PnL, fee, dan jumlah token — dengan $•••••. Persen dan data pasar tetap terlihat. Berguna untuk berbagi layar, merekam, atau membuka dasbor di tempat umum.':

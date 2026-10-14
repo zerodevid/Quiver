@@ -66,6 +66,7 @@ async function main() {
     applyPendingRestore(loadCfg().db.path, console.log);
   }
   const cfg = loadCfg();
+  require('./usd-anchor').setEnabled(cfg.prices?.usd_anchor !== false);
   // Multi-chain shape (chains.<name>.*). An old config is normalised in memory; written
   // back to disk so the new shape is visible & editable (writeCfg keeps
   // secrets from .env from being written).

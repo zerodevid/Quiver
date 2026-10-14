@@ -60,5 +60,7 @@
   "posisi sedang diproses": "position is being processed",
   "tambah $": "added $",
   "kembali $": "returned $",
-  " diklaim": " claimed"
+  " diklaim": " claimed",
+  "harga dolar token belum terbaca (DexScreener) — tidak bisa menilai pool tanpa kuotasi": "token dollar price not readable (DexScreener) — cannot value a pool without a quote asset",
+  "pool tanpa kuotasi baru bisa disalin di mode uji/simulasi — eksekusi live belum tersedia": "a pool without a quote asset can only be copied in test/simulation mode — live execution is not available yet"
 }

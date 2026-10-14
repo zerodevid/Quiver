@@ -19,6 +19,7 @@ const { ethers } = require('ethers');
 const { TOPIC, ABI } = require('./chain');
 const { getLogsSafe } = require('./scout');
 const { unclaimedV3 } = require('./fees');
+const { ensureAnchor, valueAnchoredUsd } = require('./usd-anchor');
 const m = require('./v3math');
 
 const IF_NPM = new ethers.Interface(ABI.npmV3);
@@ -255,6 +256,8 @@ class WalletV3 {
     const d0 = t0?.decimals ?? 18, d1 = t1?.decimals ?? 18;
     const q = this.chain.quoteSideOf(inf.token0, inf.token1);
     const s0 = slot.get(inf.poolAddr);
+    // No quote asset in the pair: value it through a USD anchor on one of its tokens.
+    await ensureAnchor(this.chain, inf.token0, inf.token1);
 
     // If the price at that block is unreadable (a pool with no Swap nearby, without an
     // archive node), the QUOTE side can still be valued exactly — it is the money itself.
@@ -269,6 +272,12 @@ class WalletV3 {
           token0: inf.token0, token1: inf.token1,
         });
         if (v) return v.value;
+        if (!q) {
+          const u = valueAnchoredUsd(this.chain, {
+            sqrtPriceX96: sqrt, amount0: a0, amount1: a1, dec0: d0, dec1: d1, token0: inf.token0, token1: inf.token1,
+          });
+          if (u != null) return u;
+        }
       }
       if (!q) return 0;
       const lain = q.side === 0 ? a1 : a0;

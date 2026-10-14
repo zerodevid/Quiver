@@ -8,6 +8,7 @@ const { computePoolId, priceUsable } = require('./pools');
 const { unclaimedV4, unclaimedV3 } = require('./fees');
 const m = require('./v3math');
 const { usdPerQuote } = require('./policy');
+const { ensureAnchor } = require('./usd-anchor');
 const { isSim, simFee } = require('./paper');
 
 const IF_POSM = new ethers.Interface(ABI.posmV4);
@@ -293,6 +294,7 @@ class Positions {
       for (const a of new Set(rows.filter((r) => this.chain.isV3Venue(r.venue)).map((r) => r.pool_ref))) {
         try { slots.set(a, await this.chain.slot0V3(a)); liqs.set(a, await this.poolLiquidityOf('v3', a)); } catch { /* dinilai harga tutup */ }
       }
+      await this.warmAnchors(rows);
       const toks = await this.chain.tokens([...new Set(rows.flatMap((r) => [r.token0, r.token1]))]);
       const dec = new Map(toks.filter(Boolean).map((t) => [t.address, t.decimals]));
       for (const r of rows) {
@@ -379,6 +381,16 @@ class Positions {
       return { sqrt: own, ref: 'entry' };
     }
     return { sqrt: s.sqrtPriceX96, ref: null };
+  }
+
+  // Pairs with no quote asset are valued through a cached USD anchor (usd-anchor.js): refresh it
+  // (60 s cache) before valuing, also after a restart when the cache is empty.
+  async warmAnchors(rows) {
+    for (const r of rows) {
+      if (r.token0 && r.token1 && !this.chain.quoteSideOf(r.token0, r.token1)) {
+        await ensureAnchor(this.chain, r.token0, r.token1, undefined, { force: true });
+      }
+    }
   }
 
   // Read the pool price of position r then choose its marking price; shaped as slot0 so it can be
@@ -532,6 +544,7 @@ class Positions {
     for (const r of v3) if (!feeBy.has(r.id)) feeBy.set(r.id, { fee0: 0n, fee1: 0n });
     for (const r of rows) if (isSim(r)) feeBy.set(r.id, simFee(this.chain, r));
 
+    await this.warmAnchors(rows);
     // 4. token metadata
     const toks = new Set();
     for (const r of rows) { if (r.token0) toks.add(r.token0); if (r.token1) toks.add(r.token1); }
