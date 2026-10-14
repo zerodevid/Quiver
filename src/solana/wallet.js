@@ -12,6 +12,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { Keypair } = require('@solana/web3.js');
 const bs58 = require('bs58').default || require('bs58');
+const { readSecret, writeSecret } = require('../keyfile');
 
 const DEFAULT_FILE = '~/.lpcopy/solana-key';
 const expand = (p) => (p && p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p);
@@ -35,20 +36,17 @@ function parseSecret(text) {
 function keyFileOf(cfg) { return expand(cfg?.wallet?.solana_key_file || DEFAULT_FILE); }
 
 function loadKeypair(cfg, env = process.env) {
-  if (env.LPCOPY_SOLANA_PRIVATE_KEY) return parseSecret(env.LPCOPY_SOLANA_PRIVATE_KEY);
+  // A multi-user account (wallet.from_env === false) never uses the superadmin's env key.
+  if (cfg?.wallet?.from_env !== false && env.LPCOPY_SOLANA_PRIVATE_KEY) return parseSecret(env.LPCOPY_SOLANA_PRIVATE_KEY);
   const p = keyFileOf(cfg);
   if (!p || !fs.existsSync(p)) return null;
-  const st = fs.statSync(p);
-  if ((st.mode & 0o077) !== 0) throw new Error(`izin ${p} terlalu longgar — jalankan: chmod 600 ${p}`);
-  return parseSecret(fs.readFileSync(p, 'utf8'));
+  return parseSecret(readSecret(p));
 }
 
 // Store a new key (from the Settings page / Telegram): base58, mode 600.
 function saveKeypair(cfg, kp) {
   const p = keyFileOf(cfg);
-  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(p, bs58.encode(kp.secretKey), { mode: 0o600 });
-  try { fs.chmodSync(p, 0o600); } catch { /* ignore */ }
+  writeSecret(p, bs58.encode(kp.secretKey), { encrypt: !!cfg?.wallet?.encrypted });
   return p;
 }
 

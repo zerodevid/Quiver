@@ -3,7 +3,7 @@ import { Button, Chip, Toast, toast } from '@heroui/react';
 import {
   LayoutDashboard, Layers, ListChecks, Users, SlidersHorizontal, Wallet as WalletIcon,
   Settings as SettingsIcon, Moon, Sun, Pause, Play, Menu, X, LogOut, Eye, EyeOff,
-  PlusCircle, ArrowDownUp, BookOpen, MonitorDot,
+  PlusCircle, ArrowDownUp, BookOpen, MonitorDot, UserCog,
 } from 'lucide-react';
 import { usePoll, useHash, useTheme } from './hooks';
 import { post } from './api';
@@ -19,6 +19,7 @@ import SearchModal, { SearchTrigger } from './components/GlobalSearch';
 
 import { Loading, ConfirmHost, WalletLinks, ask } from './components/ui';
 import { hideSplash } from './splash';
+import { useMe, isSuperadmin } from './me';
 
 // Each page is loaded when opened — the chart library is only downloaded for the Summary.
 const Overview = lazy(() => import('./pages/Overview'));
@@ -32,6 +33,7 @@ const Settings = lazy(() => import('./pages/Settings'));
 const ManualLp = lazy(() => import('./pages/ManualLp'));
 const Swap = lazy(() => import('./pages/Swap'));
 const Learn = lazy(() => import('./pages/Learn'));
+const Admin = lazy(() => import('./pages/Admin'));
 // Not in the menu: opened from a token icon (#token/0x…) and a pair name (#pool/0x…).
 const TokenDetail = lazy(() => import('./pages/TokenDetail'));
 const PoolDetail = lazy(() => import('./pages/PoolDetail'));
@@ -65,13 +67,18 @@ const NAV = [
 ];
 // #scout used to be its own page; its content is now inside Wallet. Old links
 // (bookmarks, Telegram messages) still land in the right place.
-const PAGES = { ...Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C]))), scout: WalletPage, token: TokenDetail, pool: PoolDetail };
+// Multi-user: the superadmin also gets the account console under System.
+const ADMIN_ITEM = ['admin', 'Akun', UserCog, Admin];
+const navFor = (me) => (isSuperadmin(me) && me.multiUser
+  ? NAV.map(([g, items]) => [g, g === 'Sistem' ? [...items, ADMIN_ITEM] : items]) : NAV);
+const PAGES = { ...Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C]))), scout: WalletPage, token: TokenDetail, pool: PoolDetail, admin: Admin };
 
 function NavLinks({ page, onPick }) {
   const { t } = useI18n();
+  const me = useMe();
   return (
     <nav className="flex flex-col gap-4">
-      {NAV.map(([group, items]) => (
+      {navFor(me).map(([group, items]) => (
         <div key={group}>
           <div className="px-2.5 pb-1 text-[0.6875rem] font-medium text-muted">{t(group)}</div>
           <div className="flex flex-col gap-px">
@@ -129,11 +136,13 @@ function PrivacyButton({ hidden, toggle }) {
 
 function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
   const { t, locale, setLocale } = useI18n();
+  const me = useMe();
+  const account = me?.user && !me.user.legacy ? me.user : null;
   const m = status?.mode;
   const pause = async () => { await post('/api/mode', { paused: !m?.paused }); reload(); };
   // Not via api.post: /logout replies with a redirect to the sign-in page, not JSON.
   const logout = async () => {
-    if (!(await ask({ title: t('Keluar dari dasbor?'), body: t('Untuk masuk lagi perlu token akses.'), confirm: t('Keluar dari dasbor') }))) return;
+    if (!(await ask({ title: t('Keluar dari dasbor?'), body: t(account ? 'Untuk masuk lagi perlu nama pengguna dan kata sandi.' : 'Untuk masuk lagi perlu token akses.'), confirm: t('Keluar dari dasbor') }))) return;
     await fetch('/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
     location.href = '/';
   };
@@ -153,6 +162,12 @@ function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
             {m?.wallet && <WalletLinks address={m.wallet} compact className="trade-snug" />}
           </span>
         </div>
+        {account && (
+          <div className="mt-1.5 flex items-center justify-between gap-2">
+            <span className="text-xs text-muted">{t('Akun')}</span>
+            <span className="truncate text-xs font-medium" title={account.username}>{account.username}</span>
+          </div>
+        )}
       </div>
       {/* Pause/resume is the only action that changes the bot — standalone, as wide as the sidebar. */}
       <Button size="sm" variant="outline" className="w-full" onPress={pause} isDisabled={!m}>
@@ -166,8 +181,8 @@ function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
           </Button>
           <PrivacyButton hidden={privacy[0]} toggle={privacy[1]} />
           <AlertBell placement="top" variant="ghost" iconClass="size-4" />
-          {/* Only when the token gate is on; without a token there is no session to close. */}
-          {m?.auth && (
+          {/* Only when the gate is on (token or accounts); otherwise there is no session to close. */}
+          {(m?.auth || account) && (
             <Button size="sm" variant="ghost" isIconOnly aria-label={t('Keluar dari dasbor')} onPress={logout}>
               <LogOut className="size-4" />
             </Button>

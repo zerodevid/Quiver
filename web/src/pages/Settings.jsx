@@ -12,8 +12,13 @@ import { num, usd, plainUsd, locale as fmtLocale, ago } from '../fmt';
 import { fxFormat } from '../currency';
 import { usePrivacy } from '../privacy';
 import { useI18n, translate as tt, reason } from '../i18n';
+import { useMe, isRegular } from '../me';
 
 const amt = (v, d = 4) => (v == null ? '—' : Number(v).toLocaleString(fmtLocale(), { maximumFractionDigits: d }));
+
+// Shared infrastructure owned by the superadmin; a regular account in multi-user mode does
+// not see these tabs (the server refuses their routes and leaves their data out anyway).
+const ADMIN_TABS = new Set(['chains', 'rpc', 'gmgn', 'loop', 'security', 'aggregators']);
 
 const SETTINGS_NAV = [
   ['wallet', 'Wallet & mode', 'Dana dan mode transaksi', Wallet],
@@ -132,6 +137,8 @@ function ChainsTab({ d, setD }) {
 function WalletTab({ d, reload }) {
   const { t } = useI18n();
   const { reload: reloadStatus } = useStatus();
+  // A regular account proves itself with its own password; it has no dashboard token.
+  const regular = isRegular(useMe());
   const w = d.wallet, m = d.mode;
   const [pk, setPk] = useState('');
   const [replace, setReplace] = useState(false);
@@ -154,7 +161,7 @@ function WalletTab({ d, reload }) {
     return r;
   };
   return (
-    <Section title="Wallet bot" desc={<>{t('Pakai wallet khusus bot, jangan wallet utama. Kunci privat disimpan di server')} (<span className="mono">{w.fromEnv ? `.env · ${w.fromEnv}` : w.keyFile}</span>) {t('dan tidak pernah dikirim mentah — cuma bisa diekspor sebagai keystore terenkripsi.')}</>}>
+    <Section title="Wallet bot" desc={<>{t('Pakai wallet khusus bot, jangan wallet utama. Kunci privat disimpan di server')} (<span className="mono">{w.fromEnv ? `.env · ${w.fromEnv}` : regular ? t('terenkripsi') : w.keyFile}</span>) {t('dan tidak pernah dikirim mentah — cuma bisa diekspor sebagai keystore terenkripsi.')}</>}>
       {w.address ? (
         <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-3">
           <div className="sm:col-span-2"><dt className="text-xs text-muted">{t('Alamat')}</dt><dd className="mono mt-0.5 break-all">{w.address}</dd></div>
@@ -174,12 +181,15 @@ function WalletTab({ d, reload }) {
           <div className="flex flex-col gap-3 rounded-md border border-border p-4">
             <div className="font-medium">{t('Ekspor wallet')}</div>
             <p className="text-sm text-muted">
-              {t(w.kind === 'solana'
+              {regular ? t(w.kind === 'solana'
+                ? 'Menghasilkan berkas keystore terenkripsi (PBKDF2 + AES-GCM). Buka berkasnya di "Buka keystore (offline)" di bawah untuk mendapat kunci base58 yang bisa diimpor ke Phantom/Solflare. Butuh kata sandi akun, diketik ulang di sini.'
+                : 'Menghasilkan berkas keystore terenkripsi (format sama dengan geth/MetaMask) yang bisa diimpor ke wallet lain lewat "Import via JSON". Kunci privat mentah tidak pernah dikirim. Butuh kata sandi akun, diketik ulang di sini.')
+              : t(w.kind === 'solana'
                 ? 'Menghasilkan berkas keystore terenkripsi (PBKDF2 + AES-GCM). Dompet Solana tidak punya format keystore baku: buka berkasnya di "Buka keystore (offline)" di bawah untuk mendapat kunci base58 yang bisa diimpor ke Phantom/Solflare. Butuh token dashboard, diketik ulang di sini, bukan diambil dari sesi login.'
                 : 'Menghasilkan berkas keystore terenkripsi (format sama dengan geth/MetaMask) yang bisa diimpor ke wallet lain lewat "Import via JSON". Kunci privat mentah tidak pernah dikirim — tanpa password di bawah, isi berkasnya tidak berguna. Butuh token dashboard, diketik ulang di sini, bukan diambil dari sesi login.')}
             </p>
             <div className="grid gap-3 sm:grid-cols-3">
-              <Text label="Token dashboard" type="password" mono placeholder="token" value={expToken} onChange={setExpToken} autoComplete="off" />
+              <Text label={regular ? 'Kata sandi akun' : 'Token dashboard'} type="password" mono={!regular} placeholder={regular ? 'kata sandi' : 'token'} value={expToken} onChange={setExpToken} autoComplete={regular ? 'current-password' : 'off'} />
               <Text label="Password keystore baru" type="password" placeholder="min. 8 karakter" value={expPass} onChange={setExpPass} autoComplete="off" />
               <Text label="Ulangi password" type="password" placeholder="min. 8 karakter" value={expPass2} onChange={setExpPass2} autoComplete="off" />
             </div>
@@ -667,6 +677,10 @@ function TelegramTab({ d, reload }) {
         <span className="text-sm text-muted">{t('{n} chat berwenang', { n: tg.chat_ids?.length || 0 })}</span>
       </div>
 
+      {/* An account uses the superadmin's bot: it only links its own chats. */}
+      {tg.managed ? (
+        <Notice>{t(tg.hasToken ? 'Bot dipasang oleh superadmin. Sambungkan chat Anda di bawah; notifikasi hanya untuk akun ini.' : 'Superadmin belum memasang bot Telegram.')}</Notice>
+      ) : <>
       <Separator />
       {tg.fromEnv ? <EnvNotice name={tg.fromEnv} what="Token bot" /> : <div className="grid gap-5 md:grid-cols-2">
         <Text label="Token bot" type="password" mono value={tok} onChange={setTok}
@@ -677,6 +691,7 @@ function TelegramTab({ d, reload }) {
           {tg.hasToken && <Button variant="outline" onPress={async () => { if (await ask({ title: t('Lepas token bot? Bot Telegram berhenti melayani.'), confirm: t('Lepas'), danger: true })) save('rm', { bot_token: '' }, 'Token dilepas'); }}>{t('Lepas')}</Button>}
         </div>
       </div>}
+      </>}
 
       <Separator />
       <div>
@@ -1015,6 +1030,9 @@ const mb = (n) => (n < 1e6 ? `${Math.max(1, Math.round(n / 1e3)).toLocaleString(
 
 function BackupTab({ d }) {
   const { t } = useI18n();
+  // A regular account confirms with its own password and backs up only its own data.
+  const regular = isRegular(useMe());
+  const secretField = regular ? { label: 'Kata sandi akun', placeholder: 'kata sandi', mono: false, autoComplete: 'current-password' } : { label: 'Token dashboard', placeholder: 'token', mono: true, autoComplete: 'off' };
   const hasWallet = !!d.wallet?.address;
   // ---- create a backup ----
   const [pick, setPick] = useState({ config: true, db: true, wallet: false });
@@ -1086,7 +1104,9 @@ function BackupTab({ d }) {
   };
 
   return (
-    <Section title="Cadangan" desc="Unduh salinan pengaturan, basis data, dan wallet bot ke satu berkas, lalu pulihkan di instance ini atau instance lain. Kedua arah butuh token dashboard yang diketik ulang.">
+    <Section title="Cadangan" desc={regular
+      ? 'Unduh salinan pengaturan, data, dan wallet akun ini ke satu berkas, lalu pulihkan di akun ini. Kedua arah butuh kata sandi akun yang diketik ulang. Memulihkan hanya menyalakan ulang mesin akun ini.'
+      : 'Unduh salinan pengaturan, basis data, dan wallet bot ke satu berkas, lalu pulihkan di instance ini atau instance lain. Kedua arah butuh token dashboard yang diketik ulang.'}>
       <div className="flex flex-col gap-4 rounded-md border border-border p-4">
         <div className="font-medium">{t('Buat cadangan')}</div>
         <div className="flex flex-col gap-3">
@@ -1096,7 +1116,7 @@ function BackupTab({ d }) {
           ))}
         </div>
         <div className="grid gap-3 sm:grid-cols-3">
-          <Text label="Token dashboard" type="password" mono placeholder="token" value={tok} onChange={setTok} autoComplete="off" />
+          <Text label={secretField.label} type="password" mono={secretField.mono} placeholder={secretField.placeholder} value={tok} onChange={setTok} autoComplete={secretField.autoComplete} />
           {pick.wallet && <>
             <Text label="Password keystore baru" type="password" placeholder="min. 8 karakter" value={pass} onChange={setPass} autoComplete="off" />
             <Text label="Ulangi password" type="password" placeholder="min. 8 karakter" value={pass2} onChange={setPass2} autoComplete="off"
@@ -1137,7 +1157,7 @@ function BackupTab({ d }) {
             </div>
             {rpick.wallet && d.wallet?.fromEnv && <EnvNotice name={d.wallet.fromEnv} what="Kunci wallet" />}
             <div className="grid gap-3 sm:grid-cols-3">
-              <Text label="Token dashboard" type="password" mono placeholder="token" value={rtok} onChange={setRtok} autoComplete="off" />
+              <Text label={secretField.label} type="password" mono={secretField.mono} placeholder={secretField.placeholder} value={rtok} onChange={setRtok} autoComplete={secretField.autoComplete} />
               {rpick.wallet && <Text label="Password keystore" type="password" placeholder="password saat mencadangkan" value={rpass} onChange={setRpass} autoComplete="off" />}
             </div>
             {restarting ? <Notice status="warning" title="Bot sedang dinyalakan ulang…">{t('Halaman ini dimuat ulang otomatis begitu bot menyala lagi.')}</Notice> : (
@@ -1156,6 +1176,8 @@ export default function Settings() {
   const [d, setD] = useState(null);
   const [tab, setTab] = useState('wallet');
   const [loadError, setLoadError] = useState('');
+  const regular = isRegular(useMe());
+  const shown = (id) => !regular || !ADMIN_TABS.has(id);
   const load = useCallback(async () => {
     setLoadError('');
     try { const data = await get('/api/settings'); if (data.error) setLoadError(data.error); else setD(data); }
@@ -1174,7 +1196,7 @@ export default function Settings() {
             <Tabs selectedKey={tab} onSelectionChange={setTab} orientation="vertical" variant="secondary" className="flex flex-col gap-6 md:flex-row">
               <Tabs.ListContainer className="md:w-60 md:shrink-0">
                 <Tabs.List aria-label={t('Bagian pengaturan')} className="grid! grid-cols-2 md:flex! md:flex-col">
-                  {SETTINGS_NAV.map(([id, label, description0, Icon]) => {
+                  {SETTINGS_NAV.filter(([id]) => shown(id)).map(([id, label, description0, Icon]) => {
                     const description = id === 'aggregators' && isSolana() ? 'Jupiter, Raydium, LI.FI, OKX, OpenOcean, DFlow' : description0;
                     return (
                     <Tabs.Tab key={id} id={id} className="min-h-16 justify-start gap-3 px-3 py-3 text-left">
@@ -1188,8 +1210,8 @@ export default function Settings() {
               <div className="min-w-0 flex-1">
                 <Tabs.Panel id="wallet"><WalletTab d={d} reload={load} /></Tabs.Panel>
                 <Tabs.Panel id="risk"><RiskTab d={d} setD={setD} /></Tabs.Panel>
-                <Tabs.Panel id="chains"><ChainsTab d={d} setD={setD} /></Tabs.Panel>
-                <Tabs.Panel id="rpc"><RpcTab d={d} setD={setD} /></Tabs.Panel>
+                {shown('chains') && <Tabs.Panel id="chains"><ChainsTab d={d} setD={setD} /></Tabs.Panel>}
+                {shown('rpc') && <Tabs.Panel id="rpc"><RpcTab d={d} setD={setD} /></Tabs.Panel>}
                 <Tabs.Panel id="gas" shouldForceMount className="data-[inert]:hidden">
                   <SimpleForm title="Gas" desc="Berlaku untuk transaksi berikutnya, tanpa restart." url="/api/settings/gas" okText="Pengaturan gas tersimpan"
                     onSaved={(gas) => setD((prev) => ({ ...prev, gas }))} initial={d.gas} fields={isSolana() ? [
@@ -1213,9 +1235,9 @@ export default function Settings() {
                     fields={[['ntfy_topic', 'Topik ntfy', 'Siapa pun yang tahu nama topiknya bisa membaca notifikasinya — pakai nama yang sulit ditebak. Kosongkan untuk mematikan.', 'text']]}
                     extra={<Button variant="outline" onPress={async () => say(await post('/api/settings/notify/test', {}), 'Notifikasi uji terkirim')}>{t('Kirim uji')}</Button>} />
                 </Tabs.Panel>
-                <Tabs.Panel id="telegram"><TelegramTab d={d} reload={load} /></Tabs.Panel>
-                <Tabs.Panel id="gmgn"><GmgnTab d={d} reload={load} /></Tabs.Panel>
-                <Tabs.Panel id="loop" shouldForceMount className="data-[inert]:hidden">
+                {shown('telegram') && <Tabs.Panel id="telegram"><TelegramTab d={d} reload={load} /></Tabs.Panel>}
+                {shown('gmgn') && <Tabs.Panel id="gmgn"><GmgnTab d={d} reload={load} /></Tabs.Panel>}
+                {shown('loop') && <Tabs.Panel id="loop" shouldForceMount className="data-[inert]:hidden">
                   <SimpleForm title="Mesin" desc="Berlaku setelah bot di-restart (pm2 restart lpcopy)." url="/api/settings/loop" okText="Tersimpan — restart bot supaya berlaku"
                     initial={{ ...d.loop, ...d.prices }} fields={[
                       ['poll_ms', 'Interval pindai (ms)', 'Seberapa sering blok baru diperiksa. 1.500 ms = 1,5 detik. Nilai lebih kecil menambah permintaan RPC.'],
@@ -1224,11 +1246,11 @@ export default function Settings() {
                       ['eth_usd', `Harga ${chainInfo().nativeSymbol} cadangan (USD)`, `Dipakai kalau harga dari pool ${chainInfo().nativeSymbol}/${chainInfo().usdgSymbol} gagal dibaca (atau pencarian otomatis dimatikan).`],
                       ['auto_eth_price', `Ambil harga ${chainInfo().nativeSymbol} dari chain`, `Aktif: gunakan harga dari pool ${chainInfo().nativeSymbol}/${chainInfo().usdgSymbol}. Nonaktif: gunakan harga cadangan yang diisi di atas.`, 'bool'],
                     ]} />
-                </Tabs.Panel>
+                </Tabs.Panel>}
                 <Tabs.Panel id="display"><DisplayTab d={d} reload={load} /></Tabs.Panel>
-                <Tabs.Panel id="security"><SecurityTab d={d} /></Tabs.Panel>
-                <Tabs.Panel id="aggregators"><AggregatorsTab d={d} setD={setD} /></Tabs.Panel>
-                <Tabs.Panel id="backup"><BackupTab d={d} /></Tabs.Panel>
+                {shown('security') && <Tabs.Panel id="security"><SecurityTab d={d} /></Tabs.Panel>}
+                {shown('aggregators') && <Tabs.Panel id="aggregators"><AggregatorsTab d={d} setD={setD} /></Tabs.Panel>}
+                {shown('backup') && <Tabs.Panel id="backup"><BackupTab d={d} /></Tabs.Panel>}
               </div>
             </Tabs>
           </Card.Content>

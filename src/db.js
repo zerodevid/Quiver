@@ -348,6 +348,27 @@ function open(dbPath) {
   migrateChain(db);
   db.exec(SCHEMA);
   // CREATE TABLE IF NOT EXISTS does not add columns to an already existing table.
+  // Multi-user accounts (see auth.js). Secrets are stored hashed.
+  db.exec(`CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, pass_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS sessions (
+    id_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+  CREATE TABLE IF NOT EXISTS invites (
+    code_hash TEXT PRIMARY KEY, created_by INTEGER NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+    used_by INTEGER, used_at INTEGER
+  );
+  -- Who did what: sign-ins, account admin, wallet keys, LIVE, backups, shared settings.
+  -- Never holds secrets (no request bodies).
+  CREATE TABLE IF NOT EXISTS audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, user_id INTEGER, username TEXT,
+    ip TEXT, action TEXT NOT NULL, detail TEXT, ok INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts);
+  CREATE INDEX IF NOT EXISTS idx_audit_user ON audit(user_id, ts)`);
   const eqCols = new Set(db.prepare('PRAGMA table_info(equity)').all().map((c) => c.name));
   if (!eqCols.has('pnl_quote')) {
     db.exec('ALTER TABLE equity ADD COLUMN pnl_quote REAL');

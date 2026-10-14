@@ -612,7 +612,11 @@ const ALIAS = {
 const PAIR_RE = /^\/(?:start|mulai)(?:@\S+)?\s+(\S+)/i;
 
 class Telegram {
-  constructor({ cfg, cfgPath, store, engine, api, shareCard, chartCard, portfolioCard, log, nets = null, primaryKey = null }) {
+  // Multi-user: the superadmin's instance is the "hub" — the only one polling the bot. An account's
+  // instance gets `hub` set: it never polls, sends with the hub's token, and receives the updates of
+  // its own chats from the hub (routeChat / pairOwner, wired in index.js).
+  constructor({ cfg, cfgPath, store, engine, api, shareCard, chartCard, portfolioCard, log, nets = null, primaryKey = null,
+    hub = null, routeChat = null, pairOwner = null }) {
     this.cfg = cfg; this.cfgPath = cfgPath; this.store = store;
     // Multi-chain: nets = { <key>: { key, label, engine, chain } }. All API calls
     // and engine reads are directed to the conversation's currently active chain (chainContext).
@@ -633,6 +637,8 @@ class Telegram {
     // polling generation: once it rises, the old loop stops by itself when the request
     // that is hanging returns (or is cancelled via `ac`).
     this.gen = 0; this.ac = null; this.wired = false; this.startError = null;
+    this.hub = hub; this.routeChat = routeChat; this.pairOwner = pairOwner;
+    if (hub) Object.defineProperty(this, 'me', { get: () => hub.me, set: () => {}, configurable: true });
   }
 
   // ---- chain ---------------------------------------------------------------
@@ -660,7 +666,7 @@ class Telegram {
     this.store.setState('tg_language:' + chatId, language);
     this.sess(chatId).pending = null;
   }
-  token() { return this.cfg.telegram?.bot_token || null; }
+  token() { return this.hub ? this.hub.token() : this.cfg.telegram?.bot_token || null; }
   // Mini app address: the same dashboard, the /mini page. Filled from server.public_url
   // (or LPCOPY_DASHBOARD_URL in .env). Without https there is no mini app — and that is
   // not a mistake: an instance that only listens on 127.0.0.1 really has no
@@ -799,6 +805,13 @@ class Telegram {
   // ---- lifecycle ----------------------------------------------------------
   async start() {
     this.startError = null;
+    if (this.hub) {
+      // An account: no polling of its own — just its notifications and its chats' menu button.
+      this.stopped = false;
+      this.wire();
+      if (this.token() && this.chats().length) await this.syncMenuButton().catch(() => {});
+      return { ok: true };
+    }
     if (!this.token()) { this.log('telegram: bot_token belum diisi — bot tidak dijalankan'); return { ok: false, reason: 'tanpa token' }; }
     this.stopped = false;
     this.ac = new AbortController();
@@ -841,6 +854,7 @@ class Telegram {
   // Restart with the newly stored token, without restarting the process.
   // The old loop is stopped first so there are not two listeners on one update queue.
   async restart() {
+    if (this.hub) return { ok: true };                 // the hub owns the token
     this.gen++;
     try { this.ac?.abort(); } catch { /* no request in flight yet */ }
     this.me = null;
@@ -927,6 +941,11 @@ class Telegram {
     const chat = u.message?.chat || u.callback_query?.message?.chat;
     if (!chat) return;
     const chatId = String(chat.id);
+    // Hub: a chat linked to an account is served by that account's instance.
+    if (this.routeChat && !this.chats().includes(chatId)) {
+      const owner = this.routeChat(chatId);
+      if (owner) return owner.handle(u);
+    }
     return localeContext.run(this.language(chatId), () => chainContext.run(this.chatChain(chatId), () => this.handleLocalized(u)));
   }
 
@@ -940,6 +959,9 @@ class Telegram {
     const text = String(msg.text || '').trim();
     if (!this.chats().includes(chatId)) {
       const m = text.match(PAIR_RE);
+      // Hub: the code may have been made by an account — that account pairs the chat.
+      const owner = m && this.pairOwner ? this.pairOwner(m[1]) : null;
+      if (owner) return owner.handle({ message: msg });
       if (m) {
         // This bot can close positions and switch on LIVE; in a group ALL members can
         // press its buttons. Only private chats may be connected, unless

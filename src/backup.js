@@ -127,6 +127,9 @@ function mergeConfig(restored, current) {
   if (current.wallet?.key_file !== undefined) out.wallet = { ...(out.wallet || {}), key_file: current.wallet.key_file };
   if (current.wallet?.solana_key_file !== undefined) out.wallet = { ...(out.wallet || {}), solana_key_file: current.wallet.solana_key_file };
   out.mode = { ...(out.mode || {}), dry_run: true };
+  // Since multi-chain the mode lives per chain (chains.<name>.mode); the top-level one above only
+  // covers pre-multi-chain files.
+  for (const c of Object.values(out.chains || {})) if (c && typeof c === 'object') c.mode = { ...(c.mode || {}), dry_run: true };
   return out;
 }
 
