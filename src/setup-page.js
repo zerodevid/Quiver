@@ -870,7 +870,7 @@ function muat() {
       S.chains[c.key] = {
         enabled: c.enabled,
         eps: c.endpoints.map(function (e) {
-          return { ref: e.ref, url: e.secret ? null : e.url, host: e.host, use: true, no_logs: e.no_logs, max_log_blocks: e.max_log_blocks, archive: e.archive, max_batch: e.max_batch, no_gpa: e.no_gpa, no_history: e.no_history };
+          return { ref: e.ref, url: e.secret ? null : e.url, host: e.host, use: true, no_logs: e.no_logs, max_log_blocks: e.max_log_blocks, archive: e.archive, logs_history_blocks: e.logs_history_blocks, max_batch: e.max_batch, no_gpa: e.no_gpa, no_history: e.no_history };
         })
       };
     }
@@ -894,7 +894,7 @@ function simpan() {
       enabled: true,
       endpoints: st.eps.filter(function (e) { return e.use; }).map(function (e) {
         if (e.ref != null && !e.url) return { ref: e.ref, no_logs: e.no_logs, archive: e.archive, max_log_blocks: e.max_log_blocks, no_gpa: e.no_gpa, no_history: e.no_history };
-        return { url: e.url, max_batch: e.max_batch || 40, no_logs: !!e.no_logs, archive: !!e.archive, max_log_blocks: e.max_log_blocks || 0, no_gpa: !!e.no_gpa, no_history: !!e.no_history };
+        return { url: e.url, max_batch: e.max_batch || 40, no_logs: !!e.no_logs, archive: !!e.archive, max_log_blocks: e.max_log_blocks || 0, logs_history_blocks: e.logs_history_blocks || 0, no_gpa: !!e.no_gpa, no_history: !!e.no_history };
       })
     };
   }

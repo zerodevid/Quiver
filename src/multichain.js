@@ -116,12 +116,15 @@ function solanaTemplate() {
 const EP = (url, extra = {}) => ({ url, max_batch: 20, ...extra });
 const CHAIN_DEFAULTS = {
   ethereum: {
-    endpoints: [EP('https://ethereum-rpc.publicnode.com', { max_log_blocks: 5000, catatan: 'publicnode: getLogs 5000 blok, hanya riwayat terbaru' })],
+    // Tenderly and MEV Blocker (probed 2026-10-14) serve getLogs a year back (3M blocks) for
+    // free, so wallet research is not limited to the ~1.5 days publicnode keeps.
+    endpoints: [
+      EP('https://ethereum-rpc.publicnode.com', { max_log_blocks: 5000, logs_history_blocks: 9000, catatan: 'publicnode: getLogs 5000 blok, hanya ~1,5 hari terakhir' }),
+      EP('https://gateway.tenderly.co/public/mainnet', { max_log_blocks: 10000, catatan: 'tenderly: getLogs riwayat lama (arsip log), kadang kena rate limit' }),
+      EP('https://rpc.mevblocker.io', { max_log_blocks: 10000, catatan: 'mevblocker: getLogs riwayat lama' }),
+    ],
     gas: { price_multiplier: 1.2, priority_wei: 1_000_000_000, max_gas_limit: 4_000_000, native_reserve_wei: 10_000_000_000_000_000, max_fee_gwei: 60, topup_max_usd: 25 },
     ethUsd: 2570,
-    // publicnode serves getLogs only ~1.5 days back (probed 2026-10-10: 10000 blocks ok, ~14000 refused);
-    // the default 2-day scan windows ended in "Archive requests require a personal token".
-    historyBlocks: 7200,
   },
   base: {
     endpoints: [

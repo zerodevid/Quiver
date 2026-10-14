@@ -84,6 +84,9 @@ class RpcPool {
       // the official endpoint replies "metadata is not found", publicnode 403.
       archive: !!e.archive,
       maxLogBlocks: e.max_log_blocks || 0,
+      // getLogs only for the last N blocks (publicnode on Ethereum: ~1.5 days, older ranges
+      // get "Archive requests require a personal token"). Older ranges skip this endpoint.
+      logsHistory: e.logs_history_blocks || 0,
       // A read-only endpoint that refuses eth_sendRawTransaction ("Method not found").
       // Can be set in the config; otherwise it is flagged by itself the first time it refuses.
       noSend: !!e.no_send,
@@ -219,19 +222,21 @@ class RpcPool {
   // logSpan: the width of the getLogs block range. Endpoints with a smaller max_log_blocks
   // are skipped — ordofi, for instance, hangs ~60 seconds then replies "network is busy"
   // for a 40k-block range, while the official endpoint answers 900k blocks in 0.34 seconds.
-  canServe(e, needsLogs, logSpan, needsArchive = false) {
+  // logFrom: the first block of the getLogs range, checked against logs_history_blocks.
+  canServe(e, needsLogs, logSpan, needsArchive = false, logFrom = null) {
     if (needsArchive && !e.archive) return false;
     if (!needsLogs) return true;
     if (e.noLogs) return false;
+    if (e.logsHistory && logFrom != null && this.head && logFrom < this.head - e.logsHistory) return false;
     return !(e.maxLogBlocks && logSpan > e.maxLogBlocks);
   }
 
   // Until when the endpoint rests for this kind of call.
   coolUntil(e, needsLogs) { return needsLogs ? Math.max(e.cooldownUntil, e.logsCooldownUntil) : e.cooldownUntil; }
 
-  usable(needsLogs = false, logSpan = 0, needsArchive = false) {
+  usable(needsLogs = false, logSpan = 0, needsArchive = false, logFrom = null) {
     const now = Date.now();
-    let pool = this.eps.filter((e) => this.canServe(e, needsLogs, logSpan, needsArchive));
+    let pool = this.eps.filter((e) => this.canServe(e, needsLogs, logSpan, needsArchive, logFrom));
     if (needsArchive && !pool.length) return [];
     if (!pool.length) pool = this.eps;             // nothing matches: just try
     const ok = pool.filter((e) => this.coolUntil(e, needsLogs) < now);      // the list order is kept
@@ -240,9 +245,9 @@ class RpcPool {
     return pool.slice().sort((a, b) => this.coolUntil(a, needsLogs) - this.coolUntil(b, needsLogs));
   }
 
-  allCoolingFor(needsLogs = false, logSpan = 0, needsArchive = false) {
+  allCoolingFor(needsLogs = false, logSpan = 0, needsArchive = false, logFrom = null) {
     const now = Date.now();
-    const pool = this.eps.filter((e) => this.canServe(e, needsLogs, logSpan, needsArchive));
+    const pool = this.eps.filter((e) => this.canServe(e, needsLogs, logSpan, needsArchive, logFrom));
     return (pool.length ? pool : this.eps).every((e) => this.coolUntil(e, needsLogs) > now);
   }
 
@@ -331,13 +336,13 @@ class RpcPool {
     return out;
   }
 
-  async batchOnce(calls, { timeoutMs = 30_000, logSpan = 0, archive = false, used = null } = {}) {
+  async batchOnce(calls, { timeoutMs = 30_000, logSpan = 0, logFrom = null, archive = false, used = null } = {}) {
     if (!calls.length) return [];
     const out = new Array(calls.length).fill(null);
     const needsLogs = calls.some((c) => c.method === 'eth_getLogs');
     let pos = 0;
     while (pos < calls.length) {
-      const eps = this.usable(needsLogs, logSpan, archive);
+      const eps = this.usable(needsLogs, logSpan, archive, logFrom);
       if (!eps.length) throw new Error('tidak ada endpoint arsip terdaftar');
       const ep = eps[0];
       if (used) used.ep = ep;
@@ -392,7 +397,7 @@ class RpcPool {
         // The slot is released by the `finally` below — which also runs when throwing from here.
         // It used to be released twice: `inflight` went negative and max_inflight no longer
         // limited anything (more 429s precisely when all endpoints are angry).
-        if (this.allCoolingFor(needsLogs, logSpan, archive)) {
+        if (this.allCoolingFor(needsLogs, logSpan, archive, logFrom)) {
           throw new Error(`semua endpoint RPC${needsLogs ? ' (yang mendukung getLogs)' : ''} tumbang: ${e.message}`);
         }
       } finally { ep.inflight--; this.release(); }
@@ -495,6 +500,7 @@ class RpcPool {
     const busyErr = (m) => /429|too many requests|network is busy|rate limit/i.test(m || '');
     const eligible = this.eps.filter((e) => !e.noLogs);
     const span = spanOf(filter);
+    const from = typeof filter.fromBlock === 'string' && /^0x[0-9a-f]+$/i.test(filter.fromBlock) ? parseInt(filter.fromBlock, 16) : null;
     // The range's end block is requested in the SAME batch (one HTTP request, one node).
     // A lagging node replies to getLogs for a block it does not have yet with an EMPTY
     // list without an error — the cursor advances and the target action in that range is lost forever.
@@ -506,7 +512,7 @@ class RpcPool {
       try {
         const calls = [{ method: 'eth_getLogs', params: [filter] }];
         if (toTag) calls.push({ method: 'eth_getBlockByNumber', params: [toTag, false], nocache: true });
-        const res = await this.batch(calls, { timeoutMs: 45_000, logSpan: span, used });
+        const res = await this.batch(calls, { timeoutMs: 45_000, logSpan: span, logFrom: from, used });
         const [lr, br] = res;
         if (!lr) throw new Error('eth_getLogs: tidak ada balasan');
         if (lr.error) throw new Error(`eth_getLogs: ${lr.error.message}`);
@@ -526,7 +532,7 @@ class RpcPool {
         // All endpoints are already resting (consecutive transport failures): nothing
         // can be tried right now.
         if (/semua endpoint RPC/.test(e.message)) throw e;
-        const ep = used.ep || this.usable(true, span)[0];
+        const ep = used.ep || this.usable(true, span, false, from)[0];
         if (!ep) throw e;
         const host = new URL(ep.url).hostname;
         ep.logsErrors++;
@@ -542,7 +548,7 @@ class RpcPool {
         const cool = Math.min(300_000, ms * 2 ** Math.min(ep.logsStreak - 1, 5));
         ep.logsCooldownUntil = Math.max(ep.logsCooldownUntil, Date.now() + cool);
         lastErr = new Error(`${e.message} [${host}]`);
-        if (this.allCoolingFor(true, span)) break;
+        if (this.allCoolingFor(true, span, false, from)) break;
         this.log(`getLogs ${host} gagal (${String(e.message).slice(0, 90)}) — istirahat getLogs ${Math.round(cool / 1000)}s, coba endpoint lain`);
       }
     }

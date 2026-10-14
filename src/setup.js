@@ -130,6 +130,7 @@ function cleanEndpoint(e) {
   if (e.no_logs) out.no_logs = true;
   if (Number(e.max_log_blocks) > 0) out.max_log_blocks = Math.round(Number(e.max_log_blocks));
   if (e.archive) out.archive = true;
+  if (Number(e.logs_history_blocks) > 0) out.logs_history_blocks = Math.round(Number(e.logs_history_blocks));
   // Solana endpoint flags (src/solana/rpc.js)
   if (e.no_gpa) out.no_gpa = true;
   if (e.no_history) out.no_history = true;
@@ -472,7 +473,7 @@ function runSetup({ root, cfgPath, envPath, requested = false, log = console.log
     return {
       ref: i, url: hidden ? maskUrl(e.url) : e.url, host: hostname, secret: hidden,
       max_batch: e.max_batch || 40, no_logs: !!e.no_logs, max_log_blocks: e.max_log_blocks || 0,
-      archive: !!e.archive, no_gpa: !!e.no_gpa, no_history: !!e.no_history, catatan: e.catatan || '',
+      archive: !!e.archive, logs_history_blocks: e.logs_history_blocks || 0, no_gpa: !!e.no_gpa, no_history: !!e.no_history, catatan: e.catatan || '',
     };
   };
   const resolveEps = (key, list) => {

@@ -278,6 +278,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
         id, url: maskUrl(e.url), host: (() => { try { return new URL(e.url).hostname; } catch { return '?'; } })(),
         secret: hasSecret(e), headers: maskHeaders(e.headers),
         no_logs: !!e.no_logs, max_log_blocks: e.max_log_blocks || 0, archive: !!e.archive,
+        logs_history_blocks: e.logs_history_blocks || 0,
         // Solana endpoint flags (src/solana/rpc.js)
         no_gpa: !!e.no_gpa, no_history: !!e.no_history,
         max_batch: e.max_batch || 40, note: e.catatan || '',
@@ -727,6 +728,9 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
         if (e.no_logs) out.no_logs = true;
         if (Number(e.max_log_blocks) > 0) out.max_log_blocks = num(e.max_log_blocks, 1, 100_000_000, 'max_log_blocks');
         if (e.archive) out.archive = true;
+        // Not editable on the dashboard: kept from the stored endpoint while its URL is unchanged.
+        const lh = e.logs_history_blocks ?? (base && base.url === url ? base.logs_history_blocks : 0);
+        if (Number(lh) > 0) out.logs_history_blocks = num(lh, 1, 100_000_000, 'logs_history_blocks');
         // Solana flags: sent by the dashboard after a test, otherwise kept from the stored endpoint.
         for (const f of ['no_gpa', 'no_history', 'no_send', 'no_indexed']) {
           const v = e[f] ?? base?.[f];
