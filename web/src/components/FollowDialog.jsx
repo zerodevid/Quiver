@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Modal, toast } from '@heroui/react';
 import { Clock } from 'lucide-react';
-import { post } from '../api';
+import { post, withChain } from '../api';
 import { useI18n, reason } from '../i18n';
 import { usd, age, pct, short, shortId, locale as fmtLocale, DECISIONS } from '../fmt';
 import { Notice, PriceRange, Text, KV } from './ui';
@@ -25,7 +25,7 @@ export default function FollowDialog({ action, onClose, onDone }) {
     setPlan(null); setNotional('');
     const mine = ++seq.current;
     setLoading(true);
-    post('/api/activity/follow/plan', { actionId: id }).then((r) => {
+    post(withChain('/api/activity/follow/plan', action?.chain), { actionId: id }).then((r) => {
       if (mine !== seq.current) return;
       setPlan(r); setLoading(false);
       const u = r.follow?.usd ?? r.follow?.suggestUsd;
@@ -41,7 +41,7 @@ export default function FollowDialog({ action, onClose, onDone }) {
     const mine = ++seq.current;
     setLoading(true);
     const h = setTimeout(async () => {
-      const r = await post('/api/activity/follow/plan', { actionId: id, usd: usdNum });
+      const r = await post(withChain('/api/activity/follow/plan', action?.chain), { actionId: id, usd: usdNum });
       if (mine !== seq.current) return;
       setPlan((old) => ({ ...r, follow: r.follow || old?.follow }));
       setLoading(false);
@@ -77,7 +77,7 @@ export default function FollowDialog({ action, onClose, onDone }) {
       description: t('Jembatan kas, zap, lalu mint — bisa sampai satu menit.'), isLoading: true, timeout: 0,
     });
     let r;
-    try { r = await post('/api/activity/follow', { actionId: id, usd: usdNum }); }
+    try { r = await post(withChain('/api/activity/follow', action?.chain), { actionId: id, usd: usdNum }); }
     catch (err) { r = { error: err.message }; }
     toast.close(wait);
     setSending(false);

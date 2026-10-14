@@ -3,6 +3,7 @@ import { usePairs, tokenColumn } from '../components/TokenCell';
 import { Button, Spinner } from '@heroui/react';
 import { Coins, DoorOpen } from 'lucide-react';
 import { usePoll, useResync } from '../hooks';
+import { chainRef } from '../chain';
 import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
 import { PageHeader, Panel, DataTable, Empty, Loading, Notice, PriceRange, Dot, Refresh, Segmented, TradeLinks, WalletLinks, baseTokenOf } from '../components/ui';
@@ -199,7 +200,7 @@ export default function Positions({ param }) {
   const shown = lensNow === 'in' ? open.filter((p) => p.inRange) : lensNow === 'out' ? open.filter((p) => p.inRange === false) : open;
 
   return (
-    <GmgnProvider tokens={open.map((p) => baseTokenOf(p))}>
+    <GmgnProvider tokens={open.map((p) => chainRef(baseTokenOf(p), p))}>
       {header}
       <PositionHistory id={hist} onClose={() => setHist(null)} />
       {error && <div className="mb-4"><Notice status="warning" title="Gagal memperbarui daftar posisi">{error} — {t('data di bawah dari pembaruan terakhir.')}</Notice></div>}

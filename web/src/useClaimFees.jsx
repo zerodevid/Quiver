@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { Checkbox, toast } from '@heroui/react';
-import { post } from './api';
+import { post, withChain } from './api';
 import { ask } from './components/ui';
 import { useI18n, reason } from './i18n';
 import { usd, short } from './fmt';
@@ -46,7 +46,7 @@ export function useClaimFees(reload) {
       if (!await ask({ title: t('Claim fee'), body: <ClaimBody p={p} initial={sell} onChange={(v) => { sell = v; }} />,
         confirm: t('Claim fee') })) return;
       setClaiming(p.id);
-      const r = await post('/api/positions/claim', { id: p.id, sell });
+      const r = await post(withChain('/api/positions/claim', p.chain), { id: p.id, sell });
       if (r.error) toast.danger(t('Claim fee gagal'), { description: reason(r.error) });
       else if (r.pending) toast.warning(t('Claim fee masih diproses'), { description: `Tx: ${r.tx}` });
       else {

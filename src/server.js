@@ -226,6 +226,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     return {
       key: n.key || n.chain.network, kind: n.chain.kind || 'evm', label: n.label || n.chain.label, chainId: n.chain.CHAIN_ID, nativeSymbol: n.chain.nativeSymbol,
       stableSymbol: n.chain.usdgSymbol,
+      // the rest of the chain identity, so the all-chains view can label and link each row by its chain
+      usdgSymbol: n.chain.usdgSymbol, wethSymbol: n.chain.wethSymbol, explorer: n.chain.explorer, dexscreener: n.chain.dexscreener,
+      geckoterminal: n.chain.geckoterminal, gmgn: n.chain.gmgn, uniswap: n.chain.uniswap,
       dryRun: n.engine.dryRun(), paused: n.engine.paused(), verified: n.chain.verified, head: n.engine.head, cursor: n.engine.cursor,
       targets: n.engine.watcher.enabledSet().size, current: n.chain.network === chain.network,
       cash: cash ? { usd: cash.usd, native: (cash.eth || 0) + (cash.weth || 0), stable: cash.usdg || 0, ts: cash.ts } : null,

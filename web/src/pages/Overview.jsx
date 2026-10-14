@@ -2,7 +2,8 @@ import { useCallback, useMemo, useState } from 'react';
 import { Button } from '@heroui/react';
 import { useStatus } from '../App';
 import { usePoll, useResync } from '../hooks';
-import { PageHeader, Stat, Hero, HeroFigure, Panel, Empty, Loading, Notice, KV, Dot, DataTable, PriceRange, Segmented, Refresh, Fx, WalletLinks, baseTokenOf } from '../components/ui';
+import { post } from '../api';
+import { PageHeader, Stat, Hero, HeroFigure, Panel, Empty, Loading, Notice, KV, Dot, DataTable, PriceRange, Segmented, Refresh, Fx, WalletLinks, baseTokenOf, ChainMark } from '../components/ui';
 import PnlCalendar from '../components/PnlCalendar';
 import GrowthChart from '../components/GrowthChart';
 import ShareButton, { ShareDialog, totalCard, dailyCard } from '../components/ShareCard';
@@ -14,7 +15,7 @@ import { usd, kUsd, tone, num, pct, age, ago, short, txHref, aprOf, aprText, loc
 import { isHidden, MASK } from '../privacy';
 import { useI18n, reason } from '../i18n';
 import { useClosePosition } from '../useClosePosition';
-import { canonAddr } from '../chain';
+import { canonAddr, chainInfo, CHAIN_ICON, chainRef } from '../chain';
 
 const RANGES = [['24h', '24 jam'], ['7d', '7 hari'], ['30d', '30 hari'], ['all', 'Semua']];
 const VIEWS = [['pnl', 'PnL kumulatif'], ['value', 'Nilai']];
@@ -95,8 +96,11 @@ function Composition({ now, ethUsd }) {
     { k: 'Fee belum diklaim', v: now.feeUsd, color: tint('var(--accent)', 62) },
     { k: 'Token sisa belum dijual', v: now.leftoverUsd || 0, color: tint('var(--accent)', 38) },
   ].filter((r, i) => i === 0 || r.v > 0.005);
+  // All-chains view: native coins differ per chain (ETH, BNB, SOL…), one row each.
+  const natives = c?.natives ? c.natives.map((n) => ({ k: `${n.symbol} · ${chainInfo(n.chain).label || n.chain}`, v: n.usd, sub: `${isHidden() ? MASK : num(n.amount, 5)} ${n.symbol}` })) : [];
   const idle = c ? [
-    { k: 'USDG', v: c.usdg },
+    { k: c.natives ? 'Stablecoin' : 'USDG', v: c.usdg },
+    ...natives,
     { k: 'WETH', v: c.weth * perEth, sub: `${isHidden() ? MASK : num(c.weth, 5)} WETH` },
     { k: 'ETH', v: c.eth * perEth, sub: `${isHidden() ? MASK : num(c.eth, 5)} ETH` },
   ].filter((r) => r.v > 0.005).sort((x, y) => y.v - x.v).map((r, i) => ({ ...r, color: tint('var(--foreground)', [36, 24, 15][i] ?? 15) })) : [];
@@ -350,6 +354,49 @@ function LiqCell({ pair, p }) {
   );
 }
 
+// All-chains view: one card per chain summed into the figures below — what each chain is
+// worth, its PnL, and whether it runs live. A card opens that chain on its own.
+function ChainBreakdown({ rows, failed }) {
+  const { t } = useI18n();
+  const open = async (key) => {
+    const r = await post('/api/chain/select', { chain: key });
+    if (r?.ok) location.reload();
+  };
+  return (
+    <div className="mb-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {(rows || []).map((c) => {
+          const pnl = c.wallet?.netPnl ?? c.wallet?.pnl;
+          return (
+            <button key={c.key} type="button" onClick={() => open(c.key)} title={t('Buka {c} saja', { c: c.label })}
+              className="flex items-center gap-3 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-accent/60">
+              <img src={CHAIN_ICON[c.key] || '/favicon.svg'} alt="" className="size-8 shrink-0 rounded-full" />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2">
+                  <span className="truncate font-medium">{c.label}</span>
+                  <span className={`text-[0.6875rem] font-medium ${c.paused ? 'text-muted' : c.dryRun ? 'text-accent' : 'text-danger'}`}>
+                    {c.paused ? t('Dijeda') : c.dryRun ? t('Simulasi') : 'Live'}
+                  </span>
+                </span>
+                <span className="mt-0.5 block text-xs text-muted">{t('{n} posisi', { n: c.openCount })}</span>
+              </span>
+              <span className="flex shrink-0 flex-col items-end">
+                <span className="num font-semibold">{c.wallet ? usd(c.wallet.value) : '—'}</span>
+                <span className={`num text-xs ${pnl == null ? 'text-muted' : tone(pnl)}`}>{pnl == null ? '—' : `${pnl > 0 ? '+' : ''}${usd(pnl)}`}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {failed?.length > 0 && (
+        <p className="mt-2 text-xs text-warning">
+          {t('Tidak ikut dijumlah (tidak menjawab): {c}', { c: failed.map((f) => chainInfo(f.key).label || f.key).join(', ') })}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function Overview() {
   const { t } = useI18n();
   const { status: d } = useStatus();
@@ -371,7 +418,7 @@ export default function Overview() {
   // a minute is enough — this is market context, not a position figure that must tick.
   const pools = useMemo(() => [...new Set((pos?.positions || [])
     .filter((x) => !x.empty)
-    .map((x) => canonAddr(x.pool_ref || ''))
+    .map((x) => chainRef(canonAddr(x.pool_ref || ''), x))
     .filter(Boolean))].sort(), [pos]);
   const { data: mk } = usePoll(pools.length ? `/api/monitor/market?pools=${pools.join(',')}` : null, 60000);
   // One chain sync refreshes the WHOLE page, not just the table: the portfolio total
@@ -430,6 +477,7 @@ export default function Overview() {
           </Notice>
         </div>
       )}
+      {d.chain?.all && <ChainBreakdown rows={d.byChain} failed={d.failed} />}
       {/* One summary block, two tiers: the two numbers looked for every time the page is
           opened (what it is worth, how much profit) stand alone in a big card on the
           left; four LP health measures become tiles beside it. Four equally sized cards
@@ -508,7 +556,7 @@ export default function Overview() {
             </Button>)}
         </div>}>
         {!pos?.positions ? <Loading text="Memuat posisi…" /> : (
-          <GmgnProvider tokens={open.map((x) => baseTokenOf(x))}>
+          <GmgnProvider tokens={open.map((x) => chainRef(baseTokenOf(x), x))}>
           <DataTable label="Posisi aktif" rows={open} rowKey={(x) => x.id} dense onRow={(x) => setHist(x.id)}
             defaultSort={{ column: 'val', direction: 'descending' }}
             empty={<Empty title="Tidak ada posisi aktif" sub="Posisi muncul di sini setelah bot menyalin LP dari wallet target." />}
@@ -616,12 +664,13 @@ export default function Overview() {
               {tx.txs.slice(0, 8).map((x) => {
                 const failed = x.status === 'gagal';
                 return (
-                  <div key={x.hash} className="flex items-center gap-3 px-4 py-2 text-sm">
+                  <div key={`${x.chain || ''}:${x.hash}`} className="flex items-center gap-3 px-4 py-2 text-sm">
                     <Dot tone={TXSTATUS[x.status]?.[1] || 'default'} title={TXSTATUS[x.status]?.[0] || x.status} />
+                    <ChainMark chain={x.chain} />
                     <span className="min-w-0 flex-1 truncate">{t(TXKIND[x.kind] || x.kind)}</span>
                     {/* status is not only the dot colour — and is not truncated together with the name */}
                     {x.status !== 'sukses' && <span className={`shrink-0 text-xs font-medium ${failed ? 'text-danger' : 'text-warning'}`}>{t(TXSTATUS[x.status]?.[0] || x.status)}</span>}
-                    <a href={txHref(x.hash)} target="_blank" rel="noreferrer" className="mono shrink-0 text-muted hover:text-accent hover:underline">{short(x.hash)}</a>
+                    <a href={txHref(x.hash, x.chain)} target="_blank" rel="noreferrer" className="mono shrink-0 text-muted hover:text-accent hover:underline">{short(x.hash)}</a>
                     <span className="shrink-0 text-end whitespace-nowrap tabular-nums text-xs text-muted">{ago(x.ts)}</span>
                   </div>
                 );

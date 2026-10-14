@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, toast } from '@heroui/react';
 import { Hand, Undo2 } from 'lucide-react';
-import { get, post } from '../api';
+import { get, post, withChain } from '../api';
 import { ask } from './ui';
 import { useI18n, reason } from '../i18n';
 import { shortId } from '../fmt';
@@ -34,7 +34,7 @@ export default function TakeoverButton({ p, reload, disabled = false, size = 'sm
     });
     if (!ok) return;
     setBusy(true);
-    const r = await post('/api/positions/takeover', { id: p.id }).catch((e) => ({ error: e.message }));
+    const r = await post(withChain('/api/positions/takeover', p.chain), { id: p.id }).catch((e) => ({ error: e.message }));
     setBusy(false);
     if (r.error) return toast.danger(t('Gagal mengambil alih {pair}', { pair }), { description: reason(r.error) });
     toast.success(t('{pair} dalam kendali manual', { pair }));
@@ -43,7 +43,7 @@ export default function TakeoverButton({ p, reload, disabled = false, size = 'sm
 
   const handBack = async () => {
     setBusy(true);
-    const info = await get(`/api/positions/handback?id=${p.id}`).catch((e) => ({ error: e.message }));
+    const info = await get(withChain(`/api/positions/handback?id=${p.id}`, p.chain)).catch((e) => ({ error: e.message }));
     setBusy(false);
     if (info.error) return toast.danger(reason(info.error));
     if (info.targetOpen === false) {
@@ -79,7 +79,7 @@ export default function TakeoverButton({ p, reload, disabled = false, size = 'sm
     });
     if (!ok) return;
     setBusy(true);
-    const r = await post('/api/positions/handback', { id: p.id }).catch((err) => ({ error: err.message }));
+    const r = await post(withChain('/api/positions/handback', p.chain), { id: p.id }).catch((err) => ({ error: err.message }));
     setBusy(false);
     if (r.error) return toast.danger(t('Gagal mengembalikan {pair}', { pair }), { description: reason(r.error), timeout: 12000 });
     toast.success(t('{pair} kembali mengikuti target', { pair }));

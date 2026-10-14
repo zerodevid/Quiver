@@ -304,6 +304,19 @@ function mergeFeed(parts, prev) {
   return { cursor: formatCursor(next), items: items.sort((a, b) => (a.ts || 0) - (b.ts || 0)) };
 }
 
+// "ref@chain,ref@chain,…" -> Map(chain -> [ref]); an unknown or missing chain = the primary.
+function splitRefs(raw, keys, primaryKey) {
+  const groups = new Map();
+  for (const item of String(raw || '').split(',').map((x) => x.trim()).filter(Boolean)) {
+    const at = item.lastIndexOf('@');
+    const ref = at > 0 ? item.slice(0, at) : item;
+    const key = at > 0 && keys.includes(item.slice(at + 1)) ? item.slice(at + 1) : primaryKey;
+    if (!groups.has(key)) groups.set(key, []);
+    if (!groups.get(key).includes(ref)) groups.get(key).push(ref);
+  }
+  return groups;
+}
+
 // ---- the route table --------------------------------------------------------
 
 // servers(): { <chainKey>: server } (server.api = the in-process route door)
@@ -325,6 +338,13 @@ function createAllChains({ servers, nets, primaryKey, label = 'Semua chain' }) {
     catch (e) { data = { error: e.message }; }
     return { key, label: n?.label || n?.chain?.label || key, nativeSymbol: n?.chain?.nativeSymbol, data };
   }));
+  const askSplit = async (url, param, pathname) => {
+    const groups = splitRefs(url.searchParams.get(param), Object.keys(servers()), primaryKey);
+    return Promise.all([...groups].map(async ([key, refs]) => {
+      try { return { key, data: await servers()[key].api('GET', pathname, {}, { [param]: refs.join(',') }) }; }
+      catch (e) { return { key, data: { error: e.message } }; }
+    }));
+  };
   const q = (url, names) => Object.fromEntries(names.map((k) => [k, url.searchParams.get(k)]).filter(([, v]) => v != null));
 
   const routes = {
@@ -349,6 +369,24 @@ function createAllChains({ servers, nets, primaryKey, label = 'Semua chain' }) {
       }));
       return mergeFeed(parts, prev);
     },
+    // Market lookups for rows of several chains: each reference arrives as `<ref>@<chain>` and is
+    // asked of its own chain (DexScreener / GMGN are keyed by chain); a bare one goes to the primary.
+    'GET /api/monitor/market': async (url) => {
+      const parts = await askSplit(url, 'pools', '/api/monitor/market');
+      return { pairs: Object.assign({}, ...parts.map((p) => p.data?.pairs || {})), ts: Date.now() };
+    },
+    'GET /api/gmgn/tokens': async (url) => {
+      const parts = await askSplit(url, 'addresses', '/api/gmgn/tokens');
+      return { enabled: parts.some((p) => p.data?.enabled), tokens: Object.assign({}, ...parts.map((p) => p.data?.tokens || {})), ts: Date.now() };
+    },
+    // "Refresh" on a merged page re-reads every chain it shows.
+    'POST /api/positions/sync': async (url) => {
+      const keys = chainsOf(url);
+      const rs = await Promise.all(keys.map((key) => servers()[key].api('POST', '/api/positions/sync').catch((e) => ({ error: e.message }))));
+      const err = rs.find((r) => r?.error)?.error;
+      const syncs = rs.map((r) => r?.syncedAt).filter(isNum);
+      return { ...(err ? { error: err } : { ok: true }), syncedAt: syncs.length ? Math.min(...syncs) : null };
+    },
     'GET /api/chains': async () => {
       const r = await servers()[primaryKey].api('GET', '/api/chains');
       return { ...r, chains: (r.chains || []).map((c) => ({ ...c, current: false })), current: 'all' };
@@ -357,4 +395,4 @@ function createAllChains({ servers, nets, primaryKey, label = 'Semua chain' }) {
   return { routes };
 }
 
-module.exports = { createAllChains, mergeSeries, mergeOverview, mergePortfolio, mergePositions, mergeList, mergeFeed, parseCursor, formatCursor, sumFields };
+module.exports = { createAllChains, splitRefs, mergeSeries, mergeOverview, mergePortfolio, mergePositions, mergeList, mergeFeed, parseCursor, formatCursor, sumFields };

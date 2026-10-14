@@ -5,7 +5,7 @@ import { usePoll } from '../hooks';
 import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Pick, Dot, TradeLinks, WalletLinks, baseTokenOf } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
 import { usd, ago, short, txHref, locale as fmtLocale, ACTIONS, DECISIONS } from '../fmt';
-import { chainInfo, EXPLORER_NAME } from '../chain';
+import { useChainInfo, EXPLORER_NAME } from '../chain';
 import { useI18n, reason } from '../i18n';
 import FollowDialog from '../components/FollowDialog';
 
@@ -24,10 +24,11 @@ function ourSize(a) {
 // is shown shortened — what people usually want is just to get to the explorer.
 function TxLink({ hash, label, className = '' }) {
   const { t } = useI18n();
+  const c = useChainInfo();
   if (!hash) return null;
-  const situs = EXPLORER_NAME[chainInfo().key] || t('Penjelajah');
+  const situs = EXPLORER_NAME[c.key] || t('Penjelajah');
   return (
-    <a href={txHref(hash)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
+    <a href={txHref(hash, c.key)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
       title={`${t(label)} · ${situs}\n${hash}`}
       className={`mono inline-flex items-center gap-1 text-[0.6875rem] text-muted hover:text-accent hover:underline ${className}`}>
       {short(hash)}<ExternalLink className="size-3" />

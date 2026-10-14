@@ -11,7 +11,7 @@ import { breakEven } from '../breakeven';
 import { useTick } from '../hooks';
 import { translate as t } from '../i18n';
 import { useFx, fxText } from '../currency';
-import { chainInfo, CHAIN_ICON, EXPLORER_NAME } from '../chain';
+import { chainInfo, useChainInfo, OnChain, setScope, CHAIN_ICON, EXPLORER_NAME } from '../chain';
 
 export function PageHeader({ group, title, desc, children }) {
   return (
@@ -411,11 +411,20 @@ const cmp = (a, b) => {
 };
 const valOf = (c, r) => (c.sort ? c.sort(r) : r[c.key]);
 
+// A chain's logo for one row of the all-chains view; the name shows on hover.
+export function ChainMark({ chain, size = 'size-4' }) {
+  if (!chain) return null;
+  const c = chainInfo(chain);
+  return <img src={CHAIN_ICON[chain] || '/favicon.svg'} alt={c.label || chain} title={c.label || chain} className={`${size} shrink-0 rounded-full`} />;
+}
+
 export function DataTable({
   label, columns, rows, rowKey, empty, dense, footer,
   searchable, pageSize = 0, defaultSort, onRow, pinTop, jumpTo,
 }) {
   const [sort, setSort] = useState(defaultSort || null);
+  // Row ids repeat across chains in the all-chains view (#12 on Robinhood and #12 on BSC).
+  const keyOf = (r, i) => { const k = rowKey ? rowKey(r, i) : i; return r?.chain ? `${r.chain}:${k}` : k; };
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   // The number of rows per page can be changed by the reader; the choice is remembered per table
@@ -466,7 +475,7 @@ export function DataTable({
   useEffect(() => {
     if (!pending) return;
     const key = String(pending.key);
-    const idx = sorted.findIndex((r, i) => String(rowKey ? rowKey(r, i) : i) === key);
+    const idx = sorted.findIndex((r, i) => String(keyOf(r, i)) === key);
     if (idx < 0) { if (q) setQ(''); else setPending(null); return; }
     setPage(size ? Math.floor(idx / size) + 1 : 1);
     setFlash(key);
@@ -516,7 +525,7 @@ export function DataTable({
               presses before they reach the row. */}
           <Table.Content aria-label={t(label)} className="min-w-[640px]"
             sortDescriptor={sort || undefined} onSortChange={setSort}
-            onRowAction={onRow ? (key) => { const r = rows.find((x, i) => String(rowKey ? rowKey(x, i) : i) === String(key)); if (r) onRow(r); } : undefined}>
+            onRowAction={onRow ? (key) => { const r = rows.find((x, i) => String(keyOf(x, i)) === String(key)); if (r) { if (r.chain) setScope(r.chain); onRow(r); } } : undefined}>
             <Table.Header>
               {columns.map((c, i) => {
                 const canSort = c.sortable !== false && !!c.key;
@@ -538,11 +547,17 @@ export function DataTable({
             </Table.Header>
             <Table.Body renderEmptyState={() => (q ? <Empty title="Tidak ada yang cocok" sub="Coba kata kunci lain." /> : empty || <Empty title="Belum ada data" />)}>
               {view.map((r, i) => (
-                <Table.Row key={rowKey ? rowKey(r, i) : i} id={rowKey ? rowKey(r, i) : i}
-                  className={`${onRow ? 'cursor-pointer' : ''} ${flash != null && String(rowKey ? rowKey(r, i) : i) === flash ? 'row-flash' : ''}`}>
-                  {columns.map((c) => (
+                <Table.Row key={keyOf(r, i)} id={keyOf(r, i)}
+                  className={`${onRow ? 'cursor-pointer' : ''} ${flash != null && String(keyOf(r, i)) === flash ? 'row-flash' : ''}`}>
+                  {columns.map((c, ci) => (
                     <Table.Cell key={c.key} className={`${c.align === 'end' ? 'text-end num' : ''} ${dense ? 'py-2' : ''} ${c.className || ''}`}>
-                      {c.render ? c.render(r) : r[c.key]}
+                      {/* a row from the all-chains view: its links follow its own chain, and its
+                          first cell carries the chain's logo */}
+                      <OnChain chain={r.chain}>
+                        {ci === 0 && r.chain
+                          ? <span className="flex items-center gap-2"><ChainMark chain={r.chain} /><span className="min-w-0">{c.render ? c.render(r) : r[c.key]}</span></span>
+                          : c.render ? c.render(r) : r[c.key]}
+                      </OnChain>
                     </Table.Cell>
                   ))}
                 </Table.Row>
@@ -739,13 +754,14 @@ export function CopyAddr({ address }) {
 // Transaction hash: a link to the block explorer + a copy button. Used by the bot
 // position history drawer and the researched wallet position history drawer alike.
 export function TxHash({ hash }) {
+  const c = useChainInfo();
   const [done, setDone] = useState(false);
   useEffect(() => { if (!done) return undefined; const id = setTimeout(() => setDone(false), 1500); return () => clearTimeout(id); }, [done]);
   if (!hash) return <span className="text-muted">—</span>;
   const copy = async () => { try { await navigator.clipboard.writeText(hash); setDone(true); } catch { /* izin clipboard ditolak */ } };
   return (
     <span className="inline-flex items-center gap-1">
-      <a href={txHref(hash)} target="_blank" rel="noreferrer" className="mono inline-flex items-center gap-1 text-accent hover:underline">
+      <a href={txHref(hash, c.key)} target="_blank" rel="noreferrer" className="mono inline-flex items-center gap-1 text-accent hover:underline">
         {short(hash)}<ExternalLink className="size-3" />
       </a>
       <button type="button" onClick={copy} className="text-muted hover:text-foreground" aria-label={t('Salin hash')}>
@@ -786,25 +802,25 @@ export function ExtLink({ href, muted, children }) {
 // Jupiter; Based Bot, fomo and Uniswap do not serve Solana.
 export const TRADE_APPS = [
   { key: 'jupiter', label: 'Jupiter', icon: '/jupiter.svg', brand: '#c7f284', kinds: ['solana'], href: (a) => `https://jup.ag/swap/SOL-${a}` },
-  { key: 'gmgn', kinds: ['evm', 'solana'], label: 'GMGN', icon: '/gmgn.png', brand: '#5ec26a', href: (a) => `https://gmgn.ai/${chainInfo().gmgn || chainInfo().key}/token/${a}` },
+  { key: 'gmgn', kinds: ['evm', 'solana'], label: 'GMGN', icon: '/gmgn.png', brand: '#5ec26a', href: (a, c = chainInfo()) => `https://gmgn.ai/${c.gmgn || c.key}/token/${a}` },
   { key: 'basedbot', label: 'Based', icon: '/basedbot.jpg', brand: '#3b82f6', href: (a) => `https://t.me/based_eth_bot?start=b_${a}` },
-  { key: 'fomo', label: 'fomo', icon: '/fomo.png', brand: '#8b7cf6', href: (a) => `https://fomo.family/tokens/${chainInfo().gmgn || chainInfo().key}/${a}` },
+  { key: 'fomo', label: 'fomo', icon: '/fomo.png', brand: '#8b7cf6', href: (a, c = chainInfo()) => `https://fomo.family/tokens/${c.gmgn || c.key}/${a}` },
   // Uniswap: the pool's own page if the pool is known (chart, liquidity, swap
   // & add LP buttons there); if only the token, the swap screen with that token.
   { key: 'uniswap', label: 'Uniswap', icon: '/uniswap.png', brand: '#ff007a',
-    href: (a) => `https://app.uniswap.org/swap?chain=${chainInfo().uniswap || chainInfo().key}&outputCurrency=${a}`,
-    poolHref: (pool) => `https://app.uniswap.org/explore/pools/${chainInfo().uniswap || chainInfo().key}/${pool}` },
+    href: (a, c = chainInfo()) => `https://app.uniswap.org/swap?chain=${c.uniswap || c.key}&outputCurrency=${a}`,
+    poolHref: (pool, c = chainInfo()) => `https://app.uniswap.org/explore/pools/${c.uniswap || c.key}/${pool}` },
 ];
 // The speculative token of a position/pool row: the one that is not a quote asset. A row that
 // does not carry quoteSide (e.g. position history) is guessed from the chain's quote symbols.
-const isQuoteSym = (sym) => { const c = chainInfo(); return sym === c.usdgSymbol || sym === c.wethSymbol || sym === c.nativeSymbol; };
+const isQuoteSym = (sym, key) => { const c = chainInfo(key); return sym === c.usdgSymbol || sym === c.wethSymbol || sym === c.nativeSymbol; };
 export const baseTokenOf = (p) => {
   if (!p) return null;
   if (p.baseToken) return p.baseToken;
   if (p.quoteSide === 0) return p.token1;
   if (p.quoteSide === 1) return p.token0;
-  if (isQuoteSym(p.symbol0) && !isQuoteSym(p.symbol1)) return p.token1;
-  if (isQuoteSym(p.symbol1) && !isQuoteSym(p.symbol0)) return p.token0;
+  if (isQuoteSym(p.symbol0, p.chain) && !isQuoteSym(p.symbol1, p.chain)) return p.token1;
+  if (isQuoteSym(p.symbol1, p.chain) && !isQuoteSym(p.symbol0, p.chain)) return p.token0;
   return null;
 };
 // Logo link bar (style in index.css: .trade-bar / .trade-stack). links:
@@ -837,24 +853,25 @@ export const WALLET_APPS = [
 // explorer: the full bar also carries the block explorer; the compact stack in table rows
 // only needs the three external sites so the logos do not cover the neighbouring column.
 export function WalletLinks({ address, compact = false, explorer = !compact, className = '' }) {
+  const c = useChainInfo();
   if (!address) return null;
-  const c = chainInfo();
-  const links = WALLET_APPS.map((app) => ({ ...app, href: app.href(address) }));
+  const links = WALLET_APPS.map((app) => ({ ...app, href: app.href(address, c.key) }));
   // The block explorer of the chain being shown, with the chain's logo. On BSC the explorer is
   // BscScan — etherscanHref is empty there, so the site does not appear twice.
   if (explorer) {
     links.push({ key: 'explorer', label: EXPLORER_NAME[c.key] || t('Penjelajah'), icon: CHAIN_ICON[c.key] || '/favicon.svg',
-      brand: 'var(--accent)', href: addrHref(address) });
+      brand: 'var(--accent)', href: addrHref(address, c.key) });
   }
   return <LinkBar tag="Wallet" links={links.filter((x) => x.href)} compact={compact} className={className} />;
 }
 // A Meteora DLMM pool has its own page; its link leads the stack when the row's venue is known.
 const METEORA_APP = { key: 'meteora', label: 'Meteora', icon: '/meteora.png', brand: '#f06f2c', href: () => '' };
 export function TradeLinks({ token, pool = null, venue = null, compact = false, className = '' }) {
+  const c = useChainInfo();
   if (!token) return null;
-  const kind = chainInfo().kind || 'evm';
+  const kind = c.kind || 'evm';
   const links = TRADE_APPS.filter((app) => (app.kinds || ['evm']).includes(kind))
-    .map((app) => ({ ...app, href: pool && app.poolHref ? app.poolHref(pool) : app.href(token) }));
+    .map((app) => ({ ...app, href: pool && app.poolHref ? app.poolHref(pool, c) : app.href(token, c) }));
   if (venue === 'meteora' && pool) links.unshift({ ...METEORA_APP, href: `https://app.meteora.ag/dlmm/${pool}` });
   return <LinkBar tag="Trade" links={links} compact={compact} className={className} />;
 }
@@ -878,9 +895,9 @@ export function PositionRef({ p, id = p.token_id }) {
 // is known, the token page if only the token. dexUrl: the DexScreener URL already
 // provided by the pair API, more precise than guessing from the address.
 export function DataLinks({ pool = null, token = null, dexUrl = null, compact = false, className = '' }) {
+  const c = useChainInfo();
   const ref = pool || token;
   if (!ref) return null;
-  const c = chainInfo();
   const links = [
     { key: 'dexscreener', label: 'DexScreener', icon: '/dexscreener.png', brand: '#9aa4b2',
       href: dexUrl || `https://dexscreener.com/${c.dexscreener || c.key}/${ref}` },

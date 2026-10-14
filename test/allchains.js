@@ -154,6 +154,11 @@ const M = 300_000;
     assert.strictEqual(asked.length, 3);
   });
 
+  await t('splitRefs groups ref@chain by chain, bare or unknown chain goes to the primary', () => {
+    const g = A.splitRefs('0xa@bsc,0xb,0xc@nope,0xa@bsc,0xd@robinhood', ['robinhood', 'bsc'], 'robinhood');
+    assert.deepStrictEqual([...g], [['bsc', ['0xa']], ['robinhood', ['0xb', '0xc', '0xd']]]);
+  });
+
   console.log(`\n${pass} ok, ${fail} gagal`);
   process.exit(fail ? 1 : 0);
 })();

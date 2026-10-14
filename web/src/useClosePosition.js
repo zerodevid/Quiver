@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { toast } from '@heroui/react';
-import { post } from './api';
+import { post, withChain } from './api';
 import { ask } from './components/ui';
 import { muteClose } from './components/TargetAlerts';
 import { usd, short } from './fmt';
@@ -25,7 +25,7 @@ export function useClosePosition(reload) {
       description: t('Menunggu konfirmasi di chain, bisa sampai 1–2 menit.'), isLoading: true, timeout: 0,
     });
     let r;
-    try { r = await post('/api/positions/close', force ? { id: p.id, force: true } : { id: p.id }); }
+    try { r = await post(withChain('/api/positions/close', p.chain), force ? { id: p.id, force: true } : { id: p.id }); }
     catch (e) { r = { error: e.message, lost: true }; }
     toast.close(wait);
     if (r.lost || /^HTTP 5\d\d$/.test(r.error || '')) {

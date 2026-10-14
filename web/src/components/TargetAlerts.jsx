@@ -9,6 +9,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button, Popover, toast } from '@heroui/react';
 import { Bell, BellOff } from 'lucide-react';
 import { get } from '../api';
+import { setScope } from '../chain';
 import { usd, pct, age, short } from '../fmt';
 import { useI18n, reason as reasonText, translate } from '../i18n';
 import { Toggle } from './ui';
@@ -215,7 +216,8 @@ function announce(all, { sound, desktop, preview = false }) {
   }
   const shown = [...(opens.length > 3 ? [] : opens), ...(closes.length > 3 ? [] : closes)];
   for (const it of shown) {
-    const go = preview ? null : () => { location.hash = linkOf(it); };
+    // a row of the all-chains feed opens its detail on its own chain
+    const go = preview ? null : () => { if (it.chain) setScope(it.chain); location.hash = linkOf(it); };
     const close = it.kind === 'close';
     let key = null;
     key = toast(titleOf(it), {
@@ -235,7 +237,7 @@ function announce(all, { sound, desktop, preview = false }) {
       body: many ? items.map(titleOf).slice(0, 4).join('\n') : it.kind === 'close' ? closeDesc(it) : descOf(it),
       tag: `quiver-feed-${it.id}`,
     });
-    n.onclick = () => { window.focus(); location.hash = many ? (opens.length ? 'activity' : 'positions') : linkOf(it); n.close(); };
+    n.onclick = () => { window.focus(); if (!many && it.chain) setScope(it.chain); location.hash = many ? (opens.length ? 'activity' : 'positions') : linkOf(it); n.close(); };
   }
 }
 
@@ -254,10 +256,13 @@ export function useTargetAlerts() {
     const tick = async () => {
       try {
         const first = last.current == null;
-        const r = await get(first ? '/api/feed' : `/api/feed?after=${last.current}&closedAfter=${lastClosed.current}`);
+        // All-chains view: the server keeps one cursor per chain in an opaque string (r.cursor).
+        const r = await get(first ? '/api/feed' : typeof last.current === 'string'
+          ? `/api/feed?after=${encodeURIComponent(last.current)}` : `/api/feed?after=${last.current}&closedAfter=${lastClosed.current}`);
         if (!alive || r.error) return;
         if (!first && r.items?.length) announce(r.items, prefs);
-        last.current = Math.max(last.current ?? 0, r.lastId ?? 0);
+        if (r.cursor != null) { last.current = r.cursor; return; }
+        last.current = Math.max(typeof last.current === 'number' ? last.current : 0, r.lastId ?? 0);
         lastClosed.current = Math.max(lastClosed.current, r.lastClosed ?? 0, ...(r.items || []).map((it) => (it.kind === 'close' ? it.ts : 0)));
       } catch { /* network down: retry on the next round */ }
       finally { if (alive) timer = setTimeout(tick, document.hidden ? 8000 : 4000); }

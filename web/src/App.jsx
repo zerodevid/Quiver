@@ -6,9 +6,9 @@ import {
   PlusCircle, ArrowDownUp, BookOpen, MonitorDot,
 } from 'lucide-react';
 import { usePoll, useHash, useTheme } from './hooks';
-import { post } from './api';
+import { post, withChain, setMergedPage } from './api';
 import { short, usd, num } from './fmt';
-import { chainInfo, setChain, CHAIN_ICON } from './chain';
+import { chainInfo, setChain, registerChains, setAllMode, getScope, setScope, getChainFilter, setChainFilter, CHAIN_ICON } from './chain';
 import { setFx } from './currency';
 import { usePrivacy, setDefaultHidden } from './privacy';
 import { useI18n, LOCALES } from './i18n';
@@ -130,7 +130,12 @@ function PrivacyButton({ hidden, toggle }) {
 function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
   const { t, locale, setLocale } = useI18n();
   const m = status?.mode;
-  const pause = async () => { await post('/api/mode', { paused: !m?.paused }); reload(); };
+  // The combined view pauses/resumes every chain it shows, each through its own server.
+  const pause = async () => {
+    const keys = status?.chain?.all ? status.chain.chains || [] : [null];
+    await Promise.all(keys.map((k) => post(withChain('/api/mode', k), { paused: !m?.paused })));
+    reload();
+  };
   // Not via api.post: /logout replies with a redirect to the sign-in page, not JSON.
   const logout = async () => {
     if (!(await ask({ title: t('Keluar dari dasbor?'), body: t('Untuk masuk lagi perlu token akses.'), confirm: t('Keluar dari dasbor') }))) return;
@@ -190,19 +195,20 @@ function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
 // Chain picker under the logo. One dashboard shows one chain; choosing another chain
 // saves the lpcopy_chain cookie on the server then reloads the page so all
 // data being polled changes too. The wallet is the same on all chains.
-function ChainSwitcher({ chain }) {
+function ChainSwitcher({ chain, data }) {
   const { t } = useI18n();
-  const { data } = usePoll('/api/chains', 15000);
   const [open, setOpen] = useState(false);
   const chains = data?.chains || [];
-  const cur = chainInfo();
+  const all = data?.current === 'all';
+  const cur = all ? { key: 'all', label: t('Semua chain') } : chainInfo();
   const pick = async (key) => {
     setOpen(false);
     if (key === cur.key) return;
     const r = await post('/api/chain/select', { chain: key });
-    if (r?.ok) location.reload();
+    if (r?.ok) { setScope(null); location.reload(); }
   };
-  const icon = CHAIN_ICON[cur.key] || CHAIN_ICON.robinhood;
+  const icon = all ? null : CHAIN_ICON[cur.key] || CHAIN_ICON.robinhood;
+  const allUsd = chains.reduce((a, c) => a + (c.cash?.usd || 0), 0);
   // A single chain: show its label without a menu.
   if (chains.length <= 1) {
     return (
@@ -216,14 +222,27 @@ function ChainSwitcher({ chain }) {
       <button type="button" onClick={() => setOpen(!open)} aria-haspopup="listbox" aria-expanded={open}
         title={t('Ganti chain')}
         className="brand-sub flex items-center gap-1.5 rounded-md border border-border/70 px-1.5 py-0.5 text-[0.6875rem] leading-4 text-muted transition-colors hover:border-border hover:text-foreground">
-        <img src={icon} alt="" width="14" height="14" className="size-3.5 shrink-0 rounded-full" />
-        <span className="font-medium">{chain?.label || cur.label}</span>
+        {icon ? <img src={icon} alt="" width="14" height="14" className="size-3.5 shrink-0 rounded-full" /> : <ChainStack keys={chains.map((c) => c.key)} />}
+        <span className="font-medium">{all ? cur.label : chain?.label || cur.label}</span>
         <svg viewBox="0 0 20 20" className="size-3 opacity-70" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8l4 4 4-4" /></svg>
       </button>
       {open && (
         <ul role="listbox" className="absolute left-0 z-40 mt-1 w-64 overflow-hidden rounded-md border border-border bg-surface p-1 shadow-lg">
+          {/* Every chain together: portfolio, positions, activity and transactions merged. */}
+          <li>
+            <button type="button" role="option" aria-selected={all} onClick={() => pick('all')}
+              className={`flex w-full items-center gap-2.5 rounded px-2 py-1.5 text-left text-xs transition-colors ${all ? 'bg-default text-foreground' : 'text-muted hover:bg-default/60 hover:text-foreground'}`}>
+              <ChainStack keys={chains.map((c) => c.key)} size={16} />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate font-medium">{t('Semua chain')}</span>
+                <span className="truncate text-[0.6875rem] opacity-80">{t('{n} chain · kas {v}', { n: chains.length, v: usd(allUsd) })}</span>
+              </span>
+              {all && <span className="text-accent">✓</span>}
+            </button>
+          </li>
+          <li className="my-1 border-t border-border" aria-hidden="true" />
           {chains.map((c) => {
-            const active = c.key === cur.key;
+            const active = !all && c.key === cur.key;
             const mode = c.paused ? t('Dijeda') : c.dryRun ? t('Simulasi') : 'Live';
             return (
               <li key={c.key}>
@@ -251,12 +270,73 @@ function ChainSwitcher({ chain }) {
   );
 }
 
-function Brand({ chain }) {
+// Overlapping chain logos: the mark of the all-chains view.
+function ChainStack({ keys, size = 14 }) {
+  const shown = keys.slice(0, 3);
+  return (
+    <span className="flex shrink-0 items-center" style={{ width: size + (shown.length - 1) * (size * 0.45) }}>
+      {shown.map((k, i) => (
+        <img key={k} src={CHAIN_ICON[k] || CHAIN_ICON.robinhood} alt="" width={size} height={size}
+          className="shrink-0 rounded-full ring-1 ring-surface" style={{ width: size, height: size, marginLeft: i ? -size * 0.55 : 0 }} />
+      ))}
+    </span>
+  );
+}
+
+// Pages that show every chain together in the all-chains view. The rest belong to one chain
+// (rules, targets, swaps, a position's detail) and get a chain picker on top instead.
+const MERGED_PAGES = new Set(['summary', 'positions', 'activity']);
+const isMergedPage = (page, param) => MERGED_PAGES.has(page) && !param;
+
+// All-chains view: which chains are summed (merged pages) or which chain a single-chain page
+// is looking at. Changing either reloads, like the chain switcher.
+function ChainScopeBar({ merged, byChain, chains }) {
+  const { t } = useI18n();
+  if (!chains?.length) return null;
+  const chip = (key, on, onPress, sub) => (
+    <button key={key} type="button" onClick={onPress} aria-pressed={on}
+      className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors ${on ? 'border-accent bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}>
+      <img src={CHAIN_ICON[key] || CHAIN_ICON.robinhood} alt="" className="size-3.5 rounded-full" />
+      {chains.find((c) => c.key === key)?.label || key}
+      {sub && <span className="opacity-70">{sub}</span>}
+    </button>
+  );
+  if (merged) {
+    const shown = new Set((byChain || []).map((c) => c.key));
+    const filter = getChainFilter();
+    const toggle = (key) => {
+      const next = shown.has(key) ? [...shown].filter((k) => k !== key) : [...shown, key];
+      if (!next.length) return;
+      setChainFilter(next);
+      location.reload();
+    };
+    return (
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-muted">{t('Chain dijumlah')}</span>
+        {chains.map((c) => chip(c.key, shown.has(c.key), () => toggle(c.key), c.dryRun ? t('simulasi') : null))}
+        {filter.length > 0 && (
+          <button type="button" className="text-xs text-muted underline hover:text-foreground" onClick={() => { setChainFilter([]); location.reload(); }}>
+            {t('Hanya yang live')}
+          </button>
+        )}
+      </div>
+    );
+  }
+  const cur = getScope() || chains[0]?.key;
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-2">
+      <span className="text-xs text-muted">{t('Halaman ini untuk satu chain')}</span>
+      {chains.map((c) => chip(c.key, c.key === cur, () => { if (c.key !== cur) { setScope(c.key); location.reload(); } }))}
+    </div>
+  );
+}
+
+function Brand({ chain, chains }) {
   return (
     // data-brand/data-brand-logo: the destination of the splash logo when it flies to the header
     <div data-brand className="flex shrink-0 flex-col items-start gap-2 text-foreground">
       <a href="#summary" aria-label="Quiver"><QuiverLogo className="h-[22px] w-[121px]" data-brand-logo="" /></a>
-      <ChainSwitcher chain={chain} />
+      <ChainSwitcher chain={chain} data={chains} />
     </div>
   );
 }
@@ -272,16 +352,30 @@ export default function App() {
   // page reformats its numbers via usd()/fmtQty(), which already know the state.
   const privacy = usePrivacy();
   const { data: status, error: statusError, reload } = usePoll('/api/overview', 5000);
+  // Every chain with its identity and cash: the chain picker, and the rows of the all-chains view.
+  const { data: chainList } = usePoll('/api/chains', 15000);
+  if (chainList?.chains) registerChains(chainList.chains);
   // The splash screen closes as soon as the first status (or its error) arrives.
   useEffect(() => { if (status || statusError) hideSplash(); }, [status, statusError]);
   // The chain identity (native symbol, explorer, DexScreener slug) is shared with non-React
   // helpers via chain.js as soon as the first status arrives.
-  useEffect(() => { if (status?.chain?.key) setChain(status.chain); }, [status?.chain?.key]);
+  // All-chains view: the merged pages keep the combined identity; a single-chain page takes the
+  // identity of the chain it is scoped to, and its requests carry ?chain= (api.js).
+  const allView = !!status?.chain?.all;
+  const merged = isMergedPage(page, param);
+  if (status?.chain) setAllMode(allView);   // before the first status: the cookie decides (chain.js)
+  setMergedPage(merged);
+  const scope = allView && !merged ? getScope() || status.chain.chains?.[0] : null;
+  if (allView && !merged && !getScope() && scope) setScope(scope);
+  // Set during render, not in an effect: the page below reads it in its own first render.
+  if (status?.chain?.key) setChain(scope && chainInfo(scope).key === scope ? { ...chainInfo(scope), all: false } : status.chain);
   // The secondary currency rate rides on the same poll; the <Fx> component reads it.
   useEffect(() => { setFx(status?.fx || null); }, [status?.fx?.currency, status?.fx?.rate]);
   // The default value redaction from Settings → Display; the eye icon overrides it per tab.
   useEffect(() => { if (status && 'hideValues' in status) setDefaultHidden(status.hideValues); }, [status?.hideValues]);
   const chain = status?.chain?.key ? status.chain : chainInfo();
+  // A single-chain page inside the combined view renders once its chain identity is in place.
+  const pageKey = page + (param || '') + (scope ? `@${scope}` : '');
   // The tab title follows the live figures: "Quiver · $1,234.56 · +$56.78" (scrolling, see setBaseTitle) — portfolio total and
   // PnL (net if capital is tracked, otherwise position PnL), the same as the card on the
   // Summary. Readable from beside another tab without opening the dashboard.
@@ -304,7 +398,7 @@ export default function App() {
       <div className="flex min-h-dvh">
         {/* sidebar desktop */}
         <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col border-r border-border bg-surface lg:flex">
-          <div className="flex h-[76px] items-center border-b border-border px-5"><Brand chain={chain} /></div>
+          <div className="flex h-[76px] items-center border-b border-border px-5"><Brand chain={chain} chains={chainList} /></div>
           {/* data-reveal: disembunyikan selama layar pembuka, muncul berurutan setelah logo mendarat */}
           <div className="flex-1 overflow-y-auto px-2 py-4" data-reveal="nav">
             <div className="mb-3 px-0.5"><SearchTrigger /></div>
@@ -316,7 +410,7 @@ export default function App() {
         <div className="flex min-w-0 flex-1 flex-col">
           {/* header mobile */}
           <header className="sticky top-0 z-30 flex h-[72px] items-center justify-between border-b border-border bg-surface/90 px-4 backdrop-blur lg:hidden">
-            <Brand chain={chain} />
+            <Brand chain={chain} chains={chainList} />
             <div className="flex items-center gap-1" data-reveal="nav">
               <span className="mr-1 hidden min-[360px]:inline"><ModeBadge m={status?.mode} /></span>
               <SearchTrigger compact />
@@ -339,10 +433,11 @@ export default function App() {
 
           <StuckAlert />
           <main className="mx-auto w-full max-w-[90rem] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7" data-reveal="main">
-            <Suspense fallback={<Loading page />}><Page key={page + (param || '')} param={param} /></Suspense>
+            {allView && <ChainScopeBar merged={merged} byChain={status.byChain} chains={chainList?.chains} />}
+            <Suspense fallback={<Loading page />}><Page key={pageKey} param={param} /></Suspense>
           </main>
           <footer className="mx-auto w-full max-w-[90rem] px-4 pb-5 text-[0.6875rem] text-muted sm:px-6 lg:px-8" data-reveal="foot">
-            {t('Quiver · cermin posisi likuiditas')} {chain.key === 'bsc' ? 'Uniswap v3/v4 + PancakeSwap v3' : 'Uniswap v3/v4'} · {chain.label} ({chain.chainId})
+            {t('Quiver · cermin posisi likuiditas')} {chain.all ? `· ${t('Semua chain')}` : <>{chain.key === 'bsc' ? 'Uniswap v3/v4 + PancakeSwap v3' : 'Uniswap v3/v4'} · {chain.label} ({chain.chainId})</>}
           </footer>
         </div>
       </div>

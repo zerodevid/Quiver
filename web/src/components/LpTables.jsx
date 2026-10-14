@@ -1,6 +1,6 @@
 // Tables shared by the token detail and pool detail pages: bot positions,
 // researched wallet positions, and target moves. The data comes from lpRows on the server.
-import { chainInfo, isEthLike } from '../chain';
+import { chainInfo, isEthLike, chainRef } from '../chain';
 import { Button } from '@heroui/react';
 import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing, TradeLinks, WalletLinks, PositionRef, baseTokenOf } from './ui';
 import { TokenPair, PairName } from './TokenIcon';
@@ -79,7 +79,7 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, w
     : null);
   const canSource = !!onSource && rows.some(sourceOf);
   return (
-    <GmgnProvider tokens={open.map((p) => baseTokenOf(p))}>
+    <GmgnProvider tokens={open.map((p) => chainRef(baseTokenOf(p), p))}>
     <Panel title={t('Posisi bot ({n})', { n: rows.length })} className={className} bodyClass="p-0"
       desc={onHist && rows.length > 0 ? 'Klik baris untuk riwayat transaksi dan catatan bot.' : undefined}
       action={<div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:justify-end">
@@ -220,7 +220,7 @@ export function TargetMoves({ rows, className = '' }) {
             </div>) },
           { key: 'val', label: 'Nilai', align: 'end', sort: (x) => x.value_quote, render: (x) => (
             x.value_quote == null ? <span className="text-muted">—</span>
-              : isEthLike(x.quote_symbol) ? `${x.value_quote.toFixed(4)} ${chainInfo().nativeSymbol}` : usd(x.value_quote)) },
+              : isEthLike(x.quote_symbol, x.chain) ? `${x.value_quote.toFixed(4)} ${chainInfo(x.chain).nativeSymbol}` : usd(x.value_quote)) },
           { key: 'dec', label: 'Keputusan', sort: (x) => x.verdict, render: (x) => {
             const k = DECISIONS[x.verdict];
             return (

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, Modal, toast } from '@heroui/react';
 import { Sprout } from 'lucide-react';
-import { get, post } from '../api';
+import { get, post, withChain } from '../api';
 import { useI18n } from '../i18n';
 import { usd, ago } from '../fmt';
 
@@ -22,7 +22,7 @@ export default function AutoCompoundButton({ p, reload, disabled = false, compac
   const show = async () => {
     setOpen(true); setBusy(true); setError(''); setData(null);
     try {
-      const r = await get(`/api/positions/compound?id=${p.id}`);
+      const r = await get(withChain(`/api/positions/compound?id=${p.id}`, p.chain));
       if (r.error) throw new Error(r.error);
       setData(r.compound); setEnabled(r.compound.enabled);
       setMode(r.compound.mode || 'compound'); setSellFee(r.compound.sellFee !== false);
@@ -34,7 +34,7 @@ export default function AutoCompoundButton({ p, reload, disabled = false, compac
     if (busy) return;
     setBusy(true); setError('');
     try {
-      const r = await post('/api/positions/compound', { id: p.id, enabled, mode, sellFee,
+      const r = await post(withChain('/api/positions/compound', p.chain), { id: p.id, enabled, mode, sellFee,
         minUsd: Number(minimum), intervalMinutes: Number(interval) });
       if (r.error) throw new Error(r.error);
       setData(r.compound); setOpen(false);

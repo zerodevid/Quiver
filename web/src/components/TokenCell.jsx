@@ -3,7 +3,7 @@ import { usePoll } from '../hooks';
 import { usd, kUsd } from '../fmt';
 import { useI18n } from '../i18n';
 import { baseTokenOf } from './ui';
-import { canonAddr } from '../chain';
+import { canonAddr, chainRef } from '../chain';
 
 // The copied token's USD price and market cap, so a "-79% from current price" BEP reads
 // against how big the token is. DexScreener's priceUsd / marketCap describe the pair's base
@@ -33,7 +33,7 @@ function tokenFigures(pair, p) {
 export function usePairs(rows) {
   const pools = useMemo(() => [...new Set((rows || [])
     .filter((x) => x && !x.empty && (x.status == null || x.status === 'open'))
-    .map((x) => canonAddr(x.pool_ref || ''))
+    .map((x) => chainRef(canonAddr(x.pool_ref || ''), x))
     .filter(Boolean))].sort().slice(0, 40), [rows]);
   const { data } = usePoll(pools.length ? `/api/monitor/market?pools=${pools.join(',')}` : null, 60000);
   return (x) => data?.pairs?.[canonAddr(x.pool_ref || '')] || null;
