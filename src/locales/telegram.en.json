@@ -943,5 +943,6 @@
   "💱 Claim + jual {0}": "💱 Claim + sell {0}",
   "💱 {0}": "💱 {0}",
   "⚠️ Fee belum terjual — masuk antrean jual dan dicoba lagi otomatis: {0}": "⚠️ Fees not sold yet — queued for sale and retried automatically: {0}",
-  "Kirim alamat wallet Solana untuk memotret gaya LP-nya: ukuran posisi khas, lebar rentang, dan seberapa sering harga masih di dalam rentang.\n<i>Contoh:</i> <code>6mch5r…XwTD</code>": "Send a Solana wallet address to profile how it provides liquidity: typical position size, range width, and how often the price is still inside the range.\n<i>Example:</i> <code>6mch5r…XwTD</code>"
+  "Kirim alamat wallet Solana untuk memotret gaya LP-nya: ukuran posisi khas, lebar rentang, dan seberapa sering harga masih di dalam rentang.\n<i>Contoh:</i> <code>6mch5r…XwTD</code>": "Send a Solana wallet address to profile how it provides liquidity: typical position size, range width, and how often the price is still inside the range.\n<i>Example:</i> <code>6mch5r…XwTD</code>",
+  "🔒 Pengaturan ini dikelola superadmin server.": "🔒 This setting is managed by the server's superadmin."
 }

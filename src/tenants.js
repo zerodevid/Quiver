@@ -83,7 +83,12 @@ function loadUserCfg(file, globalCfg, dir) {
   return u;
 }
 
+// Wallet fields an account can never change, even in memory: where its key lives, that it is
+// encrypted, and that the superadmin's env keys are never used.
+const lockedWallet = (w) => ({ key_file: w.key_file, solana_key_file: w.solana_key_file, from_env: false, encrypted: true });
+
 function userCfgView(globalCfg, userCfg, { dbPath }) {
+  const walletLock = lockedWallet(userCfg.wallet || {});
   const chainProxies = new Map();
   const chainProxy = (k) => {
     if (!chainProxies.has(k)) {
@@ -130,10 +135,12 @@ function userCfgView(globalCfg, userCfg, { dbPath }) {
       if (p === 'chains') return chains;
       if (p === 'db') return db;
       if (p === 'telegram') return telegramView();
+      if (p === 'wallet') return Object.freeze({ ...t.wallet, ...walletLock });
       if (USER_TOP.has(p)) return t[p];
       return globalCfg[p];
     },
     set(t, p, v) {
+      if (p === 'wallet') { t.wallet = { ...(v && typeof v === 'object' ? v : {}), ...walletLock }; return true; }
       if (typeof p === 'string' && USER_TOP.has(p)) { t[p] = v; return true; }
       if (p === 'telegram') {
         // Only the account's own fields are kept; a bot token never lands here.

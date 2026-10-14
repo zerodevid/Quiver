@@ -18,7 +18,7 @@ const amt = (v, d = 4) => (v == null ? '—' : Number(v).toLocaleString(fmtLocal
 
 // Shared infrastructure owned by the superadmin; a regular account in multi-user mode does
 // not see these tabs (the server refuses their routes and leaves their data out anyway).
-const ADMIN_TABS = new Set(['chains', 'rpc', 'gmgn', 'loop', 'security', 'aggregators']);
+const ADMIN_TABS = new Set(['chains', 'rpc', 'gmgn', 'loop', 'aggregators']);
 
 const SETTINGS_NAV = [
   ['wallet', 'Wallet & mode', 'Dana dan mode transaksi', Wallet],
@@ -818,8 +818,44 @@ function DisplayTab({ d, reload }) {
   );
 }
 
+// Password change for whoever is signed in with an account. Other sessions of the account are
+// signed out by the server; this browser stays in.
+function PasswordBox() {
+  const { t } = useI18n();
+  const [cur, setCur] = useState('');
+  const [next, setNext] = useState('');
+  const [next2, setNext2] = useState('');
+  const [busy, setBusy] = useState(false);
+  const mismatch = !!next2 && next !== next2;
+  const save = async () => {
+    setBusy(true);
+    const r = await post('/api/auth/password', { current: cur, next, next2 });
+    setBusy(false);
+    if (r.error) return toast.danger(r.error);
+    setCur(''); setNext(''); setNext2('');
+    toast.success(t('Kata sandi diganti. Perangkat lain sudah dikeluarkan.'));
+  };
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <div className="font-medium">{t('Ganti kata sandi')}</div>
+        <p className="mt-1 text-sm text-muted">{t('Setelah diganti, semua perangkat lain yang masuk ke akun ini dikeluarkan. Browser ini tetap masuk.')}</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Text label="Kata sandi saat ini" type="password" value={cur} onChange={setCur} autoComplete="current-password" />
+        <Text label="Kata sandi baru" type="password" value={next} onChange={setNext} placeholder="min. 8 karakter" autoComplete="new-password" />
+        <Text label="Ulangi kata sandi baru" type="password" value={next2} onChange={setNext2} autoComplete="new-password" isInvalid={mismatch} error="Kata sandi tidak sama." />
+      </div>
+      <Button variant="outline" className="w-fit" isPending={busy} isDisabled={!cur || next.length < 8 || next !== next2} onPress={save}>{t('Ganti kata sandi')}</Button>
+    </div>
+  );
+}
+
 function SecurityTab({ d }) {
   const { t } = useI18n();
+  const me = useMe();
+  const account = me?.user && !me.user.legacy;
+  const regular = isRegular(me);
   const [tok, setTok] = useState(null);
   const rotate = async () => {
     if (!(await ask({ title: t('Ganti token akses? Perangkat lain harus masuk ulang.'), confirm: t('Ganti token') }))) return;
@@ -828,13 +864,15 @@ function SecurityTab({ d }) {
     setTok(r.token);
   };
   return (
-    <Section title="Keamanan" desc="Dasbor ini bisa menyalakan LIVE dan menutup posisi, jadi dilindungi token akses.">
-      <div>
+    <Section title="Keamanan" desc={regular ? 'Akun ini bisa menyalakan LIVE dan menutup posisi. Pakai kata sandi yang kuat dan tidak dipakai di tempat lain.' : 'Dasbor ini bisa menyalakan LIVE dan menutup posisi, jadi dilindungi token akses.'}>
+      {account && <PasswordBox />}
+      {account && !regular && <Separator />}
+      {!regular && <div>
         <div className="font-medium">{t('Ganti token akses')}</div>
         <p className="mb-3 mt-1 text-sm text-muted">{t('Token lama langsung tidak berlaku; perangkat lain harus masuk ulang. Browser ini tetap masuk.')}</p>
         {d?.authFromEnv ? <EnvNotice name={d.authFromEnv} what="Token akses" />
           : <Button variant="danger" onPress={rotate}>{t('Buat token baru')}</Button>}
-      </div>
+      </div>}
       {tok && (
         <Card variant="secondary"><Card.Content className="gap-2">
           <div className="text-sm font-medium">{t('Token baru — simpan sekarang, tidak akan ditampilkan lagi')}</div>

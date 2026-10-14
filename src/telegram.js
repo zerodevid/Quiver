@@ -1085,6 +1085,11 @@ class Telegram {
     const input = s.pending || s.retryInput;
     s.pending = null;
     s.retryInput = null;
+    // An account's bot: RPC, engine loop and the dashboard token belong to the superadmin (the
+    // server refuses those routes anyway; this keeps the screens from breaking).
+    if (this.hub && (['sr', 'sra', 'srd', 'sk', 'sK'].includes(head) || (head === 'sf' && rest[0] === 'mesin'))) {
+      return out(tr("🔒 Pengaturan ini dikelola superadmin server."), kb([[btn(tr("↩︎ Pengaturan"), 's'), BACK_HOME]]));
+    }
     switch (head) {
       case 'inputRetry':
         if (input?.prompt) return this.ask(chatId, input, input.prompt);
@@ -2550,22 +2555,22 @@ class Telegram {
       `Mode: <b>${st.mode.dry_run ? tr("🧪 SIMULASI") : '🟢 LIVE'}</b>${st.mode.paused ? tr(" · ⏸ dijeda") : ''}`,
       `Wallet: <code>${esc(st.wallet.address || tr('(belum ada)'))}</code>`,
       table([
-        ['RPC', `${st.rpc.length} endpoint`],
+        st.rpc ? ['RPC', `${st.rpc.length} endpoint`] : null,
         [tr('Pengali gas'), nf(st.gas.price_multiplier, 2)],
         [tr('Cadangan {0}', [st.chain?.nativeSymbol || 'ETH']), nf(st.gas.reserve_eth ?? st.gas.reserve_sol, 4)],
-        [tr('Interval pindai'), `${num(st.loop.poll_ms)} ms`],
-        [tr('Sinkronisasi'), `${num(st.loop.sync_seconds)} s`],
+        st.loop ? [tr('Interval pindai'), `${num(st.loop.poll_ms)} ms`] : null,
+        st.loop ? [tr('Sinkronisasi'), `${num(st.loop.sync_seconds)} s`] : null,
         ['ntfy', st.notify.ntfy_topic || tr('mati')],
         ['Telegram', `${this.chats().length} chat`],
-      ]),
+      ].filter(Boolean)),
     ];
     return [L.join('\n'), kb([
       [btn(st.mode.dry_run ? tr("🟢 Nyalakan LIVE") : tr("🧪 Kembali ke simulasi"), 'sl')],
       [btn(st.mode.paused ? tr("▶️ Lanjutkan") : tr("⏸ Jeda penyalinan"), 'sp')],
-      [btn(tr("🔑 Wallet bot"), 'wb'), btn('🌐 RPC', 'sr')],
-      [btn('⛽ Gas', st.wallet?.kind === 'solana' ? 'sf:gasSol' : 'sf:gas'), btn(tr("🔧 Mesin"), 'sf:mesin')],
+      this.hub ? [btn(tr("🔑 Wallet bot"), 'wb'), btn('⛽ Gas', st.wallet?.kind === 'solana' ? 'sf:gasSol' : 'sf:gas')] : [btn(tr("🔑 Wallet bot"), 'wb'), btn('🌐 RPC', 'sr')],
+      this.hub ? null : [btn('⛽ Gas', st.wallet?.kind === 'solana' ? 'sf:gasSol' : 'sf:gas'), btn(tr("🔧 Mesin"), 'sf:mesin')],
       [btn(tr("🔔 Notifikasi"), 'sn'), btn(tr("💬 Chat Telegram"), 'sc')],
-      [btn(tr("🔐 Ganti token dasbor"), 'sk')],
+      this.hub ? null : [btn(tr("🔐 Ganti token dasbor"), 'sk')],
       [btn('🌐 Language / Bahasa', 'lang')],
       [btn(tr("🔄 Segarkan"), 's'), BACK_HOME],
     ])];

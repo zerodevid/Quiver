@@ -128,7 +128,7 @@ async function probeRpc({ url, headers }, chain) {
 // `restart`: called after a config/database restore. Defaults to the orderly-stop path
 // of index.js (SIGINT) — pm2/systemd starts it again and boot swaps the files.
 function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = null, chainControl = null, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market = null, fx = null,
-  restart = () => process.kill(process.pid, 'SIGINT'), retypeSecret = null }) {
+  restart = () => process.kill(process.pid, 'SIGINT'), retypeSecret = null, maxBackupBytes = 256 * 1024 * 1024 }) {
   chain = ensureChain(chain || engine?.chain);
   // Live list: chains can be switched on and off while the bot runs.
   const liveEngines = () => (nets ? Object.values(nets).map((n) => n.engine).filter(Boolean) : enginesInit);
@@ -215,7 +215,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
   // A backup file contains the database (can be several MB) — it passes the 1 MB readBody limit.
   const readBackupBody = (req) => (req.__body ? Promise.resolve(req.__body) : new Promise((resolve, reject) => {
     const chunks = []; let n = 0;
-    req.on('data', (c) => { n += c.length; if (n > 256 * 1024 * 1024) { req.destroy(); reject(new Error('Berkas cadangan terlalu besar.')); } else chunks.push(c); });
+    req.on('data', (c) => { n += c.length; if (n > maxBackupBytes) { req.destroy(); reject(new Error('Berkas cadangan terlalu besar.')); } else chunks.push(c); });
     req.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); } catch { reject(new Error('Berkas cadangan bukan JSON yang valid.')); } });
     req.on('error', reject);
   }));
@@ -477,7 +477,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
     // read via XSS, so this is a real second layer, not a formality.
     'POST /api/settings/wallet/export': async (req) => {
       const b = await readBody(req);
-      const bad = retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa mengekspor wallet.', req); if (bad) return bad;
+      const bad = await retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa mengekspor wallet.', req); if (bad) return bad;
       const addr = exec.address();
       if (!addr) return { error: 'Tidak ada wallet terpasang.' };
       const pass = String(b.password || '');
@@ -500,7 +500,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
     // ---- backup & restore (see backup.js) ----
     'POST /api/settings/backup': async (req) => {
       const b = await readBody(req);
-      const bad = retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa membuat cadangan.', req); if (bad) return bad;
+      const bad = await retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa membuat cadangan.', req); if (bad) return bad;
       const parts = { config: !!b.parts?.config, db: !!b.parts?.db, wallet: !!b.parts?.wallet };
       if (!parts.config && !parts.db && !parts.wallet) return { error: 'Pilih minimal satu bagian untuk dicadangkan.' };
       let wallet = null, solanaKeypair = null;
@@ -535,7 +535,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
     'POST /api/settings/restore': async (req) => {
       let b;
       try { b = await readBackupBody(req); } catch (e) { return { error: e.message }; }
-      const bad = retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa memulihkan cadangan.', req); if (bad) return bad;
+      const bad = await retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa memulihkan cadangan.', req); if (bad) return bad;
       let backup;
       try { backup = parseBackup(b.backup); } catch (e) { return { error: e.message }; }
       const parts = { config: !!b.parts?.config, db: !!b.parts?.db, wallet: !!b.parts?.wallet };
@@ -908,7 +908,16 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
         else if (!/^\d{5,15}:[A-Za-z0-9_-]{20,}$/.test(v)) return { error: 'Token bot tidak berbentuk benar (contoh: 123456789:AAH…).' };
         else t.bot_token = v;
       }
-      if (Array.isArray(b.chat_ids)) t.chat_ids = [...new Set(b.chat_ids.map((x) => String(x).trim()).filter((x) => /^-?\d+$/.test(x)))];
+      if (Array.isArray(b.chat_ids)) {
+        const next = [...new Set(b.chat_ids.map((x) => String(x).trim()).filter((x) => /^-?\d+$/.test(x)))];
+        // An account adds chats only by pairing (/start <code>): a typed chat id would let it claim
+        // someone else's chat — the shared bot routes each chat to the account that lists it.
+        if (telegram?.hub) {
+          const cur = new Set((cfg.telegram?.chat_ids || []).map(String));
+          if (next.some((x) => !cur.has(x))) return { error: 'Chat baru hanya bisa ditambahkan lewat kode sambung.' };
+        }
+        t.chat_ids = next;
+      }
       if (b.notify && typeof b.notify === 'object') {
         t.notify = { ...(t.notify || {}) };
         for (const k of ['penting', 'error', 'warn', 'info']) if (k in b.notify) t.notify[k] = !!b.notify[k];

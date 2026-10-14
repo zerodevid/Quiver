@@ -144,9 +144,9 @@ function view(dir = tmp()) {
   // ---- HTTP isolation ----
   const authStore = new Store(':memory:');
   const auth = new Auth(authStore);
-  const root = auth.register({ username: 'root', password: 'password1' });
-  const alice = auth.register({ username: 'alice', password: 'password1', invite: auth.createInvite(root.id) });
-  const bob = auth.register({ username: 'bob', password: 'password1', invite: auth.createInvite(root.id) });
+  const root = await auth.register({ username: 'root', password: 'password1' });
+  const alice = await auth.register({ username: 'alice', password: 'password1', invite: auth.createInvite(root.id) });
+  const bob = await auth.register({ username: 'bob', password: 'password1', invite: auth.createInvite(root.id) });
   const cookie = (u) => `lpcopy_session=${auth.createSession(u.id)}`;
 
   function serveTenant(userId, { telegram = null, restart = null } = {}) {
@@ -165,7 +165,7 @@ function view(dir = tmp()) {
       tenant: { userId }, tenantControl: null, restart,
     });
     return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({
-      store, dbPath: path.join(dir, 'lpcopy.db'), base: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => server.close(r)),
+      store, dbPath: path.join(dir, 'lpcopy.db'), cfgPath: path.join(dir, 'config.json'), base: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => server.close(r)),
     })));
   }
 
@@ -303,6 +303,65 @@ function view(dir = tmp()) {
     const out = mergeConfig({ chains: { robinhood: { mode: { dry_run: false } }, bsc: { mode: { dry_run: false, paused: true } } } }, {});
     assert.equal(out.chains.robinhood.mode.dry_run, true);
     assert.deepEqual(out.chains.bsc.mode, { dry_run: true, paused: true });
+  });
+
+  await t('an account cannot claim a Telegram chat by typing its id, only drop its own', async () => {
+    const tg = { hub: {}, token: () => 'hub-token', chats: () => [] };
+    const s = await serveTenant(alice.id, { telegram: tg });
+    try {
+      const hdr = { cookie: cookie(alice), 'content-type': 'application/json' };
+      const r = await fetch(`${s.base}/api/settings/telegram`, { method: 'POST', headers: hdr, body: '{"chat_ids":["555"]}' }).then((x) => x.json());
+      assert.match(r.error, /kode sambung/);
+      assert.deepEqual(JSON.parse(fs.readFileSync(s.cfgPath, 'utf8')).telegram.chat_ids, []);
+    } finally { await s.close(); }
+  });
+
+  await t("an account's wallet location and env lock cannot be changed, even in memory", async () => {
+    const { dir, v } = view();
+    v.wallet = { key_file: '/home/admin/.lpcopy/key', from_env: true, encrypted: false, note: 'kept' };
+    assert.equal(v.wallet.key_file, path.join(dir, 'key'));
+    assert.equal(v.wallet.from_env, false);
+    assert.equal(v.wallet.encrypted, true);
+    assert.equal(v.wallet.note, 'kept');
+    assert.throws(() => { 'use strict'; v.wallet.key_file = '/etc/x'; }, TypeError);
+    assert.equal(chainView(v, 'robinhood').wallet.key_file, path.join(dir, 'key'));
+  });
+
+  await t('an account has a bounded number of targets', async () => {
+    const s = await serveTenant(alice.id);
+    try {
+      const hdr = { cookie: cookie(alice), 'content-type': 'application/json' };
+      for (let i = 0; i < 25; i++) s.store.run('INSERT INTO targets(chain,address,enabled,added_ts) VALUES(?,?,1,?)', 'robinhood', '0x' + String(i).padStart(40, '0'), Date.now());
+      const r = await fetch(`${s.base}/api/targets`, { method: 'POST', headers: hdr, body: JSON.stringify({ address: '0x' + 'a'.repeat(40) }) }).then((x) => x.json());
+      assert.match(r.error, /Batas 25 target/);
+    } finally { await s.close(); }
+  });
+
+  await t('sign-in, sign-up and sign-out refuse cross-site form posts', async () => {
+    const s = await serveTenant(alice.id);
+    try {
+      for (const p of ['/login', '/register', '/logout']) {
+        const r = await fetch(`${s.base}${p}`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', origin: 'https://evil.example' }, body: 'username=alice&password=password1' });
+        assert.equal(r.status, 403, p);
+      }
+    } finally { await s.close(); }
+  });
+
+  await t('password change through the API: wrong current password refused, other sessions end', async () => {
+    const s = await serveTenant(bob.id);
+    try {
+      const mine = auth.createSession(bob.id);
+      const other = auth.createSession(bob.id);
+      const hdr = { cookie: `lpcopy_session=${mine}`, 'content-type': 'application/json' };
+      const bad = await fetch(`${s.base}/api/auth/password`, { method: 'POST', headers: hdr, body: '{"current":"nope","next":"newpassword1"}' }).then((x) => x.json());
+      assert.match(bad.error, /saat ini salah/);
+      const ok = await fetch(`${s.base}/api/auth/password`, { method: 'POST', headers: hdr, body: '{"current":"password1","next":"newpassword1"}' }).then((x) => x.json());
+      assert.equal(ok.ok, true);
+      assert.ok(auth.userBySession(mine));
+      assert.equal(auth.userBySession(other), null);
+      const reset = await fetch(`${s.base}/api/auth/users/reset`, { method: 'POST', headers: hdr, body: JSON.stringify({ id: alice.id }) }).then((x) => x.json());
+      assert.match(reset.error, /superadmin/, 'only the superadmin resets passwords');
+    } finally { await s.close(); }
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);
