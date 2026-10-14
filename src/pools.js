@@ -541,11 +541,13 @@ Chain.prototype.poolKeyFromCalldata = async function poolKeyFromCalldata(poolId,
   try { tx = await this.rpc.call('eth_getTransactionByHash', [txHash]); } catch { return null; }
   if (!tx || !tx.input || tx.input.length < 10 + 64 * 5) return null;
   const body = tx.input.slice(10);                 // drop the selector
-  const words = body.length >> 6;                  // number of 32-byte words
-  const wordAt = (i) => '0x' + body.slice(i * 64, i * 64 + 64);
+  // Step 4 bytes, not 32: a mint sent through a wallet contract (e.g. execute(address,bytes))
+  // nests the PositionManager calldata with its own 4-byte selector, so the struct sits
+  // 4 bytes off the outer 32-byte grid.
+  const wordAt = (o) => '0x' + body.slice(o, o + 64);
   const addrOf = (w) => '0x' + w.slice(-40);
-  for (let i = 0; i + 5 <= words; i++) {
-    const c0 = wordAt(i), c1 = wordAt(i + 1), fe = wordAt(i + 2), ts = wordAt(i + 3), hk = wordAt(i + 4);
+  for (let o = 0; o + 64 * 5 <= body.length; o += 8) {
+    const c0 = wordAt(o), c1 = wordAt(o + 64), fe = wordAt(o + 128), ts = wordAt(o + 192), hk = wordAt(o + 256);
     // the first two words must look like addresses (the top 12 bytes zero)
     if (!/^0x0{24}/.test(c0) || !/^0x0{24}/.test(c1) || !/^0x0{24}/.test(hk)) continue;
     const fee = Number(BigInt(fe));
