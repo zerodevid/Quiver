@@ -7,6 +7,7 @@ const { Store } = require('./db');
 const { Chain } = require('./pools');
 const { Engine } = require('./engine');
 const { createServer } = require('./server');
+const { createAllChains } = require('./allchains');
 const { scoutWallet } = require('./scout');
 const { Telegram } = require('./telegram');
 const { loadDotEnv, applyEnv, defaultEnvPath, writeCfg } = require('./env');
@@ -295,19 +296,26 @@ async function main() {
       return { ok: true };
     },
   };
+  // "All chains" view: merges the aggregate routes of every chain's server (see allchains.js).
+  const allChains = createAllChains({ servers: () => servers, nets: () => nets, primaryKey });
   const makeServer = (net) => {
-    servers[net.key] = createServer({ engine: net.engine, store, cfg: net.cfg, cfgPath: CFG_PATH, chain: net.chain, rpc: net.rpc, log: net.log, telegram, nets, chainControl });
+    servers[net.key] = createServer({ engine: net.engine, store, cfg: net.cfg, cfgPath: CFG_PATH, chain: net.chain, rpc: net.rpc, log: net.log, telegram, nets, chainControl, allChains });
   };
   for (const net of Object.values(nets)) makeServer(net);
+  // ?chain= wins (a row's link or action on the combined view), then the cookie. 'all' is
+  // answered by the primary chain's server, which has the token gate, flagged for allChains.
   const pickChain = (req, url) => {
     const q = url.searchParams.get('chain');
     if (q && servers[q]) return q;
     const m = /(?:^|;\s*)lpcopy_chain=([a-z0-9_-]+)/i.exec(req.headers.cookie || '');
+    if (m && m[1] === 'all' && Object.keys(servers).length > 1) return 'all';
     return m && servers[m[1]] ? m[1] : primaryKey;
   };
   const front = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
-    servers[pickChain(req, url)].emit('request', req, res);
+    const key = pickChain(req, url);
+    if (key === 'all') req.__allChains = true;
+    servers[key === 'all' ? primaryKey : key].emit('request', req, res);
   });
   front.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {

@@ -188,7 +188,7 @@ function checkInitData(initData, botToken, { maxAgeSec = 86400, now = Date.now()
   return { user, authDate, look };
 }
 
-function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, nets = null, chainControl = null }) {
+function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, nets = null, chainControl = null, allChains = null }) {
   chain = ensureChain(chain || engine?.chain);
   const pub = path.join(__dirname, '..', 'public');
   const { QUOTES } = chain;
@@ -2324,7 +2324,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   routes['POST /api/chain/select'] = async (req, url, res) => {
     const b = await readBody(req);
     const want = String(b.chain || '').toLowerCase();
-    const ok = nets ? !!nets[want] : want === chain.network;
+    // 'all' = the combined view of every chain (allchains.js), only when there is more than one
+    const ok = nets ? !!nets[want] || (want === 'all' && Object.keys(nets).length > 1) : want === chain.network;
     if (!ok) return { error: 'chain tidak dikenal atau tidak aktif' };
     res.__setCookie = `lpcopy_chain=${want}; Path=/; SameSite=Lax; Max-Age=31536000${isHttps(req) ? '; Secure' : ''}`;
     return { ok: true, chain: want };
@@ -2639,6 +2640,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         'content-security-policy': "default-src 'none'; sandbox",
       });
       return res.end(img.buf);
+    }
+    // "All chains" view (cookie lpcopy_chain=all, set by the front door): the aggregate routes
+    // are answered by merging every chain's reply; the rest fall through to this chain.
+    if (req.__allChains && allChains?.routes[key]) {
+      try { return json(res, 200, await allChains.routes[key](url)); }
+      catch (e) { log(`api semua chain ${key}: ${e.message}`); return json(res, 500, { error: 'kesalahan server' }); }
     }
     if (routes[key]) {
       // CSRF: a request that changes something must come from the dashboard's own page.
