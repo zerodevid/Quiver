@@ -172,7 +172,7 @@ const PER_HAL = 5;
 const valued = (x) => !x.transferBlocked && x.usd != null && x.usd >= 0.01;
 // (A hidden token can still be chosen via the token picker in the swap card.)
 
-function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price, onRetryPrice }) {
+function Holdings({ loadErr, tokens, dari: from, onUse, onRemove, onImport, harga: price, onRetryPrice }) {
   const { t } = useI18n();
   const [addr, setAddr] = useState('');
   const [sendOrig, setSending] = useState(false);
@@ -293,7 +293,7 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
             </div>
           ))}
         </div>
-      ) : <div className="p-4"><Empty title={nHidden ? 'Tidak ada aset bernilai' : 'Wallet kosong'} /></div>}
+      ) : <div className="p-4"><Empty title={loadErr ? 'Saldo gagal dibaca' : nHidden ? 'Tidak ada aset bernilai' : 'Wallet kosong'} /></div>}
 
       {(nHal > 1 || nHidden > 0) && (
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-2 text-xs text-muted">
@@ -522,6 +522,7 @@ export default function Swap() {
   const { t } = useI18n();
   const { status, reload: reloadStatus } = useStatus();
   const [tokens, setTokens] = useState(null);
+  const [loadErr, setLoadErr] = useState('');   // balance read failed (RPC rate limit) — NOT the same as an empty wallet
   const [price, setPrice] = useState('muat');   // 'loading' | 'ok' | 'failed'
   const [from, setFrom] = useState('');
   const [ke, setKe] = useState('');
@@ -555,6 +556,13 @@ export default function Swap() {
     const mine = ++loadSeq.current;
     const d = await get('/api/manual/tokens');
     if (mine !== loadSeq.current) return d.tokens || [];
+    if (!Array.isArray(d.tokens)) {
+      // Keep whatever was shown before; never present a failed read as an empty wallet.
+      setLoadErr(d.error || 'gagal membaca saldo');
+      setTokens((cur) => cur || []);
+      return [];
+    }
+    setLoadErr('');
     pasang(d.tokens || []);
     loadPrice(d.tokens || [], mine);
     return d.tokens || [];
@@ -693,7 +701,13 @@ export default function Swap() {
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,28rem)_minmax(0,1fr)] xl:gap-6">
         {/* kolom kiri: kartu swap */}
         <div className="flex min-w-0 flex-col gap-3">
-          {!has.length && (
+          {loadErr && (
+            <Notice status="danger" title={t('Saldo wallet gagal dibaca')}>
+              {t('RPC sedang membatasi permintaan, jadi saldo tidak bisa diambil — walletmu tidak kosong karena ini.')}
+              {' '}<button type="button" className="underline hover:text-accent" onClick={() => { load(); }}>{t('Coba lagi')}</button>
+            </Notice>
+          )}
+          {!loadErr && !has.length && (
             <Notice status="accent" title={t('Belum ada aset yang bisa ditukar')}>
               {t(isSolana() ? 'Wallet bot kosong. Isi dengan SOL atau USDC dulu — alamatnya ada di Pengaturan.' : 'Wallet bot kosong. Isi dengan ETH atau USDG dulu — alamatnya ada di Pengaturan.')}
               {' '}{t('Sementara itu kamu tetap bisa mengutip rute dan mengecek harga.')}
@@ -845,7 +859,7 @@ export default function Swap() {
 
         {/* kolom kanan: saldo + riwayat */}
         <div className="flex min-w-0 flex-col gap-4">
-          <Holdings tokens={tokens} dari={from} onUse={use} onRemove={remove} onImport={importKey}
+          <Holdings loadErr={loadErr} tokens={tokens} dari={from} onUse={use} onRemove={remove} onImport={importKey}
             harga={price} onRetryPrice={() => loadPrice(tokens || [])} />
           <History />
         </div>
