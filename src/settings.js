@@ -221,7 +221,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
   // Secrets never go back to the browser whole: only whether they are set, a masked prefix,
   // and which .env variable supplies them (those cannot be edited here).
   const AGG_FIELDS = { jupiter: [], raydium: [], dflow: ['api_key'], kyber: [], okx: ['api_key', 'secret_key', 'passphrase', 'project_id'], lifi: ['api_key'], zerox: ['api_key'], oneinch: ['api_key'], openocean: ['api_key'] };
-  const router = () => (chain.kind === 'solana' ? chain.router : engine.kyber);
+  const router = () => (chain.kind === 'solana' ? chain.router : engine.swapRouter);
   const aggView = () => {
     const r = router();
     if (!r?.byId) return null;
@@ -245,7 +245,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
   // chain's router so a new key or switch takes effect on the next swap.
   const resetAggregators = () => {
     for (const e of liveEngines()) e.chain?.router?.setConfig?.(cfg);
-    for (const e of liveEngines()) for (const a of e.kyber?.adapters || []) { a.cache?.clear?.(); if ('cooldownUntil' in a) a.cooldownUntil = 0; a.warned?.clear?.(); }
+    for (const e of liveEngines()) for (const a of e.swapRouter?.adapters || []) { a.cache?.clear?.(); if ('cooldownUntil' in a) a.cooldownUntil = 0; a.warned?.clear?.(); }
   };
 
   // Solana: every aggregator quotes `usd` worth of USDC → SOL (prices from Jupiter).

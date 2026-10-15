@@ -63,7 +63,7 @@ function world({ curve, usdKyber = true, hasPosition = true, poolValue = null, p
   e.positions.recordLeftoverSale = (x) => { recorded.push(x); return []; };
 
   const quoteText = [];
-  e.kyber.quote = async (tokenIn, tokenOut, amountIn) => {
+  e.swapRouter.quote = async (tokenIn, tokenOut, amountIn) => {
     quoteText.push(amountIn);
     const usdOut = curve(amountIn);
     // usdIn = the notional value of the token paid (fair price × amount), usdOut = what can
@@ -78,11 +78,11 @@ function world({ curve, usdKyber = true, hasPosition = true, poolValue = null, p
   };
   // The real safeguard is used as it is; only the HTTP/tx layer is imitated.
   const sold = [];
-  e.kyber.swap = async (tokenIn, tokenOut, amountIn, o) => {
+  e.swapRouter.swap = async (tokenIn, tokenOut, amountIn, o) => {
     // A failing safeguard (router mismatch, odd calldata) throws a plain error:
     // without .loss and without .reverted — that is what sets it apart from a market error.
     if (safeguardFailed) throw new Error('router Kyber tidak cocok: 0xdead ≠ whitelist');
-    const q = await e.kyber.quote(tokenIn, tokenOut, amountIn);
+    const q = await e.swapRouter.quote(tokenIn, tokenOut, amountIn);
     const loss = Kyber.routeLoss(q, o.ref);
     if (o.maxLossBps != null && o.requireLoss && !loss) throw new Error('rugi rute tidak terukur');
     if (o.maxLossBps != null && loss && loss.bps > o.maxLossBps) {

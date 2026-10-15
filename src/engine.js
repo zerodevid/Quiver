@@ -44,6 +44,10 @@ const leftoverSource = (item) => (item.kind === 'fee' ? 'fee' : item.source || (
 // leaves a little — without this floor every entry would put a dust item in the queue that is never
 // sold. The same as the wallet sweep default.
 const MIN_ZAP_SURPLUS_USD = 0.5;
+// A zap payment is only re-sized when it comes out more than ZAP_OVERSHOOT smaller; the re-sized
+// payment aims at the need after the zap's own price move plus ZAP_TARGET_MARGIN.
+const ZAP_OVERSHOOT = 0.03;
+const ZAP_TARGET_MARGIN = 0.01;
 
 // Large amounts for decision reasons: "$12.3k", "$1.45m". Pool liquidity written
 // in full ($1,234,567) is not readable at a glance in the decision list.
@@ -85,7 +89,7 @@ class Engine {
     this.exec.ethUsd = () => this.ethUsd;
     // `kyber` is the swap entry point for the whole engine: every enabled aggregator (Kyber,
     // OKX, LI.FI, 0x, 1inch, OpenOcean), best route or fallback order — see swaprouter.js.
-    this.kyber = new SwapRouter({ exec: this.exec, rpc, cfg, chain, log: this.log });
+    this.swapRouter = new SwapRouter({ exec: this.exec, rpc, cfg, chain, log: this.log });
     this.ethUsd = cfg.prices?.eth_usd || 2500;
     this.cursor = 0;
     this.head = 0;
@@ -1158,7 +1162,7 @@ class Engine {
     // the trigger was Kyber. On 25 Sep 2026 an entry on lp2 was cancelled exactly like that: Kyber's
     // reverse quote null, zero log lines, then three entry attempts ran out with "gas
     // estimation failed". `kyberNote` is carried into the fallback's error message so the chain stays intact.
-    const rev = await this.kyber.quoteRetry(outTok, payTok, shortEthLike);
+    const rev = await this.swapRouter.quoteRetry(outTok, payTok, shortEthLike);
     let kyberNote;
     if (rev && rev.amountOut > 0n) {
       let payK = (rev.amountOut * BigInt(10_000 + slipBps)) / 10_000n;
@@ -1166,7 +1170,7 @@ class Engine {
       await unwrapFor(payK);
       let r = null, kyberFailed = false;
       try {
-        r = await this.kyber.swap(payTok, outTok, payK, {
+        r = await this.swapRouter.swap(payTok, outTok, payK, {
           slippageBps: slipBps, maxLossBps: rules.swap.max_price_impact_bps, kind: 'bridge_swap', detail: { via: 'kyber', wantEth },
         });
       } catch (e) {
@@ -1544,7 +1548,7 @@ class Engine {
     const lossBps = rules.swap.max_price_impact_bps;
     for (const b of buys) {
       const before = (await this.exec.balances([b.tok])).get(b.tok.toLowerCase()) || 0n;
-      const r = await this.kyber.swap(usdg, b.tok, payRawOf(b.usd), {
+      const r = await this.swapRouter.swap(usdg, b.tok, payRawOf(b.usd), {
         slippageBps: slip, maxLossBps: lossBps, kind: 'zap_swap',
         detail: { via: 'kyber', pool: plan.poolRef, buy: b.tok.toLowerCase(), pay: usdg.toLowerCase(), target: plan.target ?? null, noQuote: true },
       });
@@ -1553,6 +1557,43 @@ class Engine {
       notes.push(`beli ${toks[b.idx].symbol || `token${b.idx}`} ~$${b.usd.toFixed(2)} via ${aggLabel(r?.quote)}`);
     }
     return notes;
+  }
+
+  // Sizes a zap payment so the token bought is just what the mint will need AFTER the zap has
+  // moved the pool. The first estimate (`payRaw`) uses the spot price and the amount needed NOW;
+  // buying through a thin pool with a narrow range pushes the price across the range, the mint then
+  // needs far less of the bought token, and the rest is left over (DTF, 15 Oct 2026: a $92 LP, $77
+  // paid for a ~$46 need, $27 of DTF unused). Solved by fixed point: the aggregator quote gives the
+  // rate, the pool's active liquidity gives the price after the swap, and the need is recomputed
+  // there. Returns `payRaw` unchanged when anything is unreadable or the effect is small; buying
+  // slightly too little is fine, the zap loop tops it up.
+  async rightSizeZap(payTok, buyTok, payRaw, { plan, sqrtP, sa, sb, desiredL, idx, have }) {
+    try {
+      if (payRaw <= 0n) return payRaw;
+      const q = await this.swapRouter.quote(payTok, buyTok, payRaw);
+      if (!q || q.amountOut <= 0n) return payRaw;
+      const rate = Number(q.amountOut) / Number(payRaw);
+      const poolL = await this.positions.poolLiquidityOf(plan.venue, plan.poolRef);
+      if (!(poolL > 0n)) return payRaw;
+      const sellsToken0 = idx === 1;
+      let pay = payRaw;
+      for (let i = 0; i < 8; i++) {
+        const after = m.sqrtAfterSwap(sqrtP, poolL, pay, sellsToken0);
+        if (after == null || after <= 0n) return payRaw;
+        const need = m.amountsForLiquidity(after, sa, sb, desiredL);
+        const shortAfter = (idx === 0 ? need.amount0 : need.amount1) - have;
+        const want = shortAfter <= 0n ? 0n : BigInt(Math.ceil(Number(shortAfter) * (1 + ZAP_TARGET_MARGIN) / rate));
+        const next = (pay + want) / 2n;
+        if (next === pay) break;
+        pay = next;
+      }
+      // Only a clear overshoot is corrected, and never below a quarter of the first estimate.
+      const floor = payRaw / 4n;
+      if (pay < floor) pay = floor;
+      if (pay * 100n >= payRaw * BigInt(Math.round((1 - ZAP_OVERSHOOT) * 100))) return payRaw;
+      this.log(`zap diperkecil ${(100 - Number(pay * 10000n / payRaw) / 100).toFixed(0)}% — harga pool bergeser oleh zap sendiri`);
+      return pay;
+    } catch { return payRaw; }
   }
 
   async sendEntry(plan, act, trace = {}, { resume = false } = {}) {
@@ -1662,7 +1703,7 @@ class Engine {
       // estimate how much must be paid, using the pool price + slippage
       const s = s2;
       const price1per0 = Number(s.sqrtPriceX96) ** 2 / Number(m.Q96) ** 2; // raw, without decimals
-      const payRaw = idx === 0
+      let payRaw = idx === 0
         ? BigInt(Math.ceil(Number(short) * price1per0 * (1 + rules.swap.max_slippage_bps / 10000)))
         : BigInt(Math.ceil((Number(short) / price1per0) * (1 + rules.swap.max_slippage_bps / 10000)));
       if (payRaw <= 0n) continue;
@@ -1704,7 +1745,11 @@ class Engine {
       };
       let kz, kyberErr = null;
       try {
-        kz = await this.kyber.swap(payTok, buyTok, payRaw, {
+        // Size the payment from what the aggregator really returns, not from the pool's spot
+        // price: a thin or stale pool price (DTF: a $92 LP, 42k DTF = $27 bought in excess)
+        // makes the spot-based figure buy far more than the mint can deposit.
+        payRaw = await this.rightSizeZap(payTok, buyTok, payRaw, { plan, sqrtP: s2.sqrtPriceX96, sa, sb, desiredL, idx, have });
+        kz = await this.swapRouter.swap(payTok, buyTok, payRaw, {
           slippageBps: rules.swap.max_slippage_bps, maxLossBps: zapLossBps,
           kind: 'zap_swap', detail: { via: 'kyber', ...zapDetail },
         });
@@ -2693,7 +2738,7 @@ class Engine {
       // Too small to pay for its own gas (~$0.16/sale): stop shrinking.
       const usd = usdOf(mid);
       if (usd != null && usd < MIN_CHUNK_USD) break;
-      const q = await this.kyber.quote(item.token, item.quote, mid);
+      const q = await this.swapRouter.quote(item.token, item.quote, mid);
       const loss = q ? Kyber.routeLoss(q, { ...ref, usdIn: usdOf(mid) }) : null;
       if (loss && loss.bps <= maxLoss) { ok = { amount: mid, loss: loss.bps, usdOut: loss.usdOut }; lo = mid; }
       else hi = mid;
@@ -2727,7 +2772,7 @@ class Engine {
     try {
       let r = null;
       try {
-        r = await this.kyber.swap(item.token, item.quote, amount, swapOpts);
+        r = await this.swapRouter.swap(item.token, item.quote, amount, swapOpts);
       } catch (e) {
         // A failed safeguard or an unread receipt stops here. Only two market
         // causes fall through below: a route that loses too much (e.loss) and a tx
@@ -2750,7 +2795,7 @@ class Engine {
           if (!fit) throw e;
           this.log(`sisa ${label}: jumlah penuh rugi ${(e.loss.lossBps / 100).toFixed(1)}%, dijual bertahap ${(Number(fit.amount * 1000n / amount) / 10).toFixed(0)}% dulu (rugi ${(fit.loss / 100).toFixed(1)}%)`);
           sold = fit.amount;
-          r = await this.kyber.swap(item.token, item.quote, sold, swapOpts);
+          r = await this.swapRouter.swap(item.token, item.quote, sold, swapOpts);
         }
       }
       // Kyber does not know the route (a new token's pool is often not yet indexed): try selling
@@ -2908,7 +2953,7 @@ class Engine {
           const bal = (await this.exec.balances([item.token])).get(item.token) || 0n;
           const amount = bal < BigInt(item.amount) ? bal : BigInt(item.amount);
           if (amount === 0n) { this.dropLeftover(item); continue; }
-          const q = await this.kyber.quote(item.token, item.quote, amount);
+          const q = await this.swapRouter.quote(item.token, item.quote, amount);
           const ref = await this.sellRef(item, amount);
           const lossRef = q ? Kyber.routeLoss(q, ref) : null;
           const loss = lossRef?.bps ?? null;
@@ -3017,7 +3062,7 @@ class Engine {
       const label = `${fmtUnits(amount, meta.decimals ?? 18)} ${meta.symbol || token.slice(0, 8)}`;
       // One quote per token: what decides whether it is worth selling is how much
       // can really be withdrawn, not the pool price.
-      const k = await this.kyber.quote(token, q, amount).catch(() => null);
+      const k = await this.swapRouter.quote(token, q, amount).catch(() => null);
       const usd = k?.usdOut ?? null;
       if (usd == null || usd < minUsd) {
         skipped.push({ token, label, usd,
@@ -3317,7 +3362,7 @@ class Engine {
     // three entries and the sale of 18.86 FRONTIER failed in a row). Buy enough ETH
     // from USDG while there is still gas for its swap. Only when below half
     // the reserve, so as not to swap a little at a time on every transaction.
-    if (nat == null || nat * 2n >= reserve || !this.kyber?.swap) return;
+    if (nat == null || nat * 2n >= reserve || !this.swapRouter?.swap) return;
     // Failed (e.g. the ETH is not even enough for this swap): do not repeat on every
     // leftover sale every 5 seconds — pause 10 minutes.
     if (Date.now() - (this.gasTopupFailedAt || 0) < 10 * 60_000) return;
@@ -3329,7 +3374,7 @@ class Engine {
       const want = Engine.gasTopupWei(reserve, nat, this.cfg);
       const pay = Engine.gasTopupUsdg(want, this.ethUsd, this.cfg, usdgDecimals);
       if (pay < 10n ** BigInt(usdgDecimals) || usdg < pay) return;   // < $1 or the stablecoin is not enough
-      const r = await this.kyber.swap(this.chain.ADDR.usdg, this.chain.ADDR.native, pay, { slippageBps: 100, maxLossBps: 300, kind: 'gas_topup' });
+      const r = await this.swapRouter.swap(this.chain.ADDR.usdg, this.chain.ADDR.native, pay, { slippageBps: 100, maxLossBps: 300, kind: 'gas_topup' });
       if (r) notes.push(`isi gas: beli ${fmtUnits(want, 18)} ${nativeSymbol} dari ${fmtUnits(pay, usdgDecimals)} ${usdgSymbol}`);
       else this.gasTopupFailedAt = Date.now();
     } catch (e) {

@@ -74,7 +74,7 @@ function harness({ balances = {}, rules = {}, positions = [], targetLiquidityAft
   eng.exec.ensureAllowance = async () => [];
   eng.exec.ensureRouterAllowance = async () => [];
   eng.exec.deadline = () => 9e9;
-  eng.kyber.swap = async () => ({ hash: '0xswap', amountOut: 10n ** 24n, quote: { dex: 'uji', usdIn: 1, usdOut: 1 } });
+  eng.swapRouter.swap = async () => ({ hash: '0xswap', amountOut: 10n ** 24n, quote: { dex: 'uji', usdIn: 1, usdOut: 1 } });
   eng.notify = () => {};
   for (const p of positions) store.run(
     `INSERT INTO positions(venue,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,tick_lower,tick_upper,liquidity,
@@ -354,7 +354,7 @@ async function t(name, fn) {
 
   await t('leftover memecoin that failed to sell enters the retry queue', async () => {
     const { eng, store } = harness({ balances: { ...RICH } });
-    eng.kyber.swap = async () => { throw new Error('rute tidak ada'); };
+    eng.swapRouter.swap = async () => { throw new Error('rute tidak ada'); };
     await assert.rejects(() => eng.sellToken({ posId: 1, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0 }));
     const q = JSON.parse(store.getState('leftovers:robinhood', '[]'));
     assert.strictEqual(q.length, 1, 'must be stored to retry');
@@ -364,7 +364,7 @@ async function t(name, fn) {
 
   await t('the sell queue never gives up: the item stays, rescheduled every few seconds', async () => {
     const { eng, store } = harness({ balances: { ...RICH } });
-    eng.kyber.swap = async () => { throw new Error('rute tidak ada'); };
+    eng.swapRouter.swap = async () => { throw new Error('rute tidak ada'); };
     for (let i = 0; i < 20; i++) {
       const q = JSON.parse(store.getState('leftovers:robinhood', '[]'));
       const item = q[0] || { posId: 1, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0 };
@@ -380,8 +380,8 @@ async function t(name, fn) {
   await t('leftover hunter: each tick only QUOTES; a real swap only when the loss is already below the limit', async () => {
     const { eng, store } = harness({ balances: { ...RICH } });
     let usdOut = 40, quotes = 0, swaps = 0;
-    eng.kyber.quote = async () => { quotes++; return { usdIn: 100, usdOut, amountOut: 1n, dex: 'uji', routeSummary: {} }; };
-    eng.kyber.swap = async () => { swaps++; return { hash: '0xjual', amountOut: 1n, quote: { usdIn: 100, usdOut, dex: 'uji' } }; };
+    eng.swapRouter.quote = async () => { quotes++; return { usdIn: 100, usdOut, amountOut: 1n, dex: 'uji', routeSummary: {} }; };
+    eng.swapRouter.swap = async () => { swaps++; return { hash: '0xjual', amountOut: 1n, quote: { usdIn: 100, usdOut, dex: 'uji' } }; };
     eng.saveLeftovers([{ posId: 1, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0, next: 0 }]);
     await eng.retryLeftovers();
     assert.strictEqual(quotes, 1, 'one quote');
@@ -405,7 +405,7 @@ async function t(name, fn) {
     const { eng, store } = harness({ balances: { ...RICH } });
     const notice = [];
     eng.notify = (msg, d) => notice.push(d);
-    eng.kyber.quote = async () => ({ usdIn: 229.44, usdOut: 90.01, amountOut: 1n, dex: 'uji', routeSummary: {} });
+    eng.swapRouter.quote = async () => ({ usdIn: 229.44, usdOut: 90.01, amountOut: 1n, dex: 'uji', routeSummary: {} });
     eng.saveLeftovers([{ posId: 9, target: TARGET, token: MEME, quote: USDG, amount: (10n ** 20n).toString(), tries: 0, next: 0 }]);
     for (let i = 0; i < 30; i++) {
       eng.saveLeftovers(eng.leftovers().map((x) => ({ ...x, next: 0 })));
@@ -465,7 +465,7 @@ async function t(name, fn) {
   // picker). Only on the open-position path: leftover sales & closing positions stay Kyber only.
   await t('zap without a Kyber route -> swap via the cheapest-fee pool, not the position\'s pool', async () => {
     const { eng, store, sent } = harness({ balances: { ...RICH, [MEME]: 0n } });
-    eng.kyber.swap = async () => null;
+    eng.swapRouter.swap = async () => null;
     // Another pool for the same pair, much cheaper than the position's pool (0.3%).
     store.run(`INSERT INTO pools(pool_ref,venue,token0,token1,fee,tick_spacing,hooks,first_block)
       VALUES(?,'v4',?,?,500,10,?,1)`, '0x' + 'be'.repeat(32), USDG, MEME, '0x' + '0'.repeat(40));
@@ -507,7 +507,7 @@ async function t(name, fn) {
 
   await t('bridge fails midway through execution -> a clear error, no position recorded', async () => {
     const { eng, store } = harness({ balances: { ...RICH, [MEME]: 0n } });
-    eng.kyber.swap = async () => null;               // no patching route
+    eng.swapRouter.swap = async () => null;               // no patching route
     eng.ensureQuoteAsset = async () => { throw new Error('kas kurang untuk jembatan: butuh 0.07 ETH untuk 170.00 USDG, punya 0.01 ETH'); };
     await eng.handle(rec(store, action()));
     const v = verdictOf(store);
@@ -540,8 +540,8 @@ async function t(name, fn) {
       sent.push({ kind: meta?.kind, tx });
       return '0x' + (sent.length + '').padStart(64, '0');
     };
-    eng.kyber.quote = async (a, b, x) => ({ amountOut: conv(a, b, x) });
-    eng.kyber.swap = async (a, b, x, o) => {
+    eng.swapRouter.quote = async (a, b, x) => ({ amountOut: conv(a, b, x) });
+    eng.swapRouter.swap = async (a, b, x, o) => {
       if (get(a) < x) throw new Error(`swap melebihi saldo ${a}`);
       const out = conv(a, b, x);
       add(a, -x); add(b, out);

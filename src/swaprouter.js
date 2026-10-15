@@ -1,5 +1,5 @@
 'use strict';
-// The engine's single swap entry point (engine.kyber): picks among every enabled aggregator.
+// The engine's single swap entry point (engine.swapRouter): picks among every enabled aggregator.
 //
 // Settings live at the config root, shared by all chains (Settings → Aggregators):
 //   aggregators: {

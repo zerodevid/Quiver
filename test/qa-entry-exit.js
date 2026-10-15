@@ -415,7 +415,7 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     eng.gasReserve = async () => 1n;
     let swaps = 0, release;
     const gate = new Promise((r) => { release = r; });
-    eng.kyber.swap = async () => { swaps++; await gate; return { hash: '0xs', amountOut: 1n, quote: { dex: 'uji', usdIn: 1, usdOut: 1 } }; };
+    eng.swapRouter.swap = async () => { swaps++; await gate; return { hash: '0xs', amountOut: 1n, quote: { dex: 'uji', usdIn: 1, usdOut: 1 } }; };
     eng.positions.recordLeftoverSale = () => [];
     const a = eng.sellToken({ posId: 1, target: null, token: MEME, quote: USDG, amount: '600' });
     await new Promise((r) => setImmediate(r));
@@ -430,7 +430,7 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     const { eng } = engineWith({ balances: { [ETH]: 10n ** 18n } });
     eng.gasReserve = async () => 1n;
     eng.exec.balances = async () => { throw new Error('gagal membaca saldo token dari RPC'); };
-    let swaps = 0; eng.kyber.swap = async () => { swaps++; return null; };
+    let swaps = 0; eng.swapRouter.swap = async () => { swaps++; return null; };
     await assert.rejects(eng.sellToken({ posId: 9, target: null, token: MEME, quote: USDG, amount: '1234' }), /belum terjual/);
     assert.strictEqual(swaps, 0);
     const q = eng.leftovers();
@@ -462,7 +462,7 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     eng.chain.poolLiquidityMany = async (ids) => ids.map(() => L);
     const id = Number(store.run(`INSERT INTO positions(venue,token_id,pool_ref,token0,token1,fee,tick_spacing,hooks,tick_lower,tick_upper,liquidity,status,opened_ts,cost_quote,quote_symbol)
       VALUES('v4','77',?,?,?,3000,60,?,-600,600,'0','closed',?,100,'USDG')`, POOL, USDG, MEME, ADDR.native, Date.now()).lastInsertRowid);
-    eng.kyber.swap = async () => null;   // Kyber does not know the route
+    eng.swapRouter.swap = async () => null;   // Kyber does not know the route
     eng.exec.ensureRouterAllowance = async () => [];
     eng.exec.deadline = () => 9e9;
     eng.rpc.batch = async (c) => c.map(() => ({ result: '0x' }));   // simulation passes
@@ -480,7 +480,7 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
   await t('sell via a pool: a loss above the limit is rejected (stays queued), a token without a known pool is not tried', async () => {
     const { eng, store } = engineWith({ balances: { [MEME]: 10n ** 21n, [ETH]: 10n ** 18n } });
     eng.gasReserve = async () => 1n;
-    eng.kyber.swap = async () => null;
+    eng.swapRouter.swap = async () => null;
     let sends = 0; eng.exec.send = async () => { sends++; return '0x'; };
     eng.exec.ensureRouterAllowance = async () => [];
     // without a known pool
@@ -501,7 +501,7 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     const { eng } = engineWith({ balances: { [ETH]: 5n * 10n ** 14n, [WETH]: 0n, [USDG]: 400_000_000n } });
     eng.gasReserve = async () => 2n * 10n ** 15n;
     const swaps = [];
-    eng.kyber.swap = async (a, b, amt, o) => { swaps.push({ a, b, amt, kind: o.kind }); return { hash: '0xg' }; };
+    eng.swapRouter.swap = async (a, b, amt, o) => { swaps.push({ a, b, amt, kind: o.kind }); return { hash: '0xg' }; };
     const notes = [];
     await eng.topUpGas(notes);
     assert.strictEqual(swaps.length, 1);
@@ -511,7 +511,7 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     // above ½ of the reserve: does not swap a little at a time
     const { eng: e2 } = engineWith({ balances: { [ETH]: 15n * 10n ** 14n, [USDG]: 400_000_000n } });
     e2.gasReserve = async () => 2n * 10n ** 15n;
-    let n2 = 0; e2.kyber.swap = async () => { n2++; return {}; };
+    let n2 = 0; e2.swapRouter.swap = async () => { n2++; return {}; };
     await e2.topUpGas([]);
     assert.strictEqual(n2, 0);
   });
@@ -520,7 +520,7 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     const { eng } = engineWith({ balances: { [ETH]: 0n, [USDG]: 5_000_000_000n } });
     eng.gasReserve = async () => 4_000_000n * 100_000_000_000n;   // 4m gas × 100 gwei = 0.4 ETH
     const swaps = [];
-    eng.kyber.swap = async (a, b, amt) => { swaps.push(amt); return { hash: '0xg' }; };
+    eng.swapRouter.swap = async (a, b, amt) => { swaps.push(amt); return { hash: '0xg' }; };
     await eng.topUpGas([]);
     assert.strictEqual(swaps.length, 1);
     assert.ok(swaps[0] <= 25_000_000n, `maks $25, dapat ${swaps[0]}`);

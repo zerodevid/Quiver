@@ -28,8 +28,8 @@ function engineWith() {
   eng.topUpGas = async () => {};
   eng.notify = () => {};
   const swaps = [];
-  eng.kyber.quote = async () => ({ amountOut: 1n, usdIn: 10, usdOut: 9.9, dex: 'uji' });
-  eng.kyber.swap = async (a) => { swaps.push(a); return { hash: '0x' + '1'.repeat(64), amountOut: 1n, quote: { usdOut: 9.9, dex: 'uji' } }; };
+  eng.swapRouter.quote = async () => ({ amountOut: 1n, usdIn: 10, usdOut: 9.9, dex: 'uji' });
+  eng.swapRouter.swap = async (a) => { swaps.push(a); return { hash: '0x' + '1'.repeat(64), amountOut: 1n, quote: { usdOut: 9.9, dex: 'uji' } }; };
   return { eng, store, swaps };
 }
 

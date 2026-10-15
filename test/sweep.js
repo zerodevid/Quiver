@@ -67,7 +67,7 @@ function world({ saldo: balance = {}, harga: price = {}, dryRun = false } = {}) 
 
   // Kyber quote: `price[token]` = USD that can be withdrawn. null = no route.
   const quoted = [];
-  e.kyber.quote = async (tokenIn, tokenOut, amountIn) => {
+  e.swapRouter.quote = async (tokenIn, tokenOut, amountIn) => {
     quoted.push({ tokenIn, tokenOut, amountIn });
     const usd = price[tokenIn.toLowerCase()];
     if (usd == null) return null;
@@ -76,8 +76,8 @@ function world({ saldo: balance = {}, harga: price = {}, dryRun = false } = {}) 
       amountOut: 1n, routeSummary: {}, dex: 'uniswapv3' };
   };
   const sold = [];
-  e.kyber.swap = async (tokenIn, tokenOut, amountIn, o) => {
-    const q = await e.kyber.quote(tokenIn, tokenOut, amountIn);
+  e.swapRouter.swap = async (tokenIn, tokenOut, amountIn, o) => {
+    const q = await e.swapRouter.quote(tokenIn, tokenOut, amountIn);
     if (!q) return null;
     const loss = ((q.usdIn - q.usdOut) / q.usdIn) * 10_000;
     if (o.maxLossBps != null && loss > o.maxLossBps) {
@@ -207,7 +207,7 @@ const queue = (e) => e.leftovers().map((x) => x.token);
   await t('the loss limit still refuses a bad route even if the item came from a sweep', async () => {
     const d = world({ saldo: { [GM]: 200n * E18 }, harga: { [GM]: 6.9 } });
     // loss 30% > default limit 15%
-    d.e.kyber.quote = async () => ({ usdIn: 10, usdOut: 7, amountOut: 1n, routeSummary: {}, dex: 'x' });
+    d.e.swapRouter.quote = async () => ({ usdIn: 10, usdOut: 7, amountOut: 1n, routeSummary: {}, dex: 'x' });
     await d.e.sweepWallet();
     assert.deepEqual(queue(d.e), [GM]);
     // the wait schedule is skipped, otherwise the attempt never happens and this test

@@ -277,7 +277,7 @@ const okxReply = (o = {}) => (u) => {
       { id: 'lifi', label: 'LI.FI', state: 'off', blocker: 'butuh API key', q: null, ms: null },
       { id: 'zerox', label: '0x', state: 'noroute', q: null, ms: 7 },
     ];
-    const fake = { engine: { kyber: { scan: async () => rows }, ethUsd: 2500,
+    const fake = { engine: { swapRouter: { scan: async () => rows }, ethUsd: 2500,
       rulesFrom: () => ({ exit: { sell_max_loss_bps: 300 }, swap: { max_slippage_bps: 100 } }) },
     chain: { tokens: async (l) => l.map(() => ({ symbol: 'X', decimals: 6 })), QUOTES: {} } };
     const quote = (aggregator) => Manual.prototype.quoteSwap.call(fake, { tokenIn: ME, tokenOut: MEME, amountRaw: 100n, aggregator });
@@ -291,7 +291,7 @@ const okxReply = (o = {}) => (u) => {
     assert.equal(kyber.tooLossy, true);
     assert.match((await quote('lifi')).error, /butuh API key/);
     assert.match((await quote('zerox')).error, /tidak menemukan rute/);
-    fake.engine.kyber.scan = async () => rows.map((r) => ({ ...r, state: 'noroute', q: null }));
+    fake.engine.swapRouter.scan = async () => rows.map((r) => ({ ...r, state: 'noroute', q: null }));
     assert.match((await quote('auto')).error, /Tidak ada agregator/);
   });
 
@@ -333,7 +333,7 @@ const okxReply = (o = {}) => (u) => {
     fs.writeFileSync(cfgPath, '{}');
     const chain = build('robinhood');
     const engine = { dryRun: () => true, exec: { address: () => ME }, chain };
-    engine.kyber = new SwapRouter({ exec: engine.exec, rpc: {}, cfg, chain, log: () => {} });
+    engine.swapRouter = new SwapRouter({ exec: engine.exec, rpc: {}, cfg, chain, log: () => {} });
     const r = createSettingsRoutes({ engine, cfg, cfgPath, chain, store: { setState() {}, getState: () => null }, rpc: { stats: () => [] }, log: () => {}, readBody: async (req) => req.__body });
     const call = (k, body) => r[k]({ __body: body, headers: {} }, new URL('http://x/'), {});
     return { call, cfg, cfgPath, engine };
@@ -349,7 +349,7 @@ const okxReply = (o = {}) => (u) => {
     assert.equal(zx.active, true);
     assert.ok(!JSON.stringify(r).includes('zx-secret-key-123'), 'key must not come back whole');
     assert.equal(zx.fields[0].masked, 'zx-s••••');
-    assert.equal(w.engine.kyber.byId.get('zerox').enabled(), true, 'live without restart');
+    assert.equal(w.engine.swapRouter.byId.get('zerox').enabled(), true, 'live without restart');
     r = await w.call('POST /api/settings/aggregators', { id: 'lifi', enabled: true });
     assert.equal(r.aggregators.items.find((x) => x.id === 'lifi').active, true);
     r = await w.call('POST /api/settings/aggregators', { id: 'zerox', keys: { api_key: '' } });

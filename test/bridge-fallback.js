@@ -57,9 +57,9 @@ function harness({ pools, receive = () => false, kyberQuote = async () => null, 
   };
   // quoteRetry is bypassed so the tests below do not wait for its retry delay;
   // the retry behaviour is tested separately through the real kyber.quote.
-  eng.kyber.quoteRetry = kyberQuote;
-  eng.kyber.quote = kyberQuote;
-  eng.kyber.swap = async () => null;
+  eng.swapRouter.quoteRetry = kyberQuote;
+  eng.swapRouter.quote = kyberQuote;
+  eng.swapRouter.swap = async () => null;
   return { eng, store, sent, simulated };
 }
 

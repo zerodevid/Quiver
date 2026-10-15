@@ -46,7 +46,7 @@ function fixture({ venue = 'v4', ticks = [-323405], enabled = true, singleSide, 
     buildV4Mint: p => { mint = p; if (complete) return { simulatedMint: true, plan: p }; throw new Error('MINT_READY'); },
     buildV3Mint: p => { mint = p; if (complete) return { simulatedMint: true, plan: p }; throw new Error('MINT_READY'); },
   };
-  e.kyber = { swap: async (pay, buy, amount) => {
+  e.swapRouter = { swap: async (pay, buy, amount) => {
     swaps++;
     assert.equal(pay, ADDR.usdg);
     assert.ok(amount <= balances.get(pay));
@@ -191,8 +191,8 @@ test('stale balance after a confirmed zap (lagging node): no second zap, mint pr
   const realBalances = f.e.exec.balances;
   let stale = null, staleReads = 0;
   f.e.exec.balances = async (toks) => { if (stale && staleReads-- > 0) return new Map(stale); return realBalances(toks); };
-  const kyberSwap = f.e.kyber.swap;
-  f.e.kyber.swap = async (pay, buy, amount) => {
+  const kyberSwap = f.e.swapRouter.swap;
+  f.e.swapRouter.swap = async (pay, buy, amount) => {
     stale = new Map(f.balances); staleReads = 3;   // the next three reads are "before the zap"
     const before = f.balances.get(buy);
     await kyberSwap(pay, buy, amount);

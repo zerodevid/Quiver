@@ -5,7 +5,7 @@ const { ensureChain, windowBlocks } = require('./networks');
 // Both use the SAME execution path as automatic copying:
 // `engine.executeEntry` to open a position (including the cash bridge, zap, allowances,
 // re-locking the amount at the current price, and recording the position) and
-// `engine.kyber.swap` to exchange assets. This module only prepares the plan —
+// `engine.swapRouter.swap` to exchange assets. This module only prepares the plan —
 // there is no second transaction-sending path to maintain.
 //
 // A position opened here is stored with a NULL target. The consequence is deliberate:
@@ -1356,7 +1356,7 @@ class Manual {
     if (lc(tokenIn) === lc(tokenOut)) return { error: 'token masuk dan keluar sama' };
     if (!amountRaw || BigInt(amountRaw) <= 0n) return { error: 'jumlah nol' };
     const [mi, mo] = await this.chain.tokens([tokenIn, tokenOut]);
-    const rows = await eng.kyber.scan(tokenIn, tokenOut, BigInt(amountRaw));
+    const rows = await eng.swapRouter.scan(tokenIn, tokenOut, BigInt(amountRaw));
     const { Kyber } = require('./kyber');
     // The exit side is valued on its own if it is a quote asset: without this the "route cost" is empty
     // precisely on the thin tokens whose figure most needs to be seen before pressing swap.
@@ -1419,7 +1419,7 @@ class Manual {
     // The token and amount are also recorded in txs so the history on the Swap page can
     // show "0.5 ETH → 1,700 USDG", not just a hash.
     const detail = { tokenIn: lc(tokenIn), tokenOut: lc(tokenOut), symbolIn: mi.symbol, symbolOut: mo.symbol, amountIn: entry };
-    const r = await eng.kyber.swap(tokenIn, tokenOut, BigInt(amountRaw), {
+    const r = await eng.swapRouter.swap(tokenIn, tokenOut, BigInt(amountRaw), {
       slippageBps: rules.swap.max_slippage_bps,
       maxLossBps: rules.exit.sell_max_loss_bps,
       kind: 'swap_manual', detail,

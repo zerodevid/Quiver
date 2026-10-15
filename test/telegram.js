@@ -124,7 +124,7 @@ function build({ chats = [CHAT], dryRun = true, initLogs = [], kosong: blank = [
     notify(msg, detail) { if (this.onNotify) this.onNotify(msg, detail); },
     opened: [], swapped: [],
     executeEntry: async function (plan, act) { this.opened.push({ plan, act }); return { txHash: '0xmint', positionId: 9, note: 'USDG/MEME $50,00' }; },
-    kyber: {
+    swapRouter: {
       quote: async (a, b, amt) => ({ amountOut: BigInt(amt) * 2n, usdIn: 50, usdOut: 49.5, dex: 'uji-dex', routeSummary: {} }),
       scan: async function (a, b, amt) { const q = await this.quote(a, b, amt); return [{ id: 'kyber', label: 'Kyber', state: q ? 'ok' : 'noroute', q, ms: 1 }]; },
       swap: async function (a, b, amt) { return { hash: '0xswap', amountOut: BigInt(amt) * 2n, quote: { dex: 'uji-dex', usdIn: 50, usdOut: 49.5 } }; },
@@ -1959,7 +1959,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.strictEqual(q.tooLossy, false);
 
     // a route that loses far beyond the limit must be flagged, not silently run
-    w.engine.kyber.quote = async (a, b, amt) => ({ amountOut: BigInt(amt), usdIn: 50, usdOut: 20, dex: 'jelek', routeSummary: {} });
+    w.engine.swapRouter.quote = async (a, b, amt) => ({ amountOut: BigInt(amt), usdIn: 50, usdOut: 20, dex: 'jelek', routeSummary: {} });
     const buruk = await w.api('POST', '/api/manual/swap/quote', { tokenIn: ADDR.usdg, tokenOut: MEME, amount: '10' });
     assert.strictEqual(buruk.tooLossy, true, `loss ${buruk.lossBps} bps should be flagged`);
   });
@@ -1974,7 +1974,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     const ok = await w.api('POST', '/api/manual/swap/quote', { tokenIn: ADDR.usdg, tokenOut: MEME, amount: '10' });
     assert.strictEqual(ok.insufficient, null);
     let sent = false;
-    w.engine.kyber.swap = async () => { sent = true; return { hash: '0x' }; };
+    w.engine.swapRouter.swap = async () => { sent = true; return { hash: '0x' }; };
     const r = await w.api('POST', '/api/manual/swap', { tokenIn: ADDR.usdg, tokenOut: MEME, amount: '9999' });
     assert.match(r.error || '', /saldo cuma/);
     assert.strictEqual(sent, false);
@@ -1987,7 +1987,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
 
     const w2 = build({ dryRun: false });
     let used = null;
-    w2.engine.kyber.swap = async (ti, to, amt, opt) => { used = { ti, to, amt, opt }; return { hash: '0xswap', amountOut: 5n * 10n ** 18n, quote: { dex: 'uji' } }; };
+    w2.engine.swapRouter.swap = async (ti, to, amt, opt) => { used = { ti, to, amt, opt }; return { hash: '0xswap', amountOut: 5n * 10n ** 18n, quote: { dex: 'uji' } }; };
     const r2 = await w2.api('POST', '/api/manual/swap', { tokenIn: ADDR.usdg, tokenOut: MEME, amount: '10' });
     assert.ok(r2.ok, r2.error);
     assert.strictEqual(used.amt, 10_000_000n, 'the amount must be converted to the token\'s raw unit');
