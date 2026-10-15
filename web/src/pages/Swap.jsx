@@ -281,7 +281,7 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
               )}
             </div>
             {!x.native && (
-              <span className="-mt-1.5 flex items-center gap-2 px-4 pb-2.5 pl-[4.25rem]">
+              <span className="-mt-1.5 flex items-center gap-2 px-4 pb-2.5 pl-14">
                 <TradeLinks token={x.address} compact />
                 <DataLinks token={x.address} compact />
               </span>
