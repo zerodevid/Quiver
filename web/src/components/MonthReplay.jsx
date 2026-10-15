@@ -10,8 +10,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { get } from '../api';
 import { useI18n } from '../i18n';
-import { usd, pct } from '../fmt';
-import { ReplayPlayer, S, C, clamp, lerp, ease, span, text, pill, logo, paint, backdrop, outro, mascotOf, videoTheme } from './ShareReplay';
+import { pct } from '../fmt';
+import { ReplayPlayer, S, C, clamp, lerp, ease, span, text, pill, logo, paint, backdrop, outro, mascotOf, videoTheme, money } from './ShareReplay';
 
 // Timeline (seconds of clip time).
 const TL = {
@@ -29,10 +29,12 @@ const WEEKDAYS = { id: ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'], en: ['
 
 const toneOf = (v) => (v > 0.005 ? C.up : v < -0.005 ? C.down : C.text);
 const rgba = (hex, a) => `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)},${a})`;
-const signed = (v) => (v > 0.005 ? '+' : '') + usd(v);
+const signed = (v) => (v > 0.005 ? '+' : '') + money(v);
 // Compact dollars for a cell: +$45, +$1.2k, −$3.4 (the same as the month share card).
 function cellUsd(v, locale) {
   const a = Math.abs(v), s = v > 0.005 ? '+' : v < -0.005 ? '−' : '';
+  const fx = money(a, 2, true);
+  if (!fx.startsWith('$')) return s + fx;   // the Settings currency is active
   const f = (x, d) => x.toLocaleString(locale === 'en' ? 'en-US' : 'id-ID', { minimumFractionDigits: d, maximumFractionDigits: d });
   if (a >= 1e6) return `${s}$${f(a / 1e6, 1)}M`;
   if (a >= 1e3) return `${s}$${f(a / 1e3, a >= 1e4 ? 0 : 1)}k`;
@@ -183,8 +185,8 @@ function summaryScene(ctx, m, sec, t, hide, locale) {
   ctx.restore();
 }
 
-export function drawMonth(ctx, m, sec, t, hide, locale, theme) {
-  paint(theme);
+export function drawMonth(ctx, m, sec, t, hide, locale, theme, fx) {
+  paint(theme, fx);
   ctx.save();
   backdrop(ctx, sec, theme);
   // A soft glow in the colour of the running total, behind the grid.
@@ -244,7 +246,7 @@ async function monthSound(m) {
 }
 
 // The month video tab.
-export default function MonthReplay({ month, hide, theme }) {
+export default function MonthReplay({ month, hide, theme, fx }) {
   const { t, locale } = useI18n();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -260,10 +262,10 @@ export default function MonthReplay({ month, hide, theme }) {
   }, [month]);
   const m = useMemo(() => (data ? buildMonth(data, locale) : null), [data, locale]);
   useEffect(() => { if (m && videoTheme(theme) === 'hell') mascotOf(m.total, m.pctV ?? 0); }, [m, theme]);
-  const draw = useCallback((ctx, sec) => drawMonth(ctx, m, sec, t, hide, locale, theme), [m, t, hide, locale, theme]);
+  const draw = useCallback((ctx, sec) => drawMonth(ctx, m, sec, t, hide, locale, theme, fx), [m, t, hide, locale, theme, fx]);
   const sound = useCallback(() => monthSound(m), [m]);
   return (
     <ReplayPlayer draw={draw} end={TL.end} sound={sound} ready={!!m} error={error} loading="Menyiapkan replay…"
-      fileName={`quiver-pnl-${month}-replay`} resetKey={`${month}:${hide}:${locale}:${videoTheme(theme)}`} />
+      fileName={`quiver-pnl-${month}-replay`} resetKey={`${month}:${hide}:${locale}:${videoTheme(theme)}:${fx?.currency || 'usd'}`} />
   );
 }

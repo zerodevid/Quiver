@@ -152,8 +152,25 @@ function geometry(size) {
 
 // ---- number formats, exactly the same as web/src/fmt.js ----------------------------
 const loc = () => (localeContext.getStore() === 'en' ? 'en-US' : 'id-ID');
+// Amounts are dollars unless the card is drawn in the Settings currency (opts.fx, set per
+// render in fxNow): then the same value times the rate, e.g. "Rp1.307.300" or "Rp22,4 jt".
+let fxNow = null;
+// abs: a non-negative amount already in fxNow's currency. compact (calendar cells): shorten
+// from a thousand up, no spaces, decimals only below 10 of the unit ("Rp224rb", "Rp7,2jt");
+// otherwise shorten only from a million up ("Rp1.307.300", "Rp22,4 jt").
+function fxAmount(abs, compact = false) {
+  const o = { style: 'currency', currency: fxNow.currency, minimumFractionDigits: 0, maximumFractionDigits: abs < 100 ? 2 : 0 };
+  if (abs >= (compact ? 1e3 : 1e6)) {
+    o.notation = 'compact';
+    o.maximumFractionDigits = compact ? (Number(new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 0 }).format(abs).replace(/\D/g, '')) < 10 ? 1 : 0) : 1;
+  }
+  // Intl puts a no-break space between the symbol and the digits in some locales ("Rp 22,4 jt").
+  const out = new Intl.NumberFormat(loc(), o).format(abs).replace(/^([^\d\s]+)\s+/, '$1');
+  return compact ? out.replace(/\s+/g, '') : out.replace(/\u00A0/g, ' ');
+}
 const usd = (v, d = 2) => (v == null || Number.isNaN(v) ? '—'
-  : (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d }));
+  : fxNow ? (v < 0 ? '−' : '') + fxAmount(Math.abs(v * fxNow.rate))
+    : (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d }));
 const pct = (v, d = 1) => (v == null || Number.isNaN(v) ? '—'
   : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d }) + '%');
 const num = (v, d = 0) => (v == null ? '—' : Number(v).toLocaleString(loc(), { maximumFractionDigits: d }));
@@ -759,6 +776,7 @@ function monthGeometry(size) {
 // Compact dollars for a calendar cell: +$45, +$1.2k, −$3.4.
 function cellUsd(v) {
   const a = Math.abs(v), s = v > 0.005 ? '+' : v < -0.005 ? '−' : '';
+  if (fxNow) return s + fxAmount(a * fxNow.rate, true);
   const f = (x, d) => x.toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d });
   if (a >= 1e6) return `${s}$${f(a / 1e6, 1)}M`;
   if (a >= 1e3) return `${s}$${f(a / 1e3, a >= 1e4 ? 0 : 1)}k`;
@@ -787,7 +805,11 @@ function calendarGrid({ month, daily, counts = {} }, hideAmounts, today) {
     out += `<rect x="${cx.toFixed(1)}" y="${cy.toFixed(1)}" width="${cw.toFixed(1)}" height="${ch.toFixed(1)}" rx="${rx(8 * k)}" fill="${fill}" stroke="${key === today ? T.text : stroke}"${key === today ? ' stroke-opacity="0.6" stroke-width="2"' : ''}/>`
       + txt(String(d), cx + 8 * k, cy + 8 * k + dSize * 0.8, { size: dSize, weight: 500, color: v != null ? T.muted : T.faint });
     if (counts[key] > 1 && cw > 80) out += txt(`×${counts[key]}`, cx + cw - 8 * k, cy + 8 * k + dSize * 0.8, { size: dSize * 0.85, weight: 500, color: T.faint, anchor: 'end' });
-    if (v != null && !hideAmounts) out += fitted(cellUsd(v), cx + 8 * k, cy + ch - 9 * k, cw - 14 * k, { size: vSize, weight: 600, color: sign(v) });
+    if (v != null && !hideAmounts) {
+      // Shrink rather than cut: a long amount (e.g. "+Rp224rb") must still be read whole.
+      const cell = cellUsd(v), size = Math.min(vSize, vSize * ((cw - 14 * k) / Math.max(1, measure(cell, vSize, 600))));
+      out += txt(cell, cx + 8 * k, cy + ch - 9 * k, { size, weight: 600, color: sign(v) });
+    }
   }
   return out;
 }
@@ -829,6 +851,7 @@ const layoutKey = (l) => (LAYOUTS[l] ? l : 'spotlight');
 function svgOf(kind, data, opts = {}) {
   return localeContext.run(opts.lang === 'en' ? 'en' : 'id', () => {
     tz = opts.timeZone || null;
+    fxNow = opts.fx?.rate > 0 && opts.fx.currency ? { currency: opts.fx.currency, rate: opts.fx.rate } : null;
     T = THEMES[themeKey(opts.theme)];
     const spot = layoutKey(opts.layout) === 'spotlight';
     // The month card has one composition only (the calendar is the picture).
@@ -840,7 +863,7 @@ function svgOf(kind, data, opts = {}) {
       if (kind === 'daily') return (spot ? dailySpot : dailySvg)(data, opts);
       if (kind === 'month') return monthSvg(data, opts);
       throw new Error(`jenis kartu tidak dikenal: ${kind}`);
-    } finally { tz = null; T = THEMES.dark; G = null; chainNow = CHAIN_BADGE.robinhood; }
+    } finally { tz = null; fxNow = null; T = THEMES.dark; G = null; chainNow = CHAIN_BADGE.robinhood; }
   });
 }
 // Venue name for the card: v4/v3 = Uniswap, pancakev3 = PancakeSwap, Solana venues by
@@ -857,13 +880,17 @@ function renderPng(svg, size) {
 const render = (kind, data, opts = {}) => renderPng(svgOf(kind, data, opts), opts.size);
 
 // Companion text (Telegram caption / Web Share text) — figures follow the language.
-function caption(kind, data, lang) {
+function caption(kind, data, lang, fx = null) {
   return localeContext.run(lang === 'en' ? 'en' : 'id', () => {
-    if (kind === 'position') return `${data.symbol0 || '?'} / ${data.symbol1 || '?'} ${data.pnlPct == null ? '' : pct(data.pnlPct, 2)} · Quiver`;
-    if (kind === 'total') { const { net, pnl } = totalPnl(data.now); return `${tr(net ? 'PnL bersih' : 'Total PnL')} ${usd(pnl)} · Quiver`; }
-    if (kind === 'month') return `PnL ${data.month}: ${usd(Object.entries(data.daily).filter(([d]) => d.startsWith(data.month)).reduce((a, [, v]) => a + v, 0))} · Quiver`;
-    return `PnL ${data.day}: ${usd(data.total ?? data.rows.reduce((a, r) => a + r.pnl, 0))} · Quiver`;
+    fxNow = fx?.rate > 0 && fx.currency ? { currency: fx.currency, rate: fx.rate } : null;
+    try { return captionText(kind, data); } finally { fxNow = null; }
   });
+}
+function captionText(kind, data) {
+  if (kind === 'position') return `${data.symbol0 || '?'} / ${data.symbol1 || '?'} ${data.pnlPct == null ? '' : pct(data.pnlPct, 2)} · Quiver`;
+  if (kind === 'total') { const { net, pnl } = totalPnl(data.now); return `${tr(net ? 'PnL bersih' : 'Total PnL')} ${usd(pnl)} · Quiver`; }
+  if (kind === 'month') return `PnL ${data.month}: ${usd(Object.entries(data.daily).filter(([d]) => d.startsWith(data.month)).reduce((a, [, v]) => a + v, 0))} · Quiver`;
+  return `PnL ${data.day}: ${usd(data.total ?? data.rows.reduce((a, r) => a + r.pnl, 0))} · Quiver`;
 }
 
 module.exports = { svgOf, renderPng, render, caption, venueName, sizeKey, themeKey, layoutKey, SIZES, THEMES, LAYOUTS, W: SIZES.wide.W, H: SIZES.wide.H, SCALE };

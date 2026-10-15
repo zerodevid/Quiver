@@ -19,6 +19,7 @@ import MonthReplay from './MonthReplay';
 import { get, post } from '../api';
 import { useI18n } from '../i18n';
 import { usd, pct } from '../fmt';
+import { useFx } from '../currency';
 
 // Size & theme: the keys are the same as SIZES/THEMES in src/share-card.js (the server
 // draws; unknown ones fall back to the default).
@@ -48,6 +49,11 @@ export function ShareDialog({ card, onClose }) {
   const [size, setSize] = useState(() => remember('quiver-share-size', 'wide', SIZES.map(([k]) => k)));
   const [theme, setTheme] = useState(() => remember('quiver-share-theme', 'dark', THEMES.map(([k]) => k)));
   const [layout, setLayout] = useState(() => remember('quiver-share-layout', 'spotlight', LAYOUTS.map(([k]) => k)));
+  // Amounts in dollars or in the Settings currency (Display → second currency). Without a
+  // currency/rate there is nothing to choose: dollars.
+  const fx = useFx();
+  const [curPick, setCurPick] = useState(() => remember('quiver-share-cur', 'usd', ['usd', 'fx']));
+  const cur = fx ? curPick : 'usd';
   const [blob, setBlob] = useState(null);
   const [loading, setLoading] = useState(false);
   const [url, setUrl] = useState(null);
@@ -66,13 +72,14 @@ export function ShareDialog({ card, onClose }) {
   const pickSize = (v) => { setSize(v); keep('quiver-share-size', v); };
   const pickTheme = (v) => { setTheme(v); keep('quiver-share-theme', v); };
   const pickLayout = (v) => { setLayout(v); keep('quiver-share-layout', v); };
+  const pickCur = (v) => { setCurPick(v); keep('quiver-share-cur', v); };
 
   // The image is requested again when the card, language, size, theme, layout changes, or amounts are hidden.
   useEffect(() => {
     if (!card) { setBlob(null); return; }
     let alive = true;
     setLoading(true);
-    const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), ...(card.month ? { month: card.month } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme, layout });
+    const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), ...(card.month ? { month: card.month } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme, layout, cur });
     fetch(`/api/share/card?${q}`, { credentials: 'same-origin' })
       .then(async (r) => {
         if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `HTTP ${r.status}`); }
@@ -82,7 +89,7 @@ export function ShareDialog({ card, onClose }) {
       .catch((e) => { if (alive) toast.danger(t('Kartu gagal digambar'), { description: String(e?.message || e) }); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [card, hide, lang, size, theme, layout, t]);
+  }, [card, hide, lang, size, theme, layout, cur, t]);
 
   useEffect(() => {
     if (!blob) { setUrl(null); return; }
@@ -114,7 +121,7 @@ export function ShareDialog({ card, onClose }) {
         setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
       } else if (kind === 'telegram') {
         // The server redraws from the same data, then sends it to each chat.
-        const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, month: c.month, hide, lang, tz: tzName(), size, theme, layout });
+        const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, month: c.month, hide, lang, tz: tzName(), size, theme, layout, cur });
         if (j.error) throw new Error(j.error);
         toast.success(t('Terkirim ke Telegram'), { description: j.failed ? t('{n} chat gagal: {e}', { n: j.failed, e: j.lastErr }) : t('{n} chat', { n: j.sent }) });
       } else if (kind === 'share') {
@@ -152,7 +159,7 @@ export function ShareDialog({ card, onClose }) {
                 </div>
               )}
               {video ? <>
-                {c.kind === 'month' ? <MonthReplay month={c.month} hide={hide} theme={theme} /> : <ShareReplay id={c.id} hide={hide} name={c.name} theme={theme} />}
+                {c.kind === 'month' ? <MonthReplay month={c.month} hide={hide} theme={theme} fx={cur === 'fx' ? fx : null} /> : <ShareReplay id={c.id} hide={hide} name={c.name} theme={theme} fx={cur === 'fx' ? fx : null} />}
                 {/* The video has two looks: standard, or the Hell theme. Picking Standard leaves another image theme as it is. */}
                 <div className="mt-3">
                   <Segmented size="sm" aria="Tema video" value={theme === 'hell' ? 'hell' : 'dark'} onChange={(v) => { if (v === 'hell') pickTheme('hell'); else if (theme === 'hell') pickTheme('dark'); }} options={[['dark', 'Standar'], ['hell', 'Neraka']]} />
@@ -173,6 +180,12 @@ export function ShareDialog({ card, onClose }) {
                 <Segmented size="sm" aria="Tema kartu" value={theme} onChange={pickTheme} options={THEMES.map(([k, label]) => [k, label])} />
               </div>
               </>}
+              {fx && !hide && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted">{t('Nominal dalam')}</span>
+                  <Segmented size="sm" aria="Mata uang nominal" value={cur} onChange={pickCur} options={[['usd', 'USD'], ['fx', fx.currency]]} />
+                </div>
+              )}
               <div className="mt-3">
                 <Toggle label="Sembunyikan nominal dolar" desc="Hanya persentase yang tampil; harga token tetap ditampilkan." value={hide} onChange={toggleHide} />
               </div>

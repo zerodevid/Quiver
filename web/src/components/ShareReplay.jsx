@@ -19,8 +19,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, toast } from '@heroui/react';
 import { Download, Share2, Clapperboard } from 'lucide-react';
 import { get } from '../api';
-import { useI18n } from '../i18n';
+import { useI18n, getLocale } from '../i18n';
 import { usd, pct, price } from '../fmt';
+import { isHidden } from '../privacy';
 import { canonAddr, isAddr } from '../chain';
 import { KNOWN, hue } from './TokenIcon';
 import { ARROW, CHEVRON, WORDMARK } from './Logo';
@@ -59,7 +60,24 @@ const PALETTES = {
   },
 };
 export const videoTheme = (theme) => (theme === 'hell' ? 'hell' : 'dark');
-export const paint = (theme) => Object.assign(C, PALETTES[videoTheme(theme)]);
+// Amounts: dollars, or the Settings currency when the dialog passes its rate ({ currency, rate }).
+let fxNow = null;
+export const paint = (theme, fx = null) => { Object.assign(C, PALETTES[videoTheme(theme)]); fxNow = fx?.rate > 0 && fx.currency ? fx : null; };
+// A dollar amount in the active currency. Same rules as the share card (src/share-card.js):
+// shortened from a million up ("Rp22,4 jt"); compact (calendar cells) from a thousand up,
+// without spaces ("Rp224rb"). Privacy redaction keeps the dollar mask.
+export function money(v, d = 2, compact = false) {
+  if (!fxNow || v == null || Number.isNaN(v) || isHidden()) return usd(v, d);
+  const abs = Math.abs(v * fxNow.rate), loc = getLocale() === 'en' ? 'en-US' : 'id-ID';
+  const o = { style: 'currency', currency: fxNow.currency, minimumFractionDigits: 0, maximumFractionDigits: abs < 100 ? 2 : 0 };
+  if (abs >= (compact ? 1e3 : 1e6)) {
+    o.notation = 'compact';
+    o.maximumFractionDigits = compact ? (Number(new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 0 }).format(abs).replace(/\D/g, '')) < 10 ? 1 : 0) : 1;
+  }
+  let out;
+  try { out = new Intl.NumberFormat(loc, o).format(abs).replace(/^([^\d\s]+)\s+/, '$1'); } catch { return usd(v, d); }
+  return (v < 0 ? '−' : '') + (compact ? out.replace(/\s+/g, '') : out.replace(/\u00A0/g, ' '));
+}
 const FONT = 'Inter, ui-sans-serif, system-ui, sans-serif';
 const CHART = { x0: 60, x1: 900, y0: 250, y1: 770 };   // price chart area (axis labels to the right)
 
@@ -271,7 +289,7 @@ function since(ms, t) {
   if (h > 0) return t('{h}j {m}m', { h, m: String(m % 60).padStart(2, '0') });
   return t('{m}m', { m });
 }
-const signed = (v) => (v > 0 ? '+' : '') + usd(v);
+const signed = (v) => (v > 0 ? '+' : '') + money(v);
 const toneOf = (v) => (v > 0.005 ? C.up : v < -0.005 ? C.down : C.text);
 
 // ---- scenes ------------------------------------------------------------------------
@@ -375,7 +393,7 @@ function chartScene(ctx, m, img, sec, t, hide, coins) {
   text(ctx, since(m.duration * u, t), 60, 950, { size: 64, weight: 600 });
   text(ctx, 'Fee', 290, 880, { size: 24, color: C.muted });
   ctx.save(); ctx.translate(290, 950); ctx.scale(1 + pulse * 0.05, 1 + pulse * 0.05);
-  text(ctx, hide ? pct(m.cost > 0 ? (fee / m.cost) * 100 : 0, 1) : usd(fee), 0, 0, { size: 64, weight: 600, color: u > 0 ? C.up : C.faint });
+  text(ctx, hide ? pct(m.cost > 0 ? (fee / m.cost) * 100 : 0, 1) : money(fee), 0, 0, { size: 64, weight: 600, color: u > 0 ? C.up : C.faint });
   ctx.restore();
   text(ctx, 'PnL', S - 60, 880, { size: 24, color: C.muted, align: 'right' });
   const pnlText = hide ? pct(m.cost > 0 ? (pnl / m.cost) * 100 : u * (m.pnlPct || 0), 1) : signed(pnl);
@@ -401,11 +419,14 @@ function summaryScene(ctx, m, sec, t, hide, theme) {
   text(ctx, `${p.symbol0 || '?'} / ${p.symbol1 || '?'}`, 60, 200, { size: 36, weight: 600 });
   const k = ease(span(sec, TL.summary + 0.2, TL.summary + 1.4));
   text(ctx, 'Fee', 60, 270, { size: 28, color: C.muted });
-  text(ctx, hide ? pct(m.cost > 0 ? (m.fee / m.cost) * 100 * k : 0, 1) : usd(m.fee * k), 60, 390, { size: 120, weight: 700, color: C.up });
+  // Each figure shrinks to its column (a long amount such as "Rp107.430" would run into the next).
+  const fit = (s, w) => { ctx.save(); ctx.font = font(120, 700); const x = ctx.measureText(s).width; ctx.restore(); return Math.min(120, 120 * (w / Math.max(1, x))); };
+  const feeText = hide ? pct(m.cost > 0 ? (m.fee / m.cost) * 100 * k : 0, 1) : money(m.fee * k);
+  text(ctx, feeText, 60, 390, { size: fit(hide ? feeText : money(m.fee), 440), weight: 700, color: C.up });
   ctx.save(); ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(520, 260, 2, 140); ctx.restore();
   text(ctx, 'PnL', 570, 270, { size: 28, color: C.muted });
-  text(ctx, hide ? pct((m.pnlPct || 0) * k, 1) : signed(m.pnl * k), 570, 390, { size: 120, weight: 700, color: toneOf(m.pnl) });
-  const sub = [since(m.duration, t), hide ? null : t('posisi {v}', { v: usd(m.cost, 0) }), m.closed ? null : 'Live'].filter(Boolean).join('  ·  ');
+  text(ctx, hide ? pct((m.pnlPct || 0) * k, 1) : signed(m.pnl * k), 570, 390, { size: fit(hide ? pct(m.pnlPct || 0, 1) : signed(m.pnl), S - 60 - 570), weight: 700, color: toneOf(m.pnl) });
+  const sub = [since(m.duration, t), hide ? null : t('posisi {v}', { v: money(m.cost, 0) }), m.closed ? null : 'Live'].filter(Boolean).join('  ·  ');
   text(ctx, sub, 60, 460, { size: 30, color: C.muted });
 
   // Mini chart of the position's life only, fully drawn.
@@ -453,8 +474,8 @@ export function outro(ctx, sec, start, t, line, theme, im) {
   if (hell) drawMascot(ctx, im, S / 2, S + 10, 600, ease(span(sec, start + 0.3, start + 1.1)));
 }
 
-export function drawFrame(ctx, m, img, sec, t, hide, coins, theme) {
-  paint(theme);
+export function drawFrame(ctx, m, img, sec, t, hide, coins, theme, fx) {
+  paint(theme, fx);
   ctx.save();
   backdrop(ctx, sec, theme);
   // Scene crossfades: chart → summary → outro.
@@ -688,7 +709,7 @@ export function ReplayPlayer({ draw, end, sound, ready, error, loading, note, fi
 }
 
 // The position video tab.
-export default function ShareReplay({ id, hide, name, theme }) {
+export default function ShareReplay({ id, hide, name, theme, fx }) {
   const { t } = useI18n();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -717,11 +738,11 @@ export default function ShareReplay({ id, hide, name, theme }) {
 
   // Warm the mascot image before the first frame needs it.
   useEffect(() => { if (m && !m.error && videoTheme(theme) === 'hell') mascotOf(m.pnl, m.pnlPct); }, [m, theme]);
-  const draw = useCallback((ctx, sec) => drawFrame(ctx, m, img.current, sec, t, hide, coins, theme), [m, t, hide, coins, theme]);
+  const draw = useCallback((ctx, sec) => drawFrame(ctx, m, img.current, sec, t, hide, coins, theme, fx), [m, t, hide, coins, theme, fx]);
   const sound = useCallback(() => renderSound(m, coins), [m, coins]);
   return (
     <ReplayPlayer draw={draw} end={TL.end} sound={sound} ready={!!m && !m.error} error={error || m?.error}
       loading="Menyiapkan replay…" note="Fee dan PnL di tengah video adalah perkiraan dari harga; angka akhirnya angka asli."
-      fileName={`quiver-${name}-replay`} resetKey={`${id}:${hide}:${videoTheme(theme)}`} />
+      fileName={`quiver-${name}-replay`} resetKey={`${id}:${hide}:${videoTheme(theme)}:${fx?.currency || 'usd'}`} />
   );
 }

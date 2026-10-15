@@ -2203,6 +2203,8 @@ const EN = {
   'Piksel': 'Pixel',
   'Neraka': 'Hell',
   'Standar': 'Standard',
+  'Nominal dalam': 'Amounts in',
+  'Mata uang nominal': 'Amount currency',
   'klik untuk bagikan': 'click to share',
   // Position replay video (ShareReplay)
   'Gambar': 'Image',

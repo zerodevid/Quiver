@@ -2510,9 +2510,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       .reduce((a, c) => a + (c.cost_quote || 0) * kq(c.quote_symbol), 0);
     return { month, daily, counts, cost };
   };
-  const shareCardOf = async ({ kind, id, day, month, hide = false, lang = 'id', tz, size, theme, layout } = {}) => {
+  // cur 'fx': amounts in the Settings currency (Display → second currency) instead of dollars;
+  // without a rate the card stays in dollars.
+  const shareCardOf = async ({ kind, id, day, month, hide = false, lang = 'id', tz, size, theme, layout, cur } = {}) => {
     const timeZone = tz || cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const opts = { hideAmounts: !!hide, lang, timeZone, size: shareCard.sizeKey(size), theme: shareCard.themeKey(theme), layout: shareCard.layoutKey(layout), chain: { key: chain.network, label: chain.label } };
+    const rate = cur === 'fx' ? fx.view(currencyOf(cfg)) : null;
+    const opts = { hideAmounts: !!hide, lang, timeZone, size: shareCard.sizeKey(size), theme: shareCard.themeKey(theme), layout: shareCard.layoutKey(layout), chain: { key: chain.network, label: chain.label },
+      fx: rate?.rate > 0 ? { currency: rate.currency, rate: rate.rate } : null };
     let data;
     if (kind === 'position') {
       const d = await callApi('GET', '/api/position', {}, { id });
@@ -2567,7 +2571,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         opts.chart = { kind: 'bars', bars: Array.from({ length: dim }, (_, i) => { const k = `${day.slice(0, 7)}-${String(i + 1).padStart(2, '0')}`; return { v: daily[k] || 0, on: k === day }; }) };
       }
     } else return { error: `jenis kartu tidak dikenal: ${kind}` };
-    return { png: shareCard.render(kind, data, opts), caption: shareCard.caption(kind, data, lang) };
+    return { png: shareCard.render(kind, data, opts), caption: shareCard.caption(kind, data, lang, opts.fx) };
   };
   // Candles for the position card's background chart. The window covers the position's age (minimum
   // 10 minutes) + 30% context before entry, within ≤ 120 candles; a closed position is only
