@@ -25,7 +25,7 @@ import { usd, pct } from '../fmt';
 const SIZES = [['wide', 'Lebar', 1200 / 630], ['square', 'Persegi', 1], ['story', 'Story', 1080 / 1920]];
 // Layout: spotlight = one big figure + large mascot; classic = stat tiles + chart strip.
 const LAYOUTS = [['spotlight', 'Sorot'], ['classic', 'Klasik']];
-const THEMES = [['dark', 'Grafit'], ['midnight', 'Malam'], ['sunset', 'Senja'], ['neon', 'Neon'], ['gold', 'Emas'], ['light', 'Terang'], ['pixel', 'Piksel']];
+const THEMES = [['dark', 'Grafit'], ['midnight', 'Malam'], ['sunset', 'Senja'], ['neon', 'Neon'], ['gold', 'Emas'], ['light', 'Terang'], ['pixel', 'Piksel'], ['hell', 'Neraka']];
 const tzName = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ''; } };
 // The last choice is remembered in this browser.
 const remember = (key, fallback, valid) => { try { const v = localStorage.getItem(key); return valid.includes(v) ? v : fallback; } catch { return fallback; } };

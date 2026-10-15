@@ -78,6 +78,15 @@ const THEMES = {
     up: '#6EF06E', down: '#FF6B6B', flat: '#D6D2FF', amber: '#FFD75E', accent: '#FF7AD9', deco: 'pixels', glow: 0.22,
     font: 'Pixelify Sans', adv: ADV_PIXEL, sq: true,
   },
+  // Gothic horror: blood moon, spire & cross silhouettes, embers, film grain — and its
+  // own mascot (a little demon instead of the fox). Up is flame yellow so it does not
+  // vanish into the red.
+  hell: {
+    label: 'Neraka', bg: ['#2A0707', '#120303', '#060101'], text: '#FBEFE6', muted: '#D2A79C', faint: '#9A7067',
+    line: 'rgba(255,90,70,0.2)', panel: 'rgba(200,30,30,0.08)', chip: 'rgba(200,30,30,0.18)',
+    up: '#FFD23F', down: '#FF5A4E', flat: '#EBD6CC', amber: '#FFB23F', accent: '#B3121B', deco: 'hell', glow: 0.26,
+    mascot: 'devil',
+  },
 };
 const HIDDEN = '••••';
 const FONT_DIR = path.join(__dirname, '..', 'public', 'fonts');
@@ -96,13 +105,16 @@ for (const [key, label] of [['ethereum', 'Ethereum'], ['base', 'Base'], ['arbitr
 }
 let chainNow = CHAIN_BADGE.robinhood;
 const chainName = () => chainNow.label;
-// Fox mascot, its expression follows the PnL (public/mascots/*.png, transparent PNG,
-// 900 px tall). Loaded once per process.
-const MASCOT = Object.fromEntries(['flex', 'profit', 'loss', 'neutral'].map((m) => {
-  const png = fs.readFileSync(path.join(__dirname, '..', 'public', 'mascots', `${m}.png`));
+// Mascots, the expression follows the PnL (transparent PNG, 900 px tall): the fox in
+// public/mascots/*.png, other sets in a subfolder picked by a theme's `mascot` key
+// (devil = public/mascots/devil/). Loaded once per process.
+const loadMascot = (dir) => Object.fromEntries(['flex', 'profit', 'loss', 'neutral'].map((m) => {
+  const png = fs.readFileSync(path.join(__dirname, '..', 'public', 'mascots', dir, `${m}.png`));
   const w = png.readUInt32BE(16), h = png.readUInt32BE(20);
   return [m, { href: `data:image/png;base64,${png.toString('base64')}`, w, h }];
 }));
+const MASCOTS = { fox: loadMascot(''), devil: loadMascot('devil') };
+const mascotOf = (key) => (MASCOTS[T.mascot] || MASCOTS.fox)[key];
 // flex: a big profit (≥ FLEX_PCT% of capital); profit/loss: PnL direction; neutral: zero / no data yet.
 const FLEX_PCT = 20;
 const mood = (pnl, pnlPct) => (pnl > 0.005 ? (pnlPct >= FLEX_PCT ? 'flex' : 'profit') : pnl < -0.005 ? 'loss' : 'neutral');
@@ -211,7 +223,7 @@ function fitted(s, x, y, width, options = {}) {
 }
 
 // Background decoration per theme: a thin pattern over the whole card, or circles behind the mascot.
-function deco(cx, cy, r) {
+function deco(cx, cy, r, behindArt = false) {
   const a = T.accent;
   if (T.deco === 'grid') {
     return `<defs><pattern id="deco" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0H0V48" fill="none" stroke="${a}" stroke-opacity="0.1"/></pattern></defs>`
@@ -238,7 +250,44 @@ function deco(cx, cy, r) {
     return `<defs><pattern id="deco" width="32" height="32" patternUnits="userSpaceOnUse"><rect width="16" height="16" fill="${a}" fill-opacity="0.035"/><rect x="16" y="16" width="16" height="16" fill="${a}" fill-opacity="0.035"/></pattern></defs>`
       + `<rect width="${G.W}" height="${G.H}" fill="url(#deco)"/>` + blocks;
   }
+  if (T.deco === 'hell') return hellDeco(cx, cy, r, behindArt);
   return '';
+}
+// Deterministic pseudo-random in [0, 1) so every render of a card is identical.
+const rand = (i) => { const x = Math.sin(i * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+// Hell theme backdrop: a blood moon behind the mascot (cx, cy, r = its centre and half
+// height), two rows of gothic spire silhouettes with crosses along the bottom, rising
+// embers and a film grain over everything. Behind the month calendar (`behindArt`) the
+// moon moves to the top-right corner and dims so the day figures stay readable.
+function hellDeco(cx, cy, r, behindArt = false) {
+  const { W, H } = G, a = T.accent;
+  const mr = behindArt ? Math.min(W, H) * 0.2 : r * 0.78;
+  const mx = behindArt ? W - mr * 0.55 : cx + r * 0.3, my = behindArt ? mr * 0.45 : cy - r * 0.5;
+  let out = `<defs><radialGradient id="moon" cx="${mx - mr * 0.25}" cy="${my - mr * 0.3}" r="${mr * 1.2}" gradientUnits="userSpaceOnUse"><stop stop-color="#E0262E"/><stop offset="1" stop-color="${a}"/></radialGradient>`
+    + `<radialGradient id="moonHalo" cx="${mx}" cy="${my}" r="${mr * 1.9}" gradientUnits="userSpaceOnUse"><stop offset="0.45" stop-color="${a}" stop-opacity="0.35"/><stop offset="1" stop-color="${a}" stop-opacity="0"/></radialGradient>`
+    + `<filter id="grain" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7"/><feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.5 0"/><feComposite in2="SourceGraphic" operator="in"/></filter></defs>`
+    + `<circle cx="${mx}" cy="${my}" r="${mr * 1.9}" fill="url(#moonHalo)"/><circle cx="${mx}" cy="${my}" r="${mr}" fill="url(#moon)" fill-opacity="${behindArt ? 0.4 : 0.85}"/>`;
+  // Spire skyline: towers of random width/height with pointed roofs, some crowned by a cross.
+  const skyline = (base, tall, seed, fill, opacity) => {
+    let d = '', crosses = '', x = -20, i = seed;
+    while (x < W + 20) {
+      const w = 12 + rand(i++) * 34, h = tall * (0.25 + rand(i++) * 0.75), top = base - h, roof = w * (0.6 + rand(i++) * 1.4);
+      d += `M${x.toFixed(1)} ${H}V${top.toFixed(1)}L${(x + w / 2).toFixed(1)} ${(top - roof).toFixed(1)}L${(x + w).toFixed(1)} ${top.toFixed(1)}V${H}Z`;
+      if (rand(i++) > 0.55) {
+        const tx = x + w / 2, ty = top - roof, ch = Math.max(14, w * 0.7), cw = ch * 0.6, t = Math.max(2, w * 0.08);
+        crosses += `<rect x="${(tx - t / 2).toFixed(1)}" y="${(ty - ch).toFixed(1)}" width="${t.toFixed(1)}" height="${ch.toFixed(1)}"/><rect x="${(tx - cw / 2).toFixed(1)}" y="${(ty - ch * 0.72).toFixed(1)}" width="${cw.toFixed(1)}" height="${t.toFixed(1)}"/>`;
+      }
+      x += w + rand(i++) * 30 - 6;
+    }
+    return `<g fill="${fill}" fill-opacity="${opacity}"><path d="${d}"/>${crosses}</g>`;
+  };
+  out += skyline(H - H * 0.08, H * 0.3, 11, '#2E0507', 0.75) + skyline(H, H * 0.2, 97, '#000', 0.82);
+  // Embers drifting up.
+  for (let i = 0; i < 46; i++) {
+    const ex = rand(i + 500) * W, ey = H * (0.25 + rand(i + 900) * 0.75), er = 1 + rand(i + 1300) * 2.4;
+    out += `<circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="${er.toFixed(1)}" fill="${i % 3 ? '#FF7A3D' : T.up}" fill-opacity="${(0.25 + rand(i + 1700) * 0.5).toFixed(2)}"/>`;
+  }
+  return out + `<rect width="${W}" height="${H}" fill="#fff" filter="url(#grain)" opacity="0.22"/>`;
 }
 // Tilted stamp above the mascot ("BIG WIN" when flex).
 function stamp(s, cx, cy, color) {
@@ -317,7 +366,7 @@ function chartSvg(c, tint) {
 function frame(tint, right, body, mascotKey, stampText, chart) {
   const { W, H, k } = G;
   const context = right.replace(` · ${chainName()}`, '');
-  const m = MASCOT[mascotKey], mh = G.mascot.h, mw = Math.round((m.w / m.h) * mh);
+  const m = mascotOf(mascotKey), mh = G.mascot.h, mw = Math.round((m.w / m.h) * mh);
   const mx = G.mascot.cx != null ? Math.round(G.mascot.cx - mw / 2) : G.mascot.right - mw, my = G.mascot.y;
   const gcx = mx + mw / 2, gcy = my + mh / 2;
   const stops = T.bg.map((c, i) => `<stop offset="${(i / (T.bg.length - 1)).toFixed(2)}" stop-color="${c}"/>`).join('');
@@ -545,7 +594,7 @@ function caps(s, x, y, { size, color = T.muted, ls = 0.18, anchor = 'start' }) {
 function spotlight({ meta, icons, title: titleText, chips = [], label, big, tint, pill, sub, stats, footer, mascotKey, art }) {
   const S = G, { W, H, k } = S;
   // The wide poses (loss/neutral) are shrunk so they stay clear of the text column.
-  const m = art ? null : MASCOT[mascotKey];
+  const m = art ? null : mascotOf(mascotKey);
   const mh = m ? Math.min(S.mascot.h, Math.round(S.mascot.maxW * (m.h / m.w))) : S.cal.h, mw = m ? Math.round((m.w / m.h) * mh) : S.cal.w;
   const mx = m ? (S.mascot.cx != null ? Math.round(S.mascot.cx - mw / 2) : S.mascot.right - mw) : S.cal.x, my = m ? S.mascot.bottom - mh : S.cal.y;
   const gcx = mx + mw / 2, gcy = my + mh * 0.45;
@@ -560,7 +609,7 @@ function spotlight({ meta, icons, title: titleText, chips = [], label, big, tint
   <pattern id="grid" width="${56 * k}" height="${56 * k}" patternUnits="userSpaceOnUse"><path d="M${56 * k} 0H0V${56 * k}" fill="none" stroke="${T.text}" stroke-opacity="0.05"/></pattern>
   <filter id="soft" x="-20%" y="-40%" width="140%" height="180%"><feGaussianBlur stdDeviation="${18 * k}"/></filter>
 </defs>
-<rect width="${W}" height="${H}" fill="url(#bg)"/>${T.deco && T.deco !== 'rings' ? deco(gcx, gcy, mh / 2) : ''}
+<rect width="${W}" height="${H}" fill="url(#bg)"/>${T.deco && T.deco !== 'rings' ? deco(gcx, gcy, mh / 2, !m) : ''}
 <rect width="${W}" height="${H}" fill="url(#grid)" mask="url(#gridMask)"/>
 <rect width="${W}" height="${H}" fill="url(#glow)"/><rect width="${W}" height="${H}" fill="url(#glow2)"/>
 ${m ? `<image x="${mx}" y="${my}" width="${mw}" height="${mh}" href="${m.href}"/>` : art}
