@@ -405,7 +405,7 @@ export default function Overview() {
   const [range, setRange] = useState('all');
   // Initial view: net PnL if capital is tracked; otherwise cumulative PnL.
   const [viewPick, setView] = useState('net');
-  const [shareDay, setShareDay] = useState(null);   // the 'YYYY-MM-DD' clicked in the calendar
+  const [shareDay, setShareDay] = useState(null);   // day card clicked in the calendar (kept stable across polls)
   const [shareMonth, setShareMonth] = useState(null);   // month card shared from the calendar header (kept stable across polls)
   const { data: p, reload: reloadPortfolio } = usePoll('/api/portfolio?range=' + range, 30000);
   // The same as the Positions page: a cheap endpoint, so a new position appears within ~5 seconds.
@@ -466,7 +466,7 @@ export default function Overview() {
         <ShareButton label="Bagikan total PnL" isDisabled={!now} card={now ? totalCard({ pnl: now.netPnl ?? now.pnl, net: now.netPnl != null }) : null} />
       </PageHeader>
       {/* Daily PnL card: the day clicked in the calendar. The server assembles its data itself. */}
-      <ShareDialog card={shareDay && cal ? dailyCard({ day: shareDay, pnl: cal.daily[shareDay] }) : null} onClose={() => setShareDay(null)} />
+      <ShareDialog card={shareDay} onClose={() => setShareDay(null)} />
       <ShareDialog card={shareMonth} onClose={() => setShareMonth(null)} />
       <PositionHistory id={hist} onClose={() => setHist(null)} />
       {/* Simulation with a virtual balance (paper.js): where the virtual book stands. */}
@@ -597,7 +597,7 @@ export default function Overview() {
       {/* Equal height: the right column stretches to the calendar's height, leaving no gap */}
       <div className="mb-4 grid gap-3 lg:grid-cols-5">
         <Panel title="Kalender PnL" desc="PnL terealisasi per hari posisi ditutup · klik hari atau ikon bagikan untuk membuat kartu" className="lg:col-span-3" bodyClass="flex-1">
-          {cal ? <PnlCalendar daily={cal.daily} counts={cal.counts} empty="Belum ada posisi ditutup" onShare={(k) => setShareDay(k)}
+          {cal ? <PnlCalendar daily={cal.daily} counts={cal.counts} empty="Belum ada posisi ditutup" onShare={(k) => setShareDay(dailyCard({ day: k, pnl: cal.daily[k] }))}
             onShareMonth={(month, pnl) => setShareMonth(monthCard({ month, pnl }))} /> : <Loading />}
         </Panel>
         <div className="flex min-w-0 flex-col gap-3 lg:col-span-2">
