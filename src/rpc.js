@@ -498,6 +498,7 @@ class RpcPool {
   async _getLogs(filter) {
     const capacityErr = (m) => /more logs than|log.{0,12}limit|too many (?:logs|results)|response size|query returned more/i.test(m || '');
     const busyErr = (m) => /429|too many requests|network is busy|rate limit/i.test(m || '');
+    const rangeErr = (m) => /narrow the block range|only \d+ are allowed|block range (?:is )?too (?:large|wide)|exceeds? (?:the )?max(?:imum)? block range/i.test(m || '');
     const eligible = this.eps.filter((e) => !e.noLogs);
     const span = spanOf(filter);
     const from = typeof filter.fromBlock === 'string' && /^0x[0-9a-f]+$/i.test(filter.fromBlock) ? parseInt(filter.fromBlock, 16) : null;
@@ -532,6 +533,10 @@ class RpcPool {
         // All endpoints are already resting (consecutive transport failures): nothing
         // can be tried right now.
         if (/semua endpoint RPC/.test(e.message)) throw e;
+        // The range is wider than this request may span ("only 10000000 are allowed"): a
+        // fault of the request, not of the endpoint. No cooldown — resting the endpoint
+        // would stall the copy engine's own getLogs — the caller narrows the range.
+        if (rangeErr(e.message)) throw e;
         const ep = used.ep || this.usable(true, span, false, from)[0];
         if (!ep) throw e;
         const host = new URL(ep.url).hostname;

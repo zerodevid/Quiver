@@ -233,32 +233,68 @@ class Manual {
     ];
     // An endpoint that limits the getLogs range (public BSC: 5000 blocks) cannot
     // scan from genesis — the window is limited to the last ~1 million blocks, cut to its
-    // limit. Without a limit (Robinhood: ordofi/Alchemy): 400 thousand blocks per chunk.
+    // limit. Without a limit: 10M blocks per call (what the official Robinhood RPC accepts —
+    // 9 calls for its whole history instead of ~220 at 400k), shrinking to 400k only where
+    // a range is refused.
     const limit = this.rpc.maxLogSpan?.() || 0;
-    const CHUNK = limit ? Math.min(400_000, limit) : 400_000;
+    const SIZES = limit ? [Math.min(400_000, limit)] : [10_000_000, 400_000];
     const floor = limit ? Math.max(0, head - 1_000_000) : 0;
-    const potong = Math.ceil((head - floor) / CHUNK);
-    const total = potong * query.length;
-    let step = 0;
-    for (const [address, topics, serap] of query) {
-      try {
-        if (limit) throw new Error('rentang dibatasi');   // directly per chunk
-        serap(await this.rpc.getLogs({ address, topics, fromBlock: '0x0', toBlock: hex(head) }));
-        step += potong;
-        onProgress({ done: step, total });
-        continue;
-      } catch { /* endpoint rejects a range that large: fall back to chunks */ }
-      for (let hi = head; hi > floor;) {
-        const lo = Math.max(floor, hi - CHUNK);
-        try {
-          serap(await this.rpc.getLogs({ address, topics, fromBlock: hex(lo), toBlock: hex(hi) }));
-        } catch { /* one chunk failed: do not fail the whole scan */ }
-        step++;
-        onProgress({ done: step, total });
-        if (lo === 0) break;
-        hi = lo - 1;
+
+    // Incremental: blocks already scanned for this token are not read again. The pools
+    // found then are in the pools table; only the blocks after `to` are new. The key
+    // carries the factories, so a venue added later forces a full rescan.
+    const stateKey = `pool_scan:${this.network}:${t}:${factories.map(([, f]) => lc(f)).sort().join(',')}`;
+    let from = floor;
+    try {
+      const prev = JSON.parse(this.store.getState(stateKey) || 'null');
+      if (prev?.to != null && prev.to >= floor && prev.to <= head) from = prev.to + 1;
+    } catch { /* unreadable state: full scan */ }
+    if (from > floor) {
+      const known = this.store.all(`SELECT pool_ref, venue, token0, token1, fee, tick_spacing, hooks, pool_addr, first_block FROM pools
+        WHERE chain=? AND (token0=? OR token1=?) AND fee IS NOT NULL AND tick_spacing IS NOT NULL`, this.network, t, t);
+      const venues = new Set(['v4', ...factories.map(([v]) => v)]);
+      for (const r of known) {
+        if (!venues.has(r.venue)) continue;
+        found.set(r.pool_ref, {
+          poolRef: r.pool_ref, ...(r.pool_addr ? { poolAddr: r.pool_addr } : {}), venue: r.venue,
+          token0: lc(r.token0), token1: lc(r.token1), fee: r.fee, tickSpacing: r.tick_spacing,
+          hooks: r.hooks || null, firstBlock: r.first_block,
+        });
       }
     }
+
+    // Progress = blocks covered over all queries. A range that fails at the smallest size is
+    // skipped (one bad chunk must not fail the whole scan) but then `to` is not saved, so
+    // the next scan reads it again.
+    const span = Math.max(0, head - from + 1);
+    const total = span * query.length || 1;
+    let done = 0, failed = false;
+    const split = async (q, lo, hi, level) => {
+      for (let top = hi; top >= lo;) {
+        const bottom = Math.max(lo, top - SIZES[level] + 1);
+        await range(q, bottom, top, level);
+        top = bottom - 1;
+      }
+    };
+    const range = async ([address, topics, serap], lo, hi, level, retried = false) => {
+      try {
+        serap(await this.rpc.getLogs({ address, topics, fromBlock: hex(lo), toBlock: hex(hi) }));
+        done += hi - lo + 1;
+        onProgress({ done, total });
+      } catch (e) {
+        // Busy (429) is not a range problem: one more try after a short pause before splitting.
+        if (!retried && /429|too many requests|rate limit|busy/i.test(e.message || '')) {
+          await new Promise((r) => setTimeout(r, 2000));
+          return range([address, topics, serap], lo, hi, level, true);
+        }
+        if (level + 1 < SIZES.length) return split([address, topics, serap], lo, hi, level + 1);
+        failed = true;
+        done += hi - lo + 1;
+        onProgress({ done, total });
+      }
+    };
+    if (span > 0) await Promise.all(query.map((q) => split(q, from, head, 0)));
+    if (!failed) this.store.setState(stateKey, JSON.stringify({ to: head, ts: Date.now() }));
 
     const list = [...found.values()];
     if (!list.length) return [];
