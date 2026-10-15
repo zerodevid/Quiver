@@ -115,8 +115,21 @@ class Manual {
       FROM pools p
       LEFT JOIN tokens t0 ON t0.chain = p.chain AND t0.address = p.token0
       LEFT JOIN tokens t1 ON t1.chain = p.chain AND t1.address = p.token1
-      WHERE p.chain=?
+      WHERE p.chain=? AND p.token0 IS NOT NULL AND p.token1 IS NOT NULL   -- no poolKey read: cannot be opened
       ORDER BY COALESCE(last_ts, 0) DESC, p.first_block DESC`, this.network);
+    // The JOIN misses native ETH (address 0x0, never stored in tokens) and tokens whose
+    // metadata was never read — resolve those through chain.tokens() instead of showing '?'.
+    const missing = [...new Set(rows.flatMap((r) => [r.s0 == null && r.token0, r.s1 == null && r.token1]).filter(Boolean))];
+    if (missing.length) {
+      try {
+        const byAddr = new Map((await this.chain.tokens(missing)).filter(Boolean).map((m) => [lc(m.address), m]));
+        for (const r of rows) {
+          const m0 = r.s0 == null && byAddr.get(lc(r.token0)), m1 = r.s1 == null && byAddr.get(lc(r.token1));
+          if (m0) { r.s0 = m0.symbol; r.d0 = m0.decimals; }
+          if (m1) { r.s1 = m1.symbol; r.d1 = m1.decimals; }
+        }
+      } catch (e) { this.log(`manual pools: token metadata unreadable (${e.message})`); }
+    }
     const search = String(q).trim().toLowerCase();
     const out = [];
     for (const r of rows) {
