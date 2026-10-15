@@ -186,6 +186,13 @@ function Step({ n, title, done, children, action }) {
 
 const fee = (p) => (p.dynamicFee ? 'dinamis' : `${num(p.feePct, 2)}%`);
 
+// Venue groups for the pool list filter. A v4 pool with a hook is its own group: a hook can
+// change fees or block trades, so it is worth picking out (or leaving out) on purpose.
+const VENUE_LABEL = { v3: 'V3', v4: 'V4', v4hook: 'V4 + hook', pancakev3: 'Pancake V3', meteora: 'DLMM', orca: 'Orca', raydium: 'Raydium CLMM' };
+const venueKey = (p) => (p.venue === 'v4' && p.hasHooks ? 'v4hook' : p.venue);
+const SORTS = [['aktif', 'Terbaru aktif'], ['tvl', 'Likuiditas'], ['vol', 'Volume 24 jam'], ['apr', 'APR']];
+const sortVal = { tvl: (p) => p.stats?.tvlUsd, vol: (p) => p.stats?.volume24hUsd, apr: (p) => p.stats?.aprPct };
+
 // Token amount: a memecoin can be millions, ETH can be 0.0000x — fixed decimals suit
 // neither, so below 1 it uses significant digits.
 const qty = (v) => (v == null ? '—' : v === 0 ? '0' : Math.abs(v) >= 1 ? num(v, Math.abs(v) >= 1000 ? 0 : 4)
@@ -389,6 +396,8 @@ function PoolPicker({ pools, onPick }) {
   const [q, setQ] = useState('');
   const [scan, setScan] = useState(null);     // scan result from the token address
   const [every, setAll] = useState(false);
+  const [venue, setVenue] = useState('all');
+  const [sort, setSort] = useState('aktif');
   const timer = useRef(null);
   const token = canonAddr(q);
   const isAddress = isAddr(token);
@@ -413,11 +422,19 @@ function PoolPicker({ pools, onPick }) {
 
   // A scan result replaces the list only while the search box still contains that address.
   const useScan = isAddress && scan?.token === token && scan.status === 'selesai';
-  const result = useMemo(() => {
+  const found = useMemo(() => {
     if (useScan) return scan.pools || [];
     const n = q.trim().toLowerCase();
     return n ? pools.filter((p) => p.pair.toLowerCase().includes(n)) : pools;
   }, [pools, q, useScan, scan]);
+  const venues = useMemo(() => [...new Set(found.map(venueKey))], [found]);
+  const hasStats = found.some((p) => p.stats);
+  const result = useMemo(() => {
+    const list = venue === 'all' ? found : found.filter((p) => venueKey(p) === venue);
+    const by = sortVal[sort];
+    // Rows without the stat sink to the bottom; the original (activity) order breaks ties.
+    return by ? [...list].sort((a, b) => (by(b) ?? -1) - (by(a) ?? -1)) : list;
+  }, [found, venue, sort]);
 
   return (
     <div className="flex flex-col gap-3">
@@ -453,6 +470,24 @@ function PoolPicker({ pools, onPick }) {
         </p>
       )}
 
+      {(venues.length > 1 || hasStats) && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {venues.length > 1 ? (
+            <Chips value={venue} onPick={setVenue}
+              options={[['all', t('Semua')], ...venues.map((v) => [v, t(VENUE_LABEL[v] || v.toUpperCase())])]} />
+          ) : <span />}
+          {hasStats && (
+            <label className="flex items-center gap-2 text-xs text-muted">
+              {t('Urutkan')}
+              <select value={sort} onChange={(e) => setSort(e.target.value)}
+                className="h-8 rounded-md border border-field-border bg-surface px-2 text-[0.8125rem] text-foreground">
+                {SORTS.map(([k, l]) => <option key={k} value={k}>{t(l)}</option>)}
+              </select>
+            </label>
+          )}
+        </div>
+      )}
+
       <div className="max-h-80 overflow-y-auto rounded-md border border-border">
         {!result.length ? (
           <div>
@@ -486,6 +521,7 @@ function PoolPicker({ pools, onPick }) {
                   <span className="num hidden w-16 text-end md:inline" title={t('Likuiditas')}>{p.stats.tvlUsd != null ? kUsd(p.stats.tvlUsd) : '—'}</span>
                   <span className="num hidden w-16 text-end md:inline" title={t('Volume 24 jam')}>{p.stats.volume24hUsd != null ? kUsd(p.stats.volume24hUsd) : '—'}</span>
                   <span className="num hidden w-14 text-end md:inline" title={t('Fee 24 jam / likuiditas')}>{p.stats.feeTvl24Pct != null ? `${num(p.stats.feeTvl24Pct, 2)}%` : '—'}</span>
+                  <span className="num hidden w-16 text-end lg:inline" title={t('APR pool')}>{p.stats.aprPct != null ? `${num(p.stats.aprPct, 0)}%` : '—'}</span>
                 </>
               )}
               <span className="num w-12 text-end">{fee(p)}</span>
@@ -523,7 +559,7 @@ export default function ManualLp({ param }) {
   const [mode, setMode] = useState('single');   // 'single' range | 'ladder' of layers
 
   useEffect(() => {
-    get('/api/manual/pools?limit=200').then((d) => setPools(d.pools || []));
+    get('/api/manual/pools?limit=200&stats=1').then((d) => setPools(d.pools || []));
     get('/api/rules').then(setRules);
   }, []);
 

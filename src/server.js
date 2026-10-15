@@ -661,6 +661,30 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // Scanned pools that can really be entered: paired with a quote asset,
   // with liquidity, and whose fee can be valued up front.
   const enterable = (p) => p.quoteSide != null && p.kosong !== true && !p.dynamicFee;
+  // EVM pool rows get list stats from DexScreener (Solana DLMM rows already carry Meteora's).
+  // Best effort and time-boxed: a slow or rate-limited answer leaves the list without stats.
+  const withPoolStats = async (pools, waitMs = 4000) => {
+    const need = pools.filter((p) => !p.stats);
+    if (!need.length) return pools;
+    const byPool = await Promise.race([
+      market.pairsMany(need.map((p) => p.poolRef)).catch(() => null),
+      new Promise((r) => setTimeout(() => r(null), waitMs)),
+    ]);
+    if (!byPool) return pools;
+    for (const p of need) {
+      const d = byPool.get(String(p.poolRef).toLowerCase());
+      if (!d) continue;
+      const tvl = d.liquidityUsd, vol = d.volume24hUsd;
+      const fees = vol != null && p.feePct != null ? vol * p.feePct / 100 : null;
+      p.stats = {
+        tvlUsd: tvl, volume24hUsd: vol, fees24hUsd: fees,
+        feeTvl24Pct: fees != null && tvl > 0 ? (fees / tvl) * 100 : null,
+        aprPct: fees != null && tvl > 0 ? (fees / tvl) * 365 * 100 : null,
+        createdAt: d.pairCreatedAt,
+      };
+    }
+    return pools;
+  };
 
   // Win/lose is judged from proceeds − capital − swap difference (open & close slippage):
   // slippage is the price that really vanished in that position, so a minus because of
@@ -2017,7 +2041,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         q: url.searchParams.get('q') || '',
         limit: Math.min(100, Number(url.searchParams.get('limit') || 40)),
         withPrice: url.searchParams.get('price') === '1',
-      }),
+      }).then((list) => (url.searchParams.get('stats') === '1' ? withPoolStats(list) : list)),
     }),
     // Scan pools from a token address. Made a background job like scout: a single
     // full-range scan takes a dozen seconds, too long for one HTTP reply.
@@ -2032,6 +2056,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         onProgress: (p) => { job.progress = p.total ? Math.round((p.done / p.total) * 100) : 0; },
       }).then(async (pools) => {
         if (!pools.some(enterable)) job.others = await manual.otherMarket(token);
+        await withPoolStats(pools.filter(enterable).slice(0, 90), 8000);
         job.pools = pools; job.status = 'selesai'; job.finishedAt = Date.now();
       })
         .catch((e) => { job.error = e.message; job.status = 'gagal'; job.finishedAt = Date.now(); });

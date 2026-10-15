@@ -160,6 +160,26 @@ class Market {
     });
   }
 
+  // List stats (TVL, 24h volume) for many pools at once: DexScreener answers up to 30 pair
+  // addresses per call, so the manual LP pool list costs a few requests, not one per row.
+  // A pool DexScreener has not indexed is simply missing from the answer. v4 = poolId.
+  async pairsMany(refs) {
+    const want = [...new Set(refs.map(this.lc).filter(Boolean))];
+    const out = new Map();
+    for (let i = 0; i < want.length; i += 30) {
+      const chunk = want.slice(i, i + 30).sort();
+      const r = await this.memo(`dsm:${chunk.join(',')}`, 60_000, async () => {
+        const j = await this.json(this.DS + chunk.join(','));
+        return { pairs: (j?.pairs || []).map((p) => ({
+          pool: this.lc(p.pairAddress), liquidityUsd: p.liquidity?.usd ?? null,
+          volume24hUsd: p.volume?.h24 ?? null, pairCreatedAt: p.pairCreatedAt ?? null,
+        })) };
+      });
+      for (const p of r?.pairs || []) if (!out.has(p.pool)) out.set(p.pool, p);
+    }
+    return out;
+  }
+
   // A Meteora DLMM pool in the DexScreener `pair()` shape, so every consumer keeps working.
   // Meteora is authoritative for what it knows exactly (TVL, volume, fees, creation time);
   // DexScreener (best effort, never required) only adds price changes, trade counts and the
