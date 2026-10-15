@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Quiver promo</title>
+<style>
+@font-face { font-family: "Inter"; src: url("../../web/public/fonts/inter-var-latin.woff2") format("woff2"); font-weight: 100 900; }
+:root {
+  --bg: #0e1014;
+  --accent: #5b9cf6;
+  --green: #4ade80;
+  --text: #f4f6f8;
+  --muted: rgba(244, 246, 248, .58);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1920px; height: 1080px; background: var(--bg); overflow: hidden; font-family: "Inter", system-ui, sans-serif; color: var(--text); font-feature-settings: "tnum" 1, "cv11" 1; -webkit-font-smoothing: antialiased; }
+#stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); }
+.layer { position: absolute; inset: 0; opacity: 0; will-change: transform, opacity; }
+
+/* Headlines */
+.head { position: absolute; left: 140px; z-index: 20; will-change: transform, opacity; }
+.head .eb { font-size: 19px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin-bottom: 14px; }
+.head h2 { font-size: 66px; line-height: 1.06; font-weight: 600; letter-spacing: -.03em; }
+.head p { margin-top: 16px; font-size: 25px; line-height: 1.4; font-weight: 400; color: var(--muted); max-width: 760px; }
+
+/* Real UI window */
+.win { position: absolute; left: 0; top: 0; width: 1600px; height: 1000px; transform-origin: 0 0; border-radius: 12px; overflow: hidden; border: 1px solid rgba(255, 255, 255, .12); background: #08090b; box-shadow: 0 30px 80px rgba(0, 0, 0, .55); }
+.win img { position: absolute; left: 0; top: 0; width: 1600px; height: 1000px; display: block; }
+.ovl > div { position: absolute; opacity: 0; }
+.spot { border-radius: 8px; box-shadow: 0 0 0 3000px rgba(6, 7, 9, .56), inset 0 0 0 2px #5b9cf6; }
+.ring { border-radius: 10px; box-shadow: inset 0 0 0 2px #5b9cf6; }
+.ring.g { border-radius: 7px; box-shadow: inset 0 0 0 2px #4ade80; }
+.cover { background: rgba(8, 9, 11, .8); }
+.sline { width: 2px; background: #fff; }
+.call { display: flex; align-items: center; gap: 10px; padding: 9px 16px 9px 10px; border-radius: 10px; font-size: 20px; font-weight: 600; white-space: nowrap; color: #0b0c0e; background: #fff; box-shadow: 0 10px 30px rgba(0, 0, 0, .4); }
+.call i { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: #16a34a; }
+.call i svg { width: 15px; height: 15px; }
+.call small { font-size: 16px; font-weight: 500; color: #5b6270; margin-left: 2px; }
+
+/* Logo */
+.logo-wrap { position: absolute; left: 640px; width: 640px; }
+.logo-wrap img { width: 640px; display: block; }
+.tag { position: absolute; left: 0; right: 0; text-align: center; font-size: 36px; font-weight: 450; letter-spacing: -.005em; color: rgba(244, 246, 248, .86); }
+
+/* Chains */
+.cards { position: absolute; left: 140px; top: 400px; display: flex; gap: 40px; }
+.card { width: 520px; height: 380px; border-radius: 18px; border: 1px solid rgba(255, 255, 255, .1); background: #15181e; padding: 40px; will-change: transform, opacity; }
+.card .ic { width: 84px; height: 84px; border-radius: 20px; overflow: hidden; display: grid; place-items: center; background: #0b0d11; border: 1px solid rgba(255, 255, 255, .1); }
+.card .ic img { width: 100%; height: 100%; object-fit: cover; }
+.card .ic.pad img { width: 56%; height: 56%; object-fit: contain; }
+.card h3 { margin-top: 34px; font-size: 36px; font-weight: 600; letter-spacing: -.02em; }
+.card ul { margin-top: 20px; list-style: none; font-size: 22px; line-height: 1.7; color: var(--muted); }
+.card li { display: flex; align-items: center; gap: 12px; }
+.card li img { width: 24px; height: 24px; border-radius: 6px; }
+.card li:before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.card li.i:before { display: none; }
+
+/* Telegram */
+#tg { position: absolute; left: 1020px; top: 230px; width: 660px; height: 620px; border-radius: 18px; background: #0e1621; border: 1px solid rgba(255, 255, 255, .1); overflow: hidden; box-shadow: 0 30px 80px rgba(0, 0, 0, .5); }
+#tg .hd { position: absolute; left: 0; right: 0; top: 0; padding: 20px 26px; background: #17212b; border-bottom: 1px solid rgba(255, 255, 255, .06); display: flex; align-items: center; gap: 16px; }
+#tg .hd .av { width: 50px; height: 50px; border-radius: 50%; background: #fff; display: grid; place-items: center; }
+#tg .hd .av img { width: 30px; }
+#tg .hd b { font-size: 21px; display: block; font-weight: 600; }
+#tg .hd span { font-size: 15px; color: #6ab3f3; }
+.bub { position: absolute; left: 26px; right: 60px; padding: 16px 18px 12px; border-radius: 16px 16px 16px 4px; background: #182533; font-size: 20px; line-height: 1.4; }
+.bub b { font-weight: 650; }
+.bub code { font-family: ui-monospace, Menlo, monospace; font-size: 17px; color: #8ec5ff; }
+.bub .tm { text-align: right; font-size: 14px; color: rgba(255, 255, 255, .4); margin-top: 4px; }
+.kb { position: absolute; left: 26px; right: 60px; display: flex; gap: 8px; }
+.kb div { flex: 1; text-align: center; padding: 12px 6px; border-radius: 10px; background: rgba(36, 55, 80, .9); font-size: 18px; font-weight: 600; color: #8ec5ff; }
+
+#disc { position: absolute; left: 0; right: 0; bottom: 64px; text-align: center; font-size: 17px; color: rgba(244, 246, 248, .4); letter-spacing: .02em; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="layer" id="s1">
+    <div class="logo-wrap" id="lg1" style="top:400px"><img src="../../web/public/logo-white.svg"></div>
+    <div class="tag" id="tag1" style="top:570px">Copy the best LPs.</div>
+  </div>
+  <div class="layer" id="s2"></div>
+  <div class="layer" id="s3"></div>
+  <div class="layer" id="s4"></div>
+  <div class="layer" id="s5"></div>
+  <div class="layer" id="s6"></div>
+  <div class="layer" id="s7">
+    <div class="logo-wrap" style="top:380px"><img src="../../web/public/logo-white.svg"></div>
+    <div class="tag" id="tag7" style="top:550px">Copy the best LPs.</div>
+    <div class="tag" id="chains7" style="top:630px; font-size:20px; color:rgba(244,246,248,.5); letter-spacing:.1em">ROBINHOOD CHAIN &nbsp;·&nbsp; BNB SMART CHAIN &nbsp;·&nbsp; SOLANA</div>
+    <div id="disc">Illustrative data. Not financial advice.</div>
+  </div>
+</div>
+
+<script>
+// ---------- Timeline (seconds) ----------
+const T = { s1: [0, 3.2], s2: [3.1, 8.7], s3: [8.6, 14.1], s4: [14.0, 20.8], s5: [20.7, 24.1], s6: [24.0, 26.8], s7: [26.7, 29.5] };
+const DURATION = 29.5;
+const IN = 0.55, OUT = 0.35;
+
+// ---------- Math ----------
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+function bez(x1, y1, x2, y2) {
+  const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx, cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+  const sx = (s) => ((ax * s + bx) * s + cx) * s, sy = (s) => ((ay * s + by) * s + cy) * s, dx = (s) => (3 * ax * s + 2 * bx) * s + cx;
+  return (x) => { x = clamp(x); let s = x; for (let i = 0; i < 8; i++) { const e = sx(s) - x; if (Math.abs(e) < 1e-5) break; const d = dx(s); if (Math.abs(d) < 1e-6) break; s -= e / d; } return sy(clamp(s)); };
+}
+const ease = bez(0.22, 1, 0.36, 1), easeIO = bez(0.65, 0, 0.35, 1), easeCam = bez(0.45, 0, 0.2, 1);
+const lerp = (a, b, k) => a + (b - a) * k;
+const $ = (id) => document.getElementById(id);
+
+// ---------- Scene fade: out, then in, with a small rise ----------
+function layerFx(el, [a, b], t, first = false, last = false) {
+  const inK = first ? 1 : ease(seg(t, a, a + IN)), outK = last ? 0 : easeIO(seg(t, b - OUT, b));
+  const on = t >= a && t < b;
+  el.style.display = on ? "block" : "none";
+  if (!on) return;
+  el.style.opacity = inK * (1 - outK);
+  el.style.transform = `translateY(${(1 - inK) * 22}px)`;
+}
+
+// ---------- Headlines ----------
+const HEADS = [];
+function addHead(layerId, span, outAt, style, eb, title, sub) {
+  const d = document.createElement("div"); d.className = "head"; d.setAttribute("style", style);
+  d.innerHTML = `<div class="eb">${eb}</div><h2>${title}</h2>${sub ? `<p>${sub}</p>` : ""}`;
+  $(layerId).appendChild(d);
+  HEADS.push({ d, a: span, out: outAt });
+}
+function drawHeads(t) {
+  HEADS.forEach(({ d, a, out }) => {
+    const k = ease(seg(t, a, a + 0.7)), o = out == null ? 0 : easeIO(seg(t, out, out + 0.35));
+    d.style.opacity = k * (1 - o);
+    d.style.transform = `translateY(${(1 - k) * 14 - o * 8}px)`;
+  });
+}
+addHead("s2", 3.3, 5.7, "top:70px", "Follow", "Follow the best wallets", "Mirror LP positions from wallets that have proven themselves.");
+addHead("s3", 8.8, 10.9, "top:70px", "Mirror", "Every move, mirrored", "Each target action, and the bot&rsquo;s decision on it.");
+addHead("s4", 14.2, 16.3, "top:70px", "Track", "Track every result", "Net PnL, fees and win rate, always live.");
+addHead("s5", 20.9, null, "top:70px", "Everywhere", "Three chains. One bot.", "Uniswap, PancakeSwap and Meteora under one dashboard.");
+addHead("s6", 24.1, null, "left:140px; top:370px", "Alerts", "Alerts on", "Open, claim and close from your Telegram.");
+
+// ---------- Real UI scenes ----------
+const BASE = { fx: 0, fy: 0, s: 1, cx: 160, cy: 270 };
+function makeUI(layerId, src) {
+  const win = document.createElement("div"); win.className = "win";
+  win.innerHTML = `<img src="assets/ui/${src}.png"><div class="ovl"></div>`;
+  $(layerId).appendChild(win);
+  return { win, ovl: win.querySelector(".ovl") };
+}
+function camAt(keys, t) {
+  let i = 0; while (i < keys.length - 2 && t >= keys[i + 1].t) i++;
+  const A = keys[i], B = keys[i + 1], k = easeCam(seg(t, A.t, B.t)), o = {};
+  for (const p of ["fx", "fy", "s", "cx", "cy"]) o[p] = lerp(A[p], B[p], k);
+  return o;
+}
+function applyCam(ui, keys, t) {
+  const c = camAt(keys, t);
+  ui.win.style.transform = `translate(${c.cx}px,${c.cy}px) scale(${c.s}) translate(${-c.fx}px,${-c.fy}px)`;
+}
+const kb = (t, o) => ({ t, ...BASE, ...o });
+const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+function addEl(ui, cls, rect, html = "") {
+  const d = document.createElement("div"); d.className = cls;
+  d.style.cssText = `left:${rect[0]}px; top:${rect[1]}px; ${rect[2] ? `width:${rect[2]}px; height:${rect[3]}px;` : ""}`;
+  d.innerHTML = html; ui.ovl.appendChild(d); return d;
+}
+const win_ = (t, a, b, f = 0.35) => ease(seg(t, a, a + f)) * (1 - easeIO(seg(t, b - f, b)));
+const rise = (e, t, a, d = 0.45) => { const k = ease(seg(t, a, a + d)); e.style.transform = `translateY(${(1 - k) * 10}px)`; };
+
+// S2: Targets
+const U2 = makeUI("s2", "targets");
+const K2 = [
+  kb(3.1, {}), kb(6.0, { s: 1.03 }),
+  kb(6.9, { fx: 905, fy: 330, s: 1.5, cx: 960, cy: 560 }), kb(8.7, { fx: 905, fy: 330, s: 1.55, cx: 960, cy: 560 }),
+];
+const e2spot = addEl(U2, "spot", [261, 334, 1289, 62]);
+const e2call = addEl(U2, "call", [905, 276], `<i>${CHECK}</i>+$216.53 realised<small>76% win · 379 positions</small>`);
+
+// S3: Activity
+const U3 = makeUI("s3", "activity");
+const K3 = [
+  kb(8.6, {}), kb(11.2, { s: 1.03 }),
+  kb(12.0, { fx: 860, fy: 340, s: 1.3, cx: 960, cy: 540 }), kb(12.8, { fx: 860, fy: 340, s: 1.3, cx: 960, cy: 540 }),
+  kb(13.5, { fx: 905, fy: 560, s: 1.4, cx: 960, cy: 540 }), kb(14.1, { fx: 905, fy: 560, s: 1.43, cx: 960, cy: 540 }),
+];
+const e3badges = [0, 1, 2].map((i) => addEl(U3, "ring g", [1262, 264 + i * 94, 74, 28]));
+const e3spot = addEl(U3, "spot", [261, 534, 1289, 92]);
+const e3call = addEl(U3, "call", [980, 650], `<i>${CHECK}</i>Position size capped by your rules`);
+
+// S4: Overview
+const U4 = makeUI("s4", "summary");
+const K4 = [
+  kb(14.0, {}), kb(16.3, { s: 1.03 }),
+  kb(17.1, { fx: 860, fy: 150, s: 1.3, cx: 960, cy: 340 }), kb(18.3, { fx: 860, fy: 150, s: 1.3, cx: 960, cy: 340 }),
+  kb(19.0, { fx: 760, fy: 430, s: 1.3, cx: 960, cy: 560 }), kb(20.8, { fx: 760, fy: 430, s: 1.34, cx: 960, cy: 560 }),
+];
+const KPI = [[261, 91, 313, 95], [586, 91, 312, 95], [911, 91, 313, 95], [1237, 91, 313, 95]];
+const e4kpi = KPI.map((r) => addEl(U4, "ring", r));
+const PX0 = 276, PX1 = 1100;
+const e4cover = addEl(U4, "cover", [PX0, 330, PX1 - PX0, 232]);
+const e4line = addEl(U4, "sline", [PX0, 320, 2, 250]);
+const e4hl = addEl(U4, "ring", [270, 268, 270, 44]);
+
+// ---------- S5: chains ----------
+const CH = [
+  ["robinhood-chain.jpg", "", "Robinhood Chain", [["uniswap.png", "Uniswap v3 / v4"]]],
+  ["bnb-chain.png", "", "BNB Smart Chain", [["", "PancakeSwap v3"]]],
+  ["solana.svg", "pad", "Solana", [["meteora.png", "Meteora DLMM"], ["", "Orca"], ["", "Raydium"]]],
+];
+const cardsEl = document.createElement("div"); cardsEl.className = "cards"; $("s5").appendChild(cardsEl);
+const CARDS = CH.map(([src, cls, name, protos]) => {
+  const c = document.createElement("div"); c.className = "card";
+  c.innerHTML = `<div class="ic ${cls}"><img src="../../web/public/${src}"></div><h3>${name}</h3><ul>${protos.map(([ic, n]) => `<li${ic ? ' class="i"' : ""}>${ic ? `<img src="../../web/public/${ic}">` : ""}${n}</li>`).join("")}</ul>`;
+  cardsEl.appendChild(c); return c;
+});
+
+// ---------- S6: Telegram ----------
+const tg = document.createElement("div"); tg.id = "tg";
+tg.innerHTML = `<div class="hd"><div class="av"><img src="../../web/public/favicon.svg"></div><div><b>Quiver bot</b><span>bot</span></div></div>`;
+$("s6").appendChild(tg);
+const MSG = [
+  { y: 120, a: 24.4, h: `<b>✅ Position opened</b><br>USDG / HUNBIKN · V4<br>Transaction: <code>0x7e3a…c91f</code><div class="tm">14:02</div>` },
+  { y: 330, a: 25.1, h: `<b>💰 Claim fees for position #8714010?</b><br>Estimated fees: $2.70. Fees go to your wallet in the pool tokens. Liquidity stays open.<div class="tm">14:09</div>`, kb: ["💰 Claim fees", "Close"] },
+  { y: 485, a: 25.8, h: `<b>🔴 Position closed</b><div class="tm">14:31</div>` },
+];
+const bubs = MSG.map((m) => {
+  const d = document.createElement("div"); d.className = "bub"; d.style.top = m.y + "px"; d.innerHTML = m.h; tg.appendChild(d);
+  let k = null; if (m.kb) { k = document.createElement("div"); k.className = "kb"; k.style.top = (m.y + 178) + "px"; k.innerHTML = m.kb.map((x) => `<div>${x}</div>`).join(""); tg.appendChild(k); }
+  return { d, kb: k };
+});
+
+// ---------- Render ----------
+window.DURATION = DURATION;
+window.renderAt = function (t) {
+  layerFx($("s1"), T.s1, t, true); layerFx($("s2"), T.s2, t); layerFx($("s3"), T.s3, t); layerFx($("s4"), T.s4, t);
+  layerFx($("s5"), T.s5, t); layerFx($("s6"), T.s6, t); layerFx($("s7"), T.s7, t, false, true);
+  drawHeads(t);
+
+  // S1: logo + tagline
+  $("lg1").style.opacity = ease(seg(t, 0.2, 1.0)); $("lg1").style.transform = `scale(${lerp(0.97, 1, ease(seg(t, 0.2, 1.6)))})`;
+  $("tag1").style.opacity = ease(seg(t, 1.1, 1.8)); rise($("tag1"), t, 1.1, 0.7);
+
+  // S2
+  applyCam(U2, K2, t);
+  e2spot.style.opacity = win_(t, 6.8, 8.3); e2call.style.opacity = win_(t, 7.2, 8.3, 0.3); rise(e2call, t, 7.2);
+
+  // S3
+  applyCam(U3, K3, t);
+  e3badges.forEach((e, i) => { const a = 11.9 + i * 0.3; e.style.opacity = win_(t, a, a + 1.3, 0.25); });
+  e3spot.style.opacity = win_(t, 13.3, 13.9); e3call.style.opacity = win_(t, 13.4, 13.9, 0.3); rise(e3call, t, 13.4);
+
+  // S4
+  applyCam(U4, K4, t);
+  e4kpi.forEach((e, i) => { const a = 17.3 + i * 0.22; e.style.opacity = win_(t, a, a + 0.9, 0.25); });
+  const sw = easeIO(seg(t, 19.0, 19.9)), sx = lerp(PX0, PX1, sw), cov = ease(seg(t, 18.7, 19.0));
+  e4cover.style.opacity = cov * (1 - seg(t, 19.9, 20.1)); e4cover.style.left = sx + "px"; e4cover.style.width = Math.max(0, PX1 - sx) + "px";
+  e4line.style.opacity = cov * (sw > 0 && sw < 1 ? 1 : 0); e4line.style.left = sx + "px";
+  e4hl.style.opacity = win_(t, 19.9, 20.6, 0.25);
+
+  // S5
+  CARDS.forEach((c, i) => { const a = T.s5[0] + 0.3 + i * 0.2, k = ease(seg(t, a, a + 0.6)); c.style.opacity = k; c.style.transform = `translateY(${(1 - k) * 24}px)`; });
+
+  // S6
+  bubs.forEach(({ d, kb: k }, i) => {
+    const kk = ease(seg(t, MSG[i].a, MSG[i].a + 0.4));
+    d.style.opacity = kk; d.style.transform = `translateY(${(1 - kk) * 14}px)`;
+    if (k) { const k2 = ease(seg(t, MSG[i].a + 0.3, MSG[i].a + 0.7)); k.style.opacity = k2; k.style.transform = `translateY(${(1 - k2) * 8}px)`; }
+  });
+
+  // S7
+  { const a = T.s7[0]; $("tag7").style.opacity = ease(seg(t, a + 0.5, a + 1.0)); $("chains7").style.opacity = ease(seg(t, a + 0.8, a + 1.3)); $("disc").style.opacity = ease(seg(t, a + 1.0, a + 1.4)); }
+};
+window.renderAt(0);
+</script>
+</body>
+</html>
