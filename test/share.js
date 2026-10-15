@@ -189,8 +189,8 @@ const withServer = async (telegram, fn) => {
       assert.strictEqual(story.status, 200); assert.strictEqual(story.body.readUInt32BE(20), 3840);
       // Background chart: from GeckoTerminal candles; if GeckoTerminal is unreachable,
       // the card is still answered with 200 (without the chart), not an error.
-      const original = shareCard.render; let last = null;
-      shareCard.render = (kind, data, opts) => { last = opts; return original(kind, data, opts); };
+      const original = shareCard.renderAsync; let last = null;
+      shareCard.renderAsync = (kind, data, opts) => { last = opts; return original(kind, data, opts); };
       try {
         assert.strictEqual((await fetchPng(server, 'kind=position&id=7')).status, 200);
         assert.strictEqual(last.chart?.kind, 'line'); assert.strictEqual(last.chart.pts.length, 60);
@@ -205,7 +205,7 @@ const withServer = async (telegram, fn) => {
           assert.strictEqual(without.status, 200, 'GeckoTerminal down → the card is still produced');
           assert.strictEqual(last.chart, null, 'tanpa grafik');
         });
-      } finally { candleFail = false; shareCard.render = original; }
+      } finally { candleFail = false; shareCard.renderAsync = original; }
       const wrong = await fetchPng(server, 'kind=position&id=999');
       assert.strictEqual(wrong.status, 400); assert.match(JSON.parse(wrong.body).error, /tidak ditemukan/);
       const kindName = await fetchPng(server, 'kind=apa');

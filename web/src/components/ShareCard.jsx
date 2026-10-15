@@ -56,6 +56,7 @@ export function ShareDialog({ card, onClose }) {
   const cur = fx ? curPick : 'usd';
   const [blob, setBlob] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);         // why the last card could not be drawn
   const [url, setUrl] = useState(null);
   const [busy, setBusy] = useState(null);
   const [tg, setTg] = useState(null);           // { ready, chats } — is the Telegram bot ready?
@@ -76,19 +77,28 @@ export function ShareDialog({ card, onClose }) {
 
   // The image is requested again when the card, language, size, theme, layout changes, or amounts are hidden.
   useEffect(() => {
-    if (!card) { setBlob(null); return; }
+    if (!card) { setBlob(null); setErr(null); return; }
     let alive = true;
-    setLoading(true);
+    // A newer choice cancels the request still running, so the server does not keep drawing
+    // cards nobody will see; a card that takes too long ends as an error, not an endless spinner.
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(new Error(t('Server terlalu lama menggambar kartu'))), 45_000);
+    setLoading(true); setErr(null);
     const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), ...(card.month ? { month: card.month } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme, layout, cur });
-    fetch(`/api/share/card?${q}`, { credentials: 'same-origin' })
+    fetch(`/api/share/card?${q}`, { credentials: 'same-origin', signal: ctl.signal })
       .then(async (r) => {
         if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `HTTP ${r.status}`); }
         return r.blob();
       })
       .then((b) => { if (alive) setBlob(b); })
-      .catch((e) => { if (alive) toast.danger(t('Kartu gagal digambar'), { description: String(e?.message || e) }); })
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
+      .catch((e) => {
+        if (!alive) return;
+        const msg = String(ctl.signal.reason?.message || e?.message || e);
+        setBlob(null); setErr(msg);   // never leave an older card up to be shared by mistake
+        toast.danger(t('Kartu gagal digambar'), { description: msg });
+      })
+      .finally(() => { clearTimeout(timer); if (alive) setLoading(false); });
+    return () => { alive = false; clearTimeout(timer); ctl.abort(); };
   }, [card, hide, lang, size, theme, layout, cur, t]);
 
   useEffect(() => {
@@ -170,7 +180,9 @@ export function ShareDialog({ card, onClose }) {
                 <div className={`relative w-full transition-opacity ${loading ? 'opacity-60' : ''}`} style={{ aspectRatio: ratio, maxHeight: '60vh' }}>
                   {url
                     ? <img src={url} alt={c?.text || ''} className="block h-full w-full object-contain" />
-                    : <div className="flex h-full items-center justify-center text-xs text-muted">{t('Menggambar kartu…')}</div>}
+                    : err
+                      ? <div className="flex h-full items-center justify-center p-6 text-center text-xs text-warning">{t('Kartu gagal digambar')}: {t(err)}</div>
+                      : <div className="flex h-full items-center justify-center text-xs text-muted">{t('Menggambar kartu…')}</div>}
                 </div>
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-2">

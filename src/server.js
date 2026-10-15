@@ -2571,7 +2571,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         opts.chart = { kind: 'bars', bars: Array.from({ length: dim }, (_, i) => { const k = `${day.slice(0, 7)}-${String(i + 1).padStart(2, '0')}`; return { v: daily[k] || 0, on: k === day }; }) };
       }
     } else return { error: `jenis kartu tidak dikenal: ${kind}` };
-    return { png: shareCard.render(kind, data, opts), caption: shareCard.caption(kind, data, lang, opts.fx) };
+    return { png: await shareCard.renderAsync(kind, data, opts), caption: shareCard.caption(kind, data, lang, opts.fx) };
   };
   // Candles for the position card's background chart. The window covers the position's age (minimum
   // 10 minutes) + 30% context before entry, within ≤ 120 candles; a closed position is only

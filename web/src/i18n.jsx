@@ -2172,6 +2172,8 @@ const EN = {
   'Bagikan': 'Share',
   'Menggambar kartu…': 'Rendering card…',
   'Kartu gagal digambar': 'Could not render the card',
+  'Server terlalu lama menggambar kartu': 'The server took too long to render the card',
+  'tidak ada posisi yang ditutup pada hari itu': 'no position was closed on that day',
   'Sembunyikan nominal dolar': 'Hide dollar amounts',
   'Hanya persentase yang tampil; harga token tetap ditampilkan.': 'Only percentages are shown; token prices stay visible.',
   'Salin gambar': 'Copy image',

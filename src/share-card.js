@@ -21,7 +21,7 @@
 // resvg has no text-measuring API, and SVG has no flowing layout.
 const fs = require('node:fs');
 const path = require('node:path');
-const { Resvg } = require('@resvg/resvg-js');
+const { Resvg, renderAsync: renderAsyncRaw } = require('@resvg/resvg-js');
 // The card's base font and its glyph width table (made from the same font file,
 // see the note above measure()). A theme may override via font/adv (pixel).
 const BASE_FONT = { family: 'Urbanist', adv: require('./urbanist-advances.json') };
@@ -78,7 +78,7 @@ const THEMES = {
     up: '#6EF06E', down: '#FF6B6B', flat: '#D6D2FF', amber: '#FFD75E', accent: '#FF7AD9', deco: 'pixels', glow: 0.22,
     font: 'Pixelify Sans', adv: ADV_PIXEL, sq: true,
   },
-  // Gothic horror: blood moon, spire & cross silhouettes, embers, film grain — and its
+  // Dark horror: blood moon, rock crags with flames, embers — and its
   // own mascot (a little demon instead of the fox). Up is flame yellow so it does not
   // vanish into the red.
   hell: {
@@ -294,8 +294,7 @@ function flames(W, H, tall, seed) {
   return `${d}Z`;
 }
 // Hell theme backdrop: a blood moon behind the mascot (cx, cy, r = its centre and half
-// height), rock crags and flames along the bottom, rising embers and a film grain over
-// everything. Behind the month calendar (`behindArt`) the
+// height), rock crags and flames along the bottom, and rising embers. Behind the month calendar (`behindArt`) the
 // moon moves to the top-right corner and dims so the day figures stay readable.
 function hellDeco(cx, cy, r, behindArt = false) {
   const { W, H } = G, a = T.accent;
@@ -303,7 +302,7 @@ function hellDeco(cx, cy, r, behindArt = false) {
   const mx = behindArt ? W - mr * 0.55 : cx + r * 0.3, my = behindArt ? mr * 0.45 : cy - r * 0.5;
   let out = `<defs><radialGradient id="moon" cx="${mx - mr * 0.25}" cy="${my - mr * 0.3}" r="${mr * 1.2}" gradientUnits="userSpaceOnUse"><stop stop-color="#E0262E"/><stop offset="1" stop-color="${a}"/></radialGradient>`
     + `<radialGradient id="moonHalo" cx="${mx}" cy="${my}" r="${mr * 1.9}" gradientUnits="userSpaceOnUse"><stop offset="0.45" stop-color="${a}" stop-opacity="0.35"/><stop offset="1" stop-color="${a}" stop-opacity="0"/></radialGradient>`
-    + `<filter id="grain" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7"/><feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.5 0"/><feComposite in2="SourceGraphic" operator="in"/></filter></defs>`
+    + '</defs>'
     + `<circle cx="${mx}" cy="${my}" r="${mr * 1.9}" fill="url(#moonHalo)"/><circle cx="${mx}" cy="${my}" r="${mr}" fill="url(#moon)" fill-opacity="${behindArt ? 0.4 : 0.85}"/>`;
   // Jagged crags (two rows) with a band of flame tongues between them.
   out += `<defs><linearGradient id="flame" x1="0" y1="1" x2="0" y2="0"><stop stop-color="#FF7A1A" stop-opacity="0.85"/><stop offset="0.55" stop-color="#E0262E" stop-opacity="0.45"/><stop offset="1" stop-color="#E0262E" stop-opacity="0"/></linearGradient></defs>`
@@ -315,7 +314,9 @@ function hellDeco(cx, cy, r, behindArt = false) {
     const ex = rand(i + 500) * W, ey = H * (0.25 + rand(i + 900) * 0.75), er = 1 + rand(i + 1300) * 2.4;
     out += `<circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="${er.toFixed(1)}" fill="${i % 3 ? '#FF7A3D' : T.up}" fill-opacity="${(0.25 + rand(i + 1700) * 0.5).toFixed(2)}"/>`;
   }
-  return out + `<rect width="${W}" height="${H}" fill="#fff" filter="url(#grain)" opacity="0.22"/>`;
+  // No film grain on the card: as an SVG filter it tripled the render time, and as a noise
+  // tile it doubled the PNG size — for an effect barely visible once compressed by X/Telegram.
+  return out;
 }
 // Tilted stamp above the mascot ("BIG WIN" when flex).
 function stamp(s, cx, cy, color) {
@@ -878,6 +879,15 @@ function renderPng(svg, size) {
   return Buffer.from(r.render().asPng());
 }
 const render = (kind, data, opts = {}) => renderPng(svgOf(kind, data, opts), opts.size);
+// The same, rasterised on libuv's thread pool: a big card takes a second or more, and the
+// server must not stall the bot's event loop meanwhile.
+async function renderAsync(kind, data, opts = {}) {
+  const img = await renderAsyncRaw(svgOf(kind, data, opts), {
+    fitTo: { mode: 'width', value: SIZES[sizeKey(opts.size)].W * SCALE },
+    font: { fontFiles: FONTS, loadSystemFonts: false, defaultFontFamily: BASE_FONT.family },
+  });
+  return Buffer.from(img.asPng());
+}
 
 // Companion text (Telegram caption / Web Share text) — figures follow the language.
 function caption(kind, data, lang, fx = null) {
@@ -893,4 +903,4 @@ function captionText(kind, data) {
   return `PnL ${data.day}: ${usd(data.total ?? data.rows.reduce((a, r) => a + r.pnl, 0))} · Quiver`;
 }
 
-module.exports = { svgOf, renderPng, render, caption, venueName, sizeKey, themeKey, layoutKey, SIZES, THEMES, LAYOUTS, W: SIZES.wide.W, H: SIZES.wide.H, SCALE };
+module.exports = { svgOf, renderPng, render, renderAsync, caption, venueName, sizeKey, themeKey, layoutKey, SIZES, THEMES, LAYOUTS, W: SIZES.wide.W, H: SIZES.wide.H, SCALE };
