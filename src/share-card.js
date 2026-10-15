@@ -255,9 +255,30 @@ function deco(cx, cy, r, behindArt = false) {
 }
 // Deterministic pseudo-random in [0, 1) so every render of a card is identical.
 const rand = (i) => { const x = Math.sin(i * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+// Jagged rock ridge along the bottom of a W×H card: peaks between `lift` and `lift + tall`
+// above the bottom edge, as one closed path.
+function crags(W, H, lift, tall, seed) {
+  let d = `M0 ${H}`, x = 0, i = seed;
+  while (x < W) {
+    d += `L${x.toFixed(1)} ${(H - lift - tall * (0.15 + rand(i++) * 0.85)).toFixed(1)}`;
+    x += 18 + rand(i++) * 56;
+  }
+  return `${d}L${W} ${(H - lift - tall * 0.4).toFixed(1)}L${W} ${H}Z`;
+}
+// A row of flame tongues rising from the bottom edge, up to `tall` high.
+function flames(W, H, tall, seed) {
+  let d = `M0 ${H}`, x = 0, i = seed;
+  while (x < W) {
+    const w = 30 + rand(i++) * 50, h = tall * (0.35 + rand(i++) * 0.65), lean = (rand(i++) - 0.5) * w * 0.8;
+    d += `Q${(x + w * 0.1).toFixed(1)} ${(H - h * 0.6).toFixed(1)} ${(x + w / 2 + lean).toFixed(1)} ${(H - h).toFixed(1)}`
+      + `Q${(x + w * 0.9).toFixed(1)} ${(H - h * 0.5).toFixed(1)} ${(x + w).toFixed(1)} ${H}`;
+    x += w * 0.7;
+  }
+  return `${d}Z`;
+}
 // Hell theme backdrop: a blood moon behind the mascot (cx, cy, r = its centre and half
-// height), two rows of gothic spire silhouettes with crosses along the bottom, rising
-// embers and a film grain over everything. Behind the month calendar (`behindArt`) the
+// height), rock crags and flames along the bottom, rising embers and a film grain over
+// everything. Behind the month calendar (`behindArt`) the
 // moon moves to the top-right corner and dims so the day figures stay readable.
 function hellDeco(cx, cy, r, behindArt = false) {
   const { W, H } = G, a = T.accent;
@@ -267,21 +288,11 @@ function hellDeco(cx, cy, r, behindArt = false) {
     + `<radialGradient id="moonHalo" cx="${mx}" cy="${my}" r="${mr * 1.9}" gradientUnits="userSpaceOnUse"><stop offset="0.45" stop-color="${a}" stop-opacity="0.35"/><stop offset="1" stop-color="${a}" stop-opacity="0"/></radialGradient>`
     + `<filter id="grain" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7"/><feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.5 0"/><feComposite in2="SourceGraphic" operator="in"/></filter></defs>`
     + `<circle cx="${mx}" cy="${my}" r="${mr * 1.9}" fill="url(#moonHalo)"/><circle cx="${mx}" cy="${my}" r="${mr}" fill="url(#moon)" fill-opacity="${behindArt ? 0.4 : 0.85}"/>`;
-  // Spire skyline: towers of random width/height with pointed roofs, some crowned by a cross.
-  const skyline = (base, tall, seed, fill, opacity) => {
-    let d = '', crosses = '', x = -20, i = seed;
-    while (x < W + 20) {
-      const w = 12 + rand(i++) * 34, h = tall * (0.25 + rand(i++) * 0.75), top = base - h, roof = w * (0.6 + rand(i++) * 1.4);
-      d += `M${x.toFixed(1)} ${H}V${top.toFixed(1)}L${(x + w / 2).toFixed(1)} ${(top - roof).toFixed(1)}L${(x + w).toFixed(1)} ${top.toFixed(1)}V${H}Z`;
-      if (rand(i++) > 0.55) {
-        const tx = x + w / 2, ty = top - roof, ch = Math.max(14, w * 0.7), cw = ch * 0.6, t = Math.max(2, w * 0.08);
-        crosses += `<rect x="${(tx - t / 2).toFixed(1)}" y="${(ty - ch).toFixed(1)}" width="${t.toFixed(1)}" height="${ch.toFixed(1)}"/><rect x="${(tx - cw / 2).toFixed(1)}" y="${(ty - ch * 0.72).toFixed(1)}" width="${cw.toFixed(1)}" height="${t.toFixed(1)}"/>`;
-      }
-      x += w + rand(i++) * 30 - 6;
-    }
-    return `<g fill="${fill}" fill-opacity="${opacity}"><path d="${d}"/>${crosses}</g>`;
-  };
-  out += skyline(H - H * 0.08, H * 0.3, 11, '#2E0507', 0.75) + skyline(H, H * 0.2, 97, '#000', 0.82);
+  // Jagged crags (two rows) with a band of flame tongues between them.
+  out += `<defs><linearGradient id="flame" x1="0" y1="1" x2="0" y2="0"><stop stop-color="#FF7A1A" stop-opacity="0.85"/><stop offset="0.55" stop-color="#E0262E" stop-opacity="0.45"/><stop offset="1" stop-color="#E0262E" stop-opacity="0"/></linearGradient></defs>`
+    + `<path d="${crags(W, H, H * 0.12, H * 0.3, 11)}" fill="#2E0507" fill-opacity="0.75"/>`
+    + `<path d="${flames(W, H, H * 0.2, 41)}" fill="url(#flame)"/>`
+    + `<path d="${crags(W, H, H * 0.08, H * 0.12, 97)}" fill="#000" fill-opacity="0.85"/>`;
   // Embers drifting up.
   for (let i = 0; i < 46; i++) {
     const ex = rand(i + 500) * W, ey = H * (0.25 + rand(i + 900) * 0.75), er = 1 + rand(i + 1300) * 2.4;

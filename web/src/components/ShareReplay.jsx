@@ -24,6 +24,10 @@ import { usd, pct, price } from '../fmt';
 import { canonAddr, isAddr } from '../chain';
 import { KNOWN, hue } from './TokenIcon';
 import { ARROW, CHEVRON, WORDMARK } from './Logo';
+import devilFlex from '../../../public/mascots/devil/flex.png';
+import devilProfit from '../../../public/mascots/devil/profit.png';
+import devilLoss from '../../../public/mascots/devil/loss.png';
+import devilNeutral from '../../../public/mascots/devil/neutral.png';
 
 export const S = 1080;                 // canvas side (px)
 export const FPS = 30;
@@ -43,6 +47,19 @@ export const C = {
   up: '#4ADE80', down: '#F87171', amber: '#FBBF24', accent: '#7AA2F7',
   band: 'rgba(122,162,247,0.12)', bandLine: 'rgba(122,162,247,0.45)',
 };
+// Video themes: the same keys as the share card themes in src/share-card.js. Only 'hell'
+// has its own look so far; every other key plays the standard palette. paint() swaps the
+// palette in C before each frame, so every scene keeps reading C.
+const PALETTES = {
+  dark: { ...C },
+  hell: {
+    bg: '#0E0303', text: '#FBEFE6', muted: '#C9A49A', faint: '#8A625A', grid: 'rgba(255,90,70,0.08)',
+    up: '#FFD23F', down: '#FF5A4E', amber: '#FFB23F', accent: '#FF6A3D',
+    band: 'rgba(255,90,60,0.12)', bandLine: 'rgba(255,106,61,0.5)',
+  },
+};
+export const videoTheme = (theme) => (theme === 'hell' ? 'hell' : 'dark');
+export const paint = (theme) => Object.assign(C, PALETTES[videoTheme(theme)]);
 const FONT = 'Inter, ui-sans-serif, system-ui, sans-serif';
 const CHART = { x0: 60, x1: 900, y0: 250, y1: 770 };   // price chart area (axis labels to the right)
 
@@ -166,6 +183,85 @@ export function logo(ctx, x, y, h, { word = true, color = C.text, alpha = 1 } = 
   ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(x, y); ctx.scale(h / 48, h / 48); ctx.fillStyle = color;
   ctx.fill(LOGO.mark); if (word) ctx.fill(LOGO.word, 'evenodd');
   ctx.restore();
+}
+
+// ---- hell theme backdrop & mascot -------------------------------------------------------
+
+// Deterministic pseudo-random in [0, 1): the backdrop is the same on every frame and recording.
+const rand = (i) => { const x = Math.sin(i * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+// Jagged ridge points along the bottom: peaks between `lift` and `lift + tall` above the edge.
+const ridge = (lift, tall, seed) => {
+  const pts = []; let x = 0, i = seed;
+  while (x < S) { pts.push([x, S - lift - tall * (0.15 + rand(i++) * 0.85)]); x += 18 + rand(i++) * 56; }
+  pts.push([S, S - lift - tall * 0.4]);
+  return pts;
+};
+const CRAGS = { back: ridge(S * 0.12, S * 0.3, 11), front: ridge(S * 0.08, S * 0.12, 97) };
+const TONGUES = (() => { const out = []; let x = 0, i = 41; while (x < S) { const w = 30 + rand(i++) * 50; out.push({ x, w, h: 0.35 + rand(i++) * 0.65, lean: rand(i++) - 0.5, ph: rand(i++) * 6.28 }); x += w * 0.7; } return out; })();
+let grain = null;   // a noise tile, made once
+function grainTile() {
+  if (grain || typeof document === 'undefined') return grain;
+  grain = document.createElement('canvas'); grain.width = grain.height = 256;
+  const g = grain.getContext('2d'), d = g.createImageData(256, 256);
+  for (let i = 0; i < d.data.length; i += 4) { d.data[i + 3] = rand(i) * 90; }
+  g.putImageData(d, 0, 0);
+  return grain;
+}
+function fillRidge(ctx, pts, color, alpha) {
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.fillStyle = color;
+  ctx.beginPath(); ctx.moveTo(0, S); pts.forEach(([x, y]) => ctx.lineTo(x, y)); ctx.lineTo(S, S); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+// Background of a frame. Standard: flat C.bg. Hell: dark red gradient, blood moon (top right),
+// rock crags with flickering flame tongues between them, embers rising and a film grain.
+export function backdrop(ctx, sec, theme) {
+  if (videoTheme(theme) !== 'hell') { ctx.fillStyle = C.bg; ctx.fillRect(0, 0, S, S); return; }
+  const bg = ctx.createLinearGradient(0, 0, S, S);
+  bg.addColorStop(0, '#2A0707'); bg.addColorStop(0.5, '#120303'); bg.addColorStop(1, '#060101');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, S, S);
+  const mx = S - 150, my = 170, mr = 190;
+  const halo = ctx.createRadialGradient(mx, my, mr * 0.8, mx, my, mr * 1.9);
+  halo.addColorStop(0, 'rgba(179,18,27,0.3)'); halo.addColorStop(1, 'rgba(179,18,27,0)');
+  ctx.fillStyle = halo; ctx.fillRect(0, 0, S, S);
+  const moon = ctx.createRadialGradient(mx - mr * 0.25, my - mr * 0.3, 0, mx, my, mr * 1.2);
+  moon.addColorStop(0, '#E0262E'); moon.addColorStop(1, '#B3121B');
+  ctx.save(); ctx.globalAlpha *= 0.42; ctx.fillStyle = moon; ctx.beginPath(); ctx.arc(mx, my, mr, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  fillRidge(ctx, CRAGS.back, '#2E0507', 0.75);
+  // Flames: each tongue sways and breathes on its own phase.
+  const fl = ctx.createLinearGradient(0, S, 0, S - S * 0.2);
+  fl.addColorStop(0, 'rgba(255,122,26,0.8)'); fl.addColorStop(0.55, 'rgba(224,38,46,0.4)'); fl.addColorStop(1, 'rgba(224,38,46,0)');
+  ctx.fillStyle = fl; ctx.beginPath(); ctx.moveTo(0, S);
+  for (const f of TONGUES) {
+    const h = S * 0.2 * f.h * (0.82 + 0.18 * Math.sin(sec * 5 + f.ph)), lean = (f.lean + 0.25 * Math.sin(sec * 3 + f.ph)) * f.w * 0.8;
+    ctx.lineTo(f.x, S);
+    ctx.quadraticCurveTo(f.x + f.w * 0.1, S - h * 0.6, f.x + f.w / 2 + lean, S - h);
+    ctx.quadraticCurveTo(f.x + f.w * 0.9, S - h * 0.5, f.x + f.w, S);
+  }
+  ctx.closePath(); ctx.fill();
+  fillRidge(ctx, CRAGS.front, '#000', 0.85);
+  // Embers rise and drift, wrapping around.
+  for (let i = 0; i < 40; i++) {
+    const speed = 30 + rand(i + 100) * 60, y = S - ((sec * speed + rand(i + 200) * S) % (S * 0.85));
+    const x = rand(i + 300) * S + Math.sin(sec * 1.5 + i) * 14, r = 1.5 + rand(i + 400) * 2.5;
+    ctx.save(); ctx.globalAlpha *= (0.3 + rand(i + 500) * 0.5) * clamp((S - y) / 120);
+    ctx.fillStyle = i % 3 ? '#FF7A3D' : '#FFD23F'; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  }
+  const tile = grainTile();
+  if (tile) { ctx.save(); ctx.globalAlpha *= 0.5; ctx.fillStyle = ctx.createPattern(tile, 'repeat'); ctx.fillRect(0, 0, S, S); ctx.restore(); }
+}
+// The demon mascot, its pose follows the PnL like the share card (flex = ≥ 20% profit).
+const MASCOT_SRC = { flex: devilFlex, profit: devilProfit, loss: devilLoss, neutral: devilNeutral };
+const mascotImg = {};
+export function mascotOf(pnl, pnlPct) {
+  const key = pnl > 0.005 ? (pnlPct >= 20 ? 'flex' : 'profit') : pnl < -0.005 ? 'loss' : 'neutral';
+  if (!mascotImg[key] && typeof Image !== 'undefined') { const im = new Image(); im.src = MASCOT_SRC[key]; mascotImg[key] = im; }
+  return mascotImg[key];
+}
+// Mascot of height `h` standing on `bottom`, centred on `cx`; rises in with `a` (0..1).
+export function drawMascot(ctx, im, cx, bottom, h, a) {
+  if (!im?.complete || !im.naturalWidth || a <= 0) return;
+  const w = (im.naturalWidth / im.naturalHeight) * h;
+  ctx.save(); ctx.globalAlpha *= a; ctx.drawImage(im, cx - w / 2, bottom - h + (1 - a) * 40, w, h); ctx.restore();
 }
 
 // "1j 38m" — compact elapsed time for the counters.
@@ -295,7 +391,8 @@ function dashed(ctx, x, ya, yb, label, side, alpha) {
   text(ctx, label, side === 'left' ? x + 12 : x - 12, ya + 6, { size: 20, color: C.muted, align: side === 'left' ? 'left' : 'right', alpha });
 }
 
-function summaryScene(ctx, m, sec, t, hide) {
+function summaryScene(ctx, m, sec, t, hide, theme) {
+  const hell = videoTheme(theme) === 'hell';
   const { p } = m;
   const a = ease(span(sec, TL.summary, TL.summary + 0.6));
   ctx.save(); ctx.globalAlpha = a; ctx.translate(0, (1 - a) * 24);
@@ -312,7 +409,8 @@ function summaryScene(ctx, m, sec, t, hide) {
   text(ctx, sub, 60, 460, { size: 30, color: C.muted });
 
   // Mini chart of the position's life only, fully drawn.
-  const box = { x0: 60, x1: S - 60, y0: 600, y1: 960 };
+  // Hell: the chart makes room on the right for the mascot.
+  const box = { x0: 60, x1: hell ? 700 : S - 60, y0: 600, y1: 960 };
   const life = m.pts.filter(([ts]) => ts >= m.tOpen && ts <= m.tClose);
   const all = [[m.tOpen, m.entry], ...life, [m.tClose, m.exit]];
   const mlo = Math.min(m.a, ...all.map((x) => x[1])), mhi = Math.max(m.b, ...all.map((x) => x[1]));
@@ -337,28 +435,34 @@ function summaryScene(ctx, m, sec, t, hide) {
     text(ctx, t(m.closed ? 'Keluar {v}' : 'Sekarang {v}', { v: price(m.exit) }), X(m.tClose) - 14, Y(m.exit) - 14, { size: 22, color: C.muted, align: 'right' });
   }
   pill(ctx, t('In range {v}', { v: `${Math.round(m.inRangePct)}%` }), (box.x0 + box.x1) / 2, box.y0 - 30, { size: 22, color: '#0A0B0D', fill: C.accent, align: 'center' });
+  if (hell) drawMascot(ctx, mascotOf(m.pnl, m.pnlPct), 880, S + 10, 520, ease(span(sec, TL.summary + 0.4, TL.summary + 1.1)));
   ctx.restore();
 }
 
-function outroScene(ctx, m, sec, t) {
-  const a = ease(span(sec, TL.outro, TL.outro + 0.7));
+// Logo outro, shared with the month replay. Hell: the logo moves up and the mascot rises
+// in under it.
+export function outro(ctx, sec, start, t, line, theme, im) {
+  const a = ease(span(sec, start, start + 0.7));
+  const hell = videoTheme(theme) === 'hell', y = hell ? 170 : 400;
   ctx.save(); ctx.globalAlpha = a;
   const h = 96, w = (264 / 48) * h;
-  logo(ctx, (S - w) / 2, 400 - (1 - a) * 20, h);
-  text(ctx, t('Bot copy LP otomatis'), S / 2, 600, { size: 34, color: C.muted, align: 'center' });
-  text(ctx, `${m.p.venue} · ${m.p.chain}`, S / 2, 660, { size: 26, color: C.faint, align: 'center' });
+  logo(ctx, (S - w) / 2, y - (1 - a) * 20, h);
+  text(ctx, t('Bot copy LP otomatis'), S / 2, y + 200, { size: 34, color: C.muted, align: 'center' });
+  text(ctx, line, S / 2, y + 260, { size: 26, color: C.faint, align: 'center' });
   ctx.restore();
+  if (hell) drawMascot(ctx, im, S / 2, S + 10, 600, ease(span(sec, start + 0.3, start + 1.1)));
 }
 
-export function drawFrame(ctx, m, img, sec, t, hide, coins) {
+export function drawFrame(ctx, m, img, sec, t, hide, coins, theme) {
+  paint(theme);
   ctx.save();
-  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, S, S);
+  backdrop(ctx, sec, theme);
   // Scene crossfades: chart → summary → outro.
   const out1 = 1 - ease(span(sec, TL.summary - 0.4, TL.summary));
   if (out1 > 0) { ctx.save(); ctx.globalAlpha = out1; chartScene(ctx, m, img, sec, t, hide, coins); ctx.restore(); }
   const out2 = 1 - ease(span(sec, TL.outro - 0.4, TL.outro));
-  if (sec >= TL.summary && out2 > 0) { ctx.save(); ctx.globalAlpha = out2; summaryScene(ctx, m, sec, t, hide); ctx.restore(); }
-  if (sec >= TL.outro) outroScene(ctx, m, sec, t);
+  if (sec >= TL.summary && out2 > 0) { ctx.save(); ctx.globalAlpha = out2; summaryScene(ctx, m, sec, t, hide, theme); ctx.restore(); }
+  if (sec >= TL.outro) outro(ctx, sec, TL.outro, t, `${m.p.venue} · ${m.p.chain}`, theme, mascotOf(m.pnl, m.pnlPct));
   ctx.restore();
 }
 
@@ -584,7 +688,7 @@ export function ReplayPlayer({ draw, end, sound, ready, error, loading, note, fi
 }
 
 // The position video tab.
-export default function ShareReplay({ id, hide, name }) {
+export default function ShareReplay({ id, hide, name, theme }) {
   const { t } = useI18n();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -611,11 +715,13 @@ export default function ShareReplay({ id, hide, name }) {
     });
   }, [data]);
 
-  const draw = useCallback((ctx, sec) => drawFrame(ctx, m, img.current, sec, t, hide, coins), [m, t, hide, coins]);
+  // Warm the mascot image before the first frame needs it.
+  useEffect(() => { if (m && !m.error && videoTheme(theme) === 'hell') mascotOf(m.pnl, m.pnlPct); }, [m, theme]);
+  const draw = useCallback((ctx, sec) => drawFrame(ctx, m, img.current, sec, t, hide, coins, theme), [m, t, hide, coins, theme]);
   const sound = useCallback(() => renderSound(m, coins), [m, coins]);
   return (
     <ReplayPlayer draw={draw} end={TL.end} sound={sound} ready={!!m && !m.error} error={error || m?.error}
       loading="Menyiapkan replay…" note="Fee dan PnL di tengah video adalah perkiraan dari harga; angka akhirnya angka asli."
-      fileName={`quiver-${name}-replay`} resetKey={`${id}:${hide}`} />
+      fileName={`quiver-${name}-replay`} resetKey={`${id}:${hide}:${videoTheme(theme)}`} />
   );
 }

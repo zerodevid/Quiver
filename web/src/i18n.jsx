@@ -2202,6 +2202,7 @@ const EN = {
   'Terang': 'Light',
   'Piksel': 'Pixel',
   'Neraka': 'Hell',
+  'Standar': 'Standard',
   'klik untuk bagikan': 'click to share',
   // Position replay video (ShareReplay)
   'Gambar': 'Image',

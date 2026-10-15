@@ -151,7 +151,13 @@ export function ShareDialog({ card, onClose }) {
                   <Segmented size="sm" aria="Format" value={mode} onChange={setMode} options={[['image', 'Gambar'], ['video', 'Video']]} />
                 </div>
               )}
-              {video ? (c.kind === 'month' ? <MonthReplay month={c.month} hide={hide} /> : <ShareReplay id={c.id} hide={hide} name={c.name} />) : <>
+              {video ? <>
+                {c.kind === 'month' ? <MonthReplay month={c.month} hide={hide} theme={theme} /> : <ShareReplay id={c.id} hide={hide} name={c.name} theme={theme} />}
+                {/* The video has two looks: standard, or the Hell theme. Picking Standard leaves another image theme as it is. */}
+                <div className="mt-3">
+                  <Segmented size="sm" aria="Tema video" value={theme === 'hell' ? 'hell' : 'dark'} onChange={(v) => { if (v === 'hell') pickTheme('hell'); else if (theme === 'hell') pickTheme('dark'); }} options={[['dark', 'Standar'], ['hell', 'Neraka']]} />
+                </div>
+              </> : <>
               {/* The preview follows the chosen size ratio; the story is capped in height so the dialog does not tower. */}
               <div className="flex justify-center overflow-hidden rounded-lg border border-border bg-[#0E1015]">
                 <div className={`relative w-full transition-opacity ${loading ? 'opacity-60' : ''}`} style={{ aspectRatio: ratio, maxHeight: '60vh' }}>

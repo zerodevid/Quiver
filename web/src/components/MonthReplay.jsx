@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { get } from '../api';
 import { useI18n } from '../i18n';
 import { usd, pct } from '../fmt';
-import { ReplayPlayer, S, C, clamp, lerp, ease, span, text, pill, logo } from './ShareReplay';
+import { ReplayPlayer, S, C, clamp, lerp, ease, span, text, pill, logo, paint, backdrop, outro, mascotOf, videoTheme } from './ShareReplay';
 
 // Timeline (seconds of clip time).
 const TL = {
@@ -183,19 +183,10 @@ function summaryScene(ctx, m, sec, t, hide, locale) {
   ctx.restore();
 }
 
-function outroScene(ctx, m, sec, t) {
-  const a = ease(span(sec, TL.outro, TL.outro + 0.7));
-  ctx.save(); ctx.globalAlpha = a;
-  const h = 96, w = (264 / 48) * h;
-  logo(ctx, (S - w) / 2, 400 - (1 - a) * 20, h);
-  text(ctx, t('Bot copy LP otomatis'), S / 2, 600, { size: 34, color: C.muted, align: 'center' });
-  text(ctx, m.chain, S / 2, 660, { size: 26, color: C.faint, align: 'center' });
-  ctx.restore();
-}
-
-export function drawMonth(ctx, m, sec, t, hide, locale) {
+export function drawMonth(ctx, m, sec, t, hide, locale, theme) {
+  paint(theme);
   ctx.save();
-  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, S, S);
+  backdrop(ctx, sec, theme);
   // A soft glow in the colour of the running total, behind the grid.
   const run = runningAt(m, sec), g = ctx.createRadialGradient(S / 2, 640, 0, S / 2, 640, 620);
   g.addColorStop(0, rgba(toneOf(run), 0.12)); g.addColorStop(1, rgba(toneOf(run), 0));
@@ -204,7 +195,7 @@ export function drawMonth(ctx, m, sec, t, hide, locale) {
   if (out1 > 0) { ctx.save(); ctx.globalAlpha = out1; header(ctx, m, sec, t, hide); gridScene(ctx, m, sec, t, hide, locale); ctx.restore(); }
   const out2 = 1 - ease(span(sec, TL.outro - 0.4, TL.outro));
   if (sec >= TL.summary && out2 > 0) { ctx.save(); ctx.globalAlpha = out2; summaryScene(ctx, m, sec, t, hide, locale); ctx.restore(); }
-  if (sec >= TL.outro) outroScene(ctx, m, sec, t);
+  if (sec >= TL.outro) outro(ctx, sec, TL.outro, t, m.chain, theme, mascotOf(m.total, m.pctV ?? 0));
   ctx.restore();
 }
 
@@ -253,7 +244,7 @@ async function monthSound(m) {
 }
 
 // The month video tab.
-export default function MonthReplay({ month, hide }) {
+export default function MonthReplay({ month, hide, theme }) {
   const { t, locale } = useI18n();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -268,10 +259,11 @@ export default function MonthReplay({ month, hide }) {
     return () => { alive = false; };
   }, [month]);
   const m = useMemo(() => (data ? buildMonth(data, locale) : null), [data, locale]);
-  const draw = useCallback((ctx, sec) => drawMonth(ctx, m, sec, t, hide, locale), [m, t, hide, locale]);
+  useEffect(() => { if (m && videoTheme(theme) === 'hell') mascotOf(m.total, m.pctV ?? 0); }, [m, theme]);
+  const draw = useCallback((ctx, sec) => drawMonth(ctx, m, sec, t, hide, locale, theme), [m, t, hide, locale, theme]);
   const sound = useCallback(() => monthSound(m), [m]);
   return (
     <ReplayPlayer draw={draw} end={TL.end} sound={sound} ready={!!m} error={error} loading="Menyiapkan replay…"
-      fileName={`quiver-pnl-${month}-replay`} resetKey={`${month}:${hide}:${locale}`} />
+      fileName={`quiver-pnl-${month}-replay`} resetKey={`${month}:${hide}:${locale}:${videoTheme(theme)}`} />
   );
 }
