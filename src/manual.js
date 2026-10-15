@@ -84,6 +84,76 @@ function ladderLayers({ usd, topPct = 0, bottomPct, layers, method = 'linear' })
     })),
   };
 }
+// ---- Meteora-style liquidity shapes on v3/v4 ------------------------------------
+// A v3/v4 position spreads liquidity evenly over its range, so a DLMM shape is built from
+// several adjacent positions ("bands") over the chosen range, each weighted by its distance
+// from the price. The price is always a band edge: bands below it hold only the quote asset,
+// bands above only the token — like DLMM bins on either side of the active bin.
+//   spot   : every band the same value (one wide position does the same; kept for symmetry)
+//   curve  : heaviest next to the price, thinning toward the edges
+//   bidask : lightest next to the price, heaviest at the edges
+const SHAPES = ['spot', 'curve', 'bidask'];
+const SHAPE_MIN_BANDS = 2, SHAPE_MAX_BANDS = 10;
+const shapeWeightOf = (shape, d, nSide) => (shape === 'curve' ? (nSide - d) / nSide : shape === 'bidask' ? (d + 1) / nSide : 1);
+
+// lowerPct / upperPct in planLp's convention (lowerPct = percent BELOW the price, upperPct =
+// signed change of the upper bound). Bands come out nearest to the price first.
+function shapeLayers({ usd, lowerPct, upperPct, layers, shape = 'curve' }) {
+  const total = Number(usd), n = Number(layers);
+  if (!Number.isFinite(total) || total <= 0) return { error: 'nominal harus angka lebih dari nol' };
+  if (!Number.isInteger(n) || n < SHAPE_MIN_BANDS || n > SHAPE_MAX_BANDS) return { error: `jumlah pita harus ${SHAPE_MIN_BANDS}–${SHAPE_MAX_BANDS}` };
+  if (!SHAPES.includes(shape)) return { error: 'bentuk likuiditas tidak dikenal' };
+  const rLo = 1 - Number(lowerPct) / 100, rHi = 1 + Number(upperPct) / 100;
+  if (!(rLo > 0) || !Number.isFinite(rHi) || !(rHi > rLo)) return { error: 'batas atas harus lebih tinggi dari batas bawah' };
+  // [from, to] ratio spans per side, `from` being the edge nearest the price.
+  const sides = [];
+  if (rLo < 1 && rHi > 1) {
+    const k = Math.min(n - 1, Math.max(1, Math.round(n * Math.log(1 / rLo) / Math.log(rHi / rLo))));
+    sides.push({ from: 1, to: rLo, count: k }, { from: 1, to: rHi, count: n - k });
+  } else if (rHi <= 1) sides.push({ from: rHi, to: rLo, count: n });   // all below the price
+  else sides.push({ from: rLo, to: rHi, count: n });                    // all above the price
+  const bands = [];
+  for (const sd of sides) {
+    for (let d = 0; d < sd.count; d++) {
+      const a = sd.from * (sd.to / sd.from) ** (d / sd.count), b = sd.from * (sd.to / sd.from) ** ((d + 1) / sd.count);
+      bands.push({ d, lo: Math.min(a, b), hi: Math.max(a, b), w: shapeWeightOf(shape, d, sd.count) });
+    }
+  }
+  bands.sort((x, y) => x.d - y.d || y.hi - x.hi);
+  const wSum = bands.reduce((a, b) => a + b.w, 0);
+  const cents = bands.map((b) => Math.floor((total * b.w / wSum) * 100));
+  const heaviest = cents.indexOf(Math.max(...cents));
+  cents[heaviest] += Math.round(total * 100) - cents.reduce((a, b) => a + b, 0);   // rounding remainder
+  return {
+    layers: bands.map((b, i) => ({
+      n: i + 1, usd: cents[i] / 100, lowerPct: (1 - b.lo) * 100, upperPct: (b.hi - 1) * 100,
+    })),
+  };
+}
+// The layer spec for a request: a DLMM-style shape over a range, or the classic ladder.
+const layerSpec = (a) => (a.shape ? shapeLayers(a) : ladderLayers(a));
+
+// Shape bands -> ticks with SHARED edges. Rounding each band on its own leaves gaps and
+// overlaps between neighbours, so every distinct edge is snapped to the tick spacing once
+// and both bands touching it use the same tick. The edge at the price is snapped down, so
+// the band just above it holds the current tick (the "active bin": both tokens).
+function bandTicks(layers, curTick, quoteSide, sp) {
+  const LN = Math.log(1.0001);
+  const tickOf = (r) => {
+    if (Math.abs(r - 1) < 1e-9) return m.alignTick(curTick, sp, 'down');
+    const d = Math.log(r) / LN;
+    return Math.round((quoteSide === 1 ? curTick + d : curTick - d) / sp) * sp;
+  };
+  const out = [];
+  for (const l of layers) {
+    const a = tickOf(1 - l.lowerPct / 100), b = tickOf(1 + l.upperPct / 100);
+    const tickLower = Math.min(a, b), tickUpper = Math.max(a, b);
+    if (tickUpper <= tickLower) return { error: `rentang terlalu sempit untuk ${layers.length} posisi di tick spacing ${sp} — kurangi jumlah posisi atau lebarkan rentang` };
+    out.push({ ...l, tickLower, tickUpper });
+  }
+  return { layers: out };
+}
+
 function duration(ms) {
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s} dtk`;
@@ -547,8 +617,27 @@ class Manual {
   // Plans every layer of a ladder (see ladderLayers) without sending anything. The limits
   // planLp checks per position are also checked for the whole ladder: the open-position
   // count, total exposure and cash.
-  async planLadder({ poolRef, usd, topPct = 0, bottomPct, layers, method = 'linear' }) {
-    const spec = ladderLayers({ usd, topPct, bottomPct, layers, method });
+  // The layers of a request, shape bands already pinned to shared ticks (see bandTicks).
+  async ladderSpec(args) {
+    const spec = layerSpec(args);
+    if (spec.error || !args.shape) return spec;
+    const p = await this.poolByRef(args.poolRef);
+    if (!p) return { error: 'pool tidak dikenal — pilih dari daftar atau pantau dulu targetnya' };
+    if (p.quoteSide == null) return { error: `pasangan ${p.pair} tidak punya aset kuotasi yang dikenal (USDG/ETH/WETH)` };
+    const slot0 = this.chain.isV3Venue(p.venue)
+      ? await this.chain.slot0V3(p.poolAddr || p.poolRef)
+      : await this.chain.slot0V4(p.poolRef);
+    if (!slot0) return { error: 'harga pool tidak terbaca sekarang' };
+    return bandTicks(spec.layers, slot0.tick, p.quoteSide, p.tickSpacing || 60);
+  }
+  // planLp input for one layer: pinned ticks for a shape band, percents for a ladder layer.
+  static layerRange(l) {
+    return l.tickLower != null ? { tickLower: l.tickLower, tickUpper: l.tickUpper } : { lowerPct: l.lowerPct, upperPct: l.upperPct };
+  }
+
+  async planLadder(args) {
+    const { poolRef, usd, method = 'linear', shape = null } = args;
+    const spec = await this.ladderSpec(args);
     if (spec.error) return spec;
     const eng = this.engine;
     const rules = eng.rulesFrom(null);
@@ -563,7 +652,7 @@ class Manual {
     const out = [], warnings = new Set();
     let first = null;
     for (const l of spec.layers) {
-      const d = await this.planLp({ poolRef, usd: l.usd, lowerPct: l.lowerPct, upperPct: l.upperPct });
+      const d = await this.planLp({ poolRef, usd: l.usd, ...Manual.layerRange(l) });
       if (d.error) return { error: `layer ${l.n}: ${d.error}` };
       first ||= d.preview;
       for (const w of d.warnings) warnings.add(w);
@@ -576,7 +665,7 @@ class Manual {
     // Several mints cost several gas fees; the layers are small, so it can matter.
     warnings.add(`${n} posisi terpisah — tiap layer = satu transaksi mint dan satu biaya gas`);
     return {
-      layers: out, warnings: [...warnings], method,
+      layers: out, warnings: [...warnings], method, shape,
       preview: { pair: first.pair, venue: first.venue, feePct: first.feePct, symbol0: first.symbol0, symbol1: first.symbol1,
         dec0: first.dec0, dec1: first.dec1, quoteSide: first.quoteSide, curTick: first.curTick,
         walletCashUsd: first.walletCashUsd, totalUsd },
@@ -586,13 +675,14 @@ class Manual {
   // Opens a ladder layer by layer, nearest first. Each layer is planned again right before
   // its mint (fresh price and balances) and the run stops at the first failure: what was
   // opened stays open and is reported. onProgress({ done, total, note }) after each layer.
-  async openLadder({ poolRef, usd, topPct = 0, bottomPct, layers, method = 'linear' }, onProgress = () => {}) {
-    const spec = ladderLayers({ usd, topPct, bottomPct, layers, method });
+  async openLadder(args, onProgress = () => {}) {
+    const { poolRef } = args;
+    const spec = await this.ladderSpec(args);
     if (spec.error) return { error: spec.error, opened: [] };
     const opened = [];
     for (const l of spec.layers) {
       try {
-        const d = await this.planLp({ poolRef, usd: l.usd, lowerPct: l.lowerPct, upperPct: l.upperPct });
+        const d = await this.planLp({ poolRef, usd: l.usd, ...Manual.layerRange(l) });
         if (d.error) throw new Error(d.error);
         const r = await this.openLp(d.plan);
         opened.push({ n: l.n, usd: l.usd, tx: r.txHash, positionId: r.positionId, note: r.note });
@@ -1198,4 +1288,4 @@ class Manual {
   }
 }
 
-module.exports = { ticksFromPct, ladderLayers, LADDER_METHODS, Manual };
+module.exports = { ticksFromPct, ladderLayers, shapeLayers, bandTicks, layerSpec, LADDER_METHODS, SHAPES, Manual };

@@ -5,7 +5,7 @@ import { get, post } from '../api';
 import { useStatus } from '../App';
 import { usePoll } from '../hooks';
 import CandleChart, { BAND_COLORS } from '../components/CandleChart';
-import { useLadder, LadderStep, LadderPreview } from './ManualLadder';
+import { useLadder, LadderStep, LadderPreview, LAYER_CHOICES } from './ManualLadder';
 import { PageHeader, Notice, PriceRange, Empty, KV, Segmented } from '../components/ui';
 import { orientCandles, TFS, SECS, LiveBadge } from './PositionDetail';
 import { useLivePrice, useLiveCandles } from '../liveCandles';
@@ -75,9 +75,18 @@ function ShapeIcon({ bars }) {
   );
 }
 
-function ShapePicker({ value, onChange }) {
+// On v3/v4 a position is flat over its range, so Curve and Bid-Ask are built from several
+// adjacent positions (bands) — said under the picker, since each band costs its own mint.
+const EVM_SHAPE_HINT = {
+  spot: 'Spot: satu posisi, likuiditas rata di seluruh rentang.',
+  curve: 'Curve: rentang dipecah jadi beberapa posisi berdampingan, yang dekat harga kini dapat dana terbesar.',
+  bidask: 'Bid-Ask: rentang dipecah jadi beberapa posisi berdampingan, yang di tepi rentang dapat dana terbesar.',
+};
+
+function ShapePicker({ value, onChange, evm = false }) {
   const { t } = useI18n();
   const cur = SHAPES.find((x) => x[0] === value) || SHAPES[0];
+  const hint = evm ? EVM_SHAPE_HINT[cur[0]] : cur[3];
   return (
     <div className="flex flex-col gap-1.5">
       <span className="text-xs font-medium text-muted">{t('Bentuk likuiditas')}</span>
@@ -92,7 +101,7 @@ function ShapePicker({ value, onChange }) {
           );
         })}
       </div>
-      <p className="text-xs text-muted">{t(cur[3])}</p>
+      <p className="text-xs text-muted">{t(hint)}</p>
     </div>
   );
 }
@@ -521,6 +530,16 @@ function PoolPicker({ pools, onPick }) {
       )}
 
       <div className="max-h-80 overflow-y-auto rounded-md border border-border">
+        {hasStats && result.length > 0 && (
+          <div className="sticky top-0 z-10 flex justify-end gap-4 border-b border-border bg-surface px-3 py-1.5 text-[0.6875rem] text-muted">
+            <span className="hidden w-16 text-end md:inline">{t('TVL')}</span>
+            <span className="hidden w-16 text-end md:inline">{t('Vol 24j')}</span>
+            <span className="hidden w-14 text-end md:inline">{t('Fee/TVL')}</span>
+            <span className="hidden w-16 text-end lg:inline">{t('APR')}</span>
+            <span className="w-12 text-end">{t('Tier fee')}</span>
+            <span className="hidden w-20 text-end sm:inline">{t('Aktivitas')}</span>
+          </div>
+        )}
         {!result.length ? (
           <div>
             <Empty title={isAddress ? (isSolana() ? 'Tidak ada pool Meteora DLMM / Orca / Raydium CLMM yang bisa dimasuki' : 'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki') : 'Tidak ada pool yang cocok'}
@@ -636,11 +655,16 @@ export default function ManualLp({ param }) {
   const empty = !full && lo === 0 && up === 0;
   const inverted = !full && !loBad && !upBad && !empty && up <= lo;
   const rangeOk = full || (!loBad && !upBad && !empty && !inverted);
-  const ready = mode === 'single' && !!pool && Number.isFinite(usdNum) && usdNum > 0 && rangeOk;
-  const ladder = useLadder({ pool, usdNum: Number.isFinite(usdNum) ? usdNum : 0, enabled: mode === 'ladder',
-    onOpened: () => { reloadStatus(); loadBalance(pool?.poolRef); } });
-  const stepsDone = mode === 'ladder' ? ladder.ready : ready;
   const dlmm = pool?.venue === 'meteora';
+  // EVM Curve / Bid-Ask: the range is opened as several shaped bands through the ladder job.
+  const evmShape = mode === 'single' && !!pool && !dlmm && !isSolana() && !full && shape !== 'spot';
+  const ready = mode === 'single' && !evmShape && !!pool && Number.isFinite(usdNum) && usdNum > 0 && rangeOk;
+  const onOpened = useCallback(() => { reloadStatus(); loadBalance(pool?.poolRef); }, [reloadStatus, loadBalance, pool?.poolRef]);
+  const ladder = useLadder({ pool, usdNum: Number.isFinite(usdNum) ? usdNum : 0, enabled: mode === 'ladder', onOpened });
+  const shaped = useLadder({ pool, usdNum: Number.isFinite(usdNum) ? usdNum : 0, enabled: evmShape && rangeOk, onOpened,
+    shapeSpec: evmShape && rangeOk ? { shape, lowerPct: -lo, upperPct: up } : null });
+  const L = mode === 'ladder' ? ladder : evmShape ? shaped : null;
+  const stepsDone = L ? L.ready : ready;
   const body = { poolRef: pool?.poolRef, usd: usdNum, ...(full ? { full: true } : { lowerPct: -lo, upperPct: up }), ...(dlmm ? { strategy: shape } : {}) };
 
   // The preview is recomputed by itself every time a choice changes — there is no "compute"
@@ -788,11 +812,17 @@ export default function ManualLp({ param }) {
               )} />
             ) : (
             <div className="flex flex-col gap-3">
-              {dlmm && <ShapePicker value={shape} onChange={setShape} />}
+              {(dlmm || (pool && !isSolana() && !full)) && <ShapePicker value={shape} onChange={setShape} evm={!dlmm} />}
+              {evmShape && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted">{t('Jumlah posisi')}</span>
+                  <Segmented size="sm" aria="Jumlah posisi" value={shaped.layers} onChange={shaped.setLayers} options={LAYER_CHOICES.map((n) => [n, String(n)])} />
+                </div>
+              )}
               {dlmm && p && !plan?.error && <BinDistribution p={p} />}
               {pool && (
                 <ChartRange pool={pool} lo={lo} up={up} full={full} rangeOk={rangeOk} currentPrice={currentPrice}
-                  preview={pReady && !compute ? pReady : null}
+                  preview={pReady && !compute ? pReady : null} bands={evmShape ? shaped.bands : null}
                   onDrag={(a, b) => {
                     setFull(false);
                     setLower(String(Math.abs(a))); setDirDown(a > 0 ? 1 : -1);
@@ -854,10 +884,10 @@ export default function ManualLp({ param }) {
         <Card className="gap-0! p-0! lg:sticky lg:top-4">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <h2 className="text-sm font-semibold">{t('Pratinjau')}</h2>
-            {(mode === 'ladder' ? ladder.compute : compute) && <Spinner size="sm" />}
+            {(L ? L.compute : compute) && <Spinner size="sm" />}
           </div>
           <div className="flex flex-col gap-4 p-4">
-            {mode === 'ladder' ? <LadderPreview L={ladder} dry={dry} /> : !ready ? (
+            {L ? <LadderPreview L={L} dry={dry} /> : !ready ? (
               <p className="text-sm text-muted">{t('Pilih pool dan isi nominalnya — pratinjau muncul sendiri.')}</p>
             ) : plan?.error ? (
               <Notice status="danger" title={t('Belum bisa dibuka')}>{plan.error}</Notice>

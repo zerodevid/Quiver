@@ -8,7 +8,7 @@ const { rulesFor, DEFAULTS, validateRules } = require('./policy');
 const { scoutWallet } = require('./scout');
 const { WalletResearch, summarize } = require('./wallet');
 const { createSettingsRoutes } = require('./settings');
-const { Manual, ladderLayers } = require('./manual');
+const { Manual, layerSpec } = require('./manual');
 const { Compound } = require('./compound');
 const { Holdings } = require('./holdings');
 const { Icons } = require('./icons');
@@ -838,6 +838,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     poolRef: String(b.poolRef || ''), usd: Number(b.usd),
     topPct: b.topPct != null ? Number(b.topPct) : 0, bottomPct: Number(b.bottomPct),
     layers: Number(b.layers), method: String(b.method || 'linear'),
+    // A DLMM-style shape over a range instead of the below-the-price ladder (manual.shapeLayers).
+    ...(b.shape ? { shape: String(b.shape), lowerPct: Number(b.lowerPct), upperPct: Number(b.upperPct) } : {}),
   });
   // Wallet capital for net PnL: the virtual balance in simulation (paper.js), else the tracked deposits.
   const capitalOf = () => (engine.paper?.on?.() ? engine.paper.capital() : engine.capital?.summary?.() || null);
@@ -2089,7 +2091,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         full: !!b.full, strategy: b.strategy || null,
       });
     },
-    // Layered entry: one budget over several adjacent ranges below the price (see manual.ladderLayers).
+    // Layered entry: one budget over several adjacent ranges — below the price (manual.ladderLayers)
+    // or shaped around it like DLMM (manual.shapeLayers).
     'POST /api/manual/ladder/plan': async (req) => {
       const b = await readBody(req);
       return manual.planLadder(ladderBody(b));
@@ -2102,7 +2105,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const lockKey = canon(b.poolRef || '');
       if (manualOpening.has(lockKey)) return { error: 'pembukaan LP di pool ini masih diproses — tunggu hasilnya' };
       const args = ladderBody(b);
-      const spec = ladderLayers(args);
+      const spec = layerSpec(args);
       if (spec.error) return spec;
       manualOpening.add(lockKey);
       const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;

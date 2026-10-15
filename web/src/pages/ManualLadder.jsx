@@ -24,7 +24,9 @@ const METHOD_HINT = {
 };
 // [top %, bottom %, label]: how far below the price the nearest layer starts and the deepest ends
 const LADDER_PRESETS = [[0, 40, 'Dekat · −40%'], [5, 60, 'Sedang · −5% … −60%'], [10, 80, 'Dalam · −10% … −80%']];
-const LAYER_CHOICES = [3, 4, 5, 6, 8, 10];
+export const LAYER_CHOICES = [3, 4, 5, 6, 8, 10];
+// A signed percent change, e.g. "+12.5%" / "−4%".
+const signedPct = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${num(Math.abs(v), 1)}%`;
 
 const toNum = (s) => Number(String(s).replace(',', '.') || 0);
 
@@ -45,7 +47,31 @@ function split(total, n, method) {
   return cents.map((c) => c / 100);
 }
 
-export function useLadder({ pool, usdNum, enabled, onOpened }) {
+// DLMM-style bands over a range around the price, same split as the server (manual.shapeLayers):
+// the price is a band edge, the bands on each side tile it in equal price ratios, weighted by
+// distance from the price. Returned nearest first, as ratio bands { lo, hi, usd }.
+const shapeW = (shape, d, nSide) => (shape === 'curve' ? (nSide - d) / nSide : shape === 'bidask' ? (d + 1) / nSide : 1);
+export function shapeBands({ lowerPct, upperPct, shape }, n, total) {
+  const rLo = 1 - lowerPct / 100, rHi = 1 + upperPct / 100;
+  if (!(rLo > 0) || !(rHi > rLo) || n < 2) return null;
+  const sides = rLo < 1 && rHi > 1
+    ? (() => { const k = Math.min(n - 1, Math.max(1, Math.round(n * Math.log(1 / rLo) / Math.log(rHi / rLo)))); return [[1, rLo, k], [1, rHi, n - k]]; })()
+    : rHi <= 1 ? [[rHi, rLo, n]] : [[rLo, rHi, n]];
+  const bands = [];
+  for (const [from, to, count] of sides) {
+    for (let d = 0; d < count; d++) {
+      const a = from * (to / from) ** (d / count), b = from * (to / from) ** ((d + 1) / count);
+      bands.push({ d, lo: Math.min(a, b), hi: Math.max(a, b), w: shapeW(shape, d, count) });
+    }
+  }
+  bands.sort((x, y) => x.d - y.d || y.hi - x.hi);
+  const wSum = bands.reduce((a, b) => a + b.w, 0);
+  return bands.map((b) => ({ lo: b.lo, hi: b.hi, usd: total > 0 ? Math.round(total * b.w / wSum * 100) / 100 : null }));
+}
+
+// shapeSpec = { shape, lowerPct, upperPct } turns the ladder into DLMM-style bands over that
+// range (EVM manual LP, Curve / Bid-Ask); null = the classic ladder below the price.
+export function useLadder({ pool, usdNum, enabled, onOpened, shapeSpec = null }) {
   const [top, setTop] = useState('0');
   const [bottom, setBottom] = useState('60');
   const [layers, setLayers] = useState(5);
@@ -57,14 +83,19 @@ export function useLadder({ pool, usdNum, enabled, onOpened }) {
   const seq = useRef(0);
 
   const topN = toNum(top), botN = toNum(bottom);
-  const rangeOk = topN >= 0 && botN > topN && botN < 100;
+  const sk = shapeSpec ? `${shapeSpec.shape}:${shapeSpec.lowerPct}:${shapeSpec.upperPct}` : '';
+  const rangeOk = shapeSpec ? !!shapeBands(shapeSpec, layers, 0) : topN >= 0 && botN > topN && botN < 100;
   const ready = !!pool && usdNum > 0 && rangeOk;
+  const req = shapeSpec
+    ? { poolRef: pool?.poolRef, usd: usdNum, layers, shape: shapeSpec.shape, lowerPct: shapeSpec.lowerPct, upperPct: shapeSpec.upperPct }
+    : { poolRef: pool?.poolRef, usd: usdNum, topPct: topN, bottomPct: botN, layers, method };
   const bands = useMemo(() => {
     if (!rangeOk) return null;
+    if (shapeSpec) return shapeBands(shapeSpec, layers, usdNum);
     const e = edges(topN, botN, layers);
     const amounts = usdNum > 0 ? split(usdNum, layers, method) : null;
     return e.slice(0, -1).map((hi, i) => ({ hi, lo: e[i + 1], usd: amounts ? amounts[i] : null }));
-  }, [rangeOk, topN, botN, layers, method, usdNum]);
+  }, [rangeOk, topN, botN, layers, method, usdNum, sk]);
 
   useEffect(() => {
     setConfirm(false);
@@ -72,17 +103,17 @@ export function useLadder({ pool, usdNum, enabled, onOpened }) {
     const mine = ++seq.current;
     setCompute(true);
     const id = setTimeout(async () => {
-      const r = await post('/api/manual/ladder/plan', { poolRef: pool.poolRef, usd: usdNum, topPct: topN, bottomPct: botN, layers, method });
+      const r = await post('/api/manual/ladder/plan', req);
       if (mine !== seq.current) return;
       setPlan({ ...r, _ref: pool.poolRef }); setCompute(false);
     }, 400);
     return () => clearTimeout(id);
-  }, [enabled, ready, pool?.poolRef, usdNum, topN, botN, layers, method]);
+  }, [enabled, ready, pool?.poolRef, usdNum, topN, botN, layers, method, sk]);
 
   const start = useCallback(async () => {
     setConfirm(false);
     setRun({ status: 'running', done: 0, total: layers, opened: [] });
-    const r = await post('/api/manual/ladder/open', { poolRef: pool.poolRef, usd: usdNum, topPct: topN, bottomPct: botN, layers, method });
+    const r = await post('/api/manual/ladder/open', req);
     if (r.error) { setRun(null); return toast.danger(r.error); }
     const poll = async () => {
       const j = await get(`/api/manual/ladder/job?id=${r.job}`).catch(() => null);
@@ -93,10 +124,10 @@ export function useLadder({ pool, usdNum, enabled, onOpened }) {
       if (j.status === 'done') toast.success(`${j.opened.length} layer dibuka`);
     };
     poll();
-  }, [pool?.poolRef, usdNum, topN, botN, layers, method, onOpened]);
+  }, [pool?.poolRef, usdNum, topN, botN, layers, method, sk, onOpened]);
 
   return { top, setTop, bottom, setBottom, layers, setLayers, method, setMethod, plan, compute, confirm, setConfirm,
-    run, setRun, start, topN, botN, rangeOk, ready, bands };
+    run, setRun, start, topN, botN, rangeOk, ready, bands, shapeSpec };
 }
 
 function NumBox({ label, value, onChange, invalid, hint }) {
@@ -209,7 +240,7 @@ export function LadderPreview({ L, dry }) {
   return (
     <>
       <div>
-        <div className="text-xs text-muted">{t('Total {n} layer', { n: plan.layers.length })}</div>
+        <div className="text-xs text-muted">{t(L.shapeSpec ? 'Total {n} posisi' : 'Total {n} layer', { n: plan.layers.length })}</div>
         <div className="num text-[1.5rem] leading-tight font-semibold tracking-tight">{usd(totalUsd)}</div>
       </div>
       <div className="overflow-x-auto rounded-md border border-border">
@@ -229,7 +260,7 @@ export function LadderPreview({ L, dry }) {
                   <td className="num px-2 py-1.5">{l.n}</td>
                   <td className="num px-2 py-1.5 text-end">
                     <div>{price(a)} – {price(b)}</div>
-                    <div className="text-muted">−{num(-l.upperPctEff, 1)}% … −{num(l.lowerPctEff, 1)}%</div>
+                    <div className="text-muted">{signedPct(-l.lowerPctEff)} … {signedPct(l.upperPctEff)}</div>
                   </td>
                   <td className="num px-2 py-1.5 text-end">
                     <div>{usd(l.valueUsd)}</div>
@@ -257,7 +288,9 @@ export function LadderPreview({ L, dry }) {
       ) : (
         <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/5 p-3">
           <div className="text-sm font-medium">{t('Kirim {n} transaksi sungguhan?', { n: plan.layers.length })}</div>
-          <div className="text-sm text-muted">{t('{v} ke {pair}, di −{a}% sampai −{b}% dari harga kini.', { v: usd(totalUsd), pair: p.pair, a: num(L.topN, 1), b: num(L.botN, 1) })}</div>
+          <div className="text-sm text-muted">{L.shapeSpec
+            ? t('{v} ke {pair}, bentuk {s}, {a} sampai {b} dari harga kini.', { v: usd(totalUsd), pair: p.pair, s: L.shapeSpec.shape === 'curve' ? 'Curve' : L.shapeSpec.shape === 'bidask' ? 'Bid-Ask' : 'Spot', a: signedPct(-L.shapeSpec.lowerPct), b: signedPct(L.shapeSpec.upperPct) })
+            : t('{v} ke {pair}, di −{a}% sampai −{b}% dari harga kini.', { v: usd(totalUsd), pair: p.pair, a: num(L.topN, 1), b: num(L.botN, 1) })}</div>
           <div className="flex gap-2">
             <Button className="flex-1" onPress={L.start}>{t('Ya, buka sekarang')}</Button>
             <Button variant="outline" onPress={() => L.setConfirm(false)}>{t('Batal')}</Button>

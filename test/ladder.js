@@ -1,8 +1,8 @@
 'use strict';
-// Layered entry: budget split and layer boundaries (ladderLayers in src/manual.js).
+// Layered entry: budget split and layer boundaries (ladderLayers and shapeLayers in src/manual.js).
 // Run: node test/ladder.js
 const assert = require('node:assert');
-const { ladderLayers, Manual } = require('../src/manual');
+const { ladderLayers, shapeLayers, bandTicks, Manual } = require('../src/manual');
 
 const tests = [];
 const test = (n, f) => tests.push([n, f]);
@@ -51,6 +51,64 @@ test('bad input is rejected', () => {
   assert.ok(ladderLayers({ usd: 100, bottomPct: 50, layers: 3, method: 'nope' }).error, 'unknown method');
 });
 
+// Ratio edges of a shape band: [lower, upper] relative to the current price.
+const edgesOf = (l) => [1 - l.lowerPct / 100, 1 + l.upperPct / 100];
+
+test('shape bands tile the range with the price as an edge and add up to the cent', () => {
+  for (const shape of ['spot', 'curve', 'bidask']) {
+    const { layers, error } = shapeLayers({ usd: 100, lowerPct: 25, upperPct: 40, layers: 6, shape });
+    assert.ok(!error, error);
+    assert.strictEqual(Math.round(layers.reduce((a, l) => a + l.usd, 0) * 100), 10000, shape);
+    const e = layers.map(edgesOf).sort((a, b) => a[0] - b[0]);
+    near(e[0][0], 0.75, 1e-9, 'lowest edge');
+    near(e[e.length - 1][1], 1.4, 1e-9, 'highest edge');
+    for (let i = 1; i < e.length; i++) near(e[i - 1][1], e[i][0], 1e-9, 'adjacent bands touch');
+    // no band straddles the price: each is one-sided
+    for (const [lo, hi] of e) assert.ok(hi <= 1 + 1e-12 || lo >= 1 - 1e-12, `band ${lo}-${hi} straddles the price`);
+  }
+});
+
+test('curve is heaviest next to the price, bid-ask at the edges, spot flat', () => {
+  const usd = (shape) => shapeLayers({ usd: 60, lowerPct: 20, upperPct: 25, layers: 6, shape }).layers.map((l) => l.usd);
+  assert.deepStrictEqual(usd('spot'), [10, 10, 10, 10, 10, 10]);
+  const c = usd('curve'), b = usd('bidask');
+  assert.ok(c[0] > c[c.length - 1] && c[1] > c[c.length - 1], `curve ${c}`);
+  assert.ok(b[0] < b[b.length - 1] && b[1] < b[b.length - 1], `bidask ${b}`);
+});
+
+test('a range on one side of the price is shaped from the price outward', () => {
+  const { layers } = shapeLayers({ usd: 30, lowerPct: 60, upperPct: -10, layers: 3, shape: 'curve' });
+  assert.deepStrictEqual(layers.map((l) => l.usd), [15, 10, 5]);
+  near(layers[0].upperPct, -10, 1e-9, 'nearest band starts at the upper bound');
+  near(layers[2].lowerPct, 60, 1e-9, 'deepest band ends at the lower bound');
+  assert.ok(shapeLayers({ usd: 30, lowerPct: -5, upperPct: 40, layers: 3, shape: 'bidask' }).layers.every((l) => l.lowerPct <= 0), 'above the price');
+});
+
+test('bad shape input is rejected', () => {
+  assert.ok(shapeLayers({ usd: 100, lowerPct: 20, upperPct: 20, layers: 1, shape: 'curve' }).error, 'one band');
+  assert.ok(shapeLayers({ usd: 100, lowerPct: 20, upperPct: 20, layers: 4, shape: 'nope' }).error, 'unknown shape');
+  assert.ok(shapeLayers({ usd: 100, lowerPct: -30, upperPct: 20, layers: 4, shape: 'curve' }).error, 'inverted');
+  assert.ok(shapeLayers({ usd: 100, lowerPct: 100, upperPct: 20, layers: 4, shape: 'curve' }).error, 'price zero');
+});
+
+test('shape bands share their tick edges: no gap, no overlap', () => {
+  const { layers } = shapeLayers({ usd: 60, lowerPct: 20, upperPct: 25, layers: 6, shape: 'curve' });
+  for (const quoteSide of [0, 1]) {
+    const r = bandTicks(layers, 135247, quoteSide, 60);
+    assert.ok(!r.error, r.error);
+    const t = r.layers.map((l) => [l.tickLower, l.tickUpper]).sort((a, b) => a[0] - b[0]);
+    for (const [a, b] of t) assert.ok(a % 60 === 0 && b % 60 === 0 && b > a, `aligned ${a}-${b}`);
+    for (let i = 1; i < t.length; i++) assert.strictEqual(t[i - 1][1], t[i][0], 'neighbours share an edge');
+    // exactly one band holds the current tick
+    assert.strictEqual(t.filter(([a, b]) => a <= 135247 && 135247 < b).length, 1);
+  }
+});
+
+test('bands too narrow for the tick spacing are refused', () => {
+  const { layers } = shapeLayers({ usd: 60, lowerPct: 0.5, upperPct: 0.5, layers: 10, shape: 'curve' });
+  assert.match(bandTicks(layers, 135247, 1, 60).error, /terlalu sempit/);
+});
+
 // planLadder / openLadder with planLp and openLp stubbed: only the orchestration is under test.
 function fakeManual({ openCount = 0, exposure = 0, maxOpen = 10, maxTotal = 1000, cash = 500, failAt = null } = {}) {
   const m = Object.create(Manual.prototype);
@@ -60,6 +118,8 @@ function fakeManual({ openCount = 0, exposure = 0, maxOpen = 10, maxTotal = 1000
     positions: { summary: () => ({ openCount, exposureUsd: exposure }) },
   };
   m.calls = [];
+  m.poolByRef = async () => ({ venue: 'v4', quoteSide: 1, tickSpacing: 60, poolRef: '0xpool' });
+  m.chain = { isV3Venue: () => false, slot0V4: async () => ({ tick: 1000 }) };
   m.planLp = async (a) => {
     m.calls.push(a);
     return { plan: { n: m.calls.length }, warnings: ['one side'], preview: { valueUsd: a.usd, tickLower: -2, tickUpper: -1, lowerPct: a.lowerPct, upperPct: a.upperPct,
@@ -85,6 +145,16 @@ test('planLadder checks the whole ladder against the limits', async () => {
   assert.match((await fakeManual({ openCount: 8, maxOpen: 10 }).planLadder(args)).error, /layer butuh/);
   assert.match((await fakeManual({ exposure: 950, maxTotal: 1000 }).planLadder(args)).error, /eksposur/);
   assert.match((await fakeManual({ cash: 60 }).planLadder(args)).error, /kas cuma/);
+});
+
+test('planLadder with a shape plans each band through planLp', async () => {
+  const m = fakeManual();
+  const r = await m.planLadder({ poolRef: '0xpool', usd: 100, layers: 4, shape: 'curve', lowerPct: 20, upperPct: 20 });
+  assert.ok(!r.error, r.error);
+  assert.strictEqual(r.shape, 'curve');
+  assert.strictEqual(m.calls.length, 4);
+  assert.ok(m.calls.every((c) => c.tickLower != null && c.lowerPct == null), 'bands are planned on pinned ticks');
+  assert.ok(m.calls.some((c) => c.tickUpper <= 960) && m.calls.some((c) => c.tickLower >= 960), 'bands on both sides');
 });
 
 test('openLadder opens nearest first and stops at the first failure', async () => {
