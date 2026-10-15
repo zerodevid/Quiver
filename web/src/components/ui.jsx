@@ -10,6 +10,7 @@ import { price, tickPrice, sqrtPrice, widthPct, pct, short, shortId, txHref, add
 import { breakEven } from '../breakeven';
 import { useTick } from '../hooks';
 import { translate as t } from '../i18n';
+import { get } from '../api';
 import { useFx, fxText } from '../currency';
 import { chainInfo, useChainInfo, OnChain, setScope, CHAIN_ICON, EXPLORER_NAME } from '../chain';
 
@@ -820,6 +821,9 @@ export function ExtLink({ href, muted, children }) {
 export const TRADE_APPS = [
   { key: 'jupiter', label: 'Jupiter', icon: '/jupiter.svg', brand: '#c7f284', kinds: ['solana'], href: (a) => `https://jup.ag/swap/SOL-${a}` },
   { key: 'gmgn', kinds: ['evm', 'solana'], label: 'GMGN', icon: '/gmgn.png', brand: '#5ec26a', href: (a, c = chainInfo()) => `https://gmgn.ai/${c.gmgn || c.key}/token/${a}` },
+  // Krystal: its pool explorer filtered by chain and token (find a pool to LP in).
+  { key: 'krystal', label: 'Krystal', icon: '/krystal.png', brand: '#38e1a8', kinds: ['evm'],
+    href: (a, c = chainInfo()) => `https://defi.krystal.app/pools?${c.chainId ? `chainIds=${c.chainId}&` : ''}keyword=${a}` },
   { key: 'basedbot', label: 'Based', icon: '/basedbot.jpg', brand: '#3b82f6', href: (a) => `https://t.me/based_eth_bot?start=b_${a}` },
   { key: 'fomo', label: 'fomo', icon: '/fomo.png', brand: '#8b7cf6', href: (a, c = chainInfo()) => `https://fomo.family/tokens/${c.gmgn || c.key}/${a}` },
   // Uniswap: the pool's own page if the pool is known (chart, liquidity, swap
@@ -843,12 +847,22 @@ export const baseTokenOf = (p) => {
 // Logo link bar (style in index.css: .trade-bar / .trade-stack). links:
 // [{ key, label, icon, brand, href }]. compact: a logo stack for table rows;
 // the click does not propagate to the clickable row.
+// A link whose target is looked up on click (app.resolve() -> url). The tab opens first so the
+// popup blocker lets it through; if the lookup fails it falls back to the static href.
+async function openResolved(e, app) {
+  e.preventDefault();
+  const w = window.open('about:blank', '_blank');
+  let url = app.href;
+  try { url = (await app.resolve()) || app.href; } catch { /* keep the fallback */ }
+  if (w) { w.opener = null; w.location.href = url; } else window.open(url, '_blank', 'noopener');
+}
 function LinkBar({ tag, links, compact = false, className = '' }) {
   return (
     <span className={`${compact ? 'trade-stack' : 'trade-bar'} ${className}`} onClick={(e) => e.stopPropagation()}>
       {!compact && tag && <span className="trade-bar__tag">{t(tag)}</span>}
       {links.map((app) => (
         <a key={app.key} href={app.href} target="_blank" rel="noreferrer" className="trade-link"
+          onClick={app.resolve ? (e) => openResolved(e, app) : undefined}
           style={{ '--brand': app.brand }} title={t('Buka {app}', { app: app.label })} aria-label={t('Buka {app}', { app: app.label })}>
           <img src={app.icon} alt="" />{!compact && <span>{app.label}</span>}<ArrowUpRight />
         </a>
@@ -890,6 +904,9 @@ export function TradeLinks({ token, pool = null, venue = null, compact = false, 
   const links = TRADE_APPS.filter((app) => (app.kinds || ['evm']).includes(kind))
     .map((app) => ({ ...app, href: pool && app.poolHref ? app.poolHref(pool, c) : app.href(token, c) }));
   if (venue === 'meteora' && pool) links.unshift({ ...METEORA_APP, href: `https://app.meteora.ag/dlmm/${pool}` });
+  // Solana without a known pool: Meteora's best pool for the token, looked up on click.
+  else if (kind === 'solana') links.unshift({ ...METEORA_APP, href: 'https://app.meteora.ag/',
+    resolve: async () => (await get(`/api/meteora/top-pool?token=${encodeURIComponent(token)}`)).url });
   return <LinkBar tag="Trade" links={links} compact={compact} className={className} />;
 }
 // Identifier of one position in a table/drawer. A Meteora position is an anonymous account

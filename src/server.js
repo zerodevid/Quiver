@@ -1367,6 +1367,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       me: canon(engine.exec.address() || '') || null,
       targets: Object.fromEntries(store.all('SELECT address,label FROM targets WHERE chain=?', chain.network).map((t) => [t.address, t.label || null])),
     }),
+    // Solana: the Meteora DLMM pool with the most TVL for a token, so the dashboard's Meteora logo
+    // can open the pool directly (Meteora's app has no search-by-token URL). No pool -> the pool list.
+    'GET /api/meteora/top-pool': async (req, url) => {
+      const mint = String(url.searchParams.get('token') || '');
+      if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) return { error: 'alamat token tidak valid' };
+      const r = market.meteora ? await market.meteora.pools({ query: mint, sortBy: 'tvl:desc', pageSize: 1 }).catch(() => null) : null;
+      const pool = r?.pools?.[0]?.address || null;
+      return { pool, url: pool ? `https://app.meteora.ag/dlmm/${pool}` : 'https://app.meteora.ag/' };
+    },
     // ---- GMGN OpenAPI (needs an API key; without a key all answer { enabled: false }) ----
     // Token profile: info + contract security — the "Per GMGN" card and extra signals
     // in pool health.
