@@ -13,7 +13,7 @@ import { GmgnTokenPanel, GmgnWallets } from '../components/Gmgn';
 import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
 import PositionHistory from '../components/PositionHistory';
 import WalletPositionHistory from '../components/WalletPositionHistory';
-import { MarketPanel, DexEmbed, kUsd } from './PositionDetail';
+import { MarketPanel, DexInfoEmbed, kUsd } from './PositionDetail';
 import { usd, pct, tone, num, age, short, price, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
 import { canonAddr } from '../chain';
@@ -45,8 +45,6 @@ export default function TokenDetail({ param }) {
   const { data: d, loading, reload } = usePoll(`/api/token?a=${encodeURIComponent(a)}`, 30000);
   const [poolPick, setPool] = useState(null);
   const [tf, setTf] = useState('1h');
-  // 'chart' = our candle chart; 'dex' = DexScreener embed with token info and trades.
-  const [view, setView] = useState('chart');
   // Click a bot position table row -> history drawer, same as the Positions page.
   const [hist, setHist] = useState(null);
   // Click a researched wallet position row -> its on-chain events drawer. What is stored is
@@ -119,15 +117,11 @@ export default function TokenDetail({ param }) {
         <Panel className="lg:col-span-2"
           title={t('Harga {s} dalam USD', { s: tk.symbol || '?' })}
           desc={sel ? <span className="inline-flex items-center gap-1.5">{t('pool')} <PairName token0={sel.base.address} token1={sel.quote.address} symbol0={sel.base.symbol} symbol1={sel.quote.symbol} pool={sel.pool} /> <span className="uppercase">{venueOf(sel)}</span></span> : null}
-          action={sel && <div className="flex flex-wrap items-center gap-2">
-            <Segmented size="sm" aria="Tampilan grafik" value={view} onChange={setView} options={[['chart', 'Grafik'], ['dex', 'DexScreener']]} />
-            {view === 'chart' && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}
-          </div>}>
+          action={sel && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}>
           {d.market?.error ? <Empty title="Data pasar tidak tersedia" sub={d.market.error} />
             : !sel ? <Empty title="Belum ada pool terindeks" sub="DexScreener belum mengenal pool untuk token ini." />
-              : view === 'dex' ? <DexEmbed pool={sel.pool} full />
-                : !m ? <Loading /> : <TokenChart m={m} tf={tf} poolRef={sel.pool} />}
-          {sel && view === 'chart' && <div className="mt-2 text-end text-xs text-muted">{t('lilin {tf} · GeckoTerminal', { tf })}</div>}
+              : !m ? <Loading /> : <TokenChart m={m} tf={tf} poolRef={sel.pool} />}
+          {sel && <div className="mt-2 text-end text-xs text-muted">{t('lilin {tf} · GeckoTerminal', { tf })}</div>}
         </Panel>
 
         <div className="grid gap-3">
@@ -149,6 +143,7 @@ export default function TokenDetail({ param }) {
               <MarketPanel pair={sel} pool={sel.pool} />
             </Panel>
           )}
+          {sel && <DexInfoEmbed pool={sel.pool} />}
         </div>
       </div>
 
