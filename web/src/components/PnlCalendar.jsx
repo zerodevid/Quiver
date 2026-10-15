@@ -6,10 +6,11 @@
 import { useState } from 'react';
 import { Button } from '@heroui/react';
 import { Share2 } from 'lucide-react';
-import { Empty } from './ui';
 import { usd, kUsd, tone } from '../fmt';
 import { useI18n } from '../i18n';
 import { isHidden } from '../privacy';
+import { useFx, fxShort } from '../currency';
+import { Empty, Fx } from './ui';
 
 const pad = (n) => String(n).padStart(2, '0');
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -18,6 +19,7 @@ const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDat
 // onShareMonth('YYYY-MM', total): a share button beside the month name, shown for a month with PnL.
 export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi tertutup di jendela ini', onShare, onShareMonth }) {
   const { t, locale } = useI18n();
+  useFx();   // redraw when the second currency or its rate changes
   const days = Object.keys(daily).sort();
   // Hooks must be called before a conditional return (React rules of hooks).
   const [ym, setYm] = useState(() => {
@@ -68,6 +70,8 @@ export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi t
           <span className="hidden sm:inline">{isHidden() ? usd(v) : kUsd(v)}</span>
           {/* mobile: rounded without cents so it fits the ~45px cell */}
           <span className="sm:hidden">{Math.abs(v) >= 10 ? usd(v, 0) : usd(v, 1)}</span>
+          {/* the same day in the Settings currency, under the dollars (desktop only: no room on a phone) */}
+          {fxShort(v) && <span className="hidden truncate text-[0.625rem] font-medium text-muted sm:block">≈ {fxShort(v)}</span>}
         </span>}
       </div>,
     );
@@ -90,7 +94,7 @@ export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi t
         </div>
         <span className="text-sm text-muted">
           {(green > 0 || red > 0) && <span className="mr-3 text-xs">{t('{g} hari hijau · {r} merah', { g: green, r: red })}</span>}
-          {t('Total bulan ini')} <span className={`num font-medium ${tone(total)}`}>{usd(total)}</span>
+          {t('Total bulan ini')} <span className={`num font-medium ${tone(total)}`}>{usd(total)}</span><Fx v={total} />
         </span>
       </div>
       <div className="grid flex-1 grid-cols-7 gap-1" style={{ gridTemplateRows: `auto repeat(${weeks}, minmax(3.5rem, 1fr))` }}>

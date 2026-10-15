@@ -1040,7 +1040,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           worst: closed.length ? Math.min(...pnls) : null,
           avgHoldHours: holds.length ? holds.reduce((a, b) => a + b, 0) / holds.length : null,
         },
-        closed: closed.map((p) => [p.closed_ts, p.pnl]),
+        // [closed_ts, net PnL, id]: net of the gas and outside swap slippage each position paid
+        // (the same basis as the per-source result and the wallet's net PnL), so the calendar
+        // days add up to what was really earned.
+        closed: closed.map((p) => { const c = costs.of(p.id, engine.ethUsd); return [p.closed_ts, p.pnl - (c.gasUsd || 0) - (c.outsideSlipUsd || 0), p.id]; }),
         byTarget: [...by.values()].sort((a, b) => b.net - a.net),
       };
     },
@@ -2560,10 +2563,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         for (const [ts, v] of pf.closed || []) { const k = dayKeyIn(ts, timeZone); daily[k] = (daily[k] || 0) + v; counts[k] = (counts[k] || 0) + 1; }
         if (daily[day] == null) return { error: 'tidak ada posisi yang ditutup pada hari itu' };
         const kq = (q) => (chain.isEthLike(q) ? engine.ethUsd || 0 : 1);
+        const netOf = new Map((pf.closed || []).map(([, v, pid]) => [pid, v]));
         data = {
           day, total: daily[day], count: counts[day],
           rows: (pos.closed || []).filter((c) => c.closed_ts && dayKeyIn(c.closed_ts, timeZone) === day)
-            .map((c) => ({ symbol0: c.symbol0, symbol1: c.symbol1, cost: (c.cost_quote || 0) * kq(c.quote_symbol), pnl: ((c.out_quote || 0) - (c.cost_quote || 0)) * kq(c.quote_symbol) })),
+            .map((c) => ({ symbol0: c.symbol0, symbol1: c.symbol1, cost: (c.cost_quote || 0) * kq(c.quote_symbol), pnl: netOf.get(c.id) ?? ((c.out_quote || 0) - (c.cost_quote || 0)) * kq(c.quote_symbol) })),
           monthTotal: Object.entries(daily).filter(([k]) => k.startsWith(day.slice(0, 7))).reduce((a, [, v]) => a + v, 0),
         };
         // PnL bars for each day of that month; the day shared is highlighted.

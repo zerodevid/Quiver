@@ -58,3 +58,15 @@ export function fxFormat(v, fx = current) {
 // Value redaction (privacy.js): "≈ •••" adds nothing, so it is omitted.
 // Only here, not in fxFormat — the example in Settings is not our money.
 export const fxText = (v) => (isHidden() ? null : fxFormat(v, current));
+
+// Short form for tight spots (calendar cells): always compact from a thousand, with the
+// narrow symbol — "Rp98 rb", "Rp1,2 jt" instead of "Rp98.123". Omitted when values are hidden.
+export function fxShort(v, fx = current) {
+  if (isHidden() || !fx || !(fx.rate > 0) || v == null || !Number.isFinite(v) || Math.abs(v) < 0.005) return null;
+  const n = v * fx.rate, abs = Math.abs(n);
+  const loc = getLocale() === 'en' ? 'en-US' : 'id-ID';
+  const o = { style: 'currency', currency: fx.currency, currencyDisplay: 'narrowSymbol', minimumFractionDigits: 0, maximumFractionDigits: abs < 100 ? 2 : 0 };
+  if (abs >= 1e3) { o.notation = 'compact'; o.maximumFractionDigits = 1; }
+  try { return (n < 0 ? '−' : '') + new Intl.NumberFormat(loc, o).format(abs); }
+  catch { return null; }
+}
