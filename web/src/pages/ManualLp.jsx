@@ -6,6 +6,7 @@ import { useStatus } from '../App';
 import { usePoll } from '../hooks';
 import CandleChart, { BAND_COLORS } from '../components/CandleChart';
 import { useLadder, LadderStep, LadderPreview, LAYER_CHOICES } from './ManualLadder';
+import { useCreatePool, CreatePoolStep } from './ManualCreate';
 import { PageHeader, Notice, PriceRange, Empty, KV, Segmented } from '../components/ui';
 import { orientCandles, TFS, SECS, LiveBadge } from './PositionDetail';
 import { useLivePrice, useLiveCandles } from '../liveCandles';
@@ -608,6 +609,8 @@ export default function ManualLp({ param }) {
   const [balance, setBalance] = useState(null);
   const seq = useRef(0);
   const [mode, setMode] = useState('single');   // 'single' range | 'ladder' of layers
+  const [creating, setCreating] = useState(false);   // EVM: a new pool instead of an existing one
+  const C = useCreatePool(creating);
 
   useEffect(() => {
     get('/api/manual/pools?limit=200&stats=1').then((d) => setPools(d.pools || []));
@@ -657,15 +660,20 @@ export default function ManualLp({ param }) {
   const rangeOk = full || (!loBad && !upBad && !empty && !inverted);
   const dlmm = pool?.venue === 'meteora';
   // EVM Curve / Bid-Ask: the range is opened as several shaped bands through the ladder job.
-  const evmShape = mode === 'single' && !!pool && !dlmm && !isSolana() && !full && shape !== 'spot';
-  const ready = mode === 'single' && !evmShape && !!pool && Number.isFinite(usdNum) && usdNum > 0 && rangeOk;
+  const evmShape = !creating && mode === 'single' && !!pool && !dlmm && !isSolana() && !full && shape !== 'spot';
+  const ready = mode === 'single' && !evmShape && (creating ? C.ok : !!pool) && Number.isFinite(usdNum) && usdNum > 0 && rangeOk;
   const onOpened = useCallback(() => { reloadStatus(); loadBalance(pool?.poolRef); }, [reloadStatus, loadBalance, pool?.poolRef]);
-  const ladder = useLadder({ pool, usdNum: Number.isFinite(usdNum) ? usdNum : 0, enabled: mode === 'ladder', onOpened });
+  const ladder = useLadder({ pool, usdNum: Number.isFinite(usdNum) ? usdNum : 0, enabled: !creating && mode === 'ladder', onOpened });
   const shaped = useLadder({ pool, usdNum: Number.isFinite(usdNum) ? usdNum : 0, enabled: evmShape && rangeOk, onOpened,
     shapeSpec: evmShape && rangeOk ? { shape, lowerPct: -lo, upperPct: up } : null });
-  const L = mode === 'ladder' ? ladder : evmShape ? shaped : null;
+  const L = creating ? null : mode === 'ladder' ? ladder : evmShape ? shaped : null;
   const stepsDone = L ? L.ready : ready;
-  const body = { poolRef: pool?.poolRef, usd: usdNum, ...(full ? { full: true } : { lowerPct: -lo, upperPct: up }), ...(dlmm ? { strategy: shape } : {}) };
+  const range = full ? { full: true } : { lowerPct: -lo, upperPct: up };
+  const body = creating
+    ? { ...C.spec, usd: usdNum, ...range }
+    : { poolRef: pool?.poolRef, usd: usdNum, ...range, ...(dlmm ? { strategy: shape } : {}) };
+  // Previews are tagged with what they were made for, so a late reply for another pool is not shown.
+  const planRef = creating ? `create:${C.key}` : pool?.poolRef;
 
   // The preview is recomputed by itself every time a choice changes — there is no "compute"
   // button. Replies that arrive late are discarded via a sequence number.
@@ -675,12 +683,12 @@ export default function ManualLp({ param }) {
     const mine = ++seq.current;
     setCompute(true);
     const id = setTimeout(async () => {
-      const r = await post('/api/manual/lp/plan', body);
+      const r = await post(creating ? '/api/manual/create/plan' : '/api/manual/lp/plan', body);
       if (mine !== seq.current) return;
-      setPlan({ ...r, _ref: body.poolRef }); setCompute(false);
+      setPlan({ ...r, _ref: planRef }); setCompute(false);
     }, 350);
     return () => { clearTimeout(id); };
-  }, [pool?.poolRef, usdNum, lo, up, full, ready, dlmm, shape]);
+  }, [pool?.poolRef, usdNum, lo, up, full, ready, dlmm, shape, creating, C.key]);
 
   const cash = plan?.preview?.walletCashUsd ?? balance?.walletCashUsd ?? null;
   // The largest amount that still passes every limit — so the "Max" button does not
@@ -696,11 +704,11 @@ export default function ManualLp({ param }) {
 
   const open = async () => {
     setSending(true);
-    const r = await post('/api/manual/lp/open', body);
+    const r = await post(creating ? '/api/manual/create/open' : '/api/manual/lp/open', body);
     setSending(false); setConfirm(false);
     if (r.error) return toast.danger(r.error);
     setResult(r);
-    toast.success(t('Posisi dibuka'));
+    toast.success(t(creating ? 'Pool dibuat dan posisi dibuka' : 'Posisi dibuka'));
     reloadStatus();
     loadBalance(pool?.poolRef);
   };
@@ -708,18 +716,19 @@ export default function ManualLp({ param }) {
   const p = plan?.preview;
   // Current price (in the quote asset) from the last preview FOR THIS POOL — used to
   // show each bound's price while the user types, before a new preview arrives.
-  const pNow = p && plan._ref === pool?.poolRef ? p : null;
+  const pNow = p && plan._ref === planRef ? p : null;
   const currentPrice = pNow ? tickPrice(pNow.curTick, pNow.dec0, pNow.dec1, pNow.quoteSide) : null;
   const symQ = pNow ? (pNow.quoteSide === 0 ? pNow.symbol0 : pNow.symbol1) : null;
   // A range entirely on one side of the price is only filled with one token: below =
   // the quote asset, above = its pair token.
   const oneSide = !full && rangeOk ? (up <= 0 ? 'bawah' : lo >= 0 ? 'atas' : null) : null;
-  const symSetor = oneSide && pool?.quoteSide != null
-    ? ((pool.quoteSide === 0) === (oneSide === 'bawah') ? pool.symbol0 : pool.symbol1) : null;
+  const sidePool = creating ? pNow : pool;
+  const symSetor = oneSide && sidePool?.quoteSide != null
+    ? ((sidePool.quoteSide === 0) === (oneSide === 'bawah') ? sidePool.symbol0 : sidePool.symbol1) : null;
   // The preview carries the "after opening" balance; while it does not exist, use
   // our own reading — only if for the same pool, so the pair token is not wrong.
   const pReady = pNow && ready && !plan?.error ? pNow : null;
-  const shownBalance = pReady?.saldo || (balance && balance._ref === (pool?.poolRef || null) ? balance : null);
+  const shownBalance = pReady?.saldo || (balance && balance._ref === ((creating ? null : pool?.poolRef) || null) ? balance : null);
   const dry = status?.mode?.dry_run !== false;
 
   if (result) {
@@ -730,7 +739,7 @@ export default function ManualLp({ param }) {
           <Card.Content className="items-center gap-4 py-10 text-center">
             <span className="flex size-12 items-center justify-center rounded-full bg-success/15 text-success"><Check className="size-6" /></span>
             <div>
-              <div className="text-lg font-semibold">{t('Posisi dibuka')}</div>
+              <div className="text-lg font-semibold">{t(creating ? 'Pool dibuat dan posisi dibuka' : 'Posisi dibuka')}</div>
               <div className="mt-1 text-muted">{result.note}</div>
               <div className="mono mt-2 text-sm text-muted">{result.tx}</div>
             </div>
@@ -757,9 +766,16 @@ export default function ManualLp({ param }) {
 
       <div className="mt-4 grid items-start gap-3 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="flex min-w-0 flex-col gap-3">
-          <Step n={1} title="Pilih pool" done={!!pool}
-            action={pool && !swapPool ? <Button size="sm" variant="outline" onPress={() => setSwapPool(true)}>{t('Ganti')}</Button> : null}>
-            {pools === null ? <Spinner /> : pool && !swapPool ? (
+          <Step n={1} title={creating ? 'Buat pool baru' : 'Pilih pool'} done={creating ? C.ok : !!pool}
+            action={(
+              <div className="flex items-center gap-2">
+                {!creating && pool && !swapPool && <Button size="sm" variant="outline" onPress={() => setSwapPool(true)}>{t('Ganti')}</Button>}
+                {!isSolana() && <Segmented size="sm" aria="Sumber pool" value={creating ? 'create' : 'pick'}
+                  onChange={(v) => { setCreating(v === 'create'); if (v === 'create') { setMode('single'); setShape('spot'); } }}
+                  options={[['pick', 'Pool yang ada'], ['create', 'Buat baru']]} />}
+              </div>
+            )}>
+            {creating ? <CreatePoolStep C={C} /> : pools === null ? <Spinner /> : pool && !swapPool ? (
               <div className="flex items-center gap-3">
                 <TokenPair token0={pool.token0} token1={pool.token1} symbol0={pool.symbol0} symbol1={pool.symbol1} size={30} />
                 <div className="min-w-0">
@@ -773,8 +789,8 @@ export default function ManualLp({ param }) {
                 </div>
               </div>
             ) : null}
-            {pool && !swapPool && <HookInfo hook={pool.hook} rules={rules} />}
-            {pools === null || (pool && !swapPool) ? null : (
+            {!creating && pool && !swapPool && <HookInfo hook={pool.hook} rules={rules} />}
+            {creating || pools === null || (pool && !swapPool) ? null : (
               <PoolPicker pools={pools} onPick={(x) => { setPool(x); setSwapPool(false); }} />
             )}
           </Step>
@@ -796,13 +812,13 @@ export default function ManualLp({ param }) {
               <p className="text-xs text-muted">
                 {t('Nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.')}
               </p>
-              <Balance saldo={shownBalance} pool={pool} />
+              <Balance saldo={shownBalance} pool={creating ? pNow : pool} />
               {mode === 'single' && pReady?.swaps && <AutoSwap p={pReady} />}
             </div>
           </Step>
 
           <Step n={3} title="Rentang harga" done={stepsDone}
-            action={<Segmented size="sm" aria="Mode rentang" value={mode} onChange={setMode}
+            action={creating ? null : <Segmented size="sm" aria="Mode rentang" value={mode} onChange={setMode}
               options={[['single', 'Satu rentang'], ['ladder', 'Berlayer']]} />}>
             {mode === 'ladder' ? (
               <LadderStep L={ladder} chart={pool && (
@@ -812,15 +828,15 @@ export default function ManualLp({ param }) {
               )} />
             ) : (
             <div className="flex flex-col gap-3">
-              {(dlmm || (pool && !isSolana() && !full)) && <ShapePicker value={shape} onChange={setShape} evm={!dlmm} />}
+              {!creating && (dlmm || (pool && !isSolana() && !full)) && <ShapePicker value={shape} onChange={setShape} evm={!dlmm} />}
               {evmShape && (
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs text-muted">{t('Jumlah posisi')}</span>
                   <Segmented size="sm" aria="Jumlah posisi" value={shaped.layers} onChange={shaped.setLayers} options={LAYER_CHOICES.map((n) => [n, String(n)])} />
                 </div>
               )}
-              {dlmm && p && !plan?.error && <BinDistribution p={p} />}
-              {pool && (
+              {!creating && dlmm && p && !plan?.error && <BinDistribution p={p} />}
+              {!creating && pool && (
                 <ChartRange pool={pool} lo={lo} up={up} full={full} rangeOk={rangeOk} currentPrice={currentPrice}
                   preview={pReady && !compute ? pReady : null} bands={evmShape ? shaped.bands : null}
                   onDrag={(a, b) => {
@@ -888,7 +904,7 @@ export default function ManualLp({ param }) {
           </div>
           <div className="flex flex-col gap-4 p-4">
             {L ? <LadderPreview L={L} dry={dry} /> : !ready ? (
-              <p className="text-sm text-muted">{t('Pilih pool dan isi nominalnya — pratinjau muncul sendiri.')}</p>
+              <p className="text-sm text-muted">{t(creating ? 'Isi pengaturan pool, harga awal, dan nominalnya — pratinjau muncul sendiri.' : 'Pilih pool dan isi nominalnya — pratinjau muncul sendiri.')}</p>
             ) : plan?.error ? (
               <Notice status="danger" title={t('Belum bisa dibuka')}>{plan.error}</Notice>
             ) : !p ? <Spinner /> : (
@@ -902,6 +918,7 @@ export default function ManualLp({ param }) {
                   <KV label={p.symbol1}>{num(Number(p.amount1) / 10 ** p.dec1, 6)}</KV>
                   {p.swaps && <KV label="Auto-swap">{swapQty(p.swaps.length, t)}</KV>}
                   <KV label="Kas setelah dibuka">{usd(Math.max(0, p.walletCashUsd - p.valueUsd))}</KV>
+                  {p.init && <KV label="Harga awal pool">{num(p.init.price, 8)} {symQ}</KV>}
                 </div>
 
                 {(plan.warnings || []).map((w) => (
@@ -923,12 +940,13 @@ export default function ManualLp({ param }) {
                   </Button>
                 ) : !confirm ? (
                   <Button className="w-full" onPress={() => setConfirm(true)}>
-                    {t('Buka posisi {v}', { v: usd(p.valueUsd) })}
+                    {t(creating ? 'Buat pool & buka {v}' : 'Buka posisi {v}', { v: usd(p.valueUsd) })}
                   </Button>
                 ) : (
                   <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/5 p-3">
                     <div className="text-sm font-medium">{t('Kirim transaksi sungguhan?')}</div>
                     <div className="text-sm text-muted">{t('{v} ke {pair}, rentang {r}.', { v: usd(p.valueUsd), pair: p.pair, r: rangeLabel(lo, up, full, t) })}</div>
+                    {p.init && <div className="text-sm text-muted">{t('Pool baru {venue}, harga awal {px} {q}.', { venue: String(p.create?.venue || '').toUpperCase(), px: num(p.init.price, 8), q: symQ || '' })}</div>}
                     <div className="flex gap-2">
                       <Button className="flex-1" onPress={open} isPending={sendOrig}>{t('Ya, buka sekarang')}</Button>
                       <Button variant="outline" onPress={() => setConfirm(false)}>{t('Batal')}</Button>

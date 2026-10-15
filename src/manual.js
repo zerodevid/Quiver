@@ -14,8 +14,8 @@ const { ensureChain, windowBlocks } = require('./networks');
 // apply if set — those are rules over our own position.
 const { ethers } = require('ethers');
 const m = require('./v3math');
-const { TOPIC } = require('./chain');
-const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd, hookBlocked, riskyHookFlags, hookInfo } = require('./policy');
+const { TOPIC, ABI } = require('./chain');
+const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd, hookBlocked, riskyHookFlags, hookInfo, tickSpacingFromFee } = require('./policy');
 
 const isNative = (t) => /^0x0{40}$/.test(String(t).toLowerCase());
 const lc = (t) => String(t || '').toLowerCase();
@@ -459,7 +459,7 @@ class Manual {
   // are used, and `ranged` = the tick range is computed via that rule's planRange
   // (mode exact/recenter/scale…) from the given ticks, exactly the automatic copy path.
   async planLp({ poolRef, usd, widthPct = 25, lowerPct = null, upperPct = null, tickLower = null, tickUpper = null, full = false,
-    pool = null, target = null, ranged = false }) {
+    pool = null, target = null, ranged = false, slot0: slot0Given = null }) {
     const eng = this.engine;
     const p = pool || await this.poolByRef(poolRef);
     if (!p) return { error: 'pool tidak dikenal — pilih dari daftar atau pantau dulu targetnya' };
@@ -478,9 +478,10 @@ class Manual {
     const notional = Number(usd);
     if (!Number.isFinite(notional) || notional <= 0) return { error: 'nominal harus angka lebih dari nol' };
 
-    const slot0 = this.chain.isV3Venue(p.venue)
+    // slot0Given: a pool that does not exist yet (createPool) is planned at its starting price.
+    const slot0 = slot0Given || (this.chain.isV3Venue(p.venue)
       ? await this.chain.slot0V3(p.poolAddr || p.poolRef)
-      : await this.chain.slot0V4(p.poolRef);
+      : await this.chain.slot0V4(p.poolRef));
     if (!slot0) return { error: 'harga pool tidak terbaca sekarang' };
 
     let singleSide = null;
@@ -1041,6 +1042,164 @@ class Manual {
     const r = await eng.executeEntry(plan, { target: null, slot0 });
     eng.notify(`LP manual dibuka: ${r.note}`);
     return r;
+  }
+
+  // ---- create a pool -------------------------------------------------------
+  // A new v3/v4 pool for `token` against one of this chain's quote assets, at a starting
+  // price the user sets, opened together with the first position — an empty pool can be
+  // pushed to any price for free, so it is never left initialized without our liquidity:
+  //   v4: initializePool + mint in ONE PositionManager multicall (the poolId is known up front)
+  //   v3: createAndInitializePoolIfNecessary, then the mint — guarded by a price check right
+  //       before it and by amount minimums (the pool address only exists after the first tx)
+  // An existing pool is refused: that is the ordinary manual LP path.
+  createVenues() {
+    const out = [];
+    if (this.chain.ADDR.posmV4 && this.chain.ADDR.poolManager) out.push({ key: 'v4', label: 'Uniswap v4', fees: null });
+    for (const v of this.chain.venues || []) {
+      if (!v.npmV3) continue;
+      out.push({ key: v.key, label: v.key === 'pancakev3' ? 'PancakeSwap v3' : 'Uniswap v3', fees: v.key === 'pancakev3' ? [100, 500, 2500, 10000] : [100, 500, 3000, 10000] });
+    }
+    return out;
+  }
+
+  async v3Factory(venue) {
+    const v = this.chain.venueOf(venue);
+    if (v?.factory) return lc(v.factory);
+    const npm = this.chain.npmFor(venue);
+    const IF = new ethers.Interface(['function factory() view returns (address)']);
+    const [w] = await this.rpc.ethCallMany([{ to: npm, data: IF.encodeFunctionData('factory') }], 'latest', { strict: true });
+    return lc(IF.decodeFunctionResult('factory', w)[0]);
+  }
+
+  // The new pool as planLp sees it, its starting price, and whether it already exists.
+  async createSpec({ venue, token, quote, fee, tickSpacing = null, hooks = null, price }) {
+    const ZERO = '0x0000000000000000000000000000000000000000';
+    const ven = this.createVenues().find((v) => v.key === venue);
+    if (!ven) return { error: `venue ${venue} tidak tersedia di chain ini` };
+    const v4 = venue === 'v4';
+    let tok = lc(token), q = lc(quote);
+    if (!/^0x[0-9a-f]{40}$/.test(tok) || isNative(tok)) return { error: 'alamat token tidak valid' };
+    if (!this.chain.QUOTES[q]) return { error: 'aset kuotasi harus salah satu yang dikenal chain ini (stablecoin / native / wrapped native)' };
+    // v3 has no native currency: native ETH is paired as its wrapped token.
+    if (!v4 && isNative(q)) q = lc(this.chain.ADDR.weth);
+    if (tok === q) return { error: 'token dan aset kuotasinya sama' };
+    const px = Number(price);
+    if (!(px > 0) || !Number.isFinite(px)) return { error: 'harga awal harus angka lebih dari nol' };
+
+    const f = Number(fee);
+    let ts;
+    if (v4) {
+      if (!Number.isInteger(f) || f < 0 || f > 1_000_000) return { error: 'fee v4 harus 0–1.000.000 (pip; 3000 = 0,3%)' };
+      ts = Number(tickSpacing);
+      if (!Number.isInteger(ts) || ts < 1 || ts > 16383) return { error: 'tick spacing harus bilangan bulat 1–16383' };
+    } else {
+      if (!ven.fees.includes(f)) return { error: `fee ${venue} harus salah satu dari ${ven.fees.map((x) => `${x / 10000}%`).join(', ')}` };
+      ts = tickSpacingFromFee(f);
+    }
+    const hk = v4 && hooks ? lc(hooks) : ZERO;
+    if (!/^0x[0-9a-f]{40}$/.test(hk)) return { error: 'alamat hook tidak valid' };
+
+    const [mt, mq] = await this.chain.tokens([tok, q]);
+    if (!mt || mt.unverified) return { error: 'token tidak terbaca di chain — pastikan alamatnya kontrak token' };
+    // Uniswap orders the pair by address; native ETH (0x0) is always currency0.
+    const [token0, token1] = BigInt(tok) < BigInt(q) ? [tok, q] : [q, tok];
+    const [t0, t1] = token0 === tok ? [mt, mq] : [mq, mt];
+    const qs = this.chain.quoteSideOf(token0, token1);
+    if (!qs) return { error: 'aset kuotasi tidak dikenali untuk pasangan ini' };
+    // price = quote per token; Uniswap's price is token1 per token0.
+    const p10 = qs.side === 1 ? px : 1 / px;
+    let tick;
+    try { tick = m.priceToTick(p10, t0.decimals, t1.decimals); } catch { return { error: 'harga awal di luar batas yang bisa disimpan pool' }; }
+    if (tick <= m.MIN_TICK + ts || tick >= m.MAX_TICK - ts) return { error: 'harga awal di luar batas yang bisa disimpan pool' };
+    const sqrtPriceX96 = m.getSqrtRatioAtTick(tick);
+
+    const p = {
+      venue, token0, token1, fee: f, tickSpacing: ts, hooks: v4 ? hk : null,
+      symbol0: t0.symbol, symbol1: t1.symbol, dec0: t0.decimals, dec1: t1.decimals,
+      pair: `${t0.symbol}/${t1.symbol}`, feePct: feePctOf(f), dynamicFee: dynamicFeeVal(f),
+      hasHooks: v4 && !/^0x0+$/.test(hk), hook: v4 ? hookInfo(hk) : null,
+      quoteSymbol: qs.symbol, quoteSide: qs.side, quoteKind: qs.kind,
+    };
+    let existing = null;
+    if (v4) {
+      p.poolRef = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+        ['address', 'address', 'uint24', 'int24', 'address'], [token0, token1, f, ts, hk]));
+      if (await this.chain.slot0V4(p.poolRef)) existing = p.poolRef;
+    } else {
+      const IF = new ethers.Interface(ABI.v3Factory);
+      const factory = await this.v3Factory(venue);
+      const [w] = await this.rpc.ethCallMany([{ to: factory, data: IF.encodeFunctionData('getPool', [token0, token1, f]) }], 'latest', { strict: true });
+      const addr = lc(IF.decodeFunctionResult('getPool', w)[0]);
+      if (!/^0x0+$/.test(addr)) existing = addr;
+      p.poolRef = existing;   // a v3 pool's address only exists once it is created
+      p.factory = factory;
+    }
+    if (existing) return { error: 'pool dengan token, fee, dan pengaturan ini sudah ada — buka LP di pool itu lewat daftar pool', existing };
+    return { pool: p, init: { sqrtPriceX96: sqrtPriceX96.toString(), tick, price: px } };
+  }
+
+  async planCreate(args) {
+    const spec = await this.createSpec(args);
+    if (spec.error) return spec;
+    const { pool: p, init } = spec;
+    const slot0 = { sqrtPriceX96: BigInt(init.sqrtPriceX96), tick: init.tick };
+    const d = await this.planLp({
+      poolRef: p.poolRef, pool: p, usd: args.usd, slot0, full: !!args.full,
+      lowerPct: args.lowerPct != null ? Number(args.lowerPct) : null,
+      upperPct: args.upperPct != null ? Number(args.upperPct) : null,
+    });
+    if (d.error) return d;
+    d.plan.init = init;
+    d.preview.init = init;
+    d.preview.create = { venue: p.venue, fee: p.fee, tickSpacing: p.tickSpacing, hooks: p.hooks, poolRef: p.poolRef };
+    d.warnings = [
+      'kamu LP pertama di pool ini — harga awal yang kamu isi menjadi harga pool; kalau meleset dari pasar, arbitrase langsung mengambil selisihnya dari posisimu',
+      ...(p.venue === 'v4' ? [] : ['v3: dua transaksi — membuat pool, lalu mint (dibatalkan kalau harga bergeser di antaranya)']),
+      ...d.warnings,
+    ];
+    return d;
+  }
+
+  async openCreate(args) {
+    const eng = this.engine;
+    if (!eng.exec.address()) throw new Error('belum ada wallet');
+    if (eng.dryRun()) throw new Error('mode simulasi: tidak mengirim transaksi');
+    const d = await this.planCreate(args);
+    if (d.error) throw new Error(d.error);
+    let plan = d.plan;
+    const p = d.preview.create;
+    if (p.venue !== 'v4') {
+      // 1. create + initialize the v3 pool
+      const IF = new ethers.Interface(ABI.npmV3);
+      const tx = { to: this.chain.npmFor(p.venue), value: '0',
+        data: IF.encodeFunctionData('createAndInitializePoolIfNecessary', [plan.token0, plan.token1, plan.fee, BigInt(plan.init.sqrtPriceX96)]) };
+      const h = await eng.exec.send(tx, { kind: 'lain', detail: { createPool: { venue: p.venue, token0: plan.token0, token1: plan.token1, fee: plan.fee } } });
+      const rc = await eng.exec.waitReceipt(h, 90_000);
+      if (rc.timeout || rc.status === 0 || rc.status === '0x0') throw new Error(`membuat pool gagal (${h})`);
+      const IFF = new ethers.Interface(ABI.v3Factory);
+      const factory = await this.v3Factory(p.venue);
+      const [w] = await this.rpc.ethCallMany([{ to: factory, data: IFF.encodeFunctionData('getPool', [plan.token0, plan.token1, plan.fee]) }], 'latest', { strict: true });
+      const addr = lc(IFF.decodeFunctionResult('getPool', w)[0]);
+      if (/^0x0+$/.test(addr)) throw new Error('pool belum terbaca setelah dibuat — coba buka LP-nya dari daftar pool');
+      this.rememberPool({ ...plan, poolRef: addr, poolAddr: addr, venue: p.venue, tickSpacing: plan.tickSpacing, hooks: null });
+      // 2. the first position, on the real pool now, same ticks; plan.init keeps the price guard
+      const d2 = await this.planLp({ poolRef: addr, usd: args.usd, tickLower: plan.tickLower, tickUpper: plan.tickUpper });
+      if (d2.error) throw new Error(`pool dibuat (${addr}), tapi posisinya belum bisa dibuka: ${d2.error}`);
+      plan = { ...d2.plan, init: plan.init };
+    }
+    const r = await eng.executeEntry(plan, { target: null, slot0: null });
+    if (p.venue === 'v4') this.rememberPool({ ...plan, poolRef: p.poolRef, venue: 'v4', hooks: p.hooks, tickSpacing: p.tickSpacing });
+    eng.notify(`Pool baru dibuat & LP dibuka: ${r.note}`);
+    return { ...r, poolRef: plan.poolRef };
+  }
+
+  rememberPool(x) {
+    this.store.run(
+      `INSERT INTO pools(chain,pool_ref,venue,token0,token1,fee,tick_spacing,hooks,pool_addr,first_block)
+       VALUES(?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(chain,pool_ref) DO UPDATE SET token0=excluded.token0, token1=excluded.token1, fee=excluded.fee,
+         tick_spacing=excluded.tick_spacing, hooks=excluded.hooks, pool_addr=COALESCE(excluded.pool_addr, pools.pool_addr)`,
+      this.network, x.poolRef, x.venue, lc(x.token0), lc(x.token1), x.fee, x.tickSpacing, x.hooks || null, x.poolAddr || null, null);
   }
 
   // ---- manual swap --------------------------------------------------------

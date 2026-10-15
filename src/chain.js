@@ -61,6 +61,10 @@ const ABI = {
     'function ownerOf(uint256 tokenId) view returns (address)',
     'function nextTokenId() view returns (uint256)',
     'function poolManager() view returns (address)',
+    // PoolInitializer_v4: try/catch around PoolManager.initialize, so an already
+    // initialized pool does not revert the multicall it sits in.
+    'function initializePool(tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) key, uint160 sqrtPriceX96) payable returns (int24)',
+    'function multicall(bytes[] data) payable returns (bytes[] results)',
   ],
   npmV3: [
     'function mint(tuple(address token0,address token1,uint24 fee,int24 tickLower,int24 tickUpper,uint256 amount0Desired,uint256 amount1Desired,uint256 amount0Min,uint256 amount1Min,address recipient,uint256 deadline) params) payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)',
@@ -75,6 +79,7 @@ const ABI = {
     'function unwrapWETH9(uint256 amountMinimum, address recipient) payable',
     'function refundETH() payable',
     'function sweepToken(address token, uint256 amountMinimum, address recipient) payable',
+    'function createAndInitializePoolIfNecessary(address token0, address token1, uint24 fee, uint160 sqrtPriceX96) payable returns (address pool)',
   ],
   poolManager: [
     'function getSlot0(bytes32 id) view returns (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee)',
@@ -110,6 +115,7 @@ const ABI = {
   ],
   v3Factory: [
     'function getPool(address tokenA, address tokenB, uint24 fee) view returns (address pool)',
+    'function feeAmountTickSpacing(uint24 fee) view returns (int24)',
   ],
 };
 

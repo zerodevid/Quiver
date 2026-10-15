@@ -476,11 +476,17 @@ class Executor {
       params.push(coder.encode(['address', 'address'], [pk.currency0, owner]));
     }
     const unlockData = coder.encode(['bytes', 'bytes[]'], [actionsHex(acts), params]);
-    return {
-      to: this.chain.ADDR.posmV4,
-      data: IF_POSM.encodeFunctionData('modifyLiquidities', [unlockData, deadlineSec]),
-      value: value.toString(),
-    };
+    const mint = IF_POSM.encodeFunctionData('modifyLiquidities', [unlockData, deadlineSec]);
+    // A new pool (plan.init): initialize it in the same transaction as its first liquidity,
+    // so it never sits empty at a price someone else could push. initializePool is a
+    // try/catch in the periphery: an already-initialized pool does not revert the batch.
+    const data = plan.init
+      ? IF_POSM.encodeFunctionData('multicall', [[
+        IF_POSM.encodeFunctionData('initializePool', [[pk.currency0, pk.currency1, pk.fee, pk.tickSpacing, pk.hooks], BigInt(plan.init.sqrtPriceX96)]),
+        mint,
+      ]])
+      : mint;
+    return { to: this.chain.ADDR.posmV4, data, value: value.toString() };
   }
 
   // Add liquidity to an existing position.

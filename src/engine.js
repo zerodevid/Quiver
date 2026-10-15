@@ -1602,6 +1602,18 @@ class Engine {
       s2 = this.chain.isV3Venue(plan.venue)
         ? await this.chain.slot0V3(plan.poolRef)
         : await this.chain.slot0V4(plan.poolRef);
+      // A pool we are creating (manual.openCreate): not initialized yet = planned at its starting
+      // price (v4 initializes it in the mint's own multicall). Already initialized — by our
+      // earlier attempt, or by someone else, or pushed around while empty — it must still sit
+      // at that price, or the first liquidity would go in at a price nobody chose.
+      if (plan.init) {
+        const want = BigInt(plan.init.sqrtPriceX96);
+        if (!s2 && !this.chain.isV3Venue(plan.venue)) s2 = { sqrtPriceX96: want, tick: plan.init.tick };
+        else if (s2 && s2.sqrtPriceX96 > 0n) {
+          const r = Number(s2.sqrtPriceX96) / Number(want);
+          if (Math.abs(r * r - 1) > 0.01) throw new Error('harga pool baru sudah bergeser lebih dari 1% dari harga awal — posisi tidak dibuka');
+        }
+      }
       if (!s2 || s2.sqrtPriceX96 <= 0n) throw new Error('gagal membaca harga pool dari RPC');
       if (plan.singleSide && ((plan.singleSide === 'token0' && s2.sqrtPriceX96 > sa)
         || (plan.singleSide === 'token1' && s2.sqrtPriceX96 < sb))) {
@@ -1729,7 +1741,8 @@ class Engine {
       const pick = await pickSwapPool({ store: this.store, chain: this.chain, rpc: this.rpc, exec: this.exec, log: this.log }, {
         tokenIn: payTok, tokenOut: buyTok, amountIn: payRaw, minOut,
         maxImpactBps: rules.swap.max_price_impact_bps, deadlineSec: this.exec.deadline(), info,
-        extra: [{
+        // A pool we are creating is empty: swapping through it would only move its starting price.
+        extra: plan.init ? [] : [{
           pool_ref: plan.poolRef, venue: plan.venue, token0: plan.token0, token1: plan.token1,
           fee: plan.fee, tick_spacing: plan.tickSpacing ?? pk?.tickSpacing ?? null,
           hooks: plan.poolKey?.hooks ?? pk?.hooks ?? null, pool_addr: this.chain.isV3Venue(plan.venue) ? plan.poolRef : null,
@@ -1833,7 +1846,11 @@ class Engine {
         ? this.exec.buildV3Increase({ ...finalPlan, tokenId: plan.tokenId }, this.exec.deadline())
         : this.exec.buildV4Increase({ ...finalPlan, tokenId: plan.tokenId }, this.exec.deadline()))
       : (this.chain.isV3Venue(plan.venue)
-        ? this.exec.buildV3Mint({ ...finalPlan, amount0Min: 0, amount1Min: 0 }, this.exec.deadline())
+        // A pool we just created gets real minimums: it was empty a moment ago, so its price
+        // could have been pushed anywhere for free between the create tx and this mint.
+        ? this.exec.buildV3Mint({ ...finalPlan, ...(plan.init
+          ? { amount0Min: ((amt.amount0 * (10000n - slip)) / 10000n).toString(), amount1Min: ((amt.amount1 * (10000n - slip)) / 10000n).toString() }
+          : { amount0Min: 0, amount1Min: 0 }) }, this.exec.deadline())
         : this.exec.buildV4Mint(finalPlan, this.exec.deadline()));
     // The plan is also stored in the txs table: if its receipt fails to be read (RPC down,
     // past the wait limit), bookPendingMints books the position later from the receipt —
