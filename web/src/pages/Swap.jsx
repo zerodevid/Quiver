@@ -168,7 +168,8 @@ function TokenPicker({ value, onChange, list, all, exclude, side, onImport }) {
 const PER_HAL = 5;
 // Valued = has a price and its value is at least one cent; the rest (no price / dust)
 // are collected below so meaningful assets do not drown among memecoins.
-const valued = (x) => x.usd != null && x.usd >= 0.01;
+// A token that refuses to leave the wallet counts as valueless whatever its pool price says.
+const valued = (x) => !x.transferBlocked && x.usd != null && x.usd >= 0.01;
 // (A hidden token can still be chosen via the token picker in the swap card.)
 
 function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price, onRetryPrice }) {
@@ -250,8 +251,11 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
               </div>
             )}
             <div className={`group flex items-center gap-3 px-4 py-2.5 text-sm ${x.address === from ? 'bg-accent/5' : ''}`}>
-              <button type="button" disabled={!(x.amount > 0)} onClick={() => onUse(x.address)}
-                className="flex min-w-0 flex-1 items-center gap-3 text-left disabled:cursor-default">
+              {/* A div, not a button: the link logos inside the text block are anchors and cannot nest in one. */}
+              <div role="button" tabIndex={x.amount > 0 ? 0 : -1} aria-disabled={!(x.amount > 0)}
+                onClick={() => x.amount > 0 && onUse(x.address)}
+                onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && x.amount > 0) { e.preventDefault(); onUse(x.address); } }}
+                className={`flex min-w-0 flex-1 items-start gap-3 text-left ${x.amount > 0 ? 'cursor-pointer' : 'cursor-default'}`}>
                 <TokenIcon address={x.address} symbol={x.symbol} size={28} />
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-1.5">
@@ -267,12 +271,18 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
                   <span className="num block truncate text-xs text-muted">
                     {x.priceUsd != null ? usd(x.priceUsd, x.priceUsd < 1 ? 6 : 2) : price === 'muat' ? '…' : t('tanpa harga')}
                   </span>
+                  {!x.native && (
+                    <span className="mt-1 flex items-center gap-1.5">
+                      <TradeLinks token={x.address} compact />
+                      <DataLinks token={x.address} compact />
+                    </span>
+                  )}
                 </span>
-                <span className="shrink-0 text-end">
+                <span className="shrink-0 self-start text-end">
                   <span className={`num block ${x.amount > 0 ? 'font-medium' : 'text-muted'}`}>{num(x.amount, 6)}</span>
                   <span className={`num block text-xs text-muted ${x.transferBlocked ? 'line-through' : ''}`}>{x.usd != null ? usd(x.usd) : ''}</span>
                 </span>
-              </button>
+              </div>
               {x.custom && (
                 <Button size="sm" variant="ghost" isIconOnly aria-label={t('Hapus dari daftar')} onPress={() => onRemove(x)}
                   className="-mr-2 size-7 text-muted">
@@ -280,12 +290,6 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
                 </Button>
               )}
             </div>
-            {!x.native && (
-              <span className="-mt-1.5 flex items-center gap-2 px-4 pb-2.5 pl-14">
-                <TradeLinks token={x.address} compact />
-                <DataLinks token={x.address} compact />
-              </span>
-            )}
             </div>
           ))}
         </div>
