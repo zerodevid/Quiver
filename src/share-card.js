@@ -529,8 +529,8 @@ function spotGeometry(size) {
       stats: { y: 880, cols: 3 }, mascot: { h: 760, maxW: 900, cx: W / 2, bottom: 1780 }, footY: 1800 };
   }
   if (size === 'square') {
-    return { W, H, k: 1.1, logoY: 52, metaY: 178, titleY: 246, labelY: 352, bigY: 488, pillY: 558, maxBig: 150, right: W - PAD,
-      stats: { y: 660, cols: 1, w: 470 }, mascot: { h: 560, maxW: 500, right: W - 24, bottom: H + 24 }, footY: H - 44 };
+    return { W, H, k: 1.45, logoY: 56, metaY: 196, titleY: 278, labelY: 396, bigY: 556, pillY: 636, maxBig: 190, right: W - PAD,
+      stats: { y: 712, cols: 1, w: 500, rowH: 100 }, mascot: { h: 500, maxW: 440, right: W - 20, bottom: H + 20 }, footY: H - 40 };
   }
   return { W, H, k: 1, logoY: 44, metaY: 150, titleY: 208, labelY: 298, bigY: 402, pillY: 452, maxBig: 116, right: 700,
     stats: { y: 506, cols: 3 }, mascot: { h: 540, maxW: 480, right: W - 36, bottom: H + 28 }, footY: H - 26 };
@@ -599,7 +599,7 @@ function spotlight({ meta, icons, title: titleText, chips = [], label, big, tint
   }
   if (sub) out += fitted(sub, px, S.pillY + 7 * k, S.right - px, { size: 19 * k, color: T.muted });
   // Three stats, each marked by a short tinted bar on its left.
-  const st = S.stats, colW = st.cols === 1 ? st.w : (S.right - PAD) / st.cols, rowH = 78 * k;
+  const st = S.stats, colW = st.cols === 1 ? st.w : (S.right - PAD) / st.cols, rowH = st.rowH || 78 * k;
   stats.forEach(([l, v, color], i) => {
     const sx = PAD + (st.cols === 1 ? 0 : i * colW), sy = st.y + (st.cols === 1 ? i * rowH : 0);
     out += `<rect x="${sx}" y="${sy}" width="${3 * k}" height="${54 * k}" rx="${rx(1.5 * k)}" fill="${tint}" fill-opacity="0.7"/>`
