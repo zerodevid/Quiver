@@ -1,7 +1,7 @@
 // Month replay — the "Video" tab of the PnL calendar month card. A ~19 second square clip:
 // the empty month grid appears, the days light up one by one in calendar order (each day's
-// realized PnL pops in its cell while the month total runs up at the top), the best day is
-// singled out, then a summary card and the logo outro.
+// realized PnL pops in its cell while the month total runs up at the top; the sweep stops at
+// the last day with PnL), the best day is singled out, then a summary card and the logo outro.
 //
 // Drawn in the browser and recorded by ReplayPlayer (ShareReplay.jsx), like the position
 // replay; the server only hands over the month's figures (GET /api/share/month — the same
@@ -45,10 +45,16 @@ export function buildMonth({ month, daily, counts = {}, cost = 0, chain }, local
   const first = new Date(Date.UTC(y, mo - 1, 1)).getUTCDay(), n = new Date(Date.UTC(y, mo, 0)).getUTCDate();
   const rows = Math.ceil((first + n) / 7);
   const cw = (GRID.w - GRID.gap * 6) / 7, ch = (GRID.h - GRID.head - GRID.gap * (rows - 1)) / rows;
+  // The sweep stops at the last day with PnL: the empty days after it (the rest of a month
+  // still running) are never reached, and the sweep's time is spread over the days before.
+  const keyOf = (d) => `${month}-${String(d).padStart(2, '0')}`;
+  let last = n;
+  while (last > 1 && daily[keyOf(last)] == null) last--;
   const days = [];
   for (let d = 1; d <= n; d++) {
-    const key = `${month}-${String(d).padStart(2, '0')}`, i = first + d - 1;
-    days.push({ d, key, v: daily[key] ?? null, n: counts[key] || 0, at: lerp(TL.days, TL.daysEnd, (d - 1) / Math.max(1, n - 1)),
+    const key = keyOf(d), i = first + d - 1;
+    days.push({ d, key, v: daily[key] ?? null, n: counts[key] || 0,
+      at: d > last ? Infinity : lerp(TL.days, TL.daysEnd, (d - 1) / Math.max(1, last - 1)),
       x: GRID.x + (i % 7) * (cw + GRID.gap), y: GRID.y + GRID.head + Math.floor(i / 7) * (ch + GRID.gap) });
   }
   const active = days.filter((x) => x.v != null);
