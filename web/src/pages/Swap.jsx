@@ -258,7 +258,8 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
                     <TokenSym address={x.address} symbol={x.symbol} className="truncate font-medium" />
                     {x.custom && <span className="rounded bg-default px-1.5 py-px text-[0.6875rem] font-medium text-muted">{t('manual')}</span>}
                     {x.transferBlocked && (
-                      <span className="inline-flex items-center gap-1 rounded bg-danger/15 px-1.5 py-px text-[0.6875rem] font-medium text-danger">
+                      <span title={t('Kontrak token ini menolak transfer dari wallet kamu, jadi hampir pasti tidak bisa dijual — ciri airdrop jebakan (honeypot). Nilai di atas hanya harga pool, bukan uang yang bisa ditarik. Jangan approve atau menukarnya; cek dulu lewat tautan di baris ini.')}
+                        className="inline-flex cursor-help items-center gap-1 rounded bg-danger/15 px-1.5 py-px text-[0.6875rem] font-medium text-danger">
                         <TriangleAlert className="size-3" />{t('Tidak bisa dikirim')}
                       </span>
                     )}
@@ -272,6 +273,12 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
                   <span className={`num block text-xs text-muted ${x.transferBlocked ? 'line-through' : ''}`}>{x.usd != null ? usd(x.usd) : ''}</span>
                 </span>
               </button>
+              {!x.isQuote && !x.native && (
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <TradeLinks token={x.address} compact />
+                  <DataLinks token={x.address} compact />
+                </span>
+              )}
               {x.custom && (
                 <Button size="sm" variant="ghost" isIconOnly aria-label={t('Hapus dari daftar')} onPress={() => onRemove(x)}
                   className="-mr-2 size-7 text-muted">
@@ -279,17 +286,6 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
                 </Button>
               )}
             </div>
-            {x.transferBlocked && (
-              <div className="space-y-2 border-t border-danger/20 bg-danger/5 px-4 py-2.5 text-xs">
-                <p className="text-danger">
-                  {t('Kontrak token ini menolak transfer dari wallet kamu, jadi hampir pasti tidak bisa dijual — ciri airdrop jebakan (honeypot). Nilai di atas hanya harga pool, bukan uang yang bisa ditarik. Jangan approve atau menukarnya; cek dulu di bawah.')}
-                </p>
-                <span className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                  <TradeLinks token={x.address} compact />
-                  <DataLinks token={x.address} compact />
-                </span>
-              </div>
-            )}
             </div>
           ))}
         </div>
