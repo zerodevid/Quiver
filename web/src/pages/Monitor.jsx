@@ -219,7 +219,7 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
   const headline = inRange == null ? null : inRange ? ['IN-RANGE', 'text-success', 'success'] : ['DI LUAR RENTANG', 'text-danger', 'danger'];
   const many = g.items.length > 1;
   const sum = (f) => g.items.reduce((a, x) => a + (f(x.p) || 0), 0);
-  const gPnl = sum((x) => x.pnlUsd), gCost = sum((x) => x.costUsd), gFee = sum((x) => x.feeUsd);
+  const gPnl = sum((x) => x.pnlNetUsd ?? x.pnlUsd), gCost = sum((x) => x.costUsd), gFee = sum((x) => x.feeUsd);
   const gIn = g.items.filter((x) => (x.edge ? x.edge.ok : x.p.inRange) === true).length;
   const h = g.hist;   // history of closed positions in this pool (null until /api/monitor arrives)
   const pairName = `${p0.symbol0}/${p0.symbol1}`;
@@ -322,7 +322,9 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
             symbol0={p0.symbol0} symbol1={p0.symbol1} entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} showPrices={false} />
           <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs sm:grid-cols-4">
             <div><dt className="text-[0.6875rem] text-muted">{t('Nilai')}</dt><dd className="num font-medium">{usd(p.valueUsd)}<span className="ml-1 font-normal text-muted">/ {usd(p.costUsd)}</span></dd></div>
-            <div><dt className="text-[0.6875rem] text-muted">PnL</dt><dd className={`num font-medium ${tone(p.pnlUsd)}`}>{p.syncing ? '—' : <>{usd(p.pnlUsd)} <span className="font-normal">{pct(p.pnlPct, 2)}</span></>}</dd></div>
+            <div><dt className="text-[0.6875rem] text-muted">PnL</dt><dd className={`num font-medium ${tone(p.pnlNetUsd ?? p.pnlUsd)}`}
+              title={p.exitCostUsd > 0.005 ? t('Sudah dikurangi perkiraan biaya jual memecoin saat tutup ({a}). Sebelum biaya: {b}.', { a: usd(p.exitCostUsd), b: usd(p.pnlUsd) }) : undefined}>
+              {p.syncing ? '—' : <>{usd(p.pnlNetUsd ?? p.pnlUsd)} <span className="font-normal">{pct(p.pnlNetPct ?? p.pnlPct, 2)}</span></>}</dd></div>
             <div><dt className="text-[0.6875rem] text-muted">{t('Fee belum diklaim')}</dt><dd className={`num font-medium ${p.feeUsd > 0.005 ? 'text-success' : ''}`}>{p.syncing ? '—' : usd(p.feeUsd)}</dd></div>
             <div><dt className="text-[0.6875rem] text-muted">IL</dt><dd className={`num font-medium ${tone(p.ilUsd)}`}>{p.ilUsd == null ? '—' : usd(p.ilUsd)}</dd></div>
           </dl>

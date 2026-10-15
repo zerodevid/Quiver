@@ -15,6 +15,10 @@ const IF_POSM = new ethers.Interface(ABI.posmV4);
 const IF_NPM = new ethers.Interface(ABI.npmV3);
 const IF_POOL3 = new ethers.Interface(ABI.poolV3);
 
+// Selling the memecoin that comes out of a close never gets the pool's mid price: fee + price
+// impact always take a cut. Measured over a month of sales: median ~1.5%, mean 1.4-5%.
+const SELL_LOSS_DEFAULT_PCT = 1.5, SELL_LOSS_MIN_PCT = 0.5, SELL_LOSS_MAX_PCT = 6, SELL_LOSS_SAMPLES = 60;
+
 class Positions {
   constructor({ rpc, store, chain, log }) {
     chain = ensureChain(chain);
@@ -24,6 +28,29 @@ class Positions {
     this.lastSync = 0;
     this.syncing = null; // the sync currently running, shared
     this.markWarned = new Set();   // positions whose pool price has already been reported as absurd
+  }
+
+  // Expected loss (%) when selling leftover memecoin at the pool's mid price: the median of the
+  // last sales on this chain (close-price value vs what was really received), clamped. Cached.
+  sellLossPct() {
+    if (this.sellLossCache && Date.now() - this.sellLossCache.ts < 10 * 60_000) return this.sellLossCache.pct;
+    let pct = SELL_LOSS_DEFAULT_PCT;
+    try {
+      const losses = [];
+      const rows = this.store.all("SELECT detail FROM txs WHERE chain=? AND kind='sell_leftover' AND status='sukses' ORDER BY ts DESC LIMIT ?",
+        this.chain.network, SELL_LOSS_SAMPLES);
+      for (const r of rows) {
+        for (const x of JSON.parse(r.detail || '{}').positionSales || []) {
+          if (x.closeQuote > 0 && x.gotQuote >= 0) losses.push(((x.closeQuote - x.gotQuote) / x.closeQuote) * 100);
+        }
+      }
+      if (losses.length >= 5) {
+        losses.sort((a, b) => a - b);
+        pct = Math.min(SELL_LOSS_MAX_PCT, Math.max(SELL_LOSS_MIN_PCT, losses[Math.floor(losses.length / 2)]));
+      }
+    } catch { /* keep the default */ }
+    this.sellLossCache = { pct, ts: Date.now() };
+    return pct;
   }
 
   open() {
@@ -608,6 +635,21 @@ class Positions {
       const withdrawnUsd = toUsd(r.out_quote) ?? 0;
       const pnlUsd = valUsd + feeUsd + claimedUsd + withdrawnUsd - costUsd;
 
+      // What closing will really cost: the memecoin side (principal + unclaimed fee) is sold at
+      // the pool's mid price in this PnL, but the sale pays fee + price impact. pnlUsd stays the
+      // raw mid-price figure (exit triggers and equity use it); pnlNetUsd is what to expect.
+      let exitCostUsd = 0;
+      const qs = this.chain.quoteSideOf(r.token0, r.token1);
+      if (qs && s && mark && Lval > 0n && !valueStale) {
+        const memeIs0 = qs.side === 1;
+        const vm = this.chain.valueInQuote({
+          sqrtPriceX96: mark.sqrt, dec0: d0, dec1: d1, token0: r.token0, token1: r.token1,
+          amount0: memeIs0 ? amount0 + f.fee0 : 0n, amount1: memeIs0 ? 0n : amount1 + f.fee1,
+        });
+        if (vm && Number.isFinite(vm.value)) exitCostUsd = (toUsd(vm.value) || 0) * (this.sellLossPct() / 100);
+      }
+      const pnlNetUsd = pnlUsd - exitCostUsd;
+
       // HODL: if the initial capital were left as tokens, what would it be worth now?
       // The difference = impermanent loss.
       let hodlUsd = null;
@@ -639,6 +681,7 @@ class Positions {
         entrySqrt: Positions.entrySqrtOf(r),
         valueUsd: valUsd, feeUsd, claimedUsd, withdrawnUsd, costUsd, pnlUsd,
         pnlPct: costUsd > 0 ? (pnlUsd / costUsd) * 100 : 0,
+        exitCostUsd, pnlNetUsd, pnlNetPct: costUsd > 0 ? (pnlNetUsd / costUsd) * 100 : 0,
         ilUsd: hodlUsd != null ? valUsd - hodlUsd : null,
         ageHours: (Date.now() - (r.opened_ts || Date.now())) / 3600000,
         // Empty only if the chain REALLY answers zero — not because it failed to read.

@@ -1828,6 +1828,8 @@ const EN = {
     'Capital and proceeds come from the wallet scan; open positions are revalued at the current price.',
   'Harga kini tidak terbaca — angka ini dari pemindaian terakhir wallet tersebut.':
     'Current price unavailable — this figure is from that wallet’s last scan.',
+  'Sudah dikurangi perkiraan biaya jual memecoin saat tutup ({a}). Sebelum biaya: {b}.':
+    'Net of the expected cost of selling the memecoin on close ({a}). Before cost: {b}.',
   'tersimpan': 'stored',
   'Posisi wallet': 'Wallet positions',
   'Gerakan target ({n})': 'Target moves ({n})',

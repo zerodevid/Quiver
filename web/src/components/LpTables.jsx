@@ -72,7 +72,8 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, w
   const { close, closeAll, closing } = useClosePosition(reload);
   const rows = [...open.map((p) => ({ ...p, status: 'open' })), ...closed];
   const pairOf = usePairs(rows);
-  const pnl = sum(rows, (p) => p.pnlUsd);
+  const netOf = (p) => (p.status === 'open' ? p.pnlNetUsd ?? p.pnlUsd : p.pnlUsd);
+  const pnl = sum(rows, netOf);
   const canClose = !!reload;
   const sourceOf = (p) => (onSource && p.target && p.mirror_of
     ? wallets?.find((w) => w.wallet?.toLowerCase() === p.target.toLowerCase() && w.venue === p.venue && String(w.token_id) === String(p.mirror_of))
@@ -108,8 +109,15 @@ export function BotPositions({ open, closed, onFocus, focusId, onHist, reload, w
             p.status === 'open'
               ? <div>{usd(p.valueUsd)}{p.feeUsd > 0.005 && <div className="text-xs text-success">+{usd(p.feeUsd)} fee</div>}</div>
               : usd(p.outUsd)) },
-          { key: 'pnl', label: 'PnL', align: 'end', sort: (p) => p.pnlUsd, render: (p) => (
-            <div className={tone(p.pnlUsd)}>{usd(p.pnlUsd)}<div className="text-xs">{p.pnlPct == null ? '' : pct(p.pnlPct, 2)}</div></div>) },
+          { key: 'pnl', label: 'PnL', align: 'end', sort: netOf, render: (p) => {
+            // Open: net of the expected cost of selling the memecoin on close (pnlUsd is the mid-price figure).
+            const net = p.status === 'open' && p.pnlNetUsd != null;
+            return (
+              <div className={tone(netOf(p))}
+                title={net && p.exitCostUsd > 0.005 ? t('Sudah dikurangi perkiraan biaya jual memecoin saat tutup ({a}). Sebelum biaya: {b}.', { a: usd(p.exitCostUsd), b: usd(p.pnlUsd) }) : undefined}>
+                {usd(netOf(p))}<div className="text-xs">{(net ? p.pnlNetPct : p.pnlPct) == null ? '' : pct(net ? p.pnlNetPct : p.pnlPct, 2)}</div>
+              </div>);
+          } },
           { key: 'when', label: 'Waktu', align: 'end', sort: (p) => p.closed_ts || p.opened_ts, render: (p) => <When p={p} /> },
           ...(onFocus || canClose || canSource ? [{ key: 'act', label: '', sortable: false, className: 'text-end', render: (p) => (
             <div className="flex flex-wrap items-center justify-end gap-2">
