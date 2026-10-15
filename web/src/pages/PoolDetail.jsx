@@ -13,7 +13,7 @@ import { usePoll } from '../hooks';
 import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, TradeLinks, DataLinks, DataTable, CopyBtn } from '../components/ui';
 import { TokenPair, TokenSym, PairName, poolHref } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
-import { PriceChart, DexEmbed, DexInfoEmbed, GmgnEmbed, TradesTape, MarketPanel, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc } from './PositionDetail';
+import { PriceChart, DexEmbed, DexInfoEmbed, GmgnEmbed, TradesTape, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc } from './PositionDetail';
 import { GmgnWallets } from '../components/Gmgn';
 import { BAND_COLORS } from '../components/CandleChart';
 import { usd, pct, tone, num, price, sqrtPrice, tickPrice, shortId, short, age } from '../fmt';
@@ -200,6 +200,7 @@ export default function PoolDetail({ param }) {
         </Panel>
 
         <div className="grid gap-3">
+          <DexInfoEmbed pool={ref} pair={m?.pair} />
           <Panel title="Posisi bot di pool ini" bodyClass="px-4 py-1">
             {all.length === 0
               ? <div className="py-3 text-sm text-muted">{t('Bot belum pernah membuka posisi di pool ini.')}</div>
@@ -217,10 +218,6 @@ export default function PoolDetail({ param }) {
                 </div>
               )}
           </Panel>
-          <Panel title="Pasar" desc="DexScreener · diperbarui tiap 30 detik" bodyClass="p-0">
-            <MarketPanel pair={m?.pair} pool={ref} />
-          </Panel>
-          <DexInfoEmbed pool={ref} />
         </div>
       </div>
 

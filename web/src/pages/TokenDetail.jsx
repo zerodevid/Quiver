@@ -13,7 +13,7 @@ import { GmgnTokenPanel, GmgnWallets } from '../components/Gmgn';
 import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
 import PositionHistory from '../components/PositionHistory';
 import WalletPositionHistory from '../components/WalletPositionHistory';
-import { MarketPanel, DexInfoEmbed, kUsd } from './PositionDetail';
+import { DexInfoEmbed, kUsd } from './PositionDetail';
 import { usd, pct, tone, num, age, short, price, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
 import { canonAddr } from '../chain';
@@ -138,12 +138,7 @@ export default function TokenDetail({ param }) {
             </div>
           </Panel>
           <GmgnTokenPanel address={a} />
-          {sel && (
-            <Panel title="Pool terpilih" desc="DexScreener · diperbarui tiap 30 detik" bodyClass="p-0">
-              <MarketPanel pair={sel} pool={sel.pool} />
-            </Panel>
-          )}
-          {sel && <DexInfoEmbed pool={sel.pool} />}
+          {sel && <DexInfoEmbed pool={sel.pool} pair={sel} />}
         </div>
       </div>
 

@@ -191,13 +191,22 @@ export function DexEmbed({ pool }) {
 
 // DexScreener's own token info card (banner, socials, price, liquidity, FDV, changes, buys/sells,
 // pair age). In a column this narrow the embed shows the info card only, without its chart.
-export function DexInfoEmbed({ pool }) {
+// With `pair` (our market read of the same pool) the chart/trade link buttons go under the card.
+export function DexInfoEmbed({ pool, pair = null }) {
+  const { t } = useI18n();
   const dark = document.documentElement.classList.contains('dark');
   const q = new URLSearchParams({ embed: '1', theme: dark ? 'dark' : 'light' });
   return (
     <Panel title="DexScreener" bodyClass="p-0 overflow-hidden">
       <iframe title="DexScreener info" src={`https://dexscreener.com/${chainInfo().dexscreener}/${pool}?${q}`}
         className="block h-[860px] w-full bg-surface" allow="clipboard-write" loading="lazy" />
+      {pair && !pair.error && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border px-4 py-2.5 text-xs">
+          <DataLinks pool={pool} dexUrl={pair.url} />
+          <TradeLinks token={pair.base?.address} pool={pool} />
+          {pair.websites?.map((w) => <a key={w} href={w} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:underline">{t('Situs')} <ExternalLink className="size-3" /></a>)}
+        </div>
+      )}
     </Panel>
   );
 }
@@ -660,10 +669,7 @@ export default function PositionDetail({ id }) {
               {p.hooks && !/^0x0{40}$/.test(p.hooks) && <KV label="Hook"><span className="mono">{short(p.hooks)}</span> <CopyBtn value={p.hooks} /></KV>}
             </div>
           </Panel>
-          <Panel title="Pasar" desc="DexScreener · diperbarui tiap 30 detik" bodyClass="p-0">
-            <MarketPanel pair={m?.pair} pool={p.pool_ref} />
-          </Panel>
-          <DexInfoEmbed pool={p.pool_ref} />
+          <DexInfoEmbed pool={p.pool_ref} pair={m?.pair} />
           {!closed && p.empty && <Notice status="warning" title="Likuiditas sudah nol di chain">{t('Posisi ini akan ditandai tertutup pada sinkronisasi berikutnya.')}</Notice>}
         </div>
       </div>
