@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Chip } from '@heroui/react';
 import { Search, ChevronRight } from 'lucide-react';
 import { get } from '../api';
-import { PageHeader, Panel, Text, DataTable, WalletLinks } from '../components/ui';
+import { PageHeader, Panel, Text, DataTable, WalletLinks, CopyBtn } from '../components/ui';
 import WalletDetail from '../components/WalletDetail';
 import { kUsd, tone, short, num, ago } from '../fmt';
 import { useI18n } from '../i18n';
@@ -60,7 +60,7 @@ export default function WalletPage({ param }) {
                   <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                     <button type="button" onClick={() => open(w.address)} className="group min-w-0 max-w-56 text-start sm:w-56 sm:shrink-0" title={w.address}>
                       {w.label && <div className="truncate font-medium group-hover:underline">{w.label}</div>}
-                      <div className={`mono ${w.label ? 'text-xs text-muted group-hover:text-foreground' : 'group-hover:underline'}`}>{short(w.address)}</div>
+                      <div className={`mono ${w.label ? 'text-xs text-muted group-hover:text-foreground' : 'group-hover:underline'}`}>{short(w.address)}<CopyBtn value={w.address} className="ml-1" /></div>
                     </button>
                     {w.isTarget && <Chip size="sm" variant="soft" color="accent" className="shrink-0 whitespace-nowrap">{t('target tersimpan')}</Chip>}
                     <WalletLinks address={w.address} compact className="shrink-0" />

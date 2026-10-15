@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@heroui/react';
 import AdvancedChart from '../components/AdvancedChart';
 import { usePoll } from '../hooks';
-import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink, TradeLinks, DataLinks } from '../components/ui';
+import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink, TradeLinks, DataLinks, CopyBtn } from '../components/ui';
 import TokenIcon, { TokenPair, PairName } from '../components/TokenIcon';
 import { GmgnTokenPanel, GmgnWallets } from '../components/Gmgn';
 import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
@@ -159,7 +159,7 @@ export default function TokenDetail({ param }) {
                   <div>
                     <PairName token0={p.base.address} token1={p.quote.address} symbol0={p.base.symbol} symbol1={p.quote.symbol} pool={p.pool} className="block font-medium" />
                     <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
-                      <span className="uppercase">{venueOf(p)}</span><span>·</span><span className="mono">{short(p.pool)}</span>
+                      <span className="uppercase">{venueOf(p)}</span><span>·</span><span className="mono">{short(p.pool)}</span><CopyBtn value={p.pool} />
                     </div>
                   </div>
                 </div>) },

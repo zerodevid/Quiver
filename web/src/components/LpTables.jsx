@@ -2,7 +2,7 @@
 // researched wallet positions, and target moves. The data comes from lpRows on the server.
 import { chainInfo, isEthLike, chainRef } from '../chain';
 import { Button } from '@heroui/react';
-import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing, TradeLinks, WalletLinks, PositionRef, baseTokenOf } from './ui';
+import { Panel, Dot, Empty, DataTable, PriceRange, Refreshing, TradeLinks, WalletLinks, PositionRef, baseTokenOf, CopyBtn } from './ui';
 import { TokenPair, PairName } from './TokenIcon';
 import { Pair } from '../pages/Positions';
 import { GmgnProvider } from './GmgnDot';
@@ -151,7 +151,7 @@ export function WalletPositions({ rows, onHist, jumpTo, loading = false, classNa
             <div className="max-w-40">
               <a href={(p.isTarget ? '#targets/' : '#wallet/') + p.wallet} className="group block" title={p.wallet}>
                 {p.walletLabel && <div className="truncate font-medium group-hover:underline">{p.walletLabel}</div>}
-                <div className="mono text-xs text-muted group-hover:text-foreground">{short(p.wallet)}</div>
+                <div className="mono text-xs text-muted group-hover:text-foreground">{short(p.wallet)}<CopyBtn value={p.wallet} className="ml-1" /></div>
               </a>
               <WalletLinks address={p.wallet} compact className="mt-0.5" />
             </div>) },
@@ -207,7 +207,7 @@ export function TargetMoves({ rows, className = '' }) {
             <div className="max-w-40">
               <a href={'#targets/' + x.target} className="group block" title={x.target}>
                 {x.targetLabel && <div className="truncate font-medium group-hover:underline">{x.targetLabel}</div>}
-                <div className="mono text-xs text-muted">{short(x.target)}</div>
+                <div className="mono text-xs text-muted">{short(x.target)}<CopyBtn value={x.target} className="ml-1" /></div>
               </a>
               <WalletLinks address={x.target} compact className="mt-0.5" />
             </div>) },

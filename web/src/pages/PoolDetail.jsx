@@ -10,7 +10,7 @@ import PositionHistory from '../components/PositionHistory';
 import WalletPositionHistory from '../components/WalletPositionHistory';
 import { useEffect, useState } from 'react';
 import { usePoll } from '../hooks';
-import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, TradeLinks, DataLinks, DataTable } from '../components/ui';
+import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, TradeLinks, DataLinks, DataTable, CopyBtn } from '../components/ui';
 import { TokenPair, TokenSym, PairName, poolHref } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
 import { PriceChart, DexEmbed, GmgnEmbed, TradesTape, MarketPanel, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc } from './PositionDetail';
@@ -49,7 +49,7 @@ function PairPools({ pool, poolRef, base, className = '' }) {
                 <div>
                   <PairName token0={p.base.address} token1={p.quote.address} symbol0={p.base.symbol} symbol1={p.quote.symbol} pool={p.pool} className="block font-medium" />
                   <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
-                    <span className="uppercase">{venueOf(p)}</span><span>·</span><span className="mono">{short(p.pool)}</span>
+                    <span className="uppercase">{venueOf(p)}</span><span>·</span><span className="mono">{short(p.pool)}</span><CopyBtn value={p.pool} />
                     {p.pool === poolRef && <><span>·</span><span className="text-accent">{t('pool ini')}</span></>}
                   </div>
                 </div>

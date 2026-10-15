@@ -26,7 +26,7 @@ import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
 import TargetSide from '../components/TargetSide';
 import ShareButton, { positionCard } from '../components/ShareCard';
-import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask, TradeLinks, DataLinks } from '../components/ui';
+import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask, TradeLinks, DataLinks, CopyBtn } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice, widthPct, txHref, addrHref, feeApr, aprText, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
@@ -642,9 +642,9 @@ export default function PositionDetail({ id }) {
               )}
               <KV label="Dibuka">{fmtDate(p.opened_ts)}<span className="ml-1 font-normal text-muted">({ago(p.opened_ts)})</span></KV>
               {closed && <KV label="Ditutup">{fmtDate(p.closed_ts)}</KV>}
-              {p.tx_open && <KV label="Tx buka"><span className="mono" title={p.tx_open}>{short(p.tx_open)}</span></KV>}
-              {p.tx_close && <KV label="Tx tutup"><span className="mono" title={p.tx_close}>{short(p.tx_close)}</span></KV>}
-              {p.hooks && !/^0x0{40}$/.test(p.hooks) && <KV label="Hook"><span className="mono">{short(p.hooks)}</span></KV>}
+              {p.tx_open && <KV label="Tx buka"><span className="mono" title={p.tx_open}>{short(p.tx_open)}</span> <CopyBtn value={p.tx_open} /></KV>}
+              {p.tx_close && <KV label="Tx tutup"><span className="mono" title={p.tx_close}>{short(p.tx_close)}</span> <CopyBtn value={p.tx_close} /></KV>}
+              {p.hooks && !/^0x0{40}$/.test(p.hooks) && <KV label="Hook"><span className="mono">{short(p.hooks)}</span> <CopyBtn value={p.hooks} /></KV>}
             </div>
           </Panel>
           <Panel title="Pasar" desc="DexScreener · diperbarui tiap 30 detik" bodyClass="p-0">

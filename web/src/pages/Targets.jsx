@@ -3,7 +3,7 @@ import { Button, Card, Chip, Switch, toast } from '@heroui/react';
 import { Trash2, SlidersHorizontal, Plus, ChevronRight, ArrowLeft, Copy, Pencil, Check as CheckIcon, X } from 'lucide-react';
 import { usePoll } from '../hooks';
 import { post } from '../api';
-import { PageHeader, Panel, Text, Empty, Loading, Stat, WalletLinks, ask } from '../components/ui';
+import { PageHeader, Panel, Text, Empty, Loading, Stat, WalletLinks, ask, CopyBtn } from '../components/ui';
 import RulesForm from '../components/RulesForm';
 import WalletDetail from '../components/WalletDetail';
 import WalletHoldings from '../components/WalletHoldings';
@@ -197,6 +197,7 @@ function TargetRow({ tg, enabled, onToggle, onChanged }) {
           </a>
           <div className="flex min-w-0 items-center gap-1">
             <a href={href} className="mono truncate text-xs text-muted hover:text-foreground">{short(tg.address)}</a>
+            <CopyBtn value={tg.address} />
             <WalletLinks address={tg.address} compact className="ml-2" />
           </div>
         </div>

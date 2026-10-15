@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Plus, Minus, ArrowLeftRight, CircleDollarSign, UserPlus, ExternalLink, RefreshCw } from 'lucide-react';
 import { Button } from '@heroui/react';
 import { usePoll } from '../hooks';
-import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Pick, Dot, TradeLinks, WalletLinks, baseTokenOf } from '../components/ui';
+import { PageHeader, Panel, DataTable, Empty, Loading, PriceRange, Segmented, Pick, Dot, TradeLinks, WalletLinks, baseTokenOf, CopyBtn } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
 import { usd, ago, short, txHref, locale as fmtLocale, ACTIONS, DECISIONS } from '../fmt';
 import { useChainInfo, EXPLORER_NAME } from '../chain';
@@ -107,7 +107,7 @@ export default function Activity() {
               <div className="w-44">
                 <a href={'#targets/' + a.target} className="group block" title={a.target}>
                   {a.targetLabel && <div className="truncate font-medium group-hover:underline">{a.targetLabel}</div>}
-                  <div className="mono mt-1 text-xs text-muted">{short(a.target)}</div>
+                  <div className="mono mt-1 text-xs text-muted">{short(a.target)}<CopyBtn value={a.target} className="ml-1" /></div>
                 </a>
                 <WalletLinks address={a.target} compact className="mt-0.5" />
               </div>) },

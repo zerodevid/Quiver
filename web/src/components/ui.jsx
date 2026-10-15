@@ -738,6 +738,23 @@ export function Segmented({ value, onChange, options, aria, size = 'md' }) {
   );
 }
 
+// Small icon-only copy button for a full value (address, hash). Safe inside links and clickable rows.
+export function CopyBtn({ value, className = '' }) {
+  const [done, setDone] = useState(false);
+  useEffect(() => { if (!done) return undefined; const id = setTimeout(() => setDone(false), 1500); return () => clearTimeout(id); }, [done]);
+  if (!value) return null;
+  const copy = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    try { await navigator.clipboard.writeText(value); setDone(true); } catch { /* clipboard permission denied */ }
+  };
+  return (
+    <button type="button" onClick={copy} title={value} aria-label={t('Salin')}
+      className={`inline-flex shrink-0 items-center rounded p-0.5 align-middle text-muted transition-colors hover:bg-default hover:text-foreground ${className}`}>
+      {done ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
+    </button>
+  );
+}
+
 // A short address that can be clicked to copy in full.
 export function CopyAddr({ address }) {
   const [done, setDone] = useState(false);
