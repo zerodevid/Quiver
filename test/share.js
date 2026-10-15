@@ -105,11 +105,11 @@ const withServer = async (telegram, fn) => {
       // PNG width & height are in the IHDR chunk (bytes 16–23).
       assert.strictEqual(png.readUInt32BE(16), 2400); assert.strictEqual(png.readUInt32BE(20), 1260);
     }
-    const id = shareCard.svgOf('position', p, { lang: 'id' }), en = shareCard.svgOf('position', p, { lang: 'en' });
+    const id = shareCard.svgOf('position', p, { layout: 'classic', lang: 'id' }), en = shareCard.svgOf('position', p, { layout: 'classic', lang: 'en' });
     assert.ok(id.includes('Harga masuk') && !id.includes('Entry price'));
     assert.ok(en.includes('Entry price') && en.includes('+17.50%'), 'English labels & figures');
     assert.ok(id.includes('+17,50%'), 'koma desimal Indonesia');
-    const hidden = shareCard.svgOf('position', p, { lang: 'id', hideAmounts: true });
+    const hidden = shareCard.svgOf('position', p, { layout: 'classic', lang: 'id', hideAmounts: true });
     assert.ok(!hidden.includes('$35,00') && hidden.includes('Nominal disembunyikan'), 'dollar amounts must not leak');
     assert.strictEqual(shareCard.caption('position', p, 'en'), 'USDG / MEME +17.50% · Quiver');
   });
@@ -117,11 +117,11 @@ const withServer = async (telegram, fn) => {
   await t('total card: net PnL (value − real capital) if capital is tracked, position PnL if not', () => {
     const now = { pnl: 129.36, value: 1198.29, capital: 1068.93, realizedUsd: 118.29, unrealizedUsd: 11.07, feeUsd: 28.06, openCount: 2 };
     const stats = { closedCount: 99, wins: 37, losses: 62, winRatePct: 37, best: 29.62 };
-    const net = shareCard.svgOf('total', { now: { ...now, netPnl: 98.29, capitalNet: 1100 }, stats }, { lang: 'en' });
+    const net = shareCard.svgOf('total', { now: { ...now, netPnl: 98.29, capitalNet: 1100 }, stats }, { layout: 'classic', lang: 'en' });
     assert.ok(net.includes('Net PnL') && net.includes('$98.29') && net.includes('+8.94%'), 'figures & percent from the net PnL against real capital');
     assert.ok(net.includes('capital $1,100.00 · position PnL $129.36'), 'sub-text: real capital + position PnL');
     assert.strictEqual(shareCard.caption('total', { now: { ...now, netPnl: 98.29, capitalNet: 1100 } }, 'en'), 'Net PnL $98.29 · Quiver');
-    const position = shareCard.svgOf('total', { now, stats }, { lang: 'en' });
+    const position = shareCard.svgOf('total', { now, stats }, { layout: 'classic', lang: 'en' });
     assert.ok(position.includes('Total PnL') && position.includes('$129.36') && position.includes('realized $118.29'), 'without tracked capital: position PnL');
   });
 
@@ -135,7 +135,7 @@ const withServer = async (telegram, fn) => {
     // Each theme has a different background; a profit ≥ 20% gets a stamp.
     const bgs = new Set();
     for (const theme of Object.keys(shareCard.THEMES)) {
-      const svg = shareCard.svgOf('position', p, { lang: 'en', theme, size: 'square' });
+      const svg = shareCard.svgOf('position', p, { layout: 'classic', lang: 'en', theme, size: 'square' });
       bgs.add(svg.match(/<linearGradient id="bg"[^>]*>([\s\S]*?)<\/linearGradient>/)[1]);
       assert.ok(svg.includes('BIG WIN'), `${theme}: big-profit stamp`);
     }
@@ -146,15 +146,36 @@ const withServer = async (telegram, fn) => {
     // Pixel theme: Pixelify Sans font, box corners, stepped chart lines (H/V, not L).
     const t0 = Date.now();
     const chart = { kind: 'line', pts: Array.from({ length: 20 }, (_, i) => [t0 + i * 60e3, 1 + Math.sin(i / 3)]), band: [0.5, 1.5], marks: [{ t: t0 + 5 * 60e3, v: 1.2 }] };
-    const pixel = shareCard.svgOf('position', p, { lang: 'id', theme: 'pixel', chart });
+    const pixel = shareCard.svgOf('position', p, { layout: 'classic', lang: 'id', theme: 'pixel', chart });
     assert.ok(pixel.includes('font-family="Pixelify Sans"') && pixel.includes('rx="0"'), 'tema piksel: font & sudut kotak');
     assert.ok(/<path d="M[\d.]+ [\d.]+ H[\d.]+ V/.test(pixel) && pixel.includes('url(#chartFill)'), 'grafik bertangga + isian');
-    const smooth = shareCard.svgOf('position', p, { lang: 'id', chart });
+    const smooth = shareCard.svgOf('position', p, { layout: 'classic', lang: 'id', chart });
     assert.ok(/<path d="M[\d.]+ [\d.]+ L[\d.]+ /.test(smooth) && smooth.includes('stroke-dasharray="6 6"'), 'other themes: diagonal lines + range bounds');
-    assert.ok(!shareCard.svgOf('position', p, { lang: 'id' }).includes('chartFill'), 'tanpa data → tanpa grafik');
+    assert.ok(!shareCard.svgOf('position', p, { layout: 'classic', lang: 'id' }).includes('chartFill'), 'tanpa data → tanpa grafik');
     const bars = shareCard.svgOf('daily', { day: '2024-01-16', rows: [{ symbol0: 'USDG', symbol1: 'MEME', cost: 200, pnl: 50 }], monthTotal: 50 },
-      { lang: 'id', chart: { kind: 'bars', bars: Array.from({ length: 31 }, (_, i) => ({ v: i === 15 ? 50 : i % 4 ? 0 : -3, on: i === 15 })) } });
+      { layout: 'classic', lang: 'id', chart: { kind: 'bars', bars: Array.from({ length: 31 }, (_, i) => ({ v: i === 15 ? 50 : i % 4 ? 0 : -3, on: i === 15 })) } });
     assert.strictEqual((bars.match(/fill-opacity="0.85"/g) || []).length, 1, 'daily: a single highlighted bar');
+  });
+
+  await t('spotlight layout (default): big PnL figure, chain pill, three stats; sizes and hidden amounts honoured', () => {
+    const p = { id: 1, venue: 'v4', fee: 10000, token0: ADDR.usdg, token1: MEME, symbol0: 'MEME', symbol1: 'USDG', dec0: 18, dec1: 6, quoteSide: 1,
+      costUsd: 500, claimedUsd: 42.1, pnlUsd: 188.42, pnlPct: 37.68, ageHours: 3.75, opened_ts: Date.now() - 3.75 * 3600e3, closed_ts: Date.now(), status: 'closed' };
+    assert.strictEqual(shareCard.layoutKey('apa'), 'spotlight'); assert.strictEqual(shareCard.layoutKey('classic'), 'classic');
+    const en = shareCard.svgOf('position', p, { lang: 'en', chain: { key: 'robinhood' } });
+    assert.ok(en.includes('+$188.42') && en.includes('+37.68%') && en.includes('MEME/USDG'), 'signed dollar figure, percent pill, pair');
+    assert.ok(en.includes('UNISWAP V4 · FEE 1%') && en.includes('Robinhood Chain') && en.includes('id="pill-icon"'), 'venue meta line & chain pill');
+    assert.ok(en.includes('FEES EARNED') && en.includes('$42.10') && en.includes('CAPITAL') && !en.includes('Entry price'), 'three stats, no classic grid');
+    const hidden = shareCard.svgOf('position', p, { lang: 'id', hideAmounts: true });
+    assert.ok(!hidden.includes('188,42') && !hidden.includes('$42,10') && hidden.includes('+37,68%'), 'dollar amounts must not leak');
+    for (const [size, w, h] of [['wide', 2400, 1260], ['square', 2160, 2160], ['story', 2160, 3840]]) {
+      for (const kind of ['position', 'total', 'daily']) {
+        const data = kind === 'position' ? p : kind === 'total'
+          ? { now: { pnl: 10, value: 100, capital: 90, feeUsd: 1, openCount: 1 }, stats: { winRatePct: 50 } }
+          : { day: '2024-01-16', rows: [{ cost: 200, pnl: 50 }], monthTotal: 50 };
+        const png = shareCard.render(kind, data, { lang: 'id', size, layout: 'spotlight' });
+        assert.strictEqual(png.readUInt32BE(16), w, `${kind} ${size}: width`); assert.strictEqual(png.readUInt32BE(20), h, `${kind} ${size}: height`);
+      }
+    }
   });
 
   await t('GET /api/share/card: a position from the DB is answered with a PNG; wrong kind/id → 400 JSON', async () => {

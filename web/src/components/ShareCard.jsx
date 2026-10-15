@@ -21,6 +21,8 @@ import { usd, pct } from '../fmt';
 // Size & theme: the keys are the same as SIZES/THEMES in src/share-card.js (the server
 // draws; unknown ones fall back to the default).
 const SIZES = [['wide', 'Lebar', 1200 / 630], ['square', 'Persegi', 1], ['story', 'Story', 1080 / 1920]];
+// Layout: spotlight = one big figure + large mascot; classic = stat tiles + chart strip.
+const LAYOUTS = [['spotlight', 'Sorot'], ['classic', 'Klasik']];
 const THEMES = [['dark', 'Grafit'], ['midnight', 'Malam'], ['sunset', 'Senja'], ['neon', 'Neon'], ['gold', 'Emas'], ['light', 'Terang'], ['pixel', 'Piksel']];
 const tzName = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ''; } };
 // The last choice is remembered in this browser.
@@ -42,6 +44,7 @@ export function ShareDialog({ card, onClose }) {
   const [hide, setHide] = useState(false);
   const [size, setSize] = useState(() => remember('quiver-share-size', 'wide', SIZES.map(([k]) => k)));
   const [theme, setTheme] = useState(() => remember('quiver-share-theme', 'dark', THEMES.map(([k]) => k)));
+  const [layout, setLayout] = useState(() => remember('quiver-share-layout', 'spotlight', LAYOUTS.map(([k]) => k)));
   const [blob, setBlob] = useState(null);
   const [loading, setLoading] = useState(false);
   const [url, setUrl] = useState(null);
@@ -59,13 +62,14 @@ export function ShareDialog({ card, onClose }) {
 
   const pickSize = (v) => { setSize(v); keep('quiver-share-size', v); };
   const pickTheme = (v) => { setTheme(v); keep('quiver-share-theme', v); };
+  const pickLayout = (v) => { setLayout(v); keep('quiver-share-layout', v); };
 
-  // The image is requested again when the card, language, size, theme changes, or amounts are hidden.
+  // The image is requested again when the card, language, size, theme, layout changes, or amounts are hidden.
   useEffect(() => {
     if (!card) { setBlob(null); return; }
     let alive = true;
     setLoading(true);
-    const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme });
+    const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme, layout });
     fetch(`/api/share/card?${q}`, { credentials: 'same-origin' })
       .then(async (r) => {
         if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `HTTP ${r.status}`); }
@@ -75,7 +79,7 @@ export function ShareDialog({ card, onClose }) {
       .catch((e) => { if (alive) toast.danger(t('Kartu gagal digambar'), { description: String(e?.message || e) }); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [card, hide, lang, size, theme, t]);
+  }, [card, hide, lang, size, theme, layout, t]);
 
   useEffect(() => {
     if (!blob) { setUrl(null); return; }
@@ -90,7 +94,7 @@ export function ShareDialog({ card, onClose }) {
   }, [open, tg]);
 
   const canShare = typeof navigator !== 'undefined' && !!navigator.share && !!navigator.canShare;
-  const name = c ? `quiver-${c.name}-${size}-${theme}.png`.replace(/[^A-Za-z0-9.+-]+/g, '-').replace(/-+/g, '-') : 'quiver.png';
+  const name = c ? `quiver-${c.name}-${layout}-${size}-${theme}.png`.replace(/[^A-Za-z0-9.+-]+/g, '-').replace(/-+/g, '-') : 'quiver.png';
   const ratio = SIZES.find(([k]) => k === size)?.[2] || 1200 / 630;
 
   const run = async (kind) => {
@@ -107,7 +111,7 @@ export function ShareDialog({ card, onClose }) {
         setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
       } else if (kind === 'telegram') {
         // The server redraws from the same data, then sends it to each chat.
-        const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, hide, lang, tz: tzName(), size, theme });
+        const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, hide, lang, tz: tzName(), size, theme, layout });
         if (j.error) throw new Error(j.error);
         toast.success(t('Terkirim ke Telegram'), { description: j.failed ? t('{n} chat gagal: {e}', { n: j.failed, e: j.lastErr }) : t('{n} chat', { n: j.sent }) });
       } else if (kind === 'share') {
@@ -154,6 +158,7 @@ export function ShareDialog({ card, onClose }) {
                 </div>
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Segmented size="sm" aria="Gaya kartu" value={layout} onChange={pickLayout} options={LAYOUTS.map(([k, label]) => [k, label])} />
                 <Segmented size="sm" aria="Ukuran kartu" value={size} onChange={pickSize} options={SIZES.map(([k, label]) => [k, label])} />
                 <Segmented size="sm" aria="Tema kartu" value={theme} onChange={pickTheme} options={THEMES.map(([k, label]) => [k, label])} />
               </div>

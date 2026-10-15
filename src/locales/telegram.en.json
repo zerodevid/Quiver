@@ -952,5 +952,7 @@
   "PnL terburuk": "Worst PnL",
   "fee dia": "Target fees",
   "<i>Hasil target = penarikan + fee yang dipanen − modal masuk, sejauh terpantau.</i>": "<i>Target result = withdrawals + harvested fees − capital invested, as far as observed.</i>",
-  "🟢 Dalam rentang": "🟢 In range"
+  "🟢 Dalam rentang": "🟢 In range",
+  "Modal": "Capital",
+  "Posisi ditutup": "Positions closed"
 }

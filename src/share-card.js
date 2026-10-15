@@ -514,20 +514,183 @@ function dailySvg({ day, rows, total: totalIn, count, monthTotal }, { hideAmount
   return frame(sign(total), tr('PnL harian') + ` · ${chainName()}`, body, m, stampFor(m), chart);
 }
 
+// ---- "spotlight" layout --------------------------------------------------------------
+// A poster-style alternative to the classic grid: one huge PnL figure on the left, the
+// mascot large on the right with a glow behind it, the chain as a pill at the top right,
+// and three small stats marked by a tinted bar instead of boxed tiles. No chart strip.
+// The same data and themes as the classic cards; only the composition differs.
+//   meta   small spaced caps line above the title (venue · fee tier)
+//   big    the hero figure, pill = the second figure (%) in a tinted capsule
+//   stats  [[label, value, color?]] — exactly three
+function spotGeometry(size) {
+  const { W, H } = SIZES[size] || SIZES.wide;
+  if (size === 'story') {
+    return { W, H, k: 1.3, logoY: 190, metaY: 330, titleY: 410, labelY: 530, bigY: 700, pillY: 778, maxBig: 200, right: W - PAD,
+      stats: { y: 880, cols: 3 }, mascot: { h: 760, maxW: 900, cx: W / 2, bottom: 1780 }, footY: 1800 };
+  }
+  if (size === 'square') {
+    return { W, H, k: 1.1, logoY: 52, metaY: 178, titleY: 246, labelY: 352, bigY: 488, pillY: 558, maxBig: 150, right: W - PAD,
+      stats: { y: 660, cols: 1, w: 470 }, mascot: { h: 560, maxW: 500, right: W - 24, bottom: H + 24 }, footY: H - 44 };
+  }
+  return { W, H, k: 1, logoY: 44, metaY: 150, titleY: 208, labelY: 298, bigY: 402, pillY: 452, maxBig: 116, right: 700,
+    stats: { y: 506, cols: 3 }, mascot: { h: 540, maxW: 480, right: W - 36, bottom: H + 28 }, footY: H - 26 };
+}
+// Upper-case label with letter spacing; measure() knows nothing about the spacing, so it is added here.
+function caps(s, x, y, { size, color = T.muted, ls = 0.18, anchor = 'start' }) {
+  const up = String(s).toUpperCase();
+  return { w: measure(up, size, 600) + up.length * size * ls, svg: `<text x="${x}" y="${y}" font-size="${size}" font-weight="600" fill="${color}" letter-spacing="${(size * ls).toFixed(2)}" text-anchor="${anchor}">${esc(up)}</text>` };
+}
+function spotlight({ meta, icons, title: titleText, chips = [], label, big, tint, pill, sub, stats, footer, mascotKey }) {
+  const S = G, { W, H, k } = S;
+  // The wide poses (loss/neutral) are shrunk so they stay clear of the text column.
+  const m = MASCOT[mascotKey], mh = Math.min(S.mascot.h, Math.round(S.mascot.maxW * (m.h / m.w))), mw = Math.round((m.w / m.h) * mh);
+  const mx = S.mascot.cx != null ? Math.round(S.mascot.cx - mw / 2) : S.mascot.right - mw, my = S.mascot.bottom - mh;
+  const gcx = mx + mw / 2, gcy = my + mh * 0.45;
+  const stops = T.bg.map((c, i) => `<stop offset="${(i / (T.bg.length - 1)).toFixed(2)}" stop-color="${c}"/>`).join('');
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${T.font || BASE_FONT.family}">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">${stops}</linearGradient>
+  <radialGradient id="glow" cx="${gcx}" cy="${gcy}" r="${mh * 0.75}" gradientUnits="userSpaceOnUse"><stop stop-color="${tint}" stop-opacity="${(T.glow * 1.6).toFixed(2)}"/><stop offset="0.55" stop-color="${tint}" stop-opacity="${(T.glow * 0.45).toFixed(2)}"/><stop offset="1" stop-color="${tint}" stop-opacity="0"/></radialGradient>
+  <radialGradient id="glow2" cx="${PAD + 160 * k}" cy="${S.bigY - 40 * k}" r="${340 * k}" gradientUnits="userSpaceOnUse"><stop stop-color="${tint}" stop-opacity="${(T.glow * 0.5).toFixed(2)}"/><stop offset="1" stop-color="${tint}" stop-opacity="0"/></radialGradient>
+  <radialGradient id="fade" cx="${gcx}" cy="${gcy}" r="${Math.max(W, H) * 0.7}" gradientUnits="userSpaceOnUse"><stop stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+  <mask id="gridMask"><rect width="${W}" height="${H}" fill="url(#fade)"/></mask>
+  <pattern id="grid" width="${56 * k}" height="${56 * k}" patternUnits="userSpaceOnUse"><path d="M${56 * k} 0H0V${56 * k}" fill="none" stroke="${T.text}" stroke-opacity="0.05"/></pattern>
+  <filter id="soft" x="-20%" y="-40%" width="140%" height="180%"><feGaussianBlur stdDeviation="${18 * k}"/></filter>
+</defs>
+<rect width="${W}" height="${H}" fill="url(#bg)"/>${T.deco && T.deco !== 'rings' ? deco(gcx, gcy, mh / 2) : ''}
+<rect width="${W}" height="${H}" fill="url(#grid)" mask="url(#gridMask)"/>
+<rect width="${W}" height="${H}" fill="url(#glow)"/><rect width="${W}" height="${H}" fill="url(#glow2)"/>
+<image x="${mx}" y="${my}" width="${mw}" height="${mh}" href="${m.href}"/>
+<svg x="${PAD}" y="${S.logoY}" width="${154 * k}" height="${28 * k}" viewBox="0 0 264 48">${MARK.replace('fill="#fff"', `fill="${T.logo || T.text}"`)}</svg>`;
+  // Chain pill at the top right.
+  const pSize = 17 * k, pH = 42 * k, iconR = 12 * k, pW = measure(chainName(), pSize, 500) + (chainNow.href ? iconR * 2 + 10 * k : 0) + 32 * k;
+  const pX = W - PAD - pW, pY = S.logoY + 14 * k - pH / 2;
+  out += `<rect x="${pX.toFixed(1)}" y="${pY.toFixed(1)}" width="${pW.toFixed(1)}" height="${pH}" rx="${rx(pH / 2)}" fill="${T.chip}" stroke="${T.line}" stroke-width="1.5"/>`;
+  if (chainNow.href) {
+    out += `<clipPath id="pill-icon"><circle cx="${pX + 16 * k + iconR}" cy="${pY + pH / 2}" r="${iconR}"/></clipPath>`
+      + `<image x="${pX + 16 * k}" y="${pY + pH / 2 - iconR}" width="${iconR * 2}" height="${iconR * 2}" clip-path="url(#pill-icon)" href="${chainNow.href}"/>`;
+  }
+  out += txt(chainName(), W - PAD - 16 * k, pY + pH / 2, { size: pSize, weight: 500, color: T.text, anchor: 'end', base: 'middle' });
+  // Meta line + title (token icons, name, chips) — the title shrinks to fit before the mascot.
+  out += caps(meta, PAD, S.metaY, { size: 15 * k }).svg;
+  let x = PAD;
+  const r = 24 * k, ty = S.titleY;
+  if (icons) {
+    out += token(icons[0].icon, icons[0], PAD + r, ty, r, 's0') + token(icons[1].icon, icons[1], PAD + r + 34 * k, ty, r, 's1');
+    x = PAD + 2 * r + 34 * k + 18 * k;
+  }
+  const active = chips.filter(([c]) => c);
+  const chipsW = active.reduce((a, [c]) => a + measure(c, 17 * k, 500) + 34 * k, 0);
+  const tSize = Math.min(52 * k, (S.right - x - chipsW - 16 * k) / Math.max(measure(titleText, 1, 700), 1));
+  out += txt(titleText, x, ty, { size: Math.max(tSize, 26 * k), weight: 700, base: 'middle' });
+  x += measure(titleText, Math.max(tSize, 26 * k), 700) + 16 * k;
+  for (const [c, style] of active) { const ch = chip(c, x, ty, style); out += ch.svg; x += ch.w + 10 * k; }
+  // The hero figure, with a blurred copy behind it as a glow.
+  out += caps(label, PAD, S.labelY, { size: 16 * k }).svg;
+  const bSize = Math.min(S.maxBig, (S.right - PAD) / Math.max(measure(big, 1, 700), 1));
+  out += `<g filter="url(#soft)" opacity="0.45">${txt(big, PAD - 4, S.bigY, { size: bSize, weight: 700, color: tint })}</g>`
+    + txt(big, PAD - 4, S.bigY, { size: bSize, weight: 700, color: tint });
+  let px = PAD;
+  if (pill) {
+    const pz = 22 * k, pw = measure(pill, pz, 600) + 28 * k, ph = 40 * k;
+    out += `<rect x="${px}" y="${S.pillY - ph / 2}" width="${pw.toFixed(1)}" height="${ph}" rx="${rx(ph / 2)}" fill="${rgba(tint, 0.14)}" stroke="${rgba(tint, 0.35)}"/>`
+      + txt(pill, px + 14 * k, S.pillY, { size: pz, weight: 600, color: tint, base: 'middle' });
+    px += pw + 14 * k;
+  }
+  if (sub) out += fitted(sub, px, S.pillY + 7 * k, S.right - px, { size: 19 * k, color: T.muted });
+  // Three stats, each marked by a short tinted bar on its left.
+  const st = S.stats, colW = st.cols === 1 ? st.w : (S.right - PAD) / st.cols, rowH = 78 * k;
+  stats.forEach(([l, v, color], i) => {
+    const sx = PAD + (st.cols === 1 ? 0 : i * colW), sy = st.y + (st.cols === 1 ? i * rowH : 0);
+    out += `<rect x="${sx}" y="${sy}" width="${3 * k}" height="${54 * k}" rx="${rx(1.5 * k)}" fill="${tint}" fill-opacity="0.7"/>`
+      + caps(fit(l, colW - 30 * k, 13 * k, 600), sx + 16 * k, sy + 16 * k, { size: 13 * k, ls: 0.12 }).svg
+      + fitted(v, sx + 16 * k, sy + 48 * k, colW - 30 * k, { size: 28 * k, weight: 600, color: color || T.text });
+  });
+  if (footer) out += fitted(footer, PAD, S.footY, (S.mascot.cx != null ? W - PAD : mx) - PAD - 12, { size: 15 * k, color: T.faint });
+  return out + '\n</svg>';
+}
+
+function positionSpot(p, { hideAmounts = false, icons = {} } = {}) {
+  const closed = p.status === 'closed';
+  const feeUsd = (p.claimedUsd || 0) + (closed ? 0 : (p.feeUsd || 0));
+  const m = mood(p.pnlUsd, p.pnlPct);
+  return spotlight({
+    meta: venueName(p.venue) + (p.fee != null ? ` · ${tr('fee {0}%', [num(p.fee / 10000, 2)])}` : ''),
+    icons: [{ icon: icons.token0, address: p.token0, symbol: p.symbol0 }, { icon: icons.token1, address: p.token1, symbol: p.symbol1 }],
+    title: `${p.symbol0 || '?'}/${p.symbol1 || '?'}`,
+    chips: [[closed ? tr('Ditutup') : null], [!closed && p.inRange != null ? (p.inRange ? 'in-range' : tr('di luar rentang')) : null, p.inRange ? tone(T.up) : tone(T.amber)]],
+    label: 'PnL', tint: sign(p.pnlUsd),
+    big: hideAmounts || p.pnlUsd == null ? (p.pnlPct == null ? '—' : pct(p.pnlPct, 2)) : (p.pnlUsd > 0.005 ? '+' : '') + usd(p.pnlUsd),
+    pill: hideAmounts || p.pnlPct == null ? null : pct(p.pnlPct, 2),
+    sub: hideAmounts ? tr('Nominal disembunyikan') : tr('modal {0}', [usd(p.costUsd)]),
+    stats: [
+      [tr(closed ? 'Ditahan' : 'Umur'), age(p.ageHours)],
+      [tr('Fee diperoleh'), hideAmounts ? HIDDEN : usd(feeUsd), T.up],
+      [tr('Modal'), hideAmounts ? HIDDEN : usd(p.costUsd)],
+    ],
+    footer: closed ? `${fmtDate(p.opened_ts)} › ${fmtDate(p.closed_ts)}` : tr('masuk {0}', [fmtDate(p.opened_ts)]),
+    mascotKey: m,
+  });
+}
+function totalSpot({ now, stats, since }, { hideAmounts = false } = {}) {
+  const { net, pnl, cap } = totalPnl(now);
+  const pnlPct = cap > 0 ? (pnl / cap) * 100 : null;
+  const wr = stats?.winRatePct;
+  return spotlight({
+    meta: tr('Seluruh portofolio'), title: tr(net ? 'PnL bersih' : 'Total PnL'),
+    chips: [[tr('{0} posisi terbuka', [now.openCount || 0])]],
+    label: 'PnL', tint: sign(pnl),
+    big: hideAmounts ? (pnlPct == null ? HIDDEN : pct(pnlPct, 2)) : (pnl > 0.005 ? '+' : '') + usd(pnl),
+    pill: hideAmounts || pnlPct == null ? null : pct(pnlPct, 2),
+    sub: hideAmounts ? tr('Nominal disembunyikan') : tr('modal {0}', [usd(cap)]),
+    stats: [
+      [tr('Win rate'), wr == null ? '—' : `${num(wr, 0)}%`, wr == null ? null : wr >= 50 ? T.up : T.down],
+      [tr('Fee terkumpul'), hideAmounts ? HIDDEN : usd(now.feeUsd), T.up],
+      [tr('Total portofolio'), hideAmounts ? HIDDEN : usd(now.value)],
+    ],
+    footer: since ? tr('sejak {0} · {1}', [fmtDayOnly(since), fmtDate(Date.now())]) : fmtDate(Date.now()),
+    mascotKey: mood(pnl, pnlPct),
+  });
+}
+function dailySpot({ day, rows, total: totalIn, count, monthTotal }, { hideAmounts = false } = {}) {
+  const total = totalIn ?? rows.reduce((a, r) => a + r.pnl, 0);
+  const ts = new Date(day + 'T12:00:00').getTime();
+  const wins = rows.filter((r) => r.pnl > 0.005).length;
+  const cost = rows.reduce((a, r) => a + (r.cost || 0), 0);
+  const dayPct = cost > 0 ? (total / cost) * 100 : null;
+  return spotlight({
+    meta: tr('PnL harian'), title: fmtDayOnly(ts),
+    label: tr('PnL terealisasi'), tint: sign(total),
+    big: hideAmounts ? (dayPct == null ? HIDDEN : pct(dayPct, 2)) : (total > 0.005 ? '+' : '') + usd(total),
+    pill: hideAmounts || dayPct == null ? null : pct(dayPct, 2),
+    sub: hideAmounts || !(cost > 0) ? null : tr('modal diputar {0}', [usd(cost)]),
+    stats: [
+      [tr('Posisi ditutup'), String(count ?? rows.length)],
+      [tr('Win rate'), rows.length ? `${num((wins / rows.length) * 100, 0)}%` : '—', !rows.length ? null : wins / rows.length >= 0.5 ? T.up : T.down],
+      [tr('Bulan ini'), hideAmounts ? HIDDEN : usd(monthTotal), sign(monthTotal)],
+    ],
+    footer: fmtDay(ts),
+    mascotKey: mood(total, dayPct),
+  });
+}
+
 // Pick the card and draw. lang 'id'|'en'; timeZone an IANA name (e.g. 'Asia/Jakarta');
-// size/theme one of the SIZES/THEMES keys (unknown ones fall back to the default).
+// size/theme/layout one of the SIZES/THEMES/LAYOUTS keys (unknown ones fall back to the default).
+const LAYOUTS = { spotlight: { label: 'Sorot' }, classic: { label: 'Klasik' } };
 const sizeKey = (s) => (SIZES[s] ? s : 'wide');
 const themeKey = (t) => (THEMES[t] ? t : 'dark');
+const layoutKey = (l) => (LAYOUTS[l] ? l : 'spotlight');
 function svgOf(kind, data, opts = {}) {
   return localeContext.run(opts.lang === 'en' ? 'en' : 'id', () => {
     tz = opts.timeZone || null;
     T = THEMES[themeKey(opts.theme)];
-    G = geometry(sizeKey(opts.size));
+    const spot = layoutKey(opts.layout) === 'spotlight';
+    G = spot ? spotGeometry(sizeKey(opts.size)) : geometry(sizeKey(opts.size));
     chainNow = CHAIN_BADGE[opts.chain?.key] || { label: opts.chain?.label || CHAIN_BADGE.robinhood.label, href: '' };
     try {
-      if (kind === 'position') return positionSvg(data, opts);
-      if (kind === 'total') return totalSvg(data, opts);
-      if (kind === 'daily') return dailySvg(data, opts);
+      if (kind === 'position') return (spot ? positionSpot : positionSvg)(data, opts);
+      if (kind === 'total') return (spot ? totalSpot : totalSvg)(data, opts);
+      if (kind === 'daily') return (spot ? dailySpot : dailySvg)(data, opts);
       throw new Error(`jenis kartu tidak dikenal: ${kind}`);
     } finally { tz = null; T = THEMES.dark; G = null; chainNow = CHAIN_BADGE.robinhood; }
   });
@@ -554,4 +717,4 @@ function caption(kind, data, lang) {
   });
 }
 
-module.exports = { svgOf, renderPng, render, caption, venueName, sizeKey, themeKey, SIZES, THEMES, W: SIZES.wide.W, H: SIZES.wide.H, SCALE };
+module.exports = { svgOf, renderPng, render, caption, venueName, sizeKey, themeKey, layoutKey, SIZES, THEMES, LAYOUTS, W: SIZES.wide.W, H: SIZES.wide.H, SCALE };

@@ -2385,9 +2385,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const dayKeyIn = (ts, timeZone) => {
     try { return new Date(ts).toLocaleDateString('en-CA', { timeZone }); } catch { return new Date(ts).toLocaleDateString('en-CA'); }
   };
-  const shareCardOf = async ({ kind, id, day, hide = false, lang = 'id', tz, size, theme } = {}) => {
+  const shareCardOf = async ({ kind, id, day, hide = false, lang = 'id', tz, size, theme, layout } = {}) => {
     const timeZone = tz || cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const opts = { hideAmounts: !!hide, lang, timeZone, size: shareCard.sizeKey(size), theme: shareCard.themeKey(theme), chain: { key: chain.network, label: chain.label } };
+    const opts = { hideAmounts: !!hide, lang, timeZone, size: shareCard.sizeKey(size), theme: shareCard.themeKey(theme), layout: shareCard.layoutKey(layout), chain: { key: chain.network, label: chain.label } };
     let data;
     if (kind === 'position') {
       const d = await callApi('GET', '/api/position', {}, { id });
