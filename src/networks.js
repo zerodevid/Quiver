@@ -217,7 +217,7 @@ const AVALANCHE = uniswapChain({
 // / `chain.QUOTES` need not know the difference. Solana addresses = base58 and CASE-SENSITIVE —
 // never lower-cased (see normAddr).
 //
-// `venues`: three concentrated-liquidity LP programs. Positions on all three are normalised to
+// `venues`: the LP programs (three concentrated-liquidity ones + Meteora DAMM v2). Positions on all are normalised to
 // Uniswap units (1.0001 ticks, sqrtPriceX96) in their adapters (src/solana/venues/),
 // so the tick_lower/tick_upper/entry_sqrt columns and the dashboard price formula apply as
 // is. Orca & Raydium really use 1.0001 ticks + Q64.64 sqrt; Meteora DLMM bins are
@@ -246,6 +246,7 @@ const SOLANA = {
     { key: 'meteora', program: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', label: 'Meteora DLMM' },
     { key: 'orca', program: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc', label: 'Orca Whirlpools' },
     { key: 'raydium', program: 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK', label: 'Raydium CLMM' },
+    { key: 'dammv2', program: 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG', label: 'Meteora DAMM v2' },
   ],
   nativeUsd: { mode: 'jupiter' },
   // Program IDs from the official SDKs (@meteora-ag/dlmm, @orca-so/whirlpools-sdk,

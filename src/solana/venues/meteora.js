@@ -302,6 +302,52 @@ class MeteoraVenue {
     return r.bins.map((b) => ({ bin: Number(b.binId), x: BigInt(b.xAmount.toString()), y: BigInt(b.yAmount.toString()) }));
   }
 
+  // ---- create a pool --------------------------------------------------------------
+  // The presets a permissionless pair can be created with (bin step + base fee), from the
+  // program's PresetParameter2 accounts — only the classic kind this adapter trades
+  // (LiquidityMining, fees on input). Cached: Meteora adds one rarely. fee is in 1e-6 units.
+  async presets() {
+    if (this.presetCache && Date.now() - this.presetCache.at < 6 * 3600_000) return this.presetCache.list;
+    const r = await this.rpc.run((c) => DLMM.getAllPresetParameters(c), { needsGpa: true });
+    const list = (r.presetParameter2 || [])
+      .filter((x) => Number(x.account.concreteFunctionType) === 1 && Number(x.account.collectFeeMode) === 0)
+      .map((x) => {
+        const a = x.account;
+        return { key: b58(x.publicKey), binStep: a.binStep, baseFactor: a.baseFactor, pow: a.baseFeePowerFactor, index: Number(a.index),
+          fee: Math.round((a.baseFactor * a.binStep * 10 * 10 ** a.baseFeePowerFactor) / 1000) };
+      })
+      .sort((a, b) => a.binStep - b.binStep || a.fee - b.fee || a.index - b.index);
+    this.presetCache = { at: Date.now(), list };
+    return list;
+  }
+
+  // The pair a preset would create for (tokenX, tokenY), and an existing pair with the same
+  // bin step and base fee (under any preset of that kind, or the older lbPair2 derivation).
+  async pairFor(tokenX, tokenY, preset) {
+    const X = new PublicKey(tokenX), Y = new PublicKey(tokenY), prog = new PublicKey(PROGRAM);
+    const same = (await this.presets()).filter((p) => p.binStep === preset.binStep && p.baseFactor === preset.baseFactor && p.pow === preset.pow);
+    const keys = [
+      ...same.map((p) => DLMM.deriveLbPairWithPresetParamWithIndexKey(new PublicKey(p.key), X, Y, prog)[0]),
+      DLMM.deriveLbPair2(X, Y, new BN(preset.binStep), new BN(preset.baseFactor), prog)[0],
+    ];
+    const infos = await this.rpc.run((c) => c.getMultipleAccountsInfo(keys));
+    // The lbPair2 address does not include the fee power: 0.2% and 2% share it, so its own
+    // parameters decide.
+    const powOf = (acc) => { try { return Number(pick(pick(coder.decode('LbPair', acc.data), 'parameters') || {}, 'base_fee_power_factor', 'baseFeePowerFactor') || 0); } catch { return null; } };
+    const hit = keys.find((k, i) => infos[i] && (i < keys.length - 1 || powOf(infos[i]) === preset.pow));
+    return {
+      pool: DLMM.deriveLbPairWithPresetParamWithIndexKey(new PublicKey(preset.key), X, Y, prog)[0].toBase58(),
+      existing: hit ? hit.toBase58() : null,
+    };
+  }
+
+  // The pair itself (no liquidity yet): token X = the token, Y = the quote, price Y per X.
+  async buildCreatePair({ tokenX, tokenY, preset, activeId, owner }) {
+    const tx = await this.rpc.run((c) => DLMM.createLbPair2(c, new PublicKey(owner), new PublicKey(tokenX), new PublicKey(tokenY),
+      new PublicKey(preset.key), new BN(activeId)), { needsGpa: true });
+    return { groups: MeteoraVenue.groups(tx) };
+  }
+
   // Native range from an equivalent tick range (for plans with a mode other than 'exact').
   nativeRange(poolState, tickLower, tickUpper) {
     const lower = u.tickToBin(tickLower, poolState.binStep);

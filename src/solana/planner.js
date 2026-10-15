@@ -40,8 +40,13 @@ function share0(venue, pool, tl, tu, lowerNative, upperNative, strategy = 'spot'
     }
     return all > 0 ? x / all : 0.5;
   }
+  // DAMM v2: a compounding pool holds equal value of both tokens; a concentrated one uses the
+  // v3 split over the pool's exact range (its ticks are rounded).
+  if (venue === 'dammv2' && pool.compounding) return 0.5;
+  const exact = venue === 'dammv2' && pool.sqrtMinX96 != null;
   const L = 10n ** 18n;
-  const r = m.amountsForLiquidity(pool.sqrtX96, m.getSqrtRatioAtTick(tl), m.getSqrtRatioAtTick(tu), L);
+  const r = m.amountsForLiquidity(pool.sqrtX96, exact ? BigInt(pool.sqrtMinX96) : m.getSqrtRatioAtTick(tl),
+    exact ? BigInt(pool.sqrtMaxX96) : m.getSqrtRatioAtTick(tu), L);
   const p = u.priceFromSqrtX96(pool.sqrtX96, pool.dec0, pool.dec1);   // token1 per token0
   const v0 = (Number(r.amount0) / 10 ** pool.dec0) * p, v1 = Number(r.amount1) / 10 ** pool.dec1;
   return v0 + v1 > 0 ? v0 / (v0 + v1) : 0.5;

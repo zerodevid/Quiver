@@ -91,9 +91,10 @@ async function poolDepthSol({ rpc, chain, store, engine }, ref) {
       const p = live.get(r.tokenId);
       if (!p) { missingPositions = true; continue; }
       if (r.owner && p.owner && p.owner !== r.owner) { missingPositions = true; continue; }
+      // DLMM: bin shares are not L; DAMM v2: its L is in another scale (the adapter's depthL).
       const liquidity = venue === 'meteora'
         ? String(Math.round(uniformL(p.amount0, p.amount1, p.tickLower, p.tickUpper, s)))
-        : String(p.liquidity);
+        : venue === 'dammv2' ? String(p.ext?.depthL ?? '0') : String(p.liquidity);
       positions.push({ ...r, lower: p.tickLower, upper: p.tickUpper, liquidity });
     }
   }
@@ -117,8 +118,8 @@ async function poolDepthSol({ rpc, chain, store, engine }, ref) {
     dec0: pool.dec0, dec1: pool.dec1, quoteSide: q, quoteUsd: chain.QUOTES[qt].kind === 'eth' ? engine.ethUsd : 1,
     buyFee: fee, sellFee: fee, hook: false,
     positions, missingPositions, walletBalances, missingWallets, targetScope: 'watched_positions',
-    // DLMM fee = base fee + a variable fee that rises with volatility.
-    dynamicFee: venue === 'meteora', venue,
+    // DLMM (and DAMM v2 with its dynamic fee on) fee = base fee + a variable fee that rises with volatility.
+    dynamicFee: venue === 'meteora' || !!pool.dynamicFee, venue,
   };
 }
 

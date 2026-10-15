@@ -999,6 +999,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {}, meteo
     chain.adapters.meteora.listPositions = async () => [{ venue: 'meteora', id: 'P1', pool: POOL, liquidity: '10', amount0: 10n ** 9n, amount1: 10n ** 9n, fee0: 0n, fee1: 10n ** 8n, tickLower: -500, tickUpper: 500, lower: -5, upper: 4 }];
     chain.adapters.orca.listPositions = async () => [];
     chain.adapters.raydium.listPositions = async () => { throw new Error('gPA ditolak'); };
+    chain.adapters.dammv2.listPositions = async () => [];
     const rpc = { slot: async () => 7, run: async () => [] };
     const r = await scoutWalletSol(rpc, chain, TARGET, { ethUsd: 100, store });
     assert.strictEqual(r.positionsAlive, 1);

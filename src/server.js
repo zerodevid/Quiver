@@ -844,6 +844,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const createBody = (b) => ({
     venue: String(b.venue || ''), token: String(b.token || ''), quote: String(b.quote || ''),
     fee: Number(b.fee), tickSpacing: b.tickSpacing != null ? Number(b.tickSpacing) : null,
+    binStep: b.binStep != null ? Number(b.binStep) : null, strategy: b.strategy ? String(b.strategy) : null,
     hooks: b.hooks ? String(b.hooks) : null, price: Number(b.price), usd: Number(b.usd),
     full: !!b.full, lowerPct: b.lowerPct != null ? Number(b.lowerPct) : null, upperPct: b.upperPct != null ? Number(b.upperPct) : null,
   });
@@ -2135,16 +2136,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       return { job: id, total: job.total };
     },
     // ---- create a pool (manual.createSpec / planCreate / openCreate) ----
-    'GET /api/manual/create/venues': () => ({
-      venues: chain.kind === 'solana' ? [] : manual.createVenues(),
-      quotes: chain.kind === 'solana' ? [] : Object.entries(chain.QUOTES).map(([address, q]) => ({ address, symbol: q.symbol, kind: q.kind })),
+    // Solana: Meteora DAMM v2 & DLMM (solana/manual.js); EVM: Uniswap v3/v4, PancakeSwap v3.
+    'GET /api/manual/create/venues': async () => ({
+      venues: await manual.createVenues(),
+      quotes: Object.entries(chain.QUOTES).map(([address, q]) => ({ address, symbol: q.symbol, kind: q.kind })),
     }),
-    'POST /api/manual/create/plan': async (req) => {
-      if (chain.kind === 'solana') return { error: 'membuat pool belum tersedia di Solana' };
-      return manual.planCreate(createBody(await readBody(req)));
-    },
+    'POST /api/manual/create/plan': async (req) => manual.planCreate(createBody(await readBody(req))),
     'POST /api/manual/create/open': async (req) => {
-      if (chain.kind === 'solana') return { error: 'membuat pool belum tersedia di Solana' };
       if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
       const args = createBody(await readBody(req));
       const lockKey = `create:${canon(args.token)}:${canon(args.quote)}`;

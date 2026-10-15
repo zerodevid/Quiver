@@ -337,7 +337,7 @@ class SolanaEngine {
     const owner = this.exec.address();
     const built = plan.action === 'increase'
       ? await ad.buildIncrease({ pool: plan.poolRef, position: plan.tokenId, amount0: BigInt(plan.amount0), amount1: BigInt(plan.amount1), slippageBps: plan.slippageBps ?? 150, owner, strategy: plan.strategy || null })
-      : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: BigInt(plan.amount0), amount1: BigInt(plan.amount1), slippageBps: plan.slippageBps ?? 150, owner, strategy: plan.strategy || 'spot', weights: plan.weights || null });
+      : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: BigInt(plan.amount0), amount1: BigInt(plan.amount1), slippageBps: plan.slippageBps ?? 150, owner, strategy: plan.strategy || 'spot', weights: plan.weights || null, create: plan.create || null });
     return this.exec.simulateGroups(built.groups);
   }
 
@@ -447,7 +447,8 @@ class SolanaEngine {
       try {
         built = plan.action === 'increase'
           ? await ad.buildIncrease({ pool: plan.poolRef, position: plan.tokenId, amount0: a0, amount1: a1, slippageBps: slip, owner, strategy: plan.strategy || null })
-          : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: a0, amount1: a1, slippageBps: slip, owner, strategy: plan.strategy || 'spot', weights: plan.weights || null });
+          // create: a DAMM v2 pool made by this same transaction (manual "create a pool")
+          : await ad.buildOpen({ pool: plan.poolRef, lower: plan.lower, upper: plan.upper, amount0: a0, amount1: a1, slippageBps: slip, owner, strategy: plan.strategy || 'spot', weights: plan.weights || null, create: plan.create || null });
         // The new position is noted "pending" before sending: if the process dies after the tx
         // lands but before booking, the next adoption links it to the target again.
         if (plan.action !== 'increase') {

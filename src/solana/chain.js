@@ -14,6 +14,7 @@ const { MeteoraApi } = require('./meteora-api');
 const { MeteoraVenue } = require('./venues/meteora');
 const { OrcaVenue } = require('./venues/orca');
 const { RaydiumVenue } = require('./venues/raydium');
+const { DammV2Venue } = require('./venues/dammv2');
 
 // Metaplex Metadata program — names/symbols of old SPL tokens Jupiter does not know.
 const METAPLEX = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
@@ -38,10 +39,13 @@ class SolanaChain {
       decimalsOf: async (mint) => (await this.token(mint))?.decimals ?? 9 });
     // Meteora DLMM data API: pool stats, creation time, candles (see meteora-api.js).
     this.meteora = meteoraApi || new MeteoraApi({ log });
+    // The same API family for DAMM v2 pools (same pool shape: TVL, volume, fees, fee/TVL).
+    this.meteoraDamm = new MeteoraApi({ log, base: 'https://damm-v2.datapi.meteora.ag' });
     this.adapters = {
       meteora: new MeteoraVenue({ rpc, log }),
       orca: new OrcaVenue({ rpc, log }),
       raydium: new RaydiumVenue({ rpc, log }),
+      dammv2: new DammV2Venue({ rpc, log }),
     };
     this.poolCache = new Map();   // pool -> {at, state}
   }

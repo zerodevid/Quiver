@@ -198,7 +198,7 @@ const fee = (p) => (p.dynamicFee ? 'dinamis' : `${num(p.feePct, 2)}%`);
 
 // Venue groups for the pool list filter. A v4 pool with a hook is its own group: a hook can
 // change fees or block trades, so it is worth picking out (or leaving out) on purpose.
-const VENUE_LABEL = { v3: 'V3', v4: 'V4', v4hook: 'V4 + hook', pancakev3: 'Pancake V3', meteora: 'DLMM', orca: 'Orca', raydium: 'Raydium CLMM' };
+const VENUE_LABEL = { v3: 'V3', v4: 'V4', v4hook: 'V4 + hook', pancakev3: 'Pancake V3', meteora: 'DLMM', dammv2: 'DAMM v2', orca: 'Orca', raydium: 'Raydium CLMM' };
 const venueKey = (p) => (p.venue === 'v4' && p.hasHooks ? 'v4hook' : p.venue);
 const SORTS = [['aktif', 'Terbaru aktif'], ['tvl', 'Likuiditas'], ['vol', 'Volume 24 jam'], ['apr', 'APR']];
 const sortVal = { tvl: (p) => p.stats?.tvlUsd, vol: (p) => p.stats?.volume24hUsd, apr: (p) => p.stats?.aprPct };
@@ -543,7 +543,7 @@ function PoolPicker({ pools, onPick }) {
         )}
         {!result.length ? (
           <div>
-            <Empty title={isAddress ? (isSolana() ? 'Tidak ada pool Meteora DLMM / Orca / Raydium CLMM yang bisa dimasuki' : 'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki') : 'Tidak ada pool yang cocok'}
+            <Empty title={isAddress ? (isSolana() ? 'Tidak ada pool Meteora DLMM / DAMM v2 / Orca / Raydium CLMM yang bisa dimasuki' : 'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki') : 'Tidak ada pool yang cocok'}
               sub={isAddress ? (isSolana() ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDC, USDT, atau SOL.' : 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.') : 'Tempel alamat token untuk mencari poolnya langsung dari chain.'} />
             {useScan && scan.others?.length > 0 && (
               <div className="border-t border-border px-3 py-3 text-sm">
@@ -554,7 +554,7 @@ function PoolPicker({ pools, onPick }) {
                     <span className="num shrink-0">{usd(x.reserveUsd, 0)}</span>
                   </div>
                 ))}
-                <p className="mt-2 text-xs text-muted">{t(isSolana() ? 'Di Solana bot membuka LP di Meteora DLMM, Orca Whirlpools, dan Raydium CLMM (likuiditas terkonsentrasi dengan rentang harga). AMM biasa tidak punya rentang.' : 'Bot hanya bisa membuka LP di Uniswap v3/v4 (likuiditas terkonsentrasi dengan rentang harga). Pool gaya v2 tidak punya rentang maupun NFT posisi.')}</p>
+                <p className="mt-2 text-xs text-muted">{t(isSolana() ? 'Di Solana bot membuka LP di Meteora DLMM & DAMM v2, Orca Whirlpools, dan Raydium CLMM. AMM lain belum didukung — atau buat pool DAMM v2 / DLMM sendiri lewat "Buat baru".' : 'Bot hanya bisa membuka LP di Uniswap v3/v4 (likuiditas terkonsentrasi dengan rentang harga). Pool gaya v2 tidak punya rentang maupun NFT posisi.')}</p>
               </div>
             )}
           </div>
@@ -609,7 +609,7 @@ export default function ManualLp({ param }) {
   const [balance, setBalance] = useState(null);
   const seq = useRef(0);
   const [mode, setMode] = useState('single');   // 'single' range | 'ladder' of layers
-  const [creating, setCreating] = useState(false);   // EVM: a new pool instead of an existing one
+  const [creating, setCreating] = useState(false);   // a new pool instead of an existing one
   const C = useCreatePool(creating);
 
   useEffect(() => {
@@ -657,20 +657,22 @@ export default function ManualLp({ param }) {
   const upBad = !full && !(up > -100 && up <= 100000);
   const empty = !full && lo === 0 && up === 0;
   const inverted = !full && !loBad && !upBad && !empty && up <= lo;
-  const rangeOk = full || (!loBad && !upBad && !empty && !inverted);
-  const dlmm = pool?.venue === 'meteora';
+  const dlmm = creating ? C.dlmm : pool?.venue === 'meteora';
+  // DAMM v2: every position covers the pool's own range — there is no range to pick.
+  const damm = creating ? C.damm : pool?.venue === 'dammv2';
+  const rangeOk = damm || full || (!loBad && !upBad && !empty && !inverted);
   // EVM Curve / Bid-Ask: the range is opened as several shaped bands through the ladder job.
   const evmShape = !creating && mode === 'single' && !!pool && !dlmm && !isSolana() && !full && shape !== 'spot';
-  const ready = mode === 'single' && !evmShape && (creating ? C.ok : !!pool) && Number.isFinite(usdNum) && usdNum > 0 && rangeOk;
+  const ready = (mode === 'single' || damm) && !evmShape && (creating ? C.ok : !!pool) && Number.isFinite(usdNum) && usdNum > 0 && rangeOk;
   const onOpened = useCallback(() => { reloadStatus(); loadBalance(pool?.poolRef); }, [reloadStatus, loadBalance, pool?.poolRef]);
-  const ladder = useLadder({ pool, usdNum: Number.isFinite(usdNum) ? usdNum : 0, enabled: !creating && mode === 'ladder', onOpened });
+  const ladder = useLadder({ pool, usdNum: Number.isFinite(usdNum) ? usdNum : 0, enabled: !creating && !damm && mode === 'ladder', onOpened });
   const shaped = useLadder({ pool, usdNum: Number.isFinite(usdNum) ? usdNum : 0, enabled: evmShape && rangeOk, onOpened,
     shapeSpec: evmShape && rangeOk ? { shape, lowerPct: -lo, upperPct: up } : null });
-  const L = creating ? null : mode === 'ladder' ? ladder : evmShape ? shaped : null;
+  const L = creating || damm ? null : mode === 'ladder' ? ladder : evmShape ? shaped : null;
   const stepsDone = L ? L.ready : ready;
-  const range = full ? { full: true } : { lowerPct: -lo, upperPct: up };
+  const range = full || damm ? { full: true } : { lowerPct: -lo, upperPct: up };
   const body = creating
-    ? { ...C.spec, usd: usdNum, ...range }
+    ? { ...C.spec, usd: usdNum, ...range, ...(dlmm ? { strategy: shape } : {}) }
     : { poolRef: pool?.poolRef, usd: usdNum, ...range, ...(dlmm ? { strategy: shape } : {}) };
   // Previews are tagged with what they were made for, so a late reply for another pool is not shown.
   const planRef = creating ? `create:${C.key}` : pool?.poolRef;
@@ -688,7 +690,7 @@ export default function ManualLp({ param }) {
       setPlan({ ...r, _ref: planRef }); setCompute(false);
     }, 350);
     return () => { clearTimeout(id); };
-  }, [pool?.poolRef, usdNum, lo, up, full, ready, dlmm, shape, creating, C.key]);
+  }, [pool?.poolRef, usdNum, lo, up, full, ready, dlmm, damm, shape, creating, C.key]);
 
   const cash = plan?.preview?.walletCashUsd ?? balance?.walletCashUsd ?? null;
   // The largest amount that still passes every limit — so the "Max" button does not
@@ -721,7 +723,7 @@ export default function ManualLp({ param }) {
   const symQ = pNow ? (pNow.quoteSide === 0 ? pNow.symbol0 : pNow.symbol1) : null;
   // A range entirely on one side of the price is only filled with one token: below =
   // the quote asset, above = its pair token.
-  const oneSide = !full && rangeOk ? (up <= 0 ? 'bawah' : lo >= 0 ? 'atas' : null) : null;
+  const oneSide = !full && !damm && rangeOk ? (up <= 0 ? 'bawah' : lo >= 0 ? 'atas' : null) : null;
   const sidePool = creating ? pNow : pool;
   const symSetor = oneSide && sidePool?.quoteSide != null
     ? ((sidePool.quoteSide === 0) === (oneSide === 'bawah') ? sidePool.symbol0 : sidePool.symbol1) : null;
@@ -770,9 +772,9 @@ export default function ManualLp({ param }) {
             action={(
               <div className="flex items-center gap-2">
                 {!creating && pool && !swapPool && <Button size="sm" variant="outline" onPress={() => setSwapPool(true)}>{t('Ganti')}</Button>}
-                {!isSolana() && <Segmented size="sm" aria="Sumber pool" value={creating ? 'create' : 'pick'}
+                <Segmented size="sm" aria="Sumber pool" value={creating ? 'create' : 'pick'}
                   onChange={(v) => { setCreating(v === 'create'); if (v === 'create') { setMode('single'); setShape('spot'); } }}
-                  options={[['pick', 'Pool yang ada'], ['create', 'Buat baru']]} />}
+                  options={[['pick', 'Pool yang ada'], ['create', 'Buat baru']]} />
               </div>
             )}>
             {creating ? <CreatePoolStep C={C} /> : pools === null ? <Spinner /> : pool && !swapPool ? (
@@ -781,7 +783,7 @@ export default function ManualLp({ param }) {
                 <div className="min-w-0">
                   <div className="text-base font-semibold"><PairName token0={pool.token0} token1={pool.token1} symbol0={pool.symbol0} symbol1={pool.symbol1} pool={pool.poolRef} sep="/" /></div>
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted">
-                    <span className="uppercase">{pool.venue}</span><span>·</span>
+                    <span>{t(VENUE_LABEL[venueKey(pool)] || pool.venue.toUpperCase())}</span><span>·</span>
                     <span>{pool.dynamicFee ? t('fee dinamis') : t('fee {p}%', { p: num(pool.feePct, 2) })}</span><span>·</span>
                     {pool.hasHooks && <><span className="text-warning">{t('pakai hook')}</span><span>·</span></>}
                     <span>{pool.lastTs ? t('aksi terakhir {a}', { a: ago(pool.lastTs) }) : t('belum ada aksi terpantau')}</span>
@@ -813,14 +815,25 @@ export default function ManualLp({ param }) {
                 {t('Nilai posisi, bukan jumlah token — bot mengurus sendiri tukar-menukarnya.')}
               </p>
               <Balance saldo={shownBalance} pool={creating ? pNow : pool} />
-              {mode === 'single' && pReady?.swaps && <AutoSwap p={pReady} />}
+              {(mode === 'single' || damm) && pReady?.swaps && <AutoSwap p={pReady} />}
             </div>
           </Step>
 
           <Step n={3} title="Rentang harga" done={stepsDone}
-            action={creating ? null : <Segmented size="sm" aria="Mode rentang" value={mode} onChange={setMode}
+            action={creating || damm ? null : <Segmented size="sm" aria="Mode rentang" value={mode} onChange={setMode}
               options={[['single', 'Satu rentang'], ['ladder', 'Berlayer']]} />}>
-            {mode === 'ladder' ? (
+            {damm ? (
+              <div className="flex flex-col gap-3">
+                <p className="text-sm text-muted">{t('DAMM v2 tidak memakai rentang per posisi: setiap posisi memakai rentang pool itu sendiri, jadi likuiditas & fee dibagi rata dengan LP lain di rentang yang sama.')}</p>
+                {p?.compounding && <p className="text-xs text-muted">{t('Pool ini model compounding: fee langsung menambah cadangan pool, bukan diklaim terpisah.')}</p>}
+                {p && (
+                  <div className="rounded-md border border-border p-3">
+                    <PriceRange lo={p.tickLower} hi={p.tickUpper} cur={p.curTick} dec0={p.dec0} dec1={p.dec1}
+                      quoteSide={p.quoteSide} symbol0={p.symbol0} symbol1={p.symbol1} />
+                  </div>
+                )}
+              </div>
+            ) : mode === 'ladder' ? (
               <LadderStep L={ladder} chart={pool && (
                 <ChartRange pool={pool} lo={-ladder.botN} up={-ladder.topN} full={false} rangeOk={ladder.rangeOk} currentPrice={null}
                   preview={null} bands={ladder.bands}
@@ -828,14 +841,14 @@ export default function ManualLp({ param }) {
               )} />
             ) : (
             <div className="flex flex-col gap-3">
-              {!creating && (dlmm || (pool && !isSolana() && !full)) && <ShapePicker value={shape} onChange={setShape} evm={!dlmm} />}
+              {(dlmm || (!creating && pool && !isSolana() && !full)) && <ShapePicker value={shape} onChange={setShape} evm={!dlmm} />}
               {evmShape && (
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs text-muted">{t('Jumlah posisi')}</span>
                   <Segmented size="sm" aria="Jumlah posisi" value={shaped.layers} onChange={shaped.setLayers} options={LAYER_CHOICES.map((n) => [n, String(n)])} />
                 </div>
               )}
-              {!creating && dlmm && p && !plan?.error && <BinDistribution p={p} />}
+              {dlmm && p && !plan?.error && <BinDistribution p={p} />}
               {!creating && pool && (
                 <ChartRange pool={pool} lo={lo} up={up} full={full} rangeOk={rangeOk} currentPrice={currentPrice}
                   preview={pReady && !compute ? pReady : null} bands={evmShape ? shaped.bands : null}
@@ -945,8 +958,8 @@ export default function ManualLp({ param }) {
                 ) : (
                   <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/5 p-3">
                     <div className="text-sm font-medium">{t('Kirim transaksi sungguhan?')}</div>
-                    <div className="text-sm text-muted">{t('{v} ke {pair}, rentang {r}.', { v: usd(p.valueUsd), pair: p.pair, r: rangeLabel(lo, up, full, t) })}</div>
-                    {p.init && <div className="text-sm text-muted">{t('Pool baru {venue}, harga awal {px} {q}.', { venue: String(p.create?.venue || '').toUpperCase(), px: num(p.init.price, 8), q: symQ || '' })}</div>}
+                    <div className="text-sm text-muted">{t('{v} ke {pair}, rentang {r}.', { v: usd(p.valueUsd), pair: p.pair, r: damm ? t('rentang pool') : rangeLabel(lo, up, full, t) })}</div>
+                    {p.init && <div className="text-sm text-muted">{t('Pool baru {venue}, harga awal {px} {q}.', { venue: t(VENUE_LABEL[p.create?.venue] || String(p.create?.venue || '').toUpperCase()), px: num(p.init.price, 8), q: symQ || '' })}</div>}
                     <div className="flex gap-2">
                       <Button className="flex-1" onPress={open} isPending={sendOrig}>{t('Ya, buka sekarang')}</Button>
                       <Button variant="outline" onPress={() => setConfirm(false)}>{t('Batal')}</Button>

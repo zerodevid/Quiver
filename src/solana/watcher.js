@@ -68,7 +68,9 @@ class SolanaWatcher {
   venuesOn() {
     const want = this.cfg.rules?.filters?.venues;
     const all = Object.keys(this.chain.adapters);
-    return Array.isArray(want) && want.length ? all.filter((v) => want.includes(v)) : all;
+    if (Array.isArray(want) && want.length) return all.filter((v) => want.includes(v));
+    // Venues with nothing to mirror (DAMM v2: no range of its own) only when listed by name.
+    return all.filter((v) => this.chain.adapters[v].copy !== false);
   }
 
   // New signatures since the last one seen. null = failed to read. Only recent history is needed:
@@ -212,7 +214,8 @@ class SolanaWatcher {
     // Venues already read for this target. A venue read for the FIRST time (failed during the
     // first snapshot, or just enabled in the filter) only becomes snapshot — its old positions
     // must not read as new positions and get copied en masse.
-    const seen = new Set(snap ? (snap.venues || Object.keys(this.chain.adapters)) : []);
+    // (A snapshot without `venues` predates that field — it was taken over the first three venues.)
+    const seen = new Set(snap ? (snap.venues || ['meteora', 'orca', 'raydium']) : []);
     const fresh = new Set();
     for (const v of Object.keys(this.chain.adapters)) {
       const r = got[v];

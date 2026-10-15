@@ -1,6 +1,7 @@
 'use strict';
 // Client for the free public Meteora DLMM data API (https://dlmm.datapi.meteora.ag, no API
-// key, ~30 requests/second). One call answers what otherwise takes DexScreener + GeckoTerminal
+// key, ~30 requests/second; the DAMM v2 one at https://damm-v2.datapi.meteora.ag answers the
+// same shape). One call answers what otherwise takes DexScreener + GeckoTerminal
 // + RPC: pool TVL, volume and fees per window, fee/TVL, APR, bin step, base/dynamic fee, the
 // real creation time, and OHLCV candles in the pool's own quote asset.
 //
@@ -53,7 +54,9 @@ function normalizePool(p) {
     // The API's fee_tvl_ratio and apr are already PERCENT of TVL over the window (24h fees /
     // TVL = 0.137 means 0.137% a day); apy is that compounded for a year, in percent.
     // aprPct is the plain (uncompounded) annualised figure: daily % x 365.
-    dailyYieldPct: num(p.apr), aprPct: num(p.apr) != null ? num(p.apr) * 365 : null,
+    // (The DAMM v2 API has no apr field: its 24h fee/TVL is the same daily figure.)
+    dailyYieldPct: num(p.apr) ?? num(p.fee_tvl_ratio?.['24h']),
+    aprPct: (num(p.apr) ?? num(p.fee_tvl_ratio?.['24h'])) != null ? (num(p.apr) ?? num(p.fee_tvl_ratio?.['24h'])) * 365 : null,
     apyPct: num(p.apy),
     hasFarm: p.has_farm === true, farmAprPct: num(p.farm_apr) != null ? num(p.farm_apr) * 365 : null,
     cumulativeVolume: num(p.cumulative_metrics?.volume), cumulativeFees: num(p.cumulative_metrics?.fees),

@@ -18,10 +18,16 @@ const { share0, amountsForValue, CLMM_MAX_TICK } = require('./planner');
 const { WSOL } = require('../networks');
 const { resolveStrategy, shapeWeight, STRATEGIES } = require('./dlmm-shape');
 const { poolStats } = require('./meteora-api');
+const { PublicKey } = require('@solana/web3.js');
+const { MIN_SQRT_PRICE, MAX_SQRT_PRICE } = require('@meteora-ag/cp-amm-sdk');
+const { DammV2Venue, tickOf: dammTick } = require('./venues/dammv2');
 
 const isBase58 = (a) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(a || ''));
 const str = (a) => String(a || '').trim();
 const DLMM_MAX_BINS = 1400;
+const DLMM_MAX_BIN_ID = 443636;
+// DAMM v2 sqrt price bounds (Q64.64), the full range a new pool is created over.
+const D_MIN_SQRT = MIN_SQRT_PRICE.toString(), D_MAX_SQRT = MAX_SQRT_PRICE.toString();
 
 class SolanaManual extends Manual {
   // ---- pools ------------------------------------------------------------------------
@@ -97,12 +103,21 @@ class SolanaManual extends Manual {
       }
       ok++;
     } catch (e) { this.log(`pindai pool ${t}: Meteora ${e.message}`); }
+    // Meteora DAMM v2: same API family, same numbers.
+    try {
+      const { pools } = await this.chain.meteoraDamm.pools({ query: t, sortBy: 'tvl:desc', pageSize: 100 });
+      for (const mp of pools) {
+        const prev = cand.get(mp.address) || {};
+        cand.set(mp.address, { createdAt: mp.createdAt ?? prev.createdAt ?? null, liquidityUsd: mp.tvlUsd ?? prev.liquidityUsd ?? null });
+        meteoraStats.set(mp.address, poolStats(mp));
+      }
+      ok++;
+    } catch (e) { this.log(`pindai pool ${t}: Meteora DAMM v2 ${e.message}`); }
     onProgress({ done: 3, total: 4 });
     if (!ok) throw new Error('indeks pool (Meteora, DexScreener & GeckoTerminal) tidak bisa dihubungi — coba lagi sebentar');
     if (!cand.size) return [];
 
     // Venue from the account's owner program: one getMultipleAccounts per 100 addresses.
-    const { PublicKey } = require('@solana/web3.js');
     const addrs = [...cand.keys()].filter(isBase58);
     const byProgram = new Map(Object.values(this.chain.adapters).map((a) => [a.program, a.key]));
     const perVenue = new Map();
@@ -138,6 +153,8 @@ class SolanaManual extends Manual {
         firstBlock: c.createdAt || 0, createdAt: c.createdAt || null, liquidityUsd: c.liquidityUsd ?? null,
         pair: `${s0}/${s1}`, symbol0: s0, symbol1: s1,
         dec0: st.dec0 ?? byAddr.get(st.token0)?.decimals ?? 9, dec1: st.dec1 ?? byAddr.get(st.token1)?.decimals ?? 9,
+        // dynamicFee means "fee unknown until the swap" (EVM v4); a DAMM v2 / DLMM variable fee
+        // on top of a known base fee is not that.
         feePct: st.fee != null ? st.fee / 10000 : null, dynamicFee: false, hasHooks: false,
         quoteSymbol: qs?.symbol || null, quoteSide: qs?.side ?? null,
         stats: meteoraStats.get(st.id) || null,
@@ -172,15 +189,17 @@ class SolanaManual extends Manual {
   // fixed (follow an action, exact mode: the target's bins/ticks as is).
   // strategy: Meteora DLMM shape (spot | curve | bidask); unset = the rules' choice, and
   // spot when that is 'mirror' (a manual LP has no target shape to follow).
+  // state: the pool state to plan on instead of reading it (a pool still to be created).
+  // DAMM v2 has no per-position range: the range arguments are ignored, the pool's is used.
   async planLp({ poolRef, usd, widthPct = 25, lowerPct = null, upperPct = null, tickLower = null, tickUpper = null, full = false,
-    pool = null, target = null, ranged = false, native = null, strategy = null }) {
+    pool = null, target = null, ranged = false, native = null, strategy = null, state = null }) {
     const eng = this.engine;
     const p = pool || await this.poolByRef(poolRef);
-    if (!p) return { error: 'pool tidak dikenal — tempel alamat pool Meteora DLMM / Orca / Raydium CLMM, atau pindai dari alamat token' };
+    if (!p) return { error: 'pool tidak dikenal — tempel alamat pool Meteora DLMM / DAMM v2 / Orca / Raydium CLMM, atau pindai dari alamat token' };
     if (!this.chain.isSolVenue(p.venue)) return { error: `venue ${p.venue} tidak didukung di Solana` };
     if (p.quoteSide == null) return { error: `pasangan ${p.pair} tidak punya aset kuotasi yang dikenal (${Object.values(this.chain.QUOTES).map((x) => x.symbol).join('/')})` };
     const rules = eng.rulesFrom(target);
-    const raw = await this.chain.pool(p.venue, p.poolRef, { maxAgeMs: 0 }).catch(() => null);
+    const raw = state || await this.chain.pool(p.venue, p.poolRef, { maxAgeMs: 0 }).catch(() => null);
     const st = raw ? { ...raw, symbol0: p.symbol0, symbol1: p.symbol1 } : null;
     if (!st || st.sqrtX96 == null) return { error: 'harga pool tidak terbaca sekarang' };
     if (st.enabled === false) return { error: 'pool ini sedang dinonaktifkan programnya' };
@@ -192,10 +211,11 @@ class SolanaManual extends Manual {
     if (!Number.isFinite(nominal) || nominal <= 0) return { error: 'nominal harus angka lebih dari nol' };
     const ad = this.chain.adapter(p.venue);
     const cur = st.tick;
+    const damm = p.venue === 'dammv2';
 
     // 1) range in equivalent ticks (exactly as EVM), then to the venue's native units
     let singleSide = null;
-    if (!native && !full && tickLower == null && tickUpper == null && (lowerPct != null || upperPct != null)) {
+    if (!damm && !native && !full && tickLower == null && tickUpper == null && (lowerPct != null || upperPct != null)) {
       const r = ticksFromPct({ curTick: cur, quoteSide: p.quoteSide, lowerPct, upperPct });
       if (r.error) return r;
       ({ tickLower, tickUpper } = r);
@@ -203,7 +223,9 @@ class SolanaManual extends Manual {
       else if (Number(upperPct ?? 0) <= 0) singleSide = p.quoteSide === 1 ? 'token1' : 'token0';
     }
     let lower, upper;
-    if (native) {
+    if (damm) {
+      ({ lower, upper } = ad.nativeRange(st));
+    } else if (native) {
       ({ lower, upper } = native);
     } else {
       let tl, tu;
@@ -225,7 +247,7 @@ class SolanaManual extends Manual {
       if (singleSide === 'token0') { lower = Math.max(lower, st.current + 1); upper = Math.max(upper, lower); }
       if (singleSide === 'token1') { upper = Math.min(upper, st.current - 1); lower = Math.min(lower, upper); }
       if (upper - lower + 1 > DLMM_MAX_BINS) return { error: `rentang ${upper - lower + 1} bin melebihi batas posisi DLMM (${DLMM_MAX_BINS}) — persempit rentangnya` };
-    } else {
+    } else if (!damm) {
       const sp = st.spacing;
       if (singleSide === 'token0') { lower = Math.max(lower, m.alignTick(cur + 1, sp, 'up')); upper = Math.max(upper, lower + sp); }
       if (singleSide === 'token1') { upper = Math.min(upper, m.alignTick(cur, sp, 'down')); lower = Math.min(lower, upper - sp); }
@@ -279,6 +301,7 @@ class SolanaManual extends Manual {
     if (side !== 'both') warnings.push('posisi satu sisi — fee baru diperoleh saat harga masuk rentang');
     if (fee != null && fee >= 30000) warnings.push(`fee pool ${(fee / 10000).toFixed(2)}% — tinggi, hanya sepadan kalau ramai`);
     if (p.venue === 'meteora' && upper - lower + 1 > 70) warnings.push(`rentang ${upper - lower + 1} bin — posisi DLMM lebar butuh sewa akun lebih besar (dikembalikan saat ditutup)`);
+    if (damm && st.feeMax > (st.fee ?? 0)) warnings.push(`fee pool ini masih dijadwalkan turun (sekarang bisa sampai ${(st.feeMax / 10000).toFixed(2)}%, akhirnya ${((st.fee ?? 0) / 10000).toFixed(2)}%)`);
 
     const bal = await eng.exec.balances();
     const px = await this.usdPrices(st);
@@ -299,6 +322,8 @@ class SolanaManual extends Manual {
       preview: {
         lowerPct: (1 - rasio(tHargaBawah)) * 100, upperPct: (rasio(tHargaAtas) - 1) * 100,
         pair: p.pair, venue: p.venue, feePct: fee != null ? fee / 10000 : null, dynamicFee: false,
+        // DAMM v2: the range is the pool's, not chosen (fixedRange); compounding = constant-product reserves.
+        fixedRange: damm, compounding: damm ? !!st.compounding : null,
         symbol0: p.symbol0, symbol1: p.symbol1, dec0: st.dec0, dec1: st.dec1, quoteSide: p.quoteSide,
         tickLower: tl, tickUpper: tu, curTick: cur,
         nativeLower: lower, nativeUpper: upper, nativeUnit: p.venue === 'meteora' ? 'bin' : 'tick', activeBin: p.venue === 'meteora' ? st.current : null,
@@ -443,6 +468,147 @@ class SolanaManual extends Manual {
     add(plan.token1, -BigInt(plan.amount1));
     for (const [t, v] of s) if (typeof v === 'bigint' && v < 0n) s.set(t, 0n);
     return { step, problems, after: s };
+  }
+
+  // ---- create a pool ------------------------------------------------------------------
+  // A new Meteora pool for `token` against one of the quote assets (token = X / A, quote =
+  // Y / B, so the pool price is "quote per token"), opened together with the first position:
+  //   DAMM v2 : a customizable pool (full range, static fee) and the position in ONE transaction
+  //   DLMM    : the pair from a preset (bin step + base fee), then the position — guarded by
+  //             re-reading the active bin before the deposit (an empty pair holds no price)
+  // An existing pool is refused: that is the ordinary manual LP path.
+  async createVenues() {
+    let presets = [];
+    try { presets = await this.chain.adapter('meteora').presets(); } catch (e) { this.log(`preset DLMM: ${e.message}`); }
+    // One preset per (bin step, fee) — several presets differ only by index.
+    const seen = new Set();
+    presets = presets.filter((p) => { const k = `${p.binStep}:${p.fee}`; return seen.has(k) ? false : (seen.add(k), true); })
+      .map((p) => ({ binStep: p.binStep, fee: p.fee }));
+    return [
+      { key: 'dammv2', label: 'Meteora DAMM v2', fees: null },
+      ...(presets.length ? [{ key: 'meteora', label: 'Meteora DLMM', fees: null, presets }] : []),
+    ];
+  }
+
+  async createSpec({ venue, token, quote, fee, binStep = null, price }) {
+    if (venue !== 'dammv2' && venue !== 'meteora') return { error: `venue ${venue} tidak tersedia di Solana` };
+    const tok = str(token), q = str(quote);
+    if (!isBase58(tok)) return { error: 'alamat token Solana tidak valid' };
+    if (!this.chain.QUOTES[q]) return { error: 'aset kuotasi harus SOL, USDC, atau USDT' };
+    if (tok === q || this.chain.QUOTES[tok]) return { error: 'token harus bukan aset kuotasi' };
+    const px = Number(price);
+    if (!(px > 0) || !Number.isFinite(px)) return { error: 'harga awal harus angka lebih dari nol' };
+    const [mt, mq] = await this.chain.tokens([tok, q]);
+    if (!mt) return { error: 'mint token tidak terbaca di chain — pastikan alamatnya mint token' };
+    const qs = this.chain.quoteSideOf(tok, q);
+    // token = X/A (token0), quote = Y/B (token1): the raw price is quote per token.
+    const raw = px * 10 ** (mq.decimals - mt.decimals);
+    const p = {
+      venue, token0: tok, token1: q, symbol0: mt.symbol, symbol1: mq.symbol, dec0: mt.decimals, dec1: mq.decimals,
+      pair: `${mt.symbol}/${mq.symbol}`, quoteSymbol: qs.symbol, quoteSide: qs.side, quoteKind: qs.kind,
+      hooks: null, hasHooks: false, dynamicFee: false,
+    };
+    const f = Number(fee);
+    if (venue === 'dammv2') {
+      // Static base fee in whole basis points (0.01%–99%; the program's v1 cap).
+      if (!Number.isInteger(f) || f % 100 !== 0 || f < 100 || f > 990_000) return { error: 'fee DAMM v2 harus kelipatan 0,01% antara 0,01% dan 99%' };
+      const sqrtQ64 = DammV2Venue.sqrtQ64(raw);
+      if (sqrtQ64 <= BigInt(D_MIN_SQRT) || sqrtQ64 >= BigInt(D_MAX_SQRT)) return { error: 'harga awal di luar batas yang bisa disimpan pool' };
+      p.poolRef = DammV2Venue.poolAddressFor(tok, q);
+      p.fee = f; p.feePct = f / 10000; p.tickSpacing = 1;
+      const there = await this.rpc.run((c) => c.getAccountInfo(new PublicKey(p.poolRef)));
+      if (there) return { error: 'pool DAMM v2 untuk pasangan ini sudah ada — buka LP di pool itu lewat daftar pool', existing: p.poolRef };
+      const tick = dammTick(sqrtQ64);
+      const state = {
+        venue, id: p.poolRef, token0: tok, token1: q, dec0: mt.decimals, dec1: mq.decimals,
+        sqrtX96: sqrtQ64 << 32n, tick, current: tick, spacing: 1, ticksPerUnit: 1, fee: f, feeMax: f, tickSpacing: 1,
+        liquidity: 0n, rangeLower: dammTick(D_MIN_SQRT), rangeUpper: dammTick(D_MAX_SQRT),
+        sqrtMinX96: BigInt(D_MIN_SQRT) << 32n, sqrtMaxX96: BigInt(D_MAX_SQRT) << 32n, compounding: false, enabled: true,
+      };
+      return { pool: p, state, init: { price: px, tick, sqrtQ64: sqrtQ64.toString() },
+        create: { tokenA: tok, tokenB: q, sqrtQ64: sqrtQ64.toString(), feeBps: f / 100, collectFeeMode: 1 } };
+    }
+    const ad = this.chain.adapter('meteora');
+    const preset = (await ad.presets()).find((x) => x.binStep === Number(binStep) && x.fee === f);
+    if (!preset) return { error: 'kombinasi bin step dan fee ini tidak ada di preset Meteora DLMM' };
+    const activeId = Math.round(Math.log(raw) / Math.log(1 + preset.binStep / 10_000));
+    if (!Number.isFinite(activeId) || Math.abs(activeId) > DLMM_MAX_BIN_ID) return { error: 'harga awal di luar batas yang bisa disimpan pool' };
+    const pair = await ad.pairFor(tok, q, preset);
+    if (pair.existing) return { error: 'pool DLMM dengan bin step dan fee ini sudah ada — buka LP di pool itu lewat daftar pool', existing: pair.existing };
+    p.poolRef = pair.pool; p.fee = f; p.feePct = f / 10000;
+    p.tickSpacing = Math.max(1, Math.round(u.ticksPerBin(preset.binStep)));
+    const tick = u.binToTick(activeId, preset.binStep);
+    const state = {
+      venue, id: p.poolRef, token0: tok, token1: q, dec0: mt.decimals, dec1: mq.decimals,
+      sqrtX96: u.binSqrtX96(activeId, preset.binStep), tick, current: activeId, spacing: 1, binStep: preset.binStep,
+      ticksPerUnit: u.ticksPerBin(preset.binStep), fee: f, tickSpacing: p.tickSpacing, liquidity: null, enabled: true,
+    };
+    // The bin price is rounded to the bin grid: the pool starts at that price, not exactly `px`.
+    const binPrice = Number(u.binPriceRaw(activeId, preset.binStep)) * 10 ** (mt.decimals - mq.decimals);
+    return { pool: p, state, preset, init: { price: binPrice, tick, activeId }, create: null };
+  }
+
+  async planCreate(args) {
+    const spec = await this.createSpec(args);
+    if (spec.error) return spec;
+    const { pool: p, state, init } = spec;
+    const d = await this.planLp({
+      poolRef: p.poolRef, pool: p, state, usd: args.usd, full: !!args.full,
+      lowerPct: args.lowerPct != null ? Number(args.lowerPct) : null,
+      upperPct: args.upperPct != null ? Number(args.upperPct) : null,
+      strategy: args.strategy || null,
+    });
+    if (d.error) return d;
+    d.plan.init = init;
+    if (spec.create) d.plan.create = spec.create;
+    d.preview.init = init;
+    d.preview.create = { venue: p.venue, fee: p.fee, binStep: spec.preset?.binStep ?? null, poolRef: p.poolRef };
+    d.warnings = [
+      'kamu LP pertama di pool ini — harga awal yang kamu isi menjadi harga pool; kalau meleset dari pasar, arbitrase langsung mengambil selisihnya dari posisimu',
+      ...(p.venue === 'meteora' ? ['DLMM: dua transaksi — membuat pool, lalu posisi (dibatalkan kalau harga bergeser di antaranya); sewa akun pool ~0,03 SOL tidak kembali'] : []),
+      ...d.warnings,
+    ];
+    return d;
+  }
+
+  async openCreate(args) {
+    const eng = this.engine;
+    if (!eng.exec.address()) throw new Error('belum ada wallet');
+    if (eng.dryRun()) throw new Error('mode simulasi: tidak mengirim transaksi');
+    const d = await this.planCreate(args);
+    if (d.error) throw new Error(d.error);
+    let plan = d.plan;
+    if (plan.venue === 'meteora') {
+      const spec = await this.createSpec(args);
+      if (spec.error) throw new Error(spec.error);
+      const ad = this.chain.adapter('meteora');
+      // 1. the pair, at the starting bin
+      const built = await ad.buildCreatePair({ tokenX: plan.token0, tokenY: plan.token1, preset: spec.preset, activeId: spec.init.activeId, owner: eng.exec.address() });
+      const sent = await eng.exec.sendGroups(built.groups, { kind: 'lain', detail: { createPool: { venue: 'meteora', pool: plan.poolRef, binStep: spec.preset.binStep, fee: spec.preset.fee } } });
+      if (!sent.ok) throw new Error(`membuat pool gagal${sent.hashes.length ? ` (${sent.hashes[sent.hashes.length - 1]})` : ''}`);
+      // 2. read it back (another endpoint may lag) and check nobody moved the price meanwhile
+      let st = null;
+      for (let i = 0; i < 8 && !st; i++) {
+        st = await this.chain.pool('meteora', plan.poolRef, { maxAgeMs: 0 }).catch(() => null);
+        if (!st) await new Promise((r) => setTimeout(r, 1500));
+      }
+      if (!st) throw new Error(`pool dibuat (${plan.poolRef}), tapi belum terbaca — buka LP-nya dari daftar pool`);
+      if (Math.abs(st.current - spec.init.activeId) * (spec.preset.binStep / 10_000) > 0.01) {
+        throw new Error(`pool dibuat (${plan.poolRef}), tapi harganya sudah bergeser lebih dari 1% — posisi tidak dibuka`);
+      }
+      // 3. the first position, planned again on the real pair with the same range
+      const d2 = await this.planLp({
+        poolRef: plan.poolRef, usd: args.usd, full: !!args.full, strategy: args.strategy || null,
+        lowerPct: args.lowerPct != null ? Number(args.lowerPct) : null, upperPct: args.upperPct != null ? Number(args.upperPct) : null,
+      });
+      if (d2.error) throw new Error(`pool dibuat (${plan.poolRef}), tapi posisinya belum bisa dibuka: ${d2.error}`);
+      plan = { ...d2.plan, init: plan.init };
+    }
+    const r = await eng.executeEntry(plan, { target: null });
+    // DAMM v2: the pool exists only now; reading it records it in the pools table.
+    if (plan.venue === 'dammv2') await this.chain.pool('dammv2', plan.poolRef, { maxAgeMs: 0 }).catch(() => null);
+    eng.notify(`Pool baru dibuat & LP dibuka: ${r.note}`);
+    return { ...r, poolRef: plan.poolRef };
   }
 
   // ---- follow an action -----------------------------------------------------------------

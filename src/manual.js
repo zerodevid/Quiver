@@ -162,7 +162,7 @@ function duration(ms) {
   return m ? `${j} jam ${m} mnt` : `${j} jam`;
 }
 // Solana venues (src/solana/manual.js) — their actions can be followed by hand too.
-const SOL_VENUES = new Set(['meteora', 'orca', 'raydium']);
+const SOL_VENUES = new Set(['meteora', 'orca', 'raydium', 'dammv2']);
 const dynamicFeeVal = (f) => f != null && (Number(f) & DYNAMIC_FEE) !== 0;
 const feePctOf = (f) => (f == null || dynamicFeeVal(f) ? null : Number(f) / 10000);
 
