@@ -10,18 +10,65 @@ import PositionHistory from '../components/PositionHistory';
 import WalletPositionHistory from '../components/WalletPositionHistory';
 import { useEffect, useState } from 'react';
 import { usePoll } from '../hooks';
-import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, TradeLinks, DataLinks } from '../components/ui';
-import { TokenPair, TokenSym } from '../components/TokenIcon';
+import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, TradeLinks, DataLinks, DataTable } from '../components/ui';
+import { TokenPair, TokenSym, PairName, poolHref } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
 import { PriceChart, DexEmbed, GmgnEmbed, TradesTape, MarketPanel, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc } from './PositionDetail';
 import { GmgnWallets } from '../components/Gmgn';
 import { BAND_COLORS } from '../components/CandleChart';
-import { usd, pct, tone, num, price, sqrtPrice, tickPrice, shortId } from '../fmt';
+import { usd, pct, tone, num, price, sqrtPrice, tickPrice, shortId, short, age } from '../fmt';
 import { useI18n } from '../i18n';
 import { canonAddr } from '../chain';
 
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
 const DYNAMIC_FEE = 0x800000;   // v4 dynamic fee marker (set by the hook)
+const venueOf = (p) => (p.labels?.length ? p.labels.join(' ') : p.dexId || '');
+// USD price of `a` in one DexScreener pool: it prices the BASE token, so when `a` is the
+// quote side its price = base price ÷ base price in quote.
+const priceIn = (p, a) => (p.base.address === a ? p.priceUsd
+  : p.priceUsd && p.priceNative ? p.priceUsd / p.priceNative : null);
+
+// Every pool of the same token pair (other fee tiers, v3/v4, hooked pools) — so a pair can be
+// compared at a glance and the deepest pool opened. Rows link to their own pool page.
+function PairPools({ pool, poolRef, base, className = '' }) {
+  const { t } = useI18n();
+  const { data: d } = usePoll(pool.token0 && pool.token1 ? `/api/pair-pools?a=${pool.token0}&b=${pool.token1}` : null, 60000);
+  const pairs = d?.pairs || [];
+  if (!d || (!pairs.length && !d.error)) return null;
+  const tok = pool.baseToken;
+  return (
+    <Panel title={t('Pool untuk pair ini ({n})', { n: pairs.length })} desc="DexScreener" className={className} bodyClass="p-0">
+      {d.error ? <Empty title="Daftar pool tidak tersedia" sub={d.error} /> : (
+        <DataTable label="Pool pair" rows={pairs} rowKey={(p) => p.pool} pageSize={10}
+          defaultSort={{ column: 'liq', direction: 'descending' }}
+          onRow={(p) => { if (p.pool !== poolRef && poolHref(p.pool)) window.location.hash = poolHref(p.pool); }}
+          columns={[
+            { key: 'pair', label: 'Pool', sort: (p) => venueOf(p), render: (p) => (
+              <div className="flex items-center gap-2.5">
+                <TokenPair token0={p.base.address} token1={p.quote.address} symbol0={p.base.symbol} symbol1={p.quote.symbol} size={20} />
+                <div>
+                  <PairName token0={p.base.address} token1={p.quote.address} symbol0={p.base.symbol} symbol1={p.quote.symbol} pool={p.pool} className="block font-medium" />
+                  <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
+                    <span className="uppercase">{venueOf(p)}</span><span>·</span><span className="mono">{short(p.pool)}</span>
+                    {p.pool === poolRef && <><span>·</span><span className="text-accent">{t('pool ini')}</span></>}
+                  </div>
+                </div>
+              </div>) },
+            { key: 'px', label: t('Harga {b}', { b: base }), align: 'end', sort: (p) => priceIn(p, tok), render: (p) => {
+              const v = tok ? priceIn(p, tok) : null;
+              return v == null ? '—' : usd(v, v < 0.01 ? 6 : 4);
+            } },
+            { key: 'liq', label: 'Likuiditas', align: 'end', sort: (p) => p.liquidityUsd ?? 0, render: (p) => kUsd(p.liquidityUsd) },
+            { key: 'vol', label: 'Volume 24 jam', align: 'end', sort: (p) => p.volume?.h24, render: (p) => kUsd(p.volume?.h24) },
+            { key: 'tx', label: 'Transaksi 24 jam', align: 'end', sort: (p) => (p.txns?.h24?.buys || 0) + (p.txns?.h24?.sells || 0), render: (p) => (
+              p.txns?.h24 ? <span className="whitespace-nowrap"><span className="text-success">{num(p.txns.h24.buys)}</span> / <span className="text-danger">{num(p.txns.h24.sells)}</span></span> : '—') },
+            { key: 'age', label: 'Umur', align: 'end', sort: (p) => p.pairCreatedAt || 0, render: (p) => (
+              p.pairCreatedAt ? <span className="whitespace-nowrap">{age((Date.now() - p.pairCreatedAt) / 3600000)}</span> : '—') },
+          ]} />
+      )}
+    </Panel>
+  );
+}
 
 export default function PoolDetail({ param }) {
   const { t } = useI18n();
@@ -176,6 +223,7 @@ export default function PoolDetail({ param }) {
         </div>
       </div>
 
+      <PairPools pool={pool} poolRef={ref} base={base} className="mt-4" />
       <div className="mt-4"><LiquidityRisk key={ref} pool={{ ...pool, pool_ref: ref }} focus={focus} /></div>
       <GmgnWallets address={pool.baseToken} kind="traders" symbol={base} className="mt-4" />
 

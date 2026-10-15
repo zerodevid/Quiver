@@ -1511,6 +1511,31 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         market: mk, balance, ...rows, ethUsd: engine.ethUsd,
       };
     },
+    // Every pool of one token pair (other fee tiers, v3/v4, hooks) from DexScreener, the
+    // largest liquidity first — the "pools for this pair" table on the pool page. Native
+    // and wrapped native count as the same token: DexScreener often reports a native-ETH
+    // v4 pool with WETH as its quote.
+    'GET /api/pair-pools': async (req, url) => {
+      const a = canon(url.searchParams.get('a') || ''), b = canon(url.searchParams.get('b') || '');
+      if (!isAddr(a) || !isAddr(b)) return { error: 'pasangan token tidak valid' };
+      const natives = new Set([chain.ADDR?.native, chain.ADDR?.weth].filter(Boolean).map(canon));
+      const same = (x, y) => x === y || (natives.has(x) && natives.has(y));
+      const isPair = (p) => {
+        const x = canon(p.base.address || ''), y = canon(p.quote.address || '');
+        return (same(x, a) && same(y, b)) || (same(x, b) && same(y, a));
+      };
+      // Look up through the side that is not a quote asset: a quote asset (USDG, WETH) has
+      // far more pools than the 30 DexScreener returns, so the pair could be cut off.
+      const [first, second] = QUOTES[a] && !QUOTES[b] ? [b, a] : [a, b];
+      let mk = await market.token(first).catch((e) => ({ error: e.message }));
+      let pairs = (mk.pairs || []).filter(isPair);
+      if (!pairs.length && !mk.error) {
+        const mk2 = await market.token(second).catch(() => null);
+        if (mk2?.pairs) { mk = mk2; pairs = mk2.pairs.filter(isPair); }
+      }
+      if (!pairs.length && mk.error) return { error: mk.error };
+      return { pairs, fetchedAt: mk.fetchedAt || Date.now() };
+    },
     // Detail of one pool (pair) — the equivalent of a DexScreener pair page: its tokens,
     // current price from the chain, bot positions in this pool with PnL, researched
     // wallet positions, and target moves. A pool never touched by the bot/research can still

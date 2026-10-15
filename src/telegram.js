@@ -617,6 +617,7 @@ const COMMANDS = [
   ['leftovers', 'Leftover memecoin sell queue'],
   ['logs', 'Recent log lines'],
   ['tx', 'Recent transactions'],
+  ['pools', 'Every pool of a token pair'],
   ['scout', 'Quick snapshot of any wallet'],
   ['research', 'Full PnL research on a wallet'],
   ['pause', 'Pause copying'],
@@ -629,6 +630,7 @@ const ALIAS = {
   target: 'targets', aktivitas: 'activity', aturan: 'rules', pengaturan: 'settings',
   saldo: 'balance', sisa: 'leftovers', log: 'logs', riset: 'research',
   jeda: 'pause', lanjut: 'resume', bantuan: 'help', cancel: 'cancel', rantai: 'chain',
+  pool: 'pools',
 };
 
 // Connect command: /start <code>. Also used by links in t.me.
@@ -1002,6 +1004,9 @@ class Telegram {
         const b = text.match(/(?<![1-9A-HJ-NP-Za-km-z])[1-9A-HJ-NP-Za-km-z]{32,44}(?![1-9A-HJ-NP-Za-km-z])/)?.[0];
         if (b) return this.tempel(chatId, b);
       }
+      // A v4 poolId (bytes32) can only be a pool: show every pool of its pair.
+      const pid = text.match(/0x[0-9a-fA-F]{64}(?![0-9a-fA-F])/)?.[0];
+      if (pid) return this.send(chatId, ...(await this.pairPools(pid.toLowerCase())));
       const a = text.match(/0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/)?.[0];
       if (a) return this.paste(chatId, a.toLowerCase());
     }
@@ -1030,6 +1035,9 @@ class Telegram {
       case 'tx': return go('x');
       case 'pause': return this.setPause(chatId, null, true);
       case 'resume': return this.setPause(chatId, null, false);
+      case 'pools':
+        if (arg) return this.send(chatId, ...(await this.pairPools(arg)));
+        return this.ask(chatId, { kind: 'pools' }, tr("Kirim <b>alamat pool</b> untuk melihat semua pool dari pair yang sama (fee tier lain, v3/v4, pool ber-hook), atau <b>alamat token</b> untuk semua pool token itu. Dua alamat token sekaligus = pool pair itu."));
       case 'scout':
         if (arg) return this.runScout(chatId, arg);
         return this.ask(chatId, { kind: 'scout' }, isSolana(this.chatChain(chatId))
@@ -1121,6 +1129,14 @@ class Telegram {
       case 'pl': return out(...(await this.posisi(rest[0], rest[1])));
       case 'p': return rest[0] ? out(...(await this.positionDetail(rest[0]))) : out(...(await this.posisi()));
       case 'pc': return out(...(await this.closeConfirm(rest[0])));
+      // Every pool of an open position's pair. Keyed by position id: a v4 poolId does
+      // not fit in the 64-byte callback data.
+      case 'pp': {
+        const d = await this.api('GET', '/api/positions');
+        const p = (d.positions || []).find((x) => String(x.id) === String(rest[0]));
+        if (!p) return out(tr("Posisi #{0} tidak ada di daftar terbuka.", [esc(rest[0])]), kb([[btn(tr("↩︎ Posisi"), 'p'), BACK_HOME]]));
+        return out(...(await this.pairPools(p.pool_ref, { token0: p.token0, token1: p.token1, back: btn(tr("💼 Posisi"), `p:${p.id}`), refresh: `pp:${p.id}` })));
+      }
       // Share card: a PnL image (src/share-card.js) sent as a photo to this chat;
       // the screen currently shown is not changed, just a small notification on its button.
       // The theme, size, and amount-hiding switch ride in the callback data (`ps:<id>:<theme>:
@@ -1453,6 +1469,7 @@ class Telegram {
         return out(tr("✅ <b>Swap selesai</b>\n{0}{1}\ntx <code>{2}</code>", [esc(r.note), r.dex ? tr("\nlewat {0}", [esc(r.dex)]) : '', esc(shortH(r.tx))]), kb([[btn(tr("💵 Saldo"), 'b'), btn(tr("🔁 Swap lagi"), 'sw')], [BACK_HOME]]));
       }
 
+      case 'ppAsk': return this.ask(chatId, { kind: 'pools' }, tr("Kirim <b>alamat pool</b> untuk melihat semua pool dari pair yang sama (fee tier lain, v3/v4, pool ber-hook), atau <b>alamat token</b> untuk semua pool token itu. Dua alamat token sekaligus = pool pair itu."));
       case 'k': return this.ask(chatId, { kind: 'scout' }, tr("Kirim alamat wallet untuk memotret gaya LP-nya: ukuran posisi khas, lebar rentang, dan seberapa sering harga masih di dalam rentang."));
       case 'w': return this.ask(chatId, { kind: 'riset' }, tr("Kirim alamat wallet yang mau diriset. Bot membaca seluruh posisi LP-nya langsung dari chain: modal, hasil, fee, dan riwayat tiap posisi."));
       case 'wl': return out(...(await this.walletList()));
@@ -1466,6 +1483,7 @@ class Telegram {
     switch (p.kind) {
       case 'scout': return this.runScout(chatId, text);
       case 'riset': return this.runResearch(chatId, text);
+      case 'pools': return this.send(chatId, ...(await this.pairPools(text)));
       case 'label': {
         const r = await this.api('POST', '/api/targets/label', { address: p.address, label: text });
         if (r.error) throw new Error(r.error);
@@ -2267,7 +2285,7 @@ class Telegram {
     ]);
     if (trail) { L.push(''); L.push(trail); }
     return [L.filter((x) => x != null).join('\n'), kb([
-      [btn(tr("📈 Grafik"), `pg:${p.id}`)],
+      [btn(tr("📈 Grafik"), `pg:${p.id}`), btn(tr("🏊 Pool pair ini"), `pp:${p.id}`)],
       ...tradeRows(this.net().chain, p.quoteSide === 0 ? p.token1 : p.quoteSide === 1 ? p.token0 : null, p.pool_ref),
       p.compound?.supported ? [btn(`${p.compound?.mode === 'claim' ? '💰' : '♻️'} ${tr('Panen fee')} · ${p.compound?.enabled ? (p.compound.mode === 'claim' ? tr('KLAIM') : tr('COMPOUND')) : 'OFF'}`, `ac:${p.id}`)] : null,
       [btn(tr("💰 Claim fee"), `pf:${p.id}`)],
@@ -3095,6 +3113,61 @@ class Telegram {
       [btn(tr("🔢 Ubah jumlah"), 'swn'), btn(tr("🔄 Kutipan ulang"), 'swq')],
       [btn('↩︎ Swap', 'sw')],
     ])];
+  }
+
+  // ---- pools of a pair ----------------------------------------------------
+  // Every pool of a token pair from DexScreener (other fee tiers, v3/v4, hooked pools),
+  // the deepest first — the Telegram twin of the dashboard pool page's pool list.
+  // `input`: a pool address, one token address (-> all of that token's pools), or two
+  // token addresses. `known` skips the pool lookup when the caller already has the pair.
+  async pairPools(input, known = {}) {
+    const chainKey = this.chainKey();
+    const sol = isSolana(chainKey);
+    const refs = sol
+      ? [...String(input).matchAll(/(?<![1-9A-HJ-NP-Za-km-z])[1-9A-HJ-NP-Za-km-z]{32,44}(?![1-9A-HJ-NP-Za-km-z])/g)].map((m) => m[0])
+      : [...String(input).matchAll(/0x[0-9a-fA-F]{64}(?![0-9a-fA-F])|0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g)].map((m) => m[0].toLowerCase());
+    const retry = [btn(tr("🔁 Cari lagi"), 'ppAsk'), BACK_HOME];
+    if (!refs.length) return [tr("❌ Tidak ada alamat pool atau token di pesan itu."), kb([retry])];
+
+    let pairs = null, current = null, title = null, err = null;
+    let [a, b] = refs.length >= 2 ? refs : [known.token0, known.token1];
+    if (!(a && b)) {
+      // One address: a pool first; if no pool is known by it, it is a token.
+      const pool = await this.api('GET', '/api/pool', {}, { ref: refs[0] });
+      if (pool && !pool.error && pool.pool?.token0 && pool.pool?.token1) {
+        [a, b] = [pool.pool.token0, pool.pool.token1];
+        current = refs[0];
+      } else {
+        const tk = await this.api('GET', '/api/token', {}, { a: refs[0] });
+        if (tk.error) err = tk.error;
+        else if (tk.market?.error) err = tk.market.error;
+        else { pairs = tk.market?.pairs || []; title = tk.token?.symbol || shortA(refs[0]); }
+      }
+    } else if (refs.length < 2) current = refs[0];
+    if (a && b) {
+      const r = await this.api('GET', '/api/pair-pools', {}, { a, b });
+      if (r.error) err = r.error;
+      else pairs = r.pairs || [];
+    }
+    if (err) return [tr("❌ Daftar pool tidak tersedia: <code>{0}</code>", [esc(note(err))]), kb([retry])];
+
+    const nav = [known.refresh ? btn(tr("🔄 Segarkan"), known.refresh) : null, known.back || null, BACK_HOME].filter(Boolean);
+    if (!pairs.length) return [tr("DexScreener belum mengenal pool untuk pair ini."), kb([nav])];
+    pairs = [...pairs].sort((x, y) => (y.liquidityUsd || 0) - (x.liquidityUsd || 0));
+    const head = pairs.find((p) => p.pool === current) || pairs[0];
+    const name = title ? tr("token {0}", [esc(title)]) : `${esc(head.base.symbol)}/${esc(head.quote.symbol)}`;
+    const MAX = 10;
+    const L = [tr("<b>🏊 Pool {0}</b> · {1} pool", [name, pairs.length]), tr("<i>DexScreener · likuiditas terbesar dulu</i>"), ''];
+    pairs.slice(0, MAX).forEach((p, i) => {
+      const venue = [p.dexId, ...(p.labels || [])].filter(Boolean).join(' ');
+      const tx = p.txns?.h24 ? (p.txns.h24.buys || 0) + (p.txns.h24.sells || 0) : null;
+      const addr = p.url ? `<a href="${esc(p.url)}">${esc(shortA(p.pool))}</a>` : `<code>${esc(shortA(p.pool))}</code>`;
+      L.push(`${i + 1}. <b>${esc(p.base.symbol)}/${esc(p.quote.symbol)}</b> · ${esc(venue)}${p.pool === current ? tr(" · 👈 pool ini") : ''}`);
+      L.push(tr("    likuiditas {0} · vol 24j {1}{2}", [kUsd(p.liquidityUsd), kUsd(p.volume?.h24), tx != null ? tr(" · {0} tx", [num(tx)]) : '']));
+      L.push(`    ${addr}${p.pairCreatedAt ? tr(" · umur {0}", [esc(dur((Date.now() - p.pairCreatedAt) / 1000))]) : ''}`);
+    });
+    if (pairs.length > MAX) L.push('', tr("<i>…dan {0} pool lain.</i>", [pairs.length - MAX]));
+    return [L.join('\n'), kb([nav])];
   }
 
   // ---- scout & research -------------------------------------------------
