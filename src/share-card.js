@@ -438,12 +438,15 @@ function title(s, chips, x0 = PAD, right = G.hero.right) {
 }
 // The big number then a second number beside it (dollar ↔ percent), both stopping before
 // the mascot column; the size shrinks if the number is long.
+// Widest the hero figure may get, as a share of its row: long figures (e.g. "+IDR169,121")
+// otherwise grow edge to edge and swamp the card.
+const BIG_SHARE = 0.72;
 function hero({ label, big, bigColor, side, sub, subColor = T.muted }) {
   const { labelY, bigY, subY, right, maxBig } = G.hero, k = G.k;
   const room = right - PAD;
   const sideSize = side ? Math.min(40 * k, (room * 0.4) / Math.max(measure(side, 1, 600), 1)) : 0;
   const sideW = side ? measure(side, sideSize, 600) + 22 : 0;
-  const size = Math.min(maxBig, (room - sideW) / Math.max(measure(big, 1, 700), 1));
+  const size = Math.min(maxBig, (room * BIG_SHARE - sideW) / Math.max(measure(big, 1, 700), 1));
   let out = txt(label, PAD, labelY, { size: 18 * k, weight: 500, color: T.muted });
   out += txt(big, PAD - 3, bigY, { size, weight: 700, color: bigColor });
   if (side) out += txt(side, PAD - 3 + measure(big, size, 700) + 22, bigY, { size: sideSize, weight: 600, color: bigColor });
@@ -668,7 +671,7 @@ ${m ? `<image x="${mx}" y="${my}" width="${mw}" height="${mh}" href="${m.href}"/
   for (const [c, style] of active) { const ch = chip(c, x, ty, style); out += ch.svg; x += ch.w + 10 * k; }
   // The hero figure, with a blurred copy behind it as a glow.
   out += caps(label, PAD, S.labelY, { size: 16 * k }).svg;
-  const bSize = Math.min(S.maxBig, (S.right - PAD) / Math.max(measure(big, 1, 700), 1));
+  const bSize = Math.min(S.maxBig, ((S.right - PAD) * BIG_SHARE) / Math.max(measure(big, 1, 700), 1));
   out += `<g filter="url(#soft)" opacity="0.45">${txt(big, PAD - 4, S.bigY, { size: bSize, weight: 700, color: tint })}</g>`
     + txt(big, PAD - 4, S.bigY, { size: bSize, weight: 700, color: tint });
   let px = PAD;
