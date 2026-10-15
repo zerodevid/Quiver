@@ -9,6 +9,7 @@
 //   positionCard(p)  kind 'position' — a single LP position
 //   totalCard(d)     kind 'total'    — the whole portfolio
 //   dailyCard(d)     kind 'daily'    — a single day in the PnL calendar
+//   monthCard(d)     kind 'month'    — one month of the PnL calendar as a grid
 import { useEffect, useRef, useState } from 'react';
 import { Button, Modal, toast } from '@heroui/react';
 import { Share2, Copy, Download, Send } from 'lucide-react';
@@ -36,6 +37,7 @@ export const positionCard = (p) => ({
 });
 export const totalCard = ({ pnl, net }) => ({ kind: 'total', name: 'total-pnl', text: `${net ? 'Net PnL' : 'Total PnL'} ${usd(pnl)} · Quiver` });
 export const dailyCard = ({ day, pnl }) => ({ kind: 'daily', day, name: `pnl-${day}`, text: `PnL ${day}: ${usd(pnl)} · Quiver` });
+export const monthCard = ({ month, pnl }) => ({ kind: 'month', month, name: `pnl-${month}`, text: `PnL ${month}: ${usd(pnl)} · Quiver` });
 
 // Share dialog. `card` null = closed.
 export function ShareDialog({ card, onClose }) {
@@ -69,7 +71,7 @@ export function ShareDialog({ card, onClose }) {
     if (!card) { setBlob(null); return; }
     let alive = true;
     setLoading(true);
-    const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme, layout });
+    const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), ...(card.month ? { month: card.month } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme, layout });
     fetch(`/api/share/card?${q}`, { credentials: 'same-origin' })
       .then(async (r) => {
         if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `HTTP ${r.status}`); }
@@ -111,7 +113,7 @@ export function ShareDialog({ card, onClose }) {
         setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
       } else if (kind === 'telegram') {
         // The server redraws from the same data, then sends it to each chat.
-        const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, hide, lang, tz: tzName(), size, theme, layout });
+        const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, month: c.month, hide, lang, tz: tzName(), size, theme, layout });
         if (j.error) throw new Error(j.error);
         toast.success(t('Terkirim ke Telegram'), { description: j.failed ? t('{n} chat gagal: {e}', { n: j.failed, e: j.lastErr }) : t('{n} chat', { n: j.sent }) });
       } else if (kind === 'share') {
@@ -158,7 +160,8 @@ export function ShareDialog({ card, onClose }) {
                 </div>
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Segmented size="sm" aria="Gaya kartu" value={layout} onChange={pickLayout} options={LAYOUTS.map(([k, label]) => [k, label])} />
+                {/* The month card has a single composition: the calendar grid. */}
+                {c?.kind !== 'month' && <Segmented size="sm" aria="Gaya kartu" value={layout} onChange={pickLayout} options={LAYOUTS.map(([k, label]) => [k, label])} />}
                 <Segmented size="sm" aria="Ukuran kartu" value={size} onChange={pickSize} options={SIZES.map(([k, label]) => [k, label])} />
                 <Segmented size="sm" aria="Tema kartu" value={theme} onChange={pickTheme} options={THEMES.map(([k, label]) => [k, label])} />
               </div>

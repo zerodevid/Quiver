@@ -1,9 +1,10 @@
 'use strict';
 // Share card: a PnL image ready to paste into X/Telegram, like the ones
-// Based bot or GMGN have. Three kinds of card with the same frame:
+// Based bot or GMGN have. Four kinds of card with the same frame:
 //   position  one LP position: pair, PnL, entry/exit price, fee, age
 //   total     the whole portfolio: total PnL, win rate, fee, best position
 //   daily     one day: the realized PnL of that day, the positions closed
+//   month     one month of the PnL calendar as a grid of days
 //
 // Each card can be drawn in three sizes (opts.size) and seven colour themes
 // (opts.theme), see SIZES and THEMES. One layout: header (logo + context),
@@ -540,11 +541,13 @@ function caps(s, x, y, { size, color = T.muted, ls = 0.18, anchor = 'start' }) {
   const up = String(s).toUpperCase();
   return { w: measure(up, size, 600) + up.length * size * ls, svg: `<text x="${x}" y="${y}" font-size="${size}" font-weight="600" fill="${color}" letter-spacing="${(size * ls).toFixed(2)}" text-anchor="${anchor}">${esc(up)}</text>` };
 }
-function spotlight({ meta, icons, title: titleText, chips = [], label, big, tint, pill, sub, stats, footer, mascotKey }) {
+// `art`: SVG drawn instead of the mascot (the month calendar), placed by its own geometry.
+function spotlight({ meta, icons, title: titleText, chips = [], label, big, tint, pill, sub, stats, footer, mascotKey, art }) {
   const S = G, { W, H, k } = S;
   // The wide poses (loss/neutral) are shrunk so they stay clear of the text column.
-  const m = MASCOT[mascotKey], mh = Math.min(S.mascot.h, Math.round(S.mascot.maxW * (m.h / m.w))), mw = Math.round((m.w / m.h) * mh);
-  const mx = S.mascot.cx != null ? Math.round(S.mascot.cx - mw / 2) : S.mascot.right - mw, my = S.mascot.bottom - mh;
+  const m = art ? null : MASCOT[mascotKey];
+  const mh = m ? Math.min(S.mascot.h, Math.round(S.mascot.maxW * (m.h / m.w))) : S.cal.h, mw = m ? Math.round((m.w / m.h) * mh) : S.cal.w;
+  const mx = m ? (S.mascot.cx != null ? Math.round(S.mascot.cx - mw / 2) : S.mascot.right - mw) : S.cal.x, my = m ? S.mascot.bottom - mh : S.cal.y;
   const gcx = mx + mw / 2, gcy = my + mh * 0.45;
   const stops = T.bg.map((c, i) => `<stop offset="${(i / (T.bg.length - 1)).toFixed(2)}" stop-color="${c}"/>`).join('');
   let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${T.font || BASE_FONT.family}">
@@ -560,7 +563,7 @@ function spotlight({ meta, icons, title: titleText, chips = [], label, big, tint
 <rect width="${W}" height="${H}" fill="url(#bg)"/>${T.deco && T.deco !== 'rings' ? deco(gcx, gcy, mh / 2) : ''}
 <rect width="${W}" height="${H}" fill="url(#grid)" mask="url(#gridMask)"/>
 <rect width="${W}" height="${H}" fill="url(#glow)"/><rect width="${W}" height="${H}" fill="url(#glow2)"/>
-<image x="${mx}" y="${my}" width="${mw}" height="${mh}" href="${m.href}"/>
+${m ? `<image x="${mx}" y="${my}" width="${mw}" height="${mh}" href="${m.href}"/>` : art}
 <svg x="${PAD}" y="${S.logoY}" width="${154 * k}" height="${28 * k}" viewBox="0 0 264 48">${MARK.replace('fill="#fff"', `fill="${T.logo || T.text}"`)}</svg>`;
   // Chain pill at the top right.
   const pSize = 17 * k, pH = 42 * k, iconR = 12 * k, pW = measure(chainName(), pSize, 500) + (chainNow.href ? iconR * 2 + 10 * k : 0) + 32 * k;
@@ -599,14 +602,15 @@ function spotlight({ meta, icons, title: titleText, chips = [], label, big, tint
   }
   if (sub) out += fitted(sub, px, S.pillY + 7 * k, S.right - px, { size: 19 * k, color: T.muted });
   // Three stats, each marked by a short tinted bar on its left.
-  const st = S.stats, colW = st.cols === 1 ? st.w : (S.right - PAD) / st.cols, rowH = st.rowH || 78 * k;
+  const st = S.stats, colW = st.cols === 1 ? st.w : (st.right ?? S.right) - PAD, rowH = st.rowH || 78 * k;
   stats.forEach(([l, v, color], i) => {
-    const sx = PAD + (st.cols === 1 ? 0 : i * colW), sy = st.y + (st.cols === 1 ? i * rowH : 0);
+    const cw = st.cols === 1 ? colW : colW / st.cols;
+    const sx = PAD + (st.cols === 1 ? 0 : i * cw), sy = st.y + (st.cols === 1 ? i * rowH : 0);
     out += `<rect x="${sx}" y="${sy}" width="${3 * k}" height="${54 * k}" rx="${rx(1.5 * k)}" fill="${tint}" fill-opacity="0.7"/>`
-      + caps(fit(l, colW - 30 * k, 13 * k, 600), sx + 16 * k, sy + 16 * k, { size: 13 * k, ls: 0.12 }).svg
-      + fitted(v, sx + 16 * k, sy + 48 * k, colW - 30 * k, { size: 28 * k, weight: 600, color: color || T.text });
+      + caps(fit(l, cw - 30 * k, 13 * k, 600), sx + 16 * k, sy + 16 * k, { size: 13 * k, ls: 0.12 }).svg
+      + fitted(v, sx + 16 * k, sy + 48 * k, cw - 30 * k, { size: (st.valueSize || 28) * k, weight: 600, color: color || T.text });
   });
-  if (footer) out += fitted(footer, PAD, S.footY, (S.mascot.cx != null ? W - PAD : mx) - PAD - 12, { size: 15 * k, color: T.faint });
+  if (footer) out += fitted(footer, PAD, S.footY, (!m || S.mascot.cx != null ? W - PAD : mx) - PAD - 12, { size: 15 * k, color: T.faint });
   return out + '\n</svg>';
 }
 
@@ -674,6 +678,88 @@ function dailySpot({ day, rows, total: totalIn, count, monthTotal }, { hideAmoun
   });
 }
 
+// ---- month calendar card ---------------------------------------------------------------
+// The PnL calendar of one month as a poster: the spotlight header and figure, and the
+// month grid in place of the mascot — each day tinted by its realized PnL (square root
+// of the magnitude, the same scale as the dashboard calendar), the figure inside.
+// Hidden amounts: the days keep their colour but lose their figure.
+function monthGeometry(size) {
+  const { W, H } = SIZES[size] || SIZES.wide;
+  if (size === 'story') {
+    return { W, H, k: 1.6, logoY: 190, metaY: 340, titleY: 432, labelY: 560, bigY: 740, pillY: 830, maxBig: 210, right: W - PAD,
+      stats: { y: 920, cols: 3 }, cal: { x: PAD, y: 1080, w: W - PAD * 2, h: 660 }, footY: 1800 };
+  }
+  if (size === 'square') {
+    return { W, H, k: 1.2, logoY: 52, metaY: 162, titleY: 222, labelY: 306, bigY: 410, pillY: 470, maxBig: 120, right: W - PAD,
+      stats: { y: 520, cols: 3 }, cal: { x: PAD, y: 628, w: W - PAD * 2, h: 412 } };
+  }
+  return { W, H, k: 1, logoY: 44, metaY: 150, titleY: 200, labelY: 282, bigY: 372, pillY: 420, maxBig: 92, right: 470,
+    stats: { y: 482, cols: 3, valueSize: 22 }, cal: { x: 512, y: 112, w: W - PAD - 512, h: 470 }, footY: H - 26 };
+}
+// Compact dollars for a calendar cell: +$45, +$1.2k, −$3.4.
+function cellUsd(v) {
+  const a = Math.abs(v), s = v > 0.005 ? '+' : v < -0.005 ? '−' : '';
+  const f = (x, d) => x.toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d });
+  if (a >= 1e6) return `${s}$${f(a / 1e6, 1)}M`;
+  if (a >= 1e3) return `${s}$${f(a / 1e3, a >= 1e4 ? 0 : 1)}k`;
+  return `${s}$${f(a, a >= 10 ? 0 : 1)}`;
+}
+const WEEKDAYS = { id: ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'], en: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] };
+function calendarGrid({ month, daily, counts = {} }, hideAmounts, today) {
+  const { x, y, w, h } = G.cal, k = G.k;
+  const [yy, mm] = month.split('-').map(Number);
+  const first = new Date(Date.UTC(yy, mm - 1, 1)).getUTCDay(), days = new Date(Date.UTC(yy, mm, 0)).getUTCDate();
+  const rows = Math.ceil((first + days) / 7), gap = 6 * k, headH = 26 * k;
+  const cw = (w - gap * 6) / 7, ch = (h - headH - gap * (rows - 1)) / rows;
+  const vals = Object.entries(daily).filter(([d]) => d.startsWith(month)).map(([, v]) => Math.abs(v));
+  const maxAbs = Math.max(1e-9, ...vals);
+  let out = (WEEKDAYS[localeContext.getStore() === 'en' ? 'en' : 'id']).map((n, i) =>
+    caps(n, x + i * (cw + gap) + cw / 2, y + 16 * k, { size: 12 * k, ls: 0.1, color: T.faint, anchor: 'middle' }).svg).join('');
+  const dSize = Math.min(15 * k, ch * 0.22), vSize = Math.min(19 * k, ch * 0.3);
+  for (let d = 1; d <= days; d++) {
+    const i = first + d - 1, cx = x + (i % 7) * (cw + gap), cy = y + headH + Math.floor(i / 7) * (ch + gap);
+    const key = `${month}-${String(d).padStart(2, '0')}`, v = daily[key];
+    let fill = T.panel, stroke = T.line;
+    if (v != null && Math.abs(v) > 0.005) {
+      const s = Math.sqrt(Math.min(1, Math.abs(v) / maxAbs)), c = v > 0 ? T.up : T.down;
+      fill = rgba(c, (0.1 + 0.32 * s).toFixed(3)); stroke = rgba(c, (0.25 + 0.4 * s).toFixed(3));
+    }
+    out += `<rect x="${cx.toFixed(1)}" y="${cy.toFixed(1)}" width="${cw.toFixed(1)}" height="${ch.toFixed(1)}" rx="${rx(8 * k)}" fill="${fill}" stroke="${key === today ? T.text : stroke}"${key === today ? ' stroke-opacity="0.6" stroke-width="2"' : ''}/>`
+      + txt(String(d), cx + 8 * k, cy + 8 * k + dSize * 0.8, { size: dSize, weight: 500, color: v != null ? T.muted : T.faint });
+    if (counts[key] > 1 && cw > 80) out += txt(`×${counts[key]}`, cx + cw - 8 * k, cy + 8 * k + dSize * 0.8, { size: dSize * 0.85, weight: 500, color: T.faint, anchor: 'end' });
+    if (v != null && !hideAmounts) out += fitted(cellUsd(v), cx + 8 * k, cy + ch - 9 * k, cw - 14 * k, { size: vSize, weight: 600, color: sign(v) });
+  }
+  return out;
+}
+// data: { month 'YYYY-MM', daily { day: pnl }, counts { day: n }, cost: capital of the positions closed that month }
+function monthSvg(data, { hideAmounts = false } = {}) {
+  const { month, daily, cost } = data;
+  const inMonth = Object.entries(daily).filter(([d]) => d.startsWith(month));
+  const total = inMonth.reduce((a, [, v]) => a + v, 0);
+  const green = inMonth.filter(([, v]) => v > 0.005).length, red = inMonth.filter(([, v]) => v < -0.005).length;
+  const best = inMonth.reduce((a, e) => (a == null || e[1] > a[1] ? e : a), null);
+  const closed = inMonth.reduce((a, [d]) => a + (data.counts?.[d] || 0), 0);
+  const pctV = cost > 0 ? (total / cost) * 100 : null;
+  const [yy, mm] = month.split('-').map(Number);
+  const name = new Date(Date.UTC(yy, mm - 1, 15)).toLocaleDateString(loc(), { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  let today = null;
+  try { today = new Date().toLocaleDateString('en-CA', { timeZone: TZ() }); } catch { /* no highlight */ }
+  return spotlight({
+    meta: tr('Kalender PnL'), title: name,
+    label: tr('PnL terealisasi'), tint: sign(total),
+    big: hideAmounts ? (pctV == null ? HIDDEN : pct(pctV, 2)) : (total > 0.005 ? '+' : '') + usd(total),
+    pill: hideAmounts || pctV == null ? null : pct(pctV, 2),
+    sub: hideAmounts ? tr('Nominal disembunyikan') : cost > 0 ? tr('modal diputar {0}', [usd(cost)]) : null,
+    stats: [
+      [tr('Hari hijau'), `${green}/${green + red}`, green >= red ? T.up : T.down],
+      [tr('Hari terbaik'), best ? (hideAmounts ? new Date(`${best[0]}T12:00:00Z`).toLocaleDateString(loc(), { day: 'numeric', month: 'short', timeZone: 'UTC' }) : cellUsd(best[1])) : '—', best ? sign(best[1]) : null],
+      [tr('Posisi ditutup'), String(closed)],
+    ],
+    footer: G.footY && G.cal.y + G.cal.h < G.footY - 20 ? tr('PnL terealisasi dari posisi yang ditutup tiap hari') : null,
+    art: calendarGrid(data, hideAmounts, today),
+  });
+}
+
 // Pick the card and draw. lang 'id'|'en'; timeZone an IANA name (e.g. 'Asia/Jakarta');
 // size/theme/layout one of the SIZES/THEMES/LAYOUTS keys (unknown ones fall back to the default).
 const LAYOUTS = { spotlight: { label: 'Sorot' }, classic: { label: 'Klasik' } };
@@ -685,12 +771,14 @@ function svgOf(kind, data, opts = {}) {
     tz = opts.timeZone || null;
     T = THEMES[themeKey(opts.theme)];
     const spot = layoutKey(opts.layout) === 'spotlight';
-    G = spot ? spotGeometry(sizeKey(opts.size)) : geometry(sizeKey(opts.size));
+    // The month card has one composition only (the calendar is the picture).
+    G = kind === 'month' ? monthGeometry(sizeKey(opts.size)) : spot ? spotGeometry(sizeKey(opts.size)) : geometry(sizeKey(opts.size));
     chainNow = CHAIN_BADGE[opts.chain?.key] || { label: opts.chain?.label || CHAIN_BADGE.robinhood.label, href: '' };
     try {
       if (kind === 'position') return (spot ? positionSpot : positionSvg)(data, opts);
       if (kind === 'total') return (spot ? totalSpot : totalSvg)(data, opts);
       if (kind === 'daily') return (spot ? dailySpot : dailySvg)(data, opts);
+      if (kind === 'month') return monthSvg(data, opts);
       throw new Error(`jenis kartu tidak dikenal: ${kind}`);
     } finally { tz = null; T = THEMES.dark; G = null; chainNow = CHAIN_BADGE.robinhood; }
   });
@@ -713,6 +801,7 @@ function caption(kind, data, lang) {
   return localeContext.run(lang === 'en' ? 'en' : 'id', () => {
     if (kind === 'position') return `${data.symbol0 || '?'} / ${data.symbol1 || '?'} ${data.pnlPct == null ? '' : pct(data.pnlPct, 2)} · Quiver`;
     if (kind === 'total') { const { net, pnl } = totalPnl(data.now); return `${tr(net ? 'PnL bersih' : 'Total PnL')} ${usd(pnl)} · Quiver`; }
+    if (kind === 'month') return `PnL ${data.month}: ${usd(Object.entries(data.daily).filter(([d]) => d.startsWith(data.month)).reduce((a, [, v]) => a + v, 0))} · Quiver`;
     return `PnL ${data.day}: ${usd(data.total ?? data.rows.reduce((a, r) => a + r.pnl, 0))} · Quiver`;
   });
 }

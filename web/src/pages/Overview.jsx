@@ -6,7 +6,7 @@ import { post } from '../api';
 import { PageHeader, Stat, Hero, HeroFigure, Panel, Empty, Loading, Notice, KV, Dot, DataTable, PriceRange, Segmented, Refresh, Fx, WalletLinks, baseTokenOf, ChainMark } from '../components/ui';
 import PnlCalendar from '../components/PnlCalendar';
 import GrowthChart from '../components/GrowthChart';
-import ShareButton, { ShareDialog, totalCard, dailyCard } from '../components/ShareCard';
+import ShareButton, { ShareDialog, totalCard, dailyCard, monthCard } from '../components/ShareCard';
 import { tokenColumn } from '../components/TokenCell';
 import { Pair, SyncState, FeeCell } from './Positions';
 import { GmgnProvider } from '../components/GmgnDot';
@@ -406,6 +406,7 @@ export default function Overview() {
   // Initial view: net PnL if capital is tracked; otherwise cumulative PnL.
   const [viewPick, setView] = useState('net');
   const [shareDay, setShareDay] = useState(null);   // the 'YYYY-MM-DD' clicked in the calendar
+  const [shareMonth, setShareMonth] = useState(null);   // month card shared from the calendar header (kept stable across polls)
   const { data: p, reload: reloadPortfolio } = usePoll('/api/portfolio?range=' + range, 30000);
   // The same as the Positions page: a cheap endpoint, so a new position appears within ~5 seconds.
   const { data: pos, reload: reloadPos } = usePoll('/api/positions', 5000);
@@ -466,6 +467,7 @@ export default function Overview() {
       </PageHeader>
       {/* Daily PnL card: the day clicked in the calendar. The server assembles its data itself. */}
       <ShareDialog card={shareDay && cal ? dailyCard({ day: shareDay, pnl: cal.daily[shareDay] }) : null} onClose={() => setShareDay(null)} />
+      <ShareDialog card={shareMonth} onClose={() => setShareMonth(null)} />
       <PositionHistory id={hist} onClose={() => setHist(null)} />
       {/* Simulation with a virtual balance (paper.js): where the virtual book stands. */}
       {d.mode.sim && (
@@ -594,8 +596,9 @@ export default function Overview() {
 
       {/* Equal height: the right column stretches to the calendar's height, leaving no gap */}
       <div className="mb-4 grid gap-3 lg:grid-cols-5">
-        <Panel title="Kalender PnL" desc="PnL terealisasi per hari posisi ditutup · klik hari untuk membuat kartu bagikan" className="lg:col-span-3" bodyClass="flex-1">
-          {cal ? <PnlCalendar daily={cal.daily} counts={cal.counts} empty="Belum ada posisi ditutup" onShare={(k) => setShareDay(k)} /> : <Loading />}
+        <Panel title="Kalender PnL" desc="PnL terealisasi per hari posisi ditutup · klik hari atau ikon bagikan untuk membuat kartu" className="lg:col-span-3" bodyClass="flex-1">
+          {cal ? <PnlCalendar daily={cal.daily} counts={cal.counts} empty="Belum ada posisi ditutup" onShare={(k) => setShareDay(k)}
+            onShareMonth={(month, pnl) => setShareMonth(monthCard({ month, pnl }))} /> : <Loading />}
         </Panel>
         <div className="flex min-w-0 flex-col gap-3 lg:col-span-2">
           <Panel title="Kinerja per sumber" desc="PnL posisi yang disalin dari tiap target" bodyClass="p-0" className="flex-1">

@@ -227,6 +227,26 @@ const withServer = async (telegram, fn) => {
     });
   });
 
+  await t('month card: the calendar grid of one month, days in the reader\'s time zone; hidden amounts keep only colours', async () => {
+    const daily = { '2024-01-03': 12.5, '2024-01-16': -4, '2024-01-20': 240, '2023-12-31': 99 };
+    const data = { month: '2024-01', daily, counts: { '2024-01-20': 3 }, cost: 1000 };
+    const en = shareCard.svgOf('month', data, { lang: 'en', timeZone: 'UTC' });
+    assert.ok(en.includes('January 2024') && en.includes('+$248.50') && en.includes('+24.85%'), 'month name, total of that month only, percent of capital');
+    assert.ok(en.includes('GREEN DAYS') && en.includes('2/3') && en.includes('+$240') && en.includes('×3'), 'green days, best day, closes per day');
+    assert.strictEqual((en.match(/>31</g) || []).length, 1, 'all 31 days are drawn once');
+    const hidden = shareCard.svgOf('month', data, { lang: 'id', hideAmounts: true });
+    assert.ok(!hidden.includes('$240') && !hidden.includes('$248') && hidden.includes('+24,85%') && hidden.includes('20 Jan'), 'no dollar figure leaks');
+    for (const [size, h] of [['wide', 1260], ['square', 2160], ['story', 3840]]) assert.strictEqual(shareCard.render('month', data, { size }).readUInt32BE(20), h);
+    assert.strictEqual(shareCard.caption('month', data, 'en'), 'PnL 2024-01: $248.50 · Quiver');
+    await withServer(null, async (server) => {
+      // Closed 15 Jan 23:30 UTC: January in both zones, but no close at all in February.
+      assert.strictEqual((await fetchPng(server, 'kind=month&month=2024-01&tz=Asia/Jakarta')).status, 200);
+      const empty = await fetchPng(server, 'kind=month&month=2024-02');
+      assert.strictEqual(empty.status, 400); assert.match(JSON.parse(empty.body).error, /bulan itu/);
+      assert.strictEqual((await fetchPng(server, 'kind=month&month=januari')).status, 400);
+    });
+  });
+
   await t('GET /api/share/telegram: not ready without a bot, ready if token & chat exist', async () => {
     assert.deepStrictEqual(await world(null).api('GET', '/api/share/telegram'), { ready: false, chats: 0 });
     assert.strictEqual((await world(fakeBot({ chats: [] })).api('GET', '/api/share/telegram')).ready, false);

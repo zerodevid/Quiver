@@ -968,5 +968,9 @@
   " · umur {0}": " · age {0}",
   "<i>…dan {0} pool lain.</i>": "<i>…and {0} more pool.</i>|<i>…and {0} more pools.</i>",
   "Modal": "Capital",
-  "Posisi ditutup": "Positions closed"
+  "Posisi ditutup": "Positions closed",
+  "Kalender PnL": "PnL calendar",
+  "Hari hijau": "Green days",
+  "Hari terbaik": "Best day",
+  "PnL terealisasi dari posisi yang ditutup tiap hari": "Realized PnL of the positions closed each day"
 }

@@ -5,6 +5,7 @@
 // counts : { 'YYYY-MM-DD': number of positions closed } — optional
 import { useState } from 'react';
 import { Button } from '@heroui/react';
+import { Share2 } from 'lucide-react';
 import { Empty } from './ui';
 import { usd, kUsd, tone } from '../fmt';
 import { useI18n } from '../i18n';
@@ -14,7 +15,8 @@ const pad = (n) => String(n).padStart(2, '0');
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
 // onShare(key, pnl, count): a day with PnL is clickable (e.g. to make a share card).
-export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi tertutup di jendela ini', onShare }) {
+// onShareMonth('YYYY-MM', total): a share button beside the month name, shown for a month with PnL.
+export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi tertutup di jendela ini', onShare, onShareMonth }) {
   const { t, locale } = useI18n();
   const days = Object.keys(daily).sort();
   // Hooks must be called before a conditional return (React rules of hooks).
@@ -80,6 +82,11 @@ export default function PnlCalendar({ daily, counts, empty = 'Belum ada posisi t
           <Button size="sm" variant="ghost" isIconOnly aria-label={t('Bulan sebelumnya')} onPress={() => shift(-1)}>‹</Button>
           <span className="w-36 text-center text-sm font-medium">{first.toLocaleDateString(locale === 'en' ? 'en-US' : 'id-ID', { month: 'long', year: 'numeric' })}</span>
           <Button size="sm" variant="ghost" isIconOnly aria-label={t('Bulan berikutnya')} onPress={() => shift(1)}>›</Button>
+          {onShareMonth && inMonth.length > 0 && (
+            <Button size="sm" variant="ghost" isIconOnly aria-label={t('Bagikan kalender bulan ini')} onPress={() => onShareMonth(prefix, total)}>
+              <Share2 className="size-4" />
+            </Button>
+          )}
         </div>
         <span className="text-sm text-muted">
           {(green > 0 || red > 0) && <span className="mr-3 text-xs">{t('{g} hari hijau · {r} merah', { g: green, r: red })}</span>}

@@ -2232,7 +2232,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // Share card. The data is assembled from the same routes the dashboard
     // uses, then drawn on the server (src/share-card.js) so the dashboard and the
     // Telegram bot send exactly the same image.
-    //   kind=position&id=…  | kind=total | kind=daily&day=YYYY-MM-DD
+    //   kind=position&id=…  | kind=total | kind=daily&day=YYYY-MM-DD | kind=month&month=YYYY-MM
     //   hide=1 hides the dollar amounts; lang=id|en; tz=the reader's IANA time zone
     //   (the calendar day is computed in that zone, the same as in the browser).
     // Animated replay of one position (the "Video" tab of the share dialog). The browser
@@ -2417,7 +2417,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const dayKeyIn = (ts, timeZone) => {
     try { return new Date(ts).toLocaleDateString('en-CA', { timeZone }); } catch { return new Date(ts).toLocaleDateString('en-CA'); }
   };
-  const shareCardOf = async ({ kind, id, day, hide = false, lang = 'id', tz, size, theme, layout } = {}) => {
+  const shareCardOf = async ({ kind, id, day, month, hide = false, lang = 'id', tz, size, theme, layout } = {}) => {
     const timeZone = tz || cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const opts = { hideAmounts: !!hide, lang, timeZone, size: shareCard.sizeKey(size), theme: shareCard.themeKey(theme), layout: shareCard.layoutKey(layout), chain: { key: chain.network, label: chain.label } };
     let data;
@@ -2444,7 +2444,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // entry), LP range, and entry/exit points. The same source as the chart card.
       // Failed or slow (GeckoTerminal) → the card is still produced, without the chart.
       opts.chart = await positionSpark(data).catch(() => null);
-    } else if (kind === 'total' || kind === 'daily') {
+    } else if (kind === 'total' || kind === 'daily' || kind === 'month') {
       const [pf, pos] = await Promise.all([callApi('GET', '/api/portfolio', {}, { range: 'all' }), callApi('GET', '/api/positions')]);
       const all = [...(pos.positions || []), ...(pos.closed || [])];
       if (kind === 'total') {
@@ -2453,6 +2453,21 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         // Net PnL curve over the whole history (the same view as the portfolio chart).
         const pts = portfolioCard.prepare(pf, 'net').pts;
         if (pts.length >= 2) opts.chart = { kind: 'line', pts: pts.map((x) => [x.t, x.v]), zero: true };
+      } else if (kind === 'month') {
+        // One month of the PnL calendar: per-day realized PnL and closes in the reader's time zone,
+        // plus the capital of the positions closed that month (for the percentage).
+        if (!/^\d{4}-\d{2}$/.test(String(month || ''))) return { error: 'bulan tidak valid' };
+        const daily = {}, counts = {};
+        for (const [ts, v] of pf.closed || []) {
+          const k = dayKeyIn(ts, timeZone);
+          if (!k.startsWith(month)) continue;
+          daily[k] = (daily[k] || 0) + v; counts[k] = (counts[k] || 0) + 1;
+        }
+        if (!Object.keys(daily).length) return { error: 'tidak ada posisi yang ditutup pada bulan itu' };
+        const kq = (q) => (chain.isEthLike(q) ? engine.ethUsd || 0 : 1);
+        const cost = (pos.closed || []).filter((c) => c.closed_ts && dayKeyIn(c.closed_ts, timeZone).startsWith(month))
+          .reduce((a, c) => a + (c.cost_quote || 0) * kq(c.quote_symbol), 0);
+        data = { month, daily, counts, cost };
       } else {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day || ''))) return { error: 'tanggal tidak valid' };
         const daily = {}, counts = {};
