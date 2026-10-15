@@ -81,6 +81,8 @@ export const SCHEMA = [
   ] },
   { group: 'Saringan', icon: 'ti-filter', fields: [
     { path: 'filters.allow_hooks', label: 'Izinkan semua hook (termasuk yang berisiko)', type: 'bool', help: 'Mati (disarankan): pool dengan hook pajak swap atau anti-bot tetap diikuti; yang ditolak hanya hook yang bisa menahan atau memotong penarikan. Nyala: semua hook diikuti tanpa dicek.' },
+    { path: 'filters.hook_whitelist', label: 'Hook dipercaya (alamat, pisah koma)', type: 'list', when: (r) => !r.filters.allow_hooks,
+      help: 'Hook v4 berisiko yang tetap boleh dimasuki — hanya isi alamat hook yang kodenya sudah kamu cek' },
     { path: 'filters.allow_no_quote', label: 'Salin pool tanpa USDG/ETH', type: 'bool', help: 'Mati: pool dua memecoin (tanpa aset kuotasi) dilewati. Nyala: ikut disalin; nilai dolarnya dihitung lewat harga DexScreener, jadi hanya sedekat harga itu.' },
     { path: 'filters.min_target_quote_usd', label: 'Abaikan posisi target di bawah (USD)', type: 'number', step: 5 },
     { path: 'filters.max_open_positions', label: 'Maksimum posisi terbuka', type: 'number', step: 1 },

@@ -15,7 +15,7 @@ const { ensureChain, windowBlocks } = require('./networks');
 const { ethers } = require('ethers');
 const m = require('./v3math');
 const { TOPIC } = require('./chain');
-const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd, hookBlocked, riskyHookFlags } = require('./policy');
+const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd, hookBlocked, riskyHookFlags, hookInfo } = require('./policy');
 
 const isNative = (t) => /^0x0{40}$/.test(String(t).toLowerCase());
 const lc = (t) => String(t || '').toLowerCase();
@@ -142,6 +142,7 @@ class Manual {
         token0: r.token0, token1: r.token1, fee: r.fee, feePct: feePctOf(r.fee), dynamicFee: dynamicFeeVal(r.fee),
         tickSpacing: r.tick_spacing, hooks: r.hooks,
         hasHooks: !!(r.hooks && !/^0x0+$/i.test(r.hooks)),
+        hook: hookInfo(r.hooks),
         quoteSymbol: qs?.symbol || null, quoteSide: qs?.side ?? null,
         lastTs: r.last_ts || null,
       });
@@ -172,6 +173,7 @@ class Manual {
       symbol0: t0.symbol, symbol1: t1.symbol, dec0: t0.decimals, dec1: t1.decimals,
       pair: `${t0.symbol}/${t1.symbol}`, feePct: feePctOf(r.fee), dynamicFee: dynamicFeeVal(r.fee),
       hasHooks: !!(r.hooks && !/^0x0+$/i.test(r.hooks)),
+      hook: hookInfo(r.hooks),
       quoteSymbol: qs?.symbol || null, quoteSide: qs?.side ?? null, quoteKind: qs?.kind || null,
     };
   }
@@ -347,6 +349,7 @@ class Manual {
         dec0: byAddr.get(p.token0)?.decimals ?? 18, dec1: byAddr.get(p.token1)?.decimals ?? 18,
         feePct: feePctOf(p.fee), dynamicFee: dynamicFeeVal(p.fee),
         hasHooks: !!(p.hooks && !/^0x0+$/i.test(p.hooks)),
+        hook: hookInfo(p.hooks),
         quoteSymbol: qs?.symbol || null, quoteSide: qs?.side ?? null,
         liquidity: liq[i] != null ? String(liq[i]) : null,
         kosong: liq[i] != null ? BigInt(liq[i]) === 0n : null,
@@ -394,7 +397,7 @@ class Manual {
 
     const rules = eng.rulesFrom(target);
     if (p.hasHooks && hookBlocked(p.hooks, rules)) {
-      return { error: `pool ini memakai hook ${String(p.hooks).slice(0, 10)}… yang bisa menahan atau memotong penarikan (${riskyHookFlags(p.hooks).join(', ')}). Nyalakan "Izinkan semua hook" di Aturan kalau memang disengaja.` };
+      return { error: `pool ini memakai hook ${String(p.hooks).slice(0, 10)}… yang bisa menahan atau memotong penarikan (${riskyHookFlags(p.hooks).join(', ')}). Masukkan alamat hook ini ke "Hook dipercaya" di Aturan kalau sudah dicek dan memang disengaja.` };
     }
     if (dynamicFeeVal(p.fee)) {
       return { error: `pool ini memakai fee dinamis (ditentukan hook-nya saat transaksi berjalan) — tidak bisa dinilai di muka` };
@@ -776,6 +779,7 @@ class Manual {
       symbol0: toks[0].symbol, symbol1: toks[1].symbol, dec0: toks[0].decimals, dec1: toks[1].decimals,
       pair: `${toks[0].symbol}/${toks[1].symbol}`, feePct: feePctOf(a.fee), dynamicFee: dynamicFeeVal(a.fee),
       hasHooks: !!(a.hooks && !/^0x0+$/i.test(a.hooks)),
+      hook: hookInfo(a.hooks),
       quoteSymbol: qs?.symbol || null, quoteSide: qs?.side ?? null, quoteKind: qs?.kind || null,
     };
   }

@@ -25,7 +25,26 @@ const HOOK_FLAGS = {
   afterRemoveLiquidityReturnsDelta: 1 << 0,
 };
 
+// Every permission bit, high to low (v4-core Hooks.sol), for showing what a hook may do.
+const HOOK_PERMISSIONS = [
+  'beforeInitialize', 'afterInitialize', 'beforeAddLiquidity', 'afterAddLiquidity',
+  'beforeRemoveLiquidity', 'afterRemoveLiquidity', 'beforeSwap', 'afterSwap',
+  'beforeDonate', 'afterDonate', 'beforeSwapReturnsDelta', 'afterSwapReturnsDelta',
+  'afterAddLiquidityReturnsDelta', 'afterRemoveLiquidityReturnsDelta',
+];
+
 const hasHook = (hooks) => !!(hooks && !/^0x0+$/i.test(hooks));
+
+// What a hook address may do: all its permission names plus the LP-touching subset.
+function hookInfo(hooks) {
+  if (!hasHook(hooks)) return null;
+  const bits = Number(BigInt(hooks) & 0x3fffn);
+  return {
+    address: String(hooks).toLowerCase(),
+    permissions: HOOK_PERMISSIONS.filter((_, i) => bits & (1 << (13 - i))),
+    risky: riskyHookFlags(hooks),
+  };
+}
 
 // Names of the LP-touching permissions a hook address carries ([] = safe for LPs).
 function riskyHookFlags(hooks) {
@@ -34,8 +53,10 @@ function riskyHookFlags(hooks) {
   return Object.entries(HOOK_FLAGS).filter(([, b]) => bits & b).map(([name]) => name);
 }
 
-// Whether a pool's hook blocks an entry under these rules. allow_hooks = allow every hook.
-const hookBlocked = (hooks, rules) => !rules.filters.allow_hooks && riskyHookFlags(hooks).length > 0;
+// Whether a pool's hook blocks an entry under these rules. allow_hooks = allow every hook;
+// hook_whitelist = hook addresses the user has checked and trusts despite their permissions.
+const hookTrusted = (hooks, rules) => (rules.filters.hook_whitelist || []).some((a) => String(a).toLowerCase() === String(hooks).toLowerCase());
+const hookBlocked = (hooks, rules) => !rules.filters.allow_hooks && riskyHookFlags(hooks).length > 0 && !hookTrusted(hooks, rules);
 
 const DEFAULTS = {
   sizing: {
@@ -103,6 +124,7 @@ const DEFAULTS = {
   },
   filters: {
     allow_hooks: false,
+    hook_whitelist: [],
     // Also copy pools with NO quote asset (memecoin / memecoin): valued in USD through a
     // DexScreener anchor (usd-anchor.js), funded from USDG/ETH cash. Off = skipped.
     allow_no_quote: false,
@@ -160,7 +182,7 @@ const RULE_SPEC = {
     leftover_retry_sec: ['int', 1, 86_400],
   },
   filters: {
-    allow_hooks: ['bool'], allow_no_quote: ['bool'], quote_whitelist: ['list'], token_blacklist: ['list'], token_whitelist: ['list'],
+    allow_hooks: ['bool'], hook_whitelist: ['list'], allow_no_quote: ['bool'], quote_whitelist: ['list'], token_blacklist: ['list'], token_whitelist: ['list'],
     min_pool_age_minutes: ['num', 0, 1e7], min_target_quote_usd: ['num', 0, 1e9],
     min_liquidity_usd: ['num', 0, 1e12], min_volume24h_usd: ['num', 0, 1e12],
     max_open_positions: ['int', 0, 100_000], cooldown_seconds: ['num', 0, 1e7],
@@ -555,4 +577,4 @@ function planExit(act, ourPos, ctx) {
   };
 }
 
-module.exports = { DEFAULTS, HOOK_FLAGS, riskyHookFlags, hookBlocked, RULE_SPEC, equitySizing, validateRules, normalizeRules, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };
+module.exports = { DEFAULTS, HOOK_FLAGS, HOOK_PERMISSIONS, hookInfo, riskyHookFlags, hookBlocked, RULE_SPEC, equitySizing, validateRules, normalizeRules, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };

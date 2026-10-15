@@ -391,6 +391,38 @@ function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag
   );
 }
 
+// What a v4 hook may do, decoded from the permission bits in its address. The LP-touching
+// ones (remove-liquidity callbacks, returned deltas) are what the bot refuses unless the hook
+// is trusted in the rules — swap-only hooks (taxes, anti-snipe, dynamic fees) are shown but fine.
+function HookInfo({ hook, rules }) {
+  const { t } = useI18n();
+  if (!hook) return null;
+  const f = rules?.filters || {};
+  const trusted = (f.hook_whitelist || []).some((a) => String(a).toLowerCase() === hook.address);
+  const risky = hook.risky.length > 0;
+  const tone = !risky ? 'text-success' : trusted || f.allow_hooks ? 'text-warning' : 'text-danger';
+  return (
+    <div className="mt-3 rounded-md border border-border px-3 py-2.5 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 font-medium"><Anchor className="size-3.5 text-warning" />{t('Hook')}</span>
+        <a className="num text-muted underline underline-offset-2" target="_blank" rel="noreferrer"
+          href={`${chainInfo().explorer}/address/${hook.address}`}>{hook.address.slice(0, 10)}…{hook.address.slice(-6)}</a>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1">
+        {hook.permissions.map((x) => (
+          <span key={x} className={`rounded border px-1.5 py-0.5 ${hook.risky.includes(x) ? 'border-danger/50 text-danger' : 'border-border text-muted'}`}>{x}</span>
+        ))}
+      </div>
+      <p className={`mt-2 ${tone}`}>
+        {!risky ? t('Hook ini tidak bisa menyentuh penarikan likuiditas — hanya swap (pajak, anti-bot, fee dinamis).')
+          : trusted ? t('Hook ini bisa menahan atau memotong penarikan, tapi ada di daftar hook dipercaya.')
+          : f.allow_hooks ? t('Hook ini bisa menahan atau memotong penarikan — diizinkan karena "Izinkan semua hook" menyala.')
+          : t('Hook ini bisa menahan atau memotong penarikan — pembukaan ditolak. Kalau sudah dicek, tambahkan alamatnya ke "Hook dipercaya" di Aturan.')}
+      </p>
+    </div>
+  );
+}
+
 function PoolPicker({ pools, onPick }) {
   const { t } = useI18n();
   const [q, setQ] = useState('');
@@ -716,7 +748,9 @@ export default function ManualLp({ param }) {
                   </div>
                 </div>
               </div>
-            ) : (
+            ) : null}
+            {pool && !swapPool && <HookInfo hook={pool.hook} rules={rules} />}
+            {pools === null || (pool && !swapPool) ? null : (
               <PoolPicker pools={pools} onPick={(x) => { setPool(x); setSwapPool(false); }} />
             )}
           </Step>

@@ -12,7 +12,7 @@ const { Engine } = require('../src/engine');
 const { Store } = require('../src/db');
 const { ADDR } = require('../src/chain');
 const m = require('../src/v3math');
-const { riskyHookFlags, hookBlocked } = require('../src/policy');
+const { riskyHookFlags, hookBlocked, hookInfo } = require('../src/policy');
 
 const USDG = ADDR.usdg, ETH = ADDR.native;
 const MEME = '0x7a492b0a2d630b94791af846c1842db9e623420c';
@@ -282,6 +282,22 @@ async function t(name, fn) {
     const rules = { filters: { allow_hooks: false } };
     assert.strictEqual(hookBlocked('0x0000000000000000000000000000000000000200', rules), true);
     assert.strictEqual(hookBlocked('0x0000000000000000000000000000000000000200', { filters: { allow_hooks: true } }), false);
+  });
+
+  await t('a trusted hook address is allowed despite risky permissions', () => {
+    const hook = '0xAbCd000000000000000000000000000000000200';
+    const rules = { filters: { allow_hooks: false, hook_whitelist: [hook.toLowerCase()] } };
+    assert.strictEqual(hookBlocked(hook, rules), false);
+    assert.strictEqual(hookBlocked('0x1111000000000000000000000000000000000200', rules), true);
+  });
+
+  await t('hookInfo lists every permission bit and the risky subset', () => {
+    assert.strictEqual(hookInfo(null), null);
+    assert.strictEqual(hookInfo(ADDR.native), null);
+    // 0x20c0 = beforeInitialize (13) | beforeSwap (7) | afterSwap (6); 0x200 = beforeRemoveLiquidity (9)
+    const h = hookInfo('0x00000000000000000000000000000000000022c0');
+    assert.deepStrictEqual(h.permissions, ['beforeInitialize', 'beforeRemoveLiquidity', 'beforeSwap', 'afterSwap']);
+    assert.deepStrictEqual(h.risky, ['beforeRemoveLiquidity']);
   });
 
   await t('the open position count limit is respected', async () => {
