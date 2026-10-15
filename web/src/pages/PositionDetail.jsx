@@ -174,17 +174,20 @@ export function LiveBadge() {
   );
 }
 
-export function DexEmbed({ pool }) {
+// full: keep DexScreener's token info panel and trades table (token detail page); otherwise
+// only the bare chart.
+export function DexEmbed({ pool, full = false }) {
   const dark = document.documentElement.classList.contains('dark');
   const q = new URLSearchParams({
-    embed: '1', loadChartSettings: '0', trades: '0', tabs: '0', info: '0', chartLeftToolbar: '0',
-    chartDefaultOnMobile: '1', chartTheme: dark ? 'dark' : 'light', theme: dark ? 'dark' : 'light',
+    embed: '1', loadChartSettings: '0', chartLeftToolbar: '0',
+    ...(full ? {} : { trades: '0', tabs: '0', info: '0', chartDefaultOnMobile: '1' }),
+    chartTheme: dark ? 'dark' : 'light', theme: dark ? 'dark' : 'light',
     chartStyle: '1', chartType: 'usd', interval: '15',
   });
   return (
     <div className="overflow-hidden rounded-md border border-border">
       <iframe title="DexScreener" src={`https://dexscreener.com/${chainInfo().dexscreener}/${pool}?${q}`}
-        className="block h-[520px] w-full bg-surface" allow="clipboard-write" loading="lazy" />
+        className={`block w-full bg-surface ${full ? 'h-[760px]' : 'h-[520px]'}`} allow="clipboard-write" loading="lazy" />
     </div>
   );
 }
@@ -590,7 +593,7 @@ export default function PositionDetail({ id }) {
             <div className="font-medium">{t('Harga BEP')}: {bep.price > 0 ? <span className="num">{price(bep.price)} {quote}{pNow > 0 && <span className="ml-2 text-xs">({pct((bep.price / pNow - 1) * 100, 2)} {t('dari harga sekarang')})</span>}</span> : t(bep.reason)}</div>
             <p className="mt-1 text-xs text-muted">{t('Estimasi termasuk fee saat ini dan hasil penarikan; tanpa fee mendatang, gas, dan slippage.')}</p>
           </div>}
-          {view === 'dex' ? <DexEmbed pool={p.pool_ref} /> : view === 'gmgn' ? <GmgnEmbed token={p.baseToken} tf={tf} p={p} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={p} m={m} tf={tf} />}
+          {view === 'dex' ? <DexEmbed pool={p.pool_ref} full /> : view === 'gmgn' ? <GmgnEmbed token={p.baseToken} tf={tf} p={p} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={p} m={m} tf={tf} />}
           <TradesTape pool={p.pool_ref} token={p.baseToken} base={base} quote={quote} live={!closed} />
         </Panel>
 

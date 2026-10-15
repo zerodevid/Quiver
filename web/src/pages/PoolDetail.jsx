@@ -195,7 +195,7 @@ export default function PoolDetail({ param }) {
             {view === 'chart' && (m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
             {view !== 'dex' && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}
           </div>}>
-          {view === 'dex' ? <DexEmbed pool={ref} /> : view === 'gmgn' ? <GmgnEmbed token={pool.baseToken} tf={tf} p={chartP} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={chartP} m={m} tf={tf} ranges={ranges} onRangeClick={setFocus} />}
+          {view === 'dex' ? <DexEmbed pool={ref} full /> : view === 'gmgn' ? <GmgnEmbed token={pool.baseToken} tf={tf} p={chartP} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={chartP} m={m} tf={tf} ranges={ranges} onRangeClick={setFocus} />}
           <TradesTape pool={ref} token={pool.baseToken} base={base} quote={quote} />
         </Panel>
 
