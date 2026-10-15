@@ -2133,6 +2133,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         await new Promise((r) => setTimeout(r, 1500));
         return manual.held();
       });
+      // Tokens that show a balance but refuse to leave the wallet (airdrop bait / honeypot): flagged
+      // so the Swap page can warn and leave them out of the total. Best effort — a failed probe flags nothing.
+      try {
+        const bal = new Map(tokens.map((x) => [x.address, BigInt(x.raw)]));
+        const blocked = await engine.exec.transferBlocked(tokens.map((x) => x.address), bal);
+        for (const x of tokens) if (blocked.get(x.address)) x.transferBlocked = true;
+      } catch { /* the list is still useful without the flag */ }
       if (url.searchParams.get('usd') === '1') {
         await Promise.all(tokens.map(async (x) => {
           x.priceUsd = x.amount > 0 || x.isQuote ? await usdPrice(x.address) : null;

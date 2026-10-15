@@ -622,6 +622,8 @@ const EN = {
   'chain ini belum didukung': 'chain not supported',
   'Swap hanya lewat {a}; kalau gagal tidak pindah ke agregator lain.': 'The swap goes through {a} only; if it fails it does not fall back to another aggregator.',
   'Sapu sisa': 'Sweep leftovers',
+  'Tidak bisa dikirim': 'Cannot be sent',
+  'Kontrak token ini menolak transfer dari wallet kamu, jadi hampir pasti tidak bisa dijual — ciri airdrop jebakan (honeypot). Nilai di atas hanya harga pool, bukan uang yang bisa ditarik. Jangan approve atau menukarnya; cek dulu di bawah.': "This token's contract refuses transfers from your wallet, so it almost certainly cannot be sold — the mark of a bait airdrop (honeypot). The value above is only the pool price, not money you can withdraw. Do not approve or swap it; check it below first.",
   '{n} token masuk antrean jual': '{n} tokens queued for selling',
   'Tidak ada sisa yang layak dijual': 'No leftovers worth selling',
   '{n} token dilewat: {w}': '{n} tokens skipped: {w}',

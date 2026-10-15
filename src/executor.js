@@ -21,6 +21,9 @@ const IF_UR = new ethers.Interface(ABI.universalRouter);
 const MAX_UINT160 = (1n << 160n) - 1n;
 const MAX_UINT48 = (1n << 48n) - 1n;
 const MAX_UINT256 = (1n << 256n) - 1n;
+// transferBlocked(): a plain address that receives the simulated transfer, and how long a result holds.
+const TRANSFER_PROBE_TO = '0x000000000000000000000000000000000000dEaD';
+const TRANSFER_PROBE_TTL_MS = 10 * 60_000;
 const isNative = (a) => !a || /^0x0+$/.test(a);
 const PK_TUPLE = 'tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks)';
 
@@ -408,6 +411,48 @@ class Executor {
           throw new Error(`gagal membaca saldo token ${t} dari RPC`);
         }
         out.set(t.toLowerCase(), BigInt(res[i]));
+      });
+    }
+    return out;
+  }
+
+  // Which of these tokens refuse to leave the wallet? Simulates a transfer of the whole balance
+  // from the bot wallet (eth_call, no gas). A token that reverts here cannot be sold or sent
+  // either: airdrop-bait/honeypot contracts show a balance and a pool price but block the holder.
+  // Result: Map(token -> true) for a revert, false for a pass; a token whose read failed
+  // temporarily is left out (unknown must not read as "blocked"). Cached per token+balance.
+  async transferBlocked(tokens, balances) {
+    const me = this.address();
+    const out = new Map();
+    if (!me) return out;
+    const now = Date.now();
+    const cache = this.transferProbe || (this.transferProbe = new Map());
+    const todo = [];
+    for (const t of tokens) {
+      const a = String(t).toLowerCase();
+      const raw = balances.get(a) || 0n;
+      if (raw <= 0n || isNative(a) || this.chain.QUOTES[a]) continue;
+      const hit = cache.get(a);
+      if (hit && hit.raw === raw && now - hit.at < TRANSFER_PROBE_TTL_MS) out.set(a, hit.blocked);
+      else todo.push([a, raw]);
+    }
+    if (!todo.length) return out;
+    const res = await this.rpc.ethCallMany(todo.map(([a, raw]) => ({
+      to: a, from: me, data: IF_ERC20.encodeFunctionData('transfer', [TRANSFER_PROBE_TO, raw]),
+    })));
+    todo.forEach(([a, raw], i) => {
+      // A passing transfer returns true (or nothing, for old tokens); a revert comes back null.
+      // A null can also be a transient failure, so only a second null on a retry counts.
+      if (res[i] != null) { out.set(a, false); cache.set(a, { raw, blocked: false, at: now }); }
+    });
+    const again = todo.filter(([a]) => !out.has(a));
+    if (again.length) {
+      const res2 = await this.rpc.ethCallMany(again.map(([a, raw]) => ({
+        to: a, from: me, data: IF_ERC20.encodeFunctionData('transfer', [TRANSFER_PROBE_TO, raw]),
+      })), 'latest', { strict: true }).catch(() => null);
+      if (res2) again.forEach(([a, raw], i) => {
+        const blocked = res2[i] == null;
+        out.set(a, blocked); cache.set(a, { raw, blocked, at: now });
       });
     }
     return out;

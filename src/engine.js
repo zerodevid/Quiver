@@ -2983,9 +2983,19 @@ class Engine {
     const metas = await this.chain.tokens(owns);
     const byAddr = new Map(metas.filter(Boolean).map((t) => [String(t.address).toLowerCase(), t]));
 
+    // A token that refuses a plain transfer from this wallet cannot be sold either (airdrop bait /
+    // honeypot): it is not quoted, not queued, and the approval + gas of a doomed sale is saved.
+    const blocked = await this.exec.transferBlocked(owns, bal).catch(() => new Map());
+
     const queued = [], skipped = [];
     for (const token of owns) {
       const amount = bal.get(token);
+      if (blocked.get(token)) {
+        const m = byAddr.get(token) || {};
+        skipped.push({ token, label: `${fmtUnits(amount, m.decimals ?? 18)} ${m.symbol || token.slice(0, 8)}`, usd: null,
+          why: 'transfer ditolak kontrak (kemungkinan honeypot) — tidak dijual' });
+        continue;
+      }
       const meta = byAddr.get(token) || {};
       const label = `${fmtUnits(amount, meta.decimals ?? 18)} ${meta.symbol || token.slice(0, 8)}`;
       // One quote per token: what decides whether it is worth selling is how much

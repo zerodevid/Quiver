@@ -4,7 +4,7 @@ import { ArrowDownUp, ArrowRight, Brush, Check, ChevronDown, ChevronLeft, Chevro
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { usePoll } from '../hooks';
-import { PageHeader, Notice, Loading, KV, Panel, Empty, Refreshing, TxHash } from '../components/ui';
+import { PageHeader, Notice, Loading, KV, Panel, Empty, Refreshing, TxHash, TradeLinks, DataLinks } from '../components/ui';
 import TokenIcon, { TokenSym } from '../components/TokenIcon';
 import { usd, num, pct, short, ago, TXSTATUS } from '../fmt';
 import { useI18n } from '../i18n';
@@ -180,7 +180,8 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
   const [every, setAll] = useState(false);
   const allRows = useMemo(() => tokens.filter((x) => x.amount > 0 || x.custom)
     .sort((a, b) => (valued(b) - valued(a)) || (b.usd ?? -1) - (a.usd ?? -1) || b.amount - a.amount), [tokens]);
-  const total = allRows.reduce((s, x) => s + (x.usd || 0), 0);
+  // A token that refuses to leave the wallet is worth nothing, whatever its pool price says.
+  const total = allRows.reduce((s, x) => s + (x.transferBlocked ? 0 : x.usd || 0), 0);
   const hasPrice = allRows.some((x) => x.usd != null);
   const nValued = allRows.filter(valued).length;
   // Tokens without value are hidden — but only after the price has really been read;
@@ -256,6 +257,11 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
                   <span className="flex items-center gap-1.5">
                     <TokenSym address={x.address} symbol={x.symbol} className="truncate font-medium" />
                     {x.custom && <span className="rounded bg-default px-1.5 py-px text-[0.6875rem] font-medium text-muted">{t('manual')}</span>}
+                    {x.transferBlocked && (
+                      <span className="inline-flex items-center gap-1 rounded bg-danger/15 px-1.5 py-px text-[0.6875rem] font-medium text-danger">
+                        <TriangleAlert className="size-3" />{t('Tidak bisa dikirim')}
+                      </span>
+                    )}
                   </span>
                   <span className="num block truncate text-xs text-muted">
                     {x.priceUsd != null ? usd(x.priceUsd, x.priceUsd < 1 ? 6 : 2) : price === 'muat' ? '…' : t('tanpa harga')}
@@ -263,7 +269,7 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
                 </span>
                 <span className="shrink-0 text-end">
                   <span className={`num block ${x.amount > 0 ? 'font-medium' : 'text-muted'}`}>{num(x.amount, 6)}</span>
-                  <span className="num block text-xs text-muted">{x.usd != null ? usd(x.usd) : ''}</span>
+                  <span className={`num block text-xs text-muted ${x.transferBlocked ? 'line-through' : ''}`}>{x.usd != null ? usd(x.usd) : ''}</span>
                 </span>
               </button>
               {x.custom && (
@@ -273,6 +279,17 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
                 </Button>
               )}
             </div>
+            {x.transferBlocked && (
+              <div className="space-y-2 border-t border-danger/20 bg-danger/5 px-4 py-2.5 text-xs">
+                <p className="text-danger">
+                  {t('Kontrak token ini menolak transfer dari wallet kamu, jadi hampir pasti tidak bisa dijual — ciri airdrop jebakan (honeypot). Nilai di atas hanya harga pool, bukan uang yang bisa ditarik. Jangan approve atau menukarnya; cek dulu di bawah.')}
+                </p>
+                <span className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                  <TradeLinks token={x.address} compact />
+                  <DataLinks token={x.address} compact />
+                </span>
+              </div>
+            )}
             </div>
           ))}
         </div>
