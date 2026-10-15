@@ -3,7 +3,7 @@ import { Button, Chip, Toast, toast } from '@heroui/react';
 import {
   LayoutDashboard, Layers, ListChecks, Users, SlidersHorizontal, Wallet as WalletIcon,
   Settings as SettingsIcon, Moon, Sun, Pause, Play, Menu, X, LogOut, Eye, EyeOff,
-  PlusCircle, ArrowDownUp, BookOpen, MonitorDot,
+  PlusCircle, ArrowDownUp, BookOpen, MonitorDot, ScrollText,
 } from 'lucide-react';
 import { usePoll, useHash, useTheme } from './hooks';
 import { post, withChain, setMergedPage } from './api';
@@ -25,6 +25,7 @@ const Overview = lazy(() => import('./pages/Overview'));
 const Monitor = lazy(() => import('./pages/Monitor'));
 const Positions = lazy(() => import('./pages/Positions'));
 const Activity = lazy(() => import('./pages/Activity'));
+const Logs = lazy(() => import('./pages/Logs'));
 const Targets = lazy(() => import('./pages/Targets'));
 const Rules = lazy(() => import('./pages/Rules'));
 const WalletPage = lazy(() => import('./pages/Wallet'));
@@ -60,6 +61,7 @@ const NAV = [
     ['learn', 'Belajar LP', BookOpen, Learn],
   ]],
   ['Sistem', [
+    ['logs', 'Log', ScrollText, Logs],
     ['settings', 'Pengaturan', SettingsIcon, Settings],
   ]],
 ];

@@ -4,6 +4,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { RpcPool } = require('./rpc');
 const { Store } = require('./db');
+const logbuf = require('./logbuf');
 const { Chain } = require('./pools');
 const { Engine } = require('./engine');
 const { createServer } = require('./server');
@@ -86,6 +87,7 @@ async function main() {
   const log = (msg) => {
     const line = `${ts()} ${msg}`;
     console.log(line);
+    logbuf.push(line);
     if (underPm2) return;
     try {
       if (logBytes > LOG_MAX) { fs.renameSync(logFile, `${logFile}.1`); logBytes = 0; }

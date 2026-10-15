@@ -5,7 +5,7 @@ import { getScope, isAllChains, getChainFilter } from './chain';
 // All-chains view: these routes are merged across chains by the server (src/allchains.js), so on
 // the aggregate pages they are sent without a chain. The app status and alert feed always are.
 const MERGED = /^\/api\/(positions|positions\/sync|portfolio|activity|txs|monitor\/market|gmgn\/tokens)(\?|$)/;
-const NEVER_SCOPED = /^\/api\/(overview|chains|chain\/select|feed)(\?|$)/;
+const NEVER_SCOPED = /^\/api\/(overview|chains|chain\/select|feed|console)(\?|$)/;
 let mergedPage = false;
 // App sets this per page: true on the pages that show every chain together.
 export const setMergedPage = (on) => { mergedPage = !!on; };

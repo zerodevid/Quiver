@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { rulesFor, DEFAULTS, validateRules } = require('./policy');
 const { scoutWallet } = require('./scout');
+const logbuf = require('./logbuf');
 const { WalletResearch, summarize } = require('./wallet');
 const { createSettingsRoutes } = require('./settings');
 const { Manual, layerSpec } = require('./manual');
@@ -1849,6 +1850,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       }
       if (typeof b.paused === 'boolean') { if (engine.setPaused) engine.setPaused(b.paused); else store.setState('paused', b.paused ? '1' : '0'); }
       return { ok: true, mode: { dry_run: engine.dryRun(), paused: engine.paused() } };
+    },
+    // Live process log: lines newer than ?after=<seq> (the newest ones when omitted). The page polls
+    // this every couple of seconds; `last` is the sequence to continue from.
+    'GET /api/console': (req, url) => {
+      const raw = url.searchParams.get('after');
+      return logbuf.since(raw == null || raw === '' ? NaN : Number(raw), Number(url.searchParams.get('limit')) || 500);
     },
     'GET /api/logs': () => ({ logs: store.all('SELECT * FROM logs ORDER BY ts DESC LIMIT 200') }),
     'GET /api/txs': () => ({ txs: store.all('SELECT * FROM txs WHERE chain=? ORDER BY ts DESC LIMIT 100', chain.network) }),
