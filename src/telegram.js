@@ -490,6 +490,7 @@ const RULE_GROUPS = [
   {
     g: 'filters', title: '🧲 Saringan', fields: [
       F.bool('allow_hooks', 'Izinkan semua hook', { help: 'Mati (disarankan): hook pajak swap tetap diikuti, hanya hook yang bisa menahan penarikan yang ditolak. Nyala: semua hook diikuti tanpa dicek.' }),
+      F.list('hook_whitelist', 'Hook dipercaya', { help: 'Alamat hook v4 berisiko yang tetap boleh dimasuki, dipisah koma. "-" untuk kosongkan.' }),
       F.bool('allow_no_quote', 'Salin pool tanpa USDG/ETH', { help: 'Nyala: pool dua memecoin (tanpa aset kuotasi) ikut disalin; nilainya dihitung lewat harga DexScreener. Mati: dilewati.' }),
       F.list('quote_whitelist', 'Aset kuotasi yang boleh', { help: 'Contoh: USDG, ETH, WETH' }),
       F.list('token_blacklist', 'Daftar hitam token', { help: 'Alamat, dipisah koma. "-" untuk kosongkan.' }),

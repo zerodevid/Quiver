@@ -104,6 +104,8 @@
   "Aset kuotasi yang boleh": "Allowed quote assets",
   "Contoh: USDG, ETH, WETH": "Example: USDG, ETH, WETH",
   "Daftar hitam token": "Blocked tokens",
+  "Hook dipercaya": "Trusted hooks",
+  "Alamat hook v4 berisiko yang tetap boleh dimasuki, dipisah koma. \"-\" untuk kosongkan.": "Risky v4 hook addresses that may still be entered, comma separated. \"-\" to clear.",
   "Alamat, dipisah koma. \"-\" untuk kosongkan.": "Enter comma-separated addresses, or \"-\" to clear the list.",
   "Daftar putih token": "Allowed tokens",
   "Kalau diisi, HANYA token ini yang diikuti.": "When set, only these tokens are copied.",
