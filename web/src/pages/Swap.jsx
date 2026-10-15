@@ -273,12 +273,6 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
                   <span className={`num block text-xs text-muted ${x.transferBlocked ? 'line-through' : ''}`}>{x.usd != null ? usd(x.usd) : ''}</span>
                 </span>
               </button>
-              {!x.isQuote && !x.native && (
-                <span className="flex shrink-0 items-center gap-1.5">
-                  <TradeLinks token={x.address} compact />
-                  <DataLinks token={x.address} compact />
-                </span>
-              )}
               {x.custom && (
                 <Button size="sm" variant="ghost" isIconOnly aria-label={t('Hapus dari daftar')} onPress={() => onRemove(x)}
                   className="-mr-2 size-7 text-muted">
@@ -286,6 +280,12 @@ function Holdings({ tokens, dari: from, onUse, onRemove, onImport, harga: price,
                 </Button>
               )}
             </div>
+            {!x.native && (
+              <span className="-mt-1.5 flex items-center gap-2 px-4 pb-2.5 pl-[4.25rem]">
+                <TradeLinks token={x.address} compact />
+                <DataLinks token={x.address} compact />
+              </span>
+            )}
             </div>
           ))}
         </div>
