@@ -245,6 +245,10 @@ const withServer = async (telegram, fn) => {
       assert.strictEqual(empty.status, 400); assert.match(JSON.parse(empty.body).error, /bulan itu/);
       assert.strictEqual((await fetchPng(server, 'kind=month&month=januari')).status, 400);
     });
+    // The month video replay gets the same figures as JSON.
+    const replay = await world(null).api('GET', '/api/share/month', {}, { month: '2024-01', tz: 'UTC' });
+    assert.strictEqual(replay.month, '2024-01'); assert.ok(Object.keys(replay.daily).every((d) => d.startsWith('2024-01')) && replay.chain, 'days of that month + chain label');
+    assert.match((await world(null).api('GET', '/api/share/month', {}, { month: '2024-02' })).error, /bulan itu/);
   });
 
   await t('GET /api/share/telegram: not ready without a bot, ready if token & chat exist', async () => {

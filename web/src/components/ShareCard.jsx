@@ -15,6 +15,7 @@ import { Button, Modal, toast } from '@heroui/react';
 import { Share2, Copy, Download, Send } from 'lucide-react';
 import { Toggle, Segmented } from './ui';
 import ShareReplay from './ShareReplay';
+import MonthReplay from './MonthReplay';
 import { get, post } from '../api';
 import { useI18n } from '../i18n';
 import { usd, pct } from '../fmt';
@@ -52,11 +53,11 @@ export function ShareDialog({ card, onClose }) {
   const [url, setUrl] = useState(null);
   const [busy, setBusy] = useState(null);
   const [tg, setTg] = useState(null);           // { ready, chats } — is the Telegram bot ready?
-  const [mode, setMode] = useState('image');    // 'image' | 'video' (positions only)
+  const [mode, setMode] = useState('image');    // 'image' | 'video' (positions and calendar months)
   const last = useRef(null);                    // last card, still shown while the close animation runs
   if (card) last.current = card;
   const c = card || last.current;
-  const video = mode === 'video' && c?.kind === 'position';
+  const video = mode === 'video' && (c?.kind === 'position' || c?.kind === 'month');
 
   // Hide amounts is remembered: once hidden, it usually always is.
   useEffect(() => { try { setHide(localStorage.getItem('quiver-share-hide') === '1'); } catch { /* abaikan */ } }, []);
@@ -145,12 +146,12 @@ export function ShareDialog({ card, onClose }) {
               <Modal.Heading>{t('Bagikan')}</Modal.Heading>
             </Modal.Header>
             <Modal.Body>
-              {c?.kind === 'position' && (
+              {(c?.kind === 'position' || c?.kind === 'month') && (
                 <div className="mb-3">
                   <Segmented size="sm" aria="Format" value={mode} onChange={setMode} options={[['image', 'Gambar'], ['video', 'Video']]} />
                 </div>
               )}
-              {video ? <ShareReplay id={c.id} hide={hide} name={c.name} /> : <>
+              {video ? (c.kind === 'month' ? <MonthReplay month={c.month} hide={hide} /> : <ShareReplay id={c.id} hide={hide} name={c.name} />) : <>
               {/* The preview follows the chosen size ratio; the story is capped in height so the dialog does not tower. */}
               <div className="flex justify-center overflow-hidden rounded-lg border border-border bg-[#0E1015]">
                 <div className={`relative w-full transition-opacity ${loading ? 'opacity-60' : ''}`} style={{ aspectRatio: ratio, maxHeight: '60vh' }}>

@@ -15,7 +15,7 @@
 // value follows the concentrated-liquidity formula for the range. Whatever the model misses
 // is spread evenly over the position's life, so the last frame always lands exactly on
 // the real fee and PnL.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, toast } from '@heroui/react';
 import { Download, Share2, Clapperboard } from 'lucide-react';
 import { get } from '../api';
@@ -25,8 +25,8 @@ import { canonAddr, isAddr } from '../chain';
 import { KNOWN, hue } from './TokenIcon';
 import { ARROW, CHEVRON, WORDMARK } from './Logo';
 
-const S = 1080;                 // canvas side (px)
-const FPS = 30;
+export const S = 1080;                 // canvas side (px)
+export const FPS = 30;
 // Timeline (seconds of clip time).
 const TL = {
   intro: 0.6,                   // header fades in, then the price line starts
@@ -38,7 +38,7 @@ const TL = {
   outro: 20.0,                  // logo outro
   end: 22.5,
 };
-const C = {
+export const C = {
   bg: '#0A0B0D', text: '#F4F6F5', muted: '#8B9392', faint: '#5C6463', grid: 'rgba(255,255,255,0.06)',
   up: '#4ADE80', down: '#F87171', amber: '#FBBF24', accent: '#7AA2F7',
   band: 'rgba(122,162,247,0.12)', bandLine: 'rgba(122,162,247,0.45)',
@@ -46,10 +46,10 @@ const C = {
 const FONT = 'Inter, ui-sans-serif, system-ui, sans-serif';
 const CHART = { x0: 60, x1: 900, y0: 250, y1: 770 };   // price chart area (axis labels to the right)
 
-const clamp = (v, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, v));
-const lerp = (a, b, u) => a + (b - a) * u;
-const ease = (u) => 1 - (1 - clamp(u)) ** 3;
-const span = (sec, a, b) => clamp((sec - a) / (b - a));
+export const clamp = (v, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, v));
+export const lerp = (a, b, u) => a + (b - a) * u;
+export const ease = (u) => 1 - (1 - clamp(u)) ** 3;
+export const span = (sec, a, b) => clamp((sec - a) / (b - a));
 
 // ---- model ---------------------------------------------------------------------------
 
@@ -134,12 +134,12 @@ export function coinsOf(m) {
 
 // ---- drawing helpers ---------------------------------------------------------------
 
-const font = (size, weight = 400) => `${weight} ${size}px ${FONT}`;
-function text(ctx, s, x, y, { size = 28, weight = 400, color = C.text, align = 'left', base = 'alphabetic', alpha = 1 } = {}) {
+export const font = (size, weight = 400) => `${weight} ${size}px ${FONT}`;
+export function text(ctx, s, x, y, { size = 28, weight = 400, color = C.text, align = 'left', base = 'alphabetic', alpha = 1 } = {}) {
   ctx.save(); ctx.globalAlpha *= alpha; ctx.font = font(size, weight); ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = base;
   ctx.fillText(s, x, y); ctx.restore();
 }
-function pill(ctx, s, x, y, { size = 22, color = C.text, fill = 'rgba(255,255,255,0.08)', align = 'left', dot = null, alpha = 1 } = {}) {
+export function pill(ctx, s, x, y, { size = 22, color = C.text, fill = 'rgba(255,255,255,0.08)', align = 'left', dot = null, alpha = 1 } = {}) {
   ctx.save(); ctx.globalAlpha *= alpha; ctx.font = font(size, 600);
   const padX = size * 0.6, dotW = dot ? size * 0.75 : 0, w = ctx.measureText(s).width + padX * 2 + dotW, h = size * 1.6;
   const left = align === 'right' ? x - w : align === 'center' ? x - w / 2 : x;
@@ -161,7 +161,7 @@ function tokenDisc(ctx, img, addr, sym, x, y, r) {
 }
 const LOGO = typeof Path2D === 'undefined' ? null : { mark: new Path2D(ARROW + CHEVRON), word: new Path2D(WORDMARK) };
 // Quiver logo; the path is 264×48 (mark only: 73×48). `x, y` = top-left.
-function logo(ctx, x, y, h, { word = true, color = C.text, alpha = 1 } = {}) {
+export function logo(ctx, x, y, h, { word = true, color = C.text, alpha = 1 } = {}) {
   if (!LOGO) return;
   ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(x, y); ctx.scale(h / 48, h / 48); ctx.fillStyle = color;
   ctx.fill(LOGO.mark); if (word) ctx.fill(LOGO.word, 'evenodd');
@@ -472,62 +472,41 @@ function iconSrc(addr) {
   return KNOWN[a] || (isAddr(a) && !/^0x0+$/.test(a) ? `/api/icon?a=${a}` : null);
 }
 
-// The video tab: looping preview + record/download/share.
-export default function ShareReplay({ id, hide, name }) {
+// Looping canvas preview + record/download/share, shared by the position replay and the
+// month calendar replay. `draw(ctx, sec)` paints the frame at clip time `sec` (a pure
+// function of time, so the preview and the recording match); `sound()` synthesizes the
+// soundtrack (an AudioBuffer) mixed into the recording only. A new `resetKey` drops the
+// last recording, as it no longer matches what the preview shows.
+export function ReplayPlayer({ draw, end, sound, ready, error, loading, note, fileName, resetKey }) {
   const { t } = useI18n();
   const canvas = useRef(null);
-  const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
   const [rec, setRec] = useState(null);         // null | progress 0..1 while recording
   const [video, setVideo] = useState(null);     // { blob, url, ext } of the last recording
-  const img = useRef([null, null]);
   const clock = useRef({ start: performance.now(), recording: null });
 
-  useEffect(() => {
-    let alive = true;
-    setData(null); setError(null);
-    get(`/api/share/replay?id=${encodeURIComponent(id)}`)
-      .then((r) => { if (!alive) return; if (r?.error) setError(r.error); else setData(r); })
-      .catch((e) => alive && setError(String(e?.message || e)));
-    return () => { alive = false; };
-  }, [id]);
-
-  const m = useMemo(() => { try { return data ? buildModel(data) : null; } catch (e) { return { error: e.message }; } }, [data]);
-  const coins = useMemo(() => (m && !m.error ? coinsOf(m) : []), [m]);
-
-  useEffect(() => {
-    if (!data) return;
-    img.current = [data.position.token0, data.position.token1].map((a) => {
-      const src = iconSrc(a);
-      if (!src) return null;
-      const im = new Image(); im.decoding = 'async'; im.src = src; return im;
-    });
-    // Canvas text only uses Inter once the font is loaded.
-    document.fonts?.load?.(font(64, 700)).catch(() => {});
-  }, [data]);
-
-  // A recording made with other settings is no longer what the preview shows.
-  useEffect(() => { setVideo(null); }, [id, hide]);
+  useEffect(() => { setVideo(null); }, [resetKey]);
   useEffect(() => () => { if (video) URL.revokeObjectURL(video.url); }, [video]);
+  // Canvas text only uses Inter once the font is loaded.
+  useEffect(() => { document.fonts?.load?.(font(64, 700)).catch(() => {}); }, []);
 
   // One animation loop for both the preview and the recording.
   useEffect(() => {
-    if (!m || m.error || !canvas.current) return;
+    if (!ready || !canvas.current) return;
     const ctx = canvas.current.getContext('2d');
     let raf;
     const loop = (now) => {
       const r = clock.current.recording;
       const sec = ((now - (r ? r.start : clock.current.start)) / 1000);
       if (r) {
-        drawFrame(ctx, m, img.current, Math.min(sec, TL.end), t, hide, coins);
-        setRec(Math.min(1, sec / TL.end));
-        if (sec >= TL.end) { clock.current.recording = null; r.stop(); clock.current.start = now; }
-      } else drawFrame(ctx, m, img.current, sec % TL.end, t, hide, coins);
+        draw(ctx, Math.min(sec, end));
+        setRec(Math.min(1, sec / end));
+        if (sec >= end) { clock.current.recording = null; r.stop(); clock.current.start = now; }
+      } else draw(ctx, sec % end);
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [m, coins, t, hide]);
+  }, [ready, draw, end]);
 
   const mime = pickMime();
   const record = async () => {
@@ -536,7 +515,7 @@ export default function ShareReplay({ id, hide, name }) {
     try {
       // Synthesized soundtrack as an extra audio track. If audio is not available the
       // clip is recorded silent rather than failing.
-      const buffer = await renderSound(m, coins);
+      const buffer = await sound();
       actx = new (window.AudioContext || window.webkitAudioContext)();
       await actx.resume();
       const dest = actx.createMediaStreamDestination();
@@ -568,8 +547,8 @@ export default function ShareReplay({ id, hide, name }) {
     } finally { setRec(null); }
   };
   // Download and share come only after the recording: the share sheet needs a fresh
-  // click, and 22 seconds of recording use that click up.
-  const file = video ? new File([video.blob], `quiver-${name}-replay.${video.ext}`.replace(/[^A-Za-z0-9.+-]+/g, '-').replace(/-+/g, '-'), { type: video.blob.type }) : null;
+  // click, and the recording uses that click up.
+  const file = video ? new File([video.blob], `${fileName}.${video.ext}`.replace(/[^A-Za-z0-9.+-]+/g, '-').replace(/-+/g, '-'), { type: video.blob.type }) : null;
   const canShare = !!file && typeof navigator !== 'undefined' && !!navigator.canShare?.({ files: [file] });
   const download = () => {
     const a = document.createElement('a');
@@ -581,26 +560,62 @@ export default function ShareReplay({ id, hide, name }) {
     catch (e) { if (e?.name !== 'AbortError') toast.danger(t('Gagal membagikan'), { description: String(e?.message || e) }); }
   };
 
-  const err = error || m?.error;
   const busy = rec != null;
   return (
     <div>
       <div className="relative mx-auto w-full overflow-hidden rounded-lg border border-border bg-[#0A0B0D]" style={{ aspectRatio: 1, maxHeight: '60vh', maxWidth: '60vh' }}>
-        <canvas ref={canvas} width={S} height={S} className={`block h-full w-full ${m && !m.error ? '' : 'hidden'}`} />
-        {!m && !err && <div className="flex h-full items-center justify-center text-xs text-muted">{t('Menyiapkan replay…')}</div>}
-        {err && <div className="flex h-full items-center justify-center p-6 text-center text-xs text-warning">{t('Replay tidak bisa dibuat')}: {t(err)}</div>}
+        <canvas ref={canvas} width={S} height={S} className={`block h-full w-full ${ready ? '' : 'hidden'}`} />
+        {!ready && !error && <div className="flex h-full items-center justify-center text-xs text-muted">{t(loading)}</div>}
+        {error && <div className="flex h-full items-center justify-center p-6 text-center text-xs text-warning">{t('Replay tidak bisa dibuat')}: {t(error)}</div>}
         {busy && <div className="absolute inset-x-0 bottom-0 h-1 bg-black/40"><div className="h-full bg-accent transition-[width]" style={{ width: `${rec * 100}%` }} /></div>}
       </div>
-      <p className="mt-2 text-xs text-muted">{t('Fee dan PnL di tengah video adalah perkiraan dari harga; angka akhirnya angka asli.')}</p>
+      {note && <p className="mt-2 text-xs text-muted">{t(note)}</p>}
       {!mime && <p className="mt-1 text-xs text-warning">{t('Browser ini tidak bisa merekam video. Coba Chrome atau Safari terbaru.')}</p>}
-      {busy && <p className="mt-1 text-xs text-muted">{t('Merekam {n} dtk — biarkan tab ini tetap terbuka.', { n: Math.ceil(TL.end * (1 - rec)) })}</p>}
+      {busy && <p className="mt-1 text-xs text-muted">{t('Merekam {n} dtk — biarkan tab ini tetap terbuka.', { n: Math.ceil(end * (1 - rec)) })}</p>}
       <div className="mt-3 flex flex-wrap justify-end gap-2">
-        <Button variant={video ? 'tertiary' : 'primary'} className="grow sm:grow-0" isDisabled={!m || !!m.error || !mime || busy} isPending={busy} onPress={make}>
+        <Button variant={video ? 'tertiary' : 'primary'} className="grow sm:grow-0" isDisabled={!ready || !mime || busy} isPending={busy} onPress={make}>
           <Clapperboard className="size-4" />{t(video ? 'Rekam ulang' : 'Rekam video')}
         </Button>
         {video && <Button variant={canShare ? 'outline' : 'primary'} className="grow sm:grow-0" onPress={download}><Download className="size-4" />{t('Unduh video')}</Button>}
         {canShare && <Button variant="primary" className="grow sm:grow-0" onPress={share}><Share2 className="size-4" />{t('Bagikan video')}</Button>}
       </div>
     </div>
+  );
+}
+
+// The position video tab.
+export default function ShareReplay({ id, hide, name }) {
+  const { t } = useI18n();
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const img = useRef([null, null]);
+
+  useEffect(() => {
+    let alive = true;
+    setData(null); setError(null);
+    get(`/api/share/replay?id=${encodeURIComponent(id)}`)
+      .then((r) => { if (!alive) return; if (r?.error) setError(r.error); else setData(r); })
+      .catch((e) => alive && setError(String(e?.message || e)));
+    return () => { alive = false; };
+  }, [id]);
+
+  const m = useMemo(() => { try { return data ? buildModel(data) : null; } catch (e) { return { error: e.message }; } }, [data]);
+  const coins = useMemo(() => (m && !m.error ? coinsOf(m) : []), [m]);
+
+  useEffect(() => {
+    if (!data) return;
+    img.current = [data.position.token0, data.position.token1].map((a) => {
+      const src = iconSrc(a);
+      if (!src) return null;
+      const im = new Image(); im.decoding = 'async'; im.src = src; return im;
+    });
+  }, [data]);
+
+  const draw = useCallback((ctx, sec) => drawFrame(ctx, m, img.current, sec, t, hide, coins), [m, t, hide, coins]);
+  const sound = useCallback(() => renderSound(m, coins), [m, coins]);
+  return (
+    <ReplayPlayer draw={draw} end={TL.end} sound={sound} ready={!!m && !m.error} error={error || m?.error}
+      loading="Menyiapkan replay…" note="Fee dan PnL di tengah video adalah perkiraan dari harga; angka akhirnya angka asli."
+      fileName={`quiver-${name}-replay`} resetKey={`${id}:${hide}`} />
   );
 }

@@ -2258,6 +2258,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         chart,
       };
     },
+    // Animated replay of one month of the PnL calendar (the "Video" tab of the month card):
+    // the same figures as the month share card; the browser draws and records it.
+    'GET /api/share/month': async (req, url) => {
+      const tz = url.searchParams.get('tz') || cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const [pf, pos] = await Promise.all([callApi('GET', '/api/portfolio', {}, { range: 'all' }), callApi('GET', '/api/positions')]);
+      const m = monthOf(pf, pos, url.searchParams.get('month'), tz);
+      return m.error ? m : { ...m, chain: chain.label };
+    },
     'GET /api/share/telegram': () => ({
       ready: !!(telegram?.token() && telegram.chats().length), chats: telegram ? telegram.chats().length : 0,
     }),
@@ -2417,6 +2425,23 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const dayKeyIn = (ts, timeZone) => {
     try { return new Date(ts).toLocaleDateString('en-CA', { timeZone }); } catch { return new Date(ts).toLocaleDateString('en-CA'); }
   };
+  // One month of the PnL calendar: per-day realized PnL and closes in the reader's time zone,
+  // plus the capital of the positions closed that month (for the percentage). Shared by the
+  // month share card and its video replay.
+  const monthOf = (pf, pos, month, timeZone) => {
+    if (!/^\d{4}-\d{2}$/.test(String(month || ''))) return { error: 'bulan tidak valid' };
+    const daily = {}, counts = {};
+    for (const [ts, v] of pf.closed || []) {
+      const k = dayKeyIn(ts, timeZone);
+      if (!k.startsWith(month)) continue;
+      daily[k] = (daily[k] || 0) + v; counts[k] = (counts[k] || 0) + 1;
+    }
+    if (!Object.keys(daily).length) return { error: 'tidak ada posisi yang ditutup pada bulan itu' };
+    const kq = (q) => (chain.isEthLike(q) ? engine.ethUsd || 0 : 1);
+    const cost = (pos.closed || []).filter((c) => c.closed_ts && dayKeyIn(c.closed_ts, timeZone).startsWith(month))
+      .reduce((a, c) => a + (c.cost_quote || 0) * kq(c.quote_symbol), 0);
+    return { month, daily, counts, cost };
+  };
   const shareCardOf = async ({ kind, id, day, month, hide = false, lang = 'id', tz, size, theme, layout } = {}) => {
     const timeZone = tz || cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const opts = { hideAmounts: !!hide, lang, timeZone, size: shareCard.sizeKey(size), theme: shareCard.themeKey(theme), layout: shareCard.layoutKey(layout), chain: { key: chain.network, label: chain.label } };
@@ -2454,20 +2479,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         const pts = portfolioCard.prepare(pf, 'net').pts;
         if (pts.length >= 2) opts.chart = { kind: 'line', pts: pts.map((x) => [x.t, x.v]), zero: true };
       } else if (kind === 'month') {
-        // One month of the PnL calendar: per-day realized PnL and closes in the reader's time zone,
-        // plus the capital of the positions closed that month (for the percentage).
-        if (!/^\d{4}-\d{2}$/.test(String(month || ''))) return { error: 'bulan tidak valid' };
-        const daily = {}, counts = {};
-        for (const [ts, v] of pf.closed || []) {
-          const k = dayKeyIn(ts, timeZone);
-          if (!k.startsWith(month)) continue;
-          daily[k] = (daily[k] || 0) + v; counts[k] = (counts[k] || 0) + 1;
-        }
-        if (!Object.keys(daily).length) return { error: 'tidak ada posisi yang ditutup pada bulan itu' };
-        const kq = (q) => (chain.isEthLike(q) ? engine.ethUsd || 0 : 1);
-        const cost = (pos.closed || []).filter((c) => c.closed_ts && dayKeyIn(c.closed_ts, timeZone).startsWith(month))
-          .reduce((a, c) => a + (c.cost_quote || 0) * kq(c.quote_symbol), 0);
-        data = { month, daily, counts, cost };
+        const m = monthOf(pf, pos, month, timeZone);
+        if (m.error) return m;
+        data = m;
       } else {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day || ''))) return { error: 'tanggal tidak valid' };
         const daily = {}, counts = {};
