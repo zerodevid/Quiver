@@ -39,8 +39,15 @@ function Side({ id, label, tone, mode, setMode, value, setValue, ruleText, max, 
   </fieldset>;
 }
 
-const Note = ({ tone = 'muted', icon: Icon = Info, children }) => <div className={`flex gap-2 rounded-md p-3 text-xs ${tone === 'warn' ? 'bg-warning/10 text-warning-foreground' : tone === 'danger' ? 'bg-danger/10 text-danger' : 'bg-default/50 text-muted'}`}>
-  <Icon className="mt-0.5 size-3.5 shrink-0" aria-hidden /><div className="flex flex-col gap-1">{children}</div>
+// Body text stays in the normal foreground colour on every tone (readable on a tinted background in
+// both themes); only the icon and the border carry the tone.
+const NOTE_TONE = {
+  warn: { box: 'border border-warning/40 bg-warning/10', icon: 'text-warning' },
+  danger: { box: 'border border-danger/40 bg-danger/10', icon: 'text-danger' },
+  muted: { box: 'bg-default/50', icon: 'text-muted' },
+};
+const Note = ({ tone = 'muted', icon: Icon = Info, children }) => <div className={`flex gap-2 rounded-md p-3 text-xs text-foreground ${NOTE_TONE[tone].box}`}>
+  <Icon className={`mt-0.5 size-3.5 shrink-0 ${NOTE_TONE[tone].icon}`} aria-hidden /><div className="flex flex-col gap-1">{children}</div>
 </div>;
 
 export default function TpSlButton({ p, reload, disabled = false, compact = false }) {
