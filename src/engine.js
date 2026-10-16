@@ -91,7 +91,7 @@ class Engine {
     this.exec.ethUsd = () => this.ethUsd;
     // `kyber` is the swap entry point for the whole engine: every enabled aggregator (Kyber,
     // OKX, LI.FI, 0x, 1inch, OpenOcean, Uniswap on chain), best route or fallback order — see swaprouter.js.
-    this.swapRouter = new SwapRouter({ exec: this.exec, rpc, cfg, chain, log: this.log, store });
+    this.swapRouter = new SwapRouter({ exec: this.exec, rpc, cfg, chain, log: this.log, store, discover: (token) => this.discoverPools(token) });
     this.ethUsd = cfg.prices?.eth_usd || 2500;
     this.cursor = 0;
     this.head = 0;
@@ -764,6 +764,17 @@ class Engine {
     } catch (e) {
       this.decide(act.id, 'skip', `${what} — klaim fee posisi #${mirror.id} gagal: ${String(e.message).slice(0, 200)}`, null, null, mirror.id);
     }
+  }
+
+  // A token's pools as DexScreener lists them, checked on chain and stored in the pools table
+  // (Manual#resolveListed) — how the on-chain Uniswap route finds pools the scanner never saw.
+  async discoverPools(token) {
+    if (!this.market) this.market = new Market({ log: this.log, chain: this.chain });
+    const mk = await this.market.token(token);
+    if (!mk?.pairs?.length) return 0;
+    const { Manual } = require('./manual');
+    const m = new Manual({ engine: this, store: this.store, chain: this.chain, rpc: this.rpc, log: this.log });
+    return (await m.resolveListed(mk.pairs.map((p) => p.pool))).length;
   }
 
   // Pool liquidity & volume from DexScreener for the entry filter, or null if
