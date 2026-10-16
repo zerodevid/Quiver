@@ -1023,7 +1023,7 @@ class Manual {
   // ---- take over / hand back control of a mirror position ------------------------
   // Take over = the position is released from its target: the target's exit/partial withdrawal/addition is not
   // followed, exit reconciliation is skipped, standalone exit rules (SL/TP/age/out of
-  // range) do not apply. Its link to the target (target, mirror_of) stays stored,
+  // range) do not apply (a per-position SL/TP set by the owner still does). Its link to the target (target, mirror_of) stays stored,
   // so it can be handed back — as long as that target position still exists on chain. After the
   // target position closes, there is nothing left to follow: the position stays manual.
   takeoverRow(id) {
@@ -1032,6 +1032,58 @@ class Manual {
     if (pos.status !== 'open') return { error: 'posisi sudah tertutup' };
     if (!pos.target || !pos.mirror_of) return { error: 'posisi ini tidak mengikuti target — sudah dalam kendali manual' };
     return { pos };
+  }
+
+  // ---- per-position take profit / stop loss ----------------------------------------
+  // Works for mirror (copy) and manual positions alike. Values are PnL % of the position's cost
+  // (fees included, before the exit's gas/slippage), the same basis as the rule-level
+  // stop_loss_pct / take_profit_pct. NULL = follow the rules; 0 = explicitly off.
+  exitRow(id) {
+    const pos = this.store.get('SELECT * FROM positions WHERE id=?', Number(id));
+    if (!pos) return { error: 'posisi tidak ditemukan' };
+    if (pos.status !== 'open') return { error: 'posisi sudah tertutup' };
+    return { pos };
+  }
+
+  // Everything the TP/SL dialog needs to explain what saving will do.
+  exitInfo(id) {
+    const { pos, error } = this.exitRow(id);
+    if (error) return { error };
+    const eng = this.engine;
+    const live = eng.positions.live.find((p) => p.id === pos.id) || null;
+    const e = eng.rulesFrom(pos.target).exit;
+    const isCopy = !!(pos.target && pos.mirror_of);
+    return {
+      id: pos.id, isCopy, takeoverTs: pos.takeover_ts ?? null,
+      slPct: pos.sl_pct ?? null, tpPct: pos.tp_pct ?? null,
+      rules: { stopLossPct: Math.abs(e.stop_loss_pct) || 0, takeProfitPct: e.take_profit_pct || 0, followTarget: !!e.follow_target },
+      pnlPct: live && !live.valueStale && !live.liqStale ? live.pnlPct : null,
+      costUsd: live?.costUsd ?? null, exitCostUsd: live?.exitCostUsd ?? null,
+      dryRun: !!eng.dryRun(),
+    };
+  }
+
+  setExit(id, body = {}) {
+    const { pos, error } = this.exitRow(id);
+    if (error) throw new Error(error);
+    // undefined = leave as is; null = follow the rules; 0 = off; >0 = threshold.
+    const parse = (v, key, max) => {
+      if (v === undefined) return { keep: true };
+      if (v === null) return { value: null };
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0 || n > max) throw new Error(`${key}: isi angka 0–${max}`);
+      return { value: n === 0 ? 0 : Math.round(n * 100) / 100 };
+    };
+    const sl = parse(body.slPct, 'stop loss', 99.9);
+    const tp = parse(body.tpPct, 'take profit', 10000);
+    const next = { sl: sl.keep ? pos.sl_pct : sl.value, tp: tp.keep ? pos.tp_pct : tp.value };
+    this.store.run('UPDATE positions SET sl_pct=?, tp_pct=? WHERE id=?', next.sl, next.tp, pos.id);
+    // The trigger evaluation reads the sync cache (up to 30 s old): update it so the change counts at once.
+    const live = this.engine.positions.live.find((p) => p.id === pos.id);
+    if (live) { live.sl_pct = next.sl; live.tp_pct = next.tp; }
+    const show = (v) => (v == null ? 'ikut aturan' : v === 0 ? 'mati' : `${v}%`);
+    this.store.log('info', `posisi #${pos.id}: stop loss ${show(next.sl)}, take profit ${show(next.tp)} (khusus posisi ini)`);
+    return { ok: true, slPct: next.sl, tpPct: next.tp };
   }
 
   async takeover(id) {

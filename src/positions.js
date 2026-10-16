@@ -757,11 +757,16 @@ class Positions {
       // Stale value/liquidity (RPC failed): stop loss, take profit, and out-of-range must not
       // be evaluated from old figures — wait for a sync that reads.
       if (p.valueStale || p.liqStale) continue;
-      if (e.stop_loss_pct > 0 && p.pnlPct <= -Math.abs(e.stop_loss_pct)) {
-        outs.push({ pos: p, reason: `stop loss ${p.pnlPct.toFixed(1)}%` }); continue;
+      // A per-position value (sl_pct / tp_pct, set by the owner on this very position) wins over
+      // the rules, including 0 = off. `own` marks the trigger as explicit, so it still fires on a
+      // position under manual control (see the engine's exit loop).
+      const slPct = p.sl_pct != null ? p.sl_pct : e.stop_loss_pct;
+      const tpPct = p.tp_pct != null ? p.tp_pct : e.take_profit_pct;
+      if (slPct > 0 && p.pnlPct <= -Math.abs(slPct)) {
+        outs.push({ pos: p, own: p.sl_pct != null, reason: `stop loss ${p.pnlPct.toFixed(1)}%` }); continue;
       }
-      if (e.take_profit_pct > 0 && p.pnlPct >= e.take_profit_pct) {
-        outs.push({ pos: p, reason: `take profit ${p.pnlPct.toFixed(1)}%` }); continue;
+      if (tpPct > 0 && p.pnlPct >= tpPct) {
+        outs.push({ pos: p, own: p.tp_pct != null, reason: `take profit ${p.pnlPct.toFixed(1)}%` }); continue;
       }
       if (e.max_age_hours > 0 && p.ageHours >= e.max_age_hours) {
         outs.push({ pos: p, reason: `umur ${p.ageHours.toFixed(1)} jam` }); continue;

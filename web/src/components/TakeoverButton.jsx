@@ -25,7 +25,7 @@ export default function TakeoverButton({ p, reload, disabled = false, size = 'sm
           <ul className="list-disc space-y-1 pl-5">
             <li>{t('tidak ikut menutup atau menarik sebagian saat target keluar dari posisi #{id};', { id: shortId(p.mirror_of) })}</li>
             <li>{t('tidak ikut menambah saat target menambah;')}</li>
-            <li>{t('stop loss, take profit, batas umur, dan di luar rentang tidak berlaku.')}</li>
+            <li>{t('stop loss, take profit, batas umur, dan di luar rentang dari aturan tidak berlaku (TP/SL yang kamu atur sendiri di posisi ini tetap berlaku).')}</li>
           </ul>
           <p>{t('Posisi hanya ditutup kalau kamu menutupnya. Bisa dikembalikan ke otomatis selama posisi target masih terbuka.')}</p>
         </div>

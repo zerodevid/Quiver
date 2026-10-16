@@ -461,6 +461,10 @@ function open(dbPath) {
   // Manual control ("take over"): the time a mirror position was released from its target. NULL =
   // automatic. See Manual.takeover.
   if (!posCols.has('takeover_ts')) db.exec('ALTER TABLE positions ADD COLUMN takeover_ts INTEGER');
+  // Per-position exit overrides (PnL %, magnitudes). NULL = inherit the rules (per-target or
+  // global); a number (0 = off) wins over the rules for this position only. See Manual.setExit.
+  if (!posCols.has('sl_pct')) db.exec('ALTER TABLE positions ADD COLUMN sl_pct REAL');
+  if (!posCols.has('tp_pct')) db.exec('ALTER TABLE positions ADD COLUMN tp_pct REAL');
   // Non-EVM venue data (JSON): the native range (DLMM bins / Orca-Raydium ticks), binStep,
   // the position NFT mint, and the target's L before the action. tick_lower/tick_upper still
   // hold the equivalent Uniswap ticks so the dashboard & exit triggers apply as is.
