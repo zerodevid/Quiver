@@ -2909,6 +2909,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const b = await readBody(req);
       try { return manual.setExit(b.id, b); } catch (e) { return { error: e.message }; }
     },
+    // "Compound now": add the position's unclaimed fees back as liquidity (see Compound.compoundNow).
+    // The GET prices it for the confirmation dialog and sends nothing.
+    'GET /api/positions/compound-now': async (req, url) => {
+      try { return await compound.preview(url.searchParams.get('id')); } catch (e) { return { error: e.message }; }
+    },
+    'POST /api/positions/compound-now': async (req) => {
+      const b = await readBody(req);
+      try { return await compound.compoundNow(b.id); } catch (e) { return { error: e.message }; }
+    },
     'POST /api/positions/claim': async (req) => {
       const b = await readBody(req);
       const id = Number(b.id);
