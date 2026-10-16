@@ -462,6 +462,12 @@ function PoolPicker({ pools, onPick }) {
     }, 1500);
   };
   const changeAll = (v) => { setAll(v); if (scan?.token) take(scan.token, v); };
+  // A pasted token address is searched at once — the pair filter can never match an address.
+  useEffect(() => {
+    if (!isAddress || scan?.token === token) return undefined;
+    const tm = setTimeout(() => scanning(), 250);
+    return () => clearTimeout(tm);
+  }, [token, isAddress]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // A scan result replaces the list only while the search box still contains that address.
   const useScan = isAddress && scan?.token === token && scan.status === 'selesai';
@@ -487,10 +493,6 @@ function PoolPicker({ pools, onPick }) {
           className="h-9 w-full rounded-md border border-field-border bg-surface pl-8 pr-3 text-sm outline-none focus:border-accent" />
       </div>
 
-      {/* Token address: the pool is looked up straight from the chain, not from the already known ones. */}
-      {isAddress && (!scan || scan.token !== token) && (
-        <Button size="sm" onPress={() => scanning()}>{t('Cari pool untuk token ini')}</Button>
-      )}
       {scan?.token === token && scan.status === 'jalan' && (
         <div className="flex items-center gap-2 text-sm text-muted"><Spinner size="sm" />{scan.progress > 0 ? t('Mencari pool di chain… {p}%', { p: scan.progress }) : t('Mencari pool…')}</div>
       )}
@@ -538,7 +540,7 @@ function PoolPicker({ pools, onPick }) {
         </div>
       )}
 
-      <div className="max-h-80 overflow-y-auto rounded-md border border-border">
+      <div className={`max-h-80 overflow-y-auto rounded-md border border-border ${isAddress && !useScan ? 'hidden' : ''}`}>
         {hasStats && result.length > 0 && (
           <div className="sticky top-0 z-10 flex justify-end gap-4 border-b border-border bg-surface px-3 py-1.5 text-[0.6875rem] text-muted">
             <span className="hidden w-16 text-end md:inline">{t('TVL')}</span>
