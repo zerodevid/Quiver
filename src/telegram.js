@@ -634,6 +634,10 @@ const ALIAS = {
   pool: 'pools',
 };
 
+// Screen heads behind copy trading (targets, activity, copy rules and their edit actions).
+// Hidden on open-LP account bots (this.hub). Exact heads — 'a' is activity, not 'ac*' compound.
+const COPY_SCREENS = new Set(['t', 'tt', 'tn', 'td', 'tD', 'ta', 'tr', 'tw', 'ts', 'a', 'r', 'rg', 're', 'rb', 'rv', 'rp', 'rx']);
+
 // Connect command: /start <code>. Also used by links in t.me.
 const PAIR_RE = /^\/(?:start|mulai)(?:@\S+)?\s+(\S+)/i;
 
@@ -1121,6 +1125,11 @@ class Telegram {
     // server refuses those routes anyway; this keeps the screens from breaking).
     if (this.hub && (['sr', 'sra', 'srd', 'sk', 'sK'].includes(head) || (head === 'sf' && rest[0] === 'mesin'))) {
       return out(tr("🔒 Pengaturan ini dikelola superadmin server."), kb([[btn(tr("↩︎ Pengaturan"), 's'), BACK_HOME]]));
+    }
+    // Open-LP accounts (every account bot) don't copy: the target, activity and copy-rule
+    // screens are not offered. The engine never runs the copy tick for them either.
+    if (this.hub && COPY_SCREENS.has(head)) {
+      return out(tr("👥 <b>Copy trading</b> — <i>segera hadir</i>\n\nMenyalin wallet lain otomatis sedang kami siapkan. Untuk sekarang kamu bisa membuka dan mengelola posisi LP-mu sendiri."), kb([[BACK_HOME]]));
     }
     switch (head) {
       case 'inputRetry':
@@ -2048,15 +2057,27 @@ class Telegram {
       // but not been claimed.
       pf?.now?.cash ? tr("💵 Kas {0} · fee belum diklaim {1}", [usd(pf.now.cash.usd), usd(s.feeUsd)]) : null,
       '',
-      tr("Pilih <b>Target</b> untuk mengikuti wallet, atau <b>LP manual</b> untuk membuka posisi sendiri.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap ke chat ini.</i>"),
+      // Open-LP accounts have no copy; manual LP is the way in.
+      this.hub
+        ? tr("Pilih <b>LP manual</b> untuk membuka posisi sendiri.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap ke chat ini.</i>")
+        : tr("Pilih <b>Target</b> untuk mengikuti wallet, atau <b>LP manual</b> untuk membuka posisi sendiri.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap ke chat ini.</i>"),
     ].filter((x) => x != null).join('\n');
     const mini = this.miniUrl();
-    return [text, kb([
-      mini ? [wbtn(tr("📱 Buka mini app"), mini)] : null,
-      [btn(tr("📊 Ringkasan"), 'o'), btn(tr("💼 Posisi"), 'p')],
+    // Copy-only buttons (Target, Activity, copy Rules) are dropped for open-LP account bots.
+    const copyRows = this.hub ? [] : [
       [btn(tr("📈 Grafik portofolio"), 'pfg'), btn('🎯 Target', 't')],
       [btn(tr("📜 Aktivitas"), 'a:0'), btn(tr("💵 Saldo"), 'b')],
       [btn(tr("⚙️ Aturan salin"), 'r'), btn(tr("🔧 Pengaturan"), 's')],
+    ];
+    const openRows = this.hub ? [
+      [btn(tr("📈 Grafik portofolio"), 'pfg'), btn(tr("💵 Saldo"), 'b')],
+      [btn(tr("🔧 Pengaturan"), 's'), btn(tr("👥 Copy (segera)"), 't')],
+    ] : [];
+    return [text, kb([
+      mini ? [wbtn(tr("📱 Buka mini app"), mini)] : null,
+      [btn(tr("📊 Ringkasan"), 'o'), btn(tr("💼 Posisi"), 'p')],
+      ...copyRows,
+      ...openRows,
       [btn(tr("➕ LP manual"), 'ml'), btn('🔁 Swap', 'sw')],
       [btn(tr("🔎 Riset wallet"), 'w'), btn('🔭 Scout', 'k')],
       [btn(tr("🧹 Sisa jual"), 'f'), btn(tr("📝 Log"), 'l')],

@@ -111,6 +111,19 @@ const msg = (chatId, text) => ({ message: { chat: { id: Number(chatId), type: 'p
     assert.equal((await a.bot.restart()).ok, true, 'restart is a no-op for an account');
   });
 
+  await t('an account bot hides copy screens behind a "coming soon" notice', async () => {
+    const { mkTenant } = world();
+    const { bot } = mkTenant(7);
+    delete bot.screen;                       // use the real screen(), not the harness stub
+    const seen = [];
+    bot.send = async (chatId, text) => { seen.push(text); return {}; };
+    // Target, activity and copy-rule screens all resolve to the coming-soon notice.
+    for (const code of ['t', 'a', 'r']) { seen.length = 0; await bot.screen(100, null, code); assert.match(seen.join(''), /Copy|segera|coming/i, `copy screen ${code}`); }
+    // A non-copy screen is not swallowed by the gate: the home menu renders normally.
+    bot.home = async () => ['HOME-OK', { inline_keyboard: [] }];
+    seen.length = 0; await bot.screen(100, null, 'h'); assert.match(seen.join(''), /HOME-OK/);
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

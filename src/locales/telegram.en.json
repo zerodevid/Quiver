@@ -985,5 +985,8 @@
   "PnL riil": "Real PnL",
   "Harga tengah pool menunjukkan {0}": "Pool mid price shows {0}",
   "⚠️ Quote jual belum terbaca, memakai harga tengah.": "⚠️ Sale quote unavailable, using the mid price.",
-  "🔒 Pengaturan ini dikelola superadmin server.": "🔒 This setting is managed by the server's superadmin."
+  "🔒 Pengaturan ini dikelola superadmin server.": "🔒 This setting is managed by the server's superadmin.",
+  "👥 <b>Copy trading</b> — <i>segera hadir</i>\n\nMenyalin wallet lain otomatis sedang kami siapkan. Untuk sekarang kamu bisa membuka dan mengelola posisi LP-mu sendiri.": "👥 <b>Copy trading</b> — <i>coming soon</i>\n\nAutomatically copying other wallets is on the way. For now you can open and manage your own LP positions.",
+  "👥 Copy (segera)": "👥 Copy (soon)",
+  "Pilih <b>LP manual</b> untuk membuka posisi sendiri.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap ke chat ini.</i>": "Choose <b>Manual LP</b> to open a position yourself.\n<i>You can also send a token or wallet address straight to this chat.</i>"
 }
