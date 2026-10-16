@@ -141,9 +141,9 @@ test('planLadder returns every layer with the combined total', async () => {
   assert.strictEqual(r.warnings.filter((w) => w === 'one side').length, 1, 'warnings are de-duplicated');
 });
 
-test('planLadder checks the whole ladder against the limits', async () => {
-  assert.match((await fakeManual({ openCount: 8, maxOpen: 10 }).planLadder(args)).error, /layer butuh/);
-  assert.match((await fakeManual({ exposure: 950, maxTotal: 1000 }).planLadder(args)).error, /eksposur/);
+test('planLadder ignores the copy limits but still checks the cash', async () => {
+  assert.ok(!(await fakeManual({ openCount: 8, maxOpen: 10 }).planLadder(args)).error, 'open position count is not a manual limit');
+  assert.ok(!(await fakeManual({ exposure: 950, maxTotal: 1000 }).planLadder(args)).error, 'total exposure is not a manual limit');
   assert.match((await fakeManual({ cash: 60 }).planLadder(args)).error, /kas cuma/);
 });
 

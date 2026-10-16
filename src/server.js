@@ -18,6 +18,7 @@ const { Fx, currencyOf } = require('./fx');
 const { Positions } = require('./positions');
 const { Costs, swapCostOf } = require('./costs');
 const { writeCfg } = require('./env');
+const walletFiles = require('./wallets');
 const { Auth, AuthError, SESSION_TTL_MS } = require('./auth');
 const { ADMIN_ONLY_ROUTES, ADMIN_ONLY_SETTINGS, ReadOnlyError } = require('./tenants');
 const { ethers } = require('ethers');
@@ -374,6 +375,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const canon = (x) => (SOL ? String(x ?? '').trim() : String(x ?? '').trim().toLowerCase());
   const isAddr = (x) => (SOL ? !!normAddr(chain.network, x) : /^0x[0-9a-f]{40}$/.test(String(x ?? '')));
   const isRef = (x) => (SOL ? !!normAddr(chain.network, x) : /^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(String(x ?? '')));
+  // A comma list of addresses / pool refs as the dashboard sends it. Rows carry their chain, so
+  // the web tags each item `<ref>@<chain>` (allchains.js splits those in the merged view); a
+  // single-chain server keeps its own items untagged and drops those of another chain.
+  const refList = (raw) => String(raw || '').split(',').map((item) => {
+    const at = item.lastIndexOf('@');
+    if (at < 0) return canon(item);
+    return item.slice(at + 1).trim() === chain.network ? canon(item.slice(0, at)) : '';
+  });
   // Symbol & decimals of every token ever seen, from the `tokens` table, PLUS
   // the chain's quote assets. Native (0x0) is not an ERC-20: symbol()/decimals() cannot be
   // called, so Chain#tokens never stores its row — without this addition
@@ -386,6 +395,11 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       if (!m.get(a)?.symbol) m.set(a, { address: a, symbol: q.symbol, decimals: m.get(a)?.decimals ?? q.decimals });
     }
     return m;
+  };
+  // The name the user gave the bot's wallet (Settings or Telegram), or null. EVM only.
+  const walletNameOf = (addr) => {
+    if (!addr || chain.kind === 'solana') return null;
+    try { return walletFiles.names(engine.exec.keyPath())[addr.toLowerCase()] || null; } catch { return null; }
   };
   // All engines in this process (one per chain, the same wallet) — for changing the key.
   const engines = nets ? Object.values(nets).map((n) => n.engine) : [engine];
@@ -811,7 +825,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     'POST /api/auth/invites', 'POST /api/auth/invites/revoke', 'POST /api/auth/users/status', 'POST /api/admin/fees',
     'POST /api/auth/password', 'POST /api/auth/users/reset',
     'POST /api/mode', 'POST /api/settings/live',
-    'POST /api/settings/wallet/generate', 'POST /api/settings/wallet/import', 'POST /api/settings/wallet/remove', 'POST /api/settings/wallet/export',
+    'POST /api/settings/wallet/generate', 'POST /api/settings/wallet/import', 'POST /api/settings/wallet/remove',
+    'POST /api/settings/wallet/use', 'POST /api/settings/wallet/name', 'POST /api/settings/wallet/forget',
     'POST /api/settings/backup', 'POST /api/settings/restore',
     'POST /api/settings/rpc', 'POST /api/settings/aggregators', 'POST /api/settings/telegram', 'POST /api/settings/telegram/pair',
     'POST /api/settings/token/rotate', 'POST /api/settings/chains', 'POST /api/settings/loop', 'POST /api/settings/gmgn',
@@ -1229,7 +1244,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const wallet = engine.positions.lastSync ? { value, pnl, netPnl: capital && cash ? value - capital.capitalUsd : null } : null;
       return {
         // auth: the token gate is on → the dashboard shows a logout button.
-        mode: { dry_run: engine.dryRun(), paused: engine.paused(), wallet: engine.exec.address(), auth: gateOn(), drawdown: engine.drawdownStatus(), sim: engine.paper?.status?.() ?? null },
+        mode: { dry_run: engine.dryRun(), paused: engine.paused(), wallet: engine.exec.address(), walletName: walletNameOf(engine.exec.address()), auth: gateOn(), drawdown: engine.drawdownStatus(), sim: engine.paper?.status?.() ?? null },
         wallet,
         chain: {
           head: engine.head, cursor: engine.cursor, lag: engine.head - engine.cursor, ethUsd: engine.ethUsd, headSpread: engine.headSpread,
@@ -1665,6 +1680,18 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           saleDeltaUsd: null, feeSaleUsd: null, dex: null, usdIn: null, usdOut: null, slipUsd: null, slipBps: null,
           amount0: ac.amount0, amount1: ac.amount1, valueUsd: v, feesUsd: v, reason: null, verdict: null, targetUsd: null });
       }
+      // A position adopted from the wallet: what happened to it outside the bot, read from the chain
+      // (chainhistory.js) — mint, adds, withdrawals, fee collects, each at its own block's price.
+      const ethPerGas = (w) => (w ? (Number(BigInt(w)) / 1e18) * engine.ethUsd : null);
+      for (const h of engine.chainHistory?.().rowsOf(id) || []) {
+        // The close is shown from the position's own exit record (tx_close), not twice.
+        if (h.hash === String(row.tx_close || '').toLowerCase()) continue;
+        if (events.some((e) => e.hash && e.hash.toLowerCase() === h.hash && e.kind === h.kind)) continue;
+        const v = h.value_quote != null ? h.value_quote * k : null;
+        events.push({ hash: h.hash, ts: h.ts, kind: h.kind, status: 'sukses', onchain: true, gasUsd: ethPerGas(h.gas_wei), swap: null,
+          saleDeltaUsd: null, feeSaleUsd: null, dex: null, usdIn: null, usdOut: null, slipUsd: null, slipBps: null,
+          amount0: h.amount0, amount1: h.amount1, valueUsd: v, feesUsd: h.kind === 'claim_fees' ? v : null, reason: null, verdict: null, targetUsd: null });
+      }
       // A position adopted from the wallet (not opened by the bot) has no tx in the table:
       // its open/close events are composed from the position row so its history is not empty.
       if (row.opened_ts && !events.some((e) => e.kind === 'mint' || (row.tx_open && e.hash === row.tx_open))) {
@@ -1794,8 +1821,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // ten tokens means twenty GMGN calls if not held back.
     'GET /api/gmgn/tokens': async (req, url) => {
       if (!market.gmgnEnabled()) return { enabled: false, tokens: {} };
-      const list = [...new Set(String(url.searchParams.get('addresses') || '').split(',')
-        .map((x) => canon(x)).filter((a) => isAddr(a)))].slice(0, 25);
+      const list = [...new Set(refList(url.searchParams.get('addresses')).filter((a) => isAddr(a)))].slice(0, 25);
       const rs = await Promise.all(list.map((a) => market.memo(`gmgn-lite:${a}`, 300_000, async () => {
         const g = await market.gmgnToken(a);
         if (!g || g.error || g.enabled === false) return { error: g?.error || 'tidak tersedia' };
@@ -1918,7 +1944,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // volume, liquidity on the Monitor card). market.pair() is already memoised per pool,
     // so this just merges; a pool that fails is answered null.
     'GET /api/monitor/market': async (req, url) => {
-      const pools = [...new Set(canon(url.searchParams.get('pools') || '').split(',').filter((p) => isRef(p)))].slice(0, 40);
+      const pools = [...new Set(refList(url.searchParams.get('pools')).filter((p) => isRef(p)))].slice(0, 40);
       const rs = await Promise.all(pools.map((p) => market.pair(p).catch(() => null)));
       return { pairs: Object.fromEntries(pools.map((p, i) => [p, rs[i] && !rs[i].error ? rs[i] : null])), ts: Date.now() };
     },
@@ -3329,7 +3355,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         // With accounts, a visitor at / gets the landing page; the sign-in form lives at /login.
         if (accounts && req.method === 'GET' && url.pathname === '/') {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', ...SEC_HEADERS });
-          return res.end(LANDING_PAGE({ register: reg.register, lang: url.searchParams.get('lang') || undefined, links: cfg.landing?.links }));
+          // Link previews (Telegram, X) need an absolute og:image URL; the Host header is only
+          // echoed back to this visitor (no-store), and the page escapes it.
+          const origin = /^[a-z0-9.-]+(:\d+)?$/i.test(req.headers.host || '') ? `${isHttps(req) ? 'https' : 'http'}://${req.headers.host}` : '';
+          return res.end(LANDING_PAGE({ lang: url.searchParams.get('lang') || undefined, links: cfg.landing?.links, origin }));
         }
         return loginPage(url.pathname === '/login' ? 200 : 401, null);
       }

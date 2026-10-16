@@ -407,6 +407,14 @@ function open(dbPath) {
   }
   const posCols = new Set(db.prepare('PRAGMA table_info(positions)').all().map((c) => c.name));
   if (!posCols.has('claimed_quote')) db.exec('ALTER TABLE positions ADD COLUMN claimed_quote REAL DEFAULT 0');
+  // On-chain history of positions adopted from the wallet (chainhistory.js): what happened to the
+  // NFT outside the bot — mint, adds, withdrawals, fee collects — valued at the price of its block.
+  db.exec(`CREATE TABLE IF NOT EXISTS chain_history (
+    chain TEXT NOT NULL, position_id INTEGER NOT NULL, hash TEXT NOT NULL, log_index INTEGER NOT NULL,
+    block INTEGER NOT NULL, ts INTEGER NOT NULL, kind TEXT NOT NULL,
+    amount0 TEXT NOT NULL, amount1 TEXT NOT NULL, value_quote REAL, gas_wei TEXT,
+    PRIMARY KEY (chain, position_id, hash, log_index)
+  )`);
   db.exec(`CREATE TABLE IF NOT EXISTS fee_claims (
     tx_hash TEXT PRIMARY KEY, position_id INTEGER NOT NULL, ts INTEGER NOT NULL,
     amount0 TEXT NOT NULL, amount1 TEXT NOT NULL, value_quote REAL NOT NULL

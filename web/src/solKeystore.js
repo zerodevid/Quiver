@@ -1,5 +1,5 @@
-// Opens a Solana keystore exported by Quiver (POST /api/settings/wallet/export on the Solana
-// chain) entirely in the browser: PBKDF2-SHA256 → AES-256-GCM through WebCrypto. It holds
+// Opens a Solana keystore made by Quiver (the wallet part of a Settings → Backup file, or an older
+// dashboard export) entirely in the browser: PBKDF2-SHA256 → AES-256-GCM through WebCrypto. It holds
 // the 64-byte secret key (solana-keygen format); the result is base58, the form
 // Phantom/Solflare accept for "Import private key".
 const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';

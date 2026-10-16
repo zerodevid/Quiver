@@ -227,6 +227,7 @@ function PositionChips({ items, selId, onPick }) {
 
 function MonitorCard({ g, tf: tfGlobal, tfEpoch, dense, delay, actions }) {
   const { t } = useI18n();
+  const openLp = isRegular(useMe());
   const { close, closeAll, closing, claim, claiming, reload } = actions;
   const p0 = g.p0;
   // The selected position: the user's choice if it still exists, otherwise the most
@@ -368,7 +369,7 @@ function MonitorCard({ g, tf: tfGlobal, tfEpoch, dense, delay, actions }) {
           {!sel.mon?.stale && sel.mon?.exit?.follow_target && p.target && p.takeover_ts == null && <span className="text-muted">{t('ikut target keluar')}</span>}
         </div>
         {!sel.mon ? <div className="text-xs text-muted">…</div>
-          : sel.trig.length === 0 ? <p className="text-xs text-muted">{t('Tidak ada aturan keluar mandiri yang aktif untuk posisi ini — hanya ditutup mengikuti target atau manual.')}</p>
+          : sel.trig.length === 0 ? <p className="text-xs text-muted">{openLp ? t('Tidak ada aturan keluar otomatis yang aktif untuk posisi ini — ditutup manual.') : t('Tidak ada aturan keluar mandiri yang aktif untuk posisi ini — hanya ditutup mengikuti target atau manual.')}</p>
           : <div className={`grid gap-x-4 gap-y-2.5 ${dense ? 'sm:grid-cols-2' : 'sm:grid-cols-2 xl:grid-cols-3'}`}>{sel.trig.map((x) => <TriggerBar key={x.key} x={x} />)}</div>}
       </div>
 

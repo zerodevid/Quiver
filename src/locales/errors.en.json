@@ -60,5 +60,8 @@
   "Bot sedang memproses transaksi — tunggu sampai selesai lalu coba lagi.": "The bot is processing a transaction. Wait for it to finish, then try again.",
   "Tidak ada chain EVM aktif.": "No EVM chain is active.",
   "Kunci privat harus 64 karakter hex (boleh diawali 0x).": "The private key must be 64 hex characters (0x optional).",
-  "Kunci privat tidak valid.": "Invalid private key."
+  "Kunci privat tidak valid.": "Invalid private key.",
+  "Wallet aktif tidak bisa dihapus dari daftar — pakai wallet lain dulu.": "The active wallet cannot be removed from the list. Switch to another wallet first.",
+  "Wallet Solana tidak punya daftar wallet tersimpan.": "Solana wallets have no saved-wallet list.",
+  "Nama wallet hanya untuk wallet EVM.": "Wallet names are for EVM wallets only."
 }

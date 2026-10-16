@@ -9,7 +9,7 @@ import ScanPositionsButton from '../components/ScanPositionsButton';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { PageHeader, Loading, Notice, Text, Pick, Toggle, ask } from '../components/ui';
-import { num, usd, plainUsd, locale as fmtLocale, ago } from '../fmt';
+import { num, usd, plainUsd, locale as fmtLocale, ago, short } from '../fmt';
 import { fxFormat } from '../currency';
 import { usePrivacy } from '../privacy';
 import { useI18n, translate as tt, reason } from '../i18n';
@@ -142,6 +142,91 @@ function ChainsTab({ d, setD }) {
   );
 }
 
+// ---------------- saved wallets ----------------
+// Every EVM wallet of the account: the active key plus each key it replaced (src/wallets.js). The
+// same list, names and switch/remove actions as the Telegram bot's 🔑 Wallet screen.
+function WalletName({ w, onSaved }) {
+  const { t } = useI18n();
+  const [edit, setEdit] = useState(false);
+  const [name, setName] = useState(w.name || '');
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    const r = await post('/api/settings/wallet/name', { id: w.active ? 'active' : w.id, name });
+    setBusy(false);
+    say(r, name.trim() ? 'Nama wallet disimpan' : 'Nama wallet dihapus');
+    if (!r.error) { setEdit(false); onSaved(); }
+  };
+  if (!edit) {
+    return (
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className={`truncate font-medium ${w.name ? '' : 'text-muted'}`}>{w.name || t('Tanpa nama')}</span>
+        <Button size="sm" variant="ghost" isIconOnly aria-label={t('Ganti nama wallet')} onPress={() => { setName(w.name || ''); setEdit(true); }}><Pencil className="size-3.5" /></Button>
+      </span>
+    );
+  }
+  return (
+    <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); save(); }}>
+      <Text aria="Nama wallet" placeholder="mis. Utama" value={name} onChange={(v) => setName(v.slice(0, 24))} className="w-44" />
+      <Button size="sm" type="submit" isPending={busy}>{t('Simpan')}</Button>
+      <Button size="sm" variant="ghost" onPress={() => setEdit(false)}>{t('Batal')}</Button>
+    </form>
+  );
+}
+
+function SavedWallets({ data, reload }) {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState('');
+  const list = data.wallets || [];
+  const use = async (w) => {
+    if (!(await ask({ title: t('Pakai wallet ini?'), body: t('Bot mulai memakai {w} untuk semua transaksi. Wallet yang aktif sekarang tetap tersimpan di daftar; dana di masing-masing wallet tidak ikut pindah.', { w: w.name || short(w.address) }), confirm: t('Ya, pakai') }))) return;
+    setBusy('u' + w.id);
+    const r = await post('/api/settings/wallet/use', { id: w.id });
+    setBusy('');
+    say(r, 'Wallet diganti');
+    if (!r.error) reload();
+  };
+  const forget = async (w) => {
+    if (!(await ask({ title: t('Hapus wallet ini dari daftar?'), body: t('Pastikan dananya sudah dipindah atau kunci privatnya kamu simpan sendiri.'), confirm: t('Hapus'), danger: true }))) return;
+    setBusy('x' + w.id);
+    const r = await post('/api/settings/wallet/forget', { id: w.id });
+    setBusy('');
+    say(r, 'Wallet dihapus dari daftar');
+    if (!r.error) reload();
+  };
+  if (!list.length) return null;
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="font-medium">{t('Wallet kamu ({n})', { n: list.length })}</div>
+        <span className="text-xs text-muted">{t('Sama dengan daftar di bot Telegram')}</span>
+      </div>
+      <div className="flex flex-col divide-y divide-border rounded-md border border-border">
+        {list.map((w, i) => (
+          <div key={w.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 py-2.5">
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="text-xs text-muted">{i + 1}.</span>
+                <WalletName w={w} onSaved={reload} />
+                {w.active && <Chip size="sm" variant="soft" color="success">{t('aktif')}</Chip>}
+              </div>
+              <span className="mono break-all text-xs text-muted">{w.address}</span>
+            </div>
+            <span className="num text-sm">{w.balance == null ? '—' : `${amt(w.balance, 6)} ${data.symbol || ''}`}</span>
+            {!w.active && (
+              <div className="flex items-center gap-1">
+                <Button size="sm" variant="outline" isDisabled={!!data.locked} isPending={busy === 'u' + w.id} onPress={() => use(w)}>{t('Pakai')}</Button>
+                <Button size="sm" variant="ghost" isIconOnly aria-label={t('Hapus dari daftar')} isPending={busy === 'x' + w.id} onPress={() => forget(w)}><Trash2 className="size-4" /></Button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      {data.locked && list.length > 1 && <p className="text-xs text-muted">{t('Ganti wallet belum bisa: {r}', { r: reason(data.locked) })}</p>}
+    </div>
+  );
+}
+
 // ---------------- wallet & mode ----------------
 function WalletTab({ d, reload }) {
   const { t } = useI18n();
@@ -154,25 +239,31 @@ function WalletTab({ d, reload }) {
   const [liveTxt, setLiveTxt] = useState('');
   const [rm, setRm] = useState('');
   const [busy, setBusy] = useState('');
-  const [expToken, setExpToken] = useState('');
-  const [expPass, setExpPass] = useState('');
-  const [expPass2, setExpPass2] = useState('');
   const [ksFile, setKsFile] = useState(null);
   const [ksPass, setKsPass] = useState('');
   const [ksBusy, setKsBusy] = useState(false);
   const [ksResult, setKsResult] = useState(null);
+  // The saved wallets (EVM only): the same list as the Telegram bot's wallet screen.
+  const [saved, setSaved] = useState(null);
+  const evm = w.kind !== 'solana' && !w.fromEnv;
+  const loadSaved = useCallback(() => { if (evm) get('/api/settings/wallets').then((r) => { if (!r.error) setSaved(r); }).catch(() => {}); }, [evm]);
+  useEffect(() => { loadSaved(); }, [loadSaved, w.address]);
+  const savedList = saved?.wallets || [];
   const act = async (key, url, body, ok) => {
     setBusy(key);
     const r = await post(url, body);
     setBusy('');
     say(r, typeof ok === 'function' ? ok(r) : ok);
-    if (!r.error) { reload(); reloadStatus(); }
+    if (!r.error) { reload(); reloadStatus(); loadSaved(); }
     return r;
   };
+  const refreshAll = () => { reload(); reloadStatus(); loadSaved(); };
   return (
-    <Section title="Wallet bot" desc={<>{t('Pakai wallet khusus bot, jangan wallet utama. Kunci privat disimpan di server')} (<span className="mono">{w.fromEnv ? `.env · ${w.fromEnv}` : regular ? t('terenkripsi') : w.keyFile}</span>) {t('dan tidak pernah dikirim mentah — cuma bisa diekspor sebagai keystore terenkripsi.')}</>}>
+    <Section title="Wallet bot" desc={<>{t('Pakai wallet khusus bot, jangan wallet utama. Kunci privat disimpan di server')} (<span className="mono">{w.fromEnv ? `.env · ${w.fromEnv}` : regular ? t('terenkripsi') : w.keyFile}</span>) {t('dan tidak pernah dikirim ke peramban — ekspor kunci hanya lewat bot Telegram.')}</>}>
       {w.address ? (
         <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-3">
+          {evm && <div className="sm:col-span-3"><dt className="text-xs text-muted">{t('Nama wallet')}</dt><dd className="mt-0.5">
+            <WalletName key={w.address + (w.name || '')} w={{ active: true, id: 'active', name: w.name, address: w.address }} onSaved={refreshAll} /></dd></div>}
           <div className="sm:col-span-2"><dt className="text-xs text-muted">{t('Alamat')}</dt><dd className="mono mt-0.5 break-all">{w.address}</dd></div>
           <div><dt className="text-xs text-muted">{t('Izin berkas kunci')}</dt><dd className="mt-1">
             {w.fromEnv
@@ -192,43 +283,10 @@ function WalletTab({ d, reload }) {
         </div>
       )}
 
-      {w.address && (
-        <>
-          <Separator />
-          <div className="flex flex-col gap-3 rounded-md border border-border p-4">
-            <div className="font-medium">{t('Ekspor wallet')}</div>
-            <p className="text-sm text-muted">
-              {regular ? t(w.kind === 'solana'
-                ? 'Menghasilkan berkas keystore terenkripsi (PBKDF2 + AES-GCM). Buka berkasnya di "Buka keystore (offline)" di bawah untuk mendapat kunci base58 yang bisa diimpor ke Phantom/Solflare. Butuh kata sandi akun, diketik ulang di sini.'
-                : 'Menghasilkan berkas keystore terenkripsi (format sama dengan geth/MetaMask) yang bisa diimpor ke wallet lain lewat "Import via JSON". Kunci privat mentah tidak pernah dikirim. Butuh kata sandi akun, diketik ulang di sini.')
-              : t(w.kind === 'solana'
-                ? 'Menghasilkan berkas keystore terenkripsi (PBKDF2 + AES-GCM). Dompet Solana tidak punya format keystore baku: buka berkasnya di "Buka keystore (offline)" di bawah untuk mendapat kunci base58 yang bisa diimpor ke Phantom/Solflare. Butuh token dashboard, diketik ulang di sini, bukan diambil dari sesi login.'
-                : 'Menghasilkan berkas keystore terenkripsi (format sama dengan geth/MetaMask) yang bisa diimpor ke wallet lain lewat "Import via JSON". Kunci privat mentah tidak pernah dikirim — tanpa password di bawah, isi berkasnya tidak berguna. Butuh token dashboard, diketik ulang di sini, bukan diambil dari sesi login.')}
-            </p>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <Text label={regular ? 'Kata sandi akun' : 'Token dashboard'} type="password" mono={!regular} placeholder={regular ? 'kata sandi' : 'token'} value={expToken} onChange={setExpToken} autoComplete={regular ? 'current-password' : 'off'} />
-              <Text label="Password keystore baru" type="password" placeholder="min. 8 karakter" value={expPass} onChange={setExpPass} autoComplete="off" />
-              <Text label="Ulangi password" type="password" placeholder="min. 8 karakter" value={expPass2} onChange={setExpPass2} autoComplete="off" />
-            </div>
-            <Button variant="outline" className="w-fit" isDisabled={!expToken || expPass.length < 8 || expPass !== expPass2} isPending={busy === 'exp'}
-              onPress={async () => {
-                setBusy('exp');
-                const r = await post('/api/settings/wallet/export', { token: expToken, password: expPass });
-                setBusy('');
-                setExpToken(''); setExpPass(''); setExpPass2('');
-                if (r.error) { toast.danger(r.error); return; }
-                const blob = new Blob([JSON.stringify(r.keystore, null, 2)], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url; a.download = `quiver-${r.address.slice(0, 8)}-keystore.json`;
-                document.body.appendChild(a); a.click(); a.remove();
-                URL.revokeObjectURL(url);
-                toast.success(tt('Keystore terunduh — simpan berkas dan password-nya di tempat aman.'));
-              }}>
-              <KeyRound className="size-4" />{t('Unduh keystore')}</Button>
-          </div>
-        </>
-      )}
+      {evm && savedList.length > 1 && <><Separator /><SavedWallets data={saved} reload={refreshAll} /></>}
+
+      {/* Keys are exported only in the Telegram bot (private chat, message deleted after 60 s). */}
+      {w.address && <Notice>{t('Ekspor kunci privat hanya bisa lewat bot Telegram: menu 🔑 Wallet → 🗝 Ekspor kunci privat, di chat pribadi.')}</Notice>}
 
       <Separator />
       <div className="flex flex-col gap-3 rounded-md border border-border p-4">
@@ -302,20 +360,22 @@ function WalletTab({ d, reload }) {
               <div className="font-medium">{t('Impor kunci privat')}</div>
               <Text label="Kunci privat" type="password" mono placeholder={w.kind === 'solana' ? 'base58 (ekspor Phantom/Solflare) atau [larik JSON solana-keygen]' : '0x… (64 karakter hex)'} value={pk} onChange={setPk} autoComplete="off" />
               <Button variant="outline" className="w-fit" isDisabled={!pk} isPending={busy === 'imp'}
-                onPress={async () => { const r = await act('imp', '/api/settings/wallet/import', { privateKey: pk, replace }, (x) => tt('Wallet {a} terpasang', { a: x.address })); if (!r.error) setPk(''); }}>
+                onPress={async () => { const r = await act('imp', '/api/settings/wallet/import', { privateKey: pk, replace: evm || replace }, (x) => tt(x.known ? 'Wallet {a} dipakai lagi dari daftar' : 'Wallet {a} terpasang', { a: x.address })); if (!r.error) setPk(''); }}>
                 <KeyRound className="size-4" />{t('Impor')}</Button>
             </div>
             <div className="flex flex-col gap-3">
               <div className="font-medium">{t('Buat wallet baru')}</div>
               <p className="text-sm text-muted">{t('Kunci dibuat di server. Frasa pemulihan disimpan di sebelah berkas kunci.')}</p>
               <Button variant="outline" className="w-fit" isPending={busy === 'gen'}
-                onPress={() => act('gen', '/api/settings/wallet/generate', { replace }, (x) => tt('Wallet baru {a} dibuat', { a: x.address }))}>{t('Buat wallet')}</Button>
+                onPress={() => act('gen', '/api/settings/wallet/generate', { replace: evm || replace }, (x) => tt('Wallet baru {a} dibuat', { a: x.address }))}>{t('Buat wallet')}</Button>
             </div>
           </div>
+          {/* EVM: the replaced key stays in the saved list above, so no extra confirmation is needed. */}
+          {evm ? (w.address && <p className="text-xs text-muted">{t('Wallet yang aktif sekarang tetap tersimpan di daftar dan bisa dipakai lagi kapan saja.')}</p>) : (
           <Checkbox isSelected={replace} onChange={setReplace}>
             <Checkbox.Content><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>
               {t('Ganti kunci yang sudah ada — kunci lama dipindah ke berkas cadangan, tidak dihapus')}</Checkbox.Content>
-          </Checkbox>
+          </Checkbox>)}
           {w.address && (
             <div className="flex flex-col gap-3 rounded-md border border-border p-4">
               <div className="font-medium">{t('Lepas wallet')}</div>
@@ -701,6 +761,40 @@ function GmgnTab({ d, reload }) {
 }
 
 // ---------------- Telegram bot ----------------
+const TG_NOTIF = [
+  ['penting', 'Kabar penting (LP disalin / ditutup)'],
+  ['error', 'Galat'],
+  ['warn', 'Peringatan'],
+  ['info', 'Semua baris log'],
+];
+
+// An account without the Telegram tab (its chat is linked by the Telegram sign-in) still picks
+// which messages reach that chat — the same switches as the bot's 🔔 Notifikasi screen.
+function TelegramNotify({ tg, reload }) {
+  const { t } = useI18n();
+  const [n, setN] = useState(tg.notify || {});
+  const save = async (k, v) => {
+    const next = { ...n, [k]: v };
+    setN(next);
+    const r = await post('/api/settings/telegram/notify', { notify: next });
+    say(r, 'Tersimpan');
+    if (r.error) setN(n); else reload();
+  };
+  return (
+    <div className="flex flex-col gap-3 border-t border-border pt-5">
+      <div>
+        <div className="font-medium">{t('Kabar yang dikirim ke Telegram')}</div>
+        <p className="mt-1 text-sm text-muted">{tg.chat_ids?.length
+          ? t('Berlaku untuk {n} chat yang tersambung. Sama dengan menu 🔔 Notifikasi di bot.', { n: tg.chat_ids.length })
+          : t('Belum ada chat Telegram yang tersambung — masuk lewat Telegram untuk menyambungkannya.')}</p>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        {TG_NOTIF.map(([k, label]) => <Toggle key={k} label={label} value={n[k]} onChange={(v) => save(k, v)} />)}
+      </div>
+    </div>
+  );
+}
+
 function TelegramTab({ d, reload }) {
   const { t } = useI18n();
   const tg = d.telegram || {};
@@ -722,12 +816,6 @@ function TelegramTab({ d, reload }) {
     if (r.error) return toast.danger(r.error);
     setPair(r);
   };
-  const NOTIF = [
-    ['penting', 'Kabar penting (LP disalin / ditutup)'],
-    ['error', 'Galat'],
-    ['warn', 'Peringatan'],
-    ['info', 'Semua baris log'],
-  ];
   return (
     <Section title="Bot Telegram" desc="Kendalikan bot ini dari Telegram: semua yang bisa dilakukan dasbor, bisa dilakukan lewat obrolan.">
       <div className="flex flex-wrap items-center gap-3">
@@ -794,7 +882,7 @@ function TelegramTab({ d, reload }) {
       <div>
         <div className="mb-3 font-medium">{t('Kabar yang dikirim ke Telegram')}</div>
         <div className="grid gap-4 md:grid-cols-2">
-          {NOTIF.map(([k, label]) => (
+          {TG_NOTIF.map(([k, label]) => (
             <Toggle key={k} label={label} value={tg.notify?.[k]}
               onChange={(v) => save('n' + k, { notify: { ...tg.notify, [k]: v } }, 'Tersimpan')} />
           ))}
@@ -1353,6 +1441,7 @@ export default function Settings({ section = null }) {
                     desc="Kabar tiap posisi disalin atau ditutup, lewat ntfy.sh. Pasang aplikasi ntfy di HP lalu langganan topik yang sama."
                     fields={[['ntfy_topic', 'Topik ntfy', 'Siapa pun yang tahu nama topiknya bisa membaca notifikasinya — pakai nama yang sulit ditebak. Kosongkan untuk mematikan.', 'text']]}
                     extra={<Button variant="outline" onPress={async () => say(await post('/api/settings/notify/test', {}), 'Notifikasi uji terkirim')}>{t('Kirim uji')}</Button>} />
+                  {!shown('telegram') && d.telegram && <div className="mt-6"><TelegramNotify tg={d.telegram} reload={load} /></div>}
                 </Tabs.Panel>}
                 {shown('telegram') && <Tabs.Panel id="telegram"><TelegramTab d={d} reload={load} /></Tabs.Panel>}
                 {shown('gmgn') && <Tabs.Panel id="gmgn"><GmgnTab d={d} reload={load} /></Tabs.Panel>}

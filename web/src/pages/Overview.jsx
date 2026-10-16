@@ -16,6 +16,7 @@ import { isHidden, MASK } from '../privacy';
 import { useI18n, reason } from '../i18n';
 import { useClosePosition } from '../useClosePosition';
 import { canonAddr, chainInfo, CHAIN_ICON, chainRef } from '../chain';
+import { useMe, isRegular } from '../me';
 
 const RANGES = [['24h', '24 jam'], ['7d', '7 hari'], ['30d', '30 hari'], ['all', 'Semua']];
 const QUICK = new Set(RANGES.map((r) => r[0]));
@@ -430,6 +431,8 @@ function ChainBreakdown({ rows, failed }) {
 export default function Overview() {
   const { t } = useI18n();
   const { status: d } = useStatus();
+  // Open-LP accounts don't copy (copy is "coming soon"): the copy-only panels are left out for them.
+  const openLp = isRegular(useMe());
   // Initial range: the whole history. The first question people bring to this page
   // is "how much profit since the beginning", not the last week.
   const [range, setRange] = useState('all');
@@ -599,12 +602,13 @@ export default function Overview() {
           <GmgnProvider tokens={open.map((x) => chainRef(baseTokenOf(x), x))}>
           <DataTable label="Posisi aktif" rows={open} rowKey={(x) => x.id} dense onRow={(x) => setHist(x.id)}
             defaultSort={{ column: 'val', direction: 'descending' }}
-            empty={<Empty title="Tidak ada posisi aktif" sub="Posisi muncul di sini setelah bot menyalin LP dari wallet target." />}
+            empty={<Empty title="Tidak ada posisi aktif" sub={openLp ? 'Posisi muncul di sini begitu kamu membuka posisi LP baru.' : 'Posisi muncul di sini setelah bot menyalin LP dari wallet target.'} />}
             columns={[
               { key: 'pair', label: 'Pasangan', sort: (x) => `${x.symbol0}/${x.symbol1}`, render: (x) => <Pair p={x} link={false} /> },
               // A compact version of the Source column on the Positions page: just who was copied
               // (the target PnL breakdown is there), so the summary panel stays compact.
-              { key: 'tgt', label: 'Sumber', sort: (x) => x.targetLabel || x.target || '', render: (x) => (
+              // Open-LP accounts copy no one, so the column is left out for them.
+              !openLp && { key: 'tgt', label: 'Sumber', sort: (x) => x.targetLabel || x.target || '', render: (x) => (
                 x.target ? (
                   <div className="max-w-40">
                     <a href={'#targets/' + x.target} className="group block" title={x.target}>
@@ -634,28 +638,35 @@ export default function Overview() {
 
       {/* Equal height: the right column stretches to the calendar's height, leaving no gap */}
       <div className="mb-4 grid gap-3 lg:grid-cols-5">
-        <Panel title="Kalender PnL" desc="PnL terealisasi per hari posisi ditutup · klik hari atau ikon bagikan untuk membuat kartu" className="lg:col-span-3" bodyClass="flex-1">
+        <Panel title="Kalender PnL" desc="PnL terealisasi per hari posisi ditutup · klik hari atau ikon bagikan untuk membuat kartu"
+          className={openLp && !(st?.closedCount > 0) ? 'lg:col-span-5' : 'lg:col-span-3'} bodyClass="flex-1">
           {cal ? <PnlCalendar daily={cal.daily} counts={cal.counts} empty="Belum ada posisi ditutup" onShare={(k) => setShareDay(dailyCard({ day: k, pnl: cal.daily[k] }))}
             onShareMonth={(month, pnl) => setShareMonth(monthCard({ month, pnl }))} /> : <Loading />}
         </Panel>
-        <div className="flex min-w-0 flex-col gap-3 lg:col-span-2">
-          <Panel title="Kinerja per sumber" desc="PnL posisi yang disalin dari tiap target" bodyClass="p-0" className="flex-1">
-            {p ? <BySource rows={p.byTarget} /> : <Loading />}
-          </Panel>
+        {(!openLp || st?.closedCount > 0) && <div className="flex min-w-0 flex-col gap-3 lg:col-span-2">
+          {!openLp && (
+            <Panel title="Kinerja per sumber" desc="PnL posisi yang disalin dari tiap target" bodyClass="p-0" className="flex-1">
+              {p ? <BySource rows={p.byTarget} /> : <Loading />}
+            </Panel>
+          )}
           {st?.closedCount > 0 && (
-            <Panel title="Posisi ditutup" desc={t('{n} posisi', { n: st.closedCount })} bodyClass="p-0">
+            <Panel title="Posisi ditutup" desc={t('{n} posisi', { n: st.closedCount })} bodyClass="p-0" className={openLp ? 'flex-1' : undefined}>
               <ClosedStats st={st} />
             </Panel>
           )}
-        </div>
+        </div>}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <Panel title="Jatah salin" desc="Sisa ruang di plafon aturan umum" bodyClass="p-0" className="h-full">
-          {d.room ? <CopyRoom room={d.room} dryRun={d.mode.dry_run} /> : <Loading />}
-        </Panel>
+      <div className={`grid gap-3 md:grid-cols-2 ${openLp ? '' : 'xl:grid-cols-4'}`}>
+        {!openLp && (
+          <Panel title="Jatah salin" desc="Sisa ruang di plafon aturan umum" bodyClass="p-0" className="h-full">
+            {d.room ? <CopyRoom room={d.room} dryRun={d.mode.dry_run} /> : <Loading />}
+          </Panel>
+        )}
         <Panel title="Kesehatan mesin" bodyClass="p-0" className="h-full">
           <div className="divide-y divide-border px-4">
+            {/* Block scan and copy counters come from the copy tick, which open-LP accounts never run */}
+            {!openLp && <>
             <KV label="Blok terkini">{num(d.chain.head)}</KV>
             <KV label="Tertinggal">
               <Dot tone={lag < 60 ? 'success' : 'warning'} />
@@ -671,12 +682,13 @@ export default function Overview() {
             </KV>
             <KV label="Aksi terdeteksi">{num(T.actions)}</KV>
             <KV label="Disalin / dilewati">{num(T.would)} / {num(T.skipped)}</KV>
+            </>}
             <KV label="Harga ETH">{usd(d.chain.ethUsd)}</KV>
             <KV label="Latensi RPC"><Latency rpc={d.rpc || []} /></KV>
           </div>
           {d.stats.lastError && <div className="p-4 pt-3"><Notice status="warning" title="Error terakhir">{reason(d.stats.lastError)}</Notice></div>}
         </Panel>
-        <Panel title="Alasan terbanyak dilewati" desc={T.skipped ? t('dari {n} aksi yang dilewati', { n: num(T.skipped) }) : null} bodyClass="p-0" className="h-full">
+        {!openLp && <Panel title="Alasan terbanyak dilewati" desc={T.skipped ? t('dari {n} aksi yang dilewati', { n: num(T.skipped) }) : null} bodyClass="p-0" className="h-full">
           {d.skipReasons.length ? (
             <div className="divide-y divide-border">
               {d.skipReasons.map((r) => {
@@ -697,7 +709,7 @@ export default function Overview() {
               })}
             </div>
           ) : <div className="p-4"><Empty title="Belum ada yang dilewati" /></div>}
-        </Panel>
+        </Panel>}
         <Panel title="Transaksi terakhir" bodyClass="p-0" className="h-full"
           action={<a href="#activity" className="text-xs text-accent hover:underline">{t('Semua aktivitas')} →</a>}>
           {tx?.txs?.length ? (

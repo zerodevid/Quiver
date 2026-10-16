@@ -1,6 +1,6 @@
 'use strict';
-// Offline tool: open the encrypted V3 keystore (downloaded via the "Ekspor wallet" button in
-// the dashboard) into a raw private key, to import into wallets that do not accept the
+// Offline tool: open an encrypted V3 keystore (the wallet part of a backup, or one from the old
+// dashboard export) into a raw private key, to import into wallets that do not accept the
 // JSON keystore format (e.g. OKX Wallet — only accepts a private key/recovery phrase).
 //
 // Deliberately NOT on the dashboard path: the raw private key only ever appears in this local

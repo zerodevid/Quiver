@@ -95,7 +95,9 @@ const ADMIN_NAV = [
   ]],
 ];
 // Regular (open-LP) accounts don't copy: the Copy group collapses to a single disabled
-// "coming soon" entry, matching the engine, which never runs the copy tick for them.
+// "coming soon" entry, matching the engine, which never runs the copy tick for them. Activity
+// (every target move and the bot's verdict on it) is copy-only too, so it leaves their menu.
+const COPY_ONLY_PAGES = new Set(['activity']);
 const COPY_SOON_GROUP = ['Copy', [['copy-soon', 'Copy', Users, CopySoon]]];
 // Without copying there is nothing "manual" to set apart: open-LP accounts see the LP page as
 // opening a new LP position.
@@ -103,7 +105,7 @@ const OPEN_LP_LABELS = { 'manual-lp': 'Posisi LP baru' };
 const navFor = (me) => {
   if (isRegular(me)) {
     return NAV.map(([g, items]) => (g === 'Copy' ? COPY_SOON_GROUP
-      : [g, items.map(([id, label, ...rest]) => [id, OPEN_LP_LABELS[id] || label, ...rest])]));
+      : [g, items.filter(([id]) => !COPY_ONLY_PAGES.has(id)).map(([id, label, ...rest]) => [id, OPEN_LP_LABELS[id] || label, ...rest])]));
   }
   // A single-user deployment signed in with the server token (no accounts) keeps the full LP
   // dashboard — that is the legacy bot. Only a real superadmin account gets the operator console.
@@ -162,8 +164,11 @@ const modeOf = (m) => (!m ? null : m.paused ? ['Dijeda', 'bg-muted', 'text-muted
   : m.drawdown?.tripped ? ['Drawdown', 'bg-warning', 'text-warning']
   : m.dry_run ? ['Simulasi', 'bg-accent', 'text-accent'] : ['Live', 'bg-danger', 'text-danger']);
 
-function ModeBadge({ m }) {
+function ModeBadge({ m: raw }) {
   const { t } = useI18n();
+  // Pause only stops copying; an open-LP account has nothing paused, so it never reads "Dijeda".
+  const regular = isRegular(useMe());
+  const m = raw && regular ? { ...raw, paused: false } : raw;
   const mo = modeOf(m);
   if (!mo) return <span className="text-xs text-muted">…</span>;
   return (
@@ -224,7 +229,10 @@ function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
           {/* The bot's own wallet can also be opened externally — check its balance & txs
               without copying the address first. */}
           <span className="flex items-center gap-1">
-            <span className="mono text-xs whitespace-nowrap text-muted">{m?.wallet ? short(m.wallet) : t('belum ada')}</span>
+            {/* Named in Settings or the Telegram bot: the name, with the address on hover. */}
+            {m?.walletName
+              ? <a href="#settings" className="max-w-28 truncate text-xs font-medium hover:underline" title={m.wallet}>{m.walletName}</a>
+              : <span className="mono text-xs whitespace-nowrap text-muted">{m?.wallet ? short(m.wallet) : t('belum ada')}</span>}
             {m?.wallet && <WalletLinks address={m.wallet} compact className="trade-snug" />}
           </span>
         </div>
@@ -237,7 +245,8 @@ function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
         )}
       </div>
       {/* Pause/resume is the only action that changes the bot — standalone, as wide as the sidebar. */}
-      {!operator && (
+      {/* Pause only stops copying, so open-LP accounts don't get the button. */}
+      {!operator && !isRegular(me) && (
         <Button size="sm" variant="outline" className="w-full" onPress={pause} isDisabled={!m}>
           {m?.paused ? <><Play className="size-3.5" />{t('Lanjutkan')}</> : <><Pause className="size-3.5" />{t('Jeda')}</>}
         </Button>
@@ -469,7 +478,7 @@ export default function App() {
     setBaseTitle(privacy[0] ? 'Quiver' : `Quiver · ${usd(w.value)} · ${pnl > 0 ? '+' : ''}${usd(pnl)}`);
   }, [w?.value, w?.pnl, w?.netPnl, privacy[0]]);
   // Open-LP accounts have no copy pages: a bookmarked #targets/#rules lands on "coming soon".
-  const COPY_PAGES = new Set(['targets', 'rules', 'copy-soon']);
+  const COPY_PAGES = new Set(['targets', 'rules', 'activity', 'copy-soon']);
   // Keep each role inside its own pages. A page outside the role's nav (e.g. a superadmin
   // opening #positions, or a stale bookmark) is bounced to that role's home — and the hash is
   // rewritten so the sidebar highlight and the URL agree.

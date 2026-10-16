@@ -137,24 +137,15 @@ function serve({ throws = false, wallet = null } = {}) {
     } finally { await s.close(); }
   });
 
-  await t('/api/settings/wallet/export: a wrong token is rejected, a weak password is rejected, right token+password -> a valid V3 keystore', async () => {
+  await t('the dashboard has no key export: /api/settings/wallet/export does not exist (keys leave only via Telegram)', async () => {
     const { ethers } = require('ethers');
     const wallet = ethers.Wallet.createRandom();
     const s = await serve({ wallet });
     try {
-      const hdr = { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` };
-      const post = (b) => fetch(`${s.base}/api/settings/wallet/export`, { method: 'POST', headers: hdr, body: JSON.stringify(b) });
-      const bad = await post({ token: 'salah', password: 'password123' });
-      assert.equal((await bad.json()).error, 'Token salah.');
-      const weak = await post({ token: TOKEN, password: '123' });
-      assert.match((await weak.json()).error, /minimal 8/);
-      const ok = await post({ token: TOKEN, password: 'password123' });
-      const body = await ok.json();
-      assert.equal(body.ok, true);
-      assert.equal(body.address, wallet.address.toLowerCase());
-      assert.equal(JSON.stringify(body.keystore).toLowerCase().includes(wallet.privateKey.slice(2).toLowerCase()), false, 'the raw private key must not sit in the keystore');
-      const decrypted = await ethers.Wallet.fromEncryptedJson(JSON.stringify(body.keystore), 'password123');
-      assert.equal(decrypted.address, wallet.address);
+      const r = await fetch(`${s.base}/api/settings/wallet/export`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ token: TOKEN, password: 'password123' }) });
+      const text = await r.text();
+      assert.ok(!/keystore|"ok":true/.test(text), 'no keystore comes back');
+      assert.ok(!text.toLowerCase().includes(wallet.privateKey.slice(2).toLowerCase()), 'never the key');
     } finally { await s.close(); }
   });
 

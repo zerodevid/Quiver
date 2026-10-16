@@ -523,9 +523,18 @@ class Positions {
       const w = liqRes[i];
       if (w && w !== '0x') liqBy.set(r.id, BigInt(w)); else keepOld(r);
     });
+    // A burned v3 NFT does not read as zero: the NPM reverts positions() with "Invalid token ID".
+    // Only that exact revert counts as emptied — any other failure keeps the last figure.
+    const unread = v3.filter((r, i) => !liqRes[v4.length + i] || liqRes[v4.length + i] === '0x');
+    const burned = new Set();
+    if (unread.length && this.rpc.batch) {
+      const again = await this.rpc.batch(unread.map((r) => ({ method: 'eth_call', params: [{ to: this.chain.npmFor(r.venue), data: IF_NPM.encodeFunctionData('positions', [BigInt(r.token_id)]) }, 'latest'] })))
+        .catch(() => []);
+      unread.forEach((r, i) => { if (/invalid token id/i.test(String(again[i]?.error?.message || ''))) burned.add(r.id); });
+    }
     v3.forEach((r, i) => {
       const w = liqRes[v4.length + i];
-      let L = null;
+      let L = burned.has(r.id) ? 0n : null;
       if (w && w !== '0x') { try { L = BigInt(IF_NPM.decodeFunctionResult('positions', w)[7]); } catch { L = null; } }
       if (L != null) liqBy.set(r.id, L); else keepOld(r);
     });
@@ -717,9 +726,16 @@ class Positions {
           { method: 'eth_call', params: [call, 'latest'] },
           { method: 'eth_getTransactionReceipt', params: [pos.tx_open] },
         ]);
-        if (!rr || rr.error || !rr.result || !cr || cr.error || !cr.result || cr.result === '0x') return false;
+        if (!rr || rr.error || !rr.result) return false;
+        if (pos.venue !== 'v4' && /invalid token id/i.test(String(cr?.error?.message || ''))) return true;
+        if (!cr || cr.error || !cr.result || cr.result === '0x') return false;
         const L0 = pos.venue === 'v4' ? BigInt(cr.result) : BigInt(IF_NPM.decodeFunctionResult('positions', cr.result)[7]);
         return L0 === 0n;
+      }
+      // v3: a burned NFT reverts with "Invalid token ID" — that revert, and only that, is empty.
+      if (pos.venue !== 'v4' && this.rpc.batch) {
+        const [cr] = await this.rpc.batch([{ method: 'eth_call', params: [call, 'latest'] }]);
+        if (/invalid token id/i.test(String(cr?.error?.message || ''))) return true;
       }
       const [w] = await this.rpc.ethCallMany([call]);
       if (!w || w === '0x') return false;

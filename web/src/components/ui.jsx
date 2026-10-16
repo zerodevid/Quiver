@@ -421,9 +421,11 @@ export function ChainMark({ chain, size = 'size-4' }) {
 }
 
 export function DataTable({
-  label, columns, rows, rowKey, empty, dense, footer,
+  label, columns: allColumns, rows, rowKey, empty, dense, footer,
   searchable, pageSize = 0, defaultSort, onRow, pinTop, jumpTo,
 }) {
+  // A falsy entry is a column left out for this viewer (e.g. `cond && { key, … }`).
+  const columns = allColumns.filter(Boolean);
   const [sort, setSort] = useState(defaultSort || null);
   // Row ids repeat across chains in the all-chains view (#12 on Robinhood and #12 on BSC).
   const keyOf = (r, i) => { const k = rowKey ? rowKey(r, i) : i; return r?.chain ? `${r.chain}:${k}` : k; };

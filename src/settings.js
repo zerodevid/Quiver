@@ -5,9 +5,8 @@ const { enabledChains, chainTemplate } = require('./multichain');
 // gas, notifications, engine, and the dashboard access token.
 //
 // Security rules held here:
-//  - The raw private key is NEVER sent back to the browser — only its address, or
-//    (via /wallet/export, locked by the dashboard token retyped) a password-encrypted V3
-//    keystore filled in right then, never stored on the server.
+//  - The private key is NEVER sent to the browser, not even as a keystore: exporting a key is
+//    only possible in the Telegram bot.
 //  - An old key is never silently deleted: it is moved to a dated backup file.
 //  - RPC URLs/headers containing an API key are always masked in responses; for
 //    an unchanged endpoint, the browser only sends its id and the secret stays
@@ -187,13 +186,30 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
     log(`kunci wallet diganti -> ${addr}${bak ? ` (kunci lama dicadangkan: ${path.basename(bak)})` : ''}`);
     return { address: addr, backup: bak ? path.basename(bak) : null };
   };
+  // Saved wallets (wallets.js): the active EVM key plus every key it replaced, with the names the
+  // user gave them. The same list the Telegram wallet screen shows. Solana keeps a single key, and a
+  // key from .env is not part of the list (the files beside it are not what the bot signs with).
+  const evmAddr = (pk) => new ethers.Wallet(pk.startsWith('0x') ? pk : '0x' + pk).address.toLowerCase();
+  const savedList = () => (SOL || keyFromEnv() ? [] : wallets.list(exec.keyPath(), evmAddr));
+  const walletNameOf = (addr) => {
+    if (SOL || !addr) return null;
+    try { return wallets.names(exec.keyPath())[String(addr).toLowerCase()] || null; } catch { return null; }
+  };
+  // A switch to another saved key: every engine drops its cached signer, like writeKey.
+  const activated = () => {
+    resetWallets();
+    const addr = exec.address();
+    if (addr) store.setState(walletStateKey, addr);
+    return addr;
+  };
   const refuseIfLive = () => {
     if (keyFromEnv()) return { error: `Kunci wallet diatur lewat ${keyEnvName} di .env — ganti atau hapus di berkas itu lalu restart.` };
     // The key is changed in the middle of an entry/exit/sale: the next transaction (mint, sale of the zap
     // token) is signed by ANOTHER wallet that does not hold the token.
     // (LIVE mode is already required to be off, but an entry started before the mode was switched off still
     // runs to completion.)
-    if ((engine.activeEntries || 0) > 0 || engine.exiting?.size > 0 || engine.selling?.size > 0 || engine.compound?.running) return { error: 'Bot sedang memproses transaksi (masuk/keluar/jual sisa) — tunggu sampai selesai, lalu coba lagi.' };
+    // Every engine is checked: the EVM chains share one key.
+    if (liveEngines().some((e) => (e.activeEntries || 0) > 0 || e.exiting?.size > 0 || e.selling?.size > 0 || e.compound?.running)) return { error: 'Bot sedang memproses transaksi (masuk/keluar/jual sisa) — tunggu sampai selesai, lalu coba lagi.' };
     // Open-LP accounts have no simulation mode to fall back to (they are always LIVE), so the
     // "switch to simulation first" guard would lock them out of ever changing their wallet. The
     // in-flight check above is the only protection they need. Legacy copy accounts still must
@@ -380,6 +396,9 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
           // A key from .env beats the key file; the replace/detach buttons do not apply.
           fromEnv: keyFromEnv() ? keyEnvName : null,
           kind: SOL ? 'solana' : 'evm',
+          name: walletNameOf(addr),
+          // How many wallets the account has (active + saved); the list itself is GET /api/settings/wallets.
+          count: savedList().length,
         },
         mode: {
           dry_run: engine.dryRun(), paused: engine.paused(),
@@ -460,9 +479,64 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
       }
       if (!/^(0x)?[0-9a-fA-F]{64}$/.test(pk)) return { error: 'Kunci privat harus 64 karakter hex (boleh diawali 0x).' };
       if (!pk.startsWith('0x')) pk = '0x' + pk;
-      try { new ethers.Wallet(pk); } catch { return { error: 'Kunci privat tidak valid.' }; }
+      let addr;
+      try { addr = evmAddr(pk); } catch { return { error: 'Kunci privat tidak valid.' }; }
+      // A key that is already in the saved list is switched to, not stored a second time.
+      const known = savedList().find((w) => w.address === addr);
+      if (known?.active) return { ok: true, address: addr, backup: null, known: true };
       if (fs.existsSync(exec.keyPath()) && !b.replace) return { error: 'Sudah ada kunci. Centang "ganti kunci yang ada" untuk menggantinya (kunci lama dicadangkan).' };
+      if (known) {
+        wallets.activate(exec.keyPath(), known.id);
+        log(`wallet diganti -> ${addr} (dari daftar wallet tersimpan)`);
+        return { ok: true, address: activated(), backup: null, known: true };
+      }
       return { ok: true, ...writeKey(pk) };
+    },
+    // Every wallet of the account with its native balance on this chain: the active one first.
+    'GET /api/settings/wallets': async () => {
+      const list = savedList();
+      const bal = await Promise.all(list.map(async (w) => {
+        try { return Number(ethers.formatEther(BigInt(await rpc.call('eth_getBalance', [w.address, 'latest'])))); } catch { return null; }
+      }));
+      return {
+        wallets: list.map((w, i) => ({ ...w, balance: bal[i] })), symbol: chain.nativeSymbol,
+        kind: SOL ? 'solana' : 'evm', fromEnv: keyFromEnv() ? keyEnvName : null,
+        // Why the active wallet cannot change right now, or null (LIVE, open positions, a tx in flight).
+        locked: SOL || keyFromEnv() ? null : refuseIfLive()?.error || null,
+      };
+    },
+    // Make a saved wallet the active one. The funds stay where they are.
+    'POST /api/settings/wallet/use': async (req) => {
+      const b = await readBody(req);
+      if (SOL) return { error: 'Wallet Solana tidak punya daftar wallet tersimpan.' };
+      const w = savedList().find((x) => x.id === String(b.id || ''));
+      if (!w) return { error: 'Wallet tidak ditemukan.' };
+      if (w.active) return { ok: true, address: w.address };
+      const live = refuseIfLive(); if (live) return live;
+      wallets.activate(exec.keyPath(), w.id);
+      log(`wallet diganti -> ${w.address} (dari daftar wallet tersimpan)`);
+      return { ok: true, address: activated() };
+    },
+    // Name a wallet ('active' or a saved id); an empty name removes it. Names are kept by address.
+    'POST /api/settings/wallet/name': async (req) => {
+      const b = await readBody(req);
+      if (SOL) return { error: 'Nama wallet hanya untuk wallet EVM.' };
+      const id = String(b.id || 'active');
+      const w = savedList().find((x) => (id === 'active' ? x.active : x.id === id));
+      if (!w) return { error: id === 'active' ? 'Tidak ada wallet terpasang.' : 'Wallet tidak ditemukan.' };
+      wallets.setName(exec.keyPath(), w.address, b.name);
+      return { ok: true, address: w.address, name: walletNameOf(w.address) };
+    },
+    // Drop a saved (inactive) wallet from the list. Its key file is renamed on the server, not deleted.
+    'POST /api/settings/wallet/forget': async (req) => {
+      const b = await readBody(req);
+      if (SOL) return { error: 'Wallet Solana tidak punya daftar wallet tersimpan.' };
+      const w = savedList().find((x) => x.id === String(b.id || ''));
+      if (!w) return { error: 'Wallet tidak ditemukan.' };
+      if (w.active) return { error: 'Wallet aktif tidak bisa dihapus dari daftar — pakai wallet lain dulu.' };
+      wallets.forget(exec.keyPath(), w.id, evmAddr);
+      log(`wallet ${w.address} dihapus dari daftar`);
+      return { ok: true };
     },
     'POST /api/settings/wallet/remove': async (req) => {
       const b = await readBody(req);
@@ -478,32 +552,8 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
       return { ok: true, backup: bak ? path.basename(bak) : null };
     },
 
-    // Export the wallet as an encrypted V3 keystore (the same format as geth/MetaMask),
-    // not the raw private key — even if the response is eavesdropped or stuck in a cache/log,
-    // its contents are useless without the password typed right then (not stored).
-    // Locked by the dashboard token retyped: an HttpOnly session cookie cannot be
-    // read via XSS, so this is a real second layer, not a formality.
-    'POST /api/settings/wallet/export': async (req) => {
-      const b = await readBody(req);
-      const bad = await retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa mengekspor wallet.', req); if (bad) return bad;
-      const addr = exec.address();
-      if (!addr) return { error: 'Tidak ada wallet terpasang.' };
-      const pass = String(b.password || '');
-      if (pass.length < 8) return { error: 'Password keystore minimal 8 karakter.' };
-      // Solana has no standard keystore format: see solana/wallet.js encryptKeystore — it can be
-      // opened in the browser (WebCrypto) through "Open keystore (offline)" on this page.
-      if (SOL) {
-        let kp;
-        try { kp = exec.loadWallet(); } catch (e) { return { error: e.message }; }
-        log(`wallet ${addr} diekspor sebagai keystore terenkripsi`);
-        return { ok: true, address: addr, keystore: sol.encryptKeystore(kp, pass) };
-      }
-      let w;
-      try { w = exec.loadWallet(); } catch (e) { return { error: e.message }; }
-      const keystore = await w.encrypt(pass);
-      log(`wallet ${addr} diekspor sebagai keystore terenkripsi`);
-      return { ok: true, address: addr, keystore: JSON.parse(keystore) };
-    },
+    // No key export here: a private key leaves the server only through the Telegram bot (🔑 Wallet →
+    // 🗝 Ekspor, private chat, auto-deleted message). The dashboard never offers it.
 
     // ---- backup & restore (see backup.js) ----
     'POST /api/settings/backup': async (req) => {
@@ -951,6 +1001,17 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
         const r = await telegram.restart();
         if (t.bot_token && r?.error) return { error: `Token tersimpan, tapi Telegram menolaknya: ${r.error}`, telegram: tgView() };
       }
+      return { ok: true, telegram: tgView() };
+    },
+    // Which kinds of messages reach this account's Telegram chats — the same switches as the bot's
+    // 🔔 screen. Separate from POST /api/settings/telegram so an account (which may not touch the
+    // bot or its chat list) can still choose them from the dashboard.
+    'POST /api/settings/telegram/notify': async (req) => {
+      const b = await readBody(req);
+      const n = { penting: true, error: true, warn: true, info: false, ...(cfg.telegram?.notify || {}) };
+      for (const k of Object.keys(n)) if (b.notify && k in b.notify) n[k] = !!b.notify[k];
+      cfg.telegram = { ...(cfg.telegram || {}), notify: n };
+      saveCfg();
       return { ok: true, telegram: tgView() };
     },
     'POST /api/settings/telegram/pair': async () => {

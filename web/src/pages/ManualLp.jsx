@@ -707,16 +707,12 @@ export default function ManualLp({ param }) {
   }, [pool?.poolRef, usdNum, lo, up, full, ready, dlmm, damm, shape, creating, C.key]);
 
   const cash = plan?.preview?.walletCashUsd ?? balance?.walletCashUsd ?? null;
-  // The largest amount that still passes every limit — so the "Max" button does not
-  // lead to a rejection.
+  // "Max" = the wallet cash: the copy sizing limits do not apply to a manual open.
   const maxVal = useMemo(() => {
-    const s = rules?.rules?.sizing;
-    if (!s) return null;
-    const leftoverTotal = s.max_total_exposure_usd - (status?.summary?.exposureUsd || 0);
-    const limit = [s.max_quote_per_position_usd, leftoverTotal, cash ?? Infinity].filter((x) => Number.isFinite(x));
-    const v = Math.floor(Math.min(...limit) * 100) / 100;
+    if (cash == null) return null;
+    const v = Math.floor(cash * 100) / 100;
     return v > 0 ? v : 0;
-  }, [rules, status, cash]);
+  }, [cash]);
 
   const open = async () => {
     setSending(true);
@@ -955,9 +951,12 @@ export default function ManualLp({ param }) {
                   </div>
                 ))}
 
-                <p className="text-xs text-muted">
-                  {t('Posisi ini tidak mencermin siapa pun — ia tidak akan ikut ditutup saat target keluar.')}
-                </p>
+                {/* Only meaningful beside copied positions; open-LP accounts have no targets. */}
+                {!openLp && (
+                  <p className="text-xs text-muted">
+                    {t('Posisi ini tidak mencermin siapa pun — ia tidak akan ikut ditutup saat target keluar.')}
+                  </p>
+                )}
 
                 {/* In simulation mode the button is NOT just disabled: a dead button with no way
                     out only makes the user guess. It turns into a shortcut to the place that can

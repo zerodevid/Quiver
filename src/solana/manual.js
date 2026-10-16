@@ -286,17 +286,8 @@ class SolanaManual extends Manual {
     };
 
     const warnings = [];
-    const sum = eng.positions.summary(eng.ethUsd);
+    // Copy sizing limits (per position, total exposure, open count) do not apply to a manual open.
     const s = rules.sizing;
-    if (valueUsd > s.max_quote_per_position_usd) {
-      return { error: `$${valueUsd.toFixed(2)} melebihi batas per posisi ($${s.max_quote_per_position_usd}). Naikkan batasnya di Aturan kalau memang disengaja.` };
-    }
-    if (sum.exposureUsd + valueUsd > s.max_total_exposure_usd) {
-      return { error: `total eksposur jadi $${(sum.exposureUsd + valueUsd).toFixed(2)}, melebihi batas $${s.max_total_exposure_usd}.` };
-    }
-    if (sum.openCount >= rules.filters.max_open_positions) {
-      return { error: `sudah ada ${sum.openCount} posisi terbuka (batas ${rules.filters.max_open_positions}).` };
-    }
     if (valueUsd < s.min_quote_usd) warnings.push(`di bawah minimum biasa ($${s.min_quote_usd}) — biaya transaksi bisa memakan porsi besar`);
     if (side !== 'both') warnings.push('posisi satu sisi — fee baru diperoleh saat harga masuk rentang');
     if (fee != null && fee >= 30000) warnings.push(`fee pool ${(fee / 10000).toFixed(2)}% — tinggi, hanya sepadan kalau ramai`);

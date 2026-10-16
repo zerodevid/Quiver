@@ -91,6 +91,8 @@ const form = (base, p, fields) => fetch(base + p, { method: 'POST', redirect: 'm
       assert.equal(landing.status, 200);
       const landingHtml = await landing.text();
       assert.doesNotMatch(landingHtml, /href="\/register"/, 'no web sign-up link once accounts exist');
+      assert.match(landingHtml, /class="btn primary lg" href="\/login"/, 'sign-up goes through the Telegram sign-in');
+      assert.match(landingHtml, /<meta property="og:image" content="http:\/\/127\.0\.0\.1:\d+\/og-en\.png">/);
       assert.doesNotMatch(landingHtml, /name="password"/);
       assert.match(landingHtml, /<html lang="en">/, 'English by default');
       assert.match(await (await fetch(`${s.base}/?lang=id`)).text(), /<html lang="id">/);

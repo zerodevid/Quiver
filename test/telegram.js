@@ -913,16 +913,13 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.match(lastOut(w.sent).params.text, /ditutup/i);
   });
 
-  await t('the bot offers a private-key import (message scrubbed) but no export', async () => {
+  await t('the bot offers a private-key import (message scrubbed)', async () => {
     const w = build();
     await w.bot.handle(cbq('wb'));
     const out = lastOut(w.sent);
     assert.match(out.params.text, /dihapus/i, 'the wallet screen says the key message is deleted');
     const btns = buttons(out);
     assert.ok(btns.includes('wbi'), 'an import button is offered');
-    assert.ok(!btns.some((b) => /export|ekspor|wbe/i.test(b)), 'no export path');
-    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'telegram.js'), 'utf8');
-    assert.ok(!src.includes('/api/settings/wallet/import'), 'import is done in the bot, not via the key import route');
   });
 
   await t('a pasted private key is deleted from the chat the instant it arrives', async () => {
@@ -975,6 +972,89 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.deepStrictEqual(w.bot.savedWallets().map((x) => x.address), [ADDR1, ADDR2]);
   });
 
+  await t('once named, the active wallet is shown by its name on the home menu and its button', async () => {
+    const w = walletWorld();
+    await w.importKey(PK1);
+    await w.bot.handle(cbq('wbn'));
+    await w.bot.handle(msg('Utama'));
+    w.bot.hub = { me: null };
+    w.engine.exec.address = () => ADDR1;   // /api/overview reads the wallet from the engine
+    await w.bot.handle(cbq('h'));
+    const out = lastOut(w.sent);
+    assert.match(out.params.text, /👛 <b>Utama<\/b>/, 'the home header uses the name');
+    const labels = (out.params.reply_markup.inline_keyboard || []).flat().map((x) => x.text);
+    assert.ok(labels.includes('👛 Wallet: Utama'), 'the wallet button uses the name');
+  });
+
+  await t('a private key is revealed in place after a warning, then hidden after 60 s', async () => {
+    const w = walletWorld();
+    await w.importKey(PK1);
+    await w.importKey(PK2);
+    await w.bot.handle(cbq('wb'));
+    const btns = buttons(lastOut(w.sent));
+    assert.ok(btns.includes('wbk:a'), 'the active wallet has an export button');
+    const savedBtn = btns.find((b) => b.startsWith('wbk:') && b !== 'wbk:a');
+    assert.ok(savedBtn, 'a saved wallet has an export button too');
+    w.sent.length = 0;
+    await w.bot.handle(cbq('wbk:a'));
+    const warn = lastOut(w.sent);
+    assert.strictEqual(warn.method, 'editMessageText', 'the warning replaces the wallet screen');
+    assert.ok(!warn.params.text.includes(PK2.slice(2)), 'the warning does not show the key');
+    assert.match(warn.params.text, /60 detik/);
+    assert.deepStrictEqual(buttons(warn), ['wbK:a', 'wb'], 'show or cancel');
+    const timers = [];
+    const realSet = global.setTimeout;
+    global.setTimeout = (fn, ms) => { if (ms === 60_000) { timers.push(fn); return { unref() {} }; } return realSet(fn, ms); };
+    w.sent.length = 0;
+    try { await w.bot.handle(cbq('wbK:a')); } finally { global.setTimeout = realSet; }
+    assert.ok(!w.sent.some((x) => x.method === 'sendMessage'), 'no new message: the key replaces the warning');
+    const keyMsg = w.sent.find((x) => x.method === 'editMessageText' && x.params.text.includes(PK2));
+    assert.ok(keyMsg, 'the key is shown in the same message');
+    // Telegram does not hide <code> inside a spoiler: the key must be plain spoiler text.
+    assert.match(keyMsg.params.text, /<tg-spoiler>0x2{64}<\/tg-spoiler>/, 'hidden behind a spoiler');
+    const rows = keyMsg.params.reply_markup.inline_keyboard;
+    assert.strictEqual(rows[0][0].copy_text.text, PK2, 'a copy button carries the key');
+    assert.deepStrictEqual(rows[1].map((b) => b.callback_data), ['wbkX', 'wb'], 'delete and back');
+    assert.strictEqual(timers.length, 1, 'a 60-second hide is scheduled');
+    w.sent.length = 0;
+    await timers[0]();
+    await new Promise((r) => realSet(r, 0));
+    const hidden = w.sent.find((x) => x.method === 'editMessageText');
+    assert.ok(hidden && !hidden.params.text.includes(PK2.slice(2)), 'the key is replaced by the wallet screen');
+    assert.ok(!w.sent.some((x) => x.method === 'sendMessage'), 'still no new message');
+    // Delete removes the message outright, and a later timer does nothing.
+    w.sent.length = 0;
+    const timers2 = [];
+    global.setTimeout = (fn, ms) => { if (ms === 60_000) { timers2.push(fn); return { unref() {} }; } return realSet(fn, ms); };
+    try { await w.bot.handle(cbq(savedBtn.replace('wbk', 'wbK'))); } finally { global.setTimeout = realSet; }
+    assert.ok(w.sent.some((x) => x.method === 'editMessageText' && x.params.text.includes(PK1)), "the saved wallet's own key");
+    await w.bot.handle(cbq('wbkX'));
+    assert.ok(w.sent.some((x) => x.method === 'deleteMessage' && x.params.message_id === 100), 'the key message is deleted');
+    w.sent.length = 0;
+    await timers2[0]();
+    assert.strictEqual(w.sent.length, 0, 'the timer leaves a deleted key message alone');
+  });
+
+  await t('a prompt opened from a button takes over that message, and the answer edits it', async () => {
+    const w = walletWorld();
+    await w.importKey(PK1);
+    w.sent.length = 0;
+    await w.bot.handle(cbq('wbn'));
+    assert.ok(!w.sent.some((x) => x.method === 'sendMessage'), 'the prompt edits the tapped message');
+    await w.bot.handle({ message: { chat: { id: Number(CHAT) }, from: { id: Number(CHAT) }, text: 'Utama', message_id: 556 } });
+    assert.ok(!w.sent.some((x) => x.method === 'sendMessage'), 'the result edits the prompt too');
+    assert.ok(w.sent.some((x) => x.method === 'deleteMessage' && x.params.message_id === 556), 'the typed answer is removed');
+    assert.match(lastOut(w.sent).params.text, /Nama wallet disimpan/);
+  });
+
+  await t('a private key is never exported in a group chat', async () => {
+    const w = walletWorld();
+    await w.importKey(PK1);
+    w.sent.length = 0;
+    await w.bot.handle(cbq('wbK:a', '-100123'));
+    assert.ok(!w.sent.some((s) => JSON.stringify(s.params || {}).includes(PK1.slice(2))), 'no key in a group');
+  });
+
   await t('the wallet cannot be switched while a real position is open', async () => {
     const w = walletWorld();
     await w.importKey(PK1);
@@ -999,7 +1079,7 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.deepStrictEqual(w.bot.savedWallets().map((x) => x.address), [ADDR2]);
   });
 
-  await t('a saved (inactive) wallet can be named from its own button; the list shows full addresses', async () => {
+  await t('a saved (inactive) wallet can be named from its own button; a named wallet shows its name, not its address', async () => {
     const w = walletWorld();
     await w.importKey(PK1);
     await w.importKey(PK2);
@@ -1012,8 +1092,44 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.strictEqual(w.bot.savedWallets().find((x) => x.active).name, null, 'the active wallet is untouched');
     await w.bot.handle(cbq('wb'));
     const text = lastOut(w.sent).params.text;
-    assert.ok(text.includes(ADDR1), 'the saved wallet is listed by its full address');
+    assert.match(text, /2\. Cadangan/, 'numbered after the active wallet (1.), by its name');
+    assert.ok(!text.includes(ADDR1), 'a named wallet is shown by its name, not its address');
+    assert.ok(text.includes(ADDR2), 'the unnamed active wallet still shows its full address');
     assert.ok(!text.includes(PK1.replace(/^0x/, '').slice(0, 16)), 'never the key');
+  });
+
+  await t('the bot and the dashboard share one wallet list: names, switches and removals show on both', async () => {
+    const w = walletWorld();
+    const api = (m, p, b) => w.bot._api(m, p, b);
+    await w.importKey(PK1);
+    await w.importKey(PK2);
+    // Named in the bot → listed with that name on the dashboard.
+    await w.bot.handle(cbq('wbn'));
+    await w.bot.handle(msg('Bot'));
+    let d = await api('GET', '/api/settings/wallets');
+    assert.deepStrictEqual(d.wallets.map((x) => [x.address, x.active, x.name]), [[ADDR2, true, 'Bot'], [ADDR1, false, null]]);
+    assert.strictEqual((await api('GET', '/api/settings')).wallet.name, 'Bot');
+    assert.strictEqual((await api('GET', '/api/overview')).mode.walletName, 'Bot', 'the sidebar shows the name too');
+    // Named and switched on the dashboard → the bot sees it.
+    const saved = d.wallets.find((x) => !x.active);
+    assert.ok((await api('POST', '/api/settings/wallet/name', { id: saved.id, name: 'Cadangan' })).ok);
+    const r = await api('POST', '/api/settings/wallet/use', { id: saved.id });
+    assert.strictEqual(r.address, ADDR1);
+    assert.strictEqual(w.engine.exec.address(), ADDR1);
+    await w.bot.handle(cbq('wb'));
+    assert.match(lastOut(w.sent).params.text, /Aktif:<\/b> Cadangan/);
+    // Removed on the dashboard → gone from the bot's list; the active one cannot be removed.
+    d = await api('GET', '/api/settings/wallets');
+    assert.match((await api('POST', '/api/settings/wallet/forget', { id: d.wallets.find((x) => x.active).id })).error, /aktif/);
+    assert.ok((await api('POST', '/api/settings/wallet/forget', { id: d.wallets.find((x) => !x.active).id })).ok);
+    assert.deepStrictEqual(w.bot.savedWallets().map((x) => x.address), [ADDR1]);
+  });
+
+  await t('Telegram message kinds can be chosen from the dashboard too', async () => {
+    const w = build();
+    const r = await w.bot._api('POST', '/api/settings/telegram/notify', { notify: { info: true, warn: false } });
+    assert.deepStrictEqual(r.telegram.notify, { penting: true, error: true, warn: false, info: true });
+    assert.deepStrictEqual(w.bot.notifCfg(), { penting: true, error: true, warn: false, info: true }, 'the bot reads the same switches');
   });
 
   await t('the profit calendar shows the month total, a day grid and a month card button', async () => {
@@ -1671,16 +1787,19 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.ok(!r2.error, r2.error);
   });
 
-  await t('manual LP respects the limits already set', async () => {
+  await t('manual LP ignores the copy sizing limits', async () => {
     const w = build();
     w.cfg.rules = { sizing: { max_quote_per_position_usd: 30 } };
     const r = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 50 });
-    assert.match(r.error || '', /batas per posisi/i, r.error);
-    assert.match(r.error || '', /\$30/, 'the message must name the limit that blocks it');
+    assert.ok(!r.error, r.error);
+
+    w.cfg.rules = { sizing: { max_total_exposure_usd: 1 } };
+    const r2 = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 10 });
+    assert.ok(!r2.error, r2.error);
 
     w.cfg.rules = { filters: { max_open_positions: 1 } };   // there is already 1 open position
-    const r2 = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 10 });
-    assert.match(r2.error || '', /posisi terbuka/i, r2.error);
+    const r3 = await w.api('POST', '/api/manual/lp/plan', { poolRef: '0xpool', usd: 10 });
+    assert.ok(!r3.error, r3.error);
   });
 
   await t('manual LP refuses if cash is insufficient', async () => {

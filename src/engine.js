@@ -13,14 +13,15 @@ const { Compound } = require('./compound');
 const { Capital } = require('./capital');
 const { Holdings } = require('./holdings');
 const { WalletResearch } = require('./wallet');
+const { ChainHistory } = require('./chainhistory');
 const { PaperBook } = require('./paper');
 
 // A wallet research older than this is refreshed in the background when equity sizing needs it.
 const TARGET_RESEARCH_STALE_MS = 5 * 60_000;
 const { ensureAnchor } = require('./usd-anchor');
-const { rulesFor, planEntry, planExit, quoteToUsd, usdPerQuote } = require('./policy');
+const { rulesFor, planEntry, planExit, quoteToUsd, usdPerQuote, tickSpacingFromFee } = require('./policy');
 const billing = require('./billing');
-const { enumerateV4, livePositions } = require('./scout');
+const { enumerateV4, livePositions, getLogsSafe } = require('./scout');
 const { Market } = require('./market');
 const m = require('./v3math');
 
@@ -239,59 +240,128 @@ class Engine {
       const fresh = rescan || (scannedFor && scannedFor !== me);
       const last = fresh ? 0 : Number(this.store.getState(this.sk('adopt_scanned_to'), 0));
       const blocks = fresh ? this.adoptScanBlocks() : last ? head - last + 2000 : (this.cfg.loop?.adopt_blocks ?? head);
-      const { held } = await enumerateV4(this.chain, me, head, blocks, 1_000_000, undefined, this.rpc);
       // The scan window marker is only advanced if ALL candidates were read. It used to be advanced
       // before the positions were read: one failed RPC read made that wallet's position
       // not adopted, and the next scan no longer covered its block — lost.
-      const done = () => { this.store.setState(this.sk('adopt_scanned_to'), head); this.store.setState(this.sk('adopt_scanned_wallet'), me); };
-      const known = new Set(this.store.all("SELECT token_id FROM positions WHERE chain=? AND venue='v4' AND token_id IS NOT NULL", this.network).map((r) => r.token_id));
-      let missing = [...held.keys()].filter((id) => !known.has(id));
-      if (!missing.length) return done();
-      // A Transfer can deceive (order within one block); make sure the owner is now us.
-      // strict: unreadable throws (retried in 10 minutes); revert = NFT burned.
-      const owners = await this.rpc.ethCallMany(missing.map((id) => ({
-        to: this.chain.ADDR.posmV4, data: new ethers.Interface(ABI.posmV4).encodeFunctionData('ownerOf', [BigInt(id)]),
-      })), 'latest', { strict: true });
-      missing = missing.filter((id, i) => owners[i] && owners[i] !== '0x' && ('0x' + owners[i].slice(-40)).toLowerCase() === me);
-      if (!missing.length) return done();
-      const rows = await livePositions(this.rpc, this.chain, missing);
-      let incomplete = rows.length < missing.length;
-      let n = 0;
-      for (const r of rows) {
-        if (r.liqKnown === false) { incomplete = true; continue; }
-        if (r.liquidity <= 0n) continue;
-        // The original capital & open time from wallet research (Wallet menu) if it was ever scanned;
-        // without that capital = current value, so PnL starts from zero when adopted.
-        const w = this.store.get('SELECT invested_q, opened_ts FROM wpositions WHERE chain=? AND wallet=? AND token_id=?', this.network, me, r.tokenId);
-        // The pool price when that position opened, if wallet research ever recorded its event.
-        const ev0 = this.store.get('SELECT sqrt_price FROM wevents WHERE chain=? AND wallet=? AND token_id=? AND sqrt_price IS NOT NULL ORDER BY block LIMIT 1', this.network, me, r.tokenId);
-        const isEth = this.chain.isEthLike(r.quoteSymbol);
-        const cost = w?.invested_q > 0 ? (isEth ? w.invested_q / this.ethUsd : w.invested_q) : r.valueQuote;
-        // Orphan position: a mint that SUCCEEDED on chain but failed to be recorded (RPC answer
-        // lost, process died). If there is a failed copy plan with exactly the same pool and
-        // range, this position is almost certainly the result of that plan — pair it
-        // back to its target so the exit signal is still mirrored. Without this the position
-        // hangs as "outside the bot" and is never closed.
-        const link = this.linkOrphan(r);
-        this.positions.record({
-          venue: 'v4', poolRef: r.poolId, poolKey: r.poolKey,
-          token0: r.poolKey.currency0, token1: r.poolKey.currency1, fee: r.poolKey.fee,
-          tickSpacing: r.poolKey.tickSpacing, tickLower: r.tickLower, tickUpper: r.tickUpper,
-          liquidity: r.liquidity.toString(), amount0: (r.amount0 ?? 0n).toString(), amount1: (r.amount1 ?? 0n).toString(),
-          valueQuote: r.valueQuote, quoteSymbol: r.quoteSymbol,
-          mirrorOf: link?.mirrorOf ?? null, target: link?.target ?? null,
-        }, { tokenId: r.tokenId, txHash: null, target: link?.target ?? null, costQuote: cost, openedTs: w?.opened_ts || null, entrySqrt: ev0?.sqrt_price || null });
-        if (link) this.store.log('warn', `posisi #${r.tokenId} dipasangkan kembali ke target ${link.target.slice(0, 10)}… (cermin #${link.mirrorOf}) — mint berhasil tapi sempat tercatat gagal`);
-        n++;
-      }
-      if (n) this.log(`mengadopsi ${n} posisi v4 milik wallet yang belum tercatat`);
-      if (incomplete) throw new Error('sebagian posisi wallet belum terbaca dari RPC — dipindai ulang nanti');
-      done();
+      const v4 = await this.adoptV4(me, head, blocks);
+      const v3 = await this.adoptV3(me, head, blocks);
+      if (v4.incomplete || v3.incomplete) throw new Error('sebagian posisi wallet belum terbaca dari RPC — dipindai ulang nanti');
+      this.store.setState(this.sk('adopt_scanned_to'), head);
+      this.store.setState(this.sk('adopt_scanned_wallet'), me);
       this.cleared('adopsi', 'adopsi posisi: berhasil lagi');
+      // The real history of adopted positions (once each). Its failure is retried on the next
+      // scan and never fails the adoption itself.
+      await this.chainHistory().backfill(me).catch((e) => this.log(`riwayat chain posisi adopsi: ${e.message}`));
     } catch (e) {
       this.trouble('adopsi', `adopsi posisi: ${e.message}`, { after: 3 });   // repeated every 10 minutes
       if (strict) throw e;
     }
+  }
+
+  // The v4 NFTs the wallet holds that are not on the books yet. Returns { n, incomplete }.
+  async adoptV4(me, head, blocks) {
+    const { held } = await enumerateV4(this.chain, me, head, blocks, 1_000_000, undefined, this.rpc);
+    const known = new Set(this.store.all("SELECT token_id FROM positions WHERE chain=? AND venue='v4' AND token_id IS NOT NULL", this.network).map((r) => r.token_id));
+    let missing = [...held.keys()].filter((id) => !known.has(id));
+    if (!missing.length) return { n: 0, incomplete: false };
+    // A Transfer can deceive (order within one block); make sure the owner is now us.
+    // strict: unreadable throws (retried in 10 minutes); revert = NFT burned.
+    const owners = await this.rpc.ethCallMany(missing.map((id) => ({
+      to: this.chain.ADDR.posmV4, data: new ethers.Interface(ABI.posmV4).encodeFunctionData('ownerOf', [BigInt(id)]),
+    })), 'latest', { strict: true });
+    missing = missing.filter((id, i) => owners[i] && owners[i] !== '0x' && ('0x' + owners[i].slice(-40)).toLowerCase() === me);
+    if (!missing.length) return { n: 0, incomplete: false };
+    const rows = await livePositions(this.rpc, this.chain, missing);
+    let incomplete = rows.length < missing.length;
+    let n = 0;
+    for (const r of rows) {
+      if (r.liqKnown === false) { incomplete = true; continue; }
+      if (r.liquidity <= 0n) continue;
+      const { cost, openedTs, entrySqrt } = this.adoptedCost(me, 'v4', r.tokenId, r.quoteSymbol, r.valueQuote);
+      // Orphan position: a mint that SUCCEEDED on chain but failed to be recorded (RPC answer
+      // lost, process died). If there is a failed copy plan with exactly the same pool and
+      // range, this position is almost certainly the result of that plan — pair it
+      // back to its target so the exit signal is still mirrored. Without this the position
+      // hangs as "outside the bot" and is never closed.
+      const link = this.linkOrphan(r);
+      this.positions.record({
+        venue: 'v4', poolRef: r.poolId, poolKey: r.poolKey,
+        token0: r.poolKey.currency0, token1: r.poolKey.currency1, fee: r.poolKey.fee,
+        tickSpacing: r.poolKey.tickSpacing, tickLower: r.tickLower, tickUpper: r.tickUpper,
+        liquidity: r.liquidity.toString(), amount0: (r.amount0 ?? 0n).toString(), amount1: (r.amount1 ?? 0n).toString(),
+        valueQuote: r.valueQuote, quoteSymbol: r.quoteSymbol,
+        mirrorOf: link?.mirrorOf ?? null, target: link?.target ?? null,
+      }, { tokenId: r.tokenId, txHash: null, target: link?.target ?? null, costQuote: cost, openedTs, entrySqrt });
+      if (link) this.store.log('warn', `posisi #${r.tokenId} dipasangkan kembali ke target ${link.target.slice(0, 10)}… (cermin #${link.mirrorOf}) — mint berhasil tapi sempat tercatat gagal`);
+      n++;
+    }
+    if (n) this.log(`mengadopsi ${n} posisi v4 milik wallet yang belum tercatat`);
+    return { n, incomplete };
+  }
+
+  // The same for every v3 venue of the chain (Uniswap v3, PancakeSwap v3 on BSC): NPM Transfers
+  // in the window, ownerOf to confirm, positions() for the shape, the pool from the factory.
+  async adoptV3(me, head, blocks) {
+    const pad = '0x' + me.replace(/^0x/, '').padStart(64, '0');
+    const from = Math.max(0, head - blocks);
+    const IF = new ethers.Interface(ABI.npmV3);
+    let n = 0, incomplete = false;
+    for (const { key: venue } of this.chain.venues || []) {
+      const npm = this.chain.npmFor(venue);
+      const logs = [];
+      for (let hi = head; hi > from;) {
+        const lo = Math.max(from, hi - 1_000_000);
+        logs.push(...await getLogsSafe(this.rpc, { address: npm, topics: [TOPIC.transfer, null, pad] }, lo, hi));
+        hi = lo - 1;
+      }
+      const known = new Set(this.store.all('SELECT token_id FROM positions WHERE chain=? AND venue=? AND token_id IS NOT NULL', this.network, venue).map((r) => r.token_id));
+      const ids = [...new Set(logs.filter((l) => l.topics[3]).map((l) => BigInt(l.topics[3]).toString()))].filter((id) => !known.has(id));
+      if (!ids.length) continue;
+      const owners = await this.rpc.ethCallMany(ids.map((id) => ({ to: npm, data: IF.encodeFunctionData('ownerOf', [BigInt(id)]) })), 'latest', { strict: true });
+      const mine = ids.filter((id, i) => owners[i] && owners[i] !== '0x' && ('0x' + owners[i].slice(-40)).toLowerCase() === me);
+      if (!mine.length) continue;
+      const infos = await this.rpc.ethCallMany(mine.map((id) => ({ to: npm, data: IF.encodeFunctionData('positions', [BigInt(id)]) })), 'latest', { strict: true });
+      const shapes = [];
+      mine.forEach((id, i) => {
+        try {
+          const d = IF.decodeFunctionResult('positions', infos[i]);
+          const L = BigInt(d[7]);
+          if (L > 0n) shapes.push({ tokenId: id, token0: d[2].toLowerCase(), token1: d[3].toLowerCase(), fee: Number(d[4]), tickLower: Number(d[5]), tickUpper: Number(d[6]), liquidity: L });
+        } catch { incomplete = true; }
+      });
+      if (!shapes.length) continue;
+      const metas = await this.chain.tokens([...new Set(shapes.flatMap((s) => [s.token0, s.token1]))]);
+      const decOf = new Map(metas.map((t) => [t.address, t.decimals]));
+      for (const s of shapes) {
+        const pool = await this.chain.poolV3Addr(s.token0, s.token1, s.fee, npm);
+        const slot = pool ? await this.chain.slot0V3(pool) : null;
+        if (!slot) { incomplete = true; continue; }
+        const amt = m.amountsForLiquidity(slot.sqrtPriceX96, m.getSqrtRatioAtTick(s.tickLower), m.getSqrtRatioAtTick(s.tickUpper), s.liquidity);
+        const v = this.chain.valueInQuote({ sqrtPriceX96: slot.sqrtPriceX96, amount0: amt.amount0, amount1: amt.amount1,
+          dec0: decOf.get(s.token0) ?? 18, dec1: decOf.get(s.token1) ?? 18, token0: s.token0, token1: s.token1 });
+        const { cost, openedTs, entrySqrt } = this.adoptedCost(me, venue, s.tokenId, v?.symbol, v?.value ?? 0);
+        this.positions.record({
+          venue, poolRef: pool, token0: s.token0, token1: s.token1, fee: s.fee, tickSpacing: tickSpacingFromFee(s.fee),
+          tickLower: s.tickLower, tickUpper: s.tickUpper, liquidity: s.liquidity.toString(),
+          amount0: amt.amount0.toString(), amount1: amt.amount1.toString(), valueQuote: v?.value ?? 0, quoteSymbol: v?.symbol ?? null,
+        }, { tokenId: s.tokenId, txHash: null, target: null, costQuote: cost, openedTs, entrySqrt });
+        n++;
+      }
+    }
+    if (n) this.log(`mengadopsi ${n} posisi v3 milik wallet yang belum tercatat`);
+    return { n, incomplete };
+  }
+
+  // Capital & open time of an adopted position: from wallet research (Wallet menu) if it was ever
+  // scanned; without that capital = current value, so PnL starts from zero when adopted. Plus the
+  // pool price when that position opened, if wallet research ever recorded its event.
+  adoptedCost(me, venue, tokenId, quoteSymbol, valueQuote) {
+    const w = this.store.get('SELECT invested_q, opened_ts FROM wpositions WHERE chain=? AND wallet=? AND venue=? AND token_id=?', this.network, me, venue, tokenId);
+    // wevents has no venue column: it is the v4 research path's event log.
+    const ev0 = venue === 'v4' && this.store.get('SELECT sqrt_price FROM wevents WHERE chain=? AND wallet=? AND token_id=? AND sqrt_price IS NOT NULL ORDER BY block LIMIT 1', this.network, me, tokenId);
+    const isEth = this.chain.isEthLike(quoteSymbol);
+    const cost = w?.invested_q > 0 ? (isEth ? w.invested_q / this.ethUsd : w.invested_q) : valueQuote;
+    return { cost, openedTs: w?.opened_ts || null, entrySqrt: ev0?.sqrt_price || null };
   }
 
   // Find a failed copy plan that matches this position (pool + range).
@@ -2466,8 +2536,8 @@ class Engine {
       } catch { /* old detail without JSON */ }
     }
     let source = 'tx bot';
-    if (!hash && pos.venue === 'v4' && pos.pool_ref && pos.token_id) {
-      source = 'log ModifyLiquidity';
+    if (!hash && pos.token_id && (pos.venue === 'v4' ? pos.pool_ref : this.chain.isV3Venue(pos.venue))) {
+      source = pos.venue === 'v4' ? 'log ModifyLiquidity' : 'log DecreaseLiquidity';
       hash = await this.lastWithdrawTx(pos).catch((e) => { this.store.log('warn', `cari tx tarik #${pos.id}: ${e.message}`, { quiet: true }); return null; });
     }
     if (hash) {
@@ -2552,12 +2622,25 @@ class Engine {
     }
   }
 
-  // The last tx that WITHDREW liquidity from this v4 position (ModifyLiquidity with salt ==
-  // tokenId and a negative delta), searched backward from the latest block in a limited window.
+  // The last tx that WITHDREW liquidity from this position (v4: ModifyLiquidity with salt ==
+  // tokenId and a negative delta; v3: the NPM's DecreaseLiquidity), searched backward from the latest block in a limited window.
   // Called rarely (an empty position not recorded), so the getLogs cost is reasonable.
   async lastWithdrawTx(pos, { span = this.cfg.loop?.empty_scan_blocks ?? 3000, step = 500 } = {}) {
     const head = parseInt(await this.rpc.call('eth_blockNumber', []), 16);
     const salt = BigInt(pos.token_id).toString(16).padStart(64, '0');
+    // v3: the NPM's DecreaseLiquidity indexes the tokenId itself, so a long window is cheap —
+    // back to the position's open (at most 30 days), 1M blocks per query.
+    if (this.chain.isV3Venue(pos.venue)) {
+      const ms = this.chain.blockMs || 2000;
+      const back = Math.ceil(Math.min(30 * 864e5, Date.now() - (pos.opened_ts || 0) + 3600_000) / ms);
+      for (let hi = head; hi > Math.max(0, head - back);) {
+        const lo = Math.max(0, head - back, hi - 1_000_000);
+        const logs = await getLogsSafe(this.rpc, { address: this.chain.npmFor(pos.venue), topics: [TOPIC.decreaseLiq, '0x' + salt] }, lo, hi);
+        if (logs.length) return logs[logs.length - 1].transactionHash;
+        hi = lo - 1;
+      }
+      return null;
+    }
     for (let to = head; to > head - span; to -= step) {
       const from = Math.max(0, to - step + 1);
       const logs = await this.rpc.getLogs({
@@ -3352,6 +3435,12 @@ class Engine {
     await once('compound', 'pencatatan compound', this.compound.reconcile());
     await once('claim', 'pencatatan claim fee', this.reconcileFeeClaims());
     await once('rekon', 'rekonsiliasi keluar', this.reconcileExits());
+    // What happens to open positions outside the bot (add, partial withdrawal, fee collect) is
+    // read from the chain once a minute and booked, so their PnL stays true.
+    if (addr && Date.now() - (this.lastWatch || 0) > 60_000) {
+      this.lastWatch = Date.now();
+      await once('jejak', 'pantau posisi di chain', this.chainHistory().watch(addr, { liquidityOf: (r) => this.chainLiquidity(r) }));
+    }
     await once('simulasi', 'fee simulasi', this.paper.accrue());
     await this.positions.sync(this.ethUsd);
     await once('buku-masuk', 'pembukuan mint tertunda', this.bookPendingMints());
@@ -3625,6 +3714,12 @@ class Engine {
   paperResearch() {
     this.research ??= new WalletResearch({ rpc: this.rpc, store: this.store, chain: this.chain, log: this.log });
     return this.research;
+  }
+
+  // Reader of adopted positions' on-chain history (chainhistory.js).
+  chainHistory() {
+    this.chainHist ??= new ChainHistory({ rpc: this.rpc, store: this.store, chain: this.chain, log: this.log, research: this.paperResearch() });
+    return this.chainHist;
   }
 
   // Cash that can be used to open positions: USDG, and ETH/WETH above the gas reserve (in

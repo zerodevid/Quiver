@@ -123,12 +123,12 @@ const COPY = {
     title: 'Quiver — Concentrated liquidity management',
     description: 'Open, maintain, and close concentrated liquidity positions on Uniswap and Meteora: out-of-range exits, take profit and stop loss, fee compounding, and Telegram alerts.',
     nav: ['Features', 'Automation', 'Pricing', 'FAQ'],
-    signIn: 'Sign in', signUp: 'Sign up', createAccount: 'Create account', explore: 'Explore features',
+    signIn: 'Sign in', signUp: 'Sign up', createAccount: 'Start with Telegram', explore: 'Explore features', seePricing: 'See pricing',
     themeLabel: 'Toggle light/dark theme', langLabel: 'Language', menuLabel: 'Menu', themeShort: 'Theme',
     kicker: 'Robinhood Chain, BNB Chain, Solana, and more EVM chains',
     h1: 'Your liquidity, <span>on autopilot.</span>',
     lead: 'Quiver opens, maintains, and closes your LP positions on Uniswap and Meteora. Exits when price leaves your range, take profit and stop loss, and fee compounding all run automatically on your rules.',
-    inviteOnly: 'Sign-up is currently invite-only.',
+    signupNote: 'Sign up in the Quiver bot. No password or email needed.',
     app: {
       alt: 'Quiver dashboard overview: portfolio value, net PnL, fees earned, win rate, portfolio growth chart and composition',
       note: 'The real Quiver dashboard. Data shown is illustrative.',
@@ -173,7 +173,7 @@ const COPY = {
     },
     steps: {
       k: 'Getting started', h: 'Three steps to your first position.',
-      items: [['Create an account', 'Sign up with a username and password. Every account gets its own wallet, engine, and data.'], ['Fund the wallet', 'Send the native coin and a stablecoin to your account wallet on the chain you want to use.'], ['Open a position', 'Pick a pool and set the range and exit rules. Quiver runs the rest and reports on Telegram.']],
+      items: [['Start the bot', 'Sign in with Telegram and press Start in the Quiver bot. Your account comes with its own wallet, engine, and data.'], ['Fund the wallet', 'Send the native coin and a stablecoin to your account wallet on the chain you want to use.'], ['Open a position', 'Pick a pool and set the range and exit rules. Quiver runs the rest and reports on Telegram.']],
     },
     pricing: {
       k: 'Pricing', h: 'Pay per action. No subscription.',
@@ -202,16 +202,16 @@ const COPY = {
     soon: { tag: 'Coming soon', h: 'LP copy trading', p: 'Follow the positions of LP wallets you choose, with your own size and rules. Being prepared for every account.' },
     security: {
       k: 'Security', h: 'A separate wallet for every account.',
-      items: [['Encrypted keys', 'Each account\'s private key is stored encrypted on the server and never shown in the dashboard.'], ['Export any time', 'Retrieve your private key after re-entering your password, and import it into any wallet.'], ['Verifiable on-chain', 'Every transaction has an explorer link, and PnL is computed from on-chain data after gas.']],
+      items: [['Encrypted keys', 'Each account\'s private key is stored encrypted on the server and never shown in the dashboard.'], ['Export any time', 'Download your wallet as an encrypted keystore, the format MetaMask and other wallets import.'], ['Verifiable on-chain', 'Every transaction has an explorer link, and PnL is computed from on-chain data after gas.']],
     },
     faq: {
       k: 'FAQ', h: 'Common questions',
       items: [
-        ['Does Quiver hold my funds?', 'Yes, this is a custodial service: each account has its own wallet whose key is stored encrypted on the server, so the engine can close positions and compound fees without you being online. You can export the private key any time after re-entering your password.'],
+        ['Does Quiver hold my funds?', 'Yes, this is a custodial service: each account has its own wallet whose key is stored encrypted on the server, so the engine can close positions and compound fees without you being online. You can export the wallet any time as an encrypted keystore.'],
         ['How are fees paid?', 'In the native coin of the chain where the action happens (for example ETH or BNB), deducted when the action runs. Network gas is paid separately as usual.'],
         ['Is LP always profitable?', 'No. Trading fees can be outweighed by impermanent loss, especially on new, volatile tokens. Quiver helps you manage the risk with ranges, TP/SL, and pool data, but the decisions and the risk remain yours.'],
         ['What about copy trading?', 'Copying the positions of other LP wallets is being prepared for every account. For now, regular accounts focus on manual LP with full automation.'],
-        ['How do I sign up?', 'Sign-up currently requires an invite code. Ask the operator for a code, then open the Sign up page. Open registration is coming soon.'],
+        ['How do I sign up?', 'Press Start with Telegram, then Start in the Quiver bot. Your account and its wallet are created on the spot, with no invite code, password, or email.'],
       ],
     },
     community: {
@@ -225,7 +225,7 @@ const COPY = {
         email: ['Email', 'Support, partnerships, and account issues'],
       },
     },
-    final: { h: 'Start managing your LP positions with Quiver.', p: 'Create an account, fund the wallet, and open your first position in minutes.' },
+    final: { h: 'Start managing your LP positions with Quiver.', p: 'Start the bot, fund the wallet, and open your first position in minutes.' },
     footerNav: ['Features', 'Pricing', 'FAQ', 'Sign in'],
     risk: 'Providing liquidity carries risk, including impermanent loss, smart contract failure, and tokens losing their value. Quiver is a tool, not financial advice. Only use funds you can afford to put at risk.',
   },
@@ -234,12 +234,12 @@ const COPY = {
     title: 'Quiver — Manajemen LP terkonsentrasi',
     description: 'Buka, jaga, dan tutup posisi likuiditas terkonsentrasi di Uniswap dan Meteora: keluar otomatis saat di luar rentang, take profit dan stop loss, compound fee, dan notifikasi Telegram.',
     nav: ['Fitur', 'Otomasi', 'Biaya', 'FAQ'],
-    signIn: 'Masuk', signUp: 'Daftar', createAccount: 'Buat akun', explore: 'Pelajari fitur',
+    signIn: 'Masuk', signUp: 'Daftar', createAccount: 'Mulai lewat Telegram', explore: 'Pelajari fitur', seePricing: 'Lihat biaya',
     themeLabel: 'Ganti tema terang/gelap', langLabel: 'Bahasa', menuLabel: 'Menu', themeShort: 'Tema',
     kicker: 'Robinhood Chain, BNB Chain, Solana, dan chain EVM lain',
     h1: 'Likuiditas Anda, <span>berjalan otomatis.</span>',
     lead: 'Quiver membuka, menjaga, dan menutup posisi LP Anda di Uniswap dan Meteora. Keluar saat harga meninggalkan rentang, take profit dan stop loss, serta compound fee berjalan otomatis sesuai aturan Anda.',
-    inviteOnly: 'Pendaftaran saat ini memakai kode undangan.',
+    signupNote: 'Daftar lewat bot Quiver. Tanpa kata sandi atau email.',
     app: {
       alt: 'Ringkasan dasbor Quiver: nilai portofolio, PnL bersih, fee terkumpul, win rate, grafik pertumbuhan dan komposisi portofolio',
       note: 'Dasbor Quiver yang sebenarnya. Data yang tampil bersifat ilustrasi.',
@@ -284,7 +284,7 @@ const COPY = {
     },
     steps: {
       k: 'Memulai', h: 'Tiga langkah menuju posisi pertama.',
-      items: [['Buat akun', 'Daftar dengan nama pengguna dan kata sandi. Setiap akun mendapat wallet, mesin, dan data yang terpisah.'], ['Isi wallet', 'Kirim koin native dan stablecoin ke alamat wallet akun Anda di chain yang ingin dipakai.'], ['Buka posisi', 'Pilih pool, atur rentang dan aturan exit. Quiver menjalankan sisanya dan melapor lewat Telegram.']],
+      items: [['Mulai bot', 'Masuk dengan Telegram lalu tekan Start di bot Quiver. Akun Anda langsung mendapat wallet, mesin, dan data sendiri.'], ['Isi wallet', 'Kirim koin native dan stablecoin ke alamat wallet akun Anda di chain yang ingin dipakai.'], ['Buka posisi', 'Pilih pool, atur rentang dan aturan exit. Quiver menjalankan sisanya dan melapor lewat Telegram.']],
     },
     pricing: {
       k: 'Biaya', h: 'Bayar per aksi. Tanpa langganan.',
@@ -313,16 +313,16 @@ const COPY = {
     soon: { tag: 'Segera hadir', h: 'Copy trading LP', p: 'Ikuti posisi wallet LP pilihan dengan ukuran dan aturan Anda sendiri. Sedang disiapkan untuk semua akun.' },
     security: {
       k: 'Keamanan', h: 'Wallet terpisah untuk setiap akun.',
-      items: [['Kunci terenkripsi', 'Kunci privat setiap akun disimpan terenkripsi di server dan tidak pernah ditampilkan di dasbor.'], ['Ekspor kapan saja', 'Ambil kunci privat Anda setelah memasukkan ulang kata sandi, lalu impor ke wallet mana pun.'], ['Dapat diverifikasi on-chain', 'Setiap transaksi memiliki tautan explorer, dan PnL dihitung dari data on-chain setelah gas.']],
+      items: [['Kunci terenkripsi', 'Kunci privat setiap akun disimpan terenkripsi di server dan tidak pernah ditampilkan di dasbor.'], ['Ekspor kapan saja', 'Unduh wallet Anda sebagai keystore terenkripsi, format yang bisa diimpor MetaMask dan wallet lain.'], ['Dapat diverifikasi on-chain', 'Setiap transaksi memiliki tautan explorer, dan PnL dihitung dari data on-chain setelah gas.']],
     },
     faq: {
       k: 'FAQ', h: 'Pertanyaan umum',
       items: [
-        ['Apakah Quiver memegang dana saya?', 'Ya, ini layanan kustodian: setiap akun punya wallet sendiri yang kuncinya disimpan terenkripsi di server, supaya mesin bisa menutup posisi dan compound fee tanpa Anda harus online. Anda bisa mengekspor kunci privat kapan saja setelah memasukkan ulang kata sandi.'],
+        ['Apakah Quiver memegang dana saya?', 'Ya, ini layanan kustodian: setiap akun punya wallet sendiri yang kuncinya disimpan terenkripsi di server, supaya mesin bisa menutup posisi dan compound fee tanpa Anda harus online. Anda bisa mengekspor wallet kapan saja sebagai keystore terenkripsi.'],
         ['Biaya dibayar pakai apa?', 'Koin native chain tempat transaksi terjadi (misalnya ETH atau BNB), dipotong saat aksi berjalan. Gas jaringan tetap dibayar terpisah seperti biasa.'],
         ['Apakah LP pasti untung?', 'Tidak. Fee trading bisa kalah oleh impermanent loss, terutama di token baru yang volatil. Quiver membantu mengelola risiko dengan rentang, TP/SL, dan data pool, tapi keputusan dan risikonya tetap di tangan Anda.'],
         ['Bagaimana dengan copy trading?', 'Fitur menyalin posisi wallet LP lain sedang disiapkan untuk semua akun. Untuk sekarang, akun reguler fokus ke LP manual dengan otomatisasi penuh.'],
-        ['Bagaimana cara mendaftar?', 'Saat ini pendaftaran memakai kode undangan. Minta kode ke pengelola, lalu buka halaman Daftar. Pendaftaran terbuka untuk umum akan segera dibuka.'],
+        ['Bagaimana cara mendaftar?', 'Tekan Mulai lewat Telegram, lalu Start di bot Quiver. Akun dan wallet-nya langsung dibuat, tanpa kode undangan, kata sandi, atau email.'],
       ],
     },
     community: {
@@ -336,7 +336,7 @@ const COPY = {
         email: ['Email', 'Bantuan, kerja sama, dan masalah akun'],
       },
     },
-    final: { h: 'Mulai kelola posisi LP Anda dengan Quiver.', p: 'Buat akun, isi wallet, dan buka posisi pertama dalam beberapa menit.' },
+    final: { h: 'Mulai kelola posisi LP Anda dengan Quiver.', p: 'Mulai bot, isi wallet, dan buka posisi pertama dalam beberapa menit.' },
     footerNav: ['Fitur', 'Biaya', 'FAQ', 'Masuk'],
     risk: 'Menyediakan likuiditas mengandung risiko, termasuk impermanent loss, kegagalan smart contract, dan token yang kehilangan nilai. Quiver adalah alat bantu, bukan nasihat keuangan. Gunakan hanya dana yang siap Anda tanggung risikonya.',
   },
@@ -671,17 +671,19 @@ footer nav a:hover{color:var(--fg)}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}html{scroll-behavior:auto}#splash .sp-bar span{width:100%;opacity:.5}}
 `;
 
-// `register`: whether /register is reachable (the sign-up link is hidden otherwise).
+// Sign-up goes through Telegram: the sign-in page's Telegram button creates the account
+// (src/index.js onboardTelegram), so every sign-up link points at /login.
 // `lang`: 'en' | 'id'; anything else falls back to English.
 // `links`: config.json landing.links ({ telegramChannel, telegramGroup, x, discord, email }).
-const LANDING_PAGE = ({ register = true, lang = DEFAULT_LANG, links = {} } = {}) => {
+// `origin`: 'https://host' of this request, for the absolute URLs link previews need ('' skips them).
+const LANDING_PAGE = ({ lang = DEFAULT_LANG, links = {}, origin = '' } = {}) => {
   if (!LANGS.includes(lang)) lang = DEFAULT_LANG;
   const community = safeLinks(links);
   const ext = (href) => (href.startsWith('mailto:') ? '' : ' target="_blank" rel="noopener"');
   const c = COPY[lang]; const a = c.app;
   const fmt4 = (v) => new Intl.NumberFormat(c.locale, { minimumFractionDigits: 4, maximumFractionDigits: 4 }).format(v);
   // Same-page anchors keep the language; links to other pages don't need it.
-  const signup = (cls) => (register ? `<a class="btn primary ${cls}" href="/register">${c.createAccount} ${icon('arrow')}</a>` : '');
+  const signup = (cls) => `<a class="btn primary ${cls}" href="/login">${brand('telegram')}${c.createAccount}</a>`;
   const logo = ([img, name]) => `<span class="logo-i"><img src="/${img}" alt="" width="22" height="22" loading="lazy">${esc(name)}</span>`;
   const sh = (s) => `<div class="k">${s.k}</div><h2>${s.h}</h2>${s.p ? `<p>${s.p}</p>` : ''}`;
   const ticks = (list) => `<ul class="ticks">${list.map((t) => `<li>${icon('check')}${t}</li>`).join('')}</ul>`;
@@ -690,6 +692,12 @@ const LANDING_PAGE = ({ register = true, lang = DEFAULT_LANG, links = {} } = {})
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${c.title}</title>
 <meta name="description" content="${esc(c.description)}">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website"><meta property="og:site_name" content="Quiver">
+<meta property="og:title" content="${esc(c.title)}"><meta property="og:description" content="${esc(c.description)}">
+<meta property="og:locale" content="${c.locale.replace('-', '_')}"><meta name="twitter:card" content="summary_large_image">
+${origin ? `<link rel="canonical" href="${esc(origin)}/?lang=${lang}"><meta property="og:url" content="${esc(origin)}/?lang=${lang}">
+<meta property="og:image" content="${esc(origin)}/og-${lang}.png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta property="og:image:alt" content="${esc(a.alt)}">` : ''}
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="alternate" hreflang="en" href="/?lang=en"><link rel="alternate" hreflang="id" href="/?lang=id">
 <script>(function(){
@@ -711,7 +719,7 @@ ${SPLASH}
     <span class="lang" role="group" aria-label="${c.langLabel}">${LANGS.map((l) => `<a href="/?lang=${l}" hreflang="${l}"${l === lang ? ' aria-current="true"' : ''}>${l.toUpperCase()}</a>`).join('')}</span>
     <button class="btn ghost theme" id="theme" type="button" aria-label="${c.themeLabel}">${icon('sun', 'ic sun')}${icon('moon', 'ic moon')}</button>
     <a class="btn ghost signin" href="/login">${c.signIn}</a>
-    ${register ? `<a class="btn primary" href="/register">${c.signUp}</a>` : ''}
+    <a class="btn primary signup" href="/login">${c.signUp}</a>
     <button class="btn ghost burger" id="burger" type="button" aria-label="${c.menuLabel}" aria-expanded="false" aria-controls="mnav">${icon('menu', 'ic open')}${icon('close', 'ic shut')}</button>
   </div>
 </div>
@@ -726,13 +734,13 @@ ${SPLASH}
   <h1>${c.h1}</h1>
   <p class="lead">${c.lead}</p>
   <div class="cta">${signup('lg')}<a class="btn outline lg" href="#fitur">${c.explore}</a></div>
-  ${register ? `<p class="fine">${c.inviteOnly}</p>` : ''}
+  <p class="fine">${c.signupNote}</p>
 </div>
 
 <div class="stage"><div class="wrap">
   <div class="shot">
-    <img class="on-light" src="/landing-overview-${lang}-light.webp" alt="${a.alt}" width="2880" height="1270">
-    <img class="on-dark" src="/landing-overview-${lang}-dark.webp" alt="${a.alt}" width="2880" height="1270" loading="lazy">
+    <img class="on-light" src="/landing-overview-${lang}-light.webp" alt="${a.alt}" width="2880" height="1510">
+    <img class="on-dark" src="/landing-overview-${lang}-dark.webp" alt="${a.alt}" width="2880" height="1510" loading="lazy">
   </div>
   <p class="stage-note">${a.note}</p>
 </div></div>
@@ -838,7 +846,7 @@ ${community.length ? `<section id="komunitas"><div class="wrap">
 ` : ''}<div class="final"><div class="wrap">
   <h2>${c.final.h}</h2>
   <p>${c.final.p}</p>
-  <div class="cta">${signup('lg')}<a class="btn outline lg" href="/login">${c.signIn}</a></div>
+  <div class="cta">${signup('lg')}<a class="btn outline lg" href="#biaya">${c.seePricing}</a></div>
 </div></div>
 </main>
 

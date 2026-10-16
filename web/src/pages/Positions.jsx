@@ -17,6 +17,7 @@ import TakeoverButton from '../components/TakeoverButton';
 import ScanPositionsButton from '../components/ScanPositionsButton';
 import { usd, pct, tone, age, ago, short, shortId, num, feeApr, aprText } from '../fmt';
 import { useI18n } from '../i18n';
+import { useMe, isRegular } from '../me';
 
 const sum = (rows, f) => rows.reduce((a, r) => a + (f(r) || 0), 0);
 
@@ -153,6 +154,8 @@ function Source({ p }) {
 
 export default function Positions({ param }) {
   const { t } = useI18n();
+  // Open-LP accounts copy no one: no Source columns and no copy wording for them.
+  const openLp = isRegular(useMe());
   // #positions/123 -> detail of a single position. The list poll is off while the detail is open.
   // The endpoint is cheap (database + the in-memory sync result), so a position just
   // opened by the bot appears within ~5 seconds.
@@ -230,7 +233,7 @@ export default function Positions({ param }) {
         <DataTable label="Posisi terbuka" rows={shown} rowKey={(p) => p.id} searchable onRow={(p) => setHist(p.id)}
           defaultSort={{ column: 'val', direction: 'descending' }}
           empty={<Empty title={lensNow === 'in' ? 'Tidak ada posisi in-range' : lensNow === 'out' ? 'Semua posisi ada di dalam rentang' : 'Belum ada posisi terbuka'}
-            sub={lensNow === 'all' ? 'Posisi muncul di sini setelah bot menyalin LP dari wallet target.' : null} />}
+            sub={lensNow !== 'all' ? null : openLp ? 'Posisi muncul di sini begitu kamu membuka posisi LP baru.' : 'Posisi muncul di sini setelah bot menyalin LP dari wallet target.'} />}
           columns={[
             { key: 'pair', label: 'Pasangan', sort: (p) => `${p.symbol0}/${p.symbol1}`, render: (p) => <Pair p={p} link={false} /> },
             { key: 'range', label: 'Rentang harga', sortable: false, render: (p) => (
@@ -252,7 +255,7 @@ export default function Positions({ param }) {
                   {p.cost.pctOfCost != null && <div className="text-xs text-muted">{pct(p.cost.pctOfCost, 2).replace('+', '')}</div>}
                 </div>)) },
             { key: 'age', label: 'Umur', align: 'end', sort: (p) => p.ageHours, render: (p) => <span className="whitespace-nowrap text-muted">{age(p.ageHours)}</span> },
-            { key: 'tgt', label: 'Sumber', sort: (p) => p.targetLabel || p.target,
+            !openLp && { key: 'tgt', label: 'Sumber', sort: (p) => p.targetLabel || p.target,
               search: (p) => `${p.targetLabel || ''} ${p.target || ''}`, render: (p) => <Source p={p} /> },
             // Four labelled buttons per row widen this column until the table has to be
             // scrolled far right just to reach it. So icons only, in a single
@@ -274,7 +277,7 @@ export default function Positions({ param }) {
           ]} />
       </Panel>
       <Panel title={t('Posisi tertutup ({n})', { n: closed.length })} bodyClass="p-0"
-        desc="Kolom Sumber memuat wallet yang disalin beserta hasil posisi aslinya. Modal target jarang sebesar modal kita, jadi yang sebanding persennya, bukan dolarnya."
+        desc={openLp ? null : 'Kolom Sumber memuat wallet yang disalin beserta hasil posisi aslinya. Modal target jarang sebesar modal kita, jadi yang sebanding persennya, bukan dolarnya.'}
         action={closed.length > 0 && <Totals items={[
           ['Ongkos', usd(sum(closed, (c) => c.cost?.totalUsd || 0))],
           ['PnL', usd(closedPnl), tone(closedPnl)],
@@ -290,7 +293,7 @@ export default function Positions({ param }) {
                   <div className="mono mt-0.5 text-xs text-muted">{String(c.venue || '').toUpperCase()} · #{shortId(c.token_id)}</div>
                   <TradeLinks token={baseTokenOf(c)} pool={c.pool_ref} venue={c.venue} compact className="mt-1" /></div>
               </div>) },
-            { key: 'tgt', label: 'Sumber', sort: (c) => c.targetLabel || c.target,
+            !openLp && { key: 'tgt', label: 'Sumber', sort: (c) => c.targetLabel || c.target,
               search: (c) => `${c.targetLabel || ''} ${c.target || ''}`, render: (c) => <Source p={c} /> },
             { key: 'cost', label: 'Modal', align: 'end', sort: (c) => c.costUsd, render: (c) => usd(c.costUsd) },
             { key: 'out', label: 'Hasil', align: 'end', sort: (c) => c.outUsd, render: (c) => usd(c.outUsd) },

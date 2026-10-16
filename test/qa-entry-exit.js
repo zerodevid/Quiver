@@ -719,7 +719,7 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     const info = (-600n & 0xffffffn) << 8n | ((600n & 0xffffffn) << 32n);
     const rpc = {
       blockNumber: async () => 5000,
-      getLogs: async (f) => (f.topics[2] ? [{ blockNumber: '0x10', topics: [TOPIC.transfer, addrTopic(ethers.ZeroAddress), addrTopic(ME), pad(42)] }] : []),
+      getLogs: async (f) => (f.topics[2] && f.address === ADDR.posmV4 ? [{ blockNumber: '0x10', topics: [TOPIC.transfer, addrTopic(ethers.ZeroAddress), addrTopic(ME), pad(42)] }] : []),
       ethCallMany: async (calls) => calls.map((c) => {
         const fn = IF_POSM.parseTransaction({ data: c.data })?.name;
         if (fn === 'ownerOf') return pad(ME);
@@ -739,6 +739,48 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     await eng.adoptOwnPositions(ME);
     assert.strictEqual(Number(store.getState('adopt_scanned_to:robinhood')), 5000, store.all("SELECT msg FROM logs ORDER BY id DESC LIMIT 2").map((r) => r.msg).join(' | '));
     assert.strictEqual(store.all("SELECT token_id FROM positions").map((r) => r.token_id).join(), '42');
+  });
+
+  await t('position adoption: a v3 NFT held by the wallet (opened outside the bot) is adopted too, with its pool address', async () => {
+    const V3POOL = '0x' + 'cd'.repeat(20);
+    const L = 10n ** 15n;
+    const rpc = {
+      blockNumber: async () => 5000,
+      getLogs: async (f) => (f.topics[2] && f.address === ADDR.npmV3 ? [{ blockNumber: '0x10', topics: [TOPIC.transfer, addrTopic(ethers.ZeroAddress), addrTopic(ME), pad(77)] }] : []),
+      ethCallMany: async (calls) => calls.map((c) => {
+        if (c.to !== ADDR.npmV3) return null;
+        const fn = IF_NPM.parseTransaction({ data: c.data })?.name;
+        if (fn === 'ownerOf') return pad(ME);
+        if (fn === 'positions') return IF_NPM.encodeFunctionResult('positions', [0, ethers.ZeroAddress, USDG, MEME, 10000, -2000, 2000, L, 0, 0, 0, 0]);
+        return null;
+      }),
+    };
+    const { eng, store } = engineWith({ rpc });
+    eng.chain.venues = [{ key: 'v3' }];
+    eng.chain.npmFor = () => ADDR.npmV3;
+    eng.chain.poolV3Addr = async () => V3POOL;
+    eng.chain.slot0V3 = async () => ({ sqrtPriceX96: m.getSqrtRatioAtTick(0), tick: 0 });
+    eng.chain.valueInQuote = () => ({ value: 10, kind: 'usd', symbol: 'USDG' });
+    eng.chain.isEthLike = () => false;
+    await eng.adoptOwnPositions(ME);
+    const rows = store.all('SELECT venue, token_id, pool_ref, fee, tick_spacing, tick_lower, tick_upper, liquidity, cost_quote, target FROM positions');
+    assert.deepStrictEqual(rows.map((r) => ({ ...r })), [{ venue: 'v3', token_id: '77', pool_ref: V3POOL, fee: 10000, tick_spacing: 200, tick_lower: -2000, tick_upper: 2000, liquidity: L.toString(), cost_quote: 10, target: null }]);
+    assert.strictEqual(Number(store.getState('adopt_scanned_to:robinhood')), 5000);
+    // A second scan does not book it twice.
+    await eng.adoptOwnPositions(ME, { rescan: true });
+    assert.strictEqual(store.all('SELECT id FROM positions').length, 1);
+  });
+
+  await t('a v3 position emptied outside the bot: its withdrawal tx is found from the NPM DecreaseLiquidity log (not booked as $0)', async () => {
+    const CLOSE = '0x' + 'c1'.repeat(32);
+    const rpc = {
+      call: async (m) => (m === 'eth_blockNumber' ? '0x1388' : null),
+      getLogs: async (f) => (f.address === ADDR.npmV3 && f.topics[0] === TOPIC.decreaseLiq && f.topics[1] === pad(77) ? [{ transactionHash: CLOSE }] : []),
+    };
+    const { eng } = engineWith({ rpc });
+    eng.chain.isV3Venue = (v) => v === 'v3';
+    eng.chain.npmFor = () => ADDR.npmV3;
+    assert.strictEqual(await eng.lastWithdrawTx({ venue: 'v3', token_id: '77', pool_ref: '0x' + 'cd'.repeat(20), opened_ts: Date.now() - 3600_000 }), CLOSE);
   });
 
   await t('position adoption: a different wallet (import/switch) scans the recent window, not the whole history; `rescan` too', async () => {
