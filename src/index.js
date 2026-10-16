@@ -16,6 +16,8 @@ const { normalizeCfg, chainView, enabledChains, PRIMARY } = require('./multichai
 const { setupNeeded, runSetup } = require('./setup');
 const { applyPendingRestore } = require('./backup');
 const { NETWORKS, isSolana, normAddr, addrHint } = require('./networks');
+const { Auth } = require('./auth');
+const { userDir, loadUserCfg, userCfgView } = require('./tenants');
 // The Solana engine is loaded only when a Solana chain is enabled: its SDKs (Meteora/Orca/
 // Raydium) are heavy and an EVM-only instance does not need them.
 const solanaStack = () => ({
@@ -139,15 +141,18 @@ async function main() {
       chain = new Chain(rpc, store, clog, key);
     }
     const net = { key, label: chain.label, cfg: view, rpc, chain, log: clog, timers: [], stopped: false };
-    // seed targets from the config (only if not present yet). Solana addresses are case-sensitive.
+    seedTargets(store, view, key, clog);
+    return net;
+  }
+  // Seed targets from the config (only if not present yet). Solana addresses are case-sensitive.
+  function seedTargets(st, view, key, clog) {
     for (const t of view.targets || []) {
       const a = normAddr(key, t.address);
       if (!a) { clog(`target ${t.address} dilewati: bukan ${addrHint(key)}`); continue; }
-      store.run('INSERT OR IGNORE INTO targets(chain,address,label,enabled,added_ts,rules) VALUES(?,?,?,?,?,?)',
+      st.run('INSERT OR IGNORE INTO targets(chain,address,label,enabled,added_ts,rules) VALUES(?,?,?,?,?,?)',
         key, a, t.label || null, t.enabled === false ? 0 : 1, Date.now(),
         t.rules ? JSON.stringify(t.rules) : null);
     }
-    return net;
   }
   for (const key of keys) { const net = buildNet(key); if (net) nets[key] = net; }
   if (!nets[primaryKey]) { console.error(`chain utama ${primaryKey} tidak bisa dinyalakan (tidak ada RPC?)`); process.exit(1); }
@@ -207,13 +212,17 @@ async function main() {
   const cleanup = () => { try { fs.unlinkSync(PID_FILE); } catch { /* already gone */ } };
   process.on('exit', cleanup);
 
-  const makeEngine = (net) => {
+  const makeEngine = (net, st = store) => {
     const E = isSolana(net.key) ? solanaStack().SolanaEngine : Engine;
-    net.engine = new E({ rpc: net.rpc, store, chain: net.chain, cfg: net.cfg, log: net.log });
+    net.engine = new E({ rpc: net.rpc, store: st, chain: net.chain, cfg: net.cfg, log: net.log });
   };
   for (const net of Object.values(nets)) makeEngine(net);
+  // Multi-user: every regular account is a tenant with its own config, database and engines,
+  // sharing this process's RPC pools (see tenants.js). userId -> { store, cfg, nets, servers }.
+  const tenants = new Map();
   // Live list: chains can be switched on and off while the bot runs.
-  const allEngines = () => Object.values(nets).map((n) => n.engine).filter(Boolean);
+  const allNets = () => [...Object.values(nets), ...[...tenants.values()].flatMap((t) => Object.values(t.nets))];
+  const allEngines = () => allNets().map((n) => n.engine).filter(Boolean);
 
   // Stop in an orderly way. pm2 restart (every deploy) sends SIGINT; the process used to
   // exit right away — an entry that had zapped but not minted left a naked token,
@@ -227,7 +236,7 @@ async function main() {
     if (stopping) { log(`${sig} kedua — keluar paksa`); cleanup(); process.exit(1); }
     stopping = true;
     for (const t of timers) clearInterval(t);
-    for (const n of Object.values(nets)) { n.stopped = true; n.timers.forEach(clearInterval); }
+    for (const n of allNets()) { n.stopped = true; n.timers.forEach(clearInterval); }
     const engines = allEngines();
     const busy = engines.some((e) => !e.idle());
     if (busy) log(`berhenti (${sig}) — menunggu transaksi yang sedang berjalan selesai…`);
@@ -265,6 +274,12 @@ async function main() {
     shareCard: (opts, chainKey) => serverFor(chainKey).shareCard(opts),
     chartCard: (opts, chainKey) => serverFor(chainKey).chartCard(opts),
     portfolioCard: (opts, chainKey) => serverFor(chainKey).portfolioCard(opts),
+    // Multi-user: chats and pairing codes that belong to an account go to that account's bot.
+    routeChat: (chatId) => [...tenants.values()].find((t) => t.telegram.chats().includes(chatId))?.telegram || null,
+    pairOwner: (code) => [...tenants.values()].find((t) => {
+      const p = t.telegram.pairCode;
+      return p && Date.now() <= p.exp && String(code).trim().toUpperCase() === p.code;
+    })?.telegram || null,
   });
 
   // The server is started FIRST: initialisation can take tens of seconds if the RPC
@@ -283,6 +298,10 @@ async function main() {
       makeServer(net);
       log(`chain ${key} dinyalakan dari Pengaturan`);
       runNet(net).catch((e) => net.log(`mesin gagal dinyalakan: ${e.message}`));
+      for (const t of tenants.values()) {
+        const tn = addTenantNet(t, key);
+        runNet(tn).catch((e) => tn.log(`mesin gagal dinyalakan: ${e.message}`));
+      }
       return { ok: true };
     },
     async stop(key) {
@@ -292,7 +311,10 @@ async function main() {
       net.stopped = true;
       net.timers.forEach(clearInterval);
       net.timers.length = 0;
-      const clean = await net.engine.drain(100_000);
+      const tnets = [...tenants.values()].map((t) => [t, t.nets[key]]).filter(([, n]) => n);
+      for (const [, n] of tnets) { n.stopped = true; n.timers.forEach(clearInterval); n.timers.length = 0; }
+      const clean = (await Promise.all([net.engine.drain(100_000), ...tnets.map(([, n]) => n.engine.drain(100_000))])).every(Boolean);
+      for (const [t] of tnets) { delete t.nets[key]; delete t.servers[key]; }
       delete nets[key];
       delete servers[key];
       log(`chain ${key} dimatikan dari Pengaturan${clean ? '' : ' (masih ada pekerjaan yang belum selesai, dilanjutkan saat chain dinyalakan lagi)'}`);
@@ -302,23 +324,118 @@ async function main() {
   // "All chains" view: merges the aggregate routes of every chain's server (see allchains.js).
   const allChains = createAllChains({ servers: () => servers, nets: () => nets, primaryKey });
   const makeServer = (net) => {
-    servers[net.key] = createServer({ engine: net.engine, store, cfg: net.cfg, cfgPath: CFG_PATH, chain: net.chain, rpc: net.rpc, log: net.log, telegram, nets, chainControl, allChains });
+    servers[net.key] = createServer({ engine: net.engine, store, cfg: net.cfg, cfgPath: CFG_PATH, chain: net.chain, rpc: net.rpc, log: net.log, telegram, nets, chainControl, allChains, tenantControl });
   };
+
+  // ---- tenants (regular accounts) ----
+  const auth = new Auth(store);
+  const maxUsers = () => Number(cfg.server?.max_users) || 20;
+  function addTenantNet(t, key) {
+    const base = nets[key];
+    const view = chainView(t.cfg, key);
+    const clog = (msg) => log(`[u${t.userId}:${tagOf(key)}] ${msg}`);
+    // The chain object caches pool/token metadata in its store, and other modules read those
+    // tables from the same store — so it is per tenant; only the RPC pool is shared.
+    const chain = isSolana(key)
+      ? new (solanaStack().SolanaChain)(base.rpc, t.store, clog, key)
+      : new Chain(base.rpc, t.store, clog, key);
+    const net = { key, label: chain.label, cfg: view, rpc: base.rpc, chain, log: clog, timers: [], stopped: false };
+    seedTargets(t.store, view, key, clog);
+    makeEngine(net, t.store);
+    t.nets[key] = net;
+    t.servers[key] = createServer({
+      engine: net.engine, store: t.store, authStore: store, cfg: view, cfgPath: t.cfgPath, chain, rpc: base.rpc, log: clog,
+      telegram: t.telegram, nets: t.nets, chainControl: null, tenant: { userId: t.userId }, tenantControl,
+      // A restore restarts this account's engines only, never the whole process.
+      restart: () => { tenantControl.restart(t.userId).catch((e) => log(`akun ${t.userId}: ${e.message}`)); },
+    });
+    return net;
+  }
+  function buildTenant(userId) {
+    const dir = userDir(ROOT, userId);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const cfgPath = path.join(dir, 'config.json');
+    const dbPath = path.join(dir, 'lpcopy.db');
+    // A restore from Settings → Backup is staged as pending files and swapped in here.
+    applyPendingRestore(cfgPath, log);
+    applyPendingRestore(dbPath, log);
+    const ucfg = userCfgView(cfg, loadUserCfg(cfgPath, cfg, dir), { dbPath });
+    writeCfg(cfgPath, ucfg);
+    const t = { userId, store: new Store(dbPath), cfg: ucfg, cfgPath, nets: {}, servers: {} };
+    // The account's bot: no polling of its own, the superadmin's bot delivers its chats' updates.
+    const srv = (k) => t.servers[k] || t.servers[primaryKey] || Object.values(t.servers)[0];
+    t.telegram = new Telegram({
+      cfg: ucfg, cfgPath, store: t.store, engine: null, log: (msg) => log(`[u${userId}] ${msg}`), nets: t.nets, primaryKey, hub: telegram,
+      api: (method, pathname, body, query, chainKey) => srv(chainKey).api(method, pathname, body, query),
+      shareCard: (opts, chainKey) => srv(chainKey).shareCard(opts),
+      chartCard: (opts, chainKey) => srv(chainKey).chartCard(opts),
+      portfolioCard: (opts, chainKey) => srv(chainKey).portfolioCard(opts),
+    });
+    for (const key of Object.keys(nets)) addTenantNet(t, key);
+    return t;
+  }
+  const tenantControl = {
+    has: (userId) => tenants.has(userId),
+    ownerOfChat: (chatId) => [...tenants.values()].find((t) => t.telegram.chats().includes(String(chatId)))?.userId || null,
+    max: maxUsers,
+    canAdd: () => tenants.size < maxUsers(),
+    start(userId) {
+      if (stopping || tenants.has(userId)) return { ok: true };
+      if (!this.canAdd()) { log(`akun ${userId} tidak dinyalakan: kuota ${maxUsers()} akun penuh`); return { error: 'kuota akun penuh' }; }
+      let t;
+      try { t = buildTenant(userId); } catch (e) { log(`akun ${userId} gagal dinyalakan: ${e.message}`); return { error: e.message }; }
+      tenants.set(userId, t);
+      log(`akun ${userId} dinyalakan (${Object.keys(t.nets).join(', ')})`);
+      for (const n of Object.values(t.nets)) runNet(n).catch((e) => n.log(`mesin gagal dinyalakan: ${e.message}`));
+      t.telegram.start().catch((e) => log(`[u${userId}] telegram: ${e.message}`));
+      return { ok: true };
+    },
+    async restart(userId) {
+      await this.stop(userId);
+      return this.start(userId);
+    },
+    async stop(userId) {
+      const t = tenants.get(userId);
+      if (!t) return { ok: true };
+      tenants.delete(userId);
+      try { t.telegram.stop(); } catch { /* ignore */ }
+      for (const n of Object.values(t.nets)) { n.stopped = true; n.timers.forEach(clearInterval); n.timers.length = 0; }
+      const clean = (await Promise.all(Object.values(t.nets).map((n) => n.engine.drain(100_000)))).every(Boolean);
+      try { t.store.db.close(); } catch { /* already closed */ }
+      log(`akun ${userId} dimatikan${clean ? '' : ' (pekerjaan yang belum selesai dilanjutkan saat akun dinyalakan lagi)'}`);
+      return { ok: true };
+    },
+  };
+
   for (const net of Object.values(nets)) makeServer(net);
   // ?chain= wins (a row's link or action on the combined view), then the cookie. 'all' is
   // answered by the primary chain's server, which has the token gate, flagged for allChains.
-  const pickChain = (req, url) => {
+  const pickChain = (req, url, srv) => {
     const q = url.searchParams.get('chain');
-    if (q && servers[q]) return q;
+    if (q && srv[q]) return q;
     const m = /(?:^|;\s*)lpcopy_chain=([a-z0-9_-]+)/i.exec(req.headers.cookie || '');
-    if (m && m[1] === 'all' && Object.keys(servers).length > 1) return 'all';
-    return m && servers[m[1]] ? m[1] : primaryKey;
+    // 'all' only exists on the superadmin's servers (allChains merges those).
+    if (m && m[1] === 'all' && srv === servers && Object.keys(servers).length > 1) return 'all';
+    if (m && srv[m[1]]) return m[1];
+    return srv[primaryKey] ? primaryKey : Object.keys(srv)[0];
+  };
+  // The front door picks the tenant from the session cookie, then the chain. Everyone else
+  // (token holders, the superadmin, visitors who still have to sign in) goes to the original
+  // servers, whose gate does the rest.
+  const sessionOf = (req) => {
+    // The mini app of an account carries its session as a bearer (the Telegram Web iframe drops cookies).
+    const b = /^Bearer ([0-9a-f]{64})$/.exec(req.headers.authorization || '');
+    const m = b || /(?:^|;\s*)lpcopy_session=([0-9a-f]{64})/.exec(req.headers.cookie || '');
+    return m ? auth.userBySession(m[1]) : null;
   };
   const front = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
-    const key = pickChain(req, url);
+    const u = sessionOf(req);
+    const t = u && u.role !== 'superadmin' ? tenants.get(u.id) : null;
+    const srv = t && Object.keys(t.servers).length ? t.servers : servers;
+    const key = pickChain(req, url, srv);
     if (key === 'all') req.__allChains = true;
-    servers[key === 'all' ? primaryKey : key].emit('request', req, res);
+    srv[key === 'all' ? primaryKey : key].emit('request', req, res);
   });
   front.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
@@ -370,9 +487,13 @@ async function main() {
       setInterval(when(() => engine.retryLeftovers(), 'jual sisa'), 1000),
     );
   }
+  // Accounts start alongside the superadmin's engines (each has its own warm-up).
+  for (const u of auth.listUsers()) if (u.role !== 'superadmin' && u.status === 'active') tenantControl.start(u.id);
   await Promise.all(Object.values(nets).map(runNet));
   timers.push(setInterval(() => {
     store.prune(30);
+    for (const t of tenants.values()) { try { t.store.prune(30); } catch (e) { log(`akun ${t.userId}: ${e.message}`); } }
+    try { auth.pruneAudit(365); } catch (e) { log(`audit: ${e.message}`); }
     // RPC cache: drop expired entries and those past the size limit.
     for (const net of Object.values(nets)) {
       try { net.rpc.cache?.sweep(); } catch (e) { net.log(`cache rpc: ${e.message}`); }

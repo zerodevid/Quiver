@@ -24,6 +24,7 @@ const { ethers } = require('ethers');
 const { RpcPool } = require('./rpc');
 const { TOPIC } = require('./chain');
 const { writeCfg, envName, privateKeyFromEnv } = require('./env');
+const { writeSecret } = require('./keyfile');
 const { CURRENCIES, currencyOf } = require('./fx');
 const { createBackup, parseBackup, stageRestore } = require('./backup');
 
@@ -127,7 +128,7 @@ async function probeRpc({ url, headers }, chain) {
 // `restart`: called after a config/database restore. Defaults to the orderly-stop path
 // of index.js (SIGINT) — pm2/systemd starts it again and boot swaps the files.
 function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = null, chainControl = null, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market = null, fx = null,
-  restart = () => process.kill(process.pid, 'SIGINT') }) {
+  restart = () => process.kill(process.pid, 'SIGINT'), retypeSecret = null, maxBackupBytes = 256 * 1024 * 1024 }) {
   chain = ensureChain(chain || engine?.chain);
   // Live list: chains can be switched on and off while the bot runs.
   const liveEngines = () => (nets ? Object.values(nets).map((n) => n.engine).filter(Boolean) : enginesInit);
@@ -161,7 +162,9 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
   // created/imported/detached through the same routes, in the Solana key form.
   const SOL = chain.kind === 'solana';
   const sol = SOL ? require('./solana/wallet') : null;
-  const keyFromEnv = () => (SOL ? sol.solanaKeyFromEnv() : privateKeyFromEnv());
+  const keyFromEnv = () => cfg.wallet?.from_env !== false && (SOL ? sol.solanaKeyFromEnv() : privateKeyFromEnv());
+  // Multi-user accounts keep their keys encrypted at rest (keyfile.js).
+  const encryptKeys = !!cfg.wallet?.encrypted;
   const keyEnvName = SOL ? 'LPCOPY_SOLANA_PRIVATE_KEY' : 'LPCOPY_PRIVATE_KEY';
   const walletStateKey = SOL ? `wallet_address:${chain.network}` : 'wallet_address';
 
@@ -179,8 +182,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
     const p = exec.keyPath();
     fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
     const bak = backupKey(p);
-    fs.writeFileSync(p, pk, { mode: 0o600 });
-    fs.chmodSync(p, 0o600);
+    writeSecret(p, pk, { encrypt: encryptKeys });
     resetWallets();
     const addr = exec.address();
     if (addr) store.setState(walletStateKey, addr);
@@ -199,7 +201,10 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
 
   // The dashboard token RETYPED, not a session cookie: an HttpOnly cookie cannot be
   // read via XSS, so this is a real second layer for actions that carry secrets out.
-  const retypedToken = (b, noToken) => {
+  // A multi-user account has no dashboard token: server.js injects retypeSecret, which checks the
+  // account password retyped in the same `token` field.
+  const retypedToken = (b, noToken, req) => {
+    if (retypeSecret) return retypeSecret(b, req);
     const TOKEN = cfg.server?.auth_token || null;
     if (!TOKEN) return { error: noToken };
     const supplied = Buffer.from(String(b.token || ''));
@@ -210,7 +215,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
   // A backup file contains the database (can be several MB) — it passes the 1 MB readBody limit.
   const readBackupBody = (req) => (req.__body ? Promise.resolve(req.__body) : new Promise((resolve, reject) => {
     const chunks = []; let n = 0;
-    req.on('data', (c) => { n += c.length; if (n > 256 * 1024 * 1024) { req.destroy(); reject(new Error('Berkas cadangan terlalu besar.')); } else chunks.push(c); });
+    req.on('data', (c) => { n += c.length; if (n > maxBackupBytes) { req.destroy(); reject(new Error('Berkas cadangan terlalu besar.')); } else chunks.push(c); });
     req.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); } catch { reject(new Error('Berkas cadangan bukan JSON yang valid.')); } });
     req.on('error', reject);
   }));
@@ -294,7 +299,9 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
     const pair = telegram?.pairCode && Date.now() < telegram.pairCode.exp
       ? { code: telegram.pairCode.code, expiresInSec: Math.round((telegram.pairCode.exp - Date.now()) / 1000) } : null;
     return {
-      hasToken: !!t.bot_token,
+      hasToken: !!(t.bot_token || telegram?.token()),
+      // An account uses the superadmin's bot: no token field, only its own chats.
+      managed: !!telegram?.hub,
       fromEnv: envName(cfg, 'telegram.bot_token'),
       token: t.bot_token ? `${String(t.bot_token).split(':')[0]}:${MASK}` : '',
       username: telegram?.me?.username || null,
@@ -430,7 +437,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
       const w = ethers.Wallet.createRandom();
       const res = writeKey(w.privateKey);
       // the recovery phrase is stored on the server beside the key, not sent to the browser
-      fs.writeFileSync(exec.keyPath() + '.mnemonic', w.mnemonic.phrase, { mode: 0o600 });
+      writeSecret(exec.keyPath() + '.mnemonic', w.mnemonic.phrase, { encrypt: encryptKeys });
       return { ok: true, ...res, mnemonicFile: path.basename(exec.keyPath()) + '.mnemonic' };
     },
     'POST /api/settings/wallet/import': async (req) => {
@@ -471,7 +478,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
     // read via XSS, so this is a real second layer, not a formality.
     'POST /api/settings/wallet/export': async (req) => {
       const b = await readBody(req);
-      const bad = retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa mengekspor wallet.'); if (bad) return bad;
+      const bad = await retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa mengekspor wallet.', req); if (bad) return bad;
       const addr = exec.address();
       if (!addr) return { error: 'Tidak ada wallet terpasang.' };
       const pass = String(b.password || '');
@@ -494,7 +501,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
     // ---- backup & restore (see backup.js) ----
     'POST /api/settings/backup': async (req) => {
       const b = await readBody(req);
-      const bad = retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa membuat cadangan.'); if (bad) return bad;
+      const bad = await retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa membuat cadangan.', req); if (bad) return bad;
       const parts = { config: !!b.parts?.config, db: !!b.parts?.db, wallet: !!b.parts?.wallet };
       if (!parts.config && !parts.db && !parts.wallet) return { error: 'Pilih minimal satu bagian untuk dicadangkan.' };
       let wallet = null, solanaKeypair = null;
@@ -529,7 +536,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
     'POST /api/settings/restore': async (req) => {
       let b;
       try { b = await readBackupBody(req); } catch (e) { return { error: e.message }; }
-      const bad = retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa memulihkan cadangan.'); if (bad) return bad;
+      const bad = await retypedToken(b, 'Setel token dashboard dulu di tab Keamanan sebelum bisa memulihkan cadangan.', req); if (bad) return bad;
       let backup;
       try { backup = parseBackup(b.backup); } catch (e) { return { error: e.message }; }
       const parts = { config: !!b.parts?.config, db: !!b.parts?.db, wallet: !!b.parts?.wallet };
@@ -560,17 +567,18 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
         const putKey = (p, content) => {
           fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
           const bak = backupKey(p);
-          fs.writeFileSync(p, content, { mode: 0o600 });
-          fs.chmodSync(p, 0o600);
+          writeSecret(p, content, { encrypt: encryptKeys });
           return bak ? path.basename(bak) : null;
         };
-        if (w && !privateKeyFromEnv()) {
+        // An account never uses the env keys, so they never block its restore either.
+        const envKeys = cfg.wallet?.from_env !== false;
+        if (w && !(envKeys && privateKeyFromEnv())) {
           const ev = evmEngine();
           const cur = ev?.exec.address() || null;
           const p = ev ? ev.exec.keyPath() : String(cfg.wallet?.key_file || '~/.lpcopy/key').replace(/^~/, os.homedir());
           walletRes = w.address.toLowerCase() === cur ? { address: cur, unchanged: true } : { address: w.address.toLowerCase(), backup: putKey(p, w.privateKey) };
         }
-        if (kp && !require('./solana/wallet').solanaKeyFromEnv()) {
+        if (kp && !(envKeys && require('./solana/wallet').solanaKeyFromEnv())) {
           const se = solEngine();
           const addr = kp.publicKey.toBase58();
           const cur = se?.exec.address() || null;
@@ -904,6 +912,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
     'POST /api/settings/telegram': async (req) => {
       const b = await readBody(req);
       const t = { ...(cfg.telegram || {}) };
+      if (b.bot_token !== undefined && telegram?.hub) return { error: 'Bot Telegram diatur oleh superadmin.' };
       if (b.bot_token !== undefined) {
         const locked = lockedByEnv('telegram.bot_token'); if (locked) return locked;
         const v = String(b.bot_token || '').trim();
@@ -911,7 +920,16 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
         else if (!/^\d{5,15}:[A-Za-z0-9_-]{20,}$/.test(v)) return { error: 'Token bot tidak berbentuk benar (contoh: 123456789:AAH…).' };
         else t.bot_token = v;
       }
-      if (Array.isArray(b.chat_ids)) t.chat_ids = [...new Set(b.chat_ids.map((x) => String(x).trim()).filter((x) => /^-?\d+$/.test(x)))];
+      if (Array.isArray(b.chat_ids)) {
+        const next = [...new Set(b.chat_ids.map((x) => String(x).trim()).filter((x) => /^-?\d+$/.test(x)))];
+        // An account adds chats only by pairing (/start <code>): a typed chat id would let it claim
+        // someone else's chat — the shared bot routes each chat to the account that lists it.
+        if (telegram?.hub) {
+          const cur = new Set((cfg.telegram?.chat_ids || []).map(String));
+          if (next.some((x) => !cur.has(x))) return { error: 'Chat baru hanya bisa ditambahkan lewat kode sambung.' };
+        }
+        t.chat_ids = next;
+      }
       if (b.notify && typeof b.notify === 'object') {
         t.notify = { ...(t.notify || {}) };
         for (const k of ['penting', 'error', 'warn', 'info']) if (k in b.notify) t.notify[k] = !!b.notify[k];
@@ -929,8 +947,8 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
       return { ok: true, telegram: tgView() };
     },
     'POST /api/settings/telegram/pair': async () => {
-      if (!cfg.telegram?.bot_token) return { error: 'Isi token bot dulu.' };
       if (!telegram) return { error: 'Bot Telegram tidak aktif di proses ini.' };
+      if (!telegram.token()) return { error: telegram.hub ? 'Superadmin belum memasang bot Telegram.' : 'Isi token bot dulu.' };
       const code = telegram.newPairCode();
       log('kode sambung Telegram dibuat');
       return { ok: true, code, expiresInSec: 900, username: telegram.me?.username || null };

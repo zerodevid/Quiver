@@ -18,6 +18,8 @@ const { Fx, currencyOf } = require('./fx');
 const { Positions } = require('./positions');
 const { Costs, swapCostOf } = require('./costs');
 const { writeCfg } = require('./env');
+const { Auth, AuthError, SESSION_TTL_MS } = require('./auth');
+const { ADMIN_ONLY_ROUTES, ADMIN_ONLY_SETTINGS, ReadOnlyError } = require('./tenants');
 const shareCard = require('./share-card');
 const chartCard = require('./chart-card');
 const portfolioCard = require('./portfolio-card');
@@ -94,31 +96,149 @@ button[type=submit]:focus-visible{outline:2px solid var(--accent);outline-offset
 .foot svg{width:.875rem;height:.875rem;flex:none}
 `;
 
-const LOGIN_PAGE = (err) => `<!doctype html><html lang="id"><head>
+// Extra styles for the account pages (sign-in, sign-up): titles, hints, per-field errors,
+// the password checklist and secondary links. Same tokens as LOGIN_CSS.
+const AUTH_CSS = `
+.brand h1{margin-top:.25rem}
+form .row{margin-top:1rem}form .row:first-child{margin-top:0}
+.hint{margin:.375rem 0 0;color:var(--muted);font-size:.75rem;line-height:1.4}
+.ferr{margin:.375rem 0 0;color:var(--danger);font-size:.75rem;line-height:1.4}
+input.plain{letter-spacing:0;padding-right:.875rem}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.rules{list-style:none;margin:.5rem 0 0;padding:0;display:flex;flex-wrap:wrap;gap:.25rem .875rem;font-size:.75rem;color:var(--muted)}
+.rules li{display:flex;align-items:center;gap:.3rem}
+.rules li::before{content:"";width:.4375rem;height:.4375rem;border-radius:50%;border:1.5px solid currentColor;flex:none}
+.rules li.ok{color:var(--fg)}.rules li.ok::before{background:var(--accent);border-color:var(--accent)}
+a{color:var(--accent);text-decoration:none;font-weight:500}a:hover{text-decoration:underline}
+.switch{margin:1.25rem 0 0;text-align:center;font-size:.8125rem;color:var(--muted)}
+details.alt{margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--border)}
+details.alt summary{cursor:pointer;list-style:none;text-align:center;font-size:.8125rem;color:var(--muted)}
+details.alt summary::-webkit-details-marker{display:none}
+details.alt summary:hover{color:var(--fg)}
+details.alt[open] summary{margin-bottom:1rem}
+`;
+const escHtml = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ERR_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>';
+const LOCK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
+// Show/hide button for a password field (wired by AUTH_JS through data-eye).
+const eyeBtn = (id, what) => `<button type="button" class="eye" data-eye="${id}" aria-label="Tampilkan ${what}" aria-pressed="false">
+  <svg class="on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+  <svg class="off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.2A10.9 10.9 0 0 1 12 4c6.5 0 10 8 10 8a18 18 0 0 1-2.2 3.2M6.6 6.6C3.6 8.6 2 12 2 12s3.5 8 10 8c1.7 0 3.2-.4 4.5-1.1M3 3l18 18"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+</button>`;
+// Tiny progressive enhancement: eye toggles, lower-case usernames, the live password checklist
+// and the "passwords match" check. The forms work without it (the server validates everything).
+const AUTH_JS = `<script>
+document.querySelectorAll('[data-eye]').forEach(function(b){b.addEventListener('click',function(){var i=document.getElementById(b.dataset.eye),s=i.type==='password';i.type=s?'text':'password';b.setAttribute('aria-pressed',s);i.focus()})});
+var u=document.getElementById('username');if(u&&u.dataset.lower)u.addEventListener('input',function(){var p=u.selectionStart;u.value=u.value.toLowerCase();u.setSelectionRange(p,p)});
+var p1=document.getElementById('password'),p2=document.getElementById('password2');
+function chk(){if(!p1)return;var v=p1.value;document.querySelectorAll('.rules li').forEach(function(li){var ok=li.dataset.rule==='len'?v.length>=8:li.dataset.rule==='mix'?/[a-zA-Z]/.test(v)&&/[0-9]/.test(v):false;li.classList.toggle('ok',ok)});if(p2){p2.setCustomValidity(p2.value&&p2.value!==v?'Kata sandi tidak sama':'')}}
+if(p1){p1.addEventListener('input',chk);chk()}if(p2)p2.addEventListener('input',chk);
+</script>`;
+const THEME_JS = `<script>try{var t=localStorage.getItem('lpcopy-theme');if(t==='dark'||(!t&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark')}catch(e){}</script>`;
+const authHead = (title) => `<!doctype html><html lang="id"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Quiver — masuk</title><link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<script>try{var t=localStorage.getItem('lpcopy-theme');if(t==='dark'||(!t&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark')}catch(e){}</script>
-<style>${LOGIN_CSS}</style></head>
+<title>Quiver — ${title}</title><link rel="icon" href="/favicon.svg" type="image/svg+xml">
+${THEME_JS}
+<style>${LOGIN_CSS}${AUTH_CSS}</style></head>`;
+const errBox = (msg) => (msg ? `<div class="err" role="alert">${ERR_ICON}<div>${msg}</div></div>` : '');
+
+// Sign-in. With accounts: username + password, the shared access token tucked under a
+// disclosure. Before any account exists: the access token form, as it always was.
+// `err`: 'account' | 'token' | 'blocked' | null.
+const LOGIN_PAGE = (err, { register = false, accounts = false, username = '' } = {}) => {
+  const msg = err === 'blocked' ? '<b>Terlalu banyak percobaan.</b> Tunggu beberapa menit lalu coba lagi.'
+    : err === 'account' ? '<b>Nama pengguna atau kata sandi salah.</b> Periksa kembali lalu coba lagi.'
+    : err === 'token' ? '<b>Token salah.</b> Periksa kembali lalu coba lagi.' : '';
+  const tokenForm = (autofocus) => `<form method="POST" action="/login">
+    <label for="token">Token akses</label>
+    <div class="field">
+      <input id="token" type="password" name="token" placeholder="••••••••••••"${autofocus ? ' autofocus' : ''} required autocomplete="current-password" spellcheck="false" autocapitalize="off"${err === 'token' ? ' aria-invalid="true"' : ''}>
+      ${eyeBtn('token', 'token')}
+    </div>
+    <button type="submit">Masuk</button>
+  </form>`;
+  const accountForm = `<form method="POST" action="/login">
+    <div class="row">
+      <label for="username">Nama pengguna</label>
+      <input id="username" class="plain" type="text" name="username" value="${escHtml(username)}" required autocomplete="username" spellcheck="false" autocapitalize="off" data-lower="1"${username ? '' : ' autofocus'}${err === 'account' ? ' aria-invalid="true"' : ''}>
+    </div>
+    <div class="row">
+      <label for="password">Kata sandi</label>
+      <div class="field">
+        <input id="password" type="password" name="password" required autocomplete="current-password"${username ? ' autofocus' : ''}${err === 'account' ? ' aria-invalid="true"' : ''}>
+        ${eyeBtn('password', 'kata sandi')}
+      </div>
+    </div>
+    <button type="submit">Masuk</button>
+  </form>`;
+  return `${authHead('masuk')}
 <body>
 <main class="card">
   <div class="brand">
     ${LOGIN_MARK}
-    <div><p>Dasbor ini bisa memindahkan dana. Masukkan token akses untuk melanjutkan.</p></div>
+    <div><h1>Masuk</h1><p>${accounts ? 'Masuk ke akun Quiver Anda.' : 'Dasbor ini bisa memindahkan dana. Masukkan token akses untuk melanjutkan.'}</p></div>
   </div>
-  ${err ? `<div class="err" role="alert"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg><div><b>Token salah.</b> Periksa kembali lalu coba lagi.</div></div>` : ''}
-  <form method="POST" action="/login">
-    <label for="token">Token akses</label>
-    <div class="field">
-      <input id="token" type="password" name="token" placeholder="••••••••••••" autofocus required autocomplete="current-password" spellcheck="false" autocapitalize="off"${err ? ' aria-invalid="true"' : ''}>
-      <button type="button" class="eye" aria-label="Tampilkan token" aria-pressed="false" onclick="var i=document.getElementById('token'),s=i.type==='password';i.type=s?'text':'password';this.setAttribute('aria-pressed',s);this.setAttribute('aria-label',s?'Sembunyikan token':'Tampilkan token');i.focus()">
-        <svg class="on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
-        <svg class="off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.2A10.9 10.9 0 0 1 12 4c6.5 0 10 8 10 8a18 18 0 0 1-2.2 3.2M6.6 6.6C3.6 8.6 2 12 2 12s3.5 8 10 8c1.7 0 3.2-.4 4.5-1.1M3 3l18 18"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
-      </button>
+  ${errBox(msg)}
+  ${accounts ? `${accountForm}
+  ${register ? '<p class="switch">Belum punya akun? <a href="/register">Daftar</a></p>' : ''}
+  <details class="alt"${err === 'token' ? ' open' : ''}><summary>Masuk dengan token akses server</summary>${tokenForm(err === 'token')}</details>`
+    : `${tokenForm(true)}
+  ${register ? '<p class="switch">Belum ada akun. <a href="/register">Buat akun superadmin</a></p>' : ''}`}
+  <p class="foot">${LOCK_ICON}Sesi tersimpan 30 hari di peramban ini.</p>
+</main>${AUTH_JS}</body></html>`;
+};
+
+// Sign-up. `first` = no account exists yet: this one becomes the superadmin, and when the server
+// has an access token it must be entered (proof of owning the server). Otherwise an invite code
+// is required, prefilled from /register?code=… links.
+// `err` = { field, msg } — field is username | password | password2 | code | null.
+const REGISTER_PAGE = ({ first = false, needToken = false, err = null, username = '', code = '' } = {}) => {
+  const bad = (f) => (err?.field === f ? ' aria-invalid="true"' : '');
+  const ferr = (f) => (err?.field === f ? `<p class="ferr">${escHtml(err.msg)}</p>` : '');
+  const general = err && !err.field ? `<b>${escHtml(err.msg)}</b>` : '';
+  const codeRow = first
+    ? (needToken ? `<div class="row">
+      <label for="invite">Token akses server</label>
+      <div class="field"><input id="invite" type="password" name="invite" required autocomplete="off" spellcheck="false"${bad('code')}>${eyeBtn('invite', 'token')}</div>
+      ${ferr('code') || '<p class="hint">Bukti bahwa Anda pemilik server ini (LPCOPY_AUTH_TOKEN di .env).</p>'}
+    </div>` : '')
+    : `<div class="row">
+      <label for="invite">Kode undangan</label>
+      <input id="invite" class="plain mono" type="text" name="invite" value="${escHtml(code)}" required autocomplete="off" spellcheck="false" autocapitalize="off"${bad('code')}>
+      ${ferr('code') || '<p class="hint">Minta kode ke pengelola server ini.</p>'}
+    </div>`;
+  return `${authHead('daftar')}
+<body>
+<main class="card">
+  <div class="brand">
+    ${LOGIN_MARK}
+    <div><h1>${first ? 'Buat akun superadmin' : 'Buat akun'}</h1><p>${first
+      ? 'Akun pertama mengelola server ini: RPC, bot Telegram, dan undangan pengguna.'
+      : 'Setiap akun punya mesin, data, dan wallet sendiri.'}</p></div>
+  </div>
+  ${errBox(general)}
+  <form method="POST" action="/register">
+    <div class="row">
+      <label for="username">Nama pengguna</label>
+      <input id="username" class="plain" type="text" name="username" value="${escHtml(username)}" required minlength="3" maxlength="32" pattern="[a-z0-9_.\\-]{3,32}" autocomplete="username" spellcheck="false" autocapitalize="off" data-lower="1"${username ? '' : ' autofocus'}${bad('username')}>
+      ${ferr('username') || '<p class="hint">3–32 karakter: huruf kecil, angka, titik, garis bawah, atau tanda minus.</p>'}
     </div>
-    <button type="submit">Masuk</button>
+    <div class="row">
+      <label for="password">Kata sandi</label>
+      <div class="field"><input id="password" type="password" name="password" required minlength="8" autocomplete="new-password"${username ? ' autofocus' : ''}${bad('password')}>${eyeBtn('password', 'kata sandi')}</div>
+      ${ferr('password') || '<ul class="rules" aria-label="Syarat kata sandi"><li data-rule="len">Minimal 8 karakter</li><li data-rule="mix">Disarankan huruf dan angka</li></ul>'}
+    </div>
+    <div class="row">
+      <label for="password2">Ulangi kata sandi</label>
+      <div class="field"><input id="password2" type="password" name="password2" required minlength="8" autocomplete="new-password"${bad('password2')}>${eyeBtn('password2', 'kata sandi')}</div>
+      ${ferr('password2')}
+    </div>
+    ${codeRow}
+    <button type="submit">Buat akun</button>
   </form>
-  <p class="foot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Sesi tersimpan 30 hari di peramban ini.</p>
-</main></body></html>`;
+  <p class="switch">Sudah punya akun? <a href="/">Masuk</a></p>
+</main>${AUTH_JS}</body></html>`;
+};
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
@@ -191,7 +311,11 @@ function checkInitData(initData, botToken, { maxAgeSec = 86400, now = Date.now()
   return { user, authDate, look };
 }
 
-function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, nets = null, chainControl = null, allChains = null }) {
+// Multi-user: `authStore` is the main database (accounts live there); `store` is this tenant's data.
+// `tenant` = { userId } for a regular account's server, null for the superadmin's (the original one).
+// `tenantControl` starts/stops account engines (index.js).
+function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, nets = null, chainControl = null, allChains = null,
+  authStore = store, tenant = null, tenantControl = null, restart = null }) {
   chain = ensureChain(chain || engine?.chain);
   const pub = path.join(__dirname, '..', 'public');
   const { QUOTES } = chain;
@@ -603,19 +727,58 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const miniOk = (t) => { const s = miniSessions.get(t); return !!s && s.exp > Date.now(); };
 
   const tokenNow = () => cfg.server?.auth_token || null;
-  const authed = (req) => {
+  const auth = new Auth(authStore);
+  // The shared access token (and mini app tickets) keep working as the superadmin, so an
+  // existing single-user deployment does not change behaviour until accounts are created.
+  const LEGACY_ADMIN = Object.freeze({ id: 1, username: 'admin', role: 'superadmin', status: 'active', legacy: true });
+  const cookieOf = (req, name) => {
+    const c = (req.headers.cookie || '').split(';').map((x) => x.trim()).find((x) => x.startsWith(name + '='));
+    return c ? decodeURIComponent(c.slice(name.length + 1)) : null;
+  };
+  // Who is calling? A user row, LEGACY_ADMIN, or null.
+  const userOf = (req) => {
     const TOKEN = tokenNow();
-    if (!TOKEN) return true;
     const h = req.headers.authorization;
     if (h && h.startsWith('Bearer ')) {
       const t = h.slice(7);
-      if (safeEq(t, TOKEN)) return true;
-      if (miniOk(t)) return true;                  // mini app ticket: the same rights, short lifetime
+      if (TOKEN && safeEq(t, TOKEN)) return LEGACY_ADMIN;
+      if (miniOk(t)) return LEGACY_ADMIN;          // mini app ticket: the same rights, short lifetime
+      // An account's mini app holds a short session of that account (see tgAuth).
+      if (/^[0-9a-f]{64}$/.test(t)) { const u = auth.userBySession(t); if (u) return u; }
     }
-    const ck = (req.headers.cookie || '').split(';').map((x) => x.trim());
-    const c = ck.find((x) => x.startsWith('lpcopy_token='));
-    return !!c && safeEq(decodeURIComponent(c.slice(13)), TOKEN);
+    const tok = cookieOf(req, 'lpcopy_token');
+    if (TOKEN && tok && safeEq(tok, TOKEN)) return LEGACY_ADMIN;
+    const su = auth.userBySession(cookieOf(req, 'lpcopy_session'));
+    if (su) return su;
+    return !TOKEN && !auth.hasUsers() ? LEGACY_ADMIN : null;   // no gate configured at all
   };
+  const authed = (req) => !!userOf(req);
+  // Form posts to /login, /register and /logout must come from this dashboard's own pages
+  // (login CSRF: being signed in to someone else's account without noticing).
+  const crossSite = (req) => {
+    const origin = req.headers.origin;
+    let host = null;
+    try { host = origin && origin !== 'null' ? new URL(origin).host : null; } catch { host = '(rusak)'; }
+    return (!!host && host !== req.headers.host) || req.headers['sec-fetch-site'] === 'cross-site';
+  };
+  // Audit trail (main database). Only the route and its outcome are recorded, never the body.
+  const AUDITED = new Set([
+    'POST /api/auth/invites', 'POST /api/auth/invites/revoke', 'POST /api/auth/users/status',
+    'POST /api/auth/password', 'POST /api/auth/users/reset',
+    'POST /api/mode', 'POST /api/settings/live',
+    'POST /api/settings/wallet/generate', 'POST /api/settings/wallet/import', 'POST /api/settings/wallet/remove', 'POST /api/settings/wallet/export',
+    'POST /api/settings/backup', 'POST /api/settings/restore',
+    'POST /api/settings/rpc', 'POST /api/settings/aggregators', 'POST /api/settings/telegram', 'POST /api/settings/telegram/pair',
+    'POST /api/settings/token/rotate', 'POST /api/settings/chains', 'POST /api/settings/loop', 'POST /api/settings/gmgn',
+    'POST /api/positions/close', 'POST /api/positions/takeover', 'POST /api/manual/lp/open', 'POST /api/manual/swap',
+  ]);
+  const audit = (req, action, { detail = null, ok = true, username = null } = {}) => {
+    try {
+      auth.audit({ user: req.user || null, username, ip: req.socket ? clientIp(req) : null, action, ok,
+        detail: [chain?.network, detail].filter(Boolean).join(' · ') || null });
+    } catch (e) { log(`audit: ${e.message}`); }
+  };
+  const gateOn = () => !!tokenNow() || auth.hasUsers();
   const safeEq = (a, b) => {
     const ab = Buffer.from(String(a)); const bb = Buffer.from(String(b));
     return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
@@ -632,7 +795,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const sessionCookie = (req, token) =>
     `lpcopy_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${isHttps(req) ? '; Secure' : ''}`;
   // Logout button: the same cookie is emptied and expires immediately.
-  const clearCookie = (req) => `lpcopy_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${isHttps(req) ? '; Secure' : ''}`;
+  const clearCookie = (req) => [
+    `lpcopy_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${isHttps(req) ? '; Secure' : ''}`,
+    `lpcopy_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${isHttps(req) ? '; Secure' : ''}`,
+  ];
+  const userCookie = (req, sid) =>
+    `lpcopy_session=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${isHttps(req) ? '; Secure' : ''}`;
   // Client IP for the login rate limit: behind Cloudflare the real IP is in a header, not
   // on the socket (which is always Cloudflare/loopback).
   const clientIp = (req) => req.headers['cf-connecting-ip']
@@ -867,7 +1035,58 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // Wallet capital for net PnL: the virtual balance in simulation (paper.js), else the tracked deposits.
   const capitalOf = () => (engine.paper?.on?.() ? engine.paper.capital() : engine.capital?.summary?.() || null);
   const capitalRows = () => (engine.paper?.on?.() ? [] : engine.capital.rows());
+  const isAdmin = (req) => req.user?.role === 'superadmin';
+  const FORBIDDEN = { error: 'khusus superadmin' };
   const routes = {
+    // ---- accounts (multi-user) ----
+    'GET /api/auth/me': async (req) => ({ user: auth.publicUser(req.user), multiUser: auth.hasUsers() }),
+    'GET /api/auth/users': async (req) => (isAdmin(req)
+      ? { users: auth.listUsers().map((u) => ({ ...u, running: u.role === 'superadmin' || !!tenantControl?.has(u.id) })), maxUsers: tenantControl?.max() ?? null }
+      : FORBIDDEN),
+    'GET /api/auth/invites': async (req) => (isAdmin(req) ? { invites: auth.listInvites() } : FORBIDDEN),
+    'GET /api/auth/audit': async (req, url) => (isAdmin(req)
+      ? { entries: auth.listAudit({ limit: url.searchParams.get('limit'), userId: url.searchParams.get('user') || null }) }
+      : FORBIDDEN),
+    // The plain code is shown once; only its digest is stored.
+    'POST /api/auth/invites': async (req) => {
+      if (!isAdmin(req)) return FORBIDDEN;
+      const b = await readBody(req);
+      const days = Math.min(30, Math.max(1, Number(b.days) || 7));
+      return { code: auth.createInvite(req.user.id, days * 86400_000) };
+    },
+    'POST /api/auth/invites/revoke': async (req) => {
+      if (!isAdmin(req)) return FORBIDDEN;
+      const b = await readBody(req);
+      return { ok: auth.revokeInvite(Number(b.id)) };
+    },
+    // Change one's own password; every other session of the account is signed out.
+    'POST /api/auth/password': async (req) => {
+      if (!req.user || req.user.legacy) return { error: 'Masuk dengan akun untuk mengganti kata sandi.' };
+      const b = await readBody(req);
+      if (String(b.next || '') !== String(b.next2 ?? b.next)) return { error: 'Kata sandi baru tidak sama.' };
+      try { await auth.changePassword(req.user.id, String(b.current || ''), String(b.next || ''), cookieOf(req, 'lpcopy_session')); }
+      catch (e) {
+        if (!(e instanceof AuthError)) throw e;
+        return { error: { locked: 'Terlalu banyak percobaan kata sandi. Coba lagi 15 menit lagi.', wrong: 'Kata sandi saat ini salah.',
+          password: 'Kata sandi baru minimal 8 karakter.', busy: 'Server sedang sibuk. Coba lagi sebentar lagi.' }[e.code] || e.message };
+      }
+      return { ok: true };
+    },
+    // Superadmin: a temporary password, shown once; the account's sessions end.
+    'POST /api/auth/users/reset': async (req) => {
+      if (!isAdmin(req)) return FORBIDDEN;
+      const b = await readBody(req);
+      try { return { ok: true, password: await auth.resetPassword(Number(b.id)) }; }
+      catch (e) { if (e instanceof AuthError) return { error: e.message }; throw e; }
+    },
+    'POST /api/auth/users/status': async (req) => {
+      if (!isAdmin(req)) return FORBIDDEN;
+      const b = await readBody(req);
+      try { auth.setStatus(Number(b.id), b.status); } catch (e) { if (e instanceof AuthError) return { error: e.message }; throw e; }
+      // Suspending waits for in-flight transactions of that account before its engines stop.
+      if (tenantControl) await (b.status === 'suspended' ? tenantControl.stop(Number(b.id)) : tenantControl.start(Number(b.id)));
+      return { ok: true };
+    },
     'GET /api/overview': async () => {
       // Cash is re-read if a tx has landed in a block since the last read (see
       // Engine.freshCash) — called BEFORE summary so the leftover token value that
@@ -892,7 +1111,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const wallet = engine.positions.lastSync ? { value, pnl, netPnl: capital && cash ? value - capital.capitalUsd : null } : null;
       return {
         // auth: the token gate is on → the dashboard shows a logout button.
-        mode: { dry_run: engine.dryRun(), paused: engine.paused(), wallet: engine.exec.address(), auth: !!tokenNow(), drawdown: engine.drawdownStatus(), sim: engine.paper?.status?.() ?? null },
+        mode: { dry_run: engine.dryRun(), paused: engine.paused(), wallet: engine.exec.address(), auth: gateOn(), drawdown: engine.drawdownStatus(), sim: engine.paper?.status?.() ?? null },
         wallet,
         chain: {
           head: engine.head, cursor: engine.cursor, lag: engine.head - engine.cursor, ethUsd: engine.ethUsd, headSpread: engine.headSpread,
@@ -1724,6 +1943,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       if (!isAddr(addr)) return { error: 'alamat tidak valid' };
       const v = validateRules(b.rules || null);
       if (v.error) return { error: v.error };
+      // Every target is polled on the shared RPC pools: an account gets a bounded number.
+      if (tenant) {
+        const max = Number(cfg.server?.max_targets_per_user) || 25;
+        const known = store.get('SELECT 1 FROM targets WHERE chain=? AND address=?', chain.network, addr);
+        if (!known && store.get('SELECT COUNT(*) n FROM targets').n >= max) return { error: `Batas ${max} target per akun sudah tercapai. Hapus target lain dulu.` };
+      }
       store.run('INSERT OR IGNORE INTO targets(chain,address,label,enabled,added_ts,rules,notes) VALUES(?,?,?,?,?,?,?)',
         chain.network, addr, b.label || null, b.enabled === false ? 0 : 1, Date.now(), v.rules ? JSON.stringify(v.rules) : null, b.notes || null);
       return { ok: true };
@@ -2518,7 +2743,23 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     },
   };
 
-  Object.assign(routes, createSettingsRoutes({ engine, engines, nets, chainControl, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market, fx }));
+  // A regular account retypes its password (not the dashboard token) before a key export.
+  const retypeSecret = tenant ? async (b, req) => {
+    if (!req?.user) return { error: 'Kata sandi salah.' };
+    const bad = await auth.confirmPassword(req.user.id, String(b.token || ''));
+    return bad === 'locked' ? { error: 'Terlalu banyak percobaan kata sandi. Coba lagi 15 menit lagi.' } : bad ? { error: 'Kata sandi salah.' } : null;
+  } : null;
+  Object.assign(routes, createSettingsRoutes({ engine, engines, nets, chainControl, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market, fx, retypeSecret,
+    // An account's backup upload is capped lower than the superadmin's: memory is shared.
+    maxBackupBytes: tenant ? 64 * 1024 * 1024 : 256 * 1024 * 1024, ...(restart ? { restart } : {}) }));
+  if (tenant) {
+    const full = routes['GET /api/settings'];
+    routes['GET /api/settings'] = async (...a) => {
+      const d = await full(...a);
+      if (d && typeof d === 'object') for (const k of ADMIN_ONLY_SETTINGS) delete d[k];
+      return d;
+    };
+  }
   routes['GET /api/chains'] = async () => ({ chains: await chainList(), current: chain.network });
   // Chain picker: the lpcopy_chain cookie is read by the front door (index.js) to choose
   // which chain's server answers the next requests. This cookie is not a secret.
@@ -2541,6 +2782,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const callApi = async (method, pathname, body = {}, query = {}) => {
     const key = `${method} ${pathname}`;
     if (!routes[key]) throw new Error(`rute ${key} tidak ada`);
+    // An account's bot gets no more than its dashboard does.
+    if (tenant && ADMIN_ONLY_ROUTES.has(key)) throw new Error('khusus superadmin');
     const url = new URL(`http://x${pathname}`);
     for (const [k, v] of Object.entries(query)) if (v != null) url.searchParams.set(k, String(v));
     return routes[key]({ __body: body, headers: {} }, url, {});
@@ -2759,6 +3002,20 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       return json(res, 200, { error: r.error });
     }
     const chats = (cfg.telegram?.chat_ids || []).map(String);
+    // Multi-user: a chat linked to an account opens THAT account, with a short session of its own
+    // (never the superadmin's ticket). The front door routes the bearer to the account's server.
+    const ownerId = !chats.includes(String(r.user.id)) ? tenantControl?.ownerOfChat(String(r.user.id)) : null;
+    if (ownerId) {
+      loginHits.delete(ip);
+      const sid = auth.createSession(ownerId, MINI_TTL);
+      res.__setCookie = userCookie(req, sid);
+      log(`mini app: ${r.user.username ? '@' + r.user.username : r.user.id} masuk sebagai akun ${ownerId}`);
+      return json(res, 200, {
+        ok: true, token: sid,
+        user: { id: r.user.id, name: r.user.username || r.user.first_name || null },
+        chain: { key: chain.network, label: chain.label, explorer: chain.explorer },
+      });
+    }
     if (!chats.includes(String(r.user.id))) {
       loginFail(ip);
       log(`mini app: ditolak — chat ${r.user.id} belum tersambung`);
@@ -2789,30 +3046,102 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
 
     // ---- token gate ----
     const TOKEN = tokenNow();
-    if (TOKEN) {
+    if (gateOn()) {
+      const accounts = auth.hasUsers();
+      const reg = { register: accounts || !!TOKEN, accounts };
+      const loginPage = (code, err, extra = {}) => {
+        res.writeHead(code, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', ...(code === 429 ? { 'retry-after': '300' } : {}), ...SEC_HEADERS });
+        return res.end(LOGIN_PAGE(err, { ...reg, ...extra }));
+      };
       if (url.pathname === '/login' && req.method === 'POST') {
         const ip = clientIp(req);
-        if (loginBlocked(ip)) {
-          res.writeHead(429, { 'content-type': 'text/html; charset=utf-8', 'retry-after': '300', ...SEC_HEADERS });
-          return res.end(LOGIN_PAGE(true));
-        }
+        if (crossSite(req)) { res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('permintaan lintas situs ditolak'); }
+        if (loginBlocked(ip)) return loginPage(429, 'blocked');
         let body = '';
         req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
-        return req.on('end', () => {
-          const tok = decodeURIComponent((body.split('token=')[1] || '').split('&')[0].replace(/\+/g, ' '));
-          if (safeEq(tok, TOKEN)) {
+        return req.on('end', async () => {
+          const f = new URLSearchParams(body);
+          const username = (f.get('username') || '').trim();
+          if (username) {
+            // `token` is still accepted as the password field for scripts written against the old form.
+            let u;
+            try { u = await auth.login(username, f.get('password') ?? f.get('token') ?? ''); }
+            catch (e) { if (e instanceof AuthError && e.code === 'busy') return loginPage(429, 'blocked'); throw e; }
+            audit({ user: u, socket: req.socket, headers: req.headers }, 'login', { ok: !!u, username: username.toLowerCase().slice(0, 32) });
+            if (u) {
+              loginHits.delete(ip);
+              res.writeHead(302, { location: '/', 'set-cookie': userCookie(req, auth.createSession(u.id)) });
+              return res.end();
+            }
+            loginFail(ip);
+            return loginPage(401, 'account', { username: username.toLowerCase().slice(0, 32) });
+          }
+          if (TOKEN && safeEq(f.get('token') || '', TOKEN)) {
+            audit({ user: LEGACY_ADMIN, socket: req.socket, headers: req.headers }, 'login (token)');
             loginHits.delete(ip);
             res.writeHead(302, { location: '/', 'set-cookie': sessionCookie(req, TOKEN) });
             return res.end();
           }
+          audit({ socket: req.socket, headers: req.headers }, 'login (token)', { ok: false });
           loginFail(ip);
-          res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SEC_HEADERS });
-          res.end(LOGIN_PAGE(true));
+          return loginPage(401, 'token');
+        });
+      }
+      // Registration: invite-only. The very first account becomes superadmin; when an access
+      // token is configured it doubles as the proof that the caller owns the server.
+      const REG_ERR = {
+        username: ['username', 'Nama pengguna 3–32 karakter: huruf kecil, angka, titik, garis bawah, atau tanda minus.'],
+        taken: ['username', 'Nama pengguna ini sudah dipakai. Pilih yang lain.'],
+        password: ['password', 'Kata sandi minimal 8 karakter.'],
+        invite: ['code', 'Kode undangan tidak berlaku: salah, sudah dipakai, atau kedaluwarsa.'],
+      };
+      const registerPage = (code, { err = null, username = '', invite = '' } = {}) => {
+        res.writeHead(code, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', ...SEC_HEADERS });
+        // The invite code is kept on a failed attempt (it is needed again); the server token never is.
+        return res.end(REGISTER_PAGE({ first: !auth.hasUsers(), needToken: !!TOKEN, err, username, code: auth.hasUsers() ? invite : '' }));
+      };
+      if (url.pathname === '/register' && req.method === 'GET') {
+        return registerPage(200, { invite: (url.searchParams.get('code') || '').replace(/[^0-9a-f]/gi, '').slice(0, 64) });
+      }
+      if (url.pathname === '/register' && req.method === 'POST') {
+        const ip = clientIp(req);
+        if (crossSite(req)) { res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('permintaan lintas situs ditolak'); }
+        if (loginBlocked(ip)) return registerPage(429, { err: { field: null, msg: 'Terlalu banyak percobaan. Tunggu beberapa menit lalu coba lagi.' } });
+        let body = '';
+        req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+        return req.on('end', async () => {
+          const f = new URLSearchParams(body);
+          const first = !auth.hasUsers();
+          const username = String(f.get('username') || '').trim().toLowerCase().slice(0, 32);
+          const invite = String(f.get('invite') || '').trim();
+          const again = (code, field, msg) => registerPage(code, { err: { field, msg }, username, invite });
+          if (f.get('password2') !== null && f.get('password2') !== f.get('password')) return again(400, 'password2', 'Kata sandi tidak sama.');
+          try {
+            if (first && TOKEN && !safeEq(invite, TOKEN)) { loginFail(ip); return again(401, 'code', 'Token akses server salah.'); }
+            if (!first && tenantControl && !tenantControl.canAdd()) return again(400, null, 'Kuota akun di server ini sudah penuh. Hubungi pengelola server.');
+            const u = await auth.register({ username, password: f.get('password'), invite });
+            audit({ user: u, socket: req.socket, headers: req.headers }, 'register', { detail: u.role });
+            if (u.role !== 'superadmin') tenantControl?.start(u.id);
+            loginHits.delete(ip);
+            res.writeHead(302, { location: '/', 'set-cookie': userCookie(req, auth.createSession(u.id)) });
+            return res.end();
+          } catch (e) {
+            if (!(e instanceof AuthError)) throw e;
+            if (e.code === 'busy') return again(429, null, 'Server sedang sibuk. Coba lagi sebentar lagi.');
+            if (e.code === 'invite') loginFail(ip);
+            audit({ socket: req.socket, headers: req.headers }, 'register', { ok: false, username, detail: e.code });
+            const [field, msg] = REG_ERR[e.code] || [null, e.message];
+            return again(400, field, msg);
+          }
         });
       }
       // Logout: delete the session cookie then go back to the sign-in page. A SameSite=Lax cookie
       // is not sent on a cross-site POST, so no one can log someone else out.
       if (url.pathname === '/logout' && req.method === 'POST') {
+        if (crossSite(req)) { res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('permintaan lintas situs ditolak'); }
+        const leaving = auth.userBySession(cookieOf(req, 'lpcopy_session'));
+        if (leaving) audit({ user: leaving, socket: req.socket, headers: req.headers }, 'logout');
+        auth.destroySession(cookieOf(req, 'lpcopy_session'));
         res.writeHead(302, { location: '/', 'set-cookie': clearCookie(req), 'cache-control': 'no-store' });
         return res.end();
       }
@@ -2822,15 +3151,25 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         // Token icon in the mini app: <img> cannot carry an Authorization header, so the
         // ticket rides in the query. Only for this image route — a ticket in the URL does not
         // open other routes, and it is not the dashboard token that it carries.
-        || (url.pathname === '/api/icon' && miniOk(url.searchParams.get('t') || ''));
+        || (url.pathname === '/api/icon' && (miniOk(url.searchParams.get('t') || '') || !!auth.userBySession(url.searchParams.get('t') || '')));
       if (!isPublicAsset && !authed(req)) {
         if (url.pathname.startsWith('/api/')) {
           res.writeHead(401, { 'content-type': 'application/json' });
           return res.end('{"error":"tidak berwenang"}');
         }
-        res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', ...SEC_HEADERS });
-        return res.end(LOGIN_PAGE(false));
+        return loginPage(401, null);
       }
+    }
+    req.user = userOf(req);
+    if (tenant) {
+      // An account's server only ever answers its own account (the front door routes by session,
+      // this is the second lock), and never the routes that change shared infrastructure.
+      if (!req.user || req.user.id !== tenant.userId) return json(res, 403, { error: 'bukan akun ini' });
+      if (ADMIN_ONLY_ROUTES.has(key)) return json(res, 403, { error: 'khusus superadmin' });
+    } else if (req.user && req.user.role !== 'superadmin' && url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/auth/')) {
+      // The superadmin's engine, wallet and settings. A regular account only lands here when its
+      // own engines are not running (suspended, quota): it reaches nothing.
+      return json(res, 403, { error: 'akun ini belum aktif' });
     }
     // Token logo: the only /api route that replies with an image, not JSON.
   // Share card: the only other /api route that replies with an image.
@@ -2889,8 +3228,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // The details of an unexpected error go only to the log; the client gets a generic message so
       // filesystem paths / RPC details do not leak. Errors that really need to
       // be shown are already returned by each route as {error} with status 200.
-      try { return json(res, 200, await routes[key](req, url, res)); }
-      catch (e) { log(`api ${key}: ${e.message}`); return json(res, 500, { error: 'kesalahan server' }); }
+      try {
+        const out = await routes[key](req, url, res);
+        if (AUDITED.has(key)) audit(req, key.slice(6), { ok: !out?.error, detail: out?.error ? String(out.error).slice(0, 160) : out?.address || null });
+        return json(res, 200, out);
+      }
+      catch (e) {
+        if (AUDITED.has(key)) audit(req, key.slice(6), { ok: false, detail: e instanceof ReadOnlyError ? e.message : 'kesalahan server' });
+        // A regular account touching a superadmin-owned config field (tenants.js).
+        if (e instanceof ReadOnlyError) return json(res, 403, { error: e.message });
+        log(`api ${key}: ${e.message}`); return json(res, 500, { error: 'kesalahan server' });
+      }
     }
     if (req.method !== 'GET') return json(res, 404, { error: 'tidak ada' });
 

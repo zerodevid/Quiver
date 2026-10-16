@@ -984,5 +984,6 @@
   "Fee yang sudah diklaim": "Fees already claimed",
   "PnL riil": "Real PnL",
   "Harga tengah pool menunjukkan {0}": "Pool mid price shows {0}",
-  "⚠️ Quote jual belum terbaca, memakai harga tengah.": "⚠️ Sale quote unavailable, using the mid price."
+  "⚠️ Quote jual belum terbaca, memakai harga tengah.": "⚠️ Sale quote unavailable, using the mid price.",
+  "🔒 Pengaturan ini dikelola superadmin server.": "🔒 This setting is managed by the server's superadmin."
 }

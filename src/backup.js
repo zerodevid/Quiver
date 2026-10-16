@@ -60,12 +60,20 @@ try {
   parentPort.postMessage(out);
 } finally { db.close(); }
 `;
+// Resolves only once the worker has EXITED: its answer is posted before `db.close()`, and the
+// close is what checkpoints VACUUM's WAL into the file. Reading the file on the message alone
+// could copy it mid-checkpoint — a torn, "malformed" backup.
 function inWorker(data) {
   return new Promise((resolve, reject) => {
     const w = new Worker(WORKER, { eval: true, workerData: data });
-    w.once('message', resolve);
+    let out = null;
+    w.once('message', (m) => { out = m; });
     w.once('error', reject);
-    w.once('exit', (c) => { if (c) reject(new Error(`worker keluar ${c}`)); });
+    w.once('exit', (c) => {
+      if (c) reject(new Error(`worker keluar ${c}`));
+      else if (!out) reject(new Error('worker selesai tanpa jawaban'));
+      else resolve(out);
+    });
   });
 }
 
@@ -127,6 +135,9 @@ function mergeConfig(restored, current) {
   if (current.wallet?.key_file !== undefined) out.wallet = { ...(out.wallet || {}), key_file: current.wallet.key_file };
   if (current.wallet?.solana_key_file !== undefined) out.wallet = { ...(out.wallet || {}), solana_key_file: current.wallet.solana_key_file };
   out.mode = { ...(out.mode || {}), dry_run: true };
+  // Since multi-chain the mode lives per chain (chains.<name>.mode); the top-level one above only
+  // covers pre-multi-chain files.
+  for (const c of Object.values(out.chains || {})) if (c && typeof c === 'object') c.mode = { ...(c.mode || {}), dry_run: true };
   return out;
 }
 

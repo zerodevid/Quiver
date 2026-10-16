@@ -8,6 +8,7 @@ const { ensureChain } = require('./networks');
 // (tx 0x1283eeab… : actions 0x0111 = DECREASE_LIQUIDITY + TAKE_PAIR), not a guess.
 const { ethers } = require('ethers');
 const fs = require('node:fs');
+const { readSecret } = require('./keyfile');
 const { ABI, ACT, CMD, SENTINEL } = require('./chain');
 const m = require('./v3math');
 
@@ -54,13 +55,11 @@ class Executor {
   // ---- wallet -------------------------------------------------------------
   loadWallet() {
     if (this.wallet) return this.wallet;
-    let pk = process.env.LPCOPY_PRIVATE_KEY || null;
+    // A multi-user account (wallet.from_env === false) never uses the superadmin's env key.
+    let pk = this.cfg.wallet?.from_env !== false ? process.env.LPCOPY_PRIVATE_KEY || null : null;
     const f = this.cfg.wallet?.key_file;
     if (!pk && f && fs.existsSync(f.replace('~', process.env.HOME))) {
-      const p = f.replace('~', process.env.HOME);
-      const st = fs.statSync(p);
-      if ((st.mode & 0o077) !== 0) throw new Error(`izin ${p} terlalu longgar — jalankan: chmod 600 ${p}`);
-      pk = fs.readFileSync(p, 'utf8').trim();
+      pk = readSecret(f.replace('~', process.env.HOME)).trim();
     }
     if (!pk) return null;
     this.wallet = new ethers.Wallet(pk.startsWith('0x') ? pk : '0x' + pk);
