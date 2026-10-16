@@ -296,6 +296,27 @@ CREATE TABLE IF NOT EXISTS logs (
   ts  INTEGER NOT NULL, level TEXT, msg TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts DESC);
+
+-- platform_fee: the open-LP platform's own charge per action (open/close/…), one row per fee.
+-- usd = the quoted fee in USD; native = wei actually charged; status = 'paid' | 'debt' | 'skip'.
+-- A 'debt' row is an unpaid fee (wallet had no native at the time); it is settled by a later
+-- charge or at close. status 'skip' records a $0 / disabled / superadmin case for the audit only.
+CREATE TABLE IF NOT EXISTS platform_fee (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  chain       TEXT NOT NULL DEFAULT 'robinhood',
+  ts          INTEGER NOT NULL,
+  action      TEXT NOT NULL,
+  position_id INTEGER,
+  usd         REAL,
+  native      TEXT,
+  treasury    TEXT,
+  tx          TEXT,
+  status      TEXT NOT NULL DEFAULT 'paid',
+  referrer    TEXT,
+  ref_native  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_platform_fee_ts ON platform_fee(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_platform_fee_status ON platform_fee(status);
 `;
 
 // Multi-chain migration for a database created before the `chain` column existed. All

@@ -19,6 +19,7 @@ const { PaperBook } = require('./paper');
 const TARGET_RESEARCH_STALE_MS = 5 * 60_000;
 const { ensureAnchor } = require('./usd-anchor');
 const { rulesFor, planEntry, planExit, quoteToUsd, usdPerQuote } = require('./policy');
+const billing = require('./billing');
 const { enumerateV4, livePositions } = require('./scout');
 const { Market } = require('./market');
 const m = require('./v3math');
@@ -321,6 +322,39 @@ class Engine {
   // default on, so the superadmin's legacy config keeps copying. See runNet (index.js), which
   // then never starts the block-scanning tick — the heaviest RPC load — for these accounts.
   copyEnabled() { return this.cfg.copy !== false; }
+  // An open-LP account pays the platform fee; the superadmin's copy engine does not, and
+  // nothing is charged in simulation. See chargeFee and src/billing.js.
+  billable() { return !this.copyEnabled() && !this.dryRun(); }
+
+  // Charge the platform's flat fee for an action by sending the native equivalent from the
+  // user's wallet to the treasury, and record it in the ledger. Never throws and never blocks:
+  // the action it bills for has already landed, so a billing hiccup must not undo it — a fee
+  // that cannot be paid now (no native, no treasury set) is logged as debt and settled later.
+  async chargeFee(action, { positionId = null } = {}) {
+    try {
+      if (!this.billable()) return;
+      const usd = billing.feeUsd(this.cfg, action);
+      if (usd <= 0) { return; }
+      const t = billing.treasuryFor(this.cfg, this.network);
+      if (!t) return;                                  // no treasury set for this chain -> free
+      const wei = billing.feeNativeWei(usd, this.ethUsd);
+      if (!wei || wei <= 0n) return;
+      const me = this.exec.address();
+      if (!me) return;
+      const bal = BigInt(await this.rpc.call('eth_getBalance', [me, 'latest']));
+      // Leave a margin above the fee for the fee transfer's own gas; if the wallet cannot cover
+      // both, record the fee as debt rather than sending a tx that would revert.
+      if (bal < wei + wei / 20n) {
+        billing.recordFee(this.store, this.network, { action, positionId, usd, native: wei, treasury: t.address, status: 'debt' });
+        this.store.log('warn', `fee ${action} $${usd} belum tertagih (native kurang) — dicatat sebagai utang`, { quiet: true });
+        return;
+      }
+      const hash = await this.exec.sendTransaction({ to: t.address, value: wei, gasMul: 1.2 }, { kind: 'fee', detail: action });
+      billing.recordFee(this.store, this.network, { action, positionId, usd, native: wei, treasury: t.address, tx: hash, status: 'paid' });
+    } catch (e) {
+      this.store.log('warn', `penagihan fee ${action} gagal: ${e.message}`, { quiet: true });
+    }
+  }
   // Pause per chain (key paused:<chain>); an old 'paused' key without a chain is still read
   // as a global switch — pausing all chains at once.
   paused() {
@@ -1289,7 +1323,15 @@ class Engine {
   }
 
   // Provide the missing token by swapping from the quote side, then mint.
+  // Public entry: open a position, then bill the flat "open" fee (open-LP accounts only).
+  // The fee is charged after the mint lands, so a billing problem never blocks the entry.
   async executeEntry(plan, act) {
+    const r = await this._executeEntry(plan, act);
+    await this.chargeFee('open', { positionId: r?.positionId ?? plan.positionId ?? null });
+    return r;
+  }
+
+  async _executeEntry(plan, act) {
     if (this.stopping) throw new Error('bot sedang berhenti (restart) — coba lagi sebentar');
     if (this.compound?.running) throw new Error('auto-compound sedang diproses — coba lagi sebentar');
     if (plan.positionId && (this.exiting?.has(plan.positionId) || this.compound?.pending(plan.positionId))) {
@@ -2295,7 +2337,16 @@ class Engine {
   // are skipped, and the liquidity to burn is re-read from the chain — not from records
   // that can be stale — so the position really is empty. The double-tx guard (`exiting`)
   // and the closed status still apply: they prevent a second burn that is certain to revert.
-  async executeExit(plan, pos, { force = false } = {}) {
+  // Public exit: close (or partially close) a position, then bill the exit fee. `billAction`
+  // picks the fee ('close' by default, 'tp_sl' for an automatic stop-loss/take-profit exit).
+  // Charged only after the exit lands, and only for open-LP accounts.
+  async executeExit(plan, pos, opts = {}) {
+    const r = await this._executeExit(plan, pos, opts);
+    await this.chargeFee(opts.billAction || 'close', { positionId: pos?.id ?? null });
+    return r;
+  }
+
+  async _executeExit(plan, pos, { force = false } = {}) {
     if (this.stopping) throw new Error('bot sedang berhenti (restart) — keluar dilanjutkan saat hidup lagi');
     if (this.exiting.has(pos.id)) throw new Error('posisi ini sedang dalam proses ditutup');
     if (!force) {
@@ -3294,7 +3345,7 @@ class Engine {
       if (this.paper.on()) { await this.paper.autoExit(t); continue; }
       if (this.dryRun() || !this.exec.address()) { this.store.log('info', `[simulasi] keluar #${t.pos.id}: ${t.reason}`); continue; }
       try {
-        const out = await this.executeExit({ venue: t.pos.venue, action: 'burn', full: true, liquidity: t.pos.liquidity, tokenId: t.pos.token_id }, t.pos);
+        const out = await this.executeExit({ venue: t.pos.venue, action: 'burn', full: true, liquidity: t.pos.liquidity, tokenId: t.pos.token_id }, t.pos, { billAction: 'tp_sl' });
         this.notify(`keluar mandiri #${t.pos.id}: ${t.reason}`, {
           kind: 'exit', positionId: t.pos.id, txHash: out.txHash, full: true, sold: out.sold, auto: true,
           target: t.pos.target, mirrorOf: t.pos.mirror_of, reason: t.reason,
