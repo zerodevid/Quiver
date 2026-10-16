@@ -3274,9 +3274,10 @@ class Engine {
     for (const t of triggers) {
       if (this.stopping) break;
       if (this.exiting.has(t.pos.id)) continue;
-      // Manual control: standalone exit rules do not apply. Read from the database, not the
-      // sync result (can be 30 seconds old). A position that is empty on chain is still booked.
-      if (!t.pos.empty && this.store.get('SELECT takeover_ts FROM positions WHERE id=?', t.pos.id)?.takeover_ts != null) continue;
+      // Manual control: standalone exit RULES do not apply (a per-position TP/SL set by the owner
+      // does: `own`). Read from the database, not the sync result (can be 30 seconds old). A
+      // position that is empty on chain is still booked.
+      if (!t.own && !t.pos.empty && this.store.get('SELECT takeover_ts FROM positions WHERE id=?', t.pos.id)?.takeover_ts != null) continue;
       if (t.pos.empty) {
         // Closing in the database without a transaction = a $0 result recorded forever. Re-read
         // first; if it turns out to still exist, leave it to the next sync to evaluate.

@@ -1118,9 +1118,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // takeover_ts is read from the database, not the sync result (can be 30 seconds old):
       // the take over/hand back button must switch immediately.
       const takeover = new Map(store.all("SELECT id, takeover_ts FROM positions WHERE chain=? AND status='open'", chain.network).map((r) => [r.id, r.takeover_ts]));
+      const slTp = new Map(store.all("SELECT id, sl_pct, tp_pct FROM positions WHERE chain=? AND status='open'", chain.network).map((r) => [r.id, r]));
       return {
         positions: positions.map((p) => ({
-          ...p, takeover_ts: takeover.get(p.id) ?? null, compound: compound.status(p), ...origin(p),
+          ...p, takeover_ts: takeover.get(p.id) ?? null, sl_pct: slTp.get(p.id)?.sl_pct ?? null, tp_pct: slTp.get(p.id)?.tp_pct ?? null, compound: compound.status(p), ...origin(p),
           cost: costOf(p.id, p.costUsd),
         })),
         closed, syncedAt: engine.positions.lastSync,
@@ -1193,6 +1194,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       pos.origin = originOf(row, { watch: true });
       pos.targetLabel = pos.origin.targetLabel;
       pos.target = row.target; pos.mirror_of = row.mirror_of; pos.takeover_ts = row.takeover_ts ?? null;
+      pos.sl_pct = row.sl_pct ?? null; pos.tp_pct = row.tp_pct ?? null;
       // Speculative token = the one that is not a quote asset; the price base in the chart.
       pos.baseToken = pos.quoteSide === 0 ? row.token1 : pos.quoteSide === 1 ? row.token0 : row.token0;
       pos.cost = costOf(id, costUsd);
@@ -2512,6 +2514,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       if (!Number.isSafeInteger(id) || id <= 0) return { error: 'ID posisi tidak valid' };
       try { return { ok: true, compound: compound.configure(id, b) }; }
       catch (e) { return { error: e.message }; }
+    },
+    // Per-position take profit / stop loss (see Manual.setExit). The GET feeds the dialog's warnings.
+    'GET /api/positions/exit': (req, url) => manual.exitInfo(url.searchParams.get('id')),
+    'POST /api/positions/exit': async (req) => {
+      const b = await readBody(req);
+      try { return manual.setExit(b.id, b); } catch (e) { return { error: e.message }; }
     },
     'POST /api/positions/claim': async (req) => {
       const b = await readBody(req);

@@ -14,6 +14,7 @@ const PositionDetail = lazy(() => import('./PositionDetail'));
 import PositionHistory from '../components/PositionHistory';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
+import TpSlButton from '../components/TpSlButton';
 import { usd, pct, tone, age, ago, short, shortId, num, feeApr, aprText } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -255,6 +256,7 @@ export default function Positions({ param }) {
             { key: 'act', label: 'Aksi', sortable: false, className: 'text-end', render: (p) => (
               <div className="flex items-center justify-end gap-1">
                 <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} compact />
+                <TpSlButton p={p} reload={reload} disabled={claiming != null || closing != null} compact />
                 <TakeoverButton p={p} reload={reload} disabled={claiming != null || closing != null} compact />
                 <Button size="sm" variant="tertiary" isIconOnly aria-label={t('Claim fee')} title={t('Claim fee')}
                   isPending={claiming === p.id} isDisabled={claiming != null || closing != null || p.empty} onPress={() => claim(p)}>
