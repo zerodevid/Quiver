@@ -5,6 +5,7 @@
 // and the log lines that mention this position. The price chart stays on the detail page.
 import { useEffect, useState } from 'react';
 import PositionSnapshot from './PositionSnapshot';
+import PositionActionBar from './PositionActionBar';
 import TargetSide from './TargetSide';
 import { Button, Chip, Drawer } from '@heroui/react';
 import { X, ChartCandlestick } from 'lucide-react';
@@ -267,6 +268,7 @@ export default function PositionHistory({ id, onClose }) {
                       {p.target && <><span>·</span><a href={'#targets/' + p.target} className="hover:underline">{t('meniru {t}', { t: p.targetLabel || short(p.target) })}</a></>}
                     </div>
                     <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} className="mt-1.5 flex-wrap" />
+                    {!closed && <div className="mt-2"><PositionActionBar key={id} id={id} onUpdate={() => setRevision((v) => v + 1)} /></div>}
                   </div>
                 </div>
               ) : <Drawer.Heading className="text-base font-semibold">{t('Riwayat posisi')}</Drawer.Heading>}
