@@ -16,9 +16,12 @@
 
 const { ethers } = require('ethers');
 
-// USD, undercutting the reference competitor (which charges 0.20/0.20/0.25/0.30) to compete.
-// Admin-configurable via cfg.fees.schedule; these are only the defaults.
-const DEFAULT_FEES_USD = { open: 0.15, close: 0.15, tp_sl: 0.20, rebalance: 0.25 };
+// USD. One flat rate for every billable action — that is the edge: the reference competitor
+// charges more for the less frequent actions (0.20 open/close but 0.25 take-profit/stop-loss,
+// 0.30 rebalance), while here every action is the same $0.20. Admin-configurable via
+// cfg.fees.schedule; these are only the defaults.
+const FLAT_FEE_USD = 0.20;
+const DEFAULT_FEES_USD = { open: FLAT_FEE_USD, close: FLAT_FEE_USD, tp_sl: FLAT_FEE_USD, rebalance: FLAT_FEE_USD };
 // Actions that are always free regardless of config — documented so the UI and the engine agree.
 const FREE_ACTIONS = new Set(['collect', 'add', 'compound']);
 // Fraction of the open+close fee credited to the referrer (the rest is the platform's).
@@ -77,6 +80,6 @@ function feeSummary(store, chain = null) {
 }
 
 module.exports = {
-  DEFAULT_FEES_USD, FREE_ACTIONS, DEFAULT_REFERRAL_SHARE,
+  FLAT_FEE_USD, DEFAULT_FEES_USD, FREE_ACTIONS, DEFAULT_REFERRAL_SHARE,
   feeUsd, feeNativeWei, treasuryFor, referralShare, recordFee, feeSummary,
 };

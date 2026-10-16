@@ -18,12 +18,12 @@ const REF = '0x' + '2'.repeat(40);
 (async () => {
   console.log('billing');
 
-  await t('default schedule charges open/close/tp_sl/rebalance, free the rest', () => {
+  await t('default schedule is a flat $0.20 for every billable action, free the rest', () => {
     const cfg = {};
-    assert.equal(b.feeUsd(cfg, 'open'), 0.15);
-    assert.equal(b.feeUsd(cfg, 'close'), 0.15);
+    assert.equal(b.feeUsd(cfg, 'open'), 0.20);
+    assert.equal(b.feeUsd(cfg, 'close'), 0.20);
     assert.equal(b.feeUsd(cfg, 'tp_sl'), 0.20);
-    assert.equal(b.feeUsd(cfg, 'rebalance'), 0.25);
+    assert.equal(b.feeUsd(cfg, 'rebalance'), 0.20);
     for (const free of ['collect', 'add', 'compound']) assert.equal(b.feeUsd(cfg, free), 0, free);
     assert.equal(b.feeUsd(cfg, 'something_unknown'), 0, 'unknown actions are free, never guessed');
   });
@@ -92,7 +92,7 @@ const REF = '0x' + '2'.repeat(40);
     assert.ok(row, 'a paid row exists');
     assert.equal(row.action, 'open');
     assert.equal(row.tx, '0xfee');
-    assert.ok(sentTx() && sentTx().value === b.feeNativeWei(0.15, 3000), 'sent the native fee');
+    assert.ok(sentTx() && sentTx().value === b.feeNativeWei(0.20, 3000), 'sent the native fee');
   });
 
   await t('chargeFee: no native -> recorded as debt, no tx sent', async () => {

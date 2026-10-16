@@ -382,7 +382,7 @@ function view(dir = tmp()) {
     const base = `http://127.0.0.1:${adminServer.address().port}`;
     try {
       const got = await (await fetch(`${base}/api/admin/fees`, { headers: { cookie: cookie(root) } })).json();
-      assert.equal(got.schedule.open, 0.15, 'default open fee');
+      assert.equal(got.schedule.open, 0.20, 'default open fee');
       assert.equal(got.revenue.paidCount, 10, 'revenue summary flows through');
       const save = await fetch(`${base}/api/admin/fees`, {
         method: 'POST', headers: { cookie: cookie(root), 'content-type': 'application/json' },
