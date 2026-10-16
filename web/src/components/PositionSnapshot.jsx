@@ -6,6 +6,7 @@ import { usePoll, useResync } from '../hooks';
 import { useClaimFees } from '../useClaimFees';
 import { useClosePosition } from '../useClosePosition';
 import AutoCompoundButton from './AutoCompoundButton';
+import TpSlButton from './TpSlButton';
 import ShareButton, { positionCard } from './ShareCard';
 import TokenIcon from './TokenIcon';
 import { KV, Loading, Notice, PriceRange } from './ui';
@@ -62,6 +63,19 @@ export default function PositionSnapshot({ id, onUpdate }) {
       {bep && <KV label="Harga BEP">{bep.price > 0 ? <>{price(bep.price)} <span className="text-xs text-muted">{quote} / {base}</span></> : t(bep.reason)}</KV>}
       <KV label="Fee pool">{p.fee != null ? `${p.fee / 10000}%` : '—'}</KV>
     </div>
+    {!closed && !p.empty && <div className="rounded-lg border border-border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold">{t('Proteksi posisi')}</h3>
+          <p className="mt-0.5 text-xs text-muted">
+            {p.sl_pct > 0 || p.tp_pct > 0
+              ? [p.sl_pct > 0 && t('Stop loss −{n}%', { n: p.sl_pct }), p.tp_pct > 0 && t('Take profit +{n}%', { n: p.tp_pct })].filter(Boolean).join(' · ')
+              : p.sl_pct === 0 || p.tp_pct === 0 ? t('Diatur khusus posisi ini (sebagian dinonaktifkan).') : t('Belum diatur — mengikuti aturan target/global.')}
+          </p>
+        </div>
+        <TpSlButton p={p} reload={refresh} disabled={busy || !synced} />
+      </div>
+    </div>}
     {!closed && p.inRange === false && <p className="text-xs text-warning">{t('Harga berada di luar rentang. Posisi tidak menghasilkan fee swap sampai harga kembali ke rentang.')}</p>}
     <div>
       <h3 className="mb-2 text-sm font-semibold">{t(closed ? 'Diterima saat keluar' : 'Komposisi token')}</h3>
