@@ -502,6 +502,7 @@ const EN = {
   'Cari pool untuk token ini': 'Find pools for this token',
   'Mencari pool di chain… {p}%': 'Searching pools on-chain… {p}%',
   'Mencari pool…': 'Searching pools…',
+  'Kembali ke timeframe halaman': 'Back to the page timeframe',
   'dari DexScreener': 'from DexScreener',
   'Pindai chain': 'Scan the chain',
   'Pool yang baru dibuat mungkin belum terdaftar di DexScreener.': 'A freshly created pool may not be listed on DexScreener yet.',

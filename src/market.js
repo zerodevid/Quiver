@@ -37,7 +37,10 @@ const TF = {
 class Market {
   // gmgnKey: a function that returns the current GMGN API key (it can change from the
   // Settings page without a restart), or null if not yet set.
-  constructor({ log, fetch: fetchImpl, chain = null, gmgnKey = null } = {}) {
+  // gtGapMs / gtWaitMs: GeckoTerminal pacing (see gtTurn); tests pass 0 for the old fail-fast behaviour.
+  constructor({ log, fetch: fetchImpl, chain = null, gmgnKey = null, gtGapMs = 2200, gtWaitMs = 25_000 } = {}) {
+    this.gtGapMs = gtGapMs; this.gtWaitMs = gtWaitMs; this.gtCooldownMs = 20_000;
+    this.gtNext = 0;          // ms — the earliest the next GeckoTerminal call may go
     this.log = log || (() => {});
     this.fetch = fetchImpl || globalThis.fetch;
     this.gmgnKey = typeof gmgnKey === 'function' ? gmgnKey : () => gmgnKey;
@@ -107,15 +110,36 @@ class Market {
   // Once GeckoTerminal answers 429, ALL calls to it are held for 20 seconds
   // (the memo then serves the fallback/stale): continuing to hit it when the quota is exhausted only
   // prolongs the block for all three instances on this IP.
+  // GeckoTerminal's public API allows ~30 calls a minute per IP, shared by every instance on
+  // the VPS. Calls from this process are spaced gtGapMs apart, and during a 429 cooldown they
+  // wait it out instead of failing — as long as the wait fits in gtWaitMs. A chart then loads a
+  // few seconds late instead of showing "429" until its next poll (a freshly picked timeframe
+  // has no stale answer to fall back on). A queue longer than gtWaitMs still fails fast.
+  async gtTurn() {
+    const deadline = Date.now() + this.gtWaitMs;
+    for (;;) {
+      const now = Date.now();
+      const at = Math.max(now, this.gtNext, this.gtCooldown);
+      if (at > now && (!this.gtWaitMs || at > deadline)) throw new Error('batas panggilan (429) — coba lagi sebentar');
+      this.gtNext = at + this.gtGapMs;   // reserve the slot before waiting for it
+      if (at > now) await new Promise((r) => setTimeout(r, at - now));
+      // A 429 that landed while we waited pushes the cooldown past our slot: queue again.
+      if (Date.now() >= this.gtCooldown) return;
+    }
+  }
+
   async json(url, { timeoutMs = 12_000, tries = 1 } = {}) {
     const gt = url.startsWith('https://api.geckoterminal.com/');
-    if (gt && this.gtCooldown > Date.now()) throw new Error('batas panggilan (429) — coba lagi sebentar');
+    if (gt) await this.gtTurn();
     let last = null;
+    // One extra try for a GeckoTerminal 429, after its cooldown (gtTurn waits it out).
+    let limitedRetry = gt && this.gtWaitMs > 0;
     for (let i = 0; i < tries; i++) {
       try {
         const r = await this.fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(timeoutMs) });
         if (r.status === 429) {
-          if (gt) this.gtCooldown = Date.now() + 20_000;
+          if (gt) this.gtCooldown = Date.now() + this.gtCooldownMs;
+          if (limitedRetry) { limitedRetry = false; await this.gtTurn(); i--; continue; }
           throw new Error('batas panggilan (429) — coba lagi sebentar');
         }
         if (r.status === 404) return null;
@@ -125,7 +149,8 @@ class Market {
         last = e;
         // What is worth retrying: timeouts, dropped connections, and server-side errors
         // (502/503/504 — GeckoTerminal occasionally answers those for a few seconds).
-        // 429 is NOT retried: it is precisely asking us to stop for a moment.
+        // 429 is not retried here: it is asking us to stop for a moment (the one GeckoTerminal
+        // retry above goes only after its cooldown).
         const layak = /abort|timeout|timed out|fetch failed|network|ECONN|socket/i.test(String(e.message))
           || /^HTTP 5\d\d$/.test(String(e.message));
         if (!layak || i === tries - 1) throw e;

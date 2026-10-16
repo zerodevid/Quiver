@@ -13,6 +13,9 @@ async function check(name, fn) {
 }
 
 const POOL = '0x' + 'ab'.repeat(32);
+// GeckoTerminal pacing off: these tests check the fail-fast 429 handling without real waits.
+const NO_PACE = { gtGapMs: 0, gtWaitMs: 0 };
+
 function fake({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5, 3, 1, 2, 20]] } = {}) {
   const calls = [];
   const fetchImpl = async (url) => {
@@ -23,7 +26,7 @@ function fake({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5,
     }
     return { ok: true, status: 200, json: async () => ({ data: { attributes: { ohlcv_list: candles } }, meta: { base: { address: '0xA', symbol: 'X' }, quote: { address: '0xB', symbol: 'USDG' } } }) };
   };
-  return { mk: new Market({ fetch: fetchImpl }), calls };
+  return { mk: new Market({ ...NO_PACE, fetch: fetchImpl }), calls };
 }
 
 (async () => {
@@ -39,7 +42,7 @@ function fake({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5,
 
   await check('a failed call (429/502) uses the last good answer, marked stale', async () => {
     let gagalkan = false;
-    const mk = new Market({ fetch: async (url) => {
+    const mk = new Market({ ...NO_PACE, fetch: async (url) => {
       if (gagalkan) return { ok: false, status: 429, json: async () => ({}) };
       return { ok: true, status: 200, json: async () => ({ data: { attributes: { ohlcv_list: [[1000, 1, 2, 0.5, 1.5, 10]] } } }) };
     } });
@@ -61,7 +64,7 @@ function fake({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5,
       price_from_in_usd: '1', price_to_in_usd: '0.5', volume_in_usd: '10',
     } });
     const calls = [];
-    const mk = new Market({ fetch: async (url) => {
+    const mk = new Market({ ...NO_PACE, fetch: async (url) => {
       calls.push(url);
       return { ok: true, status: 200, json: async () => ({ data: [
         // GeckoTerminal labels it "sell" (its base is USDG), but relative to this X it is a buy.
@@ -77,7 +80,7 @@ function fake({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5,
     assert.strictEqual(r.trades[1].priceUsd, 0.5, 'USD price of the speculative token side');
     assert.strictEqual(r.trades[1].ts, Date.parse('2026-09-20T15:00:00Z'));
     // Without a token address, follow the GeckoTerminal label.
-    const r2 = await new Market({ fetch: async () => ({ ok: true, status: 200, json: async () => ({ data: [row('3', '2026-09-20T15:00:00Z', USDG, X, 10, 20, 'sell')] }) }) }).trades(POOL);
+    const r2 = await new Market({ ...NO_PACE, fetch: async () => ({ ok: true, status: 200, json: async () => ({ data: [row('3', '2026-09-20T15:00:00Z', USDG, X, 10, 20, 'sell')] }) }) }).trades(POOL);
     assert.strictEqual(r2.trades[0].side, 'sell');
     // Cache: a second poll within 10 seconds does not call GeckoTerminal again.
     await mk.trades(POOL, { token: X });
@@ -85,7 +88,7 @@ function fake({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5,
   });
 
   await check('without a previous good answer, an error stays an error', async () => {
-    const mk = new Market({ fetch: async () => ({ ok: false, status: 429, json: async () => ({}) }) });
+    const mk = new Market({ ...NO_PACE, fetch: async () => ({ ok: false, status: 429, json: async () => ({}) }) });
     const r = await mk.memo('kosong', 0, async () => ({ error: 'batas panggilan (429) — coba lagi sebentar' }));
     assert.match(r.error, /429/);
   });
@@ -127,7 +130,7 @@ function fake({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5,
 
   await check('429 from GeckoTerminal holds all calls there for 20 seconds; DexScreener is not affected', async () => {
     const calls = [];
-    const mk = new Market({ fetch: async (url) => {
+    const mk = new Market({ ...NO_PACE, fetch: async (url) => {
       calls.push(url);
       if (url.startsWith('https://api.geckoterminal.com/')) return { ok: false, status: 429, json: async () => ({}) };
       return { ok: true, status: 200, json: async () => ({ pairs: [{ baseToken: {}, quoteToken: {} }] }) };
@@ -141,6 +144,24 @@ function fake({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5,
     assert.strictEqual(calls.filter((u) => u.includes('geckoterminal')).length, 2, 'retried after the pause');
   });
 
+  await check('paced GeckoTerminal calls wait out a 429 and retry once instead of failing', async () => {
+    const calls = [];
+    let limited = 1;
+    const mk = new Market({ gtGapMs: 30, gtWaitMs: 2000, fetch: async (url) => {
+      calls.push([url, Date.now()]);
+      if (limited-- > 0) return { ok: false, status: 429, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({ data: { attributes: { ohlcv_list: [[1000, 1, 2, 0.5, 1.5, 10]] } }, meta: {} }) };
+    } });
+    mk.gtCooldownMs = 50;
+    const r = await mk.candles(POOL, '5m');
+    assert.ok(!r.error, 'the retry after the cooldown answers');
+    assert.strictEqual(calls.length, 2);
+    // A second pool right after: spaced, not refused.
+    const r2 = await mk.candles('0x' + 'cd'.repeat(32), '5m');
+    assert.ok(!r2.error);
+    assert.ok(calls[2][1] - calls[1][1] >= 25, 'calls are spaced gtGapMs apart');
+  });
+
   await check('GMGN candles: X-APIKEY + chain + range in ms, USD price, amount becomes volume; without a key -> error', async () => {
     const calls = [];
     const fetchImpl = async (url, opts) => {
@@ -150,7 +171,7 @@ function fake({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5,
         { time: 1000, open: '1', high: '2', low: '0.5', close: '1.5', volume: '999', amount: '10' },
       ] } }) };
     };
-    const mk = new Market({ fetch: fetchImpl, chain: { geckoterminal: 'robinhood', gmgn: 'robinhood' }, gmgnKey: () => 'kunci123' });
+    const mk = new Market({ ...NO_PACE, fetch: fetchImpl, chain: { geckoterminal: 'robinhood', gmgn: 'robinhood' }, gmgnKey: () => 'kunci123' });
     const r = await mk.candlesGmgn('0xABC', '5m', { limit: 100 });
     assert.strictEqual(r.source, 'gmgn'); assert.strictEqual(r.currency, 'usd');
     assert.deepStrictEqual(r.candles.map((c) => [c.t, c.c, c.v]), [[1000000, 1.5, 10], [2000000, 2.5, 42]]);
@@ -161,14 +182,14 @@ function fake({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5,
     assert.strictEqual(u.searchParams.get('resolution'), '5m');
     assert.strictEqual(Number(u.searchParams.get('to')) - Number(u.searchParams.get('from')), 100 * 300 * 1000, 'range = candle limit, in ms');
     assert.strictEqual(calls[0].headers['X-APIKEY'], 'kunci123');
-    assert.ok(!mk.gmgnEnabled.call(new Market({ fetch: fetchImpl })), 'tanpa key = nonaktif');
-    assert.match((await new Market({ fetch: fetchImpl }).candlesGmgn('0xabc', '5m')).error, /API key/);
+    assert.ok(!mk.gmgnEnabled.call(new Market({ ...NO_PACE, fetch: fetchImpl })), 'tanpa key = nonaktif');
+    assert.match((await new Market({ ...NO_PACE, fetch: fetchImpl }).candlesGmgn('0xabc', '5m')).error, /API key/);
   });
 
   await check('the GMGN limit (RATE_LIMIT_*) holds calls for 10 seconds and uses the fallback; a rejected key is explained', async () => {
     let mode = 'ok';
     const calls = [];
-    const mk = new Market({ fetch: async (url) => {
+    const mk = new Market({ ...NO_PACE, fetch: async (url) => {
       calls.push(url);
       if (mode === 'limit') return { ok: false, status: 200, json: async () => ({ code: 40001, error: 'RATE_LIMIT_EXCEEDED', message: 'slow down' }) };
       if (mode === 'auth') return { ok: false, status: 401, json: async () => ({ code: 401, message: 'invalid key' }) };

@@ -121,7 +121,7 @@ function TriggerBar({ x }) {
 // range band; the entry & BEP lines only for the selected position so it is not cluttered.
 // Starts polling after `delay` ms so the cards do not hit GeckoTerminal
 // simultaneously (quota ~30 calls/minute per IP).
-function CardChart({ g, sel, tf, onTf, live, delay, height }) {
+function CardChart({ g, sel, tf, onTf, tfReset, live, delay, height }) {
   const { t } = useI18n();
   const p0 = g.p0;
   const [go, setGo] = useState(delay === 0);
@@ -131,7 +131,10 @@ function CardChart({ g, sel, tf, onTf, live, delay, height }) {
   // would force the candles to be refetched every 5 seconds.
   const span = Math.max(...g.items.map((x) => x.p.ageHours || 0)) * 3600;
   const limit = Math.min(500, Math.max(150, Math.ceil((span / SECS[tf] + 40) / 50) * 50));
-  const { data: m } = usePoll(go ? `/api/market?pool=${p0.pool_ref}&tf=${tf}&limit=${limit}&token=${p0.baseToken || ''}&pair=0` : null, 45000);
+  // A failed load (GeckoTerminal 429 on a freshly picked timeframe) is retried in 8 s, not 45 s.
+  const [failed, setFailed] = useState(false);
+  const { data: m } = usePoll(go ? `/api/market?pool=${p0.pool_ref}&tf=${tf}&limit=${limit}&token=${p0.baseToken || ''}&pair=0` : null, failed ? 8000 : 45000);
+  useEffect(() => setFailed(!!m?.ohlcv?.error), [m]);
   const at = (tick) => tickPrice(tick, p0.dec0, p0.dec1, p0.quoteSide);
   const pEntry = sel ? sqrtPrice(sel.p.entrySqrt, p0.dec0, p0.dec1, p0.quoteSide) : null;
   const pNow = live?.price ?? (p0.curSqrt ? sqrtPrice(p0.curSqrt, p0.dec0, p0.dec1, p0.quoteSide) : (p0.curTick != null ? at(p0.curTick) : null));
@@ -149,6 +152,11 @@ function CardChart({ g, sel, tf, onTf, live, delay, height }) {
       <div className="flex flex-col items-center justify-center gap-1 px-4 text-center text-xs text-muted" style={{ height }}>
         <span>{t('Grafik belum tersedia')}</span>
         <span>{m.ohlcv?.error ? t(m.ohlcv.error) : t('GeckoTerminal belum punya riwayat harga untuk pool ini.')}</span>
+        {/* The timeframe switcher lives inside the chart, so without candles a card-only
+            timeframe needs its own way back. */}
+        {tfReset && (
+          <button type="button" className="mt-1 underline underline-offset-2" onClick={tfReset}>{t('Kembali ke timeframe halaman')}</button>
+        )}
       </div>
     );
   }
@@ -312,7 +320,7 @@ function MonitorCard({ g, tf: tfGlobal, tfEpoch, dense, delay, actions }) {
         </div>}
       </div>
       <div className="px-1">
-        <CardChart g={g} sel={sel} tf={tf} onTf={setTfOwn} live={g.live} delay={delay} height={dense ? 260 : 340} />
+        <CardChart g={g} sel={sel} tf={tf} onTf={setTfOwn} tfReset={tfOwn && tfOwn !== tfGlobal ? () => setTfOwn(null) : null} live={g.live} delay={delay} height={dense ? 260 : 340} />
       </div>
 
       {/* selected position: source & age (when many), linear range band, key numbers */}
