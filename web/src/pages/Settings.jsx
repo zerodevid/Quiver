@@ -572,6 +572,49 @@ function SimpleForm({ title, desc, fields, initial, url, okText, extra, envName,
   );
 }
 
+// Gas speed presets for regular accounts. A raw price-multiplier number confuses people, so the
+// only choice offered is slow / medium / fast. Each maps to a price_multiplier (the executor's
+// one speed knob); everything else in cfg.gas keeps its chain default. The persisted key stays
+// `price_multiplier` — this is just a friendlier way to set it. Same values work for EVM and Solana.
+const GAS_SPEEDS = [
+  ['slow', '🐢 Hemat', 1.1, 'Biaya paling murah. Transaksi bisa lebih lama saat jaringan ramai.'],
+  ['medium', '🚶 Normal', 1.3, 'Seimbang antara biaya dan kecepatan. Disarankan.'],
+  ['fast', '🚀 Cepat', 1.8, 'Bayar sedikit lebih mahal supaya transaksi masuk lebih cepat.'],
+];
+const gasSpeedOf = (mult) => GAS_SPEEDS.find(([, , v]) => Math.abs(Number(mult) - v) < 0.01)?.[0] ?? null;
+
+function GasSpeed({ gas, onSaved }) {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState(null);
+  const cur = gasSpeedOf(gas?.price_multiplier);
+  const pick = async (key, mult) => {
+    if (busy) return;
+    setBusy(key);
+    try {
+      const next = { ...gas, price_multiplier: mult };
+      const r = await post('/api/settings/gas', next);
+      if (r.error) { toast.error(r.error); return; }
+      onSaved?.(next); toast.success(t('Kecepatan gas disimpan'));
+    } catch { toast.error(t('Tidak dapat menyimpan. Periksa koneksi lalu coba lagi.')); }
+    finally { setBusy(null); }
+  };
+  return (
+    <Section title="Gas" desc="Seberapa cepat transaksimu diproses jaringan. Makin cepat, sedikit lebih mahal biayanya.">
+      <div className="grid gap-3 sm:grid-cols-3">
+        {GAS_SPEEDS.map(([key, label, mult, hint]) => (
+          <button key={key} type="button" disabled={!!busy} onClick={() => pick(key, mult)} aria-pressed={cur === key}
+            className={`flex flex-col gap-1.5 rounded-xl border p-4 text-left transition disabled:opacity-60 ${cur === key ? 'border-accent bg-accent/10' : 'border-border bg-surface-secondary/30 hover:border-accent/50'}`}>
+            <span className="font-medium">{t(label)}</span>
+            <span className="text-sm leading-snug text-muted">{t(hint)}</span>
+            {cur === key && <span className="text-xs font-medium text-accent">{t('Dipakai sekarang')}</span>}
+          </button>
+        ))}
+      </div>
+      {cur === null && <p className="mt-3 text-sm text-muted">{t('Pengaturan khusus: pengali {m}× harga gas jaringan.', { m: gas?.price_multiplier })}</p>}
+    </Section>
+  );
+}
+
 // Fields managed through .env: the dashboard refuses to change them (they would be overwritten again on
 // restart), so what is shown is where to change them.
 function EnvNotice({ name, what }) {
@@ -1264,6 +1307,7 @@ export default function Settings() {
                 {shown('chains') && <Tabs.Panel id="chains"><ChainsTab d={d} setD={setD} /></Tabs.Panel>}
                 {shown('rpc') && <Tabs.Panel id="rpc"><RpcTab d={d} setD={setD} /></Tabs.Panel>}
                 <Tabs.Panel id="gas" shouldForceMount className="data-[inert]:hidden">
+                  {regular ? <GasSpeed gas={d.gas} onSaved={(gas) => setD((prev) => ({ ...prev, gas }))} /> :
                   <SimpleForm title="Gas" desc="Berlaku untuk transaksi berikutnya, tanpa restart." url="/api/settings/gas" okText="Pengaturan gas tersimpan"
                     onSaved={(gas) => setD((prev) => ({ ...prev, gas }))} initial={d.gas} fields={isSolana() ? [
                       ['price_multiplier', 'Pengali harga prioritas', 'Fee prioritas terkini (persentil 75 untuk akun yang ditulis transaksi) × angka ini.'],
@@ -1278,7 +1322,7 @@ export default function Settings() {
                       ['max_gas_limit', 'Batas gas per transaksi', 'Jumlah maksimum unit gas untuk satu transaksi, bukan jumlah ETH. Batas terlalu kecil dapat membuat transaksi gagal.'],
                       ['max_fee_gwei', 'Batas harga gas (gwei)', 'Harga gas per unit tidak pernah melebihi angka ini, walau satu RPC melaporkan harga yang ngawur. Harga normal jaringan ini sekitar 0,1 gwei.'],
                       ['reserve_eth', `Cadangan ${chainInfo().nativeSymbol} untuk gas`, `${chainInfo().nativeSymbol} sebanyak ini tidak pernah dipakai untuk LP maupun swap.`],
-                    ]} />
+                    ]} />}
                 </Tabs.Panel>
                 <Tabs.Panel id="notify" shouldForceMount className="data-[inert]:hidden">
                   <SimpleForm title="Notifikasi" url="/api/settings/notify" okText="Topik tersimpan" initial={d.notify} envName={d.notify?.fromEnv}

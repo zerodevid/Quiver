@@ -645,6 +645,16 @@ const ALIAS = {
 // to copy.
 const COPY_SCREENS = new Set(['t', 'tt', 'tn', 'td', 'tD', 'ta', 'tr', 'tw', 'ts', 'a', 'r', 'rg', 're', 'rb', 'rv', 'rp', 'rx', 'w', 'k', 'scout', 'wr', 'adT']);
 
+// Gas speed presets for account bots: a raw price multiplier confuses people, so the gas screen
+// offers only slow / medium / fast. Each maps to cfg.gas.price_multiplier (the executor's one speed
+// knob); the rest of cfg.gas keeps its chain default. The same multipliers work for EVM and Solana.
+const GAS_SPEEDS = [
+  ['slow', '🐢 Hemat', 1.1],
+  ['medium', '🚶 Normal', 1.3],
+  ['fast', '🚀 Cepat', 1.8],
+];
+const gasSpeedOf = (m) => GAS_SPEEDS.find(([, , v]) => Math.abs(Number(m) - v) < 0.01)?.[0] ?? null;
+
 // Connect command: /start <code>. Also used by links in t.me.
 const PAIR_RE = /^\/(?:start|mulai)(?:@\S+)?\s+(\S+)/i;
 
@@ -1421,6 +1431,15 @@ class Telegram {
         return out(...(await this.rpcScreen()));
       }
 
+      case 'gs': {
+        const sp = rest[0] && GAS_SPEEDS.find(([k]) => k === rest[0]);
+        if (sp) {
+          const st = await this.api('GET', '/api/settings');
+          const r = await this.api('POST', '/api/settings/gas', { ...st.gas, price_multiplier: sp[2] });
+          if (ack) await ack(r.error || tr("Kecepatan gas disimpan"));
+        }
+        return out(...(await this.gasSpeedScreen()));
+      }
       case 'sf': return out(...(await this.form(rest[0])));
       case 'sfe': return this.askField(chatId, localizeSchema(FORMS)[rest[0]].fields[+rest[1]], `sfe:${rest[0]}:${rest[1]}`, `sf:${rest[0]}`);
       case 'sfb': {
@@ -2721,7 +2740,7 @@ class Telegram {
       // Open-LP (hub) accounts have no simulation mode — they are always LIVE, so no toggle.
       this.hub ? null : [btn(st.mode.dry_run ? tr("🟢 Nyalakan LIVE") : tr("🧪 Kembali ke simulasi"), 'sl')],
       [btn(st.mode.paused ? tr("▶️ Lanjutkan") : tr("⏸ Jeda penyalinan"), 'sp')],
-      this.hub ? [btn(tr("🔑 Wallet bot"), 'wb'), btn('⛽ Gas', st.wallet?.kind === 'solana' ? 'sf:gasSol' : 'sf:gas')] : [btn(tr("🔑 Wallet bot"), 'wb'), btn('🌐 RPC', 'sr')],
+      this.hub ? [btn(tr("🔑 Wallet bot"), 'wb'), btn('⛽ Gas', 'gs')] : [btn(tr("🔑 Wallet bot"), 'wb'), btn('🌐 RPC', 'sr')],
       this.hub ? null : [btn('⛽ Gas', st.wallet?.kind === 'solana' ? 'sf:gasSol' : 'sf:gas'), btn(tr("🔧 Mesin"), 'sf:mesin')],
       [btn(tr("🔔 Notifikasi"), 'sn'), btn(tr("💬 Chat Telegram"), 'sc')],
       this.hub ? null : [btn(tr("🔐 Ganti token dasbor"), 'sk')],
@@ -2839,6 +2858,22 @@ class Telegram {
         spec.type === 'bool' ? `sfb:${name}:${i}` : `sfe:${name}:${i}`)]);
     });
     if (f.note) { L.push(''); L.push(`<i>${esc(f.note)}</i>`); }
+    return [L.join('\n'), kb([...rows, [btn(tr("↩︎ Pengaturan"), 's'), BACK_HOME]])];
+  }
+
+  // Simple gas screen for account bots: pick slow / medium / fast instead of typing a multiplier.
+  async gasSpeedScreen() {
+    const st = await this.api('GET', '/api/settings');
+    const cur = gasSpeedOf(st.gas?.price_multiplier);
+    const L = [
+      tr("<b>⛽ Kecepatan gas</b>"), '',
+      tr("Seberapa cepat transaksimu diproses jaringan. Makin cepat, sedikit lebih mahal biayanya."), '',
+      tr("🐢 <b>Hemat</b> — termurah, bisa lebih lama saat jaringan ramai"),
+      tr("🚶 <b>Normal</b> — seimbang biaya & kecepatan (disarankan)"),
+      tr("🚀 <b>Cepat</b> — bayar sedikit lebih supaya cepat masuk"),
+    ];
+    if (cur === null) L.push('', tr("<i>Saat ini pakai pengaturan khusus ({0}× harga jaringan).</i>", [st.gas?.price_multiplier]));
+    const rows = GAS_SPEEDS.map(([key, name]) => [btn(`${cur === key ? '🔘' : '⚪️'} ${tr(name)}`, `gs:${key}`)]);
     return [L.join('\n'), kb([...rows, [btn(tr("↩︎ Pengaturan"), 's'), BACK_HOME]])];
   }
 
