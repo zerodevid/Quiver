@@ -2302,6 +2302,8 @@ const EN = {
   'Posisi di {v} · {c}': 'Position on {v} · {c}',
   'Ditutup {v}': 'Closed {v}',
   'Posisi selesai': 'Position closed',
+  'Compound fee': 'Fee compounded',
+  'Tarik sebagian': 'Partial withdrawal',
   'posisi {v}': '{v} position',
   'Masuk {v}': 'Open {v}',
   'Keluar {v}': 'Close {v}',
