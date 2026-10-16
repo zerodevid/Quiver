@@ -975,5 +975,14 @@
   "Kalender PnL": "PnL calendar",
   "Hari hijau": "Green days",
   "Hari terbaik": "Best day",
-  "PnL terealisasi dari posisi yang ditutup tiap hari": "Realized PnL of the positions closed each day"
+  "PnL terealisasi dari posisi yang ditutup tiap hari": "Realized PnL of the positions closed each day",
+  "⏳ Menghitung estimasi hasil tutup…": "⏳ Estimating the close result…",
+  "<b>Estimasi jika ditutup sekarang</b>": "<b>Estimate if closed now</b>",
+  "Diterima di wallet": "Received in wallet",
+  "Kerugian jual memecoin": "Memecoin sale loss",
+  "Gas": "Gas",
+  "Fee yang sudah diklaim": "Fees already claimed",
+  "PnL riil": "Real PnL",
+  "Harga tengah pool menunjukkan {0}": "Pool mid price shows {0}",
+  "⚠️ Quote jual belum terbaca, memakai harga tengah.": "⚠️ Sale quote unavailable, using the mid price."
 }

@@ -1129,7 +1129,11 @@ class Telegram {
       case 'b': return out(...(await this.saldo()));
       case 'pl': return out(...(await this.posisi(rest[0], rest[1])));
       case 'p': return rest[0] ? out(...(await this.positionDetail(rest[0]))) : out(...(await this.posisi()));
-      case 'pc': return out(...(await this.closeConfirm(rest[0])));
+      case 'pc': {
+        // The exit quote asks every aggregator (~1–3 s); without an interim message the tap looks ignored.
+        if (msgId) await out(tr("⏳ Menghitung estimasi hasil tutup…"));
+        return out(...(await this.closeConfirm(rest[0])));
+      }
       // Every pool of an open position's pair. Keyed by position id: a v4 poolId does
       // not fit in the 64-byte callback data.
       case 'pp': {
@@ -2378,6 +2382,26 @@ class Telegram {
     const live = !this.engine.dryRun();
     const L = [tr("🔴 <b>Tutup posisi #{0}?</b>", [esc(id)])];
     if (p) L.push(tr("{0}/{1} · nilai {2} · {3}", [esc(p.symbol0), esc(p.symbol1), usd(p.valueUsd), sgn(p.pnlUsd)]));
+    // Close simulation (read-only): the memecoin side quoted on the aggregators and the gas of a
+    // typical close subtracted, so the PnL shown is what would be booked, not the pool mid-price PnL.
+    let q = p ? await this.api('GET', '/api/position/exit-quote', null, { id }).catch(() => null) : null;
+    if (q?.error) q = null;
+    if (q) {
+      L.push('');
+      L.push(tr("<b>Estimasi jika ditutup sekarang</b>"));
+      L.push(table([
+        [tr("Diterima di wallet"), usd(q.receiveUsd)],
+        [tr("Kerugian jual memecoin"), q.sellCostUsd > 0.005 ? `−${usd(q.sellCostUsd)}` : null],
+        [tr("Gas"), `−${usd(q.gasUsd)}`],
+        [tr("Fee yang sudah diklaim"), q.claimedUsd > 0.005 ? `+${usd(q.claimedUsd)}` : null],
+        [tr("PnL riil"), `${sgn(q.pnlUsd)} (${pct(q.pnlPct)})`],
+      ]));
+      for (const leg of q.legs || []) {
+        if (leg.all?.length) L.push(`<i>${esc(leg.all.map((a, i) => `${a.label} ${usd(a.outUsd)}${i === 0 ? ' ✓' : ''}`).join(' · '))}</i>`);
+      }
+      L.push(tr("Harga tengah pool menunjukkan {0}", [sgn(q.pnlMidUsd)]));
+      if (!q.quoted) L.push(tr("⚠️ Quote jual belum terbaca, memakai harga tengah."));
+    }
     L.push('');
     L.push(live
       ? tr("Likuiditas ditarik penuh dan transaksi dikirim sungguhan. Memecoin sisa akan dijual otomatis kalau aturan itu menyala.")
