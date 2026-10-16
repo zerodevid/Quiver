@@ -162,19 +162,20 @@ function fake({ status = 200, candles = [[1000, 1, 2, 0.5, 1.5, 10], [2000, 1.5,
     assert.ok(calls[2][1] - calls[1][1] >= 25, 'calls are spaced gtGapMs apart');
   });
 
-  await check('GMGN candles: X-APIKEY + chain + range in ms, USD price, amount becomes volume; without a key -> error', async () => {
+  await check('GMGN candles: X-APIKEY + chain + range in ms, ms candle times, USD volume; without a key -> error', async () => {
     const calls = [];
     const fetchImpl = async (url, opts) => {
       calls.push({ url, headers: opts.headers });
       return { ok: true, status: 200, json: async () => ({ code: 0, data: { list: [
-        { time: 2000, open: '2', high: '3', low: '1', close: '2.5', volume: '999', amount: '42' },
-        { time: 1000, open: '1', high: '2', low: '0.5', close: '1.5', volume: '999', amount: '10' },
+        // The real answer: time in ms, volume in USD, amount in tokens.
+        { time: 1_792_128_300_000, open: '2', high: '3', low: '1', close: '2.5', volume: '42', amount: '999' },
+        { time: 1_792_128_000_000, open: '1', high: '2', low: '0.5', close: '1.5', volume: '10', amount: '999' },
       ] } }) };
     };
     const mk = new Market({ ...NO_PACE, fetch: fetchImpl, chain: { geckoterminal: 'robinhood', gmgn: 'robinhood' }, gmgnKey: () => 'kunci123' });
     const r = await mk.candlesGmgn('0xABC', '5m', { limit: 100 });
     assert.strictEqual(r.source, 'gmgn'); assert.strictEqual(r.currency, 'usd');
-    assert.deepStrictEqual(r.candles.map((c) => [c.t, c.c, c.v]), [[1000000, 1.5, 10], [2000000, 2.5, 42]]);
+    assert.deepStrictEqual(r.candles.map((c) => [c.t, c.c, c.v]), [[1_792_128_000_000, 1.5, 10], [1_792_128_300_000, 2.5, 42]]);
     const u = new URL(calls[0].url);
     assert.strictEqual(u.origin + u.pathname, 'https://openapi.gmgn.ai/v1/market/token_kline');
     assert.strictEqual(u.searchParams.get('chain'), 'robinhood');

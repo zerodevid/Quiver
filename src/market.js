@@ -375,8 +375,9 @@ class Market {
       for (const c of j?.list || []) {
         const t = Number(c.time), o = Number(c.open), h = Number(c.high), l = Number(c.low), cl = Number(c.close);
         if (!(t > 0) || !(o > 0) || !(h > 0) || !(l > 0) || !(cl > 0)) continue;
-        // volume = token amount, amount = USD value — the UI uses the USD value as the volume.
-        byT.set(t, { t: t * 1000, o, h, l, c: cl, v: Number(c.amount) || 0 });
+        // `time` is in ms (seconds only in older answers); `volume` is the USD value and
+        // `amount` the token amount (checked against close × amount) — the UI shows USD volume.
+        byT.set(t, { t: t > 1e12 ? t : t * 1000, o, h, l, c: cl, v: Number(c.volume) || 0 });
       }
       const candles = [...byT.values()].sort((a, b) => a.t - b.t);
       return { tf, secs, candles, source: 'gmgn', currency: 'usd', base: { address: this.lc(token) }, quote: null, fetchedAt: Date.now() };

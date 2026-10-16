@@ -35,7 +35,7 @@ import { useAlertPrefs, alarm, bumpTitle } from '../components/TargetAlerts';
 import { orientCandles, tfFor, SECS, LiveBadge, kUsd } from './PositionDetail';
 import { usd, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice } from '../fmt';
 import { useI18n } from '../i18n';
-import { canonAddr } from '../chain';
+import { canonAddr, chainInfo } from '../chain';
 
 const TFS = [['auto', 'Otomatis'], ['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam']];
 const SORTS = [['risk', 'Paling berisiko'], ['pnl', 'PnL'], ['value', 'Nilai'], ['age', 'Umur']];
@@ -124,6 +124,8 @@ function TriggerBar({ x }) {
 function CardChart({ g, sel, tf, onTf, tfReset, live, delay, height }) {
   const { t } = useI18n();
   const p0 = g.p0;
+  // The speculative token: GMGN candles are per token, and it orients GeckoTerminal's.
+  const base = baseTokenOf(p0);
   const [go, setGo] = useState(delay === 0);
   useEffect(() => { if (go) return undefined; const id = setTimeout(() => setGo(true), delay); return () => clearTimeout(id); }, [go, delay]);
   // Enough candles that the oldest position in this pool shows its entry point. Rounded
@@ -131,27 +133,39 @@ function CardChart({ g, sel, tf, onTf, tfReset, live, delay, height }) {
   // would force the candles to be refetched every 5 seconds.
   const span = Math.max(...g.items.map((x) => x.p.ageHours || 0)) * 3600;
   const limit = Math.min(500, Math.max(150, Math.ceil((span / SECS[tf] + 40) / 50) * 50));
-  // A failed load (GeckoTerminal 429 on a freshly picked timeframe) is retried in 8 s, not 45 s.
+  // Candles from GMGN (its own quota, unlike GeckoTerminal's ~30/min shared by every instance on
+  // the VPS); the server falls back to GeckoTerminal without a GMGN key or when GMGN fails.
+  // `pair` (DexScreener) is asked for its priceUsd: the quote -> USD rate below.
+  // A failed load is retried in 8 s, not 45 s.
   const [failed, setFailed] = useState(false);
-  const { data: m } = usePoll(go ? `/api/market?pool=${p0.pool_ref}&tf=${tf}&limit=${limit}&token=${p0.baseToken || ''}&pair=0` : null, failed ? 8000 : 45000);
+  const { data: m } = usePoll(go ? `/api/market?pool=${p0.pool_ref}&tf=${tf}&limit=${limit}&token=${base || ''}&src=gmgn` : null, failed ? 8000 : 45000);
   useEffect(() => setFailed(!!m?.ohlcv?.error), [m]);
   const at = (tick) => tickPrice(tick, p0.dec0, p0.dec1, p0.quoteSide);
   const pEntry = sel ? sqrtPrice(sel.p.entrySqrt, p0.dec0, p0.dec1, p0.quoteSide) : null;
   const pNow = live?.price ?? (p0.curSqrt ? sqrtPrice(p0.curSqrt, p0.dec0, p0.dec1, p0.quoteSide) : (p0.curTick != null ? at(p0.curTick) : null));
-  const oriented = useMemo(() => orientCandles(m?.ohlcv, p0.baseToken, pNow ?? pEntry), [m, p0.baseToken, pNow, pEntry]);
-  const candles = useLiveCandles(oriented, SECS[tf], live, `${p0.pool_ref}:${tf}:mon`);
-  const ranges = useMemo(() => g.items.filter((x) => !x.full).map((x) => {
+  // GMGN prices in USD while ranges/entry/BEP are in the pool's quote asset: all of them are
+  // multiplied by the quote -> USD rate (as on the position page). No rate = no markers.
+  const gmgn = m?.ohlcv?.source === 'gmgn';
+  const quoteSym = p0.quoteSide === 0 ? p0.symbol0 : p0.quoteSide === 1 ? p0.symbol1 : null;
+  const k = !gmgn ? 1
+    : m?.pair?.priceUsd > 0 && pNow > 0 ? m.pair.priceUsd / pNow
+    : quoteSym === chainInfo().usdgSymbol ? 1 : null;
+  const cv = (v) => (v != null && k ? v * k : null);
+  const oriented = useMemo(() => (gmgn ? (m?.ohlcv?.candles || []) : orientCandles(m?.ohlcv, base, pNow ?? pEntry)), [m, gmgn, base, pNow, pEntry]);
+  const liveK = useMemo(() => (live && k ? { ...live, price: live.price * k } : k ? live : null), [live, k]);
+  const candles = useLiveCandles(oriented, SECS[tf], liveK, `${p0.pool_ref}:${tf}:mon:${gmgn ? 'gmgn' : 'gt'}`);
+  const ranges = useMemo(() => (k ? g.items.filter((x) => !x.full).map((x) => {
     const a = at(x.p.tick_lower), b = at(x.p.tick_upper);
-    return { id: x.p.id, lo: Math.min(a, b), hi: Math.max(a, b), color: x.color, label: x.tag, selected: sel?.p.id === x.p.id, from: x.p.opened_ts };
-  }), [g.items, sel?.p.id]);   // eslint-disable-line react-hooks/exhaustive-deps
+    return { id: x.p.id, lo: Math.min(a, b) * k, hi: Math.max(a, b) * k, color: x.color, label: x.tag, selected: sel?.p.id === x.p.id, from: x.p.opened_ts };
+  }) : []), [g.items, sel?.p.id, k]);   // eslint-disable-line react-hooks/exhaustive-deps
   const bep = sel ? breakEven(sel.p) : null;
-  const quote = p0.quoteSide === 0 ? p0.symbol0 : p0.quoteSide === 1 ? p0.symbol1 : null;
+  const quote = gmgn ? 'USD' : quoteSym;
   if (!m) return <div className="flex items-center justify-center" style={{ height }}><Loading text={go ? 'Memuat lilin…' : 'Antre…'} /></div>;
   if (m.ohlcv?.error || !candles.length) {
     return (
       <div className="flex flex-col items-center justify-center gap-1 px-4 text-center text-xs text-muted" style={{ height }}>
         <span>{t('Grafik belum tersedia')}</span>
-        <span>{m.ohlcv?.error ? t(m.ohlcv.error) : t('GeckoTerminal belum punya riwayat harga untuk pool ini.')}</span>
+        <span>{m.ohlcv?.error ? t(m.ohlcv.error) : gmgn ? t('GMGN belum punya riwayat harga untuk token ini.') : t('GeckoTerminal belum punya riwayat harga untuk pool ini.')}</span>
         {/* The timeframe switcher lives inside the chart, so without candles a card-only
             timeframe needs its own way back. */}
         {tfReset && (
@@ -161,10 +175,10 @@ function CardChart({ g, sel, tf, onTf, tfReset, live, delay, height }) {
     );
   }
   return (
-    <AdvancedChart key={`${p0.pool_ref}:${tf}`} candles={candles} tf={tf} onTfChange={onTf} quote={quote} poolRef={p0.pool_ref} title={`${p0.symbol0}/${p0.symbol1}`}
+    <AdvancedChart key={`${p0.pool_ref}:${tf}:${gmgn ? 'gmgn' : 'gt'}`} candles={candles} tf={tf} onTfChange={onTf} quote={quote} poolRef={p0.pool_ref} title={`${p0.symbol0}/${p0.symbol1}`}
       height={height} ranges={ranges}
-      entry={sel && (sel.p.opened_ts || pEntry != null) ? { t: sel.p.opened_ts, p: pEntry } : null}
-      now={pNow} bep={bep?.price > 0 ? bep.price : null} />
+      entry={sel && (sel.p.opened_ts || pEntry != null) ? { t: sel.p.opened_ts, p: cv(pEntry) } : null}
+      now={cv(pNow)} bep={bep?.price > 0 ? cv(bep.price) : null} />
   );
 }
 
