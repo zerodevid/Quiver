@@ -890,6 +890,7 @@ class Telegram {
     } catch (e) {
       this.startError = e.message;
       this.log(`telegram: tidak bisa menghubungi Telegram (${e.message}) — tetap mencoba di latar`);
+      this.ensureMe();   // keep retrying getMe in the background so login & commands recover without a restart
     }
     if (gen !== this.gen) return { ok: false, reason: 'dibatalkan' };   // replaced again in the meantime
     this.log(`telegram: bot ${this.me ? '@' + this.me.username : '(?)'} jalan · ${this.chats().length} chat terhubung`);
@@ -901,6 +902,25 @@ class Telegram {
     this.wire();
     this.poll(gen);
     return { ok: !this.startError, username: this.me?.username || null, error: this.startError };
+  }
+
+  // getMe can fail at startup on a flaky network. Without it botUsername() is null and the
+  // dashboard's "Sign in with Telegram" button has no bot to deep-link to. Keep retrying in the
+  // background (with backoff) until it succeeds, then register the commands start() could not.
+  async ensureMe() {
+    for (let i = 0; !this.me && !this.stopped; i++) {
+      try {
+        const me = await this.tg('getMe');
+        if (me) {
+          this.me = me;
+          this.startError = null;
+          this.log(`telegram: bot @${me.username} tersambung`);
+          await this.tg('setMyCommands', { commands: COMMANDS.map(([command, description]) => ({ command, description })) }).catch(() => {});
+          return;
+        }
+      } catch { /* keep trying */ }
+      await sleep(Math.min(30_000, 3000 * (i + 1)));
+    }
   }
 
   // The button beside the typing field: the mini app if the dashboard has an https address, otherwise
