@@ -364,6 +364,49 @@ function view(dir = tmp()) {
     } finally { await s.close(); }
   });
 
+  await t('platform fees: superadmin reads/writes the schedule, an account cannot', async () => {
+    const { dir, v } = view();
+    const cfg = chainView(globalCfg(), 'robinhood');
+    const cfgPath = path.join(dir, 'config.json');
+    writeCfg(cfgPath, globalCfg());
+    const engine = {
+      cfg, store: new Store(':memory:'), ethUsd: 2500, positions: { live: [], lastSync: 0, resync: async () => {} },
+      watcher: { unsupported: new Map() }, exec: { address: () => null, balances: async () => new Map() },
+      leftovers: () => [], dryRun: () => true, paused: () => false, drawdownStatus: () => ({}), freshCash: async () => null,
+    };
+    const adminServer = createServer({
+      engine, store: engine.store, authStore, cfg, cfgPath, chain: {}, rpc: {}, log: () => {},
+      tenant: null, tenantControl: { feeTotals: () => ({ paidUsd: 1.5, paidCount: 10, debtUsd: 0, debtCount: 0, accounts: 2 }) },
+    });
+    await new Promise((r) => adminServer.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${adminServer.address().port}`;
+    try {
+      const got = await (await fetch(`${base}/api/admin/fees`, { headers: { cookie: cookie(root) } })).json();
+      assert.equal(got.schedule.open, 0.15, 'default open fee');
+      assert.equal(got.revenue.paidCount, 10, 'revenue summary flows through');
+      const save = await fetch(`${base}/api/admin/fees`, {
+        method: 'POST', headers: { cookie: cookie(root), 'content-type': 'application/json' },
+        body: JSON.stringify({ schedule: { open: 0.25 }, treasury: { robinhood: { address: '0x' + 'a'.repeat(40) } } }),
+      });
+      assert.equal(save.status, 200);
+      const after = await (await fetch(`${base}/api/admin/fees`, { headers: { cookie: cookie(root) } })).json();
+      assert.equal(after.schedule.open, 0.25, 'the new fee persisted');
+      assert.equal(after.treasury.robinhood.address.toLowerCase(), '0x' + 'a'.repeat(40));
+      const bad = await fetch(`${base}/api/admin/fees`, {
+        method: 'POST', headers: { cookie: cookie(root), 'content-type': 'application/json' },
+        body: JSON.stringify({ treasury: { robinhood: { address: 'not-an-address' } } }),
+      });
+      assert.match((await bad.json()).error, /tidak valid/, 'a bad treasury address is rejected');
+    } finally { await new Promise((r) => adminServer.close(r)); }
+
+    // A regular account is refused the route entirely.
+    const s = await serveTenant(alice.id);
+    try {
+      const r = await fetch(`${s.base}/api/admin/fees`, { headers: { cookie: cookie(alice) } });
+      assert.match((await r.json()).error, /superadmin/);
+    } finally { await s.close(); }
+  });
+
   await t('an account is open-LP only: copy is forced off and the engine skips it', async () => {
     const { v } = view();
     // A user cannot even write the copy flag, and the view always reports it off.

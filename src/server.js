@@ -20,11 +20,15 @@ const { Costs, swapCostOf } = require('./costs');
 const { writeCfg } = require('./env');
 const { Auth, AuthError, SESSION_TTL_MS } = require('./auth');
 const { ADMIN_ONLY_ROUTES, ADMIN_ONLY_SETTINGS, ReadOnlyError } = require('./tenants');
+const { ethers } = require('ethers');
+const billing = require('./billing');
+const { enabledChains } = require('./multichain');
 const shareCard = require('./share-card');
 const chartCard = require('./chart-card');
 const portfolioCard = require('./portfolio-card');
 const { breakEven } = require('./breakeven.mjs');
 const { swapHistory } = require('./swaplog');
+const { LANDING_PAGE } = require('./landing-page');
 
 
 // Speculative token price in the quote asset — a copy of the formula in web/src/fmt.js, used by the
@@ -236,11 +240,11 @@ const REGISTER_PAGE = ({ first = false, needToken = false, err = null, username 
     ${codeRow}
     <button type="submit">Buat akun</button>
   </form>
-  <p class="switch">Sudah punya akun? <a href="/">Masuk</a></p>
+  <p class="switch">Sudah punya akun? <a href="/login">Masuk</a></p>
 </main>${AUTH_JS}</body></html>`;
 };
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.svg': 'image/svg+xml', '.json': 'application/json' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.svg': 'image/svg+xml', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' };
 
 // Security headers for document responses. This dashboard can switch on LIVE and close
 // positions, so it must not be frameable by other sites (clickjacking): frame-ancestors
@@ -763,7 +767,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   };
   // Audit trail (main database). Only the route and its outcome are recorded, never the body.
   const AUDITED = new Set([
-    'POST /api/auth/invites', 'POST /api/auth/invites/revoke', 'POST /api/auth/users/status',
+    'POST /api/auth/invites', 'POST /api/auth/invites/revoke', 'POST /api/auth/users/status', 'POST /api/admin/fees',
     'POST /api/auth/password', 'POST /api/auth/users/reset',
     'POST /api/mode', 'POST /api/settings/live',
     'POST /api/settings/wallet/generate', 'POST /api/settings/wallet/import', 'POST /api/settings/wallet/remove', 'POST /api/settings/wallet/export',
@@ -1085,6 +1089,58 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       try { auth.setStatus(Number(b.id), b.status); } catch (e) { if (e instanceof AuthError) return { error: e.message }; throw e; }
       // Suspending waits for in-flight transactions of that account before its engines stop.
       if (tenantControl) await (b.status === 'suspended' ? tenantControl.stop(Number(b.id)) : tenantControl.start(Number(b.id)));
+      return { ok: true };
+    },
+    // ---- platform fees (superadmin) ----
+    // The flat per-action fee schedule and the per-chain treasury the fee is sent to, plus the
+    // revenue summed across accounts. Config lives at the config root (read-only to accounts).
+    'GET /api/admin/fees': async (req) => {
+      if (!isAdmin(req)) return FORBIDDEN;
+      const chains = enabledChains(cfg);
+      const treasury = {};
+      for (const k of chains) treasury[k] = { address: cfg.treasury?.[k]?.address || '', referral: cfg.treasury?.[k]?.referral || '' };
+      return {
+        enabled: cfg.fees?.enabled !== false,
+        schedule: { ...billing.DEFAULT_FEES_USD, ...(cfg.fees?.schedule || {}) },
+        defaults: billing.DEFAULT_FEES_USD,
+        referralShare: billing.referralShare(cfg),
+        freeActions: [...billing.FREE_ACTIONS],
+        chains, treasury,
+        revenue: tenantControl?.feeTotals ? tenantControl.feeTotals() : null,
+      };
+    },
+    'POST /api/admin/fees': async (req) => {
+      if (!isAdmin(req)) return FORBIDDEN;
+      const b = await readBody(req);
+      const fees = { ...(cfg.fees || {}) };
+      if (typeof b.enabled === 'boolean') fees.enabled = b.enabled;
+      if (b.schedule && typeof b.schedule === 'object') {
+        const sched = { ...(fees.schedule || {}) };
+        for (const [k, v] of Object.entries(b.schedule)) {
+          const n = Number(v);
+          if (!Number.isFinite(n) || n < 0) return { error: `fee ${k} tidak valid` };
+          sched[k] = n;
+        }
+        fees.schedule = sched;
+      }
+      if (b.referral_share != null) {
+        const n = Number(b.referral_share);
+        if (!Number.isFinite(n) || n < 0 || n > 1) return { error: 'bagian referral harus 0–1' };
+        fees.referral_share = n;
+      }
+      cfg.fees = fees;
+      if (b.treasury && typeof b.treasury === 'object') {
+        const tre = { ...(cfg.treasury || {}) };
+        for (const [k, v] of Object.entries(b.treasury)) {
+          const addr = String(v?.address || '').trim();
+          const ref = String(v?.referral || '').trim();
+          if (addr && !ethers.isAddress(addr)) return { error: `alamat treasury ${k} tidak valid` };
+          if (ref && !ethers.isAddress(ref)) return { error: `alamat referral ${k} tidak valid` };
+          tre[k] = { address: addr ? ethers.getAddress(addr) : '', referral: ref ? ethers.getAddress(ref) : '' };
+        }
+        cfg.treasury = tre;
+      }
+      saveCfg();
       return { ok: true };
     },
     'GET /api/overview': async () => {
@@ -3157,7 +3213,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           res.writeHead(401, { 'content-type': 'application/json' });
           return res.end('{"error":"tidak berwenang"}');
         }
-        return loginPage(401, null);
+        // With accounts, a visitor at / gets the landing page; the sign-in form lives at /login.
+        if (accounts && req.method === 'GET' && url.pathname === '/') {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', ...SEC_HEADERS });
+          return res.end(LANDING_PAGE({ register: reg.register, lang: url.searchParams.get('lang') || undefined }));
+        }
+        return loginPage(url.pathname === '/login' ? 200 : 401, null);
       }
     }
     req.user = userOf(req);

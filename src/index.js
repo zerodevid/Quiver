@@ -15,6 +15,7 @@ const { loadDotEnv, applyEnv, defaultEnvPath, writeCfg } = require('./env');
 const { normalizeCfg, chainView, enabledChains, PRIMARY } = require('./multichain');
 const { setupNeeded, runSetup } = require('./setup');
 const { applyPendingRestore } = require('./backup');
+const billing = require('./billing');
 const { NETWORKS, isSolana, normAddr, addrHint } = require('./networks');
 const { Auth } = require('./auth');
 const { userDir, loadUserCfg, userCfgView } = require('./tenants');
@@ -379,6 +380,21 @@ async function main() {
     ownerOfChat: (chatId) => [...tenants.values()].find((t) => t.telegram.chats().includes(String(chatId)))?.userId || null,
     max: maxUsers,
     canAdd: () => tenants.size < maxUsers(),
+    // Platform fee revenue, summed across every account's own database (only accounts are
+    // billed). Each account keeps its fee ledger in its own DB, so the superadmin's fee page
+    // aggregates here. Running accounts only — a suspended account's engine/DB is closed.
+    feeTotals() {
+      const total = { paidUsd: 0, paidCount: 0, debtUsd: 0, debtCount: 0, accounts: 0 };
+      for (const t of tenants.values()) {
+        try {
+          const s = billing.feeSummary(t.store);
+          total.paidUsd += s.paidUsd; total.paidCount += s.paidCount;
+          total.debtUsd += s.debtUsd; total.debtCount += s.debtCount;
+          if (s.paidCount || s.debtCount) total.accounts++;
+        } catch { /* a DB being rebuilt: skip it */ }
+      }
+      return total;
+    },
     start(userId) {
       if (stopping || tenants.has(userId)) return { ok: true };
       if (!this.canAdd()) { log(`akun ${userId} tidak dinyalakan: kuota ${maxUsers()} akun penuh`); return { error: 'kuota akun penuh' }; }

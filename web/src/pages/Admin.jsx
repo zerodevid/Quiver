@@ -186,6 +186,88 @@ function Audit({ entries, users }) {
   );
 }
 
+// Platform fees: the flat per-action schedule, the per-chain treasury the fee is sent to, and
+// the revenue collected across all accounts. Superadmin only (the backend also enforces it).
+const ACTION_LABELS = { open: 'Buka posisi', close: 'Tutup posisi', tp_sl: 'TP / SL otomatis', rebalance: 'Rebalance' };
+function Fees() {
+  const { t } = useI18n();
+  const fees = usePoll('/api/admin/fees', 30000);
+  const [draft, setDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const d = draft || (fees.data && !fees.data.error ? {
+    enabled: fees.data.enabled,
+    schedule: { ...fees.data.schedule },
+    referral_share: fees.data.referralShare,
+    treasury: Object.fromEntries(fees.data.chains.map((k) => [k, { ...fees.data.treasury[k] }])),
+  } : null);
+  if (fees.data?.error) return <Panel title="Fee platform"><Notice status="warning">{t(fees.data.error)}</Notice></Panel>;
+  if (!d) return <Panel title="Fee platform"><Loading /></Panel>;
+  const set = (patch) => setDraft({ ...d, ...patch });
+  const setFee = (k, v) => set({ schedule: { ...d.schedule, [k]: v } });
+  const setTre = (k, field, v) => set({ treasury: { ...d.treasury, [k]: { ...d.treasury[k], [field]: v } } });
+  const save = async () => {
+    setBusy(true);
+    const r = await post('/api/admin/fees', { enabled: d.enabled, schedule: d.schedule, referral_share: Number(d.referral_share), treasury: d.treasury });
+    setBusy(false);
+    if (r.error) return toast.danger(t(r.error));
+    toast.success(t('Fee disimpan')); setDraft(null); fees.reload();
+  };
+  const rev = fees.data.revenue;
+  const field = 'w-28 rounded-md border border-[var(--field-border)] bg-[var(--surface)] px-2 py-1 text-sm';
+  const addr = 'flex-1 min-w-0 rounded-md border border-[var(--field-border)] bg-[var(--surface)] px-2 py-1 font-mono text-xs';
+  return (
+    <Panel title="Fee platform" desc={t('Fee rata per aksi, dibayar dalam koin native, dikirim ke treasury tiap chain. Hanya berlaku untuk akun pengguna (bukan superadmin).')}>
+      <div className="flex flex-col gap-4 p-1">
+        {rev && (
+          <div className="flex flex-wrap gap-2 text-sm">
+            <Chip color="success" variant="flat">{t('Terkumpul')}: ${rev.paidUsd.toFixed(2)} · {rev.paidCount}×</Chip>
+            {rev.debtUsd > 0 && <Chip color="warning" variant="flat">{t('Utang')}: ${rev.debtUsd.toFixed(2)} · {rev.debtCount}×</Chip>}
+            <Chip variant="flat">{t('{n} akun kena fee', { n: rev.accounts })}</Chip>
+          </div>
+        )}
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={d.enabled} onChange={(e) => set({ enabled: e.target.checked })} />
+          {t('Tagih fee (matikan untuk gratiskan semua aksi)')}
+        </label>
+        <div className="grid gap-2">
+          {Object.keys(ACTION_LABELS).map((k) => (
+            <div key={k} className="flex items-center gap-2 text-sm">
+              <span className="w-40">{t(ACTION_LABELS[k])}</span>
+              <span className="text-[var(--muted)]">$</span>
+              <input className={field} type="number" step="0.01" min="0" value={d.schedule[k] ?? ''} disabled={!d.enabled}
+                onChange={(e) => setFee(k, e.target.value === '' ? '' : Number(e.target.value))} />
+            </div>
+          ))}
+          <p className="text-xs text-[var(--muted)]">{t('Collect fee, tambah likuiditas, dan compound selalu gratis.')}</p>
+        </div>
+        <div className="flex items-center gap-2 text-sm">
+          <span className="w-40">{t('Bagian referral')}</span>
+          <input className={field} type="number" step="0.05" min="0" max="1" value={d.referral_share}
+            onChange={(e) => set({ referral_share: e.target.value })} />
+          <span className="text-[var(--muted)]">{t('(0–1, mis. 0.25 = 25%)')}</span>
+        </div>
+        <div className="flex flex-col gap-2">
+          <span className="text-sm font-medium">{t('Treasury per chain')}</span>
+          {Object.keys(d.treasury).map((k) => (
+            <div key={k} className="flex flex-col gap-1">
+              <span className="text-xs uppercase text-[var(--muted)]">{k}</span>
+              <div className="flex gap-2">
+                <input className={addr} placeholder={t('Alamat treasury 0x…')} value={d.treasury[k].address || ''} onChange={(e) => setTre(k, 'address', e.target.value)} />
+                <input className={addr} placeholder={t('Referral 0x… (opsional)')} value={d.treasury[k].referral || ''} onChange={(e) => setTre(k, 'referral', e.target.value)} />
+              </div>
+            </div>
+          ))}
+          <p className="text-xs text-[var(--muted)]">{t('Tanpa alamat treasury, fee di chain itu tidak ditagih (gratis).')}</p>
+        </div>
+        <div className="flex gap-2">
+          <Button color="primary" size="sm" isLoading={busy} onPress={save}>{t('Simpan')}</Button>
+          {draft && <Button variant="flat" size="sm" onPress={() => setDraft(null)}>{t('Batal')}</Button>}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
 export default function Admin() {
   const { t } = useI18n();
   const me = useMe();
@@ -204,6 +286,7 @@ export default function Admin() {
       {err ? <Notice status="danger">{t(err)}</Notice> : !users.data || !invites.data ? <Loading page /> : (
         <div className="flex flex-col gap-5">
           <Users users={users.data.users} maxUsers={users.data.maxUsers} me={me} reload={reload} />
+          <Fees />
           <Invites invites={invites.data.invites} users={users.data.users} reload={reload} />
           {audit.data?.entries && <Audit entries={audit.data.entries} users={users.data.users} />}
         </div>
