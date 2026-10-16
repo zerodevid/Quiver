@@ -2713,6 +2713,11 @@ const EN = {
   "Tidak dinilai saat harga atau likuiditas posisi gagal terbaca dari RPC — bot menunggu sinkron yang berhasil. Bot harus berjalan.": "Not evaluated while the position's price or liquidity cannot be read from RPC — the bot waits for a successful sync. The bot must be running.",
   "Tetap berlaku walau bot dijeda: jeda hanya menahan entry baru.": "Still applies while the bot is paused: a pause only holds back new entries.",
   "Mode simulasi aktif: TP/SL hanya dicatat di log, tidak mengirim transaksi. Matikan simulasi di Pengaturan agar benar-benar menutup posisi.": "Simulation mode is on: TP/SL is only logged, no transaction is sent. Turn simulation off in Settings to actually close the position.",
+  "Proteksi posisi": "Position protection",
+  "Stop loss −{n}%": "Stop loss −{n}%",
+  "Take profit +{n}%": "Take profit +{n}%",
+  "Diatur khusus posisi ini (sebagian dinonaktifkan).": "Set for this position only (one side switched off).",
+  "Belum diatur — mengikuti aturan target/global.": "Not set — following the target/global rules.",
 };
 
 const DICT = { id: null, en: EN };

@@ -28,6 +28,7 @@ import { BAND_COLORS } from '../components/CandleChart';
 import AdvancedChart from '../components/AdvancedChart';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
+import TpSlButton from '../components/TpSlButton';
 import { PageHeader, Panel, Empty, Loading, Notice, PriceRange, Refresh, Segmented, Dot, TradeLinks, DataLinks, baseTokenOf } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
 import { GmgnDot, GmgnProvider } from '../components/GmgnDot';
@@ -379,6 +380,7 @@ function MonitorCard({ g, tf: tfGlobal, tfEpoch, dense, delay, actions }) {
         {!p.empty && (
           <div className="ml-auto flex flex-wrap justify-end gap-1.5">
             <AutoCompoundButton p={p} reload={reload} disabled={busy} />
+            <TpSlButton p={p} reload={reload} disabled={busy} />
             <TakeoverButton p={p} reload={reload} disabled={busy} />
             <Button size="sm" variant="secondary" isPending={claiming === p.id} isDisabled={busy} onPress={() => claim(p)}>{t('Claim fee')}{many && <span className="mono ml-1 opacity-70">{sel.tag}</span>}</Button>
             <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={busy} onPress={() => close(p)}>{t('Tutup')}{many && <span className="mono ml-1 opacity-70">{sel.tag}</span>}</Button>
