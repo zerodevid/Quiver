@@ -2405,6 +2405,30 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const chart = await positionSpark(p).catch(() => null);
       if (!chart?.band) return { error: 'lilin harga belum tersedia untuk pool ini' };
       const closed = p.status === 'closed';
+      // What happened during the position's life, for markers on the clip: liquidity added
+      // (with the fees a v4 add settles), fees claimed or compounded, partial withdrawals.
+      // Grouped per transaction, so an add with its auto-claim is one marker.
+      const hist = await callApi('GET', '/api/position/history', {}, { id: p.id }).catch(() => null);
+      const byTx = new Map();
+      for (const e of hist?.events || []) {
+        if (e.status === 'gagal' || e.synthetic) continue;
+        const kind = e.kind === 'increase' ? 'add' : e.kind === 'claim_fees' ? 'claim' : e.kind === 'compound' ? 'compound'
+          : e.kind === 'decrease' ? 'remove' : null;
+        if (!kind) continue;
+        const ev = byTx.get(e.hash) || { ts: e.ts, addUsd: null, claimUsd: null, compoundUsd: null, removeUsd: null, kinds: [] };
+        if (!ev.kinds.includes(kind)) ev.kinds.push(kind);
+        if (kind === 'add') {
+          let plan = {};
+          try { plan = JSON.parse(store.get('SELECT detail FROM txs WHERE hash=?', e.hash)?.detail || '{}').plan || {}; } catch { /* old detail */ }
+          ev.addUsd = plan.valueUsd ?? (plan.valueQuote != null ? plan.valueQuote * (chain.isEthLike(plan.quoteSymbol) ? engine.ethUsd : 1) : null);
+        }
+        if (kind === 'claim') ev.claimUsd = (ev.claimUsd || 0) + (e.feesUsd || 0);
+        if (kind === 'compound') ev.compoundUsd = e.valueUsd ?? null;
+        if (kind === 'remove') ev.removeUsd = e.valueUsd ?? null;
+        byTx.set(e.hash, ev);
+      }
+      const events = [...byTx.values()].filter((e) => e.ts > (p.opened_ts || 0) && (!closed || !p.closed_ts || e.ts < p.closed_ts))
+        .sort((a, b) => a.ts - b.ts);
       return {
         position: {
           id: p.id, status: p.status, venue: shareCard.venueName(p.venue), chain: chain.label,
@@ -2416,6 +2440,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           feeUsd: (p.claimedUsd || 0) + (closed ? (p.fees_quote || 0) * (p.quoteKind === 'eth' ? d.ethUsd || 0 : 1) : (p.feeUsd || 0)),
         },
         chart,
+        events,
       };
     },
     // Animated replay of one month of the PnL calendar (the "Video" tab of the month card):

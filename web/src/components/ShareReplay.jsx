@@ -98,7 +98,7 @@ function clValue(p, a, b) {
   return 2 * Math.sqrt(p) - sa - p / sb;
 }
 
-export function buildModel({ position: p, chart }) {
+export function buildModel({ position: p, chart, events = [] }) {
   const marks = chart.marks || [];
   const pts = chart.pts.filter(([t, v]) => Number.isFinite(t) && Number.isFinite(v) && v > 0).map(([t, v]) => [t, v]);
   const closed = p.status === 'closed';
@@ -145,7 +145,37 @@ export function buildModel({ position: p, chart }) {
   lo = Math.max(lo - pad, 0); hi += pad;
 
   const duration = (closed ? p.closed_ts || Date.now() : Date.now()) - (p.opened_ts || tOpen);
-  return { p, pts, closed, t0, tOpen, tClose, tLast, a, b, inBand, priceAt, entry, exit: priceAt(tClose), inRangePct, fee, cost, pnl, pnlPct: p.pnlPct, feeAt, pnlAt, lo, hi, duration };
+  const acts = actsOf(events, tOpen, tClose, t0, tLast);
+  return { p, pts, closed, t0, tOpen, tClose, tLast, a, b, inBand, priceAt, entry, exit: priceAt(tClose), inRangePct, fee, cost, pnl, pnlPct: p.pnlPct, feeAt, pnlAt, lo, hi, duration, acts };
+}
+
+// Liquidity added, fees claimed or compounded, partial withdrawals during the life (from
+// /api/share/replay, one row per transaction) → chart markers. Rows closer than ~5% of the
+// chart width merge into one marker (three quick adds would otherwise stack their labels),
+// each with the clip time at which the playhead reaches it.
+const ACT_KINDS = ['add', 'claim', 'compound', 'remove'];
+function actsOf(events, tOpen, tClose, t0, tLast) {
+  const out = [];
+  for (const e of events) {
+    if (!(e.ts > tOpen && e.ts < tClose)) continue;
+    const last = out[out.length - 1];
+    const c = last && (e.ts - last.ts) / (tLast - t0 || 1) < 0.05 ? last
+      : (out.push({ ts: e.ts, n: {}, usd: {} }), out[out.length - 1]);
+    for (const k of e.kinds || []) {
+      if (!ACT_KINDS.includes(k)) continue;
+      c.n[k] = (c.n[k] || 0) + 1;
+      const v = e[`${k}Usd`];
+      if (v != null) c.usd[k] = (c.usd[k] || 0) + v;
+    }
+  }
+  for (const c of out) c.s = lerp(TL.life, TL.close, (c.ts - tOpen) / (tClose - tOpen || 1));
+  return out.filter((c) => Object.keys(c.n).length);
+}
+// Totals over the life, for the summary line.
+function actTotals(acts) {
+  const n = {}, usd = {};
+  for (const c of acts) for (const k of Object.keys(c.n)) { n[k] = (n[k] || 0) + c.n[k]; if (c.usd[k] != null) usd[k] = (usd[k] || 0) + c.usd[k]; }
+  return { n, usd };
 }
 
 // Clip time → (data time of the line's head, position life progress 0..1).
@@ -291,6 +321,28 @@ function since(ms, t) {
   return t('{m}m', { m });
 }
 const signed = (v) => (v > 0 ? '+' : '') + money(v);
+// One line per kind of a marker: "Tambah likuiditas $120", "2× klaim fee $8,60".
+const ACT_LABEL = { add: 'Tambah likuiditas', claim: 'Klaim fee', compound: 'Compound fee', remove: 'Tarik sebagian' };
+function actLines(c, t, hide) {
+  return ACT_KINDS.filter((k) => c.n[k]).map((k) => {
+    const name = t(ACT_LABEL[k]);
+    const head = c.n[k] > 1 ? `${c.n[k]}× ${name.charAt(0).toLowerCase()}${name.slice(1)}` : name;
+    return { kind: k, s: !hide && c.usd[k] > 0.005 ? `${head} ${money(c.usd[k])}` : head };
+  });
+}
+// A marker ring: a filled disc in the kind's colour with its glyph, outlined so it stands
+// out from a price line of the same colour.
+function actRing(ctx, c, x, y, r) {
+  const col = actColor(c);
+  ctx.save();
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+  ctx.lineWidth = Math.max(2, r * 0.18); ctx.strokeStyle = C.text; ctx.stroke();
+  ctx.restore();
+  text(ctx, actGlyph(c), x, y + 1, { size: r * 1.3, weight: 800, color: '#0A0B0D', align: 'center', base: 'middle' });
+}
+const actGlyph = (c) => (c.n.add ? '+' : c.n.remove ? '−' : c.n.compound ? '↻' : '$');
+const KIND_COLOR = { add: 'accent', compound: 'accent', remove: 'amber', claim: 'up' };
+const actColor = (c) => C[KIND_COLOR[ACT_KINDS.find((k) => c.n[k])]];
 const toneOf = (v) => (v > 0.005 ? C.up : v < -0.005 ? C.down : C.text);
 
 // ---- scenes ------------------------------------------------------------------------
@@ -368,6 +420,31 @@ function chartScene(ctx, m, img, sec, t, hide, coins) {
     pill(ctx, price(ph), hx + (hx > x1 - 160 ? -18 : 18), hy - 34, { size: 22, align: hx > x1 - 160 ? 'right' : 'left', color: '#0A0B0D', fill: live ? (inRange ? C.accent : C.amber) : C.text });
   }
 
+  // Markers: a ring on the line where liquidity was added, fees claimed or compounded, or
+  // part withdrawn; its label pops above for two seconds once the playhead passes.
+  for (const c of m.acts) {
+    const age = sec - c.s;
+    if (age < 0) break;
+    const x = X(c.ts), y = Y(m.priceAt(c.ts)), col = actColor(c);
+    const pop = age < 0.25 ? 1 + 0.5 * Math.sin((age / 0.25) * Math.PI) : 1;
+    ctx.save(); ctx.globalAlpha *= Math.min(1, age / 0.12);
+    ctx.setLineDash([3, 6]); ctx.strokeStyle = col; ctx.globalAlpha *= 0.5; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x, y + 18); ctx.lineTo(x, y1 + 10); ctx.stroke();
+    ctx.restore();
+    ctx.save(); ctx.globalAlpha *= Math.min(1, age / 0.12); actRing(ctx, c, x, y, 17 * pop); ctx.restore();
+    const show = age < 1.6 ? 1 : 1 - (age - 1.6) / 0.4;
+    if (show > 0) {
+      const lines = actLines(c, t, hide);
+      ctx.font = font(22, 600);
+      const w = Math.max(...lines.map((l) => ctx.measureText(l.s).width)) + 30;
+      const lx = clamp(x, x0 + w / 2, x1 - w / 2);
+      const top = y - 40 - (lines.length - 1) * 40 > y0 - 20 ? y - 40 : y + 60 + (lines.length - 1) * 40;
+      lines.forEach((l, i) => pill(ctx, l.s, lx, top - (lines.length - 1 - i) * 40, {
+        size: 22, align: 'center', color: '#0A0B0D', fill: C[KIND_COLOR[l.kind]], alpha: ease(Math.min(1, age / 0.2)) * show,
+      }));
+    }
+  }
+
   // Fee coins fly from the line to the fee counter.
   const target = [290, 930];
   let pulse = 0;
@@ -390,15 +467,25 @@ function chartScene(ctx, m, img, sec, t, hide, coins) {
   const fee = m.feeAt(u), pnl = u > 0 ? m.pnlAt(u) : 0;
   const ca = ease(span(sec, 0.2, TL.intro + 0.4));
   ctx.save(); ctx.globalAlpha = ca;
+  // The three figures share one row: long ones ("15j 25m", "Rp660.112", "+Rp599.049")
+  // shrink together, sized from the final values so the row does not jitter as they count.
+  const feeText = hide ? pct(m.cost > 0 ? (fee / m.cost) * 100 : 0, 1) : money(fee);
+  const pnlText = hide ? pct(m.cost > 0 ? (pnl / m.cost) * 100 : u * (m.pnlPct || 0), 1) : signed(pnl);
+  ctx.save(); ctx.font = font(64, 600);
+  const wid = (s) => ctx.measureText(s).width;
+  const wT = wid(since(m.duration, t)), wF = Math.max(wid(feeText), wid(hide ? pct(m.cost > 0 ? (m.fee / m.cost) * 100 : 0, 1) : money(m.fee)));
+  const wP = Math.max(wid(pnlText), wid(hide ? pct(m.pnlPct || 0, 1) : signed(m.pnl)));
+  ctx.restore();
+  const gap = 36, size = 64 * Math.min(1, (S - 120 - 2 * gap) / (wT + wF + wP));
+  const xFee = 60 + Math.max(230, (wT * size) / 64 + gap);
   text(ctx, t('Waktu'), 60, 880, { size: 24, color: C.muted });
-  text(ctx, since(m.duration * u, t), 60, 950, { size: 64, weight: 600 });
-  text(ctx, 'Fee', 290, 880, { size: 24, color: C.muted });
-  ctx.save(); ctx.translate(290, 950); ctx.scale(1 + pulse * 0.05, 1 + pulse * 0.05);
-  text(ctx, hide ? pct(m.cost > 0 ? (fee / m.cost) * 100 : 0, 1) : money(fee), 0, 0, { size: 64, weight: 600, color: u > 0 ? C.up : C.faint });
+  text(ctx, since(m.duration * u, t), 60, 950, { size, weight: 600 });
+  text(ctx, 'Fee', xFee, 880, { size: 24, color: C.muted });
+  ctx.save(); ctx.translate(xFee, 950); ctx.scale(1 + pulse * 0.05, 1 + pulse * 0.05);
+  text(ctx, feeText, 0, 0, { size, weight: 600, color: u > 0 ? C.up : C.faint });
   ctx.restore();
   text(ctx, 'PnL', S - 60, 880, { size: 24, color: C.muted, align: 'right' });
-  const pnlText = hide ? pct(m.cost > 0 ? (pnl / m.cost) * 100 : u * (m.pnlPct || 0), 1) : signed(pnl);
-  text(ctx, pnlText, S - 60, 950, { size: 64, weight: 600, align: 'right', color: u > 0 ? toneOf(pnl) : C.faint });
+  text(ctx, pnlText, S - 60, 950, { size, weight: 600, align: 'right', color: u > 0 ? toneOf(pnl) : C.faint });
   ctx.restore();
 }
 
@@ -429,6 +516,12 @@ function summaryScene(ctx, m, sec, t, hide, theme) {
   text(ctx, hide ? pct((m.pnlPct || 0) * k, 1) : signed(m.pnl * k), 570, 390, { size: fit(hide ? pct(m.pnlPct || 0, 1) : signed(m.pnl), S - 60 - 570), weight: 700, color: toneOf(m.pnl) });
   const sub = [since(m.duration, t), hide ? null : t('posisi {v}', { v: money(m.cost, 0) }), m.closed ? null : 'Live'].filter(Boolean).join('  ·  ');
   text(ctx, sub, 60, 460, { size: 30, color: C.muted });
+  if (m.acts.length) {
+    const tot = actTotals(m.acts);
+    const line = actLines(tot, t, hide).map((l) => l.s).join('  ·  ');
+    ctx.save(); ctx.font = font(26, 400); const w = ctx.measureText(line).width; ctx.restore();
+    text(ctx, line, 60, 512, { size: Math.min(26, 26 * ((S - 120) / Math.max(1, w))), color: C.muted });
+  }
 
   // Mini chart of the position's life only, fully drawn.
   // Hell: the chart makes room on the right for the mascot.
@@ -456,6 +549,7 @@ function summaryScene(ctx, m, sec, t, hide, theme) {
     dot(X(m.tClose), Y(m.exit));
     text(ctx, t(m.closed ? 'Keluar {v}' : 'Sekarang {v}', { v: price(m.exit) }), X(m.tClose) - 14, Y(m.exit) - 14, { size: 22, color: C.muted, align: 'right' });
   }
+  for (const c of m.acts) if (c.ts <= cut) actRing(ctx, c, X(c.ts), Y(m.priceAt(c.ts)), 12);
   pill(ctx, t('In range {v}', { v: `${Math.round(m.inRangePct)}%` }), (box.x0 + box.x1) / 2, box.y0 - 30, { size: 22, color: '#0A0B0D', fill: C.accent, align: 'center' });
   if (hell) drawMascot(ctx, mascotOf(m.pnl, m.pnlPct), 880, S + 10, 520, ease(span(sec, TL.summary + 0.4, TL.summary + 1.1)));
   ctx.restore();
@@ -547,6 +641,12 @@ async function renderSound(m, coins) {
     const land = c.s + 1.1;
     tone(land, f, { dur: 0.28, gain: 0.07, attack: 0.003 });
     tone(land, f * 2.76, { dur: 0.12, gain: 0.03, attack: 0.002 });
+  });
+
+  // Markers: a soft two-note blip as each one pops.
+  m.acts.forEach((c) => {
+    tone(c.s, note(c.n.remove ? 7 : 12), { dur: 0.25, gain: 0.07, type: 'triangle', attack: 0.005 });
+    tone(c.s + 0.08, note(c.n.remove ? 3 : 19), { dur: 0.35, gain: 0.06, type: 'triangle', attack: 0.005 });
   });
 
   // Close: two soft notes.
