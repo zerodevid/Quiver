@@ -56,6 +56,14 @@ const leftover = (pay) => {
   await t('a deep pool (tiny own impact) keeps the payment', async () => {
     assert.strictEqual(await eng({ liq: 10n ** 24n }).rightSizeZap('a', 'b', payNaive, args), payNaive);
   });
+  await t('an empty first quote is retried once before giving up', async () => {
+    const e = eng();
+    let calls = 0;
+    const good = { amountOut: BigInt(Math.floor(Number(payNaive) * rate)) };
+    e.swapRouter = { quote: async () => (calls++ === 0 ? null : good) };
+    const pay = await e.rightSizeZap('a', 'b', payNaive, args);
+    assert.ok(pay < payNaive, 'payment not reduced after the retry');
+  });
   await t('missing quote or unreadable liquidity keeps the payment', async () => {
     assert.strictEqual(await eng({ quote: null }).rightSizeZap('a', 'b', payNaive, args), payNaive);
     assert.strictEqual(await eng({ liq: 0n }).rightSizeZap('a', 'b', payNaive, args), payNaive);

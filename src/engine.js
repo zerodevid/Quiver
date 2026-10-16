@@ -1581,11 +1581,14 @@ class Engine {
   async rightSizeZap(payTok, buyTok, payRaw, { plan, sqrtP, sa, sb, desiredL, idx, have }) {
     try {
       if (payRaw <= 0n) return payRaw;
-      const q = await this.swapRouter.quote(payTok, buyTok, payRaw);
-      if (!q || q.amountOut <= 0n) return payRaw;
+      // A quote that comes back empty is usually transient (a timeout, a 429): ask once more
+      // before giving up, because giving up means paying for the whole un-sized estimate.
+      let q = await this.swapRouter.quote(payTok, buyTok, payRaw);
+      if (!q || q.amountOut <= 0n) q = await this.swapRouter.quote(payTok, buyTok, payRaw);
+      if (!q || q.amountOut <= 0n) { this.store?.log?.('warn', 'zap tidak diperkecil: quote kosong', { quiet: true }); return payRaw; }
       const rate = Number(q.amountOut) / Number(payRaw);
       const poolL = await this.positions.poolLiquidityOf(plan.venue, plan.poolRef);
-      if (!(poolL > 0n)) return payRaw;
+      if (!(poolL > 0n)) { this.store?.log?.('warn', 'zap tidak diperkecil: likuiditas pool tidak terbaca', { quiet: true }); return payRaw; }
       const sellsToken0 = idx === 1;
       let pay = payRaw;
       for (let i = 0; i < 8; i++) {
@@ -1604,7 +1607,7 @@ class Engine {
       if (pay * 100n >= payRaw * BigInt(Math.round((1 - ZAP_OVERSHOOT) * 100))) return payRaw;
       this.log(`zap diperkecil ${(100 - Number(pay * 10000n / payRaw) / 100).toFixed(0)}% — harga pool bergeser oleh zap sendiri`);
       return pay;
-    } catch { return payRaw; }
+    } catch (e) { this.store?.log?.('warn', `zap tidak diperkecil: ${e.message}`, { quiet: true }); return payRaw; }
   }
 
   async sendEntry(plan, act, trace = {}, { resume = false } = {}) {
@@ -2914,7 +2917,7 @@ class Engine {
       if (!quiet) {
         this.notify(`${leftoverOrigin(item)}: ${msg}`, {
           kind: 'leftover', positionId: item.posId, txHash: r.hash, label, usdIn: r.quote.usdIn ?? ref.usdIn,
-          usdOut, dex: r.quote.dex, tries: item.tries || 0, partial: rest > 0n,
+          usdOut, dex: r.quote.dex, tries: item.tries || 0, partial: rest > 0n, source: leftoverSource(item),
         });
       }
       return msg;

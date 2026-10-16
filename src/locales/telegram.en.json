@@ -242,6 +242,8 @@
   "🔴 Tutup": "🔴 Close",
   "💼 Semua posisi": "💼 All positions",
   "posisi #{0}": "Position #{0}",
+  "kelebihan zap": "Zap surplus",
+  "sisa di wallet": "Wallet leftover",
   "🛡 <b>KELUAR MANDIRI</b>": "🛡 <b>Exit rule triggered</b>",
   "🔴 <b>LP DITUTUP</b>": "🔴 <b>Position closed</b>",
   "➖ <b>LP DIKURANGI</b>": "➖ <b>Liquidity reduced</b>",
