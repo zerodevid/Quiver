@@ -640,7 +640,10 @@ const ALIAS = {
 
 // Screen heads behind copy trading (targets, activity, copy rules and their edit actions).
 // Hidden on open-LP account bots (this.hub). Exact heads — 'a' is activity, not 'ac*' compound.
-const COPY_SCREENS = new Set(['t', 'tt', 'tn', 'td', 'tD', 'ta', 'tr', 'tw', 'ts', 'a', 'r', 'rg', 're', 'rb', 'rv', 'rp', 'rx']);
+// Copy-only screens, hidden from open-LP account bots: target lists (t*), activity (a), copy
+// rules (r*), and the wallet-research / scout tools (w, k, scout) that only exist to pick wallets
+// to copy.
+const COPY_SCREENS = new Set(['t', 'tt', 'tn', 'td', 'tD', 'ta', 'tr', 'tw', 'ts', 'a', 'r', 'rg', 're', 'rb', 'rv', 'rp', 'rx', 'w', 'k', 'scout', 'wr', 'adT']);
 
 // Connect command: /start <code>. Also used by links in t.me.
 const PAIR_RE = /^\/(?:start|mulai)(?:@\S+)?\s+(\S+)/i;
@@ -1112,6 +1115,7 @@ class Telegram {
         if (arg) return this.send(chatId, ...(await this.pairPools(arg)));
         return this.ask(chatId, { kind: 'pools' }, tr("Kirim <b>alamat pool</b> untuk melihat semua pool dari pair yang sama (fee tier lain, v3/v4, pool ber-hook), atau <b>alamat token</b> untuk semua pool token itu. Dua alamat token sekaligus = pool pair itu."));
       case 'scout':
+        if (this.hub) return go('scout');   // open-LP bots don't scout wallets to copy — show the gate
         if (arg) return this.runScout(chatId, arg);
         return this.ask(chatId, { kind: 'scout' }, isSolana(this.chatChain(chatId))
           ? tr("Kirim alamat wallet Solana untuk memotret gaya LP-nya: ukuran posisi khas, lebar rentang, dan seberapa sering harga masih di dalam rentang.\n<i>Contoh:</i> <code>6mch5r…XwTD</code>")
@@ -2137,7 +2141,8 @@ class Telegram {
       ...copyRows,
       ...openRows,
       [btn(tr("➕ LP manual"), 'ml'), btn('🔁 Swap', 'sw')],
-      [btn(tr("🔎 Riset wallet"), 'w'), btn('🔭 Scout', 'k')],
+      // Wallet research and Scout analyse wallets to copy — copy-only tools, dropped for open-LP bots.
+      this.hub ? null : [btn(tr("🔎 Riset wallet"), 'w'), btn('🔭 Scout', 'k')],
       [btn(tr("🧹 Sisa jual"), 'f'), btn(tr("📝 Log"), 'l')],
       [btn(tr("🧾 Transaksi"), 'x'), btn('🌐 Language / Bahasa', 'lang')],
       [btn(o.mode.paused ? tr("▶️ Lanjutkan") : tr("⏸ Jeda"), 'sp'), btn(tr("🔄 Segarkan"), 'h')],
