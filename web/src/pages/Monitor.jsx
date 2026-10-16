@@ -24,7 +24,8 @@ import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
 import { useLiveCandles } from '../liveCandles';
 import { breakEven } from '../breakeven';
-import CandleChart, { BAND_COLORS } from '../components/CandleChart';
+import { BAND_COLORS } from '../components/CandleChart';
+import AdvancedChart from '../components/AdvancedChart';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
 import { PageHeader, Panel, Empty, Loading, Notice, PriceRange, Refresh, Segmented, Dot, TradeLinks, DataLinks, baseTokenOf } from '../components/ui';
@@ -120,7 +121,7 @@ function TriggerBar({ x }) {
 // range band; the entry & BEP lines only for the selected position so it is not cluttered.
 // Starts polling after `delay` ms so the cards do not hit GeckoTerminal
 // simultaneously (quota ~30 calls/minute per IP).
-function CardChart({ g, sel, onPick, tf, live, delay, height }) {
+function CardChart({ g, sel, tf, onTf, live, delay, height }) {
   const { t } = useI18n();
   const p0 = g.p0;
   const [go, setGo] = useState(delay === 0);
@@ -138,7 +139,7 @@ function CardChart({ g, sel, onPick, tf, live, delay, height }) {
   const candles = useLiveCandles(oriented, SECS[tf], live, `${p0.pool_ref}:${tf}:mon`);
   const ranges = useMemo(() => g.items.filter((x) => !x.full).map((x) => {
     const a = at(x.p.tick_lower), b = at(x.p.tick_upper);
-    return { id: x.p.id, lo: Math.min(a, b), hi: Math.max(a, b), color: x.color, label: x.tag, selected: sel?.p.id === x.p.id };
+    return { id: x.p.id, lo: Math.min(a, b), hi: Math.max(a, b), color: x.color, label: x.tag, selected: sel?.p.id === x.p.id, from: x.p.opened_ts };
   }), [g.items, sel?.p.id]);   // eslint-disable-line react-hooks/exhaustive-deps
   const bep = sel ? breakEven(sel.p) : null;
   const quote = p0.quoteSide === 0 ? p0.symbol0 : p0.quoteSide === 1 ? p0.symbol1 : null;
@@ -152,7 +153,8 @@ function CardChart({ g, sel, onPick, tf, live, delay, height }) {
     );
   }
   return (
-    <CandleChart candles={candles} tf={tf} quote={quote} height={height} ranges={ranges} onRangeClick={onPick}
+    <AdvancedChart key={`${p0.pool_ref}:${tf}`} candles={candles} tf={tf} onTfChange={onTf} quote={quote} poolRef={p0.pool_ref} title={`${p0.symbol0}/${p0.symbol1}`}
+      height={height} ranges={ranges}
       entry={sel && (sel.p.opened_ts || pEntry != null) ? { t: sel.p.opened_ts, p: pEntry } : null}
       now={pNow} bep={bep?.price > 0 ? bep.price : null} />
   );
@@ -200,13 +202,17 @@ function PositionChips({ items, selId, onPick }) {
   );
 }
 
-function MonitorCard({ g, tf, dense, delay, actions }) {
+function MonitorCard({ g, tf: tfGlobal, tfEpoch, dense, delay, actions }) {
   const { t } = useI18n();
   const { close, closeAll, closing, claim, claiming, reload } = actions;
   const p0 = g.p0;
   // The selected position: the user's choice if it still exists, otherwise the most
   // at-risk in this pool (the order of g.items is already like that).
   const [pick, setPick] = useState(null);
+  // The chart's own timeframe: a switch on this card wins over the page-wide choice until that changes.
+  const [tfOwn, setTfOwn] = useState(null);
+  useEffect(() => setTfOwn(null), [tfEpoch]);
+  const tf = tfOwn || tfGlobal;
   const sel = g.items.find((x) => x.p.id === pick) || g.items[0];
   const p = sel.p;
   const at = (tick) => tickPrice(tick, p0.dec0, p0.dec1, p0.quoteSide);
@@ -306,7 +312,7 @@ function MonitorCard({ g, tf, dense, delay, actions }) {
         </div>}
       </div>
       <div className="px-1">
-        <CardChart g={g} sel={sel} onPick={setPick} tf={tf} live={g.live} delay={delay} height={dense ? 170 : 250} />
+        <CardChart g={g} sel={sel} tf={tf} onTf={setTfOwn} live={g.live} delay={delay} height={dense ? 260 : 340} />
       </div>
 
       {/* selected position: source & age (when many), linear range band, key numbers */}
@@ -482,7 +488,7 @@ export default function Monitor() {
   const delayOf = useMemo(() => new Map(pools.map((ref, i) => [ref, i * 600])), [pools]);
 
   const header = (
-    <PageHeader group="Pemantauan" title="Monitor" desc="Semua posisi terbuka dalam satu layar: satu grafik per pool dengan rentang tiap posisi sebagai pita berwarna (klik pita untuk memilih), harga live dari chain, PnL, dan seberapa dekat posisi ke aturan keluar otomatis.">
+    <PageHeader group="Pemantauan" title="Monitor" desc="Semua posisi terbuka dalam satu layar: satu grafik per pool dengan rentang tiap posisi sebagai pita berwarna, timeframe, indikator, dan alat gambar per grafik, harga live dari chain, PnL, dan seberapa dekat posisi ke aturan keluar otomatis.">
       <Segmented size="sm" aria="Rentang lilin" value={prefs.tf} onChange={(tf) => setPrefs({ tf })} options={TFS} />
       <Segmented size="sm" aria="Urutan" value={prefs.sort} onChange={(sort) => setPrefs({ sort })} options={SORTS} />
       <div className="inline-flex rounded-lg border border-border bg-surface p-0.5" role="group" aria-label={t('Ukuran kartu')}>
@@ -530,7 +536,7 @@ export default function Monitor() {
       </div>
       <div className={`grid gap-4 ${prefs.dense ? 'lg:grid-cols-2 2xl:grid-cols-3' : 'xl:grid-cols-2'}`}>
         {sorted.map((g) => (
-          <MonitorCard key={g.ref} g={g} tf={tfOf(g)} dense={prefs.dense} delay={delayOf.get(g.ref) || 0}
+          <MonitorCard key={g.ref} g={g} tf={tfOf(g)} tfEpoch={prefs.tf} dense={prefs.dense} delay={delayOf.get(g.ref) || 0}
             actions={{ close, closeAll, closing, claim, claiming, reload }} />
         ))}
       </div>

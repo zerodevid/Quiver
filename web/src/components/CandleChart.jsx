@@ -16,7 +16,7 @@ import { translate as t } from '../i18n';
 // only understands the sRGB format, so the colour is painted onto a single canvas pixel and read
 // back — a way that works for any format the browser knows.
 const hexCache = new Map();
-function cssColor(name) {
+export function cssColor(name) {
   const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888888';
   if (hexCache.has(raw)) return hexCache.get(raw);
   const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
