@@ -396,44 +396,54 @@ class Manual {
   async dexPools(token, pairs) {
     const t = lc(token);
     const rows = (pairs || []).filter((x) => x?.pool && (lc(x.base?.address) === t || lc(x.quote?.address) === t));
-    const v4 = rows.filter((x) => /^0x[0-9a-f]{64}$/.test(lc(x.pool)));
-    const v3 = rows.filter((x) => /^0x[0-9a-f]{40}$/.test(lc(x.pool)));
+    const liqOf = new Map(rows.map((x) => [lc(x.pool), x.liquidityUsd || 0]));
+    const out = await this.resolveListed(rows.map((x) => x.pool));
+    // No creation block from DexScreener: its liquidity orders the rows instead.
+    return out.sort((a, b) => (b.quoteSide != null) - (a.quoteSide != null)
+      || (a.kosong === true) - (b.kosong === true)
+      || (liqOf.get(b.poolRef) || 0) - (liqOf.get(a.poolRef) || 0));
+  }
+
+  // Pool refs listed by an outside index (DexScreener, GeckoTerminal) -> pool descriptors, in one
+  // eth_call batch: a v4 id through PositionManager.poolKeys(bytes25), checked against the id hash,
+  // a v3 address through its own token0/token1/fee/tickSpacing/factory. Only pools of a venue
+  // this chain trades (the v4 PoolManager, a known v3 factory) come back, stored in the pools
+  // table like scanned ones. Unsorted.
+  async resolveListed(refs) {
+    const uniq = [...new Set((refs || []).map(lc))];
+    const v4 = uniq.filter((r) => /^0x[0-9a-f]{64}$/.test(r));
+    const v3 = uniq.filter((r) => /^0x[0-9a-f]{40}$/.test(r));
+    if (!v4.length && !v3.length) return [];
     const factories = new Map();
     for (const v of this.chain.venues) {
       try { factories.set(lc(await this.chain.factoryV3(v.npmV3)), v.key); } catch { /* skip this venue */ }
     }
     const V3_CALLS = ['0x0dfe1681', '0xd21220a7', '0xddca3f43', '0xd0c93a7c', '0xc45a0155'];   // token0 token1 fee tickSpacing factory
     const res = await this.rpc.ethCallMany([
-      ...v4.map((x) => ({ to: this.chain.ADDR.posmV4, data: '0x86b6be7d' + lc(x.pool).slice(2, 52).padEnd(64, '0') })),   // poolKeys(bytes25)
-      ...v3.flatMap((x) => V3_CALLS.map((data) => ({ to: lc(x.pool), data }))),
+      ...v4.map((id) => ({ to: this.chain.ADDR.posmV4, data: '0x86b6be7d' + id.slice(2, 52).padEnd(64, '0') })),   // poolKeys(bytes25)
+      ...v3.flatMap((pool) => V3_CALLS.map((data) => ({ to: pool, data }))),
     ]);
     const word = (hex, i) => (hex && hex.length >= 2 + (i + 1) * 64 ? BigInt('0x' + hex.slice(2 + i * 64, 2 + (i + 1) * 64)) : null);
     const addrOf = (w) => (w == null ? null : '0x' + w.toString(16).padStart(40, '0'));
-    const liqOf = new Map(rows.map((x) => [lc(x.pool), x.liquidityUsd || 0]));
     const list = [];
-    v4.forEach((x, i) => {
+    v4.forEach((id, i) => {
       const r = res[i];
       const pk = {
         currency0: addrOf(word(r, 0)), currency1: addrOf(word(r, 1)),
         fee: Number(word(r, 2) ?? 0n), tickSpacing: Number(BigInt.asIntN(24, word(r, 3) ?? 0n)), hooks: addrOf(word(r, 4)),
       };
       // No PositionManager mint ever = zero key; a key that does not hash to the id is not this pool.
-      if (!pk.currency1 || /^0x0+$/.test(pk.currency1) || lc(computePoolId(pk)) !== lc(x.pool)) return;
-      list.push({ poolRef: lc(x.pool), venue: 'v4', token0: pk.currency0, token1: pk.currency1, fee: pk.fee, tickSpacing: pk.tickSpacing, hooks: pk.hooks, firstBlock: null });
+      if (!pk.currency1 || /^0x0+$/.test(pk.currency1) || lc(computePoolId(pk)) !== id) return;
+      list.push({ poolRef: id, venue: 'v4', token0: pk.currency0, token1: pk.currency1, fee: pk.fee, tickSpacing: pk.tickSpacing, hooks: pk.hooks, firstBlock: null });
     });
-    v3.forEach((x, i) => {
+    v3.forEach((pool, i) => {
       const r = res.slice(v4.length + i * 5, v4.length + i * 5 + 5).map((h) => word(h, 0));
       if (r.some((w) => w == null)) return;
       const venue = factories.get(addrOf(r[4]));
       if (!venue) return;
-      const pool = lc(x.pool);
       list.push({ poolRef: pool, poolAddr: pool, venue, token0: addrOf(r[0]), token1: addrOf(r[1]), fee: Number(r[2]), tickSpacing: Number(BigInt.asIntN(24, r[3])), hooks: null, firstBlock: null });
     });
-    const out = await this.describePools(list);
-    // No creation block from DexScreener: its liquidity orders the rows instead.
-    return out.sort((a, b) => (b.quoteSide != null) - (a.quoteSide != null)
-      || (a.kosong === true) - (b.kosong === true)
-      || (liqOf.get(b.poolRef) || 0) - (liqOf.get(a.poolRef) || 0));
+    return this.describePools(list);
   }
 
   // Store found pools (so they appear in the ordinary list from now on), fetch their token

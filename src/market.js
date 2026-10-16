@@ -283,6 +283,49 @@ class Market {
     });
   }
 
+  // The chain's busiest pools from GeckoTerminal, for the "Hot pools" page:
+  //  - sort 'trending': its trending ranking over `duration` (5m / 1h / 6h / 24h),
+  //  - sort 'volume': the largest 24h volume,
+  //  - sort 'new': the newest pools.
+  // One page (20 pools) per call, cached a minute; the calls go through the same GeckoTerminal
+  // pacing as the candles. `venueHint` is only GeckoTerminal's dex label — whether the bot can
+  // really enter a pool is decided on chain (Manual.resolveListed).
+  hotPools({ sort = 'trending', duration = '1h', page = 1 } = {}) {
+    const path = sort === 'new' ? 'new_pools' : sort === 'volume' ? 'pools' : 'trending_pools';
+    const q = new URLSearchParams({ page: String(Math.max(1, Math.min(10, Number(page) || 1))), include: 'base_token,quote_token' });
+    if (path === 'trending_pools') q.set('duration', ['5m', '1h', '6h', '24h'].includes(duration) ? duration : '1h');
+    if (path === 'pools') q.set('sort', 'h24_volume_usd_desc');
+    return this.memo(`gt-hot:${path}:${q}`, 60_000, async () => {
+      const j = await this.json(`https://api.geckoterminal.com/api/v2/networks/${this.gtSlug}/${path}?${q}`);
+      if (!j) return { error: 'GeckoTerminal tidak mengenal chain ini' };
+      const tokens = new Map((j.included || []).filter((x) => x?.type === 'token').map((x) => [x.id, x.attributes || {}]));
+      const addrOf = (id) => this.lc(String(id || '').replace(/^[^_]+_/, ''));
+      const num = (v) => (v == null || v === '' ? null : Number(v));
+      const windows = ['m5', 'h1', 'h6', 'h24'];
+      const pools = (j.data || []).map((d) => {
+        const a = d.attributes || {};
+        const rel = d.relationships || {};
+        const tok = (r) => {
+          const t = tokens.get(r?.data?.id) || {};
+          return { address: addrOf(r?.data?.id), symbol: t.symbol || null, name: t.name || null, image: t.image_url && t.image_url !== 'missing.png' ? t.image_url : null };
+        };
+        const dex = rel.dex?.data?.id || '';
+        return {
+          poolRef: this.lc(a.address), name: a.name, dex,
+          venueHint: /-v4-|-v4$/.test(dex) ? 'v4' : /-v3-|-v3$/.test(dex) ? 'v3' : null,
+          base: tok(rel.base_token), quote: tok(rel.quote_token),
+          priceUsd: num(a.base_token_price_usd), fdvUsd: num(a.fdv_usd), mcapUsd: num(a.market_cap_usd),
+          tvlUsd: num(a.reserve_in_usd),
+          createdAt: a.pool_created_at ? Date.parse(a.pool_created_at) : null,
+          change: Object.fromEntries(windows.map((w) => [w, num(a.price_change_percentage?.[w])])),
+          volume: Object.fromEntries(windows.map((w) => [w, num(a.volume_usd?.[w])])),
+          txns: Object.fromEntries(windows.map((w) => [w, a.transactions?.[w] || null])),
+        };
+      });
+      return { sort, duration: q.get('duration'), pools, fetchedAt: Date.now() };
+    });
+  }
+
   // OHLCV candles from GeckoTerminal, ascending by time.
   //  - token: the token address that is the price base (the speculative token), so the direction
   //    of the price is the same as the position range in the UI — not up to GeckoTerminal.

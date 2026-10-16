@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Layers, ListChecks, Users, SlidersHorizontal, Wallet as WalletIcon,
   Settings as SettingsIcon, Moon, Sun, Pause, Play, Menu, X, LogOut, Eye, EyeOff,
   PlusCircle, ArrowDownUp, BookOpen, MonitorDot, ScrollText, UserCog, PiggyBank,
-  Link2, Network, Shuffle, MessageCircle, DatabaseBackup,
+  Link2, Network, Shuffle, MessageCircle, DatabaseBackup, Flame,
 } from 'lucide-react';
 import { usePoll, useHash, useTheme } from './hooks';
 import { post, withChain, setMergedPage } from './api';
@@ -38,6 +38,7 @@ const Swap = lazy(() => import('./pages/Swap'));
 const Learn = lazy(() => import('./pages/Learn'));
 const Admin = lazy(() => import('./pages/Admin'));
 const Treasury = lazy(() => import('./pages/Treasury'));
+const HotPools = lazy(() => import('./pages/HotPools'));
 // Not in the menu: opened from a token icon (#token/0x…) and a pair name (#pool/0x…).
 const TokenDetail = lazy(() => import('./pages/TokenDetail'));
 const PoolDetail = lazy(() => import('./pages/PoolDetail'));
@@ -62,6 +63,7 @@ const NAV = [
     ['swap', 'Swap', ArrowDownUp, Swap],
   ]],
   ['Riset', [
+    ['hot-pools', 'Pool ramai', Flame, HotPools],
     ['wallet', 'Wallet', WalletIcon, WalletPage],
     ['learn', 'Belajar LP', BookOpen, Learn],
   ]],

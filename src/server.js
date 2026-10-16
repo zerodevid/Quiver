@@ -422,6 +422,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   }));
   const scoutJobs = new Map();
   const poolScanJobs = new Map();
+  // Hot pools page: on-chain resolution of each listed pool (poolRef -> { at, d }); a pool's key
+  // and fee never change, so 10 minutes only bounds how stale its "empty" flag can be.
+  const hotResolved = new Map();
+  const HOT_RESOLVE_MS = 10 * 60_000;
   const walletJobs = new Map();
   // Wallet research: EVM from event logs (wallet.js), Solana from the transaction history +
   // Meteora/Orca/Raydium program events (solana/research.js) — same tables & shape.
@@ -2502,6 +2506,36 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         withPrice: url.searchParams.get('price') === '1',
       }).then((list) => (url.searchParams.get('stats') === '1' ? withPoolStats(list) : list)),
     }),
+    // Hot pools: GeckoTerminal's trending / top-volume / newest pools on this chain. Pools of a
+    // venue the bot trades are resolved on chain (fee, hook, quote side, empty) so each row says
+    // whether it can be entered, and are stored so "#manual-lp/<ref>" opens them directly.
+    'GET /api/hot-pools': async (req, url) => {
+      const sort = ['trending', 'volume', 'new'].includes(url.searchParams.get('sort')) ? url.searchParams.get('sort') : 'trending';
+      const r = await market.hotPools({ sort, duration: url.searchParams.get('duration') || '1h', page: url.searchParams.get('page') || 1 });
+      if (r.error) return r;
+      const pools = r.pools.map((p) => ({ ...p }));
+      if (!SOL && manual.resolveListed) {
+        const now = Date.now();
+        const need = pools.filter((p) => p.venueHint && !(hotResolved.get(p.poolRef)?.at > now - HOT_RESOLVE_MS)).map((p) => p.poolRef);
+        if (need.length) {
+          const got = await manual.resolveListed(need).catch((e) => { log(`hot pools: ${e.message}`); return null; });
+          if (got) {
+            const byRef = new Map(got.map((d) => [d.poolRef, d]));
+            for (const ref of need) hotResolved.set(ref, { at: now, d: byRef.get(ref) || null });
+            if (hotResolved.size > 500) for (const [k, v] of hotResolved) if (v.at < now - HOT_RESOLVE_MS) hotResolved.delete(k);
+          }
+        }
+        for (const p of pools) {
+          const d = hotResolved.get(p.poolRef)?.d;
+          p.lp = d ? {
+            venue: d.venue, feePct: d.feePct, dynamicFee: !!d.dynamicFee, quoteSymbol: d.quoteSymbol,
+            empty: d.kosong === true, hook: d.hasHooks ? { address: d.hooks, risky: d.hook?.risky || [] } : null,
+            enterable: enterable(d),
+          } : null;
+        }
+      }
+      return { ...r, pools };
+    },
     // Scan pools from a token address. Made a background job like scout: a single
     // full-range scan takes a dozen seconds, too long for one HTTP reply.
     'POST /api/manual/pools/scan': async (req) => {
