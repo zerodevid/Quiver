@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { toast } from '@heroui/react';
-import { post, withChain } from './api';
+import { get, post, withChain } from './api';
 import { ask } from './components/ui';
 import { muteClose } from './components/TargetAlerts';
 import { usd, short } from './fmt';
@@ -49,11 +49,36 @@ export function useClosePosition(reload) {
   const close = async (p) => {
     if (closing != null) return;
     const pair = `${p.symbol0}/${p.symbol1}`;
+    // Quote the exit first (read-only, ~1–3 s): the real PnL after selling the memecoin side and gas.
+    const wait = toast(t('Menghitung estimasi hasil tutup…'), { isLoading: true, timeout: 0 });
+    let q = null;
+    try { q = await get(withChain(`/api/position/exit-quote?id=${p.id}`, p.chain)); } catch { /* the plain dialog still works */ }
+    toast.close(wait);
+    if (q?.error) q = null;
+    const sign = (v) => `${v >= 0 ? '+' : '−'}${usd(Math.abs(v))}`;
+    const row = (label, v, cls = '') => (
+      <div className="flex justify-between gap-4"><span>{label}</span><span className={`num ${cls}`}>{v}</span></div>
+    );
+    const base = p.feeUsd > 0.005
+      ? t('Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v} + fee {f}.', { v: usd(p.valueUsd), f: usd(p.feeUsd) })
+      : t('Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v}.', { v: usd(p.valueUsd) });
     const ok = await ask({
       title: t('Tutup posisi {pair}?', { pair }),
-      body: p.feeUsd > 0.005
-        ? t('Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v} + fee {f}.', { v: usd(p.valueUsd), f: usd(p.feeUsd) })
-        : t('Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v}.', { v: usd(p.valueUsd) }),
+      body: q ? (
+        <div className="space-y-2">
+          <div>{base}</div>
+          <div className="space-y-1 rounded-lg border border-border p-2.5 text-[0.8125rem]">
+            <div className="font-medium text-foreground">{t('Estimasi jika ditutup sekarang')}</div>
+            {row(t('Diterima di wallet'), usd(q.receiveUsd))}
+            {q.sellCostUsd > 0.005 && row(t('Kerugian jual memecoin (Kyber)'), `−${usd(q.sellCostUsd)}`, 'text-danger')}
+            {row(t('Gas'), `−${usd(q.gasUsd)}`)}
+            {q.claimedUsd > 0.005 && row(t('Fee yang sudah diklaim'), `+${usd(q.claimedUsd)}`)}
+            {row(t('PnL riil'), `${sign(q.pnlUsd)} (${q.pnlPct >= 0 ? '+' : ''}${q.pnlPct.toFixed(1)}%)`, q.pnlUsd >= 0 ? 'text-success font-medium' : 'text-danger font-medium')}
+            <div className="text-xs text-muted">{t('Harga tengah pool menunjukkan {v}', { v: sign(q.pnlMidUsd) })}</div>
+            {!q.quoted && <div className="text-xs text-warning">{t('Quote jual belum terbaca, memakai harga tengah.')}</div>}
+          </div>
+        </div>
+      ) : base,
       confirm: t('Tutup posisi'), danger: true,
     });
     if (!ok) return;

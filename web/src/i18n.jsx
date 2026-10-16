@@ -984,6 +984,15 @@ const EN = {
   'Gagal: {e}': 'Failed: {e}',
   'Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v} + fee {f}.':
     'Liquidity is withdrawn and fees are claimed in one transaction. Current value {v} + {f} in fees.',
+  'Menghitung estimasi hasil tutup…': 'Estimating the close result…',
+  'Estimasi jika ditutup sekarang': 'Estimate if closed now',
+  'Diterima di wallet': 'Lands in wallet',
+  'Kerugian jual memecoin (Kyber)': 'Memecoin sale loss (Kyber)',
+  'Gas': 'Gas',
+  'Fee yang sudah diklaim': 'Fees already claimed',
+  'PnL riil': 'Real PnL',
+  'Harga tengah pool menunjukkan {v}': 'Pool mid price shows {v}',
+  'Quote jual belum terbaca, memakai harga tengah.': 'Sale quote unavailable, using the mid price.',
   // ---- target alerts ----
   'Peringatan target': 'Target alerts',
   'Toast dan bunyi saat wallet target membuka posisi LP, dan saat posisi salinan ditutup — lengkap dengan PnL-nya. Bunyi buka dan tutup berbeda.':

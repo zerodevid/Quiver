@@ -2634,6 +2634,58 @@ class Engine {
     return { quote: String(q.side === 0 ? pos.token0 : pos.token1).toLowerCase(), memes: [meme] };
   }
 
+  // A read-only simulation of closing `live` (an entry of positions.live) right now: the memecoin side
+  // (principal + unclaimed fee) is QUOTED on Kyber — the same route the exit sale uses — instead
+  // of marked at the pool mid price, and the gas of a typical burn + sale is subtracted. No tx is sent.
+  // Returns USD figures: what lands in the wallet and the PnL that would be booked.
+  async exitQuote(live) {
+    const usdOfQuote = (raw, quote) => {
+      const q = this.chain.QUOTES[String(quote).toLowerCase()];
+      return q ? (Number(raw) / 10 ** q.decimals) * (q.kind === 'eth' ? this.ethUsd : 1) : null;
+    };
+    const roles = this.leftoverRoles(live);
+    const a0 = BigInt(live.amount0 || '0') + BigInt(live.fee0 || '0');
+    const a1 = BigInt(live.amount1 || '0') + BigInt(live.fee1 || '0');
+    const amountOf = (tok) => (String(tok).toLowerCase() === String(live.token0).toLowerCase() ? a0 : a1);
+    const memes = roles ? roles.memes : [];
+    // Money side kept as is: the part of value + fee that is not a memecoin, at the marking price.
+    let memeMidUsd = 0, soldUsd = 0, quoted = true;
+    const legs = [];
+    for (const meme of memes) {
+      const amount = amountOf(meme);
+      if (amount <= 0n) continue;
+      // The memecoin at the same marking price the live PnL uses (markSqrt when the pool is unfit, else the pool price).
+      const sqrt = live.markSqrt ?? live.curSqrt;
+      const memeIs0 = String(meme).toLowerCase() === String(live.token0).toLowerCase();
+      const vm = sqrt ? this.chain.valueInQuote({
+        sqrtPriceX96: BigInt(sqrt), dec0: live.dec0, dec1: live.dec1, token0: live.token0, token1: live.token1,
+        amount0: memeIs0 ? amount : 0n, amount1: memeIs0 ? 0n : amount,
+      }) : null;
+      const kindEth = this.chain.quoteSideOf(live.token0, live.token1)?.kind === 'eth';
+      const midUsd = vm && Number.isFinite(vm.value) ? vm.value * (kindEth ? this.ethUsd : 1) : null;
+      const q = await this.swapRouter.quoteRetry(meme, roles.quote, amount).catch(() => null);
+      const outUsd = q ? usdOfQuote(q.amountOut, roles.quote) : null;
+      if (outUsd == null) quoted = false;
+      legs.push({ token: meme, midUsd, outUsd, dex: q?.dex ?? null });
+      memeMidUsd += midUsd ?? 0;
+      soldUsd += outUsd ?? midUsd ?? 0;
+    }
+    // Everything the exit hands over that is not sold: the quote-asset side (and both sides of a money pair).
+    const midTotalUsd = (live.valueUsd || 0) + (live.feeUsd || 0);
+    const keptUsd = Math.max(0, midTotalUsd - memeMidUsd);
+    const recent = this.store.all("SELECT kind, gas_quote FROM txs WHERE chain=? AND kind IN ('burn','sell_leftover') AND status!='gagal' AND gas_quote IS NOT NULL ORDER BY ts DESC LIMIT 12", this.network);
+    const avg = (k) => { const x = recent.filter((r) => r.kind === k).map((r) => Number(r.gas_quote)); return x.length ? x.reduce((a, b) => a + b, 0) / x.length : 0; };
+    const gasUsd = avg('burn') + (memes.length ? avg('sell_leftover') * memes.length : 0);
+    const receiveUsd = keptUsd + soldUsd;
+    const pnlUsd = receiveUsd + (live.claimedUsd || 0) + (live.withdrawnUsd || 0) - (live.costUsd || 0) - gasUsd;
+    return {
+      id: live.id, quoted, legs, gasUsd,
+      midUsd: midTotalUsd, receiveUsd, sellCostUsd: memeMidUsd - memes.reduce((s, _, i) => s + (legs[i]?.outUsd ?? legs[i]?.midUsd ?? 0), 0),
+      claimedUsd: live.claimedUsd || 0, costUsd: live.costUsd || 0,
+      pnlMidUsd: live.pnlUsd, pnlUsd, pnlPct: live.costUsd > 0 ? (pnlUsd / live.costUsd) * 100 : 0,
+    };
+  }
+
   // Amount of `token` that Transfer logs in the receipt sent to `me`.
   receivedFromLogs(receipt, token, me) {
     let got = 0n;

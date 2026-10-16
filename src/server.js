@@ -1114,6 +1114,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // One position for the detail page. An open one is taken from the last sync result
     // (value, fee, current price); one already closed — or freshly opened and not yet
     // synced — from the database, dressed up just enough to have the same shape.
+    // Close simulation: the real proceeds and PnL if the position were closed right now
+    // (memecoin side quoted on Kyber, gas of a typical close subtracted). Sends nothing.
+    'GET /api/position/exit-quote': async (req, url) => {
+      const id = Number(url.searchParams.get('id'));
+      const live = engine.positions.live.find((p) => p.id === id);
+      if (!live) return { error: 'posisi tidak ditemukan' };
+      try { return await engine.exitQuote(live); } catch (e) { return { error: e.message }; }
+    },
     'GET /api/position': (req, url) => {
       const id = Number(url.searchParams.get('id'));
       const row = store.get('SELECT * FROM positions WHERE chain=? AND id=?', chain.network, id);
