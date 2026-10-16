@@ -2718,6 +2718,7 @@ const EN = {
   "Take profit +{n}%": "Take profit +{n}%",
   "Diatur khusus posisi ini (sebagian dinonaktifkan).": "Set for this position only (one side switched off).",
   "Belum diatur — mengikuti aturan target/global.": "Not set — following the target/global rules.",
+  "Aksi posisi": "Position actions",
 };
 
 const DICT = { id: null, en: EN };
