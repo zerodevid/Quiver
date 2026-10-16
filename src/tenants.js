@@ -34,7 +34,9 @@ function defaultChainBlock(globalBlock = {}) {
   return {
     targets: [],
     rules: clone(globalBlock.rules) || {},
-    mode: { dry_run: true, paused: false, sim_balance_usd: Number(globalBlock.mode?.sim_balance_usd) || 1000 },
+    // New open-LP accounts go straight to LIVE: they trade their own deposited funds, there is
+    // nothing to simulate. (The superadmin's own config is separate and keeps its own mode.)
+    mode: { dry_run: false, paused: false, sim_balance_usd: Number(globalBlock.mode?.sim_balance_usd) || 1000 },
     gas: clone(globalBlock.gas) || {},
     risk: clone(globalBlock.risk) || {},
     swap: clone(globalBlock.swap) || {},

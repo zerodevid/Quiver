@@ -2,6 +2,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
+const crypto = require('node:crypto');
+const { ethers } = require('ethers');
+const keyfile = require('./keyfile');
 const { RpcPool } = require('./rpc');
 const { Store } = require('./db');
 const logbuf = require('./logbuf');
@@ -431,6 +434,25 @@ async function main() {
       t.telegram.syncMenuButton?.().catch(() => {});
       return true;
     },
+    // Create the account's EVM wallet on first onboarding if it has none yet. The key is
+    // generated here and stored encrypted in the account's own key file; returns the address.
+    ensureWallet(userId) {
+      const t = tenants.get(userId);
+      if (!t) return null;
+      const evm = Object.values(t.nets).find((n) => n.chain?.kind !== 'solana' && n.engine?.exec);
+      if (!evm) return null;
+      const exec = evm.engine.exec;
+      try {
+        if (exec.address()) return exec.address();           // already has a wallet
+        const p = exec.keyPath();
+        fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
+        keyfile.writeSecret(p, ethers.Wallet.createRandom().privateKey, { encrypt: true });
+        exec.resetWallet();
+        const addr = exec.address();
+        log(`akun ${userId}: wallet dibuat ${addr}`);
+        return addr;
+      } catch (e) { log(`akun ${userId}: gagal membuat wallet: ${e.message}`); return null; }
+    },
   };
 
   // Telegram deep-link login. The dashboard asks for a code, opens t.me/<bot>?start=login_<code>,
@@ -452,21 +474,34 @@ async function main() {
       this.pending.set(code, { poll, exp: Date.now() + this.TTL, status: 'pending' });
       return { code, poll, url: `https://t.me/${username}?start=login_${code}`, ttlMs: this.TTL };
     },
-    // Called by the hub bot when it receives /start login_<code>. `from` is the Telegram user.
-    authorize(code, from) {
-      this.sweep();
-      const p = this.pending.get(String(code));
-      if (!p) return { error: 'Kode login tidak dikenal atau sudah kedaluwarsa.' };
-      if (p.status !== 'pending') return { error: 'Kode login sudah dipakai.' };
+    // Find-or-create the account for a Telegram user, start its engine, link the chat and make
+    // sure it has a wallet. The single onboarding path shared by a plain /start on the bot and a
+    // /start login_<code> from the dashboard. `chatId` defaults to the user's own id (private chat).
+    onboard(from, chatId = null) {
       let res;
       try { res = auth.loginOrCreateTelegram({ id: from.id, username: from.username || null }); }
       catch (e) { return { error: e.message }; }
       const { user, created } = res;
       if (user.status !== 'active') return { error: 'Akun ini dinonaktifkan.' };
-      if (created && user.role !== 'superadmin') tenantControl.start(user.id);
-      if (user.role !== 'superadmin') tenantControl.linkChat(user.id, from.id);
-      Object.assign(p, { status: 'ok', userId: user.id, name: user.tg_username || user.username, created });
-      return { ok: true, name: user.tg_username || user.username, created };
+      let address = null;
+      if (user.role !== 'superadmin') {
+        if (created) tenantControl.start(user.id);
+        tenantControl.linkChat(user.id, chatId ?? from.id);
+        address = tenantControl.ensureWallet(user.id);
+      }
+      return { ok: true, user, created, address, name: user.tg_username || user.username };
+    },
+    // Called by the hub bot when it receives /start login_<code>. Onboards, then marks the
+    // pending web login so the dashboard poll can collect the session.
+    authorize(code, from, chatId = null) {
+      this.sweep();
+      const p = this.pending.get(String(code));
+      if (!p) return { error: 'Kode login tidak dikenal atau sudah kedaluwarsa.' };
+      if (p.status !== 'pending') return { error: 'Kode login sudah dipakai.' };
+      const r = this.onboard(from, chatId);
+      if (r.error) return r;
+      Object.assign(p, { status: 'ok', userId: r.user.id, name: r.name, created: r.created });
+      return { ok: true, name: r.name, created: r.created, address: r.address };
     },
     // Called by the dashboard poll. Consumes the code once the session is handed out.
     claim(poll) {

@@ -3155,7 +3155,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     const TOKEN = tokenNow();
     if (gateOn()) {
       const accounts = auth.hasUsers();
-      const reg = { register: accounts || !!TOKEN, accounts };
+      // Registration is via Telegram (/start) once the platform is up. The web sign-up page
+      // only exists to bootstrap the very first superadmin; once any account exists it is gone.
+      const reg = { register: !accounts, accounts };
       const loginPage = (code, err, extra = {}) => {
         res.writeHead(code, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', ...(code === 429 ? { 'retry-after': '300' } : {}), ...SEC_HEADERS });
         return res.end(LOGIN_PAGE(err, { ...reg, ...extra }));
@@ -3207,6 +3209,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         // The invite code is kept on a failed attempt (it is needed again); the server token never is.
         return res.end(REGISTER_PAGE({ first: !auth.hasUsers(), needToken: !!TOKEN, err, username, code: auth.hasUsers() ? invite : '' }));
       };
+      // Once any account exists, there is no web sign-up — new users join through the Telegram
+      // bot (/start). Only the first-superadmin bootstrap is served here.
+      if (url.pathname === '/register' && auth.hasUsers()) {
+        res.writeHead(302, { location: '/login' });
+        return res.end();
+      }
       if (url.pathname === '/register' && req.method === 'GET') {
         return registerPage(200, { invite: (url.searchParams.get('code') || '').replace(/[^0-9a-f]/gi, '').slice(0, 64) });
       }
@@ -3267,7 +3275,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         // With accounts, a visitor at / gets the landing page; the sign-in form lives at /login.
         if (accounts && req.method === 'GET' && url.pathname === '/') {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', ...SEC_HEADERS });
-          return res.end(LANDING_PAGE({ register: reg.register, lang: url.searchParams.get('lang') || undefined }));
+          return res.end(LANDING_PAGE({ register: reg.register, lang: url.searchParams.get('lang') || undefined, links: cfg.landing?.links }));
         }
         return loginPage(url.pathname === '/login' ? 200 : 401, null);
       }

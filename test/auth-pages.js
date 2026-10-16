@@ -72,33 +72,42 @@ const form = (base, p, fields) => fetch(base + p, { method: 'POST', redirect: 'm
       assert.deepEqual(s.started, [], 'the superadmin has no tenant to start');
     });
 
-    await t('later sign-ups need an invite; the link prefills it and a bad one is flagged on its field', async () => {
-      const code = s.auth.createInvite(1);
-      const page = await (await fetch(`${s.base}/register?code=${code}`)).text();
-      assert.match(page, /Kode undangan/);
-      assert.match(page, new RegExp(`value="${code}"`));
-      const bad = await form(s.base, '/register', { username: 'budi', password: 'password1', password2: 'password1', invite: 'ffff' });
-      const html = await bad.text();
-      assert.match(html, /id="invite"[^>]*aria-invalid="true"/);
-      assert.match(html, /Kode undangan tidak berlaku/);
-      const taken = await form(s.base, '/register', { username: 'root', password: 'password1', password2: 'password1', invite: code });
-      assert.match(await taken.text(), /sudah dipakai\. Pilih yang lain/);
-      const ok = await form(s.base, '/register', { username: 'budi', password: 'password1', password2: 'password1', invite: code });
-      assert.equal(ok.status, 302);
-      assert.deepEqual(s.started, [2], "the new account's engines are started");
+    await t('once an account exists, web sign-up is gone — new users onboard through Telegram', async () => {
+      // The bootstrap already made account 1. A later /register no longer serves a form: it
+      // redirects to /login. New users join via the Telegram bot (/start), not a web invite.
+      const get = await fetch(`${s.base}/register?code=whatever`, { redirect: 'manual' });
+      assert.equal(get.status, 302);
+      assert.equal(get.headers.get('location'), '/login');
+      const post = await form(s.base, '/register', { username: 'budi', password: 'password1', password2: 'password1' });
+      assert.equal(post.status, 302, 'a POST is redirected too, not processed');
+      assert.equal(s.auth.userCount(), 1, 'no account was created from the web form');
+      // Make a second account the way Telegram onboarding would, for the sign-in test below.
+      s.auth.loginOrCreateTelegram({ id: 4242, username: 'budi' });
+      assert.equal(s.auth.userById(2).username, 'budi');
     });
 
     await t('with accounts: username + password sign-in, token kept as an alternative', async () => {
-      const login = await (await fetch(`${s.base}/`)).text();
+      const landing = await fetch(`${s.base}/`);
+      assert.equal(landing.status, 200);
+      const landingHtml = await landing.text();
+      assert.doesNotMatch(landingHtml, /href="\/register"/, 'no web sign-up link once accounts exist');
+      assert.doesNotMatch(landingHtml, /name="password"/);
+      assert.match(landingHtml, /<html lang="en">/, 'English by default');
+      assert.match(await (await fetch(`${s.base}/?lang=id`)).text(), /<html lang="id">/);
+      const loginRes = await fetch(`${s.base}/login`);
+      assert.equal(loginRes.status, 200);
+      const login = await loginRes.text();
       assert.match(login, /name="username"/);
       assert.match(login, /name="password"/);
       assert.match(login, /Masuk dengan token akses server/);
-      const bad = await form(s.base, '/login', { username: 'budi', password: 'nope' });
+      // 'root' is the superadmin created with a password at bootstrap; password sign-in still
+      // works for password accounts (Telegram accounts like 'budi' have none and use the bot).
+      const bad = await form(s.base, '/login', { username: 'root', password: 'nope' });
       const html = await bad.text();
       assert.equal(bad.status, 401);
       assert.match(html, /Nama pengguna atau kata sandi salah/);
-      assert.match(html, /value="budi"/);
-      const ok = await form(s.base, '/login', { username: 'budi', password: 'password1' });
+      assert.match(html, /value="root"/);
+      const ok = await form(s.base, '/login', { username: 'root', password: 'password1' });
       assert.equal(ok.status, 302);
       const tok = await form(s.base, '/login', { token: TOKEN });
       assert.equal(tok.status, 302);

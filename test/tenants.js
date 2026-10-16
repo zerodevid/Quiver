@@ -50,11 +50,11 @@ function view(dir = tmp()) {
 (async () => {
   console.log('tenants');
 
-  await t('a new account starts in simulation with no targets, but inherits the tuning', async () => {
+  await t('a new account starts LIVE with no targets, but inherits the tuning', async () => {
     const { v } = view();
     const rh = chainView(v, 'robinhood');
     assert.deepEqual(rh.targets, []);
-    assert.equal(rh.mode.dry_run, true);
+    assert.equal(rh.mode.dry_run, false, 'open-LP accounts trade their own deposits — LIVE from the start');
     assert.equal(rh.mode.sim_balance_usd, 500);
     assert.deepEqual(rh.rules, { sizing: { pct: 5 } });
     assert.equal(rh.gas.price_multiplier, 1.5);
@@ -337,13 +337,18 @@ function view(dir = tmp()) {
     } finally { await s.close(); }
   });
 
-  await t('sign-in, sign-up and sign-out refuse cross-site form posts', async () => {
+  await t('sign-in and sign-out refuse cross-site form posts', async () => {
     const s = await serveTenant(alice.id);
     try {
-      for (const p of ['/login', '/register', '/logout']) {
+      // /register is no longer a form once accounts exist (users onboard via Telegram), so only
+      // the sign-in and sign-out forms remain to protect against cross-site posts.
+      for (const p of ['/login', '/logout']) {
         const r = await fetch(`${s.base}${p}`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', origin: 'https://evil.example' }, body: 'username=alice&password=password1' });
         assert.equal(r.status, 403, p);
       }
+      // A cross-site POST to /register is harmless: it only redirects to /login, never acts.
+      const reg = await fetch(`${s.base}/register`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', origin: 'https://evil.example' }, body: 'username=x&password=password1' });
+      assert.equal(reg.status, 302);
     } finally { await s.close(); }
   });
 

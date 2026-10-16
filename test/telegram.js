@@ -912,15 +912,25 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     assert.match(lastOut(w.sent).params.text, /ditutup/i);
   });
 
-  await t('the bot never offers a private key import/export path', async () => {
+  await t('the bot offers a private-key import (message scrubbed) but no export', async () => {
     const w = build();
     await w.bot.handle(cbq('wb'));
-    const body = lastOut(w.sent).params.text;
-    assert.match(body, /sengaja tidak disediakan/i);
-    for (const b of buttons(lastOut(w.sent))) assert.ok(!/import|impor|export|ekspor/i.test(b));
-    // and no import route can be reached from anywhere in the bot
+    const out = lastOut(w.sent);
+    assert.match(out.params.text, /dihapus/i, 'the wallet screen says the key message is deleted');
+    const btns = buttons(out);
+    assert.ok(btns.includes('wbi'), 'an import button is offered');
+    assert.ok(!btns.some((b) => /export|ekspor|wbe/i.test(b)), 'no export path');
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'telegram.js'), 'utf8');
-    assert.ok(!src.includes('/api/settings/wallet/import'), 'telegram.js must not call the key import route');
+    assert.ok(!src.includes('/api/settings/wallet/import'), 'import is done in the bot, not via the key import route');
+  });
+
+  await t('a pasted private key is deleted from the chat the instant it arrives', async () => {
+    const w = build();
+    await w.bot.handle(cbq('wbi'));                          // ask for the key (secret input)
+    w.sent.length = 0;
+    await w.bot.handle({ message: { chat: { id: Number(CHAT) }, from: { id: Number(CHAT) }, text: 'not-a-valid-key', message_id: 555 } });
+    const del = w.sent.find((s) => s.method === 'deleteMessage');
+    assert.ok(del && del.params.message_id === 555, 'the message holding the key is deleted immediately');
   });
 
   await t('replacing the wallet is still refused in LIVE (the dashboard rule applies too)', async () => {

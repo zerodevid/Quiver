@@ -11,14 +11,18 @@
 //    sentence as an answer and cannot read anything.
 //  - Connecting a chat needs a one-time code made on the dashboard (or printed
 //    to the log when the bot first starts with no connected chat).
-//  - The private key NEVER passes through Telegram: import is refused, export does not exist.
+//  - A pasted private key (wallet import) is deleted from the chat the instant it arrives
+//    (onMessage, the `secret` input flag), so it does not linger in Telegram history; export
+//    does not exist.
 //    Telegram chat history is stored on Telegram's servers — not a place for keys.
 //  - Actions that move funds (LIVE, close position, change wallet) always
 //    go through confirmation.
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const { ethers } = require('ethers');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { writeCfg } = require('./env');
+const keyfile = require('./keyfile');
 const { isSolana, normAddr, addrHint } = require('./networks');
 // The chain a conversation is currently using. The same pattern as localeContext: every
 // Telegram update runs inside run(<chain>), and this.api/this.engine/the cards
@@ -813,6 +817,27 @@ class Telegram {
     this.sending = false;
   }
 
+  // ---- onboarding ---------------------------------------------------------
+  // Greet a just-onboarded Telegram user. `r` = { created, address, name, user }. For a regular
+  // account it shows the freshly created wallet to deposit into; the superadmin gets an operator
+  // note instead. `fromLogin` adds a line that the dashboard tab is now signed in.
+  async sendWelcome(chatId, r, fromLogin) {
+    const who = r.name ? esc('@' + r.name) : '';
+    if (r.user?.role === 'superadmin') {
+      return this.send(chatId, tr("👋 Halo {0}. Kamu operator Quiver — buka dasbor untuk mengelola akun dan fee.", [who])
+        + (fromLogin ? '\n\n' + tr("✅ Kamu sudah masuk di tab dasbor.") : ''));
+    }
+    const lines = [
+      r.created ? tr("🎉 Selamat datang di <b>Quiver</b>, {0}!", [who]) : tr("👋 Halo lagi, {0}!", [who]),
+      '',
+      r.created ? tr("Akunmu sudah dibuat dan wallet-mu siap:") : tr("Wallet-mu:"),
+    ];
+    if (r.address) lines.push(`<code>${esc(r.address)}</code>`, '', tr("Isi dana ke alamat itu, lalu buka posisi LP lewat menu. Ketik /menu kapan saja."));
+    else lines.push('', tr("Ketik /menu untuk mulai."));
+    if (fromLogin) lines.push('', tr("✅ Kamu juga sudah masuk di tab dasbor."));
+    return this.send(chatId, lines.join('\n'));
+  }
+
   // ---- connecting chats ---------------------------------------------------
   newPairCode() {
     const code = crypto.randomBytes(4).toString('hex').toUpperCase();
@@ -987,13 +1012,23 @@ class Telegram {
   async onMessage(msg) {
     const chatId = String(msg.chat.id);
     const text = String(msg.text || '').trim();
-    // Deep-link dashboard login: /start login_<code>. Handled before anything else, because the
-    // person logging in is usually not a connected chat yet. Only the hub bot carries the broker.
-    const login = text.match(/^\/(?:start|mulai)(?:@\S+)?\s+login_([0-9a-f]{8,})$/i);
-    if (login && this.loginBroker && msg.from) {
-      const r = this.loginBroker.authorize(login[1], msg.from);
-      if (r.error) return this.send(chatId, `❌ ${esc(note(r.error))}`);
-      return this.send(chatId, tr("✅ Masuk sebagai {0}. Kembali ke tab dasbor — kamu sudah masuk.", [esc(r.name ? '@' + r.name : 'akun')]));
+    // Telegram IS the sign-up: a /start from a chat we don't know yet creates the account, makes
+    // a wallet and welcomes the user — no web form. `/start login_<code>` does the same and also
+    // signs the dashboard in. Only the hub bot carries the broker; a connected chat skips this and
+    // goes to its account's menu below. Pairing codes (/start <CODE>) keep working further down.
+    if (this.loginBroker && msg.from && !this.chats().includes(chatId)) {
+      const m = text.match(/^\/(?:start|mulai)(?:@\S+)?(?:\s+(\S+))?\s*$/i);
+      const payload = m ? (m[1] || '') : null;
+      const login = payload && /^login_([0-9a-f]{8,})$/i.exec(payload);
+      if (m && (!payload || login)) {
+        const r = login ? this.loginBroker.authorize(login[1], msg.from, chatId) : this.loginBroker.onboard(msg.from, chatId);
+        if (r.error) return this.send(chatId, `❌ ${esc(note(r.error))}`);
+        await this.sendWelcome(chatId, r, !!login);
+        // The chat is linked now; show the account's own menu.
+        const acct = this.routeChat ? this.routeChat(chatId) : null;
+        if (acct) return acct.screen(chatId, null, 'h');
+        return;
+      }
     }
     if (!this.chats().includes(chatId)) {
       const m = text.match(PAIR_RE);
@@ -1023,6 +1058,9 @@ class Telegram {
     // Being asked something? Any answer that is not a command is taken as input.
     if (s.pending && !text.startsWith('/')) {
       const p = s.pending; s.pending = null;
+      // A sensitive answer (a pasted private key) is scrubbed from the chat the instant it
+      // arrives — before it is even processed, so a failed import leaves nothing behind either.
+      if (p.secret) this.deleteMsg(chatId, msg.message_id);
       try { return await this.answer(chatId, p, text); }
       catch (e) {
         s.retryInput = p;
@@ -1357,6 +1395,10 @@ class Telegram {
         return out(tr("✅ Wallet baru: <code>{0}</code>\nFrasa pemulihan disimpan di server (<code>{1}</code>) dan sengaja tidak dikirim lewat Telegram.", [esc(r.address), esc(r.mnemonicFile)]), kb([[btn(tr("↩︎ Wallet"), 'wb')], [BACK_HOME]]));
       }
       case 'wbr': return this.ask(chatId, { kind: 'lepasWallet', retry: 'wb' }, tr("Untuk melepas wallet, kirim alamatnya persis (kunci dicadangkan, tidak dihapus)."));
+      // Import a private key. `secret` makes onMessage delete the pasted message the instant it
+      // arrives, so the key never lingers in the Telegram chat history.
+      case 'wbi': return this.ask(chatId, { kind: 'importpk', secret: true, retry: 'wb' },
+        tr("🔐 Kirim <b>kunci privat</b> wallet kamu (64 hex, boleh diawali 0x).\n\n⚠️ Pesanmu akan <b>langsung dihapus</b> setelah diterima. Kunci lama dicadangkan, bukan dihapus."));
 
       case 'sr': {
         if (!rest[0]) return out(...(await this.rpcScreen()));
@@ -1553,6 +1595,12 @@ class Telegram {
         const r = await this.api('POST', '/api/settings/wallet/remove', { confirm: text.trim().toLowerCase() });
         if (r.error) throw new Error(r.error);
         return this.screen(chatId, null, 'wb', tr("✅ Wallet dilepas (kunci dicadangkan).\n\n"));
+      }
+      case 'importpk': {
+        // The pasted message was already deleted by onMessage. Import throws a plain-language
+        // error on a bad key, which the input handler shows without ever echoing the key.
+        const addr = await this.importWallet(text);
+        return this.screen(chatId, null, 'wb', tr("✅ Wallet diimpor: <code>{0}</code>\nPesan kunci sudah dihapus dari chat.\n\n", [esc(addr)]));
       }
       case 'ntfy': {
         const r = await this.api('POST', '/api/settings/notify', { ntfy_topic: text.trim() === '-' ? '' : text.trim() });
@@ -2683,6 +2731,36 @@ class Telegram {
     return this.screen(chatId, msgId, msgId ? 's' : 'h', note);
   }
 
+  // Delete a message (used to scrub a pasted private key from the chat the instant it arrives).
+  deleteMsg(chatId, messageId) {
+    if (!messageId) return;
+    this.tg('deleteMessage', { chat_id: Number(chatId), message_id: Number(messageId) }).catch(() => { /* already gone / too old */ });
+  }
+
+  // Import a private key the user pasted in the bot, replacing the account's wallet. Written
+  // encrypted (keyfile.js, LPCOPY_MASTER_KEY); the old key is backed up, never deleted. The
+  // pasted message is removed by the caller the moment it arrives — see onMessage. Refuses while
+  // a transaction is in flight so the swapped key never signs half of one.
+  async importWallet(pk) {
+    for (const n of Object.values(this.nets)) {
+      const e = n.engine;
+      if ((e?.activeEntries || 0) > 0 || e?.exiting?.size > 0 || e?.selling?.size > 0 || e?.compound?.running) {
+        throw new Error('Bot sedang memproses transaksi — tunggu sampai selesai lalu coba lagi.');
+      }
+    }
+    pk = String(pk || '').trim();
+    if (!/^(0x)?[0-9a-fA-F]{64}$/.test(pk)) throw new Error('Kunci privat harus 64 karakter hex (boleh diawali 0x).');
+    if (!pk.startsWith('0x')) pk = '0x' + pk;
+    try { new ethers.Wallet(pk); } catch { throw new Error('Kunci privat tidak valid.'); }
+    const evm = Object.values(this.nets).find((n) => !isSolana(n.key) && n.engine?.exec);
+    if (!evm) throw new Error('Tidak ada chain EVM aktif untuk menyimpan kunci.');
+    const p = evm.engine.exec.keyPath();
+    if (fs.existsSync(p)) fs.renameSync(p, `${p}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+    keyfile.writeSecret(p, pk, { encrypt: true });
+    for (const n of Object.values(this.nets)) if (!isSolana(n.key)) n.engine?.exec?.resetWallet();
+    return evm.engine.exec.address();
+  }
+
   async walletScreen() {
     const st = await this.api('GET', '/api/settings');
     const w = st.wallet, b = w.balances;
@@ -2698,9 +2776,10 @@ class Telegram {
         [b?.symbols?.usdg || 'USDG', b ? tok(b.usdg, 2) : null],
         [b?.symbols?.weth || 'WETH', b ? tok(b.weth) : null],
       ]),
-      quote(tr("<i>Impor kunci privat lewat Telegram sengaja tidak disediakan — riwayat chat tersimpan di server Telegram. Pakai dasbor untuk itu.</i>")),
+      quote(tr("<i>Kamu bisa impor kunci privat sendiri. Pesan berisi kunci akan langsung dihapus dari chat begitu diterima.</i>")),
     ];
     return [L.filter((x) => x != null).join('\n'), kb([
+      [btn(tr("📥 Impor kunci privat"), 'wbi')],
       [btn(tr("🆕 Buat wallet baru"), 'wbg')],
       [btn(tr("🗑 Lepas wallet"), 'wbr')],
       [btn(tr("↩︎ Pengaturan"), 's'), BACK_HOME],

@@ -989,5 +989,18 @@
   "👥 <b>Copy trading</b> — <i>segera hadir</i>\n\nMenyalin wallet lain otomatis sedang kami siapkan. Untuk sekarang kamu bisa membuka dan mengelola posisi LP-mu sendiri.": "👥 <b>Copy trading</b> — <i>coming soon</i>\n\nAutomatically copying other wallets is on the way. For now you can open and manage your own LP positions.",
   "👥 Copy (segera)": "👥 Copy (soon)",
   "Pilih <b>LP manual</b> untuk membuka posisi sendiri.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap ke chat ini.</i>": "Choose <b>Manual LP</b> to open a position yourself.\n<i>You can also send a token or wallet address straight to this chat.</i>",
-  "✅ Masuk sebagai {0}. Kembali ke tab dasbor — kamu sudah masuk.": "✅ Signed in as {0}. Go back to the dashboard tab — you're in."
+  "✅ Masuk sebagai {0}. Kembali ke tab dasbor — kamu sudah masuk.": "✅ Signed in as {0}. Go back to the dashboard tab — you're in.",
+  "👋 Halo {0}. Kamu operator Quiver — buka dasbor untuk mengelola akun dan fee.": "👋 Hi {0}. You're the Quiver operator — open the dashboard to manage accounts and fees.",
+  "✅ Kamu sudah masuk di tab dasbor.": "✅ You're signed in on the dashboard tab.",
+  "🎉 Selamat datang di <b>Quiver</b>, {0}!": "🎉 Welcome to <b>Quiver</b>, {0}!",
+  "👋 Halo lagi, {0}!": "👋 Welcome back, {0}!",
+  "Akunmu sudah dibuat dan wallet-mu siap:": "Your account is ready and so is your wallet:",
+  "Wallet-mu:": "Your wallet:",
+  "Isi dana ke alamat itu, lalu buka posisi LP lewat menu. Ketik /menu kapan saja.": "Fund that address, then open an LP position from the menu. Type /menu anytime.",
+  "Ketik /menu untuk mulai.": "Type /menu to get started.",
+  "✅ Kamu juga sudah masuk di tab dasbor.": "✅ You're also signed in on the dashboard tab.",
+  "<i>Kamu bisa impor kunci privat sendiri. Pesan berisi kunci akan langsung dihapus dari chat begitu diterima.</i>": "<i>You can import your own private key. The message holding it is deleted from the chat the moment it arrives.</i>",
+  "📥 Impor kunci privat": "📥 Import private key",
+  "🔐 Kirim <b>kunci privat</b> wallet kamu (64 hex, boleh diawali 0x).\n\n⚠️ Pesanmu akan <b>langsung dihapus</b> setelah diterima. Kunci lama dicadangkan, bukan dihapus.": "🔐 Send your wallet's <b>private key</b> (64 hex, 0x optional).\n\n⚠️ Your message will be <b>deleted immediately</b> after it arrives. The old key is backed up, not deleted.",
+  "✅ Wallet diimpor: <code>{0}</code>\nPesan kunci sudah dihapus dari chat.\n\n": "✅ Wallet imported: <code>{0}</code>\nThe key message has been deleted from the chat.\n\n"
 }
