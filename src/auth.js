@@ -82,8 +82,33 @@ class Auth {
   hasUsers() { return this.userCount() > 0; }
 
   // `legacy` = signed in with the shared access token rather than an account.
-  publicUser(u) { return u ? { id: u.id, username: u.username, role: u.role, status: u.status, legacy: !!u.legacy } : null; }
+  publicUser(u) { return u ? { id: u.id, username: u.username, role: u.role, status: u.status, legacy: !!u.legacy, tg: u.tg_username || (u.tg_id ? String(u.tg_id) : null) } : null; }
   userById(id) { return this.store.get('SELECT * FROM users WHERE id=?', id) || null; }
+  userByTelegram(tgId) { return this.store.get('SELECT * FROM users WHERE tg_id=?', String(tgId)) || null; }
+
+  // Find or create the account for a Telegram user (deep-link login). Telegram identity is the
+  // credential — there is no password. The first account created on the server is the
+  // superadmin. The username is derived from the Telegram handle (or the id), made unique.
+  // Returns { user, created }.
+  loginOrCreateTelegram({ id, username = null }) {
+    const tgId = String(id);
+    const existing = this.userByTelegram(tgId);
+    if (existing) {
+      // Keep the stored handle fresh (people change their @username).
+      if (username && username !== existing.tg_username) this.store.run('UPDATE users SET tg_username=? WHERE id=?', username, existing.id);
+      return { user: this.userById(existing.id), created: false };
+    }
+    const first = !this.hasUsers();
+    // A login-only account still needs a unique username (it is a NOT NULL UNIQUE column and the
+    // UI shows it). Derive it from the handle, fall back to the id, and de-duplicate.
+    const base = String(username || `tg${tgId}`).toLowerCase().replace(/[^a-z0-9_.-]/g, '').slice(0, 28) || `tg${tgId}`;
+    let name = base;
+    for (let i = 1; this.store.get('SELECT 1 FROM users WHERE username=?', name); i++) name = `${base}-${i}`.slice(0, 32);
+    const r = this.store.run(
+      'INSERT INTO users(username, pass_hash, role, status, created_at, tg_id, tg_username) VALUES(?,?,?,?,?,?,?)',
+      name, null, first ? 'superadmin' : 'user', 'active', Date.now(), tgId, username || null);
+    return { user: this.userById(Number(r.lastInsertRowid)), created: true };
+  }
 
   // The first account is the superadmin and needs no invite; everyone after needs one.
   // The invite is checked BEFORE the username, so without a valid code nobody can probe

@@ -987,6 +987,14 @@ class Telegram {
   async onMessage(msg) {
     const chatId = String(msg.chat.id);
     const text = String(msg.text || '').trim();
+    // Deep-link dashboard login: /start login_<code>. Handled before anything else, because the
+    // person logging in is usually not a connected chat yet. Only the hub bot carries the broker.
+    const login = text.match(/^\/(?:start|mulai)(?:@\S+)?\s+login_([0-9a-f]{8,})$/i);
+    if (login && this.loginBroker && msg.from) {
+      const r = this.loginBroker.authorize(login[1], msg.from);
+      if (r.error) return this.send(chatId, `❌ ${esc(note(r.error))}`);
+      return this.send(chatId, tr("✅ Masuk sebagai {0}. Kembali ke tab dasbor — kamu sudah masuk.", [esc(r.name ? '@' + r.name : 'akun')]));
+    }
     if (!this.chats().includes(chatId)) {
       const m = text.match(PAIR_RE);
       // Hub: the code may have been made by an account — that account pairs the chat.

@@ -152,6 +152,35 @@ const withRoot = async () => { const a = fresh(); const root = await a.register(
     await rejectsCode(a.resetPassword(root.id), 'forbidden');
   });
 
+  await t('Telegram login creates an account the first time and reuses it after', async () => {
+    const a = fresh();
+    const r1 = a.loginOrCreateTelegram({ id: 111, username: 'Alice' });
+    assert.equal(r1.created, true);
+    assert.equal(r1.user.role, 'superadmin', 'the first account is the superadmin');
+    assert.equal(r1.user.tg_id, '111');
+    assert.equal(r1.user.username, 'alice', 'username derived from the handle, lowercased');
+    // Same Telegram id -> same account, no duplicate.
+    const r2 = a.loginOrCreateTelegram({ id: 111, username: 'Alice' });
+    assert.equal(r2.created, false);
+    assert.equal(r2.user.id, r1.user.id);
+    assert.equal(a.userCount(), 1);
+    // A second Telegram user becomes a regular account.
+    const r3 = a.loginOrCreateTelegram({ id: 222, username: 'bob' });
+    assert.equal(r3.created, true);
+    assert.equal(r3.user.role, 'user');
+    assert.equal(a.userByTelegram(222).id, r3.user.id);
+  });
+
+  await t('Telegram usernames that collide get de-duplicated, no-handle users get a tg<id> name', async () => {
+    const a = fresh();
+    await a.register({ username: 'sam', password: 'password1' });   // takes "sam"
+    const r = a.loginOrCreateTelegram({ id: 333, username: 'Sam' }); // wants "sam" too
+    assert.equal(r.user.username, 'sam-1', 'collision resolved');
+    const noHandle = a.loginOrCreateTelegram({ id: 444, username: null });
+    assert.equal(noHandle.user.username, 'tg444');
+    assert.equal(noHandle.user.tg_username, null);
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

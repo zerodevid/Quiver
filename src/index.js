@@ -325,7 +325,7 @@ async function main() {
   // "All chains" view: merges the aggregate routes of every chain's server (see allchains.js).
   const allChains = createAllChains({ servers: () => servers, nets: () => nets, primaryKey });
   const makeServer = (net) => {
-    servers[net.key] = createServer({ engine: net.engine, store, cfg: net.cfg, cfgPath: CFG_PATH, chain: net.chain, rpc: net.rpc, log: net.log, telegram, nets, chainControl, allChains, tenantControl });
+    servers[net.key] = createServer({ engine: net.engine, store, cfg: net.cfg, cfgPath: CFG_PATH, chain: net.chain, rpc: net.rpc, log: net.log, telegram, nets, chainControl, allChains, tenantControl, loginBroker });
   };
 
   // ---- tenants (regular accounts) ----
@@ -421,7 +421,67 @@ async function main() {
       log(`akun ${userId} dimatikan${clean ? '' : ' (pekerjaan yang belum selesai dilanjutkan saat akun dinyalakan lagi)'}`);
       return { ok: true };
     },
+    // Link a Telegram chat to an account so the bot routes to it and the mini app opens it.
+    linkChat(userId, chatId) {
+      const t = tenants.get(userId);
+      if (!t) return false;
+      const ids = [...new Set([...t.telegram.chats(), String(chatId)])];
+      t.telegram.cfg.telegram = { ...(t.telegram.cfg.telegram || {}), chat_ids: ids };
+      t.telegram.saveCfg();
+      t.telegram.syncMenuButton?.().catch(() => {});
+      return true;
+    },
   };
+
+  // Telegram deep-link login. The dashboard asks for a code, opens t.me/<bot>?start=login_<code>,
+  // the user taps Start, the hub bot authorizes the code against their Telegram identity, and the
+  // dashboard polls with a browser-only secret to collect the session. Two tokens on purpose: the
+  // `code` travels through Telegram (could be seen) and only authorizes; the `poll` secret never
+  // leaves the browser and is what redeems the session.
+  const loginBroker = {
+    pending: new Map(),                 // code -> { poll, exp, status, userId, name, created }
+    TTL: 5 * 60_000,
+    botUsername: () => telegram.me?.username || null,
+    sweep() { const now = Date.now(); for (const [k, v] of this.pending) if (v.exp < now) this.pending.delete(k); },
+    request() {
+      this.sweep();
+      const username = this.botUsername();
+      if (!username) return { error: 'Login Telegram belum siap: bot belum tersambung.' };
+      const code = crypto.randomBytes(8).toString('hex');
+      const poll = crypto.randomBytes(32).toString('hex');
+      this.pending.set(code, { poll, exp: Date.now() + this.TTL, status: 'pending' });
+      return { code, poll, url: `https://t.me/${username}?start=login_${code}`, ttlMs: this.TTL };
+    },
+    // Called by the hub bot when it receives /start login_<code>. `from` is the Telegram user.
+    authorize(code, from) {
+      this.sweep();
+      const p = this.pending.get(String(code));
+      if (!p) return { error: 'Kode login tidak dikenal atau sudah kedaluwarsa.' };
+      if (p.status !== 'pending') return { error: 'Kode login sudah dipakai.' };
+      let res;
+      try { res = auth.loginOrCreateTelegram({ id: from.id, username: from.username || null }); }
+      catch (e) { return { error: e.message }; }
+      const { user, created } = res;
+      if (user.status !== 'active') return { error: 'Akun ini dinonaktifkan.' };
+      if (created && user.role !== 'superadmin') tenantControl.start(user.id);
+      if (user.role !== 'superadmin') tenantControl.linkChat(user.id, from.id);
+      Object.assign(p, { status: 'ok', userId: user.id, name: user.tg_username || user.username, created });
+      return { ok: true, name: user.tg_username || user.username, created };
+    },
+    // Called by the dashboard poll. Consumes the code once the session is handed out.
+    claim(poll) {
+      this.sweep();
+      for (const [code, p] of this.pending) {
+        if (p.poll !== poll) continue;
+        if (p.status === 'ok') { this.pending.delete(code); return { userId: p.userId, name: p.name, created: p.created }; }
+        return { pending: true };
+      }
+      return { error: 'expired' };
+    },
+  };
+  // The hub bot handles /start login_<code> (see telegram.js); late-bound because the bot is
+  // constructed before the broker.
+  telegram.loginBroker = loginBroker;
 
   for (const net of Object.values(nets)) makeServer(net);
   // ?chain= wins (a row's link or action on the combined view), then the cookie. 'all' is

@@ -371,9 +371,11 @@ function open(dbPath) {
   // CREATE TABLE IF NOT EXISTS does not add columns to an already existing table.
   // Multi-user accounts (see auth.js). Secrets are stored hashed.
   db.exec(`CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, pass_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL
+    id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, pass_hash TEXT,
+    role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL,
+    tg_id TEXT, tg_username TEXT
   );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_users_tg ON users(tg_id) WHERE tg_id IS NOT NULL;
   CREATE TABLE IF NOT EXISTS sessions (
     id_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
   );
@@ -390,6 +392,12 @@ function open(dbPath) {
   );
   CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts);
   CREATE INDEX IF NOT EXISTS idx_audit_user ON audit(user_id, ts)`);
+  // Telegram login (deep-link): accounts are keyed by Telegram id. Added to an existing
+  // accounts DB that predates it.
+  const userCols = new Set(db.prepare('PRAGMA table_info(users)').all().map((c) => c.name));
+  if (!userCols.has('tg_id')) db.exec('ALTER TABLE users ADD COLUMN tg_id TEXT');
+  if (!userCols.has('tg_username')) db.exec('ALTER TABLE users ADD COLUMN tg_username TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_tg ON users(tg_id) WHERE tg_id IS NOT NULL');
   const eqCols = new Set(db.prepare('PRAGMA table_info(equity)').all().map((c) => c.name));
   if (!eqCols.has('pnl_quote')) {
     db.exec('ALTER TABLE equity ADD COLUMN pnl_quote REAL');

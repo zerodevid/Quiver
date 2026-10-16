@@ -96,6 +96,10 @@ button[type=submit]{width:100%;height:2.625rem;margin-top:1.25rem;border:0;borde
 button[type=submit]:hover{filter:brightness(1.06)}
 button[type=submit]:active{transform:translateY(1px)}
 button[type=submit]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.tg{width:100%;height:2.75rem;display:flex;align-items:center;justify-content:center;gap:.5rem;border:0;border-radius:.375rem;background:#229ED9;color:#fff;font:inherit;font-size:.9375rem;font-weight:600;cursor:pointer;transition:filter .12s,transform .08s}
+button.tg:hover{filter:brightness(1.06)}button.tg:active{transform:translateY(1px)}button.tg:disabled{opacity:.6;cursor:default}
+.tgstatus{margin:.625rem 0 0;min-height:1.1em;color:var(--muted);font-size:.8125rem;text-align:center}
+.tgstatus.bad{color:var(--danger)}
 .foot{margin:1.25rem 0 0;padding-top:1rem;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:.5rem;color:var(--muted);font-size:.75rem;text-align:center}
 .foot svg{width:.875rem;height:.875rem;flex:none}
 `;
@@ -139,6 +143,25 @@ function chk(){if(!p1)return;var v=p1.value;document.querySelectorAll('.rules li
 if(p1){p1.addEventListener('input',chk);chk()}if(p2)p2.addEventListener('input',chk);
 </script>`;
 const THEME_JS = `<script>try{var t=localStorage.getItem('lpcopy-theme');if(t==='dark'||(!t&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark')}catch(e){}</script>`;
+// Telegram paper-plane glyph for the login button.
+const TG_GLYPH = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true" style="flex:0 0 auto"><path d="M21.9 4.3 18.6 20c-.2 1-.9 1.3-1.8.8l-5-3.7-2.4 2.3c-.3.3-.5.5-1 .5l.3-5 9.2-8.3c.4-.4-.1-.6-.6-.2L6 13.5l-4.9-1.5c-1-.3-1-1 .2-1.5L20.6 2.8c.9-.3 1.6.2 1.3 1.5Z"/></svg>';
+// The login page opens the bot and polls for the session. Inline, like AUTH_JS.
+const TG_LOGIN_JS = `<script>
+(function(){var b=document.getElementById('tglogin'),s=document.getElementById('tgstatus');if(!b)return;
+function msg(t,e){s.textContent=t;s.className='tgstatus'+(e?' bad':'')}
+b.addEventListener('click',async function(){b.disabled=true;msg('Membuka Telegram…');
+try{var r=await fetch('/api/tg/login/start',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(x=>x.json());
+if(r.error){b.disabled=false;return msg(r.error,1)}
+var w=window.open(r.url,'_blank');if(!w)location.href=r.url;
+msg('Tekan Start di bot Telegram, lalu kembali ke sini…');
+var until=Date.now()+(r.ttlMs||300000);
+(function tick(){if(Date.now()>until){b.disabled=false;return msg('Kode kedaluwarsa. Coba lagi.',1)}
+fetch('/api/tg/login/poll?poll='+encodeURIComponent(r.poll)).then(x=>x.json()).then(function(p){
+if(p.ok){msg('Berhasil — mengarahkan…');return location.href='/'}
+if(p.error&&!p.pending){b.disabled=false;return msg(p.error,1)}
+setTimeout(tick,2000)}).catch(function(){setTimeout(tick,2500)})})();
+}catch(e){b.disabled=false;msg('Gagal memulai login. Coba lagi.',1)}})})();
+</script>`;
 const authHead = (title) => `<!doctype html><html lang="id"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Quiver — ${title}</title><link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -175,21 +198,25 @@ const LOGIN_PAGE = (err, { register = false, accounts = false, username = '' } =
     </div>
     <button type="submit">Masuk</button>
   </form>`;
+  // Telegram deep-link login is the primary path for users: one tap, no password. The
+  // username/password and server-token forms stay under disclosures for the superadmin.
+  const tgBlock = `<button type="button" id="tglogin" class="tg">${TG_GLYPH}Masuk dengan Telegram</button>
+  <p id="tgstatus" class="tgstatus" role="status"></p>`;
   return `${authHead('masuk')}
 <body>
 <main class="card">
   <div class="brand">
     ${LOGIN_MARK}
-    <div><h1>Masuk</h1><p>${accounts ? 'Masuk ke akun Quiver Anda.' : 'Dasbor ini bisa memindahkan dana. Masukkan token akses untuk melanjutkan.'}</p></div>
+    <div><h1>Masuk</h1><p>Masuk dengan Telegram — tanpa kata sandi. Tekan tombol, buka bot, lalu tekan Start.</p></div>
   </div>
   ${errBox(msg)}
-  ${accounts ? `${accountForm}
-  ${register ? '<p class="switch">Belum punya akun? <a href="/register">Daftar</a></p>' : ''}
+  ${tgBlock}
+  ${accounts ? `<details class="alt"${err === 'account' ? ' open' : ''}><summary>Masuk dengan nama pengguna</summary>${accountForm}</details>
   <details class="alt"${err === 'token' ? ' open' : ''}><summary>Masuk dengan token akses server</summary>${tokenForm(err === 'token')}</details>`
-    : `${tokenForm(true)}
+    : `<details class="alt"${err === 'token' ? ' open' : ''}><summary>Masuk dengan token akses server</summary>${tokenForm(err === 'token')}</details>
   ${register ? '<p class="switch">Belum ada akun. <a href="/register">Buat akun superadmin</a></p>' : ''}`}
   <p class="foot">${LOCK_ICON}Sesi tersimpan 30 hari di peramban ini.</p>
-</main>${AUTH_JS}</body></html>`;
+</main>${AUTH_JS}${TG_LOGIN_JS}</body></html>`;
 };
 
 // Sign-up. `first` = no account exists yet: this one becomes the superadmin, and when the server
@@ -319,7 +346,7 @@ function checkInitData(initData, botToken, { maxAgeSec = 86400, now = Date.now()
 // `tenant` = { userId } for a regular account's server, null for the superadmin's (the original one).
 // `tenantControl` starts/stops account engines (index.js).
 function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, nets = null, chainControl = null, allChains = null,
-  authStore = store, tenant = null, tenantControl = null, restart = null }) {
+  authStore = store, tenant = null, tenantControl = null, restart = null, loginBroker = null }) {
   chain = ensureChain(chain || engine?.chain);
   const pub = path.join(__dirname, '..', 'public');
   const { QUOTES } = chain;
@@ -3099,6 +3126,30 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // The Telegram mini app exchanges initData for a ticket here — before the gate, because
     // at that point there is no session at all.
     if (key === 'POST /api/tg/auth') return tgAuth(req, res);
+
+    // Telegram deep-link login — public, before the gate (the whole point is to GET a session).
+    // start: hand the dashboard a one-time code + the t.me link to open; poll: the dashboard
+    // redeems its browser-only secret for a session once the user tapped Start in the bot.
+    if (key === 'POST /api/tg/login/start') {
+      const ip = clientIp(req);
+      if (loginBlocked(ip)) return json(res, 429, { error: 'terlalu banyak percobaan — tunggu beberapa menit' });
+      if (!loginBroker) return json(res, 200, { error: 'Login Telegram tidak tersedia di server ini.' });
+      const r = loginBroker.request();
+      if (r.error) return json(res, 200, { error: r.error });
+      return json(res, 200, { code: r.code, url: r.url, poll: r.poll, ttlMs: r.ttlMs });
+    }
+    if (key === 'GET /api/tg/login/poll') {
+      if (!loginBroker) return json(res, 200, { error: 'Login Telegram tidak tersedia di server ini.' });
+      const r = loginBroker.claim(url.searchParams.get('poll') || '');
+      if (r.pending) return json(res, 200, { pending: true });
+      if (r.error) return json(res, 200, { error: r.error });
+      const u = auth.userById(r.userId);
+      if (!u || u.status !== 'active') return json(res, 200, { error: 'Akun tidak aktif.' });
+      loginHits.delete(clientIp(req));
+      audit({ user: u, socket: req.socket, headers: req.headers }, 'login (telegram)', { username: u.username });
+      res.__setCookie = userCookie(req, auth.createSession(u.id));
+      return json(res, 200, { ok: true, created: !!r.created, user: auth.publicUser(u) });
+    }
 
     // ---- token gate ----
     const TOKEN = tokenNow();

@@ -111,6 +111,17 @@ const msg = (chatId, text) => ({ message: { chat: { id: Number(chatId), type: 'p
     assert.equal((await a.bot.restart()).ok, true, 'restart is a no-op for an account');
   });
 
+  await t('the hub handles /start login_<code> by authorizing it against the Telegram user', async () => {
+    const { hub } = world();
+    const calls = [];
+    hub.loginBroker = { authorize: (code, from) => { calls.push([code, from.id, from.username]); return { ok: true, name: 'alice', created: true }; } };
+    const seen = [];
+    hub.send = async (chatId, text) => { seen.push(text); return {}; };
+    await hub.onMessage({ chat: { id: 55, type: 'private' }, from: { id: 55, username: 'Alice' }, text: '/start login_a1b2c3d4' });
+    assert.deepEqual(calls, [['a1b2c3d4', 55, 'Alice']], 'broker.authorize called with the code and Telegram user');
+    assert.match(seen.join(''), /Masuk|Signed in/i, 'a confirmation is sent back');
+  });
+
   await t('an account bot hides copy screens behind a "coming soon" notice', async () => {
     const { mkTenant } = world();
     const { bot } = mkTenant(7);
