@@ -178,6 +178,9 @@ const ADMIN_ONLY_ROUTES = new Set([
   'POST /api/settings/gmgn', 'POST /api/settings/gmgn/test',
   'POST /api/settings/chains', 'POST /api/settings/loop',
   'POST /api/settings/token/rotate',
+  // An account's chat is linked by the Telegram sign-in itself; bot and chat settings are the
+  // operator's.
+  'POST /api/settings/telegram', 'POST /api/settings/telegram/pair',
 ]);
 // Fields of GET /api/settings that describe shared infrastructure; hidden from regular accounts.
 const ADMIN_ONLY_SETTINGS = ['rpc', 'rpcCache', 'gmgn', 'aggregators', 'authFromEnv', 'loop'];

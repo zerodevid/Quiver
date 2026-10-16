@@ -305,14 +305,14 @@ function view(dir = tmp()) {
     assert.deepEqual(out.chains.bsc.mode, { dry_run: true, paused: true });
   });
 
-  await t('an account cannot claim a Telegram chat by typing its id, only drop its own', async () => {
+  await t('an account cannot change its Telegram chats from the dashboard (sign-in links them)', async () => {
     const tg = { hub: {}, token: () => 'hub-token', chats: () => [] };
     const s = await serveTenant(alice.id, { telegram: tg });
     try {
       const hdr = { cookie: cookie(alice), 'content-type': 'application/json' };
       const r = await fetch(`${s.base}/api/settings/telegram`, { method: 'POST', headers: hdr, body: '{"chat_ids":["555"]}' }).then((x) => x.json());
-      assert.match(r.error, /kode sambung/);
-      assert.deepEqual(JSON.parse(fs.readFileSync(s.cfgPath, 'utf8')).telegram.chat_ids, []);
+      assert.match(r.error, /superadmin/);
+      assert.deepEqual(JSON.parse(fs.readFileSync(s.cfgPath, 'utf8')).telegram?.chat_ids || [], []);
     } finally { await s.close(); }
   });
 

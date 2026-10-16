@@ -123,15 +123,66 @@ const msg = (chatId, text) => ({ message: { chat: { id: Number(chatId), type: 'p
     assert.match(seen.join(''), /0x1111/, 'the new wallet address is shown');
   });
 
-  await t('/start login_<code> onboards and authorizes the dashboard login', async () => {
+  // A broker double: describe() binds the code to the first Telegram user, authorize()/deny() need it.
+  const fakeBroker = (calls) => {
+    const owner = new Map();
+    return {
+      describe: (code, from) => { calls.push(['describe', code, from.id]); if (owner.has(code) && owner.get(code) !== from.id) return { error: 'milik akun lain' }; owner.set(code, from.id); return { device: 'Chrome · macOS', ip: '203.0.113.7', match: '47' }; },
+      authorize: (code, from, chatId) => { calls.push(['authorize', code, from.id, chatId]); return owner.get(code) === from.id ? { ok: true, name: 'alice', created: false, address: '0x' + '2'.repeat(40), user: { role: 'user' } } : { error: 'milik akun lain' }; },
+      deny: (code, from) => { calls.push(['deny', code, from.id]); return { ok: true }; },
+    };
+  };
+  const cb = (chatId, fromId, data) => ({ callback_query: { id: 'q1', data, from: { id: fromId }, message: { message_id: 9, chat: { id: chatId, type: 'private' } } } });
+
+  await t('/start login_<code> asks for confirmation first, and only "Yes, it\'s me" signs the dashboard in', async () => {
     const { hub } = world();
     const calls = [];
-    hub.loginBroker = { authorize: (code, from, chatId) => { calls.push([code, from.id, chatId]); return { ok: true, name: 'alice', created: false, address: '0x' + '2'.repeat(40), user: { role: 'user' } }; } };
-    const seen = [];
-    hub.send = async (chatId, text) => { seen.push(text); return {}; };
-    await hub.onMessage({ chat: { id: 55, type: 'private' }, from: { id: 55, username: 'Alice' }, text: '/start login_a1b2c3d4' });
-    assert.deepEqual(calls, [['a1b2c3d4', 55, '55']], 'broker.authorize called with the code, user and chat');
-    assert.match(seen.join(''), /dasbor|dashboard/i, 'tells them the dashboard is signed in');
+    hub.loginBroker = fakeBroker(calls);
+    const sent = [], edited = [];
+    hub.send = async (chatId, text, keyboard) => { sent.push({ text, keyboard }); return {}; };
+    hub.edit = async (chatId, msgId, text) => { edited.push(text); return {}; };
+    await hub.handle({ message: { chat: { id: 55, type: 'private' }, from: { id: 55, username: 'Alice' }, text: '/start login_a1b2c3d4' } });
+    assert.deepEqual(calls, [['describe', 'a1b2c3d4', 55]], 'nothing is authorized by the link alone');
+    assert.match(sent[0].text, /Chrome · macOS/); assert.match(sent[0].text, /47/);
+    const datas = sent[0].keyboard.inline_keyboard.flat().map((b) => b.callback_data);
+    assert.deepEqual(datas, ['lgok:a1b2c3d4', 'lgno:a1b2c3d4']);
+    await hub.handle(cb(55, 55, 'lgok:a1b2c3d4'));
+    assert.deepEqual(calls.at(-1), ['authorize', 'a1b2c3d4', 55, '55']);
+    assert.match(edited.join(''), /disetujui|approved/i);
+    assert.match(sent.map((x) => x.text).join(''), /dasbor|dashboard/i, 'the welcome says the dashboard is signed in');
+  });
+
+  await t('"Not me" denies the login, and a forwarded code cannot be confirmed by someone else', async () => {
+    const { hub } = world();
+    const calls = [];
+    hub.loginBroker = fakeBroker(calls);
+    const edited = [];
+    hub.send = async () => ({});
+    hub.edit = async (chatId, msgId, text) => { edited.push(text); return {}; };
+    await hub.handle({ message: { chat: { id: 55, type: 'private' }, from: { id: 55 }, text: '/start login_a1b2c3d4' } });
+    await hub.handle(cb(55, 55, 'lgno:a1b2c3d4'));
+    assert.deepEqual(calls.at(-1), ['deny', 'a1b2c3d4', 55]);
+    assert.match(edited.at(-1), /ditolak|denied/i);
+    await hub.handle({ message: { chat: { id: 56, type: 'private' }, from: { id: 56 }, text: '/start login_ffff0000' } });
+    await hub.handle(cb(77, 77, 'lgok:ffff0000'));
+    assert.match(edited.at(-1), /akun lain/, 'another Telegram user pressing Yes is refused');
+  });
+
+  await t('a login from a chat already linked to an account is handled by the hub, then shows the account menu', async () => {
+    const w = world();
+    const a = w.mkTenant(2);
+    await w.hub.handle(msg(42, `/start ${a.bot.newPairCode()}`));
+    const calls = [];
+    w.hub.loginBroker = fakeBroker(calls);
+    w.hub.send = async () => ({});
+    w.hub.edit = async () => ({});
+    await w.hub.handle({ message: { chat: { id: 42, type: 'private' }, from: { id: 42, username: 'Alice' }, text: '/start login_a1b2c3d4' } });
+    await w.hub.handle(cb(42, 42, 'lgok:a1b2c3d4'));
+    assert.deepEqual(calls.map((c) => c[0]), ['describe', 'authorize'], 'the account bot does not swallow it');
+    assert.deepEqual(w.handled.at(-1), ['u2', '42'], 'then the account menu is shown');
+    // A plain /start from that chat still belongs to the account.
+    await w.hub.handle({ message: { chat: { id: 42, type: 'private' }, from: { id: 42 }, text: '/start' } });
+    assert.equal(calls.length, 2);
   });
 
   await t('an account bot hides copy screens behind a "coming soon" notice', async () => {

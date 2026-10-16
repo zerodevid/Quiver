@@ -100,6 +100,11 @@ button.tg{width:100%;height:2.75rem;display:flex;align-items:center;justify-cont
 button.tg:hover{filter:brightness(1.06)}button.tg:active{transform:translateY(1px)}button.tg:disabled{opacity:.6;cursor:default}
 .tgstatus{margin:.625rem 0 0;min-height:1.1em;color:var(--muted);font-size:.8125rem;text-align:center}
 .tgstatus.bad{color:var(--danger)}
+.tgopen{display:block;margin:.375rem 0 0;text-align:center;font-size:.875rem;font-weight:550;color:var(--accent,#2a9df4)}
+.tgopen[hidden]{display:none}
+.tgmatch{margin:.875rem 0 0;text-align:center;font-size:.8125rem;color:var(--muted)}
+.tgmatch b{display:block;margin-top:.125rem;font-size:1.75rem;font-weight:650;letter-spacing:.08em;color:var(--fg)}
+.tgmatch[hidden]{display:none}
 .foot{margin:1.25rem 0 0;padding-top:1rem;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:.5rem;color:var(--muted);font-size:.75rem;text-align:center}
 .foot svg{width:.875rem;height:.875rem;flex:none}
 `;
@@ -145,22 +150,29 @@ if(p1){p1.addEventListener('input',chk);chk()}if(p2)p2.addEventListener('input',
 const THEME_JS = `<script>try{var t=localStorage.getItem('lpcopy-theme');if(t==='dark'||(!t&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark')}catch(e){}</script>`;
 // Telegram paper-plane glyph for the login button.
 const TG_GLYPH = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true" style="flex:0 0 auto"><path d="M21.9 4.3 18.6 20c-.2 1-.9 1.3-1.8.8l-5-3.7-2.4 2.3c-.3.3-.5.5-1 .5l.3-5 9.2-8.3c.4-.4-.1-.6-.6-.2L6 13.5l-4.9-1.5c-1-.3-1-1 .2-1.5L20.6 2.8c.9-.3 1.6.2 1.3 1.5Z"/></svg>';
-// The login page opens the bot and polls for the session. Inline, like AUTH_JS.
+// Telegram login button. The Telegram tab is opened synchronously in the click (a window opened
+// after the await is popup-blocked, mostly on phones) and pointed at the bot once the code is
+// back. This page never navigates away: it keeps polling for the session, and an "Open Telegram"
+// link stays visible in case the tab was blocked or closed.
 const TG_LOGIN_JS = `<script>
-(function(){var b=document.getElementById('tglogin'),s=document.getElementById('tgstatus');if(!b)return;
+(function(){var b=document.getElementById('tglogin'),s=document.getElementById('tgstatus'),a=document.getElementById('tgopen'),m=document.getElementById('tgmatch');if(!b)return;
+function stop(){b.disabled=false;a.hidden=true;m.hidden=true}
 function msg(t,e){s.textContent=t;s.className='tgstatus'+(e?' bad':'')}
-b.addEventListener('click',async function(){b.disabled=true;msg('Membuka Telegram…');
+b.addEventListener('click',async function(){b.disabled=true;a.hidden=true;m.hidden=true;msg('Membuka Telegram…');
+var w=null;try{w=window.open('','_blank')}catch(e){}
 try{var r=await fetch('/api/tg/login/start',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(x=>x.json());
-if(r.error){b.disabled=false;return msg(r.error,1)}
-var w=window.open(r.url,'_blank');if(!w)location.href=r.url;
-msg('Tekan Start di bot Telegram, lalu kembali ke sini…');
-var until=Date.now()+(r.ttlMs||300000);
-(function tick(){if(Date.now()>until){b.disabled=false;return msg('Kode kedaluwarsa. Coba lagi.',1)}
+if(r.error){if(w)w.close();b.disabled=false;return msg(r.error,1)}
+if(w&&!w.closed){try{w.location.href=r.url}catch(e){w=null}}
+a.href=r.url;a.hidden=false;
+msg(w?'Tekan Start di bot Telegram, cek kodenya sama, lalu tekan “Ya, ini saya”.':'Buka Telegram, tekan Start, cek kodenya sama, lalu tekan “Ya, ini saya”.');
+m.querySelector('b').textContent=r.match;m.hidden=false;
+var until=Date.now()+(r.ttlMs||120000);
+(function tick(){if(Date.now()>until){stop();return msg('Kode kedaluwarsa. Coba lagi.',1)}
 fetch('/api/tg/login/poll?poll='+encodeURIComponent(r.poll)).then(x=>x.json()).then(function(p){
 if(p.ok){msg('Berhasil — mengarahkan…');return location.href='/'}
-if(p.error&&!p.pending){b.disabled=false;return msg(p.error,1)}
+if(p.error&&!p.pending){stop();return msg(p.error,1)}
 setTimeout(tick,2000)}).catch(function(){setTimeout(tick,2500)})})();
-}catch(e){b.disabled=false;msg('Gagal memulai login. Coba lagi.',1)}})})();
+}catch(e){if(w)w.close();b.disabled=false;msg('Gagal memulai login. Coba lagi.',1)}})})();
 </script>`;
 const authHead = (title) => `<!doctype html><html lang="id"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -201,7 +213,9 @@ const LOGIN_PAGE = (err, { register = false, accounts = false, username = '' } =
   // Telegram deep-link login is the primary path for users: one tap, no password. The
   // username/password and server-token forms stay under disclosures for the superadmin.
   const tgBlock = `<button type="button" id="tglogin" class="tg">${TG_GLYPH}Masuk dengan Telegram</button>
-  <p id="tgstatus" class="tgstatus" role="status"></p>`;
+  <p id="tgmatch" class="tgmatch" hidden>Kode di Telegram: <b></b></p>
+  <p id="tgstatus" class="tgstatus" role="status"></p>
+  <a id="tgopen" class="tgopen" href="#" target="_blank" rel="noopener" hidden>Buka Telegram</a>`;
   return `${authHead('masuk')}
 <body>
 <main class="card">
@@ -3134,9 +3148,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const ip = clientIp(req);
       if (loginBlocked(ip)) return json(res, 429, { error: 'terlalu banyak percobaan — tunggu beberapa menit' });
       if (!loginBroker) return json(res, 200, { error: 'Login Telegram tidak tersedia di server ini.' });
-      const r = loginBroker.request();
+      const r = loginBroker.request({ ua: req.headers['user-agent'], ip });
       if (r.error) return json(res, 200, { error: r.error });
-      return json(res, 200, { code: r.code, url: r.url, poll: r.poll, ttlMs: r.ttlMs });
+      return json(res, 200, { url: r.url, poll: r.poll, match: r.match, ttlMs: r.ttlMs });
     }
     if (key === 'GET /api/tg/login/poll') {
       if (!loginBroker) return json(res, 200, { error: 'Login Telegram tidak tersedia di server ini.' });

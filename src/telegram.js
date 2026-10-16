@@ -657,6 +657,10 @@ const gasSpeedOf = (m) => GAS_SPEEDS.find(([, , v]) => Math.abs(Number(m) - v) <
 
 // Connect command: /start <code>. Also used by links in t.me.
 const PAIR_RE = /^\/(?:start|mulai)(?:@\S+)?\s+(\S+)/i;
+// Dashboard sign-in deep link: t.me/<bot>?start=login_<code> arrives as "/start login_<code>".
+const LOGIN_START_RE = /^\/(?:start|mulai)(?:@\S+)?\s+login_([0-9a-f]{8,})\s*$/i;
+// The confirmation buttons under that login request: "Yes, it's me" / "Not me".
+const LOGIN_CB_RE = /^lg(ok|no):([0-9a-f]{8,})$/;
 
 class Telegram {
   // Multi-user: the superadmin's instance is the "hub" — the only one polling the bot. An account's
@@ -1029,8 +1033,12 @@ class Telegram {
     const chat = u.message?.chat || u.callback_query?.message?.chat;
     if (!chat) return;
     const chatId = String(chat.id);
-    // Hub: a chat linked to an account is served by that account's instance.
-    if (this.routeChat && !this.chats().includes(chatId)) {
+    // Hub: a chat linked to an account is served by that account's instance — except a dashboard
+    // login (/start login_<code>), which only the hub's broker can authorize. Routed to the
+    // account, a returning user would just see the start menu while the dashboard kept waiting.
+    const isLogin = !!this.loginBroker && (LOGIN_START_RE.test(String(u.message?.text || '').trim())
+      || LOGIN_CB_RE.test(String(u.callback_query?.data || '')));
+    if (this.routeChat && !isLogin && !this.chats().includes(chatId)) {
       const owner = this.routeChat(chatId);
       if (owner) return owner.handle(u);
     }
@@ -1038,6 +1046,7 @@ class Telegram {
   }
 
   async handleLocalized(u) {
+    if (u.callback_query && this.loginBroker && LOGIN_CB_RE.test(String(u.callback_query.data || ''))) return this.onLoginConfirm(u.callback_query);
     if (u.callback_query) return this.onCallback(u.callback_query);
     if (u.message) return this.onMessage(u.message);
   }
@@ -1049,14 +1058,25 @@ class Telegram {
     // a wallet and welcomes the user — no web form. `/start login_<code>` does the same and also
     // signs the dashboard in. Only the hub bot carries the broker; a connected chat skips this and
     // goes to its account's menu below. Pairing codes (/start <CODE>) keep working further down.
-    if (this.loginBroker && msg.from && !this.chats().includes(chatId)) {
+    // A login code is honoured from any chat, also one already connected (a returning user, or
+    // the operator's own chat); a plain /start only onboards a chat we don't know yet.
+    if (this.loginBroker && msg.from) {
       const m = text.match(/^\/(?:start|mulai)(?:@\S+)?(?:\s+(\S+))?\s*$/i);
       const payload = m ? (m[1] || '') : null;
-      const login = payload && /^login_([0-9a-f]{8,})$/i.exec(payload);
-      if (m && (!payload || login)) {
-        const r = login ? this.loginBroker.authorize(login[1], msg.from, chatId) : this.loginBroker.onboard(msg.from, chatId);
+      const login = LOGIN_START_RE.exec(text);
+      if (login) {
+        // Never sign a browser in on the link alone: show which browser asked and wait for the
+        // user's own "Yes, it's me" (onLoginConfirm).
+        const d = this.loginBroker.describe(login[1], msg.from);
+        if (d.error) return this.send(chatId, `❌ ${esc(note(d.error))}`);
+        return this.send(chatId, tr("🔐 <b>Masuk ke dasbor Quiver?</b>\n\nPerangkat: <b>{0}</b>\nIP: <code>{1}</code>\nKode: <b>{2}</b>\n\nPastikan kodenya sama dengan yang tampil di halaman login. Kalau kamu tidak sedang masuk, tekan <b>Bukan saya</b>.",
+          [esc(d.device), esc(d.ip || '?'), esc(d.match)]),
+          kb([[btn(tr("✅ Ya, ini saya"), `lgok:${login[1]}`), btn(tr("❌ Bukan saya"), `lgno:${login[1]}`)]]));
+      }
+      if (m && !payload && !this.chats().includes(chatId)) {
+        const r = this.loginBroker.onboard(msg.from, chatId);
         if (r.error) return this.send(chatId, `❌ ${esc(note(r.error))}`);
-        await this.sendWelcome(chatId, r, !!login);
+        await this.sendWelcome(chatId, r, false);
         // The chat is linked now; show the account's own menu.
         const acct = this.routeChat ? this.routeChat(chatId) : null;
         if (acct) return acct.screen(chatId, null, 'h');
@@ -1158,6 +1178,26 @@ class Telegram {
       default:
         return this.send(chatId, tr("Perintah tidak dikenal. /bantuan untuk daftarnya."), kb([[BACK_HOME]]));
     }
+  }
+
+  // The answer to a dashboard login confirmation (see onMessage). Only the Telegram user the code
+  // was opened by can confirm it (the broker checks), from whichever chat it was sent to.
+  async onLoginConfirm(q) {
+    const chatId = String(q.message.chat.id);
+    const msgId = q.message.message_id;
+    const [, act, code] = LOGIN_CB_RE.exec(q.data);
+    await this.tg('answerCallbackQuery', { callback_query_id: q.id }).catch(() => {});
+    if (act === 'no') {
+      const r = this.loginBroker.deny(code, q.from);
+      return this.edit(chatId, msgId, r.error ? `❌ ${esc(note(r.error))}` : tr("❌ <b>Login ditolak.</b> Browser yang meminta tidak akan masuk. Kalau kamu tidak memintanya, abaikan tautan login dari orang lain."), kb([])).catch(() => {});
+    }
+    const r = this.loginBroker.authorize(code, q.from, chatId);
+    if (r.error) return this.edit(chatId, msgId, `❌ ${esc(note(r.error))}`, kb([])).catch(() => {});
+    await this.edit(chatId, msgId, tr("✅ <b>Login disetujui.</b>"), kb([])).catch(() => {});
+    await this.sendWelcome(chatId, r, true);
+    // The chat is linked now; show the account's own menu.
+    const acct = this.routeChat ? this.routeChat(chatId) : null;
+    if (acct) return acct.screen(chatId, null, 'h');
   }
 
   async onCallback(q) {

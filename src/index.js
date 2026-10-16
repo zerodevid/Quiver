@@ -21,6 +21,7 @@ const { applyPendingRestore } = require('./backup');
 const billing = require('./billing');
 const { NETWORKS, isSolana, normAddr, addrHint } = require('./networks');
 const { Auth } = require('./auth');
+const { createLoginBroker } = require('./tg-login');
 const { userDir, loadUserCfg, userCfgView } = require('./tenants');
 // The Solana engine is loaded only when a Solana chain is enabled: its SDKs (Meteora/Orca/
 // Raydium) are heavy and an EVM-only instance does not need them.
@@ -455,65 +456,25 @@ async function main() {
     },
   };
 
-  // Telegram deep-link login. The dashboard asks for a code, opens t.me/<bot>?start=login_<code>,
-  // the user taps Start, the hub bot authorizes the code against their Telegram identity, and the
-  // dashboard polls with a browser-only secret to collect the session. Two tokens on purpose: the
-  // `code` travels through Telegram (could be seen) and only authorizes; the `poll` secret never
-  // leaves the browser and is what redeems the session.
-  const loginBroker = {
-    pending: new Map(),                 // code -> { poll, exp, status, userId, name, created }
-    TTL: 5 * 60_000,
-    botUsername: () => telegram.me?.username || null,
-    sweep() { const now = Date.now(); for (const [k, v] of this.pending) if (v.exp < now) this.pending.delete(k); },
-    request() {
-      this.sweep();
-      const username = this.botUsername();
-      if (!username) return { error: 'Login Telegram belum siap: bot belum tersambung.' };
-      const code = crypto.randomBytes(8).toString('hex');
-      const poll = crypto.randomBytes(32).toString('hex');
-      this.pending.set(code, { poll, exp: Date.now() + this.TTL, status: 'pending' });
-      return { code, poll, url: `https://t.me/${username}?start=login_${code}`, ttlMs: this.TTL };
-    },
-    // Find-or-create the account for a Telegram user, start its engine, link the chat and make
-    // sure it has a wallet. The single onboarding path shared by a plain /start on the bot and a
-    // /start login_<code> from the dashboard. `chatId` defaults to the user's own id (private chat).
-    onboard(from, chatId = null) {
-      let res;
-      try { res = auth.loginOrCreateTelegram({ id: from.id, username: from.username || null }); }
-      catch (e) { return { error: e.message }; }
-      const { user, created } = res;
-      if (user.status !== 'active') return { error: 'Akun ini dinonaktifkan.' };
-      let address = null;
-      if (user.role !== 'superadmin') {
-        if (created) tenantControl.start(user.id);
-        tenantControl.linkChat(user.id, chatId ?? from.id);
-        address = tenantControl.ensureWallet(user.id);
-      }
-      return { ok: true, user, created, address, name: user.tg_username || user.username };
-    },
-    // Called by the hub bot when it receives /start login_<code>. Onboards, then marks the
-    // pending web login so the dashboard poll can collect the session.
-    authorize(code, from, chatId = null) {
-      this.sweep();
-      const p = this.pending.get(String(code));
-      if (!p) return { error: 'Kode login tidak dikenal atau sudah kedaluwarsa.' };
-      if (p.status !== 'pending') return { error: 'Kode login sudah dipakai.' };
-      const r = this.onboard(from, chatId);
-      if (r.error) return r;
-      Object.assign(p, { status: 'ok', userId: r.user.id, name: r.name, created: r.created });
-      return { ok: true, name: r.name, created: r.created, address: r.address };
-    },
-    // Called by the dashboard poll. Consumes the code once the session is handed out.
-    claim(poll) {
-      this.sweep();
-      for (const [code, p] of this.pending) {
-        if (p.poll !== poll) continue;
-        if (p.status === 'ok') { this.pending.delete(code); return { userId: p.userId, name: p.name, created: p.created }; }
-        return { pending: true };
-      }
-      return { error: 'expired' };
-    },
+  // Find-or-create the account for a Telegram user, start its engine, link the chat and make sure
+  // it has a wallet. The single onboarding path shared by a plain /start on the bot and a confirmed
+  // dashboard login. `chatId` defaults to the user's own id (private chat).
+  const onboardTelegram = (from, chatId = null) => {
+    let res;
+    try { res = auth.loginOrCreateTelegram({ id: from.id, username: from.username || null }); }
+    catch (e) { return { error: e.message }; }
+    const { user, created } = res;
+    if (user.status !== 'active') return { error: 'Akun ini dinonaktifkan.' };
+    let address = null;
+    if (user.role !== 'superadmin') {
+      if (created) tenantControl.start(user.id);
+      tenantControl.linkChat(user.id, chatId ?? from.id);
+      address = tenantControl.ensureWallet(user.id);
+    }
+    return { ok: true, user, created, address, name: user.tg_username || user.username };
   };
+  // Telegram deep-link login (src/tg-login.js): codes, device confirmation, browser-only poll.
+  const loginBroker = createLoginBroker({ botUsername: () => telegram.me?.username || null, onboard: onboardTelegram });
   // The hub bot handles /start login_<code> (see telegram.js); late-bound because the bot is
   // constructed before the broker.
   telegram.loginBroker = loginBroker;
