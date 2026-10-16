@@ -41,7 +41,7 @@ const SETTINGS_NAV = [
   ['loop', 'Mesin', 'Pemindaian dan harga ETH', Settings2],
   ['display', 'Tampilan', 'Sensor nilai dan mata uang kedua', Coins],
   ['security', 'Keamanan', 'Akses masuk dasbor', ShieldCheck],
-  ['aggregators', 'Agregator swap', 'Kyber, OKX, LI.FI, 0x, 1inch, OpenOcean', Shuffle],
+  ['aggregators', 'Agregator swap', 'Kyber, OKX, LI.FI, 0x, 1inch, OpenOcean, Uniswap', Shuffle],
   ['backup', 'Cadangan', 'Unduh & pulihkan pengaturan, data, wallet', DatabaseBackup],
 ];
 
@@ -1056,6 +1056,7 @@ const AGG_INFO = {
   zerox: ['Butuh API key dari dashboard 0x. Mesin swap yang dipakai Coinbase Wallet dan MetaMask.', 'https://dashboard.0x.org'],
   oneinch: ['Butuh API key dari portal 1inch. API-nya tidak memberi minimum terima, jadi hasil simulasi yang dijadikan patokan.', 'https://business.1inch.com/portal'],
   openocean: ['Butuh API key pro — API publiknya memblokir bot lewat Cloudflare.', 'https://openocean.finance'],
+  uniswap: ['Tanpa key, langsung on-chain: harga dari kontrak Quoter Uniswap v3/v4, swap lewat UniversalRouter ke satu pool terbaik. Hanya pool pasangan itu sendiri (tanpa multi-hop).', 'https://app.uniswap.org'],
 };
 const AGG_FIELD_LABEL = { api_key: 'API key', secret_key: 'Secret key', passphrase: 'Passphrase', project_id: 'Project ID (opsional)' };
 
