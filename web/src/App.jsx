@@ -70,16 +70,33 @@ const NAV = [
 ];
 // #scout used to be its own page; its content is now inside Wallet. Old links
 // (bookmarks, Telegram messages) still land in the right place.
-// Multi-user: the superadmin also gets the account console under System.
-const ADMIN_ITEM = ['admin', 'Akun', UserCog, Admin];
+// The superadmin on a multi-user server is the platform operator, not an LP trader: its
+// dashboard is the admin console (accounts, fees, invites, audit) plus the shared server
+// settings and logs — NOT the LP trading pages that users see.
+const ADMIN_NAV = [
+  ['Admin', [
+    ['admin', 'Akun & Fee', UserCog, Admin],
+  ]],
+  ['Sistem', [
+    ['settings', 'Pengaturan', SettingsIcon, Settings],
+    ['logs', 'Log', ScrollText, Logs],
+  ]],
+];
 // Regular (open-LP) accounts don't copy: the Copy group collapses to a single disabled
 // "coming soon" entry, matching the engine, which never runs the copy tick for them.
 const COPY_SOON_GROUP = ['Copy', [['copy-soon', 'Copy', Users, CopySoon]]];
 const navFor = (me) => {
   if (isRegular(me)) return NAV.map(([g, items]) => (g === 'Copy' ? COPY_SOON_GROUP : [g, items]));
-  if (isSuperadmin(me) && me.multiUser) return NAV.map(([g, items]) => [g, g === 'Sistem' ? [...items, ADMIN_ITEM] : items]);
+  // A single-user deployment signed in with the server token (no accounts) keeps the full LP
+  // dashboard — that is the legacy bot. Only a real superadmin account gets the operator console.
+  if (isSuperadmin(me) && me.multiUser && !me.legacy) return ADMIN_NAV;
   return NAV;
 };
+// The pages a role may open directly; anything else is bounced to its home. Detail pages
+// (opened from a link) are always allowed.
+const DETAIL_PAGES = new Set(['token', 'pool', 'scout']);
+const homePageFor = (me) => (isSuperadmin(me) && me.multiUser && !me.legacy ? 'admin' : 'summary');
+const allowedPages = (me) => new Set(navFor(me).flatMap(([, items]) => items.map(([id]) => id)));
 // Placeholder for the Copy section on open-LP accounts — the feature is built but not yet
 // offered to regular users (the engine does not copy for them).
 function CopySoon() {
@@ -427,7 +444,13 @@ export default function App() {
   }, [w?.value, w?.pnl, w?.netPnl, privacy[0]]);
   // Open-LP accounts have no copy pages: a bookmarked #targets/#rules lands on "coming soon".
   const COPY_PAGES = new Set(['targets', 'rules', 'copy-soon']);
-  const Page = (isRegular(me) && COPY_PAGES.has(page)) ? CopySoon : (PAGES[page] || Overview);
+  // Keep each role inside its own pages. A page outside the role's nav (e.g. a superadmin
+  // opening #positions, or a stale bookmark) is bounced to that role's home — and the hash is
+  // rewritten so the sidebar highlight and the URL agree.
+  const offScope = me && !allowedPages(me).has(page) && !DETAIL_PAGES.has(page) && !(isRegular(me) && COPY_PAGES.has(page));
+  useEffect(() => { if (offScope) window.location.hash = homePageFor(me); }, [offScope, me, page]);
+  const effPage = offScope ? homePageFor(me) : page;
+  const Page = (isRegular(me) && COPY_PAGES.has(effPage)) ? CopySoon : (PAGES[effPage] || Overview);
   useTargetAlerts();
 
   return (
