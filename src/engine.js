@@ -322,6 +322,11 @@ class Engine {
   // default on, so the superadmin's legacy config keeps copying. See runNet (index.js), which
   // then never starts the block-scanning tick — the heaviest RPC load — for these accounts.
   copyEnabled() { return this.cfg.copy !== false; }
+  // Open-LP (tenant) accounts: they trade their own deposited funds and have no simulation mode —
+  // they are always LIVE (tenants.js forces mode.dry_run false and copy off for every tenant).
+  // Only the superadmin's legacy copy engine offers simulation. Guards that require switching to
+  // simulation first (e.g. changing the wallet) must not apply here. See refuseIfLive in settings.js.
+  openLp() { return !this.copyEnabled(); }
   // An open-LP account pays the platform fee; the superadmin's copy engine does not, and
   // nothing is charged in simulation. See chargeFee and src/billing.js.
   billable() { return !this.copyEnabled() && !this.dryRun(); }

@@ -196,7 +196,12 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
     // (LIVE mode is already required to be off, but an entry started before the mode was switched off still
     // runs to completion.)
     if ((engine.activeEntries || 0) > 0 || engine.exiting?.size > 0 || engine.selling?.size > 0 || engine.compound?.running) return { error: 'Bot sedang memproses transaksi (masuk/keluar/jual sisa) — tunggu sampai selesai, lalu coba lagi.' };
-    return !engine.dryRun() ? { error: 'Matikan mode LIVE dulu sebelum mengganti wallet.' } : null;
+    // Open-LP accounts have no simulation mode to fall back to (they are always LIVE), so the
+    // "switch to simulation first" guard would lock them out of ever changing their wallet. The
+    // in-flight check above is the only protection they need. Legacy copy accounts still must
+    // turn LIVE off first.
+    if (!engine.openLp?.() && !engine.dryRun()) return { error: 'Matikan mode LIVE dulu sebelum mengganti wallet.' };
+    return null;
   };
 
   // The dashboard token RETYPED, not a session cookie: an HttpOnly cookie cannot be

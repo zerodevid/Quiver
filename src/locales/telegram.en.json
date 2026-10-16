@@ -180,6 +180,7 @@
   "Kembali ke mode simulasi": "Simulation mode enabled",
   "⚠️ <b>Menyalakan mode LIVE</b>\n\nMulai saat itu bot mengirim transaksi sungguhan memakai dana di wallet bot.\n\nKetik <code>LIVE</code> untuk mengonfirmasi.": "⚠️ <b>Enable live trading?</b>\n\nThe bot will submit real transactions using funds in its wallet.\n\nType <code>LIVE</code> to confirm.",
   "🔑 <b>Buat wallet baru?</b>\n\nKunci lama otomatis dicadangkan (tidak dihapus), lalu bot memakai alamat baru. Dana di alamat lama <b>tidak</b> ikut pindah.\n\nHanya bisa saat mode simulasi.": "🔑 <b>Create a new wallet?</b>\n\nThe current key will be backed up, and the bot will use a new address. Funds will remain in the previous wallet.\n\nAvailable only in simulation mode.",
+  "🔑 <b>Buat wallet baru?</b>\n\nKunci lama otomatis dicadangkan (tidak dihapus), lalu bot memakai alamat baru. Dana di alamat lama <b>tidak</b> ikut pindah.": "🔑 <b>Create a new wallet?</b>\n\nThe current key will be backed up, and the bot will use a new address. Funds will remain in the previous wallet.",
   "✅ Ya, buat baru": "✅ Create wallet",
   "✅ Wallet baru: <code>{0}</code>\nFrasa pemulihan disimpan di server (<code>{1}</code>) dan sengaja tidak dikirim lewat Telegram.": "✅ New wallet: <code>{0}</code>\nThe recovery phrase is stored on the server (<code>{1}</code>) and is not sent through Telegram.",
   "↩︎ Wallet": "↩︎ Wallet",

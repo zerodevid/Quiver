@@ -1387,7 +1387,9 @@ class Telegram {
           tr("⚠️ <b>Menyalakan mode LIVE</b>\n\nMulai saat itu bot mengirim transaksi sungguhan memakai dana di wallet bot.\n\nKetik <code>LIVE</code> untuk mengonfirmasi."));
       }
       case 'wb': return out(...(await this.walletScreen()));
-      case 'wbg': return out(tr("🔑 <b>Buat wallet baru?</b>\n\nKunci lama otomatis dicadangkan (tidak dihapus), lalu bot memakai alamat baru. Dana di alamat lama <b>tidak</b> ikut pindah.\n\nHanya bisa saat mode simulasi."),
+      case 'wbg': return out(this.hub
+        ? tr("🔑 <b>Buat wallet baru?</b>\n\nKunci lama otomatis dicadangkan (tidak dihapus), lalu bot memakai alamat baru. Dana di alamat lama <b>tidak</b> ikut pindah.")
+        : tr("🔑 <b>Buat wallet baru?</b>\n\nKunci lama otomatis dicadangkan (tidak dihapus), lalu bot memakai alamat baru. Dana di alamat lama <b>tidak</b> ikut pindah.\n\nHanya bisa saat mode simulasi."),
         kb([[btn(tr("✅ Ya, buat baru"), 'wbG')], [btn(tr("↩︎ Batal"), 'wb')]]));
       case 'wbG': {
         const r = await this.api('POST', '/api/settings/wallet/generate', { replace: true });
@@ -2711,7 +2713,8 @@ class Telegram {
       ].filter(Boolean)),
     ];
     return [L.join('\n'), kb([
-      [btn(st.mode.dry_run ? tr("🟢 Nyalakan LIVE") : tr("🧪 Kembali ke simulasi"), 'sl')],
+      // Open-LP (hub) accounts have no simulation mode — they are always LIVE, so no toggle.
+      this.hub ? null : [btn(st.mode.dry_run ? tr("🟢 Nyalakan LIVE") : tr("🧪 Kembali ke simulasi"), 'sl')],
       [btn(st.mode.paused ? tr("▶️ Lanjutkan") : tr("⏸ Jeda penyalinan"), 'sp')],
       this.hub ? [btn(tr("🔑 Wallet bot"), 'wb'), btn('⛽ Gas', st.wallet?.kind === 'solana' ? 'sf:gasSol' : 'sf:gas')] : [btn(tr("🔑 Wallet bot"), 'wb'), btn('🌐 RPC', 'sr')],
       this.hub ? null : [btn('⛽ Gas', st.wallet?.kind === 'solana' ? 'sf:gasSol' : 'sf:gas'), btn(tr("🔧 Mesin"), 'sf:mesin')],

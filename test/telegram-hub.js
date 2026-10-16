@@ -111,15 +111,27 @@ const msg = (chatId, text) => ({ message: { chat: { id: Number(chatId), type: 'p
     assert.equal((await a.bot.restart()).ok, true, 'restart is a no-op for an account');
   });
 
-  await t('the hub handles /start login_<code> by authorizing it against the Telegram user', async () => {
+  await t('a plain /start from a new chat onboards the Telegram user and welcomes them', async () => {
     const { hub } = world();
     const calls = [];
-    hub.loginBroker = { authorize: (code, from) => { calls.push([code, from.id, from.username]); return { ok: true, name: 'alice', created: true }; } };
+    hub.loginBroker = { onboard: (from, chatId) => { calls.push(['onboard', from.id, chatId]); return { ok: true, created: true, name: 'alice', address: '0x' + '1'.repeat(40), user: { role: 'user' } }; } };
+    const seen = [];
+    hub.send = async (chatId, text) => { seen.push(text); return {}; };
+    await hub.onMessage({ chat: { id: 55, type: 'private' }, from: { id: 55, username: 'Alice' }, text: '/start' });
+    assert.deepEqual(calls, [['onboard', 55, '55']], 'broker.onboard called with the Telegram user and chat');
+    assert.match(seen.join(''), /Selamat datang|Welcome/i, 'a welcome is sent');
+    assert.match(seen.join(''), /0x1111/, 'the new wallet address is shown');
+  });
+
+  await t('/start login_<code> onboards and authorizes the dashboard login', async () => {
+    const { hub } = world();
+    const calls = [];
+    hub.loginBroker = { authorize: (code, from, chatId) => { calls.push([code, from.id, chatId]); return { ok: true, name: 'alice', created: false, address: '0x' + '2'.repeat(40), user: { role: 'user' } }; } };
     const seen = [];
     hub.send = async (chatId, text) => { seen.push(text); return {}; };
     await hub.onMessage({ chat: { id: 55, type: 'private' }, from: { id: 55, username: 'Alice' }, text: '/start login_a1b2c3d4' });
-    assert.deepEqual(calls, [['a1b2c3d4', 55, 'Alice']], 'broker.authorize called with the code and Telegram user');
-    assert.match(seen.join(''), /Masuk|Signed in/i, 'a confirmation is sent back');
+    assert.deepEqual(calls, [['a1b2c3d4', 55, '55']], 'broker.authorize called with the code, user and chat');
+    assert.match(seen.join(''), /dasbor|dashboard/i, 'tells them the dashboard is signed in');
   });
 
   await t('an account bot hides copy screens behind a "coming soon" notice', async () => {

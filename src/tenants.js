@@ -99,6 +99,10 @@ function userCfgView(globalCfg, userCfg, { dbPath }) {
           // Regular accounts are open-LP only: copy trading is always off and cannot be turned
           // on from a user config. The engine reads cfg.copy (see Engine#copyEnabled).
           if (p === 'copy') return false;
+          // Open-LP accounts have no simulation mode — they are always LIVE and trade their own
+          // deposited funds. mode.dry_run is forced false here no matter what is stored, so a
+          // tenant can never put the engine into simulation (see Engine#dryRun / #openLp).
+          if (p === 'mode') return { ...(t.mode && typeof t.mode === 'object' ? t.mode : {}), dry_run: false };
           if (typeof p === 'string' && USER_CHAIN.has(p)) return t[p];
           return globalCfg.chains[k]?.[p];
         },

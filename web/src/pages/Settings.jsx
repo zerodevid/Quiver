@@ -262,7 +262,8 @@ function WalletTab({ d, reload }) {
           <div className="font-medium">{t('Mode: {m}', { m: t(m.dry_run ? 'Simulasi' : 'Live') })}</div>
           <div className="text-sm text-muted">{t(m.dry_run ? 'Bot memutuskan dan mencatat, tapi tidak mengirim transaksi.' : 'Bot mengirim transaksi sungguhan dari wallet di atas.')}</div>
         </div>
-        {m.dry_run ? (
+        {/* Open-LP (regular) accounts have no simulation mode — they are always LIVE, so no toggle. */}
+        {!regular && (m.dry_run ? (
           <div className="flex flex-wrap items-end gap-2">
             <Text label="Konfirmasi LIVE" placeholder="ketik LIVE" value={liveTxt} onChange={setLiveTxt} className="w-32" />
             <Button variant="danger" isDisabled={!w.address || liveTxt !== 'LIVE'} isPending={busy === 'live'}
@@ -270,14 +271,14 @@ function WalletTab({ d, reload }) {
           </div>
         ) : (
           <Button variant="outline" isPending={busy === 'live'} onPress={() => act('live', '/api/settings/live', { live: false }, 'Kembali ke simulasi')}>{t('Kembali ke simulasi')}</Button>
-        )}
+        ))}
       </div>
 
-      {m.dry_run && <SimBox key={m.sim?.balance_usd ?? 0} sim={m.sim} act={act} busy={busy} />}
+      {!regular && m.dry_run && <SimBox key={m.sim?.balance_usd ?? 0} sim={m.sim} act={act} busy={busy} />}
 
       <Separator />
       {w.fromEnv ? <EnvNotice name={w.fromEnv} what="Kunci wallet" />
-        : !m.dry_run ? <Notice status="warning">{t('Matikan mode LIVE dulu untuk mengganti wallet.')}</Notice> : (
+        : (!m.dry_run && !regular) ? <Notice status="warning">{t('Matikan mode LIVE dulu untuk mengganti wallet.')}</Notice> : (
         <>
           <div className="grid gap-6 md:grid-cols-2">
             <div className="flex flex-col gap-3">
