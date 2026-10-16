@@ -2029,12 +2029,22 @@ class Engine {
       if (grossAmt && v && plan.venue === 'v4') {
         try {
           const paid0 = await this.spentIn(receipt, plan.token0, me), paid1 = await this.spentIn(receipt, plan.token1, me);
-          const vp = this.chain.valueInQuote({
-            sqrtPriceX96: s2.sqrtPriceX96, amount0: paid0, amount1: paid1,
+          // Token-wise: what the liquidity needed minus what the wallet really paid = the fee income the
+          // settlement used. Kept on the tx so the history can show it as a Claim Fee row.
+          const r0 = amt.amount0 > paid0 ? amt.amount0 - paid0 : 0n, r1 = amt.amount1 > paid1 ? amt.amount1 - paid1 : 0n;
+          const vr = (r0 > 0n || r1 > 0n) ? this.chain.valueInQuote({
+            sqrtPriceX96: s2.sqrtPriceX96, amount0: r0, amount1: r1,
             dec0: toks[0].decimals, dec1: toks[1].decimals, token0: plan.token0, token1: plan.token1,
-          });
-          const reinvested = vp && Number.isFinite(vp.value) ? v.value - vp.value : 0;
-          if (reinvested > 0) this.store.run('UPDATE positions SET claimed_quote=COALESCE(claimed_quote,0)+? WHERE id=?', reinvested, plan.positionId);
+          }) : null;
+          if (vr && Number.isFinite(vr.value) && vr.value > 0) {
+            this.store.run('UPDATE positions SET claimed_quote=COALESCE(claimed_quote,0)+? WHERE id=?', vr.value, plan.positionId);
+            const trow1 = this.store.get('SELECT detail FROM txs WHERE hash=?', hash);
+            if (trow1) {
+              let d1 = {}; try { d1 = JSON.parse(trow1.detail || '{}'); } catch { /* old detail */ }
+              d1.autoClaim = { amount0: r0.toString(), amount1: r1.toString(), valueQuote: vr.value };
+              this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify(d1), hash);
+            }
+          }
         } catch { /* native side or unreadable receipt: leave the cost as booked */ }
       }
     }

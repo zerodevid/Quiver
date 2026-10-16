@@ -1274,6 +1274,16 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         }
         return ev;
       });
+      // A v4 increase settles the position's accrued fees into its payment: show that as a Claim Fee
+      // row in the same transaction (what block explorers and other trackers show).
+      for (const t of txs) {
+        const ac = parse(t.detail).autoClaim;
+        if (t.kind !== 'increase' || !ac) continue;
+        const v = ac.valueQuote * k;
+        events.push({ hash: t.hash, ts: t.ts, kind: 'claim_fees', status: t.status, auto: true, gasUsd: null, swap: null,
+          saleDeltaUsd: null, feeSaleUsd: null, dex: null, usdIn: null, usdOut: null, slipUsd: null, slipBps: null,
+          amount0: ac.amount0, amount1: ac.amount1, valueUsd: v, feesUsd: v, reason: null, verdict: null, targetUsd: null });
+      }
       // A position adopted from the wallet (not opened by the bot) has no tx in the table:
       // its open/close events are composed from the position row so its history is not empty.
       if (row.opened_ts && !events.some((e) => e.kind === 'mint' || (row.tx_open && e.hash === row.tx_open))) {
