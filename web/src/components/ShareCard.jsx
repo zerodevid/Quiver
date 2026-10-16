@@ -17,6 +17,7 @@ import { Toggle, Segmented } from './ui';
 import ShareReplay from './ShareReplay';
 import MonthReplay from './MonthReplay';
 import { get, post } from '../api';
+import { authHeaders } from '../telegram';
 import { useI18n } from '../i18n';
 import { usd, pct } from '../fmt';
 import { useFx } from '../currency';
@@ -85,7 +86,7 @@ export function ShareDialog({ card, onClose }) {
     const timer = setTimeout(() => ctl.abort(new Error(t('Server terlalu lama menggambar kartu'))), 45_000);
     setLoading(true); setErr(null);
     const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), ...(card.month ? { month: card.month } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme, layout, cur });
-    fetch(`/api/share/card?${q}`, { credentials: 'same-origin', signal: ctl.signal })
+    fetch(`/api/share/card?${q}`, { credentials: 'same-origin', headers: authHeaders(), signal: ctl.signal })
       .then(async (r) => {
         if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `HTTP ${r.status}`); }
         return r.blob();

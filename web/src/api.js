@@ -1,6 +1,7 @@
 // API client. The server is on the same origin; authentication goes through an HttpOnly cookie.
 // 401 = token expired/rotated -> reload so the server shows the sign-in page.
 import { getScope, isAllChains, getChainFilter } from './chain';
+import { authHeaders, dropTicket, isMini } from './telegram';
 
 // All-chains view: these routes are merged across chains by the server (src/allchains.js), so on
 // the aggregate pages they are sent without a chain. The app status and alert feed always are.
@@ -26,8 +27,13 @@ const scoped = (path) => {
 };
 
 async function req(path, opts = {}) {
-  const r = await fetch(scoped(path), { credentials: 'same-origin', ...opts });
-  if (r.status === 401) { location.reload(); throw new Error('tidak berwenang'); }
+  // In the Telegram mini app the session is a Bearer ticket (telegram.js), not the cookie.
+  const r = await fetch(scoped(path), { credentials: 'same-origin', ...opts, headers: { ...opts.headers, ...authHeaders() } });
+  if (r.status === 401) {
+    if (isMini()) dropTicket();   // sign in again from initData rather than reuse the dead ticket
+    location.reload();
+    throw new Error('tidak berwenang');
+  }
   const body = await r.json().catch(() => ({}));
   if (!r.ok && !body.error) body.error = `HTTP ${r.status}`;
   return body;

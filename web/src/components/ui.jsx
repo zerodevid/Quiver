@@ -11,6 +11,7 @@ import { breakEven } from '../breakeven';
 import { useTick } from '../hooks';
 import { translate as t } from '../i18n';
 import { get } from '../api';
+import { isMini, openLink } from '../telegram';
 import { useFx, fxText } from '../currency';
 import { chainInfo, useChainInfo, OnChain, setScope, CHAIN_ICON, EXPLORER_NAME } from '../chain';
 
@@ -851,6 +852,13 @@ export const baseTokenOf = (p) => {
 // popup blocker lets it through; if the lookup fails it falls back to the static href.
 async function openResolved(e, app) {
   e.preventDefault();
+  // Telegram mini app: no popup window there, the link goes to the phone's browser once resolved.
+  if (isMini()) {
+    let url = app.href;
+    try { url = (await app.resolve()) || app.href; } catch { /* keep the fallback */ }
+    if (!openLink(url)) location.href = url;
+    return;
+  }
   const w = window.open('about:blank', '_blank');
   let url = app.href;
   try { url = (await app.resolve()) || app.href; } catch { /* keep the fallback */ }

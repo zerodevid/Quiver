@@ -635,22 +635,23 @@ telegram: belum ada chat terhubung. Kirim ke bot →  /start 3F9A21C0   (berlaku
 ### Mini app
 
 Tombol **📱 Buka mini app** di menu utama — dan tombol di sebelah kolom ketik —
-membuka `‹dasbor›/mini`: tiga layar (Ringkasan, Posisi, Aktivitas) yang dirancang
-untuk layar HP di dalam Telegram, bukan dasbor desktop yang dikecilkan. Kulitnya sama
-dengan dasbor — token warna, Inter 15px, kartu bergaris, chip, lencana mode, dan
-susunan angka yang sama dengan `web/src/pages/*.jsx`, termasuk lambang token dan
-lencana APR. Yang diambil dari Telegram cuma terang/gelapnya, supaya mini app tidak
-menyala putih di aplikasi bertema gelap. Tombol kembali dan getaran memakai yang
-bawaan, dan dari layar posisi fee bisa diklaim atau posisi ditutup — lewat rute API
-yang sama dengan dasbor dan bot.
+membuka `‹dasbor›/mini`: **dasbor yang sama persis** dengan versi web — semua halaman
+(Ringkasan, Posisi, Aktivitas, Target, Aturan, Dompet, Swap, LP manual, Pengaturan, Log,
+detail posisi/pool/token), dengan tata letak HP yang sudah dimiliki dasbor. Tidak ada
+bundel terpisah: `/mini` menyajikan `index.html` dasbor itu sendiri, dan `main.jsx`
+mengenalinya dari alamatnya, memuat SDK Telegram, lalu masuk dengan `initData` sebelum
+merender (`web/src/telegram.js`). Jadi setiap fitur baru di dasbor otomatis ada di mini
+app.
+
+Yang diambil dari Telegram: terang/gelap (sampai pengguna memilih sendiri lewat tombol
+tema), warna bilah atas yang disamakan dengan latar dasbor, tombol kembali bawaan
+(muncul di luar Ringkasan), dan tautan keluar (explorer, DexScreener, …) yang dibuka di
+peramban HP lewat `openLink`. Tombol keluar disembunyikan — mini app masuk sendiri setiap
+dibuka.
 
 Lambang token dipasang lewat `<img>`, yang tidak bisa membawa header `Authorization`;
 jadi khusus `/api/icon` tiketnya boleh ikut sebagai `?t=`. Tiket di URL itu tidak
 membuka rute lain — rute gambar itu saja.
-
-Halaman itu bundel tersendiri (`web/mini.html` + `web/src/mini/`, ±14 KB, tanpa React)
-supaya terbuka seketika di jaringan seluler; karena itu ia sengaja tidak mengimpor apa
-pun dari `web/src/`.
 
 **Masuknya** tanpa token: Telegram menandatangani `initData` dengan `bot_token`, server
 memeriksa tanda tangan itu (`checkInitData` di `src/server.js`), menolak yang basi atau
@@ -658,8 +659,9 @@ yang diubah, lalu menuntut syarat yang sama dengan bot — pengguna harus ada di
 `telegram.chat_ids`. Yang lolos menerima tiket acak berumur 12 jam, bukan token dasbor
 itu sendiri; tiket itu dikirim sebagai `Authorization: Bearer` karena di Telegram Web
 halamannya hidup dalam iframe milik `web.telegram.org`, tempat cookie `SameSite=Lax`
-memang tidak ikut terkirim. Hanya `/mini` dan potongan `mini-*` yang boleh dimuat
-sebelum ada sesi; dasbor dan seluruh `/api/*` tetap di balik gerbang token.
+memang tidak ikut terkirim. Yang boleh dimuat sebelum ada sesi hanya `/mini`, hasil
+build di `/assets/`, dan gambar statis (logo merek, `/tokens/`) — kode dan gambar halaman,
+tanpa data. Dasbor di `/` dan seluruh `/api/*` tetap di balik gerbang token.
 
 **Menyalakan:** isi alamat https dasbor di `server.public_url` (atau
 `LPCOPY_DASHBOARD_URL` di `.env`; satu VPS beberapa instance boleh memakai akhiran nama

@@ -19,6 +19,7 @@ import SearchModal, { SearchTrigger } from './components/GlobalSearch';
 
 import { Loading, ConfirmHost, WalletLinks, ask } from './components/ui';
 import { hideSplash } from './splash';
+import { isMini } from './telegram';
 
 // Each page is loaded when opened — the chart library is only downloaded for the Summary.
 const Overview = lazy(() => import('./pages/Overview'));
@@ -173,8 +174,9 @@ function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
           </Button>
           <PrivacyButton hidden={privacy[0]} toggle={privacy[1]} />
           <AlertBell placement="top" variant="ghost" iconClass="size-4" />
-          {/* Only when the token gate is on; without a token there is no session to close. */}
-          {m?.auth && (
+          {/* Only when the token gate is on; without a token there is no session to close. The
+              Telegram mini app signs in by itself each time it opens, so it has nothing to log out of. */}
+          {m?.auth && !isMini() && (
             <Button size="sm" variant="ghost" isIconOnly aria-label={t('Keluar dari dasbor')} onPress={logout}>
               <LogOut className="size-4" />
             </Button>

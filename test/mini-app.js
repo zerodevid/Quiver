@@ -3,7 +3,7 @@
 //  - initData signature: a valid one passes, one that was altered/signed by another token/stale is rejected
 //  - /api/tg/auth only serves chats in telegram.chat_ids
 //  - the ticket it returns opens /api/* as a Bearer; an arbitrary ticket is rejected
-//  - the /mini page and its chunks pass the token gate, the dashboard stays locked
+//  - the /mini page (the dashboard's index.html) and the build assets pass the token gate, / stays locked
 //  - the mini page may be framed by Telegram (frame-ancestors), other pages may not
 //
 // Run: node test/mini-app.js
@@ -162,7 +162,7 @@ const auth = (base, data) => fetch(`${base}/api/tg/auth`, {
 
   await t('mini page passes the gate, the dashboard stays locked', async () => {
     const dist = path.join(__dirname, '..', 'web', 'dist');
-    const hasBuild = fs.existsSync(path.join(dist, 'mini.html'));
+    const hasBuild = fs.existsSync(path.join(dist, 'index.html'));
     const r = await fetch(`${s.base}/mini`);
     // 401 = the gate closed it — that must not happen, with or without a build.
     assert.notEqual(r.status, 401);
@@ -171,8 +171,9 @@ const auth = (base, data) => fetch(`${base}/api/tg/auth`, {
       const csp = r.headers.get('content-security-policy') || '';
       assert.match(csp, /frame-ancestors[^;]*telegram\.org/);
       assert.equal(r.headers.get('x-frame-options'), null);   // DENY overrides the permissions above
-      const label = (await r.text()).match(/\/assets\/(mini-[A-Za-z0-9_.-]+\.js)/)?.[1];
-      assert.ok(label, 'mini.html must reference the mini-*.js chunks');
+      // The mini app is the dashboard itself: same page, its entry chunk loads without a session.
+      const label = (await r.text()).match(/\/assets\/(index-[A-Za-z0-9_.-]+\.js)/)?.[1];
+      assert.ok(label, '/mini must serve the dashboard page');
       assert.equal((await fetch(`${s.base}/assets/${label}`)).status, 200);
     } else {
       console.log('       (web/dist has not been built — header check skipped)');
@@ -181,10 +182,10 @@ const auth = (base, data) => fetch(`${base}/api/tg/auth`, {
     const dasbor = await fetch(`${s.base}/`);
     assert.equal(dasbor.status, 401);
     assert.equal(dasbor.headers.get('x-frame-options'), 'DENY');
-    if (hasBuild) {
-      const idx = fs.readFileSync(path.join(dist, 'index.html'), 'utf8').match(/\/assets\/(index-[A-Za-z0-9_.-]+\.js)/)?.[1];
-      if (idx) assert.equal((await fetch(`${s.base}/assets/${idx}`)).status, 401);
-    }
+    // Data stays behind the gate even though the page code is public.
+    assert.equal((await fetch(`${s.base}/api/overview`)).status, 401);
+    // An extensionless route is not mistaken for a public file.
+    assert.equal((await fetch(`${s.base}/positions`)).status, 401);
   });
 
   await t('without bot_token the mini app cannot be used', async () => {

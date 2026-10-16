@@ -23,6 +23,7 @@ import { useI18n, getLocale } from '../i18n';
 import { usd, pct, price } from '../fmt';
 import { isHidden } from '../privacy';
 import { canonAddr, isAddr } from '../chain';
+import { withTicket } from '../telegram';
 import { KNOWN, hue } from './TokenIcon';
 import { ARROW, CHEVRON, WORDMARK } from './Logo';
 import devilFlex from '../../../public/mascots/devil/flex.png';
@@ -594,7 +595,7 @@ async function remux(blob) {
 
 function iconSrc(addr) {
   const a = canonAddr(addr);
-  return KNOWN[a] || (isAddr(a) && !/^0x0+$/.test(a) ? `/api/icon?a=${a}` : null);
+  return KNOWN[a] || (isAddr(a) && !/^0x0+$/.test(a) ? withTicket(`/api/icon?a=${a}`) : null);
 }
 
 // Looping canvas preview + record/download/share, shared by the position replay and the

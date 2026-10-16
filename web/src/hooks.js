@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { get, post } from './api';
+import { paintChrome } from './telegram';
 
 // Fetch data from a path then refresh every `ms`. Polling stops when the tab is not visible.
 // `loading` only turns on if the reply takes longer than 400 ms: a poll that finishes
@@ -94,7 +95,8 @@ export function useTheme() {
   const apply = (t) => {
     const el = document.documentElement;
     el.classList.remove('light', 'dark'); el.classList.add(t); el.setAttribute('data-theme', t);
-    try { localStorage.setItem('lpcopy-theme', t); } catch { /* abaikan */ }
+    try { localStorage.setItem('lpcopy-theme', t); } catch { /* ignore */ }
+    paintChrome(t);
     setTheme(t);
   };
   return [theme, () => apply(theme === 'dark' ? 'light' : 'dark')];

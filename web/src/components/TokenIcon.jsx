@@ -12,6 +12,7 @@
 // without shifting the layout.
 import { useEffect, useState } from 'react';
 import { isAddr, isPoolRef, canonAddr } from '../chain';
+import { withTicket } from '../telegram';
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 
@@ -68,7 +69,8 @@ function Icon({ address, symbol, size = 20, className = '' }) {
     return () => clearTimeout(id);
   }, [phase]);
 
-  const src = local || (isAddr(a) && a !== ZERO ? `/api/icon?a=${a}${phase === 'ulang' ? '&r=1' : ''}` : null);
+  // withTicket: in the Telegram mini app an <img> has no cookie to send, so the ticket rides along.
+  const src = local || (isAddr(a) && a !== ZERO ? withTicket(`/api/icon?a=${a}${phase === 'ulang' ? '&r=1' : ''}`) : null);
   const showImg = src && (phase === 'coba' || phase === 'ulang');
 
   return (

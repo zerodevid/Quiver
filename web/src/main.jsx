@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import { I18nProvider, initLocale } from './i18n';
 import { hideSplash, armSplashTimeout } from './splash';
+import { loadSdk, signIn, paintChrome, wireBackButton, wireLinks } from './telegram';
 import './index.css';
 
 // Pages are loaded per chunk with hashed names. After a deploy, a tab
@@ -21,7 +22,6 @@ window.addEventListener('vite:preloadError', (e) => {
 // Entry loaded: an error after this point is not "app failed to load" (see index.html).
 window.__quiverBooted = true;
 initLocale();
-armSplashTimeout();
 
 class AppBoundary extends Component {
   state = { error: null };
@@ -40,6 +40,39 @@ class AppBoundary extends Component {
   }
 }
 
-createRoot(document.getElementById('root')).render(
-  <StrictMode><AppBoundary><I18nProvider><App /></I18nProvider></AppBoundary></StrictMode>,
-);
+const render = () => {
+  armSplashTimeout();
+  createRoot(document.getElementById('root')).render(
+    <StrictMode><AppBoundary><I18nProvider><App /></I18nProvider></AppBoundary></StrictMode>,
+  );
+};
+
+// /mini is the same dashboard opened inside Telegram (the bot's "Mini app" button). It signs in
+// with Telegram's initData instead of the token cookie (see telegram.js), so it renders only
+// after that exchange; a refusal stays on the splash with the server's reason.
+if (/^\/mini\/?$/.test(location.pathname)) {
+  loadSdk().then((tg) => {
+    if (!tg) return;
+    tg.ready();
+    tg.expand();
+    // Light or dark comes from Telegram until the user picks one with the theme button.
+    let stored = null;
+    try { stored = localStorage.getItem('lpcopy-theme'); } catch { /* storage blocked */ }
+    const theme = stored || (tg.colorScheme === 'dark' ? 'dark' : 'light');
+    const el = document.documentElement;
+    el.classList.remove('light', 'dark'); el.classList.add(theme); el.setAttribute('data-theme', theme);
+    paintChrome(theme);
+    wireBackButton();
+    wireLinks();
+  }).then(signIn).then((error) => {
+    if (!error) return render();
+    const splash = document.getElementById('splash');
+    const message = document.getElementById('startup-message');
+    if (!splash || !message) return;
+    message.textContent = error;
+    message.hidden = false;
+    splash.classList.add('sp-failed');
+  });
+} else {
+  render();
+}

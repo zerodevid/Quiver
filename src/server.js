@@ -137,11 +137,13 @@ const TG_SEC_HEADERS = {
   'content-security-policy': 'frame-ancestors https://web.telegram.org https://*.telegram.org https://*.t.me',
   'x-content-type-options': 'nosniff',
 };
-// Files that must be loadable BEFORE there is a session: the mini app page and its
-// build chunks (the 'mini' entry in vite.config.js — its name always starts with mini-), plus the
-// modulepreload patch that Vite slips into EVERY entry. There are no secrets in
-// them: the data stays behind the gate, this is only the page skeleton.
-const MINI_PUBLIC = /^\/(?:mini|assets\/(?:mini|modulepreload-polyfill)-[A-Za-z0-9_.-]+\.(?:js|css))$/;
+// Files that must be loadable BEFORE there is a session: the mini app page (/mini, the
+// dashboard's own index.html — it signs in with Telegram's initData once loaded), the Vite build
+// output under /assets/, and the static images the dashboard shows (brand tiles, quote token
+// logos). On Telegram Web the page sits in a web.telegram.org iframe where the session cookie is
+// never sent, so these must load without it. There are no secrets in them: the data stays behind
+// the gate (/api/*), this is only the page's code and artwork. The dashboard at / stays locked.
+const MINI_PUBLIC = /^\/(?:mini\/?|assets\/[A-Za-z0-9_.-]+|tokens\/[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+\.(?:png|jpe?g|svg|webp))$/;
 
 // Verify the initData of a Telegram Mini App. Telegram signs it with the
 // bot_token, so only a server holding that token can prove that
@@ -2865,7 +2867,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     const isVendor = url.pathname.startsWith('/vendor/') || url.pathname === '/favicon.svg';
     const root = isVendor || !useDist ? pub : dist;
     let p = url.pathname === '/' ? '/index.html' : url.pathname;
-    if (p === '/mini' || p === '/mini/') p = '/mini.html';    // second entry of the Vite build
+    const isMiniPage = p === '/mini' || p === '/mini/';
+    if (isMiniPage) p = '/index.html';    // the mini app is the dashboard itself, signed in by Telegram
     let file = path.join(root, path.normalize(p).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) { res.writeHead(404); return res.end('tidak ada'); }
     if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
@@ -2883,7 +2886,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // private: the browser may store, the CDN (Cloudflare) may not — this file is behind the token gate.
       'cache-control': immutable ? `${isVendor ? 'public' : 'private'}, max-age=31536000, immutable` : 'private, no-store, max-age=0',
       // HTML documents are guarded against clickjacking; static assets need not be.
-      ...(path.extname(file) === '.html' ? (path.basename(file) === 'mini.html' ? TG_SEC_HEADERS : SEC_HEADERS) : {}),
+      ...(path.extname(file) === '.html' ? (isMiniPage ? TG_SEC_HEADERS : SEC_HEADERS) : {}),
     };
     if (!useDist && path.extname(file) === '.html') {
       const ver = Math.floor(fs.statSync(path.join(pub, 'app.js')).mtimeMs).toString(36);
