@@ -2223,11 +2223,14 @@ class Telegram {
   }
 
   leftoverCard(d, p) {
-    const pair = p ? `${p.symbol0}/${p.symbol1}` : tr("posisi #{0}", [d.positionId]);
+    // A sale with no position behind it (zap surplus, wallet sweep) has no id to show.
+    const pair = p ? `${p.symbol0}/${p.symbol1}`
+      : d.positionId != null ? tr("posisi #{0}", [d.positionId])
+        : d.source === 'zap' ? tr("kelebihan zap") : tr("sisa di wallet");
     const diff = d.usdIn > 0 && d.usdOut != null ? ((d.usdOut - d.usdIn) / d.usdIn) * 100 : null;
     const L = [
       tr("🧹 <b>SISA TERJUAL</b> · {0}", [this.modeTag()]),
-      tr("<b>{0}</b> · posisi #{1}", [esc(pair), esc(d.positionId)]),
+      d.positionId != null ? tr("<b>{0}</b> · posisi #{1}", [esc(pair), esc(d.positionId)]) : `<b>${esc(pair)}</b>`,
       '',
       tr("💰 Diterima <b>{0}</b> dari {1}", [usd(d.usdOut), esc(d.label || '?')]),
       number([
