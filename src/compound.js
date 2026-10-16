@@ -93,7 +93,7 @@ class Compound {
   // How much liquidity can be added from the existing fees, and what it is worth.
   // The same for v3 and v4; only where fees & pool price are read from and the
   // shape of the transaction differ.
-  async plan(pos) {
+  async plan(pos, { minUsd = null } = {}) {
     const e = this.engine;
     const v3 = this.chain.isV3Venue(pos.venue);
     const slot = v3 ? await e.chain.slot0V3(pos.pool_ref) : await e.chain.slot0V4(pos.pool_ref);
@@ -129,7 +129,7 @@ class Compound {
       L = L * BigInt(Math.floor(cap * 1e6)) / BigInt(Math.ceil(est.valueUsd * 1e6));
       est = value(L);
     }
-    if (L <= 0n || est.valueUsd < this.status(pos).minUsd) return { skip: 'fee yang bisa ditambahkan belum mencapai minimum compound' };
+    if (L <= 0n || est.valueUsd < (minUsd ?? this.status(pos).minUsd)) return { skip: 'fee yang bisa ditambahkan belum mencapai minimum compound' };
     if (v3) {
       // v3 pulls the fees via transferFrom after collect: what is requested is the amount
       // that fits the LP ratio (already cut by slippage via usable), and mins protect
@@ -192,14 +192,17 @@ class Compound {
     }
   }
 
-  // One position, compound mode: fees become liquidity again.
-  async runCompound(pos, st) {
+  // One position, compound mode: fees become liquidity again. `manual` = the owner pressed
+  // "compound now": the enabled switch and the minimum value do not apply (a tiny floor stays), and
+  // problems are thrown to the caller instead of only being noted.
+  async runCompound(pos, st, { manual = false } = {}) {
     const e = this.engine;
     const v3 = this.chain.isV3Venue(pos.venue);
+    const allowed = () => !e.dryRun() && !e.paused() && (manual || this.status(pos).enabled);
     e.exiting.add(pos.id);
     try {
-      const plan = await this.plan(pos);
-      if (plan.skip) { this.note(pos.id, plan.skip); return; }
+      const plan = await this.plan(pos, manual ? { minUsd: 0.01 } : {});
+      if (plan.skip) { if (manual) throw new Error(plan.skip); this.note(pos.id, plan.skip); return; }
       if (await this.ownerOf(pos) !== e.exec.address().toLowerCase()) throw new Error('NFT posisi bukan milik wallet bot');
       const owner = e.exec.address().toLowerCase();
       if (v3) {
@@ -215,19 +218,21 @@ class Compound {
       }
       const tx = v3 ? e.exec.buildV3Compound(plan, e.exec.deadline()) : e.exec.buildV4Compound(plan, e.exec.deadline());
       // Check mode/settings again after RPC waits; OFF cancels unsent work.
-      if (e.dryRun() || e.paused() || !this.status(pos).enabled) return;
+      if (!allowed()) { if (manual) throw new Error('mode simulasi atau bot dijeda — compound dibatalkan'); return; }
       const hash = await e.exec.send(tx, { kind: 'compound', detail: { position: pos.id, wallet: owner,
         pool: pos.pool_ref, liquidity: plan.liquidity, valueQuote: plan.valueQuote, valueUsd: plan.valueUsd },
-      guard: () => !e.dryRun() && !e.paused() && this.status(pos).enabled });
+      guard: allowed });
       this.store.run('UPDATE compound_settings SET last_tx=?,last_note=? WHERE position_id=?', hash, 'compound menunggu konfirmasi', pos.id);
       const rc = await e.exec.waitReceipt(hash, 90_000);
-      if (rc.timeout) return;
+      if (rc.timeout) return { tx: hash, pending: true, valueUsd: plan.valueUsd };
       if (!rc.ok) throw new Error(`compound revert (${hash})`);
       await this.finish(pos, hash, rc.receipt);
       try { await e.positions.sync(e.ethUsd); } catch { /* next regular sync */ }
+      return { tx: hash, valueUsd: plan.valueUsd };
     } catch (err) {
       this.note(pos.id, err.message);
-      this.store.log('warn', `auto-compound #${pos.id}: ${err.message}`, { quiet: true });
+      this.store.log('warn', `${manual ? 'compound manual' : 'auto-compound'} #${pos.id}: ${err.message}`, { quiet: true });
+      if (manual) throw err;
     } finally { e.exiting.delete(pos.id); }
   }
 
@@ -252,6 +257,41 @@ class Compound {
       this.note(pos.id, err.message);
       this.store.log('warn', `auto-klaim fee #${pos.id}: ${err.message}`, { quiet: true });
     }
+  }
+
+  // ---- compound now (manual) ------------------------------------------------------
+  // Shared checks for the preview and the run: the position must be ours, open, harvestable and idle.
+  manualRow(id) {
+    const pos = this.store.get("SELECT * FROM positions WHERE chain=? AND id=? AND status='open'", this.network, Number(id));
+    if (!pos) throw new Error('posisi tidak ditemukan');
+    if (!this.supported(pos)) throw new Error('compound tersedia untuk posisi Uniswap v3 dan v4');
+    if (!pos.token_id || String(pos.token_id).startsWith('sim')) throw new Error('posisi simulasi tidak bisa di-compound');
+    return pos;
+  }
+
+  // What pressing the button would add, for the confirmation dialog. Sends nothing.
+  async preview(id) {
+    const pos = this.manualRow(id);
+    const e = this.engine;
+    const base = { dryRun: !!e.dryRun(), paused: !!e.paused(), feeUsd: this.feeUsd(pos) };
+    try {
+      const plan = await this.plan(pos, { minUsd: 0.01 });
+      return plan.skip ? { ...base, skip: plan.skip } : { ...base, addUsd: plan.valueUsd };
+    } catch (err) { return { ...base, error: err.message }; }
+  }
+
+  async compoundNow(id) {
+    const pos = this.manualRow(id);
+    const e = this.engine;
+    if (e.dryRun()) throw new Error('mode simulasi: tidak mengirim transaksi');
+    if (e.paused()) throw new Error('bot sedang dijeda — lanjutkan dulu');
+    if (!e.exec.address()) throw new Error('belum ada wallet');
+    if (this.running || e.busy || e.exiting.has(pos.id) || this.pending(pos.id) || e.pendingFeeClaim(pos.id)) {
+      throw new Error('posisi sedang diproses (compound, klaim, atau penutupan) — coba lagi sebentar');
+    }
+    this.running = true;
+    try { return { ok: true, ...(await this.runCompound(pos, this.status(pos), { manual: true })) }; }
+    finally { this.running = false; }
   }
 
   async tick(now = Date.now(), exitIds = new Set()) {

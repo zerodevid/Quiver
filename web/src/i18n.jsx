@@ -2579,6 +2579,22 @@ const EN = {
   "Diatur khusus posisi ini (sebagian dinonaktifkan).": "Set for this position only (one side switched off).",
   "Belum diatur — mengikuti aturan target/global.": "Not set — following the target/global rules.",
   "Aksi posisi": "Position actions",
+  "Compound tidak bisa dijalankan": "Compound cannot run",
+  "Mode simulasi aktif — compound tidak mengirim transaksi": "Simulation mode is on — compound sends no transaction",
+  "Bot sedang dijeda — lanjutkan dulu": "The bot is paused — resume it first",
+  "Belum bisa di-compound": "Cannot compound yet",
+  "Compound fee {pair} sekarang?": "Compound the {pair} fees now?",
+  "Fee yang belum diklaim ({fee}) ditambahkan kembali sebagai likuiditas di posisi ini: sekitar {add}.": "The unclaimed fees ({fee}) are added back as liquidity in this position: about {add}.",
+  "Tanpa swap: sisa token yang tidak cocok dengan rasio LP masuk ke wallet.": "No swap: leftover tokens that do not fit the LP ratio go to the wallet.",
+  "Mengirim transaksi on-chain dan butuh gas; tidak bisa dibatalkan.": "Sends an on-chain transaction and costs gas; it cannot be undone.",
+  "Hasil akhir mengikuti harga saat transaksi masuk (slippage dari Aturan). Batas nilai posisi dan eksposur tetap berlaku.": "The final amount follows the price when the transaction lands (slippage from the Rules). Position-value and exposure limits still apply.",
+  "Tidak mengubah jadwal Panen fee otomatis.": "Does not change the automatic fee harvest schedule.",
+  "Compound sekarang": "Compound now",
+  "Compound gagal": "Compound failed",
+  "Compound terkirim — menunggu konfirmasi": "Compound sent — waiting for confirmation",
+  "Hasilnya muncul di sinkron berikutnya.": "The result shows up on the next sync.",
+  "Compound {pair} berhasil": "Compound of {pair} succeeded",
+  "Ditambahkan sekitar {add}.": "About {add} added.",
 };
 
 const DICT = { id: null, en: EN };

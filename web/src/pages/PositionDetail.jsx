@@ -25,6 +25,7 @@ import { useClaimFees } from '../useClaimFees';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
 import TpSlButton from '../components/TpSlButton';
+import CompoundNowButton from '../components/CompoundNowButton';
 import TargetSide from '../components/TargetSide';
 import ShareButton, { positionCard } from '../components/ShareCard';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask, TradeLinks, DataLinks, CopyBtn } from '../components/ui';
@@ -555,6 +556,7 @@ export default function PositionDetail({ id }) {
             {!closed && !p.empty && <>
               <span aria-hidden className="mx-1 hidden h-5 w-px bg-border sm:block" />
               <AutoCompoundButton p={p} reload={reload} disabled={claiming != null || closing != null} />
+              <CompoundNowButton p={p} reload={reload} disabled={claiming != null || closing != null} />
               <TpSlButton p={p} reload={reload} disabled={claiming != null || closing != null} />
               <TakeoverButton p={p} reload={reload} disabled={claiming != null || closing != null} />
               <Button size="sm" variant="outline" isPending={claiming != null} isDisabled={closing != null || claiming != null} onPress={() => claim(p)}>{t('Claim fee')}</Button>

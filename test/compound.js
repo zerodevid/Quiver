@@ -208,3 +208,45 @@ test('signer serializes sends and a rejected send does not poison the queue', as
   assert.deepEqual(order, [1, 2, -2, 3, -3]);
   assert.equal(results[0].status, 'rejected'); assert.equal(results[2].value, 3);
 });
+
+test('compound now: works with auto-harvest OFF and below the minimum, sends once', async () => {
+  const f = fixture();
+  try {
+    assert.equal(f.c.status(f.pos()).enabled, false);
+    f.c.configure(f.id, { enabled: false, minUsd: 100 });
+    const pv = await f.c.preview(f.id);
+    assert.ok(pv.addUsd > 0 && !pv.skip && !pv.error);
+    assert.equal(f.sent.length, 0, 'preview sends nothing');
+    const r = await f.c.compoundNow(f.id);
+    assert.equal(r.ok, true); assert.ok(r.valueUsd > 0);
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].kind, 'compound');
+    assert.equal(f.store.all('SELECT * FROM compound_runs').length, 1);
+    assert.equal(f.c.running, false, 'lock released');
+  } finally { f.store.db.close(); }
+});
+
+for (const guard of ['dry', 'paused', 'exit', 'noWallet', 'busy']) test(`compound now refuses when ${guard}`, async () => {
+  const f = fixture();
+  try {
+    if (guard === 'dry') f.e.cfg.mode.dry_run = true;
+    if (guard === 'paused') f.store.setState('paused', '1');
+    if (guard === 'exit') f.e.exiting.add(f.id);
+    if (guard === 'noWallet') f.e.exec.address = () => null;
+    if (guard === 'busy') f.c.running = true;
+    await assert.rejects(f.c.compoundNow(f.id));
+    assert.equal(f.sent.length, 0);
+  } finally { f.store.db.close(); }
+});
+
+test('compound now surfaces a revert and an unknown or closed position as errors', async () => {
+  const f = fixture();
+  try {
+    f.state.revert = true;
+    await assert.rejects(f.c.compoundNow(f.id), /revert/);
+    assert.equal(f.c.running, false);
+    await assert.rejects(f.c.compoundNow(999), /tidak ditemukan/);
+    f.store.run("UPDATE positions SET status='closed' WHERE id=?", f.id);
+    await assert.rejects(f.c.compoundNow(f.id), /tidak ditemukan/);
+  } finally { f.store.db.close(); }
+});

@@ -6,6 +6,7 @@ import { useClaimFees } from '../useClaimFees';
 import { useClosePosition } from '../useClosePosition';
 import AutoCompoundButton from './AutoCompoundButton';
 import TpSlButton from './TpSlButton';
+import CompoundNowButton from './CompoundNowButton';
 import TakeoverButton from './TakeoverButton';
 import { useI18n } from '../i18n';
 
@@ -23,6 +24,7 @@ export default function PositionActionBar({ id, onUpdate }) {
   const busy = claiming != null || closing != null;
   return <div className="flex flex-wrap items-center gap-1.5" role="toolbar" aria-label={t('Aksi posisi')}>
     <AutoCompoundButton p={p} reload={refresh} disabled={busy} />
+    <CompoundNowButton p={p} reload={refresh} disabled={busy} />
     <TpSlButton p={p} reload={refresh} disabled={busy} />
     <TakeoverButton p={p} reload={refresh} disabled={busy} />
     <Button size="sm" variant="outline" isPending={claiming === p.id} isDisabled={busy || !(p.feeUsd > 0)} onPress={() => claim(p)}>
