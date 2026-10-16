@@ -141,11 +141,11 @@ const posCols = (open, pairOf) => [
       <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={22} />
       <div>
         <PairName token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} pool={p.pool_ref} className="block font-medium" />
-        <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted">
           <span className="uppercase">{String(p.venue || 'v4')}</span><span>·</span>
           <PositionRef p={p} />
           {p.incomplete ? <span className="text-xs text-warning" title={tt(p.incomplete === 2 ? 'Harga saat kejadian belum terbaca' : 'Sebagian riwayat di luar jendela pindai')}>{tt('parsial')}</span> : null}
-          <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} compact className="ml-2" />
+          <TradeLinks token={baseTokenOf(p)} pool={p.pool_ref} compact className="sm:ml-2" />
         </div>
       </div>
     </div>) },

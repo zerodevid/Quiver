@@ -128,6 +128,13 @@ td .mono { white-space: nowrap; }
   box-shadow: 10px 0 14px -10px rgb(0 0 0 / 0.45);
 }
 .table-sticky.is-scrolled .table__column:first-child::before, .table-sticky.is-scrolled .table__cell:first-child::before { opacity: 1; }
+/* On a phone the sticky column must not eat the screen: a pair cell with icons, id and trade
+   links was ~70% of the width, leaving a sliver to swipe the figures through. Cap it and let
+   its content wrap (the floor fits the touch-size trade-link row); whatever still does not fit is clipped instead of drawn over the next cells. */
+@media (max-width: 639px) {
+  .table-sticky .table__cell:first-child > * { max-width: max(44vw, 12.5rem); }
+  .table-sticky .table__cell:first-child { overflow: hidden; }
+}
 
 /* Thin scrollbar; macOS already does this by default, Windows/Linux do not yet. */
 * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
