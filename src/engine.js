@@ -1975,6 +1975,7 @@ class Engine {
         if (w(0) > 0n) { L = w(0); amt = { amount0: w(1), amount1: w(2) }; plan = { ...plan, liquidity: L.toString() }; }
       }
     }
+    const grossAmt = amt;   // liquidity-based amounts from the entry flow (null when booked later from the receipt)
     if (!amt) {
       const spent = async (tok, max) => {
         try { return await this.spentIn(receipt, tok, me); }
@@ -2021,6 +2022,21 @@ class Engine {
         (amt.amount0 + BigInt(prev.cost0 || '0')).toString(),
         (amt.amount1 + BigInt(prev.cost1 || '0')).toString(),
         v?.value ?? 0, plan.positionId);
+      // A v4 increase pays out the position's accrued fees into the settlement, so the wallet pays
+      // LESS than the liquidity added. The cost above is the gross liquidity, so the difference is fee
+      // income that was reinvested: book it as claimed, or the PnL would lose it (DTF/USDG #3830276
+      // showed $1.4 uPnL while the wallet had really paid $25 less than the cost basis).
+      if (grossAmt && v && plan.venue === 'v4') {
+        try {
+          const paid0 = await this.spentIn(receipt, plan.token0, me), paid1 = await this.spentIn(receipt, plan.token1, me);
+          const vp = this.chain.valueInQuote({
+            sqrtPriceX96: s2.sqrtPriceX96, amount0: paid0, amount1: paid1,
+            dec0: toks[0].decimals, dec1: toks[1].decimals, token0: plan.token0, token1: plan.token1,
+          });
+          const reinvested = vp && Number.isFinite(vp.value) ? v.value - vp.value : 0;
+          if (reinvested > 0) this.store.run('UPDATE positions SET claimed_quote=COALESCE(claimed_quote,0)+? WHERE id=?', reinvested, plan.positionId);
+        } catch { /* native side or unreadable receipt: leave the cost as booked */ }
+      }
     }
     const positionId = adding ? plan.positionId : this.positions.record(plan, {
       tokenId, txHash: hash, target: plan.target,
