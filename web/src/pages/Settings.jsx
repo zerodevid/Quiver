@@ -5,6 +5,7 @@ import { Button, Card, Chip, Checkbox, Separator, Tabs, toast } from '@heroui/re
 import { Pencil, Activity as Pulse, Trash2, KeyRound, Unlock, ChevronUp, ChevronDown, Copy, Wallet, Network, Fuel, Bell, MessageCircle, Settings2, ShieldCheck, ShieldAlert, ChartCandlestick, Coins, RefreshCw, DatabaseBackup, Download, ArchiveRestore, Shuffle, Trophy, Link2 } from 'lucide-react';
 import { Wallet as EthersWallet } from 'ethers';
 import SettingInfo from '../components/SettingInfo';
+import ScanPositionsButton from '../components/ScanPositionsButton';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { PageHeader, Loading, Notice, Text, Pick, Toggle, ask } from '../components/ui';
@@ -12,13 +13,21 @@ import { num, usd, plainUsd, locale as fmtLocale, ago } from '../fmt';
 import { fxFormat } from '../currency';
 import { usePrivacy } from '../privacy';
 import { useI18n, translate as tt, reason } from '../i18n';
-import { useMe, isRegular } from '../me';
+import { useMe, isRegular, isOperator } from '../me';
 
 const amt = (v, d = 4) => (v == null ? '—' : Number(v).toLocaleString(fmtLocale(), { maximumFractionDigits: d }));
 
 // Shared infrastructure owned by the superadmin; a regular account in multi-user mode does
 // not see these tabs (the server refuses their routes and leaves their data out anyway).
-const ADMIN_TABS = new Set(['chains', 'rpc', 'gmgn', 'loop', 'aggregators']);
+// Telegram too: an account's chat is linked by signing in with Telegram, nothing to set.
+const ADMIN_TABS = new Set(['chains', 'rpc', 'gmgn', 'loop', 'aggregators', 'telegram']);
+
+// On the operator console (multi-user superadmin) these common server sections are pages of
+// their own in the side nav (see ADMIN_NAV in App.jsx), so the Settings page leaves them out.
+export const OPERATOR_SECTIONS = ['chains', 'rpc', 'aggregators', 'telegram', 'backup'];
+// The operator does not trade from the console, so its own wallet/LIVE mode, drawdown pause,
+// gas and position notifications are hidden there (accounts set their own).
+const OPERATOR_HIDDEN = new Set(['wallet', 'risk', 'gas', 'notify']);
 
 const SETTINGS_NAV = [
   ['wallet', 'Wallet & mode', 'Dana dan mode transaksi', Wallet],
@@ -174,6 +183,14 @@ function WalletTab({ d, reload }) {
           <div><dt className="text-xs text-muted">{w.balances?.symbols?.weth || chainInfo().wethSymbol}</dt><dd className="num mt-0.5 font-medium">{amt(w.balances?.weth, 6)}</dd></div>
         </dl>
       ) : <Notice>{t('Belum ada wallet terpasang. Bot hanya bisa berjalan dalam mode simulasi.')}</Notice>}
+
+      {/* A freshly imported wallet may already hold LP positions: adopt them now instead of waiting. */}
+      {w.address && (
+        <div className="flex flex-wrap items-center gap-3">
+          <ScanPositionsButton onDone={() => { reload(); reloadStatus(); }} />
+          <span className="text-xs text-muted">{t('Cari posisi LP yang sudah ada di wallet ini (mis. dibuka sebelum diimpor) supaya ikut dikelola bot.')}</span>
+        </div>
+      )}
 
       {w.address && (
         <>
@@ -1265,13 +1282,20 @@ function BackupTab({ d }) {
   );
 }
 
-export default function Settings() {
+// `section`: render only that one section as a page of its own (operator console nav).
+export default function Settings({ section = null }) {
   const { t } = useI18n();
   const [d, setD] = useState(null);
-  const [tab, setTab] = useState('wallet');
+  const [tab, setTab] = useState(section || 'wallet');
   const [loadError, setLoadError] = useState('');
-  const regular = isRegular(useMe());
-  const shown = (id) => !regular || !ADMIN_TABS.has(id);
+  const me = useMe();
+  const regular = isRegular(me);
+  const operator = isOperator(me);
+  const shown = (id) => (section ? id === section
+    : (!regular || !ADMIN_TABS.has(id)) && !(operator && (OPERATOR_SECTIONS.includes(id) || OPERATOR_HIDDEN.has(id))));
+  // The operator has no Wallet tab: fall back to the first section it does see.
+  const current = shown(tab) ? tab : SETTINGS_NAV.find(([id]) => shown(id))?.[0];
+  const [, title, desc] = (section && SETTINGS_NAV.find(([id]) => id === section)) || [null, 'Pengaturan', 'Atur bot sesuai kebutuhan. Pilih bagian, lalu klik ikon informasi untuk memahami setiap pengaturan.'];
   const load = useCallback(async () => {
     setLoadError('');
     try { const data = await get('/api/settings'); if (data.error) setLoadError(data.error); else setD(data); }
@@ -1281,14 +1305,14 @@ export default function Settings() {
 
   return (
     <>
-      <PageHeader group="Sistem" title="Pengaturan" desc="Atur bot sesuai kebutuhan. Pilih bagian, lalu klik ikon informasi untuk memahami setiap pengaturan.">
-        {d && <Chip variant="soft" color={d.mode.dry_run ? 'default' : 'warning'}>{t(d.mode.dry_run ? 'Mode simulasi' : 'Mode LIVE')}</Chip>}
+      <PageHeader group={section ? 'Server' : 'Sistem'} title={title} desc={desc}>
+        {d && !operator && <Chip variant="soft" color={d.mode.dry_run ? 'default' : 'warning'}>{t(d.mode.dry_run ? 'Mode simulasi' : 'Mode LIVE')}</Chip>}
       </PageHeader>
       {loadError ? <Notice status="danger"><div className="flex flex-wrap items-center gap-3">{t(loadError)}<Button variant="outline" onPress={load}>{t('Coba lagi')}</Button></div></Notice> : !d ? <Loading /> : (
         <Card>
           <Card.Content>
-            <Tabs selectedKey={tab} onSelectionChange={setTab} orientation="vertical" variant="secondary" className="flex flex-col gap-6 md:flex-row">
-              <Tabs.ListContainer className="md:w-60 md:shrink-0">
+            <Tabs selectedKey={current} onSelectionChange={setTab} orientation="vertical" variant="secondary" className="flex flex-col gap-6 md:flex-row">
+              <Tabs.ListContainer className={section ? 'hidden' : 'md:w-60 md:shrink-0'}>
                 <Tabs.List aria-label={t('Bagian pengaturan')} className="grid! grid-cols-2 md:flex! md:flex-col">
                   {SETTINGS_NAV.filter(([id]) => shown(id)).map(([id, label, description0, Icon]) => {
                     const description = id === 'aggregators' && isSolana() ? 'Jupiter, Raydium, LI.FI, OKX, OpenOcean, DFlow' : description0;
@@ -1302,11 +1326,11 @@ export default function Settings() {
                 </Tabs.List>
               </Tabs.ListContainer>
               <div className="min-w-0 flex-1">
-                <Tabs.Panel id="wallet"><WalletTab d={d} reload={load} /></Tabs.Panel>
-                <Tabs.Panel id="risk"><RiskTab d={d} setD={setD} /></Tabs.Panel>
+                {shown('wallet') && <Tabs.Panel id="wallet"><WalletTab d={d} reload={load} /></Tabs.Panel>}
+                {shown('risk') && <Tabs.Panel id="risk"><RiskTab d={d} setD={setD} /></Tabs.Panel>}
                 {shown('chains') && <Tabs.Panel id="chains"><ChainsTab d={d} setD={setD} /></Tabs.Panel>}
                 {shown('rpc') && <Tabs.Panel id="rpc"><RpcTab d={d} setD={setD} /></Tabs.Panel>}
-                <Tabs.Panel id="gas" shouldForceMount className="data-[inert]:hidden">
+                {shown('gas') && <Tabs.Panel id="gas" shouldForceMount className="data-[inert]:hidden">
                   {regular ? <GasSpeed gas={d.gas} onSaved={(gas) => setD((prev) => ({ ...prev, gas }))} /> :
                   <SimpleForm title="Gas" desc="Berlaku untuk transaksi berikutnya, tanpa restart." url="/api/settings/gas" okText="Pengaturan gas tersimpan"
                     onSaved={(gas) => setD((prev) => ({ ...prev, gas }))} initial={d.gas} fields={isSolana() ? [
@@ -1323,13 +1347,13 @@ export default function Settings() {
                       ['max_fee_gwei', 'Batas harga gas (gwei)', 'Harga gas per unit tidak pernah melebihi angka ini, walau satu RPC melaporkan harga yang ngawur. Harga normal jaringan ini sekitar 0,1 gwei.'],
                       ['reserve_eth', `Cadangan ${chainInfo().nativeSymbol} untuk gas`, `${chainInfo().nativeSymbol} sebanyak ini tidak pernah dipakai untuk LP maupun swap.`],
                     ]} />}
-                </Tabs.Panel>
-                <Tabs.Panel id="notify" shouldForceMount className="data-[inert]:hidden">
+                </Tabs.Panel>}
+                {shown('notify') && <Tabs.Panel id="notify" shouldForceMount className="data-[inert]:hidden">
                   <SimpleForm title="Notifikasi" url="/api/settings/notify" okText="Topik tersimpan" initial={d.notify} envName={d.notify?.fromEnv}
                     desc="Kabar tiap posisi disalin atau ditutup, lewat ntfy.sh. Pasang aplikasi ntfy di HP lalu langganan topik yang sama."
                     fields={[['ntfy_topic', 'Topik ntfy', 'Siapa pun yang tahu nama topiknya bisa membaca notifikasinya — pakai nama yang sulit ditebak. Kosongkan untuk mematikan.', 'text']]}
                     extra={<Button variant="outline" onPress={async () => say(await post('/api/settings/notify/test', {}), 'Notifikasi uji terkirim')}>{t('Kirim uji')}</Button>} />
-                </Tabs.Panel>
+                </Tabs.Panel>}
                 {shown('telegram') && <Tabs.Panel id="telegram"><TelegramTab d={d} reload={load} /></Tabs.Panel>}
                 {shown('gmgn') && <Tabs.Panel id="gmgn"><GmgnTab d={d} reload={load} /></Tabs.Panel>}
                 {shown('loop') && <Tabs.Panel id="loop" shouldForceMount className="data-[inert]:hidden">
@@ -1342,7 +1366,7 @@ export default function Settings() {
                       ['auto_eth_price', `Ambil harga ${chainInfo().nativeSymbol} dari chain`, `Aktif: gunakan harga dari pool ${chainInfo().nativeSymbol}/${chainInfo().usdgSymbol}. Nonaktif: gunakan harga cadangan yang diisi di atas.`, 'bool'],
                     ]} />
                 </Tabs.Panel>}
-                <Tabs.Panel id="display"><DisplayTab d={d} reload={load} /></Tabs.Panel>
+                {shown('display') && <Tabs.Panel id="display"><DisplayTab d={d} reload={load} /></Tabs.Panel>}
                 {shown('security') && <Tabs.Panel id="security"><SecurityTab d={d} /></Tabs.Panel>}
                 {shown('aggregators') && <Tabs.Panel id="aggregators"><AggregatorsTab d={d} setD={setD} /></Tabs.Panel>}
                 {shown('backup') && <Tabs.Panel id="backup"><BackupTab d={d} /></Tabs.Panel>}

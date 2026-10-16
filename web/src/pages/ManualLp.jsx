@@ -13,6 +13,7 @@ import { useLivePrice, useLiveCandles } from '../liveCandles';
 import TokenIcon, { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, kUsd, num, ago, price, tickPrice, locale } from '../fmt';
 import { useI18n } from '../i18n';
+import { useMe, isRegular } from '../me';
 import { isSolana, isAddr, canonAddr, chainInfo } from '../chain';
 
 // Quick range choices: [lower bound change %, upper bound change %, label],
@@ -598,6 +599,9 @@ function PoolPicker({ pools, onPick }) {
 
 export default function ManualLp({ param }) {
   const { t } = useI18n();
+  // Open-LP accounts don't copy, so this is simply "a new LP position" for them, not "manual".
+  const openLp = isRegular(useMe());
+  const title = openLp ? 'Posisi LP baru' : 'LP manual';
   const { status, reload: reloadStatus } = useStatus();
   const [pools, setPools] = useState(null);
   const [rules, setRules] = useState(null);
@@ -746,7 +750,7 @@ export default function ManualLp({ param }) {
   if (result) {
     return (
       <>
-        <PageHeader group="Aksi" title="LP manual" />
+        <PageHeader group="Aksi" title={title} />
         <Card>
           <Card.Content className="items-center gap-4 py-10 text-center">
             <span className="flex size-12 items-center justify-center rounded-full bg-success/15 text-success"><Check className="size-6" /></span>
@@ -767,8 +771,9 @@ export default function ManualLp({ param }) {
 
   return (
     <>
-      <PageHeader group="Aksi" title="LP manual"
-        desc="Membuka posisi sendiri, di luar penyalinan target. Jalur eksekusinya sama: kas dijembatani, token ditukar seperlunya, lalu mint." />
+      <PageHeader group="Aksi" title={title}
+        desc={openLp ? 'Pilih pool dan nominal. Bot menjembatani kas, menukar token seperlunya, lalu mint posisinya.'
+          : 'Membuka posisi sendiri, di luar penyalinan target. Jalur eksekusinya sama: kas dijembatani, token ditukar seperlunya, lalu mint.'} />
 
       {dry && (
         <Notice status="warning" title={t('Mode simulasi')}>

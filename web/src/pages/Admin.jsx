@@ -163,7 +163,7 @@ function Audit({ entries, users }) {
     'api/mode': 'Jeda / lanjut', 'api/settings/live': 'Mode LIVE',
     'api/settings/wallet/generate': 'Buat wallet', 'api/settings/wallet/import': 'Impor wallet', 'api/settings/wallet/remove': 'Lepas wallet', 'api/settings/wallet/export': 'Ekspor wallet',
     'api/settings/backup': 'Buat cadangan', 'api/settings/restore': 'Pulihkan cadangan',
-    'api/positions/close': 'Tutup posisi', 'api/positions/takeover': 'Ambil alih posisi', 'api/manual/lp/open': 'Buka LP manual', 'api/manual/swap': 'Swap manual',
+    'api/positions/close': 'Tutup posisi', 'api/positions/takeover': 'Ambil alih posisi', 'api/positions/scan': 'Scan posisi', 'api/manual/lp/open': 'Buka LP manual', 'api/manual/swap': 'Swap manual',
   };
   return (
     <Panel title="Log audit" desc="Masuk, pengelolaan akun, kunci wallet, LIVE, cadangan, dan pengaturan bersama. Isi permintaan tidak pernah dicatat." bodyClass="p-0"
@@ -198,16 +198,14 @@ function Fees() {
     enabled: fees.data.enabled,
     schedule: { ...fees.data.schedule },
     referral_share: fees.data.referralShare,
-    treasury: Object.fromEntries(fees.data.chains.map((k) => [k, { ...fees.data.treasury[k] }])),
   } : null);
   if (fees.data?.error) return <Panel title="Fee platform"><Notice status="warning">{t(fees.data.error)}</Notice></Panel>;
   if (!d) return <Panel title="Fee platform"><Loading /></Panel>;
   const set = (patch) => setDraft({ ...d, ...patch });
   const setFee = (k, v) => set({ schedule: { ...d.schedule, [k]: v } });
-  const setTre = (k, field, v) => set({ treasury: { ...d.treasury, [k]: { ...d.treasury[k], [field]: v } } });
   const save = async () => {
     setBusy(true);
-    const r = await post('/api/admin/fees', { enabled: d.enabled, schedule: d.schedule, referral_share: Number(d.referral_share), treasury: d.treasury });
+    const r = await post('/api/admin/fees', { enabled: d.enabled, schedule: d.schedule, referral_share: Number(d.referral_share) });
     setBusy(false);
     if (r.error) return toast.danger(t(r.error));
     toast.success(t('Fee disimpan')); setDraft(null); fees.reload();
@@ -246,19 +244,10 @@ function Fees() {
             onChange={(e) => set({ referral_share: e.target.value })} />
           <span className="text-[var(--muted)]">{t('(0–1, mis. 0.25 = 25%)')}</span>
         </div>
-        <div className="flex flex-col gap-2">
-          <span className="text-sm font-medium">{t('Treasury per chain')}</span>
-          {Object.keys(d.treasury).map((k) => (
-            <div key={k} className="flex flex-col gap-1">
-              <span className="text-xs uppercase text-[var(--muted)]">{k}</span>
-              <div className="flex gap-2">
-                <input className={addr} placeholder={t('Alamat treasury 0x…')} value={d.treasury[k].address || ''} onChange={(e) => setTre(k, 'address', e.target.value)} />
-                <input className={addr} placeholder={t('Referral 0x… (opsional)')} value={d.treasury[k].referral || ''} onChange={(e) => setTre(k, 'referral', e.target.value)} />
-              </div>
-            </div>
-          ))}
-          <p className="text-xs text-[var(--muted)]">{t('Tanpa alamat treasury, fee di chain itu tidak ditagih (gratis).')}</p>
-        </div>
+        <p className="text-sm text-[var(--muted)]">
+          {t('Alamat wallet fee per chain, saldonya, dan grafik fee masuk ada di halaman')}{' '}
+          <a className="text-[var(--accent)] underline" href="#treasury">{t('Wallet fee')}</a>.
+        </p>
         <div className="flex gap-2">
           <Button color="primary" size="sm" isLoading={busy} onPress={save}>{t('Simpan')}</Button>
           {draft && <Button variant="flat" size="sm" onPress={() => setDraft(null)}>{t('Batal')}</Button>}

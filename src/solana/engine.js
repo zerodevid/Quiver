@@ -119,7 +119,9 @@ class SolanaEngine {
 
   // LP positions owned by our wallet that are not recorded (opened by hand / the process died
   // before recording) are adopted: capital = the current value (how much it started with is unknown).
-  async adoptOwnPositions(addr) {
+  // Every run reads the wallet's full position list, so there is no scan marker to reset; the
+  // options of the EVM engine (`rescan`, `strict`) are accepted and need nothing extra here.
+  async adoptOwnPositions(addr, _opts = {}) {
     const known = new Set(this.store.all('SELECT token_id FROM positions WHERE chain=? AND token_id IS NOT NULL', this.network).map((r) => r.token_id));
     for (const [venue, a] of Object.entries(this.chain.adapters)) {
       let list;

@@ -378,10 +378,12 @@ function view(dir = tmp()) {
       cfg, store: new Store(':memory:'), ethUsd: 2500, positions: { live: [], lastSync: 0, resync: async () => {} },
       watcher: { unsupported: new Map() }, exec: { address: () => null, balances: async () => new Map() },
       leftovers: () => [], dryRun: () => true, paused: () => false, drawdownStatus: () => ({}), freshCash: async () => null,
+      rpc: { call: async (m) => (m === 'eth_getBalance' ? '0xde0b6b3a7640000' : null) },   // 1 ETH
     };
+    const daily = [{ chain: 'robinhood', day: Date.UTC(2026, 9, 15), usd: 0.4, native: '2', n: 2 }];
     const adminServer = createServer({
-      engine, store: engine.store, authStore, cfg, cfgPath, chain: {}, rpc: {}, log: () => {},
-      tenant: null, tenantControl: { feeTotals: () => ({ paidUsd: 1.5, paidCount: 10, debtUsd: 0, debtCount: 0, accounts: 2 }) },
+      engine, store: engine.store, authStore, cfg, cfgPath, chain: { network: 'robinhood', nativeSymbol: 'ETH' }, rpc: {}, log: () => {},
+      tenant: null, tenantControl: { feeTotals: () => ({ paidUsd: 1.5, paidCount: 10, debtUsd: 0, debtCount: 0, accounts: 2 }), feeDaily: () => daily },
     });
     await new Promise((r) => adminServer.listen(0, '127.0.0.1', r));
     const base = `http://127.0.0.1:${adminServer.address().port}`;
@@ -402,6 +404,13 @@ function view(dir = tmp()) {
         body: JSON.stringify({ treasury: { robinhood: { address: 'not-an-address' } } }),
       });
       assert.match((await bad.json()).error, /tidak valid/, 'a bad treasury address is rejected');
+      // The fee wallet tab: the saved address, its live balance and the income series.
+      const tr = await (await fetch(`${base}/api/admin/treasury`, { headers: { cookie: cookie(root) } })).json();
+      const rh = tr.chains.find((c) => c.key === 'robinhood');
+      assert.equal(rh.address.toLowerCase(), '0x' + 'a'.repeat(40));
+      assert.equal(rh.balance, 1, 'balance read from the chain, in native units');
+      assert.equal(rh.nativeUsd, 2500);
+      assert.deepEqual(tr.daily, daily, 'income series flows through');
     } finally { await new Promise((r) => adminServer.close(r)); }
 
     // A regular account is refused the route entirely.
@@ -409,6 +418,8 @@ function view(dir = tmp()) {
     try {
       const r = await fetch(`${s.base}/api/admin/fees`, { headers: { cookie: cookie(alice) } });
       assert.match((await r.json()).error, /superadmin/);
+      const r2 = await fetch(`${s.base}/api/admin/treasury`, { headers: { cookie: cookie(alice) } });
+      assert.match((await r2.json()).error, /superadmin/);
     } finally { await s.close(); }
   });
 

@@ -815,7 +815,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     'POST /api/settings/backup', 'POST /api/settings/restore',
     'POST /api/settings/rpc', 'POST /api/settings/aggregators', 'POST /api/settings/telegram', 'POST /api/settings/telegram/pair',
     'POST /api/settings/token/rotate', 'POST /api/settings/chains', 'POST /api/settings/loop', 'POST /api/settings/gmgn',
-    'POST /api/positions/close', 'POST /api/positions/takeover', 'POST /api/manual/lp/open', 'POST /api/manual/swap',
+    'POST /api/positions/close', 'POST /api/positions/takeover', 'POST /api/positions/scan', 'POST /api/manual/lp/open', 'POST /api/manual/swap',
   ]);
   const audit = (req, action, { detail = null, ok = true, username = null } = {}) => {
     try {
@@ -1184,6 +1184,27 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       saveCfg();
       return { ok: true };
     },
+    // The fee wallets: per chain the treasury address, its live native balance and the fee income
+    // that reached it per day (summed across accounts). The balance is read from the chain, so it
+    // also reflects anything the operator withdrew; the income series comes from the ledger.
+    'GET /api/admin/treasury': async (req) => {
+      if (!isAdmin(req)) return FORBIDDEN;
+      const keys = enabledChains(cfg);
+      const chains = await Promise.all(keys.map(async (k) => {
+        const n = nets?.[k] || (k === chain.network ? { chain, engine } : null);
+        const c = n?.chain;
+        const address = cfg.treasury?.[k]?.address || '';
+        const referral = cfg.treasury?.[k]?.referral || '';
+        const out = { key: k, label: n?.label || c?.label || k, kind: c?.kind || 'evm', nativeSymbol: c?.nativeSymbol || 'ETH',
+          nativeUsd: n?.engine?.ethUsd || null, address, referral, balance: null, refBalance: null, error: null };
+        if (!n || out.kind === 'solana') return out;
+        const read = async (a) => (a ? Number(ethers.formatEther(BigInt(await n.engine.rpc.call('eth_getBalance', [a, 'latest'])))) : null);
+        try { [out.balance, out.refBalance] = await Promise.all([read(address), read(referral)]); }
+        catch (e) { out.error = e.message; }
+        return out;
+      }));
+      return { chains, daily: tenantControl?.feeDaily ? tenantControl.feeDaily() : [] };
+    },
     'GET /api/overview': async () => {
       // Cash is re-read if a tx has landed in a block since the last read (see
       // Engine.freshCash) — called BEFORE summary so the leftover token value that
@@ -1451,6 +1472,25 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       try { await Promise.all([engine.positions.resync(engine.ethUsd), books]); }
       catch (e) { return { error: e.message, syncedAt: engine.positions.lastSync }; }
       return { ok: true, syncedAt: engine.positions.lastSync };
+    },
+    // Scan the wallet for active LP positions the bot has not recorded yet (e.g. opened before the
+    // wallet was imported) and adopt them, on every chain of this account. Covers the recent
+    // window only (Engine#adoptScanBlocks), not the whole history, to spare the RPC.
+    'POST /api/positions/scan': async () => {
+      let adopted = 0;
+      const errors = [];
+      for (const e of engines) {
+        const addr = e.exec?.address?.();
+        if (!addr || !e.adoptOwnPositions) continue;
+        const count = () => e.store.get("SELECT COUNT(*) n FROM positions WHERE chain=? AND status='open'", e.network)?.n || 0;
+        const before = count();
+        try { await e.adoptOwnPositions(addr, { rescan: true, strict: true }); }
+        catch (err) { errors.push(`${e.chain?.label || e.network}: ${err.message}`); }
+        adopted += Math.max(0, count() - before);
+        if (adopted) e.positions?.resync?.(e.ethUsd).catch(() => {});
+      }
+      if (errors.length && !adopted) return { error: errors.join('; ') };
+      return { ok: true, adopted, errors };
     },
     // One position for the detail page. An open one is taken from the last sync result
     // (value, fee, current price); one already closed — or freshly opened and not yet

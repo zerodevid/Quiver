@@ -3,7 +3,8 @@ import { Button, Chip, Toast, toast } from '@heroui/react';
 import {
   LayoutDashboard, Layers, ListChecks, Users, SlidersHorizontal, Wallet as WalletIcon,
   Settings as SettingsIcon, Moon, Sun, Pause, Play, Menu, X, LogOut, Eye, EyeOff,
-  PlusCircle, ArrowDownUp, BookOpen, MonitorDot, ScrollText, UserCog,
+  PlusCircle, ArrowDownUp, BookOpen, MonitorDot, ScrollText, UserCog, PiggyBank,
+  Link2, Network, Shuffle, MessageCircle, DatabaseBackup,
 } from 'lucide-react';
 import { usePoll, useHash, useTheme } from './hooks';
 import { post, withChain, setMergedPage } from './api';
@@ -20,7 +21,7 @@ import SearchModal, { SearchTrigger } from './components/GlobalSearch';
 import { Loading, ConfirmHost, WalletLinks, ask } from './components/ui';
 import { hideSplash } from './splash';
 import { isMini } from './telegram';
-import { useMe, isSuperadmin, isRegular } from './me';
+import { useMe, isRegular, isOperator } from './me';
 
 // Each page is loaded when opened — the chart library is only downloaded for the Summary.
 const Overview = lazy(() => import('./pages/Overview'));
@@ -36,6 +37,7 @@ const ManualLp = lazy(() => import('./pages/ManualLp'));
 const Swap = lazy(() => import('./pages/Swap'));
 const Learn = lazy(() => import('./pages/Learn'));
 const Admin = lazy(() => import('./pages/Admin'));
+const Treasury = lazy(() => import('./pages/Treasury'));
 // Not in the menu: opened from a token icon (#token/0x…) and a pair name (#pool/0x…).
 const TokenDetail = lazy(() => import('./pages/TokenDetail'));
 const PoolDetail = lazy(() => import('./pages/PoolDetail'));
@@ -73,9 +75,19 @@ const NAV = [
 // The superadmin on a multi-user server is the platform operator, not an LP trader: its
 // dashboard is the admin console (accounts, fees, invites, audit) plus the shared server
 // settings and logs — NOT the LP trading pages that users see.
+// The common server sections are taken out of Settings into their own pages here.
+const settingsSection = (id) => function SettingsSection() { return <Settings section={id} />; };
 const ADMIN_NAV = [
   ['Admin', [
     ['admin', 'Akun & Fee', UserCog, Admin],
+    ['treasury', 'Wallet fee', PiggyBank, Treasury],
+  ]],
+  ['Server', [
+    ['chains', 'Chain', Link2, settingsSection('chains')],
+    ['rpc', 'RPC', Network, settingsSection('rpc')],
+    ['aggregators', 'Agregator swap', Shuffle, settingsSection('aggregators')],
+    ['telegram', 'Telegram', MessageCircle, settingsSection('telegram')],
+    ['backup', 'Cadangan', DatabaseBackup, settingsSection('backup')],
   ]],
   ['Sistem', [
     ['settings', 'Pengaturan', SettingsIcon, Settings],
@@ -85,17 +97,23 @@ const ADMIN_NAV = [
 // Regular (open-LP) accounts don't copy: the Copy group collapses to a single disabled
 // "coming soon" entry, matching the engine, which never runs the copy tick for them.
 const COPY_SOON_GROUP = ['Copy', [['copy-soon', 'Copy', Users, CopySoon]]];
+// Without copying there is nothing "manual" to set apart: open-LP accounts see the LP page as
+// opening a new LP position.
+const OPEN_LP_LABELS = { 'manual-lp': 'Posisi LP baru' };
 const navFor = (me) => {
-  if (isRegular(me)) return NAV.map(([g, items]) => (g === 'Copy' ? COPY_SOON_GROUP : [g, items]));
+  if (isRegular(me)) {
+    return NAV.map(([g, items]) => (g === 'Copy' ? COPY_SOON_GROUP
+      : [g, items.map(([id, label, ...rest]) => [id, OPEN_LP_LABELS[id] || label, ...rest])]));
+  }
   // A single-user deployment signed in with the server token (no accounts) keeps the full LP
   // dashboard — that is the legacy bot. Only a real superadmin account gets the operator console.
-  if (isSuperadmin(me) && me.multiUser && !me.legacy) return ADMIN_NAV;
+  if (isOperator(me)) return ADMIN_NAV;
   return NAV;
 };
 // The pages a role may open directly; anything else is bounced to its home. Detail pages
 // (opened from a link) are always allowed.
 const DETAIL_PAGES = new Set(['token', 'pool', 'scout']);
-const homePageFor = (me) => (isSuperadmin(me) && me.multiUser && !me.legacy ? 'admin' : 'summary');
+const homePageFor = (me) => (isOperator(me) ? 'admin' : 'summary');
 const allowedPages = (me) => new Set(navFor(me).flatMap(([, items]) => items.map(([id]) => id)));
 // Placeholder for the Copy section on open-LP accounts — the feature is built but not yet
 // offered to regular users (the engine does not copy for them).
@@ -106,11 +124,12 @@ function CopySoon() {
       <Users className="mx-auto mb-4 size-10 text-[var(--muted)]" />
       <h2 className="text-lg font-semibold">{t('Copy trading')}</h2>
       <Chip className="my-3" color="warning" variant="flat">{t('Segera hadir')}</Chip>
-      <p className="text-sm text-[var(--muted)]">{t('Menyalin wallet lain otomatis sedang kami siapkan. Untuk sekarang kamu bisa membuka dan mengelola posisi LP-mu sendiri lewat LP manual.')}</p>
+      <p className="text-sm text-[var(--muted)]">{t('Menyalin wallet lain otomatis sedang kami siapkan. Untuk sekarang kamu bisa membuka dan mengelola posisi LP-mu sendiri lewat Posisi LP baru.')}</p>
     </div>
   );
 }
-const PAGES = { ...Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C]))), 'copy-soon': CopySoon, scout: WalletPage, token: TokenDetail, pool: PoolDetail, admin: Admin };
+const PAGES = { ...Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C]))), 'copy-soon': CopySoon, scout: WalletPage, token: TokenDetail, pool: PoolDetail, admin: Admin, treasury: Treasury,
+  ...Object.fromEntries(ADMIN_NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C]))) };
 
 function NavLinks({ page, onPick }) {
   const { t } = useI18n();
@@ -177,6 +196,8 @@ function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
   const { t, locale, setLocale } = useI18n();
   const me = useMe();
   const account = me?.user && !me.user.legacy ? me.user : null;
+  // The operator does not trade from the console: no mode/wallet card, pause button or target alerts.
+  const operator = isOperator(me);
   const m = status?.mode;
   // The combined view pauses/resumes every chain it shows, each through its own server.
   const pause = async () => {
@@ -193,6 +214,7 @@ function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
   return (
     <div className="flex flex-col gap-2.5 border-t border-border p-3">
       <div className="rounded-md border border-border px-3 py-2.5">
+        {!operator && <>
         <div className="flex items-center justify-between">
           <span className="text-xs text-muted">{t('Mode')}</span>
           <ModeBadge m={m} />
@@ -206,17 +228,20 @@ function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
             {m?.wallet && <WalletLinks address={m.wallet} compact className="trade-snug" />}
           </span>
         </div>
+        </>}
         {account && (
-          <div className="mt-1.5 flex items-center justify-between gap-2">
+          <div className={`${operator ? '' : 'mt-1.5 '}flex items-center justify-between gap-2`}>
             <span className="text-xs text-muted">{t('Akun')}</span>
             <span className="truncate text-xs font-medium" title={account.username}>{account.username}</span>
           </div>
         )}
       </div>
       {/* Pause/resume is the only action that changes the bot — standalone, as wide as the sidebar. */}
-      <Button size="sm" variant="outline" className="w-full" onPress={pause} isDisabled={!m}>
-        {m?.paused ? <><Play className="size-3.5" />{t('Lanjutkan')}</> : <><Pause className="size-3.5" />{t('Jeda')}</>}
-      </Button>
+      {!operator && (
+        <Button size="sm" variant="outline" className="w-full" onPress={pause} isDisabled={!m}>
+          {m?.paused ? <><Play className="size-3.5" />{t('Lanjutkan')}</> : <><Pause className="size-3.5" />{t('Jeda')}</>}
+        </Button>
+      )}
       {/* Tool row: frameless icons on the left, language picker on the right — follows the mobile header style. */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-0.5">
@@ -224,7 +249,7 @@ function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
             {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
           </Button>
           <PrivacyButton hidden={privacy[0]} toggle={privacy[1]} />
-          <AlertBell placement="top" variant="ghost" iconClass="size-4" />
+          {!operator && <AlertBell placement="top" variant="ghost" iconClass="size-4" />}
           {/* Only when the gate is on (token or accounts); otherwise there is no session to close. The
               Telegram mini app signs in by itself each time it opens, so it has nothing to log out of. */}
           {(m?.auth || account) && !isMini() && (
@@ -435,7 +460,8 @@ export default function App() {
   // The tab title follows the live figures: "Quiver · $1,234.56 · +$56.78" (scrolling, see setBaseTitle) — portfolio total and
   // PnL (net if capital is tracked, otherwise position PnL), the same as the card on the
   // Summary. Readable from beside another tab without opening the dashboard.
-  const w = status?.wallet;
+  const operator = isOperator(me);
+  const w = operator ? null : status?.wallet;
   useEffect(() => {
     if (!w) return;
     const pnl = w.netPnl ?? w.pnl;
@@ -451,7 +477,7 @@ export default function App() {
   useEffect(() => { if (offScope) window.location.hash = homePageFor(me); }, [offScope, me, page]);
   const effPage = offScope ? homePageFor(me) : page;
   const Page = (isRegular(me) && COPY_PAGES.has(effPage)) ? CopySoon : (PAGES[effPage] || Overview);
-  useTargetAlerts();
+  useTargetAlerts(operator);
 
   return (
     <StatusCtx.Provider value={{ status, reload }}>
@@ -465,7 +491,7 @@ export default function App() {
           <div className="flex h-[76px] items-center border-b border-border px-5"><Brand chain={chain} chains={chainList} /></div>
           {/* data-reveal: disembunyikan selama layar pembuka, muncul berurutan setelah logo mendarat */}
           <div className="flex-1 overflow-y-auto px-2 py-4" data-reveal="nav">
-            <div className="mb-3 px-0.5"><SearchTrigger /></div>
+            {!operator && <div className="mb-3 px-0.5"><SearchTrigger /></div>}
             <NavLinks page={page} />
           </div>
           <div data-reveal="nav"><StatusFoot status={status} reload={reload} theme={theme} toggleTheme={toggleTheme} privacy={privacy} /></div>
@@ -476,10 +502,10 @@ export default function App() {
           <header className="sticky top-0 z-30 flex h-[72px] items-center justify-between border-b border-border bg-surface/90 px-4 backdrop-blur lg:hidden">
             <Brand chain={chain} chains={chainList} />
             <div className="flex items-center gap-1" data-reveal="nav">
-              <span className="mr-1 hidden min-[360px]:inline"><ModeBadge m={status?.mode} /></span>
-              <SearchTrigger compact />
+              {!operator && <span className="mr-1 hidden min-[360px]:inline"><ModeBadge m={status?.mode} /></span>}
+              {!operator && <SearchTrigger compact />}
               <PrivacyButton hidden={privacy[0]} toggle={privacy[1]} />
-              <AlertBell placement="bottom" variant="ghost" iconClass="size-4" />
+              {!operator && <AlertBell placement="bottom" variant="ghost" iconClass="size-4" />}
               <Button size="sm" variant="ghost" isIconOnly aria-label={t('Ganti tema')} onPress={toggleTheme}>
                 {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
               </Button>
@@ -495,7 +521,7 @@ export default function App() {
             </div>
           )}
 
-          <StuckAlert />
+          {!operator && <StuckAlert />}
           <main className="mx-auto w-full max-w-[90rem] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7" data-reveal="main">
             {allView && <ChainScopeBar merged={merged} byChain={status.byChain} chains={chainList?.chains} />}
             <Suspense fallback={<Loading page />}><Page key={pageKey} param={param} /></Suspense>

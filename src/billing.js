@@ -79,7 +79,25 @@ function feeSummary(store, chain = null) {
   return { paidUsd: paid.usd, paidCount: paid.n, debtUsd: debt.usd, debtCount: debt.n };
 }
 
+// Paid fees per chain and UTC day, for the treasury income chart: [{ chain, day, usd, native, n }].
+// `day` is the UTC midnight in ms; `native` is wei as a decimal string (summed in JS — SQLite has
+// no 128-bit integers and the column is text). Debts are left out: that money never arrived.
+function feeDaily(store, since = 0) {
+  const rows = store.all("SELECT chain, ts, usd, native FROM platform_fee WHERE status='paid' AND ts>=? ORDER BY ts", since);
+  const out = new Map();
+  for (const r of rows) {
+    const day = Math.floor(r.ts / 864e5) * 864e5;
+    const k = `${r.chain}|${day}`;
+    const b = out.get(k) || { chain: r.chain, day, usd: 0, native: 0n, n: 0 };
+    b.usd += Number(r.usd) || 0;
+    try { b.native += BigInt(r.native || 0); } catch { /* malformed row: count it in USD only */ }
+    b.n++;
+    out.set(k, b);
+  }
+  return [...out.values()].map((b) => ({ ...b, native: b.native.toString() }));
+}
+
 module.exports = {
   FLAT_FEE_USD, DEFAULT_FEES_USD, FREE_ACTIONS, DEFAULT_REFERRAL_SHARE,
-  feeUsd, feeNativeWei, treasuryFor, referralShare, recordFee, feeSummary,
+  feeUsd, feeNativeWei, treasuryFor, referralShare, recordFee, feeSummary, feeDaily,
 };

@@ -17,6 +17,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Store } = require('../src/db');
+const { ethers } = require('ethers');
 const { rulesFor } = require('../src/policy');
 const mm = require('../src/v3math');
 const { createServer } = require('../src/server');
@@ -931,6 +932,115 @@ const buttons = (o) => (o?.params?.reply_markup?.inline_keyboard || []).flat().m
     await w.bot.handle({ message: { chat: { id: Number(CHAT) }, from: { id: Number(CHAT) }, text: 'not-a-valid-key', message_id: 555 } });
     const del = w.sent.find((s) => s.method === 'deleteMessage');
     assert.ok(del && del.params.message_id === 555, 'the message holding the key is deleted immediately');
+  });
+
+  // A bot whose wallet is a real (encrypted) key file in a temp dir, so imports and switches are real.
+  const walletWorld = () => {
+    if (!process.env.LPCOPY_MASTER_KEY) process.env.LPCOPY_MASTER_KEY = 'test-master-key-'.repeat(3);
+    const w = build();
+    w.cfg.wallet.key_file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lpcopy-wallets-')), 'key');
+    w.engine.exec.address = () => {
+      try { return new ethers.Wallet(require('../src/keyfile').readSecret(w.cfg.wallet.key_file).trim()).address.toLowerCase(); } catch { return null; }
+    };
+    w.engine.positions.open = () => [];
+    w.importKey = async (pk) => { await w.bot.handle(cbq('wbi')); await w.bot.handle(msg(pk)); };
+    return w;
+  };
+  const PK1 = '0x' + '11'.repeat(32), PK2 = '0x' + '22'.repeat(32);
+  const ADDR1 = new ethers.Wallet(PK1).address.toLowerCase(), ADDR2 = new ethers.Wallet(PK2).address.toLowerCase();
+
+  await t('importing a second key keeps the first one as a saved wallet to switch back to', async () => {
+    const w = walletWorld();
+    await w.importKey(PK1);
+    await w.importKey(PK2);
+    assert.strictEqual(w.engine.exec.address(), ADDR2);
+    await w.bot.handle(cbq('wb'));
+    const out = lastOut(w.sent);
+    assert.match(out.params.text, new RegExp(ADDR2), 'the active address is shown in full');
+    assert.match(out.params.text, /Wallet kamu<\/b> \(2\)/, "both wallets are counted, the active one included");
+    assert.ok(!out.params.text.includes(w.cfg.wallet.key_file) && !/berkas kunci|izin berkas|cadangan kunci/.test(out.params.text), 'no server paths or key-file details');
+    const use = buttons(out).find((b) => b.startsWith('wbu:'));
+    assert.ok(use, 'the saved wallet has a switch button');
+    await w.bot.handle(cbq(use.replace('wbu', 'wbU')));
+    assert.strictEqual(w.engine.exec.address(), ADDR1, 'switched back to the first wallet');
+    assert.strictEqual(w.store.getState('wallet_address'), ADDR1);
+  });
+
+  await t('re-importing a saved key switches to it instead of saving a duplicate', async () => {
+    const w = walletWorld();
+    await w.importKey(PK1);
+    await w.importKey(PK2);
+    await w.importKey(PK1);
+    assert.strictEqual(w.engine.exec.address(), ADDR1);
+    assert.deepStrictEqual(w.bot.savedWallets().map((x) => x.address), [ADDR1, ADDR2]);
+  });
+
+  await t('the wallet cannot be switched while a real position is open', async () => {
+    const w = walletWorld();
+    await w.importKey(PK1);
+    await w.importKey(PK2);
+    w.engine.positions.open = () => [{ id: 1, token_id: '77' }];
+    const saved = w.bot.savedWallets().find((x) => !x.active);
+    await w.bot.handle(cbq(`wbU:${saved.id}`));
+    assert.match(lastOut(w.sent).params.text, /posisi terbuka/);
+    assert.strictEqual(w.engine.exec.address(), ADDR2, 'the active wallet is unchanged');
+  });
+
+  await t('a saved wallet can be named and removed from the list', async () => {
+    const w = walletWorld();
+    await w.importKey(PK1);
+    await w.bot.handle(cbq('wbn'));
+    await w.bot.handle(msg('Utama'));
+    await w.importKey(PK2);
+    await w.bot.handle(cbq('wb'));
+    assert.match(lastOut(w.sent).params.text, /Utama/, 'the saved wallet shows its name');
+    const saved = w.bot.savedWallets().find((x) => !x.active);
+    await w.bot.handle(cbq(`wbX:${saved.id}`));
+    assert.deepStrictEqual(w.bot.savedWallets().map((x) => x.address), [ADDR2]);
+  });
+
+  await t('a saved (inactive) wallet can be named from its own button; the list shows full addresses', async () => {
+    const w = walletWorld();
+    await w.importKey(PK1);
+    await w.importKey(PK2);
+    await w.bot.handle(cbq('wb'));
+    const name = buttons(lastOut(w.sent)).find((b) => b.startsWith('wbm:'));
+    assert.ok(name, 'each saved wallet has a rename button');
+    await w.bot.handle(cbq(name));
+    await w.bot.handle(msg('Cadangan'));
+    assert.strictEqual(w.bot.savedWallets().find((x) => !x.active).name, 'Cadangan');
+    assert.strictEqual(w.bot.savedWallets().find((x) => x.active).name, null, 'the active wallet is untouched');
+    await w.bot.handle(cbq('wb'));
+    const text = lastOut(w.sent).params.text;
+    assert.ok(text.includes(ADDR1), 'the saved wallet is listed by its full address');
+    assert.ok(!text.includes(PK1.replace(/^0x/, '').slice(0, 16)), 'never the key');
+  });
+
+  await t('the profit calendar shows the month total, a day grid and a month card button', async () => {
+    const w = build();
+    w.cfg.telegram.timezone = 'UTC';
+    const api = w.bot.api;
+    w.bot.api = (m, p, b, q) => (p === '/api/portfolio'
+      ? Promise.resolve({ closed: [[Date.UTC(2026, 9, 5, 12), 12.5, 1], [Date.UTC(2026, 9, 5, 15), 2.5, 2], [Date.UTC(2026, 9, 14, 9), -3, 3], [Date.UTC(2026, 8, 30, 9), 99, 4]] })
+      : api(m, p, b, q));
+    await w.bot.handle(cbq('cal:2026-10'));
+    const out = lastOut(w.sent);
+    if (process.env.SHOW_CAL) console.log(out.params.text);
+    assert.match(out.params.text, /\+\$12[.,]00/, 'the month total is October only');
+    assert.match(out.params.text, / 5\+/, 'a profit day is marked in the grid');
+    assert.match(out.params.text, /14-/, 'a loss day is marked in the grid');
+    const btns = buttons(out);
+    assert.ok(btns.includes('ms:2026-10') && btns.includes('cal:2026-09'), 'month card and previous month');
+  });
+
+  await t('the open-LP home menu reaches the calendar, the wallet and gas directly', async () => {
+    const w = build();
+    w.bot.hub = { me: null };
+    await w.bot.handle(cbq('h'));
+    const btns = buttons(lastOut(w.sent));
+    for (const b of ['cal', 'wb', 'gs']) assert.ok(btns.includes(b), `home has ${b}`);
+    const labels = (lastOut(w.sent).params.reply_markup.inline_keyboard || []).flat().map((x) => x.text);
+    assert.ok(labels.includes('💧 Posisi LP baru') && !labels.some((l) => /LP manual/.test(l)), 'no copying here, so no "manual" LP');
   });
 
   await t('replacing the wallet is still refused in LIVE (the dashboard rule applies too)', async () => {

@@ -69,6 +69,26 @@ const REF = '0x' + '2'.repeat(40);
     assert.equal(row.native, '50000000000000', 'native stored as decimal text, not a lossy float');
   });
 
+  await t('feeDaily buckets paid fees per chain and UTC day, summing wei exactly', () => {
+    const store = new Store(':memory:');
+    const day = Date.UTC(2026, 9, 15);
+    const add = (chain, ts, usd, native, status = 'paid') => store.run(
+      'INSERT INTO platform_fee(chain, ts, action, usd, native, status) VALUES(?,?,?,?,?,?)', chain, ts, 'open', usd, native, status);
+    add('robinhood', day + 1000, 0.2, '90000000000000000001');   // > 2^64 wei: must not lose the last digit
+    add('robinhood', day + 5000, 0.2, '1');
+    add('robinhood', day + 86400e3, 0.2, '7');                     // the next day
+    add('bsc', day + 1000, 0.2, '3');
+    add('robinhood', day + 2000, 0.2, '5', 'debt');                // never arrived: left out
+    const rows = b.feeDaily(store);
+    const rh = rows.filter((r) => r.chain === 'robinhood').sort((x, y) => x.day - y.day);
+    assert.equal(rh.length, 2);
+    assert.equal(rh[0].day, day);
+    assert.equal(rh[0].n, 2);
+    assert.equal(rh[0].native, '90000000000000000002');
+    assert.ok(Math.abs(rh[0].usd - 0.4) < 1e-9);
+    assert.equal(rows.find((r) => r.chain === 'bsc').native, '3');
+  });
+
   // ---- Engine#chargeFee: who pays, and paid vs debt vs exempt ----
   const { Engine } = require('../src/engine');
   const stubEngine = ({ copy = false, dry = false, bal = 10n ** 18n, cfg } = {}) => {

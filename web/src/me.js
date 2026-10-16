@@ -17,3 +17,6 @@ export function useMe() {
 // belongs to the superadmin, so those parts of the dashboard are hidden.
 export const isRegular = (me) => !!me?.user && me.user.role !== 'superadmin';
 export const isSuperadmin = (me) => me?.user?.role === 'superadmin';
+// The platform operator on a multi-user server: its dashboard is the admin console, not the LP
+// pages. A single-user deployment signed in with the server token keeps the full LP dashboard.
+export const isOperator = (me) => isSuperadmin(me) && !!me.multiUser && !me.legacy;

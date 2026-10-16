@@ -14,6 +14,7 @@ const PositionDetail = lazy(() => import('./PositionDetail'));
 import PositionHistory from '../components/PositionHistory';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
+import ScanPositionsButton from '../components/ScanPositionsButton';
 import { usd, pct, tone, age, ago, short, shortId, num, feeApr, aprText } from '../fmt';
 import { useI18n } from '../i18n';
 
@@ -171,7 +172,12 @@ export default function Positions({ param }) {
   // the portfolio's truth, and must not change just because the table is filtered.
   const [lens, setLens] = useState('all');
   if (param) return <Suspense fallback={<Loading page />}><PositionDetail id={param} /></Suspense>;
-  const header = <PageHeader group="Pemantauan" title="Posisi" desc="Posisi LP milik bot — nilai, fee, dan PnL diperbarui dari chain tiap 30 detik. Klik baris untuk melihat riwayat transaksi dan catatan bot." />;
+  // Scan: positions already in the wallet (e.g. opened before it was imported) join the list.
+  const header = (
+    <PageHeader group="Pemantauan" title="Posisi" desc="Posisi LP milik bot — nilai, fee, dan PnL diperbarui dari chain tiap 30 detik. Klik baris untuk melihat riwayat transaksi dan catatan bot.">
+      <ScanPositionsButton size="sm" onDone={(r) => { if (r.adopted) resync(); }} />
+    </PageHeader>
+  );
   // No reply at all yet: show something where the table will appear, not
   // an empty page — and if the server is unreachable, say so.
   if (!d?.positions) {

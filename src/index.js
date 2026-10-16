@@ -399,6 +399,21 @@ async function main() {
       }
       return total;
     },
+    // Paid fees per chain and day, merged across every running account (see billing.feeDaily).
+    feeDaily(since = 0) {
+      const out = new Map();
+      for (const t of tenants.values()) {
+        let rows;
+        try { rows = billing.feeDaily(t.store, since); } catch { continue; }   // a DB being rebuilt
+        for (const r of rows) {
+          const k = `${r.chain}|${r.day}`;
+          const b = out.get(k);
+          if (!b) out.set(k, { ...r, native: BigInt(r.native) });
+          else { b.usd += r.usd; b.native += BigInt(r.native); b.n += r.n; }
+        }
+      }
+      return [...out.values()].sort((a, b) => a.day - b.day).map((b) => ({ ...b, native: b.native.toString() }));
+    },
     start(userId) {
       if (stopping || tenants.has(userId)) return { ok: true };
       if (!this.canAdd()) { log(`akun ${userId} tidak dinyalakan: kuota ${maxUsers()} akun penuh`); return { error: 'kuota akun penuh' }; }

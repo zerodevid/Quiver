@@ -54,5 +54,11 @@
   "Urutan agregator tidak valid.": "Invalid aggregator order.",
   "Agregator tidak dikenal.": "Unknown aggregator.",
   "Nilai terlalu panjang.": "Value too long.",
-  "tidak ada rute / API menolak (lihat log)": "no route / the API refused (see the log)"
+  "tidak ada rute / API menolak (lihat log)": "no route / the API refused (see the log)",
+  "Masih ada posisi terbuka di wallet aktif — tutup dulu sebelum ganti wallet.": "The active wallet still has open positions. Close them before switching wallets.",
+  "Wallet tidak ditemukan.": "Wallet not found.",
+  "Bot sedang memproses transaksi — tunggu sampai selesai lalu coba lagi.": "The bot is processing a transaction. Wait for it to finish, then try again.",
+  "Tidak ada chain EVM aktif.": "No EVM chain is active.",
+  "Kunci privat harus 64 karakter hex (boleh diawali 0x).": "The private key must be 64 hex characters (0x optional).",
+  "Kunci privat tidak valid.": "Invalid private key."
 }

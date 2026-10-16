@@ -245,12 +245,13 @@ function announce(all, { sound, desktop, preview = false }) {
 // Keeps running while the tab is hidden (less often) — that is exactly when sound and
 // desktop notifications are useful. After being switched off then on again, the starting point
 // is fetched again so actions during the off period are not sounded later.
-export function useTargetAlerts() {
+// `off`: no polling at all (the operator console has no positions or targets to announce).
+export function useTargetAlerts(off = false) {
   const p = useAlertPrefs();
   const last = useRef(null);          // id of the last action already announced
   const lastClosed = useRef(0);       // the last close time already announced
   useEffect(() => {
-    if (!p.enabled) return undefined;
+    if (!p.enabled || off) return undefined;
     last.current = null;
     let alive = true, timer = null;
     const tick = async () => {
@@ -269,7 +270,7 @@ export function useTargetAlerts() {
     };
     tick();
     return () => { alive = false; clearTimeout(timer); };
-  }, [p.enabled]);
+  }, [p.enabled, off]);
 }
 
 // ---- bell button + its settings ----------------------------------------

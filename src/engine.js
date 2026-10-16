@@ -209,17 +209,41 @@ class Engine {
   // wallet's address are cheap (chunks of 1 million blocks). The window used to be 600k blocks (~17 hours) and
   // only ran at start, so older positions never appeared.
   // After that only new blocks since the last scan are needed, called periodically.
-  async adoptOwnPositions(addr) {
+  //
+  // The scan marker belongs to the wallet it was made for: after a wallet switch or import the
+  // new wallet's recent window (cfg.loop.adopt_scan_days, default 7 days) is scanned, otherwise
+  // its positions would never be found. `rescan` does the same on demand (the "scan positions"
+  // button). Only that window, not the whole history: on a 0.1 s chain the whole history is tens
+  // of millions of blocks of getLogs, and a position still open is almost always recent. Only
+  // positions still held with liquidity are adopted. `strict` rethrows the error for the button
+  // instead of only logging it. Runs are serialized, so the button and the periodic scan never
+  // adopt the same position twice.
+  adoptOwnPositions(addr, opts = {}) {
+    const run = (this.adoptRun || Promise.resolve()).catch(() => {}).then(() => this.adoptOnce(addr, opts));
+    this.adoptRun = run;
+    return run;
+  }
+
+  // Blocks in the recent window a fresh wallet scan covers.
+  adoptScanBlocks() {
+    const days = Number(this.cfg.loop?.adopt_scan_days) > 0 ? Number(this.cfg.loop.adopt_scan_days) : 7;
+    return Math.ceil((days * 864e5) / (this.chain.blockMs || 2000));
+  }
+
+  async adoptOnce(addr, { rescan = false, strict = false } = {}) {
     try {
       const me = addr.toLowerCase();
       const head = await this.rpc.blockNumber();
-      const last = Number(this.store.getState(this.sk('adopt_scanned_to'), 0));
-      const blocks = last ? head - last + 2000 : (this.cfg.loop?.adopt_blocks ?? head);
+      // A marker without its wallet predates this check: it was made for the current wallet.
+      const scannedFor = this.store.getState(this.sk('adopt_scanned_wallet'), null);
+      const fresh = rescan || (scannedFor && scannedFor !== me);
+      const last = fresh ? 0 : Number(this.store.getState(this.sk('adopt_scanned_to'), 0));
+      const blocks = fresh ? this.adoptScanBlocks() : last ? head - last + 2000 : (this.cfg.loop?.adopt_blocks ?? head);
       const { held } = await enumerateV4(this.chain, me, head, blocks, 1_000_000, undefined, this.rpc);
       // The scan window marker is only advanced if ALL candidates were read. It used to be advanced
       // before the positions were read: one failed RPC read made that wallet's position
       // not adopted, and the next scan no longer covered its block — lost.
-      const done = () => this.store.setState(this.sk('adopt_scanned_to'), head);
+      const done = () => { this.store.setState(this.sk('adopt_scanned_to'), head); this.store.setState(this.sk('adopt_scanned_wallet'), me); };
       const known = new Set(this.store.all("SELECT token_id FROM positions WHERE chain=? AND venue='v4' AND token_id IS NOT NULL", this.network).map((r) => r.token_id));
       let missing = [...held.keys()].filter((id) => !known.has(id));
       if (!missing.length) return done();
@@ -264,7 +288,10 @@ class Engine {
       if (incomplete) throw new Error('sebagian posisi wallet belum terbaca dari RPC — dipindai ulang nanti');
       done();
       this.cleared('adopsi', 'adopsi posisi: berhasil lagi');
-    } catch (e) { this.trouble('adopsi', `adopsi posisi: ${e.message}`, { after: 3 }); }   // repeated every 10 minutes
+    } catch (e) {
+      this.trouble('adopsi', `adopsi posisi: ${e.message}`, { after: 3 });   // repeated every 10 minutes
+      if (strict) throw e;
+    }
   }
 
   // Find a failed copy plan that matches this position (pool + range).

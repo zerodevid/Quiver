@@ -23,6 +23,8 @@ const { ethers } = require('ethers');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { writeCfg } = require('./env');
 const keyfile = require('./keyfile');
+const wallets = require('./wallets');
+const { isSim } = require('./paper');
 const { isSolana, normAddr, addrHint } = require('./networks');
 // The chain a conversation is currently using. The same pattern as localeContext: every
 // Telegram update runs inside run(<chain>), and this.api/this.engine/the cards
@@ -136,6 +138,8 @@ const positionTable = (positions, history = false) => column([
   ]),
 ]);
 const shortA = (a) => (a ? `${String(a).slice(0, 6)}…${String(a).slice(-4)}` : '—');
+// Lowercase address of an EVM private key (throws on a bad key).
+const walletAddr = (pk) => new ethers.Wallet(pk.startsWith('0x') ? pk : '0x' + pk).address.toLowerCase();
 const shortH = (h) => (h ? `${String(h).slice(0, 10)}…` : '—');
 // Drop trailing zeros of the fraction: "1,50" -> "1,5", "1,00" -> "1". A number without a comma
 // is not touched — in Indonesian format "1.000" is a thousand, not one point zero.
@@ -1283,6 +1287,7 @@ class Telegram {
       case 'h': return out(...(await this.home()));
       case 'o': return out(...(await this.overview()));
       case 'b': return out(...(await this.saldo()));
+      case 'cal': return out(...(await this.calendar(rest[0])));
       case 'pl': return out(...(await this.posisi(rest[0], rest[1])));
       case 'p': return rest[0] ? out(...(await this.positionDetail(rest[0]))) : out(...(await this.posisi()));
       case 'pc': {
@@ -1302,12 +1307,12 @@ class Telegram {
       // the screen currently shown is not changed, just a small notification on its button.
       // The theme, size, and amount-hiding switch ride in the callback data (`ps:<id>:<theme>:
       // <size>:<hide>`); the buttons under the photo replace the image in the same message.
-      case 'ps': case 'os': {
+      case 'ps': case 'os': case 'ms': {
         if (!this.shareCard) throw new Error('kartu bagikan tidak tersedia');
-        const kind = head === 'ps' ? 'position' : 'total', id = rest[0] || undefined;
+        const kind = head === 'ps' ? 'position' : head === 'ms' ? 'month' : 'total', id = rest[0] || undefined;
         const theme = CARD_THEMES[rest[1]] ? rest[1] : 'dark', size = CARD_SIZES[rest[2]] ? rest[2] : 'wide', hide = rest[3] === '1';
         if (ack && rest[1]) await ack(tr("Menggambar kartu…"));
-        const card = await this.shareCard({ kind, id, lang: locale(), theme, size, hide });
+        const card = await this.shareCard({ kind, id, month: kind === 'month' ? id : undefined, lang: locale(), theme, size, hide });
         if (card.error) throw new Error(note(card.error));
         const keyboard = this.cardKb(head, id, theme, size, hide);
         const edited = rest[1] ? await this.editPhoto(chatId, msgId, card.png, card.caption, keyboard) : false;
@@ -1462,19 +1467,65 @@ class Telegram {
       }
       case 'wb': return out(...(await this.walletScreen()));
       case 'wbg': return out(this.hub
-        ? tr("🔑 <b>Buat wallet baru?</b>\n\nKunci lama otomatis dicadangkan (tidak dihapus), lalu bot memakai alamat baru. Dana di alamat lama <b>tidak</b> ikut pindah.")
-        : tr("🔑 <b>Buat wallet baru?</b>\n\nKunci lama otomatis dicadangkan (tidak dihapus), lalu bot memakai alamat baru. Dana di alamat lama <b>tidak</b> ikut pindah.\n\nHanya bisa saat mode simulasi."),
+        ? tr("🔑 <b>Buat wallet baru?</b>\n\nWallet yang aktif sekarang tetap tersimpan di daftar, lalu bot memakai alamat baru. Dana di alamat lama <b>tidak</b> ikut pindah.")
+        : tr("🔑 <b>Buat wallet baru?</b>\n\nWallet yang aktif sekarang tetap tersimpan di daftar, lalu bot memakai alamat baru. Dana di alamat lama <b>tidak</b> ikut pindah.\n\nHanya bisa saat mode simulasi."),
         kb([[btn(tr("✅ Ya, buat baru"), 'wbG')], [btn(tr("↩︎ Batal"), 'wb')]]));
       case 'wbG': {
         const r = await this.api('POST', '/api/settings/wallet/generate', { replace: true });
         if (r.error) return out(`❌ ${esc(note(r.error))}`, kb([[btn(tr("↩︎ Kembali"), 'wb')]]));
-        return out(tr("✅ Wallet baru: <code>{0}</code>\nFrasa pemulihan disimpan di server (<code>{1}</code>) dan sengaja tidak dikirim lewat Telegram.", [esc(r.address), esc(r.mnemonicFile)]), kb([[btn(tr("↩︎ Wallet"), 'wb')], [BACK_HOME]]));
+        return out(tr("✅ Wallet baru aktif: <code>{0}</code>\nWallet lama tetap tersimpan di daftar. Frasa pemulihan disimpan aman di server dan sengaja tidak dikirim lewat Telegram.", [esc(r.address)]), kb([[btn(tr("↩︎ Wallet"), 'wb')], [BACK_HOME]]));
+      }
+      // Switch to a saved wallet: confirm first (the funds stay where they are).
+      case 'wbu': {
+        const w = this.savedWallets().find((x) => x.id === rest[0]);
+        if (!w) return out(...(await this.walletScreen()));
+        return out(tr("🔁 <b>Pakai wallet ini?</b>\n\n{0}\n<code>{1}</code>\n\nBot mulai memakai wallet ini untuk semua transaksi. Wallet yang aktif sekarang tetap tersimpan di daftar; dana di masing-masing wallet tidak ikut pindah.", [esc(this.walletName(w)), esc(w.address)]),
+          kb([[btn(tr("✅ Ya, pakai"), `wbU:${w.id}`)], [btn(tr("↩︎ Batal"), 'wb')]]));
+      }
+      case 'wbU': {
+        let addr;
+        try { addr = this.useWallet(rest[0]); }
+        catch (e) { return out(`⚠️ ${esc(note(e.message))}`, kb([[btn(tr("↩︎ Wallet"), 'wb'), BACK_HOME]])); }
+        if (ack) await ack(tr("Wallet diganti"));
+        return this.screen(chatId, null, 'wb', tr("✅ Wallet aktif sekarang: <code>{0}</code>\n\n", [esc(addr)]));
+      }
+      // Drop a saved (inactive) wallet from the list. The key file is kept on the server.
+      case 'wbx': {
+        const w = this.savedWallets().find((x) => x.id === rest[0] && !x.active);
+        if (!w) return out(...(await this.walletScreen()));
+        return out(tr("🗑 <b>Hapus wallet ini dari daftar?</b>\n\n{0}\n<code>{1}</code>\n\nPastikan dananya sudah dipindah atau kunci privatnya kamu simpan sendiri.", [esc(this.walletName(w)), esc(w.address)]),
+          kb([[btn(tr("🗑 Ya, hapus"), `wbX:${w.id}`)], [btn(tr("↩︎ Batal"), 'wb')]]));
+      }
+      case 'wbX': {
+        const p = this.walletKeyPath();
+        if (p) wallets.forget(p, rest[0], walletAddr);
+        return this.screen(chatId, null, 'wb', tr("✅ Wallet dihapus dari daftar.\n\n"));
+      }
+      case 'wbn': return this.ask(chatId, { kind: 'walletName', retry: 'wb' }, tr("Kirim nama untuk wallet aktif (maks. 24 karakter). Kirim <code>-</code> untuk menghapus nama."));
+      // Name a saved (inactive) wallet; the name is keyed by address, so it survives switches.
+      case 'wbm': {
+        const w = this.savedWallets().find((x) => x.id === rest[0]);
+        if (!w) return out(...(await this.walletScreen()));
+        return this.ask(chatId, { kind: 'walletName', id: w.id, retry: 'wb' },
+          tr("Kirim nama untuk wallet <code>{0}</code> (maks. 24 karakter). Kirim <code>-</code> untuk menghapus nama.", [esc(w.address)]));
       }
       case 'wbr': return this.ask(chatId, { kind: 'lepasWallet', retry: 'wb' }, tr("Untuk melepas wallet, kirim alamatnya persis (kunci dicadangkan, tidak dihapus)."));
       // Import a private key. `secret` makes onMessage delete the pasted message the instant it
       // arrives, so the key never lingers in the Telegram chat history.
+      // Scan the wallet for LP positions the bot has not recorded (e.g. opened before the import).
+      case 'wbs': {
+        if (ack) await ack(tr("Memindai…"));
+        await out(tr("⏳ Mencari posisi LP aktif di wallet ini…"));
+        const r = await this.api('POST', '/api/positions/scan', {});
+        const back = kb([[btn(tr("💼 Posisi"), 'p'), btn(tr("↩︎ Wallet"), 'wb')], [BACK_HOME]]);
+        if (r.error) return out(`⚠️ ${esc(note(r.error))}`, back);
+        const warn = r.errors?.length ? `\n\n⚠️ ${esc(note(r.errors.join('; ')))}` : '';
+        return out((r.adopted
+          ? tr("✅ <b>Scan selesai:</b> {0} posisi baru ditemukan dan sekarang dikelola bot.", [r.adopted])
+          : tr("✅ <b>Scan selesai:</b> tidak ada posisi baru — semua posisi LP wallet ini sudah tercatat.")) + warn, back);
+      }
       case 'wbi': return this.ask(chatId, { kind: 'importpk', secret: true, retry: 'wb' },
-        tr("🔐 Kirim <b>kunci privat</b> wallet kamu (64 hex, boleh diawali 0x).\n\n⚠️ Pesanmu akan <b>langsung dihapus</b> setelah diterima. Kunci lama dicadangkan, bukan dihapus."));
+        tr("🔐 Kirim <b>kunci privat</b> wallet kamu (64 hex, boleh diawali 0x).\n\n⚠️ Pesanmu akan <b>langsung dihapus</b> setelah diterima. Wallet yang aktif sekarang tetap tersimpan di daftar."));
 
       case 'sr': {
         if (!rest[0]) return out(...(await this.rpcScreen()));
@@ -1619,7 +1670,7 @@ class Telegram {
         if (ack) await ack(tr("Membuka posisi…"));
         await out(tr("⏳ Membuka posisi… <i>(jembatan kas, zap, lalu mint — bisa sampai satu menit)</i>"));
         const r = await this.api('POST', '/api/manual/lp/open', d);
-        if (r.error) return out(tr("⛔ <b>Gagal membuka LP</b>\n<code>{0}</code>", [esc(note(r.error))]), kb([[s.lpOrigin === 'qk' ? btn(tr("↩︎ Kembali"), 'qk') : btn(tr("↩︎ LP manual"), 'ml'), BACK_HOME]]));
+        if (r.error) return out(tr("⛔ <b>Gagal membuka LP</b>\n<code>{0}</code>", [esc(note(r.error))]), kb([[s.lpOrigin === 'qk' ? btn(tr("↩︎ Kembali"), 'qk') : btn(this.lpName('back'), 'ml'), BACK_HOME]]));
         s.lp = null;
         return out(tr("✅ <b>LP dibuka</b>\n{0}\ntx <code>{1}</code>", [esc(r.note), esc(shortH(r.tx))]), kb([[btn(tr("💼 Lihat posisi"), 'p')], [BACK_HOME]]));
       }
@@ -1685,7 +1736,13 @@ class Telegram {
         // The pasted message was already deleted by onMessage. Import throws a plain-language
         // error on a bad key, which the input handler shows without ever echoing the key.
         const addr = await this.importWallet(text);
-        return this.screen(chatId, null, 'wb', tr("✅ Wallet diimpor: <code>{0}</code>\nPesan kunci sudah dihapus dari chat.\n\n", [esc(addr)]));
+        return this.screen(chatId, null, 'wb', tr("✅ Wallet diimpor dan aktif: <code>{0}</code>\nPesan kunci sudah dihapus dari chat.\nPunya posisi LP dari sebelumnya? Tekan 🔍 <b>Scan posisi</b>.\n\n", [esc(addr)]));
+      }
+      case 'walletName': {
+        const w = this.savedWallets().find((x) => (p.id ? x.id === p.id : x.active));
+        if (!w) throw new Error(p.id ? 'Wallet tidak ditemukan.' : 'Tidak ada wallet terpasang.');
+        wallets.setName(this.walletKeyPath(), w.address, text.trim() === '-' ? '' : text);
+        return this.screen(chatId, null, 'wb', tr("✅ Nama wallet disimpan.\n\n"));
       }
       case 'ntfy': {
         const r = await this.api('POST', '/api/settings/notify', { ntfy_topic: text.trim() === '-' ? '' : text.trim() });
@@ -2168,6 +2225,13 @@ class Telegram {
     } catch { return null; }
   }
 
+  // The open-a-position flow ('ml'). Copy bots call it "manual" to set it apart from copied
+  // positions; open-LP bots have no copying, so there it is simply a new LP position.
+  lpName(kind) {
+    if (this.hub) return { button: tr("💧 Posisi LP baru"), title: tr("<b>💧 Posisi LP baru</b>"), back: tr("↩︎ Posisi LP baru") }[kind];
+    return { button: tr("➕ LP manual"), title: tr("<b>➕ LP manual</b>"), back: tr("↩︎ LP manual") }[kind];
+  }
+
   async home() {
     const [o, pf] = await Promise.all([this.api('GET', '/api/overview'), this.porto24()]);
     const mode = o.mode.dry_run ? tr("🧪 SIMULASI") : '🟢 LIVE';
@@ -2200,7 +2264,7 @@ class Telegram {
       '',
       // Open-LP accounts have no copy; manual LP is the way in.
       this.hub
-        ? tr("Pilih <b>LP manual</b> untuk membuka posisi sendiri.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap ke chat ini.</i>")
+        ? tr("Pilih <b>💧 Posisi LP baru</b> untuk membuka posisi.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap ke chat ini.</i>")
         : tr("Pilih <b>Target</b> untuk mengikuti wallet, atau <b>LP manual</b> untuk membuka posisi sendiri.\n<i>Anda juga bisa mengirim alamat token atau wallet lengkap ke chat ini.</i>"),
     ].filter((x) => x != null).join('\n');
     const mini = this.miniUrl();
@@ -2208,18 +2272,22 @@ class Telegram {
     const copyRows = this.hub ? [] : [
       [btn(tr("📈 Grafik portofolio"), 'pfg'), btn('🎯 Target', 't')],
       [btn(tr("📜 Aktivitas"), 'a:0'), btn(tr("💵 Saldo"), 'b')],
+      [btn(tr("📅 Kalender profit"), 'cal'), btn(tr("🔑 Wallet bot"), 'wb')],
       [btn(tr("⚙️ Aturan salin"), 'r'), btn(tr("🔧 Pengaturan"), 's')],
     ];
     const openRows = this.hub ? [
       [btn(tr("📈 Grafik portofolio"), 'pfg'), btn(tr("💵 Saldo"), 'b')],
-      [btn(tr("🔧 Pengaturan"), 's'), btn(tr("👥 Copy (segera)"), 't')],
+      [btn(tr("📅 Kalender profit"), 'cal'), btn(tr("🔧 Pengaturan"), 's')],
+      // The active wallet at a glance; the button opens the wallet list (switch / import).
+      [btn(o.mode.wallet ? tr("👛 Wallet: {0}", [shortA(o.mode.wallet)]) : tr("👛 Wallet"), 'wb'), btn('⛽ Gas', 'gs')],
+      [btn(tr("👥 Copy (segera)"), 't')],
     ] : [];
     return [text, kb([
       mini ? [wbtn(tr("📱 Buka mini app"), mini)] : null,
       [btn(tr("📊 Ringkasan"), 'o'), btn(tr("💼 Posisi"), 'p')],
       ...copyRows,
       ...openRows,
-      [btn(tr("➕ LP manual"), 'ml'), btn('🔁 Swap', 'sw')],
+      [btn(this.lpName('button'), 'ml'), btn('🔁 Swap', 'sw')],
       // Wallet research and Scout analyse wallets to copy — copy-only tools, dropped for open-LP bots.
       this.hub ? null : [btn(tr("🔎 Riset wallet"), 'w'), btn('🔭 Scout', 'k')],
       [btn(tr("🧹 Sisa jual"), 'f'), btn(tr("📝 Log"), 'l')],
@@ -2507,6 +2575,66 @@ class Telegram {
 
   // Buttons under the share card: colour theme, size, hide amounts, and
   // the way back. `head` 'ps' (position, id) or 'os' (portfolio total, empty id).
+  // PnL calendar of one month (the dashboard's Summary calendar): realized net PnL per day in the
+  // chat's time zone, a month grid marking profit/loss days, and the days that had closes.
+  // `month` is YYYY-MM; empty = the current month. The month share card is one tap away.
+  async calendar(month) {
+    const timeZone = this.cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const dayKey = (ts) => { try { return new Date(ts).toLocaleDateString('en-CA', { timeZone }); } catch { return new Date(ts).toLocaleDateString('en-CA'); } };
+    const now = dayKey(Date.now()).slice(0, 7);
+    const m = /^\d{4}-\d{2}$/.test(String(month || '')) ? month : now;
+    const pf = await this.api('GET', '/api/portfolio', {}, { range: 'all' });
+    const daily = {}, counts = {};
+    for (const [ts, v] of pf.closed || []) {
+      const k = dayKey(ts);
+      if (!k.startsWith(m)) continue;
+      daily[k] = (daily[k] || 0) + v; counts[k] = (counts[k] || 0) + 1;
+    }
+    const [y, mo] = m.split('-').map(Number);
+    const shift = (d) => { const t = new Date(Date.UTC(y, mo - 1 + d, 1)); return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}`; };
+    const lang = locale() === 'en' ? 'en-US' : 'id-ID';
+    const title = new Date(Date.UTC(y, mo - 1, 1)).toLocaleDateString(lang, { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    const days = Object.keys(daily).sort();
+    const total = days.reduce((a, k) => a + daily[k], 0);
+    const closes = days.reduce((a, k) => a + counts[k], 0);
+    const L = [tr("📅 <b>Kalender profit</b> · {0}", [esc(title)]), this.chainLine()];
+    if (!days.length) {
+      L.push('', tr("<i>Belum ada posisi ditutup bulan ini.</i>"));
+    } else {
+      const wins = days.filter((k) => daily[k] > 0), best = days.reduce((a, k) => (daily[k] > daily[a] ? k : a));
+      L.push('', tr("<b>Total bulan:</b> {0}", [pnlText(total)]));
+      L.push(number([
+        [tr('Posisi ditutup'), num(closes)],
+        [tr('Hari untung / rugi'), `${wins.length} / ${days.length - wins.length}`],
+        [tr('Hari terbaik'), `${Number(best.slice(8))} · ${sgn(daily[best])}`],
+      ]));
+      // Month grid, Monday first: "+" after a profit day, "-" after a loss day.
+      const weekday = (d) => (new Date(Date.UTC(y, mo - 1, d)).getUTCDay() + 6) % 7;
+      const names = locale() === 'en' ? ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'] : ['Sn', 'Sl', 'Rb', 'Km', 'Jm', 'Sb', 'Mg'];
+      const last = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+      const cells = [...Array(weekday(1)).fill('    ')];
+      for (let d = 1; d <= last; d++) {
+        const v = daily[`${m}-${String(d).padStart(2, '0')}`];
+        cells.push(String(d).padStart(3) + (v == null ? ' ' : v >= 0 ? '+' : '-'));
+      }
+      const rows = [names.map((n) => n.padStart(3) + ' ').join('')];
+      for (let i = 0; i < cells.length; i += 7) rows.push(cells.slice(i, i + 7).join(''));
+      L.push(`<pre>${esc(rows.map((r) => r.trimEnd()).join('\n'))}</pre>`);
+      L.push(column(days.slice().reverse().map((k) => [
+        new Date(`${k}T00:00:00Z`).toLocaleDateString(lang, { weekday: 'short', day: 'numeric', timeZone: 'UTC' }),
+        `${sgn(daily[k])} · ${counts[k]}×`,
+      ]), 'lr'));
+    }
+    const nav = [btn('◀️', `cal:${shift(-1)}`)];
+    if (m !== now) nav.push(btn(tr("Bulan ini"), 'cal'));
+    if (m < now) nav.push(btn('▶️', `cal:${shift(1)}`));
+    return [L.filter((x) => x != null).join('\n'), kb([
+      nav,
+      days.length && this.shareCard ? [btn(tr("🖼 Kartu bulan ini"), `ms:${m}`)] : null,
+      [btn(tr("🔄 Segarkan"), `cal:${m}`), BACK_HOME],
+    ])];
+  }
+
   cardKb(head, id, theme, size, hide) {
     const go = (t, s, h) => `${head}:${id || ''}:${t}:${s}:${h ? 1 : 0}`;
     const themes = Object.entries(CARD_THEMES).map(([k, v]) => btn(k === theme ? `· ${tr(v.label)} ·` : tr(v.label), go(k, size, hide)));
@@ -2514,7 +2642,7 @@ class Telegram {
       themes.slice(0, 4), themes.slice(4),
       Object.entries(CARD_SIZES).map(([k, v]) => btn(k === size ? `· ${tr(v.label)} ·` : tr(v.label), go(theme, k, hide))),
       [btn(`${hide ? '✅' : '▫️'} ${tr("Sembunyikan nominal")}`, go(theme, size, !hide)),
-        head === 'ps' ? btn(tr("💼 Posisi"), `p:${id}`) : btn(tr("📊 Ringkasan"), 'o')],
+        head === 'ps' ? btn(tr("💼 Posisi"), `p:${id}`) : head === 'ms' ? btn(tr("📅 Kalender"), `cal:${id}`) : btn(tr("📊 Ringkasan"), 'o')],
     ]);
   }
 
@@ -2824,51 +2952,113 @@ class Telegram {
     this.tg('deleteMessage', { chat_id: Number(chatId), message_id: Number(messageId) }).catch(() => { /* already gone / too old */ });
   }
 
-  // Import a private key the user pasted in the bot, replacing the account's wallet. Written
-  // encrypted (keyfile.js, LPCOPY_MASTER_KEY); the old key is backed up, never deleted. The
-  // pasted message is removed by the caller the moment it arrives — see onMessage. Refuses while
-  // a transaction is in flight so the swapped key never signs half of one.
-  async importWallet(pk) {
-    for (const n of Object.values(this.nets)) {
-      const e = n.engine;
-      if ((e?.activeEntries || 0) > 0 || e?.exiting?.size > 0 || e?.selling?.size > 0 || e?.compound?.running) {
-        throw new Error('Bot sedang memproses transaksi — tunggu sampai selesai lalu coba lagi.');
-      }
+  // ---- wallets ----------------------------------------------------------------
+  // The account's EVM wallets: one active key plus every key it used before, kept as saved
+  // wallets beside it (wallets.js). All EVM chains share that key; Solana keeps its own.
+  evmNet() { return Object.values(this.nets).find((n) => !isSolana(n.key) && n.engine?.exec) || null; }
+  walletKeyPath() { return this.evmNet()?.engine.exec.keyPath() || null; }
+  savedWallets() { const p = this.walletKeyPath(); return p ? wallets.list(p, walletAddr) : []; }
+  walletName(w) { return w.name || shortA(w.address); }
+
+  // Why the active key may not change right now, or null. Never mid-transaction (the next tx would
+  // be signed by a wallet that does not hold the token), and never with real positions open: they
+  // belong to the active wallet, so the bot could no longer close them.
+  walletBusy() {
+    const engines = Object.values(this.nets).map((n) => n.engine).filter(Boolean);
+    if (engines.some((e) => (e.activeEntries || 0) > 0 || e.exiting?.size > 0 || e.selling?.size > 0 || e.compound?.running)) {
+      return 'Bot sedang memproses transaksi — tunggu sampai selesai lalu coba lagi.';
     }
+    const open = engines.filter((e) => !isSolana(e.network)).reduce((s, e) => {
+      try { return s + e.positions.open().filter((r) => !isSim(r)).length; } catch { return s; }
+    }, 0);
+    return open ? 'Masih ada posisi terbuka di wallet aktif — tutup dulu sebelum ganti wallet.' : null;
+  }
+
+  // The active key changed: every EVM engine drops its cached signer, and the address the
+  // position reads use is updated.
+  walletChanged() {
+    for (const n of Object.values(this.nets)) if (!isSolana(n.key)) n.engine?.exec?.resetWallet();
+    const addr = this.evmNet()?.engine.exec.address() || null;
+    if (addr) this.store.setState('wallet_address', addr);
+    return addr;
+  }
+
+  // Import a private key the user pasted in the bot and make it the active wallet. Written
+  // encrypted (keyfile.js, LPCOPY_MASTER_KEY); the previous key stays in the saved list. A key that
+  // is already saved is simply switched to. The pasted message is removed by the caller the moment
+  // it arrives — see onMessage.
+  async importWallet(pk) {
     pk = String(pk || '').trim();
     if (!/^(0x)?[0-9a-fA-F]{64}$/.test(pk)) throw new Error('Kunci privat harus 64 karakter hex (boleh diawali 0x).');
     if (!pk.startsWith('0x')) pk = '0x' + pk;
-    try { new ethers.Wallet(pk); } catch { throw new Error('Kunci privat tidak valid.'); }
-    const evm = Object.values(this.nets).find((n) => !isSolana(n.key) && n.engine?.exec);
-    if (!evm) throw new Error('Tidak ada chain EVM aktif untuk menyimpan kunci.');
-    const p = evm.engine.exec.keyPath();
-    if (fs.existsSync(p)) fs.renameSync(p, `${p}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
-    keyfile.writeSecret(p, pk, { encrypt: true });
-    for (const n of Object.values(this.nets)) if (!isSolana(n.key)) n.engine?.exec?.resetWallet();
-    return evm.engine.exec.address();
+    let addr;
+    try { addr = walletAddr(pk); } catch { throw new Error('Kunci privat tidak valid.'); }
+    const p = this.walletKeyPath();
+    if (!p) throw new Error('Tidak ada chain EVM aktif untuk menyimpan kunci.');
+    const known = this.savedWallets().find((w) => w.address === addr);
+    if (known?.active) return addr;
+    const busy = this.walletBusy(); if (busy) throw new Error(busy);
+    if (known) wallets.activate(p, known.id);
+    else { wallets.backup(p); keyfile.writeSecret(p, pk, { encrypt: true }); }
+    return this.walletChanged();
   }
 
+  useWallet(id) {
+    const p = this.walletKeyPath();
+    if (!p) throw new Error('Tidak ada chain EVM aktif.');
+    const busy = this.walletBusy(); if (busy) throw new Error(busy);
+    wallets.activate(p, id);
+    return this.walletChanged();
+  }
+
+  // Native balance of each saved wallet, read in parallel; null when the read fails.
+  async walletBalances(list) {
+    const rpc = this.evmNet()?.engine.rpc;
+    if (!rpc) return list.map(() => null);
+    return Promise.all(list.map(async (w) => {
+      try { return Number(ethers.formatEther(BigInt(await rpc.call('eth_getBalance', [w.address, 'latest'])))); } catch { return null; }
+    }));
+  }
+
+  // The wallet screen: which wallet is active and what it holds, then the saved wallets to switch
+  // to. Server details (key file paths, permissions, backup files) are deliberately left out.
   async walletScreen() {
     const st = await this.api('GET', '/api/settings');
     const w = st.wallet, b = w.balances;
-    const L = [
-      tr("<b>🔑 Wallet bot</b>"),
-      `<code>${esc(w.address || tr('(belum ada wallet)'))}</code>`,
-      '',
-      table([
-        [tr("berkas kunci"), w.keyFile],
-        [tr("izin berkas"), w.hasKey ? `${w.perms || '?'}${w.perms === '600' ? tr(" · aman") : tr(" · terlalu longgar")}` : tr("belum ada")],
-        [tr("cadangan kunci"), tr("{0} berkas", [w.backups])],
-        [b?.symbols?.eth || 'ETH', b ? tok(b.eth) : null],
+    const list = st.wallet.kind === 'solana' ? [] : this.savedWallets();
+    const active = list.find((x) => x.active);
+    const saved = list.filter((x) => !x.active);
+    const bals = await this.walletBalances(saved);
+    const sym = b?.symbols?.eth || this.net()?.chain?.nativeSymbol || 'ETH';
+    const L = [tr("<b>🔑 Wallet bot</b>"), ''];
+    if (w.address) {
+      L.push(tr("🟢 <b>Aktif:</b> {0}", [esc(active ? this.walletName(active) : shortA(w.address))]));
+      L.push(`<code>${esc(w.address)}</code>`);
+      L.push(table([
+        [sym, b ? tok(b.eth) : null],
         [b?.symbols?.usdg || 'USDG', b ? tok(b.usdg, 2) : null],
         [b?.symbols?.weth || 'WETH', b ? tok(b.weth) : null],
-      ]),
-      quote(tr("<i>Kamu bisa impor kunci privat sendiri. Pesan berisi kunci akan langsung dihapus dari chat begitu diterima.</i>")),
-    ];
-    return [L.filter((x) => x != null).join('\n'), kb([
-      [btn(tr("📥 Impor kunci privat"), 'wbi')],
-      [btn(tr("🆕 Buat wallet baru"), 'wbg')],
-      [btn(tr("🗑 Lepas wallet"), 'wbr')],
+      ]));
+    } else {
+      L.push(tr("⚪️ Belum ada wallet aktif."));
+    }
+    // Every wallet of the account, the active one marked, so the count matches what the user owns
+    // (listing only the inactive ones read as "one wallet is missing").
+    if (saved.length) {
+      L.push('', tr("<b>Wallet kamu</b> ({0})", [list.length]));
+      if (active) L.push(`✅ ${esc(this.walletName(active))} · ${b ? `${tok(b.eth)} ${esc(sym)}` : '—'} · ${tr("aktif")}`);
+      // The full address on its own line: a shortened one alone is easy to mistake for a key.
+      saved.forEach((x, i) => L.push(`${i + 1}. ${esc(this.walletName(x))} · ${bals[i] == null ? '—' : `${tok(bals[i])} ${esc(sym)}`}\n<code>${esc(x.address)}</code>`));
+    }
+    L.push('', quote(tr("<i>Ketuk 🔁 di wallet lain untuk memakainya. Ganti wallet hanya bisa saat tidak ada posisi terbuka. Pesan berisi kunci privat langsung dihapus dari chat begitu diterima.</i>")));
+    const rows = w.fromEnv ? [] : saved.map((x, i) => [btn(`🔁 ${i + 1}. ${this.walletName(x)}`.slice(0, 40), `wbu:${x.id}`), btn('✏️', `wbm:${x.id}`), btn('🗑', `wbx:${x.id}`)]);
+    return [L.join('\n'), kb([
+      ...rows,
+      w.fromEnv ? null : [btn(tr("📥 Impor kunci privat"), 'wbi'), btn(tr("🆕 Buat wallet baru"), 'wbg')],
+      w.address ? [btn(tr("🔍 Scan posisi"), 'wbs')] : null,
+      active ? [btn(tr("✏️ Beri nama wallet aktif"), 'wbn')] : null,
+      // Detaching leaves the bot without a wallet: only for the operator's own (copy) bot.
+      this.hub || w.fromEnv || !w.address ? null : [btn(tr("🗑 Lepas wallet"), 'wbr')],
       [btn(tr("↩︎ Pengaturan"), 's'), BACK_HOME],
     ])];
   }
@@ -3000,7 +3190,7 @@ class Telegram {
     const d = this.sess(chatId).lp || {};
     const ready = d.poolRef && d.usd > 0;
     const L = [
-      tr("<b>➕ LP manual</b>"),
+      this.lpName('title'),
       tr("Membuka posisi sendiri, di luar penyalinan target. Jalur eksekusinya sama: kas dijembatani, token ditukar seperlunya, lalu mint."),
       tr("💡 <i>Paling cepat: tempel alamat token di chat ini kapan saja.</i>"),
       '',
@@ -3041,7 +3231,7 @@ class Telegram {
       ...rows, nav.length ? nav : null,
       [btn(tr("🔎 Cari pasangan"), 'mlc')],
       [btn(tr("➕ Dari alamat token"), 'mla')],
-      [btn(tr("↩︎ LP manual"), 'ml')],
+      [btn(this.lpName('back'), 'ml')],
     ])];
   }
 
@@ -3263,7 +3453,7 @@ class Telegram {
       [btn(tr("1 sisi · bawah −25%"), 'mlw:25:0'), btn(tr("1 sisi · atas +25%"), 'mlw:0:25')],
       [btn('±50%', 'mlw:50:50'), btn('½× – 2×', 'mlw:50:100'), btn(tr("seluruh rentang"), 'mlF')],
       [btn(tr("✏️ Atur bawah & atas"), 'mlC')],
-      [btn(tr("↩︎ LP manual"), 'ml')],
+      [btn(this.lpName('back'), 'ml')],
     ])];
   }
 
@@ -3271,7 +3461,7 @@ class Telegram {
     const d = this.sess(chatId).lp || {};
     const r = await this.api('POST', '/api/manual/lp/plan', d);
     if (r.error) {
-      return [tr("⛔ <b>Belum bisa dibuka</b>\n{0}", [esc(note(r.error))]), kb([[btn(tr("↩︎ LP manual"), 'ml'), BACK_HOME]])];
+      return [tr("⛔ <b>Belum bisa dibuka</b>\n{0}", [esc(note(r.error))]), kb([[btn(this.lpName('back'), 'ml'), BACK_HOME]])];
     }
     const p = r.preview;
     const rg = band(p);
@@ -3300,7 +3490,7 @@ class Telegram {
     return [L.filter((x) => x != null).join('\n'), kb([
       [btn(tr("✅ Buka posisi sekarang"), 'mlX')],
       [btn(tr("💵 Ubah nominal"), 'mln'), btn(tr("📐 Ubah rentang"), 'mlr')],
-      [btn(tr("↩︎ LP manual"), 'ml')],
+      [btn(this.lpName('back'), 'ml')],
     ])];
   }
 

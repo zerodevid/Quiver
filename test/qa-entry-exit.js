@@ -741,6 +741,41 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     assert.strictEqual(store.all("SELECT token_id FROM positions").map((r) => r.token_id).join(), '42');
   });
 
+  await t('position adoption: a different wallet (import/switch) scans the recent window, not the whole history; `rescan` too', async () => {
+    const OTHER = '0x' + '9'.repeat(40);
+    const spans = [];
+    const rpc = {
+      blockNumber: async () => 5000,
+      getLogs: async (f) => { spans.push([Number(f.fromBlock), Number(f.toBlock)]); return []; },
+      ethCallMany: async (calls) => calls.map(() => null),
+    };
+    const { eng, store } = engineWith({ rpc });
+    eng.chain.blockMs = 864e5 / 100;                         // 100 blocks/day → the 7-day window = 700 blocks
+    // An old marker without its wallet (before this check) counts as the current wallet's.
+    store.setState('adopt_scanned_to:robinhood', 4900);
+    await eng.adoptOwnPositions(ME);
+    const from = () => Math.min(...spans.map((x) => x[0]));
+    assert.ok(from() > 2000, `incremental for the same wallet, from ${from()}`);
+    assert.strictEqual(store.getState('adopt_scanned_wallet:robinhood'), ME.toLowerCase());
+    spans.length = 0;
+    await eng.adoptOwnPositions(OTHER);
+    assert.strictEqual(from(), 5000 - 700, 'a new wallet scans the recent window only');
+    assert.strictEqual(store.getState('adopt_scanned_wallet:robinhood'), OTHER.toLowerCase());
+    spans.length = 0;
+    await eng.adoptOwnPositions(OTHER, { rescan: true });
+    assert.strictEqual(from(), 5000 - 700, 'rescan covers the same window');
+    spans.length = 0;
+    eng.cfg.loop = { ...eng.cfg.loop, adopt_scan_days: 2 };
+    await eng.adoptOwnPositions(OTHER, { rescan: true });
+    assert.strictEqual(from(), 5000 - 200, 'the window is configurable');
+  });
+
+  await t('position adoption: strict rethrows the error for the scan button', async () => {
+    const { eng } = engineWith({ rpc: { blockNumber: async () => { throw new Error('rpc down'); } } });
+    await eng.adoptOwnPositions(ME);                        // periodic: logged, not thrown
+    await assert.rejects(eng.adoptOwnPositions(ME, { strict: true }), /rpc down/);
+  });
+
   // ---------------------------------------------------------------- sync & stop
   await t('the sync does not run two rounds at once (double booking when the RPC is slow)', async () => {
     const { eng } = engineWith();

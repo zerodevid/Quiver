@@ -35,6 +35,7 @@ import { useAlertPrefs, alarm, bumpTitle } from '../components/TargetAlerts';
 import { orientCandles, tfFor, SECS, LiveBadge, kUsd } from './PositionDetail';
 import { usd, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice } from '../fmt';
 import { useI18n } from '../i18n';
+import { useMe, isRegular } from '../me';
 import { canonAddr, chainInfo } from '../chain';
 
 const TFS = [['auto', 'Otomatis'], ['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam']];
@@ -430,6 +431,7 @@ function useMonitorAlerts(items) {
 
 export default function Monitor() {
   const { t } = useI18n();
+  const openLp = isRegular(useMe());
   const [prefs, setPrefsState] = useState(readPrefs);
   const setPrefs = (patch) => setPrefsState((v) => { const n = { ...v, ...patch }; writePrefs(n); return n; });
   const { data: d, error, reload } = usePoll('/api/positions', 5000);
@@ -529,7 +531,7 @@ export default function Monitor() {
     return <>{header}{error ? <Notice status="danger" title="Daftar posisi gagal dimuat">{error} — {t('mencoba lagi otomatis.')}</Notice> : <Loading page />}</>;
   }
   if (!open.length) {
-    return <>{header}<Panel><Empty title="Belum ada posisi terbuka" sub="Kartu muncul di sini begitu bot menyalin LP dari wallet target atau Anda membuka LP manual." /></Panel></>;
+    return <>{header}<Panel><Empty title="Belum ada posisi terbuka" sub={openLp ? 'Kartu muncul di sini begitu kamu membuka posisi LP baru.' : 'Kartu muncul di sini begitu bot menyalin LP dari wallet target atau Anda membuka LP manual.'} /></Panel></>;
   }
 
   const sum = (f) => open.reduce((a, p) => a + (f(p) || 0), 0);

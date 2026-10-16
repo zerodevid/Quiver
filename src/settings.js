@@ -25,6 +25,8 @@ const { RpcPool } = require('./rpc');
 const { TOPIC } = require('./chain');
 const { writeCfg, envName, privateKeyFromEnv } = require('./env');
 const { writeSecret } = require('./keyfile');
+const wallets = require('./wallets');
+const { isSim } = require('./paper');
 const { CURRENCIES, currencyOf } = require('./fx');
 const { createBackup, parseBackup, stageRestore } = require('./backup');
 
@@ -168,12 +170,8 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
   const keyEnvName = SOL ? 'LPCOPY_SOLANA_PRIVATE_KEY' : 'LPCOPY_PRIVATE_KEY';
   const walletStateKey = SOL ? `wallet_address:${chain.network}` : 'wallet_address';
 
-  const backupKey = (p) => {
-    if (!fs.existsSync(p)) return null;
-    const bak = `${p}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-    fs.renameSync(p, bak);
-    return bak;
-  };
+  // The old key is kept as a saved wallet (wallets.js), its recovery phrase moved along with it.
+  const backupKey = (p) => wallets.backup(p);
   // The EVM and Solana engines of this process (either may be absent): a backup carries
   // whichever keys are installed, a restore writes each to its own key file.
   const evmEngine = () => liveEngines().find((e) => e.chain?.kind !== 'solana') || null;
@@ -201,6 +199,11 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
     // in-flight check above is the only protection they need. Legacy copy accounts still must
     // turn LIVE off first.
     if (!engine.openLp?.() && !engine.dryRun()) return { error: 'Matikan mode LIVE dulu sebelum mengganti wallet.' };
+    // Real open positions belong to the active wallet: after a switch the bot could not close them.
+    const open = liveEngines().filter((e) => (e.chain?.kind === 'solana') === SOL).reduce((s, e) => {
+      try { return s + e.positions.open().filter((r) => !isSim(r)).length; } catch { return s; }
+    }, 0);
+    if (open) return { error: 'Masih ada posisi terbuka di wallet aktif — tutup dulu sebelum ganti wallet.' };
     return null;
   };
 
@@ -367,8 +370,7 @@ function createSettingsRoutes({ engine, engines: enginesInit = [engine], nets = 
           };
         } catch { balances = null; }
       }
-      const backups = fs.existsSync(path.dirname(p))
-        ? fs.readdirSync(path.dirname(p)).filter((f) => f.startsWith(path.basename(p) + '.bak-')).length : 0;
+      const backups = wallets.savedFiles(p).length;
       return {
         chain: { key: chain.network, label: chain.label, chainId: chain.CHAIN_ID, nativeSymbol: chain.nativeSymbol, verified: chain.verified,
           venues: [...(SOL ? [] : ['v4']), ...chain.venues.map((v) => v.key)] },
