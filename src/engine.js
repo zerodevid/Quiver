@@ -2663,10 +2663,13 @@ class Engine {
       }) : null;
       const kindEth = this.chain.quoteSideOf(live.token0, live.token1)?.kind === 'eth';
       const midUsd = vm && Number.isFinite(vm.value) ? vm.value * (kindEth ? this.ethUsd : 1) : null;
-      const q = await this.swapRouter.quoteRetry(meme, roles.quote, amount).catch(() => null);
-      const outUsd = q ? usdOfQuote(q.amountOut, roles.quote) : null;
+      // Every enabled aggregator is asked; the best amountOut is what the exit sale would take.
+      let ranked = await this.swapRouter.quoteAll(meme, roles.quote, amount).catch(() => []);
+      if (!ranked.length) ranked = await this.swapRouter.quoteAll(meme, roles.quote, amount).catch(() => []);
+      const all = ranked.map((r) => ({ id: r.id, label: this.swapRouter.byId.get(r.id)?.label || r.id, outUsd: usdOfQuote(r.q.amountOut, roles.quote), ms: r.ms }));
+      const outUsd = all[0]?.outUsd ?? null;
       if (outUsd == null) quoted = false;
-      legs.push({ token: meme, midUsd, outUsd, dex: q?.dex ?? null });
+      legs.push({ token: meme, midUsd, outUsd, via: all[0]?.label ?? null, all });
       memeMidUsd += midUsd ?? 0;
       soldUsd += outUsd ?? midUsd ?? 0;
     }

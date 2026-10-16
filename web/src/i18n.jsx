@@ -987,7 +987,7 @@ const EN = {
   'Menghitung estimasi hasil tutup…': 'Estimating the close result…',
   'Estimasi jika ditutup sekarang': 'Estimate if closed now',
   'Diterima di wallet': 'Lands in wallet',
-  'Kerugian jual memecoin (Kyber)': 'Memecoin sale loss (Kyber)',
+  'Kerugian jual memecoin': 'Memecoin sale loss',
   'Gas': 'Gas',
   'Fee yang sudah diklaim': 'Fees already claimed',
   'PnL riil': 'Real PnL',

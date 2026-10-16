@@ -70,9 +70,14 @@ export function useClosePosition(reload) {
           <div className="space-y-1 rounded-lg border border-border p-2.5 text-[0.8125rem]">
             <div className="font-medium text-foreground">{t('Estimasi jika ditutup sekarang')}</div>
             {row(t('Diterima di wallet'), usd(q.receiveUsd))}
-            {q.sellCostUsd > 0.005 && row(t('Kerugian jual memecoin (Kyber)'), `−${usd(q.sellCostUsd)}`, 'text-danger')}
+            {q.sellCostUsd > 0.005 && row(t('Kerugian jual memecoin'), `−${usd(q.sellCostUsd)}`, 'text-danger')}
             {row(t('Gas'), `−${usd(q.gasUsd)}`)}
             {q.claimedUsd > 0.005 && row(t('Fee yang sudah diklaim'), `+${usd(q.claimedUsd)}`)}
+            {q.legs.map((l) => l.all?.length > 0 && (
+              <div key={l.token} className="text-xs text-muted">
+                {l.all.map((a, i) => `${a.label} ${usd(a.outUsd)}${i === 0 ? ' ✓' : ''}`).join(' · ')}
+              </div>
+            ))}
             {row(t('PnL riil'), `${sign(q.pnlUsd)} (${q.pnlPct >= 0 ? '+' : ''}${q.pnlPct.toFixed(1)}%)`, q.pnlUsd >= 0 ? 'text-success font-medium' : 'text-danger font-medium')}
             <div className="text-xs text-muted">{t('Harga tengah pool menunjukkan {v}', { v: sign(q.pnlMidUsd) })}</div>
             {!q.quoted && <div className="text-xs text-warning">{t('Quote jual belum terbaca, memakai harga tengah.')}</div>}
