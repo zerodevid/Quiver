@@ -12,6 +12,58 @@ import { useI18n } from './i18n';
 // There are three outcomes, not two: closed, failed (the server answers with a reason),
 // or uncertain — the connection dropped / a proxy cut the long request before the
 // server could answer, although the transaction may still have landed.
+// Exit quotes for several positions (read-only, ~1–3 s each; three at a time). A position whose
+// quote cannot be read stays in the list as `q: null` and is counted as unquoted, never guessed.
+async function quoteMany(list) {
+  const out = list.map((p) => ({ p, q: null }));
+  let next = 0;
+  const worker = async () => {
+    while (next < out.length) {
+      const item = out[next++];
+      try {
+        const q = await get(withChain(`/api/position/exit-quote?id=${item.p.id}`, item.p.chain));
+        if (q && !q.error) item.q = q;
+      } catch { /* shown as unquoted */ }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, out.length) }, worker));
+  return out;
+}
+
+// The summed estimate for a batch close, with one line per position.
+function BatchEstimate({ items, t }) {
+  const quoted = items.filter((x) => x.q);
+  if (!quoted.length) return null;
+  const sum = (f) => quoted.reduce((a, x) => a + (f(x.q) || 0), 0);
+  const cost = quoted.reduce((a, x) => a + (x.p.costUsd || 0), 0);
+  const pnl = sum((q) => q.pnlUsd);
+  const sign = (v) => `${v >= 0 ? '+' : '−'}${usd(Math.abs(v))}`;
+  const row = (label, v, cls = '') => <div className="flex justify-between gap-4"><span>{label}</span><span className={`num ${cls}`}>{v}</span></div>;
+  const sell = sum((q) => q.sellCostUsd), claimed = sum((q) => q.claimedUsd);
+  return <div className="space-y-1 rounded-lg border border-border p-2.5 text-[0.8125rem]">
+    <div className="font-medium text-foreground">{t('Estimasi jika ditutup sekarang')}</div>
+    {row(t('Diterima di wallet'), usd(sum((q) => q.receiveUsd)))}
+    {sell > 0.005 && row(t('Kerugian jual memecoin'), `−${usd(sell)}`, 'text-danger')}
+    {row(t('Gas'), `−${usd(sum((q) => q.gasUsd))}`)}
+    {claimed > 0.005 && row(t('Fee yang sudah diklaim'), `+${usd(claimed)}`)}
+    {row(t('PnL riil'), `${sign(pnl)}${cost > 0 ? ` (${pnl >= 0 ? '+' : ''}${(pnl / cost * 100).toFixed(1)}%)` : ''}`, pnl >= 0 ? 'text-success font-medium' : 'text-danger font-medium')}
+    <div className="mt-1 max-h-40 space-y-0.5 overflow-y-auto border-t border-border pt-1.5 text-xs text-muted">
+      {items.map(({ p, q }) => <div key={p.id} className="flex justify-between gap-3">
+        <span className="truncate">{p.symbol0}/{p.symbol1} #{p.id}</span>
+        <span className="num whitespace-nowrap">{q ? `${usd(q.receiveUsd)} · ${sign(q.pnlUsd)}` : t('tidak terbaca')}</span>
+      </div>)}
+    </div>
+    {quoted.length < items.length && <div className="text-xs text-warning">{t('{n} posisi belum bisa dihitung estimasinya — tidak termasuk dalam angka di atas.', { n: items.length - quoted.length })}</div>}
+    {quoted.some((x) => !x.q.quoted) && <div className="text-xs text-warning">{t('Quote jual belum terbaca, memakai harga tengah.')}</div>}
+    <div className="text-xs text-muted">{t('Perkiraan sekarang; hasil akhir mengikuti harga saat tiap transaksi masuk.')}</div>
+  </div>;
+}
+
+async function estimateFor(list, t) {
+  const wait = toast(t('Menghitung estimasi hasil tutup…'), { isLoading: true, timeout: 0 });
+  try { return await quoteMany(list); } finally { toast.close(wait); }
+}
+
 export function useClosePosition(reload) {
   const { t } = useI18n();
   const [closing, setClosing] = useState(null);   // ids of the positions being closed
@@ -100,11 +152,15 @@ export function useClosePosition(reload) {
     if (closing != null || !list?.length) return;
     const value = list.reduce((s, p) => s + (p.valueUsd || 0), 0);
     const fee = list.reduce((s, p) => s + (p.feeUsd || 0), 0);
+    const items = await estimateFor(list, t);
     const ok = await ask({
       title: pair ? t('Tutup semua {n} posisi {pair}?', { n: list.length, pair }) : t('Tutup semua {n} posisi terbuka?', { n: list.length }),
-      body: fee > 0.005
-        ? t('Ditutup satu per satu; tiap posisi satu transaksi. Nilai sekarang {v} + fee {f}.', { v: usd(value), f: usd(fee) })
-        : t('Ditutup satu per satu; tiap posisi satu transaksi. Nilai sekarang {v}.', { v: usd(value) }),
+      body: <div className="space-y-2">
+        <div>{fee > 0.005
+          ? t('Ditutup satu per satu; tiap posisi satu transaksi. Nilai sekarang {v} + fee {f}.', { v: usd(value), f: usd(fee) })
+          : t('Ditutup satu per satu; tiap posisi satu transaksi. Nilai sekarang {v}.', { v: usd(value) })}</div>
+        <BatchEstimate items={items} t={t} />
+      </div>,
       confirm: t('Tutup semua'), danger: true,
     });
     if (!ok) return;
@@ -123,9 +179,13 @@ export function useClosePosition(reload) {
   const forceCloseAll = async (list) => {
     if (closing != null || !list?.length) return;
     const value = list.reduce((s, p) => s + (p.valueUsd || 0), 0);
+    const items = await estimateFor(list, t);
     const ok = await ask({
       title: t('Tutup paksa semua {n} posisi terbuka?', { n: list.length }),
-      body: t('Semua posisi ditutup satu per satu tanpa menunggu compound/claim yang tertunda, dan likuiditas dibakar sesuai chain. Nilai sekarang {v}. Tidak bisa dibatalkan setelah berjalan.', { v: usd(value) }),
+      body: <div className="space-y-2">
+        <div>{t('Semua posisi ditutup satu per satu tanpa menunggu compound/claim yang tertunda, dan likuiditas dibakar sesuai chain. Nilai sekarang {v}. Tidak bisa dibatalkan setelah berjalan.', { v: usd(value) })}</div>
+        <BatchEstimate items={items} t={t} />
+      </div>,
       confirm: t('Tutup paksa semua'), danger: true,
     });
     if (!ok) return;

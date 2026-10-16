@@ -2735,6 +2735,9 @@ const EN = {
   "Hasilnya muncul di sinkron berikutnya.": "The result shows up on the next sync.",
   "Compound {pair} berhasil": "Compound of {pair} succeeded",
   "Ditambahkan sekitar {add}.": "About {add} added.",
+  "tidak terbaca": "unreadable",
+  "{n} posisi belum bisa dihitung estimasinya — tidak termasuk dalam angka di atas.": "{n} positions could not be estimated — not included in the figures above.",
+  "Perkiraan sekarang; hasil akhir mengikuti harga saat tiap transaksi masuk.": "An estimate for now; the final result follows the price when each transaction lands.",
 };
 
 const DICT = { id: null, en: EN };
