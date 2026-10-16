@@ -2738,6 +2738,7 @@ const EN = {
   "tidak terbaca": "unreadable",
   "{n} posisi belum bisa dihitung estimasinya — tidak termasuk dalam angka di atas.": "{n} positions could not be estimated — not included in the figures above.",
   "Perkiraan sekarang; hasil akhir mengikuti harga saat tiap transaksi masuk.": "An estimate for now; the final result follows the price when each transaction lands.",
+  "Kamu bisa langsung menutup tanpa menunggu.": "You can close right away without waiting.",
 };
 
 const DICT = { id: null, en: EN };

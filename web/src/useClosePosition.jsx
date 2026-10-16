@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from '@heroui/react';
 import { get, post, withChain } from './api';
 import { ask } from './components/ui';
@@ -59,9 +59,21 @@ function BatchEstimate({ items, t }) {
   </div>;
 }
 
-async function estimateFor(list, t) {
-  const wait = toast(t('Menghitung estimasi hasil tutup…'), { isLoading: true, timeout: 0 });
-  try { return await quoteMany(list); } finally { toast.close(wait); }
+// The dialog opens at once and the confirm button works throughout; the estimate fills in
+// below as the quotes arrive (or never, if the owner confirms first).
+function LiveBatchEstimate({ list }) {
+  const { t } = useI18n();
+  const [items, setItems] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    quoteMany(list).then((r) => { if (alive) setItems(r); });
+    return () => { alive = false; };
+  }, [list]);
+  if (!items) return <div className="flex items-center gap-2 rounded-lg border border-border p-2.5 text-xs text-muted" role="status">
+    <span aria-hidden className="size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+    {t('Menghitung estimasi hasil tutup…')} <span>{t('Kamu bisa langsung menutup tanpa menunggu.')}</span>
+  </div>;
+  return <BatchEstimate items={items} t={t} />;
 }
 
 export function useClosePosition(reload) {
@@ -152,14 +164,13 @@ export function useClosePosition(reload) {
     if (closing != null || !list?.length) return;
     const value = list.reduce((s, p) => s + (p.valueUsd || 0), 0);
     const fee = list.reduce((s, p) => s + (p.feeUsd || 0), 0);
-    const items = await estimateFor(list, t);
     const ok = await ask({
       title: pair ? t('Tutup semua {n} posisi {pair}?', { n: list.length, pair }) : t('Tutup semua {n} posisi terbuka?', { n: list.length }),
       body: <div className="space-y-2">
         <div>{fee > 0.005
           ? t('Ditutup satu per satu; tiap posisi satu transaksi. Nilai sekarang {v} + fee {f}.', { v: usd(value), f: usd(fee) })
           : t('Ditutup satu per satu; tiap posisi satu transaksi. Nilai sekarang {v}.', { v: usd(value) })}</div>
-        <BatchEstimate items={items} t={t} />
+        <LiveBatchEstimate list={list} />
       </div>,
       confirm: t('Tutup semua'), danger: true,
     });
@@ -179,12 +190,11 @@ export function useClosePosition(reload) {
   const forceCloseAll = async (list) => {
     if (closing != null || !list?.length) return;
     const value = list.reduce((s, p) => s + (p.valueUsd || 0), 0);
-    const items = await estimateFor(list, t);
     const ok = await ask({
       title: t('Tutup paksa semua {n} posisi terbuka?', { n: list.length }),
       body: <div className="space-y-2">
         <div>{t('Semua posisi ditutup satu per satu tanpa menunggu compound/claim yang tertunda, dan likuiditas dibakar sesuai chain. Nilai sekarang {v}. Tidak bisa dibatalkan setelah berjalan.', { v: usd(value) })}</div>
-        <BatchEstimate items={items} t={t} />
+        <LiveBatchEstimate list={list} />
       </div>,
       confirm: t('Tutup paksa semua'), danger: true,
     });
