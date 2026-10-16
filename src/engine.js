@@ -316,6 +316,11 @@ class Engine {
   }
 
   dryRun() { return this.cfg.mode?.dry_run !== false; }
+  // Copy trading (the target watcher + mirror exits). Off for "open LP" accounts, where the
+  // engine only manages the user's own manual positions. `cfg.copy === false` disables it;
+  // default on, so the superadmin's legacy config keeps copying. See runNet (index.js), which
+  // then never starts the block-scanning tick — the heaviest RPC load — for these accounts.
+  copyEnabled() { return this.cfg.copy !== false; }
   // Pause per chain (key paused:<chain>); an old 'paused' key without a chain is still read
   // as a global switch — pausing all chains at once.
   paused() {
@@ -3172,6 +3177,8 @@ class Engine {
   // It needs TWO consecutive zero observations so a momentarily failed read or a
   // close-then-open rebalance in one transaction does not trigger a close.
   async reconcileExits() {
+    // Open-LP accounts have no targets to follow out of; skip the RPC round trip entirely.
+    if (!this.copyEnabled()) return;
     if (this.dryRun() || !this.exec.address()) return;
     // v3 is checked too: it used to be v4 only, so a v3 mirror whose exit signal was missed
     // hung forever.

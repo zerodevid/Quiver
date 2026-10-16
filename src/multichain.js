@@ -21,7 +21,7 @@
 // it is, and writeCfg(view) still writes the complete parent config.
 const { NETWORKS, build } = require('./networks');
 
-const PER_CHAIN = ['chain', 'targets', 'rules', 'mode', 'gas', 'prices', 'loop', 'scout', 'risk', 'swap'];
+const PER_CHAIN = ['chain', 'targets', 'rules', 'mode', 'gas', 'prices', 'loop', 'scout', 'risk', 'swap', 'copy'];
 const PRIMARY = 'robinhood';
 
 // Default BSC block: simulation, no targets, public RPC. Tested 2026-09-19 from the VPS:

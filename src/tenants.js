@@ -94,6 +94,9 @@ function userCfgView(globalCfg, userCfg, { dbPath }) {
     if (!chainProxies.has(k)) {
       chainProxies.set(k, new Proxy(userCfg.chains[k], {
         get(t, p) {
+          // Regular accounts are open-LP only: copy trading is always off and cannot be turned
+          // on from a user config. The engine reads cfg.copy (see Engine#copyEnabled).
+          if (p === 'copy') return false;
           if (typeof p === 'string' && USER_CHAIN.has(p)) return t[p];
           return globalCfg.chains[k]?.[p];
         },

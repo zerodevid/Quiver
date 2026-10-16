@@ -20,7 +20,7 @@ import SearchModal, { SearchTrigger } from './components/GlobalSearch';
 import { Loading, ConfirmHost, WalletLinks, ask } from './components/ui';
 import { hideSplash } from './splash';
 import { isMini } from './telegram';
-import { useMe, isSuperadmin } from './me';
+import { useMe, isSuperadmin, isRegular } from './me';
 
 // Each page is loaded when opened — the chart library is only downloaded for the Summary.
 const Overview = lazy(() => import('./pages/Overview'));
@@ -72,9 +72,28 @@ const NAV = [
 // (bookmarks, Telegram messages) still land in the right place.
 // Multi-user: the superadmin also gets the account console under System.
 const ADMIN_ITEM = ['admin', 'Akun', UserCog, Admin];
-const navFor = (me) => (isSuperadmin(me) && me.multiUser
-  ? NAV.map(([g, items]) => [g, g === 'Sistem' ? [...items, ADMIN_ITEM] : items]) : NAV);
-const PAGES = { ...Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C]))), scout: WalletPage, token: TokenDetail, pool: PoolDetail, admin: Admin };
+// Regular (open-LP) accounts don't copy: the Copy group collapses to a single disabled
+// "coming soon" entry, matching the engine, which never runs the copy tick for them.
+const COPY_SOON_GROUP = ['Copy', [['copy-soon', 'Copy', Users, CopySoon]]];
+const navFor = (me) => {
+  if (isRegular(me)) return NAV.map(([g, items]) => (g === 'Copy' ? COPY_SOON_GROUP : [g, items]));
+  if (isSuperadmin(me) && me.multiUser) return NAV.map(([g, items]) => [g, g === 'Sistem' ? [...items, ADMIN_ITEM] : items]);
+  return NAV;
+};
+// Placeholder for the Copy section on open-LP accounts — the feature is built but not yet
+// offered to regular users (the engine does not copy for them).
+function CopySoon() {
+  const { t } = useI18n();
+  return (
+    <div className="mx-auto max-w-md py-16 text-center">
+      <Users className="mx-auto mb-4 size-10 text-[var(--muted)]" />
+      <h2 className="text-lg font-semibold">{t('Copy trading')}</h2>
+      <Chip className="my-3" color="warning" variant="flat">{t('Segera hadir')}</Chip>
+      <p className="text-sm text-[var(--muted)]">{t('Menyalin wallet lain otomatis sedang kami siapkan. Untuk sekarang kamu bisa membuka dan mengelola posisi LP-mu sendiri lewat LP manual.')}</p>
+    </div>
+  );
+}
+const PAGES = { ...Object.fromEntries(NAV.flatMap(([, items]) => items.map(([id, , , C]) => [id, C]))), 'copy-soon': CopySoon, scout: WalletPage, token: TokenDetail, pool: PoolDetail, admin: Admin };
 
 function NavLinks({ page, onPick }) {
   const { t } = useI18n();
@@ -365,6 +384,7 @@ export default function App() {
   // Routes of the form "page/parameter", e.g. #target/0xabc… opens the detail of a single wallet.
   const [page, ...rest] = useHash('summary').split('/');
   const param = rest.join('/') || null;
+  const me = useMe();
   const [theme, toggleTheme] = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
   // Value redaction: App is redrawn when its switch changes, so the whole
@@ -405,7 +425,9 @@ export default function App() {
     // Value redaction: the tab title is readable from anywhere (taskbar, screen recording) — blank it.
     setBaseTitle(privacy[0] ? 'Quiver' : `Quiver · ${usd(w.value)} · ${pnl > 0 ? '+' : ''}${usd(pnl)}`);
   }, [w?.value, w?.pnl, w?.netPnl, privacy[0]]);
-  const Page = PAGES[page] || Overview;
+  // Open-LP accounts have no copy pages: a bookmarked #targets/#rules lands on "coming soon".
+  const COPY_PAGES = new Set(['targets', 'rules', 'copy-soon']);
+  const Page = (isRegular(me) && COPY_PAGES.has(page)) ? CopySoon : (PAGES[page] || Overview);
   useTargetAlerts();
 
   return (

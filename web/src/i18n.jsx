@@ -31,6 +31,9 @@ export function initLocale() {
 }
 
 const EN = {
+  'Copy trading': 'Copy trading',
+  'Segera hadir': 'Coming soon',
+  'Menyalin wallet lain otomatis sedang kami siapkan. Untuk sekarang kamu bisa membuka dan mengelola posisi LP-mu sendiri lewat LP manual.': 'Automatically copying other wallets is on the way. For now you can open and manage your own LP positions from Manual LP.',
   "Likuiditas habis di jalur harga; penjualan penuh belum dapat dihitung.": "Liquidity runs out along this price path; a full sale cannot be estimated.",
   "Melewati kedalaman yang terbaca; estimasi belum lengkap.": "Beyond the available depth; the estimate is incomplete.",
   "Posisi atau saldo target belum lengkap.": "Target positions or balances are incomplete.",

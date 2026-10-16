@@ -364,6 +364,22 @@ function view(dir = tmp()) {
     } finally { await s.close(); }
   });
 
+  await t('an account is open-LP only: copy is forced off and the engine skips it', async () => {
+    const { v } = view();
+    // A user cannot even write the copy flag, and the view always reports it off.
+    assert.throws(() => { v.chains.robinhood.copy = true; }, ReadOnlyError, 'copy must not be user-settable');
+    const cv = chainView(v, 'robinhood');
+    assert.equal(cv.copy, false, 'tenant chain copy must be false');
+    const engine = require('../src/engine');
+    const eng = Object.create(engine.Engine.prototype);
+    eng.cfg = cv;
+    assert.equal(eng.copyEnabled(), false, 'tenant engine must not copy');
+    // The superadmin (global config, no copy field) still copies.
+    const admin = Object.create(engine.Engine.prototype);
+    admin.cfg = chainView(globalCfg(), 'robinhood');
+    assert.equal(admin.copyEnabled(), true, 'superadmin engine still copies');
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

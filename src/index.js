@@ -466,7 +466,8 @@ async function main() {
         await engine.syncPositions();
         try { const n = engine.backfillEquityPnl(); if (n) clog(`ekuitas: PnL kumulatif direkonstruksi untuk ${n} titik lama`); } catch (e) { clog(`ekuitas: ${e.message}`); }
         net.ready = true;
-        clog(`mode: ${engine.dryRun() ? 'SIMULASI (tidak mengirim transaksi)' : 'LIVE'} | target aktif: ${engine.watcher.enabledSet().size}${net.chain.verified ? '' : ' | alamat kontrak BELUM diverifikasi on-chain'}`);
+        const scope = engine.copyEnabled() ? `target aktif: ${engine.watcher.enabledSet().size}` : 'open LP (tanpa copy)';
+        clog(`mode: ${engine.dryRun() ? 'SIMULASI (tidak mengirim transaksi)' : 'LIVE'} | ${scope}${net.chain.verified ? '' : ' | alamat kontrak BELUM diverifikasi on-chain'}`);
       } catch (e) {
         clog(`mesin gagal dinyalakan: ${e.message} — dicoba lagi 60 detik lagi`);
         if (!stopping && !net.stopped) setTimeout(boot, 60_000).unref?.();
@@ -479,13 +480,17 @@ async function main() {
     const eqMs = (view.loop?.equity_seconds || 300) * 1000;
     const when = (fn, what) => () => { if (net.ready) fn().catch((e) => clog(`${what}: ${e.message}`)); };
     net.timers.push(
-      setInterval(when(() => engine.tick(), 'tick'), pollMs),
       setInterval(when(() => engine.syncPositions(), 'sync'), syncMs),
       setInterval(when(() => engine.snapshotEquity(), 'equity'), eqMs),
       // Leftover memecoins whose sale was rejected are pursued continuously: every second we check whether
       // the schedule (the `leftover_retry_sec` rule) has arrived; if so, it is re-quoted.
       setInterval(when(() => engine.retryLeftovers(), 'jual sisa'), 1000),
     );
+    // The block-scanning tick is the copy engine (watch targets, mirror their moves). Open-LP
+    // accounts don't copy, so it never runs for them — this is the heaviest RPC load, and
+    // skipping it is what lets many accounts share the free RPC. Their own positions are still
+    // managed by the sync timer above (standalone stop-loss / take-profit / out-of-range).
+    if (engine.copyEnabled()) net.timers.push(setInterval(when(() => engine.tick(), 'tick'), pollMs));
   }
   // Accounts start alongside the superadmin's engines (each has its own warm-up).
   for (const u of auth.listUsers()) if (u.role !== 'superadmin' && u.status === 'active') tenantControl.start(u.id);
