@@ -9,7 +9,6 @@ const { ensureChain } = require('./networks');
 const { ethers } = require('ethers');
 const fs = require('node:fs');
 const { ABI, ACT, CMD, SENTINEL } = require('./chain');
-const m = require('./v3math');
 
 const coder = ethers.AbiCoder.defaultAbiCoder();
 const IF_POSM = new ethers.Interface(ABI.posmV4);
@@ -608,28 +607,28 @@ class Executor {
   // ---- swap via the UniversalRouter ----------------------------------------
   // v4: V4_SWAP -> SWAP_EXACT_IN_SINGLE + SETTLE_ALL + TAKE_ALL
   //
-  // `layout` = the shape of IV4Router.ExactInputSingleParams the router uses. There are TWO
-  // in circulation: 'limit' (old) carries `uint160 sqrtPriceLimitX96` between
-  // amountOutMinimum and hookData, 'plain' (v4-periphery late 2024) drops it.
-  // v4-periphery reads params via raw calldata offsets, not abi.decode, so
-  // the wrong shape never gives a message: the swap reverts with NO data at
-  // all. Measured 2026-09-24 on Robinhood Chain: the 'plain' shape reverted 0x on 12
-  // different pools, 'limit' passed simulation on all of them — which is why the zap fallback via a
-  // direct pool always ended in "all pools refuse the swap". The shape is not guessed
-  // from the chain name; the pool picker (swappool.js) simulates both then
-  // remembers the accepted one via rememberV4Layout.
-  buildSwapV4(poolKey, zeroForOne, amountIn, amountOutMin, deadlineSec, layout = this.v4Layout || 'limit') {
+  // `layout` = the shape of IV4Router.ExactInputSingleParams the router reads. Two are in
+  // circulation, and v4-periphery reads them through raw calldata offsets, so the wrong one
+  // never gives a message:
+  //   'hop'   — (poolKey, zeroForOne, amountIn, amountOutMinimum, uint256 minHopPriceX36,
+  //             hookData): UniversalRouter v2.1, Robinhood Chain. Sent with 0 = no per-hop
+  //             price check. Measured 2026-10-16: the only shape that swaps every pool in both
+  //             directions there. (It used to be sent as 'limit' with MIN/MAX_SQRT in that
+  //             field: read as a minimum hop price, MAX_SQRT made every one→zero swap revert
+  //             0x4713c18b.)
+  //   'plain' — no fifth field: UniversalRouter v2.0 (BSC).
+  // A wrong shape can pass by accident when currency0 is native (the hookData offset lands on
+  // a zero word), always with empty hookData and the same amounts, so that is harmless. The
+  // pool picker (swappool.js) simulates both and puts the accepted one first next time.
+  buildSwapV4(poolKey, zeroForOne, amountIn, amountOutMin, deadlineSec, layout = this.v4Layout || 'hop') {
     const acts = actionsHex([ACT.SWAP_EXACT_IN_SINGLE, ACT.SETTLE_ALL, ACT.TAKE_ALL]);
     const inCur = zeroForOne ? poolKey.currency0 : poolKey.currency1;
     const outCur = zeroForOne ? poolKey.currency1 : poolKey.currency0;
     const key = [poolKey.currency0, poolKey.currency1, poolKey.fee, poolKey.tickSpacing, poolKey.hooks];
-    // Price limit = the end of the legal range for its direction (without a limit of its own). An old
-    // router that ignores it is not harmed; one that honours it needs a legal value.
-    const limit = zeroForOne ? m.MIN_SQRT_RATIO + 1n : m.MAX_SQRT_RATIO - 1n;
     const params = [
-      layout === 'limit'
-        ? coder.encode([`tuple(${PK_TUPLE} poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,uint160 sqrtPriceLimitX96,bytes hookData)`],
-          [[key, zeroForOne, amountIn, amountOutMin, limit, '0x']])
+      layout === 'hop'
+        ? coder.encode([`tuple(${PK_TUPLE} poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,uint256 minHopPriceX36,bytes hookData)`],
+          [[key, zeroForOne, amountIn, amountOutMin, 0n, '0x']])
         : coder.encode([`tuple(${PK_TUPLE} poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,bytes hookData)`],
           [[key, zeroForOne, amountIn, amountOutMin, '0x']]),
       coder.encode(['address', 'uint256'], [inCur, amountIn]),
@@ -644,21 +643,25 @@ class Executor {
     };
   }
 
-  // The shapes that must be tried when simulating a v4 swap: the proven one if
-  // already known, otherwise both (a single eth_call batch, not guesswork).
-  v4SwapLayouts() { return this.v4Layout ? [this.v4Layout] : ['limit', 'plain']; }
+  // The shapes to simulate for a v4 swap: both, the one proven last time first. Never just the
+  // proven one: on a router where a wrong shape passes by accident for native pools, it could
+  // be remembered and then fail every ERC20 pool.
+  v4SwapLayouts() { return this.v4Layout === 'plain' ? ['plain', 'hop'] : ['hop', 'plain']; }
   rememberV4Layout(layout) {
     if (!layout || this.v4Layout === layout) return;
     this.v4Layout = layout;
-    this.log(`swap v4 lewat router: bentuk params '${layout}'${layout === 'limit' ? ' (lama, dengan sqrtPriceLimit)' : ' (baru)'}`);
+    this.log(`swap v4 lewat router: bentuk params '${layout}'${layout === 'hop' ? ' (v2.1, dengan minHopPrice)' : ' (v2.0)'}`);
   }
 
-  // v3: V3_SWAP_EXACT_IN(recipient, amountIn, amountOutMin, path, payerIsUser)
+  // v3: V3_SWAP_EXACT_IN(recipient, amountIn, amountOutMin, path, payerIsUser, maxHopSlippage).
+  // The trailing empty `uint256[] maxHopSlippage` is read by UniversalRouter v2.1 (Robinhood),
+  // which reverts SliceOutOfBounds (0x3b99b53d) without it; v2.0 (BSC) reads the first five
+  // fields only — both checked 2026-10-16.
   buildSwapV3(tokenIn, tokenOut, fee, amountIn, amountOutMin, deadlineSec) {
     const owner = this.address();
     const path = ethers.concat([tokenIn, ethers.toBeHex(fee, 3), tokenOut]);
-    const input = coder.encode(['address', 'uint256', 'uint256', 'bytes', 'bool'],
-      [owner, amountIn, amountOutMin, path, true]);
+    const input = coder.encode(['address', 'uint256', 'uint256', 'bytes', 'bool', 'uint256[]'],
+      [owner, amountIn, amountOutMin, path, true, []]);
     const commands = '0x' + CMD.V3_SWAP_EXACT_IN.toString(16).padStart(2, '0');
     return {
       to: this.chain.ADDR.universalRouter,

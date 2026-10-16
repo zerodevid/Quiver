@@ -50,13 +50,13 @@ class KyberAdapter {
 const withTimeout = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
 
 class SwapRouter {
-  constructor({ exec, rpc, cfg, chain, log, store = null, adapters = null }) {
+  constructor({ exec, rpc, cfg, chain, log, store = null, discover = null, adapters = null }) {
     this.cfg = cfg; this.log = log || (() => {});
     const opts = { exec, rpc, cfg, chain, log: this.log };
     this.adapters = adapters || [
       new KyberAdapter(new Kyber(opts), cfg),
       new Okx(opts), new Lifi(opts), new ZeroX(opts), new OneInch(opts), new OpenOcean(opts),
-      new Uniswap({ ...opts, store }),
+      new Uniswap({ ...opts, store, discover }),
     ];
     this.byId = new Map(this.adapters.map((a) => [a.id, a]));
   }
