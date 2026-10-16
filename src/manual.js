@@ -14,6 +14,7 @@ const { ensureChain, windowBlocks } = require('./networks');
 // apply if set — those are rules over our own position.
 const { ethers } = require('ethers');
 const m = require('./v3math');
+const { computePoolId } = require('./pools');
 const { TOPIC, ABI } = require('./chain');
 const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd, hookBlocked, riskyHookFlags, hookInfo, tickSpacingFromFee } = require('./policy');
 
@@ -381,11 +382,64 @@ class Manual {
     if (span > 0) await Promise.all(query.map((q) => split(q, from, head, 0)));
     if (!failed) this.store.setState(stateKey, JSON.stringify({ to: head, ts: Date.now() }));
 
-    const list = [...found.values()];
-    if (!list.length) return [];
+    return this.describePools([...found.values()]);
+  }
 
-    // Store so this pool also appears in the ordinary list from now on, and fetch its
-    // token metadata (the name is used everywhere).
+  /**
+   * Fast path of scanPools: the token's pools as DexScreener lists them (`pairs`, from
+   * market.token — one HTTP call instead of a getLogs sweep over the whole chain), resolved on
+   * chain in one batch: a v4 pool id through PositionManager.poolKeys(bytes25), a v3 pool
+   * address through its own token0/token1/fee/tickSpacing/factory. Only pools of a venue this
+   * chain trades (the v4 PoolManager, a known v3 factory) are kept, so Ramses/v2 rows drop out.
+   * A pool DexScreener has not indexed yet is missed — the chain scan stays for that.
+   */
+  async dexPools(token, pairs) {
+    const t = lc(token);
+    const rows = (pairs || []).filter((x) => x?.pool && (lc(x.base?.address) === t || lc(x.quote?.address) === t));
+    const v4 = rows.filter((x) => /^0x[0-9a-f]{64}$/.test(lc(x.pool)));
+    const v3 = rows.filter((x) => /^0x[0-9a-f]{40}$/.test(lc(x.pool)));
+    const factories = new Map();
+    for (const v of this.chain.venues) {
+      try { factories.set(lc(await this.chain.factoryV3(v.npmV3)), v.key); } catch { /* skip this venue */ }
+    }
+    const V3_CALLS = ['0x0dfe1681', '0xd21220a7', '0xddca3f43', '0xd0c93a7c', '0xc45a0155'];   // token0 token1 fee tickSpacing factory
+    const res = await this.rpc.ethCallMany([
+      ...v4.map((x) => ({ to: this.chain.ADDR.posmV4, data: '0x86b6be7d' + lc(x.pool).slice(2, 52).padEnd(64, '0') })),   // poolKeys(bytes25)
+      ...v3.flatMap((x) => V3_CALLS.map((data) => ({ to: lc(x.pool), data }))),
+    ]);
+    const word = (hex, i) => (hex && hex.length >= 2 + (i + 1) * 64 ? BigInt('0x' + hex.slice(2 + i * 64, 2 + (i + 1) * 64)) : null);
+    const addrOf = (w) => (w == null ? null : '0x' + w.toString(16).padStart(40, '0'));
+    const liqOf = new Map(rows.map((x) => [lc(x.pool), x.liquidityUsd || 0]));
+    const list = [];
+    v4.forEach((x, i) => {
+      const r = res[i];
+      const pk = {
+        currency0: addrOf(word(r, 0)), currency1: addrOf(word(r, 1)),
+        fee: Number(word(r, 2) ?? 0n), tickSpacing: Number(BigInt.asIntN(24, word(r, 3) ?? 0n)), hooks: addrOf(word(r, 4)),
+      };
+      // No PositionManager mint ever = zero key; a key that does not hash to the id is not this pool.
+      if (!pk.currency1 || /^0x0+$/.test(pk.currency1) || lc(computePoolId(pk)) !== lc(x.pool)) return;
+      list.push({ poolRef: lc(x.pool), venue: 'v4', token0: pk.currency0, token1: pk.currency1, fee: pk.fee, tickSpacing: pk.tickSpacing, hooks: pk.hooks, firstBlock: null });
+    });
+    v3.forEach((x, i) => {
+      const r = res.slice(v4.length + i * 5, v4.length + i * 5 + 5).map((h) => word(h, 0));
+      if (r.some((w) => w == null)) return;
+      const venue = factories.get(addrOf(r[4]));
+      if (!venue) return;
+      const pool = lc(x.pool);
+      list.push({ poolRef: pool, poolAddr: pool, venue, token0: addrOf(r[0]), token1: addrOf(r[1]), fee: Number(r[2]), tickSpacing: Number(BigInt.asIntN(24, r[3])), hooks: null, firstBlock: null });
+    });
+    const out = await this.describePools(list);
+    // No creation block from DexScreener: its liquidity orders the rows instead.
+    return out.sort((a, b) => (b.quoteSide != null) - (a.quoteSide != null)
+      || (a.kosong === true) - (b.kosong === true)
+      || (liqOf.get(b.poolRef) || 0) - (liqOf.get(a.poolRef) || 0));
+  }
+
+  // Store found pools (so they appear in the ordinary list from now on), fetch their token
+  // metadata and liquidity, and shape them for the pool picker. Shared by both scans.
+  async describePools(list) {
+    if (!list.length) return [];
     for (const p of list) {
       this.store.run(
         `INSERT INTO pools(chain,pool_ref,venue,token0,token1,fee,tick_spacing,hooks,pool_addr,first_block)
@@ -426,7 +480,7 @@ class Manual {
       };
     }).sort((a, b) => (b.quoteSide != null) - (a.quoteSide != null)
       || (a.kosong === true) - (b.kosong === true)
-      || b.firstBlock - a.firstBlock);
+      || (b.firstBlock || 0) - (a.firstBlock || 0));
   }
 
   // A token with no Uniswap v3/v4 pool that can be entered is usually still

@@ -450,9 +450,10 @@ function PoolPicker({ pools, onPick }) {
     setScan({ token: tok, ...d });
     return d;
   };
-  const scanning = async () => {
+  // `chain`: skip the DexScreener fast path and sweep the chain (a pool too new to be listed).
+  const scanning = async (chain = false) => {
     setScan({ token, status: 'jalan', progress: 0 });
-    const r = await post('/api/manual/pools/scan', { token });
+    const r = await post('/api/manual/pools/scan', chain ? { token, chain: true } : { token });
     if (r.error) return setScan({ token, status: 'gagal', error: r.error });
     clearInterval(timer.current);
     timer.current = setInterval(async () => {
@@ -488,17 +489,24 @@ function PoolPicker({ pools, onPick }) {
 
       {/* Token address: the pool is looked up straight from the chain, not from the already known ones. */}
       {isAddress && (!scan || scan.token !== token) && (
-        <Button size="sm" onPress={scanning}>{t('Cari pool untuk token ini')}</Button>
+        <Button size="sm" onPress={() => scanning()}>{t('Cari pool untuk token ini')}</Button>
       )}
       {scan?.token === token && scan.status === 'jalan' && (
-        <div className="flex items-center gap-2 text-sm text-muted"><Spinner size="sm" />{t('Mencari pool di chain… {p}%', { p: scan.progress || 0 })}</div>
+        <div className="flex items-center gap-2 text-sm text-muted"><Spinner size="sm" />{scan.progress > 0 ? t('Mencari pool di chain… {p}%', { p: scan.progress }) : t('Mencari pool…')}</div>
       )}
       {scan?.token === token && scan.status === 'gagal' && (
         <Notice status="danger" title={t('Pemindaian gagal')}>{scan.error}</Notice>
       )}
       {useScan && (
         <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted">
-          <span>{t('{n} pool bisa dimasuki dari {total} yang ada', { n: (scan.pools || []).length, total: scan.total })}</span>
+          <span>
+            {t('{n} pool bisa dimasuki dari {total} yang ada', { n: (scan.pools || []).length, total: scan.total })}
+            {scan.source === 'dexscreener' && <>
+              {' · '}{t('dari DexScreener')}{' · '}
+              <button type="button" className="underline underline-offset-2" title={t('Pool yang baru dibuat mungkin belum terdaftar di DexScreener.')}
+                onClick={() => scanning(true)}>{t('Pindai chain')}</button>
+            </>}
+          </span>
           {!!scan.hidden && (
             <button type="button" className="underline underline-offset-2" onClick={() => changeAll(!every)}>
               {every ? t('Sembunyikan yang kosong') : t('Tampilkan semua')}

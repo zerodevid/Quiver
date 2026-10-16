@@ -88,3 +88,27 @@ test('a range that failed is read again by the next scan', async () => {
   assert.equal(pools.length, 1, 'the pool hidden by the failed range is found on the rescan');
   assert.ok(f.calls.length >= 18, 'a failed scan does not advance the saved block');
 });
+
+// Manual.dexPools: the DexScreener fast path resolves listed pools on chain in one batch.
+test('dexPools keeps a listed v4 pool whose poolKey hashes to its id and drops foreign ones', async () => {
+  const { computePoolId } = require('../src/pools');
+  const key = { currency0: ADDR.usdg, currency1: TOKEN, fee: 3000, tickSpacing: 60, hooks: ADDR.native };
+  const id = computePoolId(key).toLowerCase();
+  const encodedKey = coder.encode(['address', 'address', 'uint24', 'int24', 'address'], [key.currency0, key.currency1, key.fee, key.tickSpacing, key.hooks]);
+  const f = fixture();
+  const sent = [];
+  f.man.rpc.ethCallMany = async (items) => { sent.push(...items); return items.map((i) => (i.data.startsWith('0x86b6be7d') && i.data.slice(10, 60) === id.slice(2, 52) ? encodedKey : '0x' + '0'.repeat(320))); };
+  const pairs = [
+    { pool: id, base: { address: TOKEN }, quote: { address: ADDR.usdg }, liquidityUsd: 1000 },
+    // Listed under a v4 id, but no PositionManager key: never resolved.
+    { pool: '0x' + '44'.repeat(32), base: { address: TOKEN }, quote: { address: ADDR.usdg }, liquidityUsd: 5000 },
+    // A v3-shaped address from a factory this chain does not trade (Ramses): dropped.
+    { pool: '0x' + '55'.repeat(20), base: { address: TOKEN }, quote: { address: ADDR.usdg }, liquidityUsd: 9000 },
+  ];
+  const pools = await f.man.dexPools(TOKEN, pairs);
+  assert.deepEqual(pools.map((p) => p.poolRef), [id]);
+  assert.equal(pools[0].fee, 3000);
+  assert.equal(pools[0].tickSpacing, 60);
+  assert.equal(f.calls.length, 0, 'no getLogs sweep');
+  assert.equal(sent.filter((i) => i.to === ADDR.posmV4).length, 2);
+});

@@ -2111,10 +2111,22 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const token = canon(b.token || '');
       if (!isAddr(token)) return { error: `alamat token tidak valid — ${addrHint(chain.network)}` };
       if (poolScanJobs.get(token)?.status === 'jalan') return { ok: true, status: 'jalan' };
-      const job = { status: 'jalan', progress: 0, startedAt: Date.now(), pools: null, error: null };
+      const job = { status: 'jalan', progress: 0, startedAt: Date.now(), pools: null, error: null, source: 'chain' };
       poolScanJobs.set(token, job);
-      manual.scanPools(token, {
-        onProgress: (p) => { job.progress = p.total ? Math.round((p.done / p.total) * 100) : 0; },
+      // DexScreener first (one HTTP call + one eth_call batch, ~1 s); the full chain scan
+      // (a getLogs sweep, minutes on a busy RPC) only when it finds nothing to enter, or when
+      // asked (`chain`: a pool too new for DexScreener).
+      const fast = async () => {
+        if (b.chain || SOL || !manual.dexPools) return null;
+        const mk = await Promise.race([market.token(token), new Promise((r) => setTimeout(() => r(null), 8000))]).catch(() => null);
+        const pools = mk?.pairs?.length ? await manual.dexPools(token, mk.pairs).catch((e) => { log(`pool dexscreener ${token}: ${e.message}`); return null; }) : null;
+        return pools?.some(enterable) ? pools : null;
+      };
+      fast().then((pools) => {
+        if (pools) { job.source = 'dexscreener'; return pools; }
+        return manual.scanPools(token, {
+          onProgress: (p) => { job.progress = p.total ? Math.round((p.done / p.total) * 100) : 0; },
+        });
       }).then(async (pools) => {
         if (!pools.some(enterable)) job.others = await manual.otherMarket(token);
         await withPoolStats(pools.filter(enterable).slice(0, 90), 8000);
@@ -2127,7 +2139,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const token = canon(url.searchParams.get('token') || '');
       const j = poolScanJobs.get(token);
       if (!j) return { status: 'kosong' };
-      const out = { status: j.status, progress: j.progress, error: j.error };
+      const out = { status: j.status, progress: j.progress, error: j.error, source: j.source };
       if (!j.pools) return out;
       // The raw result can be hundreds of pools and almost all are junk: created then
       // abandoned without liquidity, or paired with a token that is not money.
