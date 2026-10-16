@@ -88,8 +88,8 @@ class Engine {
     // Each transaction's gas is booked in USD at the native (ETH/BNB) price at that time (see waitReceipt).
     this.exec.ethUsd = () => this.ethUsd;
     // `kyber` is the swap entry point for the whole engine: every enabled aggregator (Kyber,
-    // OKX, LI.FI, 0x, 1inch, OpenOcean), best route or fallback order — see swaprouter.js.
-    this.swapRouter = new SwapRouter({ exec: this.exec, rpc, cfg, chain, log: this.log });
+    // OKX, LI.FI, 0x, 1inch, OpenOcean, Uniswap on chain), best route or fallback order — see swaprouter.js.
+    this.swapRouter = new SwapRouter({ exec: this.exec, rpc, cfg, chain, log: this.log, store });
     this.ethUsd = cfg.prices?.eth_usd || 2500;
     this.cursor = 0;
     this.head = 0;

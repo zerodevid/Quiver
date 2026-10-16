@@ -18,9 +18,11 @@ const { Lifi } = require('../src/aggregators/lifi');
 const { ZeroX } = require('../src/aggregators/zerox');
 const { OneInch } = require('../src/aggregators/oneinch');
 const { OpenOcean } = require('../src/aggregators/openocean');
+const { Uniswap, QUOTERS } = require('../src/aggregators/uniswap');
 const { SwapRouter } = require('../src/swaprouter');
 const { ADDR } = require('../src/chain');
 const { build } = require('../src/networks');
+const coder = require('ethers').AbiCoder.defaultAbiCoder();
 
 const ME = '0xe9c209fd02a1562761c99700fc3d126e64b981ee';
 const OTHER = '0x' + '99'.repeat(20);
@@ -320,6 +322,68 @@ const okxReply = (o = {}) => (u) => {
     const o = stub('okx', 999n); o.enabled = () => false;
     assert.equal((await routerOf([stub('kyber', 1n), o]).swap(ADDR.usdg, MEME, 1n)).hash, '0xkyber');
     assert.equal(o.swaps, 0);
+  });
+
+  console.log('\nUniswap (on chain):');
+  // Two pools of USDG/MEME: a v3 one and a hooked v4 one; the Quoter answers per pool.
+  const uniWorld = (o = {}) => {
+    const ch = build('robinhood');
+    const rows = [
+      { pool_ref: '0xp3', venue: 'v3', token0: ADDR.usdg, token1: MEME, fee: 3000, tick_spacing: 60, hooks: null, pool_addr: '0x' + '33'.repeat(20) },
+      { pool_ref: '0xp4', venue: 'v4', token0: ADDR.usdg, token1: MEME, fee: 0x800000, tick_spacing: 10, hooks: '0x' + '44'.repeat(20), pool_addr: null },
+    ];
+    const store = { all: () => rows };
+    const q3 = QUOTERS[4663].v3, q4 = QUOTERS[4663].v4;
+    const sent = [], sims = [];
+    const rpc = {
+      ethCallMany: async (items) => items.map((i) => {
+        if (i.to === q3) return o.v3 == null ? null : coder.encode(['uint256', 'uint160', 'uint32', 'uint256'], [o.v3, 0, 0, 0]);
+        if (i.to === q4) return o.v4 == null ? null : coder.encode(['uint256', 'uint256'], [o.v4, 0]);
+        return null;
+      }),
+      batch: async (reqs) => reqs.map((r) => { sims.push(r.params[0]); return o.simRevert ? { error: { message: 'execution reverted', code: 3 } } : { result: '0x' }; }),
+    };
+    const exec = {
+      address: () => ME, deadline: () => 9999999999,
+      ensureRouterAllowance: async () => [],
+      buildSwapV3: (a, b, fee, amt, min) => ({ to: ch.ADDR.universalRouter, data: `0xv3${fee}:${min}`, value: '0' }),
+      buildSwapV4: (pk, z, amt, min, d, layout) => ({ to: ch.ADDR.universalRouter, data: `0xv4${layout}:${min}`, value: '0' }),
+      send: async (tx, meta) => { sent.push({ tx, meta }); return '0x' + 'ab'.repeat(32); },
+      waitReceipt: async () => ({ ok: true, receipt: { logs: [{ address: MEME, topics: [XFER, topicAddr(OTHER), topicAddr(ME)], data: hex32(o.got ?? 990n) }] } }),
+      balances: async () => new Map([[MEME, 0n]]),
+    };
+    const u = new Uniswap({ exec, rpc, cfg: { aggregators: o.cfg || {} }, chain: ch, store: o.noStore ? null : store, log: () => {} });
+    return { u, sent, sims };
+  };
+  await t('quote: the Quoter\'s best pool wins; a reverted quote is no route', async () => {
+    let w = uniWorld({ v3: 900n, v4: 1000n });
+    let q = await w.u.quote(ADDR.usdg, MEME, 100n);
+    assert.equal(q.amountOut, 1000n); assert.equal(q.aggregator, 'uniswap'); assert.match(q.dex, /v4 fee dinamis hook/);
+    w = uniWorld({ v3: 900n });
+    q = await w.u.quote(ADDR.usdg, MEME, 100n);
+    assert.equal(q.amountOut, 900n); assert.equal(q.dex, 'Uniswap: v3 0.3%');
+    assert.equal(await uniWorld({}).u.quote(ADDR.usdg, MEME, 100n), null);
+  });
+  await t('swap: dry-runs both v4 layouts, sends to the UniversalRouter with min = quote − slippage', async () => {
+    const w = uniWorld({ v3: 900n, v4: 1000n });
+    const r = await w.u.swap(ADDR.usdg, MEME, 100n, { slippageBps: 100 });
+    assert.deepEqual(w.sims.map((s) => s.data), ['0xv4limit:990', '0xv4plain:990', '0xv33000:891']);
+    assert.equal(w.sent.length, 1);
+    assert.equal(w.sent[0].tx.to, build('robinhood').ADDR.universalRouter);
+    assert.equal(w.sent[0].tx.data, '0xv4limit:990');
+    assert.equal(w.sent[0].meta.detail.aggregator, 'uniswap');
+    assert.equal(r.amountOut, 990n);
+  });
+  await t('swap: every dry run rejected → nothing sent, simulated error after retries', async () => {
+    const w = uniWorld({ v3: 900n, v4: 1000n, simRevert: true });
+    await assert.rejects(w.u.swap(ADDR.usdg, MEME, 100n), (e) => e.simulated === true);
+    assert.equal(w.sent.length, 0);
+  });
+  await t('off without a pools table, when switched off, or on a chain without a Quoter', async () => {
+    assert.equal(uniWorld({ noStore: true }).u.enabled(), false);
+    assert.equal(uniWorld({ cfg: { uniswap: { enabled: false } } }).u.blocker(), 'dimatikan');
+    const u = uniWorld({}).u; u.chain = { ...u.chain, CHAIN_ID: 999 };
+    assert.equal(u.blocker(), 'chain ini belum didukung');
   });
 
   console.log('\nsettings routes:');

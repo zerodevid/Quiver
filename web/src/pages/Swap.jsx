@@ -334,7 +334,7 @@ function Holdings({ loadErr, tokens, dari: from, onUse, onRemove, onImport, harg
 // did not become an LP, fee sales, bridge, gas top-up, WETH — plus fee claims & compounds.
 // Old rows (before token & amount were recorded) only have their USD value.
 const STATUS_ICON = { sukses: CircleCheck, pending: Clock, gagal: CircleX };
-const AGG = { okx: 'OKX', lifi: 'LI.FI', zerox: '0x', oneinch: '1inch', openocean: 'OpenOcean' };
+const AGG = { okx: 'OKX', lifi: 'LI.FI', zerox: '0x', oneinch: '1inch', openocean: 'OpenOcean', uniswap: 'Uniswap' };
 // DEX names from Kyber arrive raw ("uniswapv3", "uniswap-v4"); tidy up only the known ones.
 const dexName = (s) => String(s).replace(/^uniswap-?v(\d)$/i, 'Uniswap v$1').replace(/^kyberswap.*/i, 'KyberSwap');
 const STATUS_CLS = {

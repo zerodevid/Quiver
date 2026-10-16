@@ -24,9 +24,10 @@ const { Lifi } = require('./aggregators/lifi');
 const { ZeroX } = require('./aggregators/zerox');
 const { OneInch } = require('./aggregators/oneinch');
 const { OpenOcean } = require('./aggregators/openocean');
+const { Uniswap } = require('./aggregators/uniswap');
 
-const DEFAULT_ORDER = ['kyber', 'okx', 'lifi', 'zerox', 'oneinch', 'openocean'];
-const LABELS = { kyber: 'Kyber', okx: 'OKX', lifi: 'LI.FI', zerox: '0x', oneinch: '1inch', openocean: 'OpenOcean' };
+const DEFAULT_ORDER = ['kyber', 'okx', 'lifi', 'zerox', 'oneinch', 'openocean', 'uniswap'];
+const LABELS = { kyber: 'Kyber', okx: 'OKX', lifi: 'LI.FI', zerox: '0x', oneinch: '1inch', openocean: 'OpenOcean', uniswap: 'Uniswap' };
 // Display name of the aggregator a quote/swap result came from.
 const aggLabel = (q) => LABELS[q?.aggregator] || 'Kyber';
 const QUOTE_TIMEOUT_MS = 12_000;
@@ -49,12 +50,13 @@ class KyberAdapter {
 const withTimeout = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
 
 class SwapRouter {
-  constructor({ exec, rpc, cfg, chain, log, adapters = null }) {
+  constructor({ exec, rpc, cfg, chain, log, store = null, adapters = null }) {
     this.cfg = cfg; this.log = log || (() => {});
     const opts = { exec, rpc, cfg, chain, log: this.log };
     this.adapters = adapters || [
       new KyberAdapter(new Kyber(opts), cfg),
       new Okx(opts), new Lifi(opts), new ZeroX(opts), new OneInch(opts), new OpenOcean(opts),
+      new Uniswap({ ...opts, store }),
     ];
     this.byId = new Map(this.adapters.map((a) => [a.id, a]));
   }
