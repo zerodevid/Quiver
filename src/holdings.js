@@ -23,6 +23,12 @@ const FIRST_WINDOW = 900_000;
 // Scan logs at most every 5 minutes per wallet — getLogs is the heaviest RPC
 // call, and the target detail page is polled repeatedly.
 const RESCAN_MS = 5 * 60_000;
+// An address nobody owns: a real ERC-20 holds nothing for it. A token whose balanceOf
+// still answers > 0 for it reports the same fake balance to every wallet (airdrop scam).
+const PROBE = ethers.getAddress('0x' + ethers.id('lpcopy holdings probe').slice(-40));
+// Symbols of majors that scam tokens copy to pass as cash ("ETH" worth $187k at a fake
+// 1:1 WETH pool). The chain's own quote assets are matched by address, never by symbol.
+const MAJORS = new Set(['ETH', 'WETH', 'BTC', 'WBTC', 'USDT', 'USDC', 'USDG', 'DAI', 'BNB', 'WBNB', 'SOL', 'WSOL', 'POL', 'MATIC', 'AVAX', 'WAVAX']);
 
 class Holdings {
   constructor({ rpc, store, chain, log }) {
@@ -65,6 +71,14 @@ class Holdings {
     return out;
   }
 
+  // Tokens (of `tokens`) whose balanceOf answers > 0 for PROBE — a balance made up by the contract.
+  // Unreadable = not flagged: a failed probe must not hide a real holding.
+  async fakeBalances(tokens) {
+    if (!tokens.length) return new Set();
+    const res = await this.rpc.ethCallMany(tokens.map((t) => ({ to: t, data: IF_ERC20.encodeFunctionData('balanceOf', [PROBE]) }))).catch(() => []);
+    return new Set(tokens.filter((t, i) => res[i] && res[i] !== '0x' && res[i].length <= 66 && BigInt(res[i]) > 0n));
+  }
+
   // List of tokens with a balance held by the wallet, with metadata. ETH is always included (cash),
   // other tokens only if their balance is > 0.
   async of(wallet) {
@@ -83,14 +97,21 @@ class Holdings {
     // Metadata of a token that has a balance but is not yet known is read from the chain (and stored).
     const metas = await this.chain.tokens(keep);
     const byAddr = new Map(metas.filter(Boolean).map((t) => [lc(t.address), t]));
+    const fake = await this.fakeBalances(keep.filter((a) => !isNative(a) && !QUOTES[a]));
+    const majors = new Set([...MAJORS, ...Object.values(QUOTES).map((q) => String(q.symbol).toUpperCase())]);
     return keep.map((a) => {
       const meta = byAddr.get(a) || {};
       const raw = bal.get(a) || 0n;
       const dec = meta.decimals ?? (QUOTES[a]?.decimals ?? 18);
+      const symbol = meta.symbol || QUOTES[a]?.symbol || a.slice(0, 8);
+      // `suspect`: the balance or the identity cannot be trusted, so the value is not counted.
+      const suspect = QUOTES[a] || isNative(a) ? null
+        : fake.has(a) ? 'fakeBalance'
+          : majors.has(String(symbol).trim().toUpperCase()) ? 'spoof' : null;
       return {
-        address: a, symbol: meta.symbol || QUOTES[a]?.symbol || a.slice(0, 8), name: meta.name || null, decimals: dec,
+        address: a, symbol, name: meta.name || null, decimals: dec,
         raw: raw.toString(), amount: Number(raw) / 10 ** dec,
-        isQuote: !!QUOTES[a], native: isNative(a),
+        isQuote: !!QUOTES[a], native: isNative(a), suspect,
       };
     });
   }

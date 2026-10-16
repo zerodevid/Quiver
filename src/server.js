@@ -433,17 +433,19 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // USD price per token for the swap balance list. Quote assets from the engine's ETH price;
   // other tokens from the DexScreener pool with the largest liquidity (cached 30 seconds).
   // Time-bounded: the page must not wait for a slow DexScreener.
-  const usdPrice = async (a) => {
-    if (QUOTES[a]) return QUOTES[a].kind === 'usd' ? 1 : engine.ethUsd || null;
+  // usdQuote also returns the liquidity of the pool the price came from (null for quote assets).
+  const usdQuote = async (a) => {
+    if (QUOTES[a]) return { price: QUOTES[a].kind === 'usd' ? 1 : engine.ethUsd || null, liquidityUsd: null };
     const mk = await Promise.race([market.token(a), new Promise((r) => setTimeout(() => r(null), 3000))]).catch(() => null);
     const pairs = mk?.pairs || [];
     const asBase = pairs.find((p) => p.priceUsd && p.base.address === a);
-    if (asBase) return asBase.priceUsd;
+    if (asBase) return { price: asBase.priceUsd, liquidityUsd: asBase.liquidityUsd ?? null };
     // A token that only appears as a pool's quote side: the base's USD price divided by the
     // base's price in this token (priceNative) = this token's price.
     const asQuote = pairs.find((p) => p.priceUsd && p.priceNative && p.quote.address === a);
-    return asQuote ? asQuote.priceUsd / asQuote.priceNative : null;
+    return asQuote ? { price: asQuote.priceUsd / asQuote.priceNative, liquidityUsd: asQuote.liquidityUsd ?? null } : { price: null, liquidityUsd: null };
   };
+  const usdPrice = async (a) => (await usdQuote(a)).price;
 
   // The portfolio of one wallet, with a cache: tokens with a balance + their USD value. Used by the
   // "Wallet contents" panel and the balance summary in the target list — both are polled, and
@@ -454,14 +456,25 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     const tokens = await holdings.of(addr);
     const batch = holdings.prices ? await holdings.prices(tokens.map((x) => x.address)) : null;
     await Promise.all(tokens.map(async (x) => {
-      x.priceUsd = x.amount > 0 ? (batch ? batch.get(x.address) ?? null : await usdPrice(x.address)) : null;
-      x.usd = x.priceUsd != null ? x.amount * x.priceUsd : null;
+      const q = x.amount > 0 ? (batch ? { price: batch.get(x.address) ?? null, liquidityUsd: null } : await usdQuote(x.address)) : null;
+      // A copied major symbol's price is the scam pool's, not the asset's: none shown.
+      x.priceUsd = x.suspect === 'spoof' ? null : q?.price ?? null;
+      const value = x.priceUsd != null ? x.amount * x.priceUsd : null;
+      // Worth more than the pool its price comes from holds: that value cannot be sold for —
+      // the same trick as a fake balance (a thin pool sets the price, the wallet "holds" millions).
+      if (!x.suspect && value != null && q?.liquidityUsd != null && value > q.liquidityUsd) x.suspect = 'illiquid';
+      x.usd = x.suspect ? null : value;
     }));
     const totalUsd = tokens.reduce((a, x) => a + (x.usd || 0), 0);
     for (const x of tokens) x.sharePct = totalUsd > 0 && x.usd != null ? (x.usd / totalUsd) * 100 : null;
     // Valued first (large to small), then those whose price was not found.
     tokens.sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1) || b.amount - a.amount);
-    const data = { address: addr, tokens, totalUsd, unpricedN: tokens.filter((x) => x.amount > 0 && x.usd == null).length, ts: Date.now() };
+    const data = {
+      address: addr, tokens, totalUsd,
+      unpricedN: tokens.filter((x) => x.amount > 0 && x.usd == null && !x.suspect).length,
+      suspectN: tokens.filter((x) => x.amount > 0 && x.suspect).length,
+      ts: Date.now(),
+    };
     holdingsCache.set(addr, { ts: data.ts, data });
     // The total is stored too: the target list must be able to show each wallet's cash
     // right after the bot is restarted, without waiting for a chain scan first.

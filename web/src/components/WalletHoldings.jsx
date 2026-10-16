@@ -16,12 +16,21 @@ const amount = (v) => (v == null || !Number.isFinite(v) ? '—'
     : v >= 1 ? v.toLocaleString(undefined, { maximumSignificantDigits: 6 })
       : v.toLocaleString(undefined, { maximumSignificantDigits: 4 }));
 
+// Why a token's value is left out of the total (set by the server, see Holdings.of / holdingsOf).
+const SUSPECT = {
+  fakeBalance: 'Saldo palsu: kontrak ini melaporkan saldo yang sama ke alamat mana pun.',
+  spoof: 'Meniru simbol aset utama — bukan kontrak aslinya.',
+  illiquid: 'Nilainya melebihi likuiditas pool-nya, jadi tidak bisa dijual sebesar itu.',
+};
+
 const cols = [
   { key: 'tok', label: 'Token', sort: (x) => x.symbol, search: (x) => `${x.symbol} ${x.name || ''} ${x.address}`, render: (x) => (
     <div className="flex items-center gap-2.5">
       <TokenIcon address={x.address} symbol={x.symbol} size={22} link />
       <div className="min-w-0">
-        <span className="flex items-center gap-2"><TokenSym address={x.address} symbol={x.symbol} className="font-medium" />{!x.native && <TradeLinks token={x.address} compact />}</span>
+        <span className="flex items-center gap-2"><TokenSym address={x.address} symbol={x.symbol} className="font-medium" />
+          {x.suspect && <span className="rounded bg-warning/15 px-1.5 text-[0.6875rem] font-medium text-warning" title={tt(SUSPECT[x.suspect] || '')}>{tt(x.suspect === 'illiquid' ? 'tak likuid' : 'palsu')}</span>}
+          {!x.native && <TradeLinks token={x.address} compact />}</span>
         <div className="mono truncate text-xs text-muted">{x.native ? (x.name || tt('ETH native')) : x.name || `${x.address.slice(0, 6)}…${x.address.slice(-4)}`}</div>
       </div>
     </div>) },
@@ -29,7 +38,7 @@ const cols = [
   { key: 'px', label: 'Harga', align: 'end', sort: (x) => x.priceUsd ?? -1, render: (x) => (
     <span className="num whitespace-nowrap text-muted">{x.priceUsd != null ? `$${price(x.priceUsd)}` : '—'}</span>) },
   { key: 'usd', label: 'Nilai', align: 'end', sort: (x) => x.usd ?? -1, render: (x) => (
-    <span className="num whitespace-nowrap font-medium" title={x.usd == null ? tt('Harga tidak ditemukan di DexScreener') : undefined}>{usd(x.usd)}</span>) },
+    <span className="num whitespace-nowrap font-medium" title={x.suspect ? tt(SUSPECT[x.suspect] || '') : x.usd == null ? tt('Harga tidak ditemukan di DexScreener') : undefined}>{usd(x.usd)}</span>) },
   { key: 'share', label: 'Porsi', align: 'end', sort: (x) => x.sharePct ?? -1, render: (x) => (
     x.sharePct == null ? <span className="text-muted">—</span> : (
       <div className="flex items-center justify-end gap-2">
@@ -81,6 +90,7 @@ export default function WalletHoldings({ address }) {
           <p className="px-4 py-3 text-xs text-muted">
             {t('Saldo dibaca langsung dari chain; harga dari DexScreener (pool paling likuid).')}
             {data.unpricedN > 0 && ` ${t('{n} token tidak ditemukan harganya dan tidak ikut dihitung dalam total.', { n: data.unpricedN })}`}
+            {data.suspectN > 0 && ` ${t('{n} token ditandai palsu atau tak likuid dan tidak ikut dihitung.', { n: data.suspectN })}`}
             {' '}{t('Token yang masuk lewat kontrak lain baru terdeteksi setelah pindai transfer (~1 hari terakhir) selesai.')}
           </p>
         </>
