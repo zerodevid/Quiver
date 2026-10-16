@@ -160,7 +160,12 @@ export default function GrowthChart({ p, view, dim = false }) {
   };
   const Y = yScale(Math.min(lo, vMin), Math.max(hi, vMax), { zero: isPnl, floor0: !isPnl });
   const yDec = Y.step < 1 ? 2 : 0;
-  const lbl = { '24h': 'dalam 24 jam', '7d': 'dalam 7 hari', '30d': 'dalam 30 hari', all: 'sejak awal' }[p.range];
+  const lbl = {
+    '6h': 'dalam 6 jam', '12h': 'dalam 12 jam', '24h': 'dalam 24 jam', '3d': 'dalam 3 hari', '7d': 'dalam 7 hari', '14d': 'dalam 14 hari',
+    '30d': 'dalam 30 hari', '90d': 'dalam 90 hari', '180d': 'dalam 180 hari', '365d': 'dalam 1 tahun', all: 'sejak awal',
+    today: 'hari ini', yesterday: 'kemarin', week: 'minggu ini', lastweek: 'minggu lalu', month: 'bulan ini',
+    lastmonth: 'bulan lalu', quarter: 'kuartal ini', ytd: 'tahun ini', lastyear: 'tahun lalu',
+  }[p.range];
 
   // Colour by sign. The gradient is computed against each shape's bounding box:
   // the line (vMin…vMax) and the area filled down to zero (min(vMin,0)…max(vMax,0)).

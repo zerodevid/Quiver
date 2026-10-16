@@ -928,10 +928,20 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // performance per source (target copied / manual). Separate from /api/overview
     // because overview is polled every 5 seconds — this data is enough every half minute.
     'GET /api/portfolio': async (req, url) => {
-      const SPAN = { '24h': 864e5, '7d': 7 * 864e5, '30d': 30 * 864e5, all: 0 };
-      const range = url.searchParams.get('range') in SPAN ? url.searchParams.get('range') : '7d';
+      // Rolling windows are computed here; calendar windows (today, this week, last month ...)
+      // depend on the viewer's time zone, so the browser sends their from/to.
+      const DAY_MS = 864e5;
+      const SPAN = { '6h': 6 * 36e5, '12h': 12 * 36e5, '24h': DAY_MS, '3d': 3 * DAY_MS, '7d': 7 * DAY_MS, '14d': 14 * DAY_MS, '30d': 30 * DAY_MS,
+        '90d': 90 * DAY_MS, '180d': 180 * DAY_MS, '365d': 365 * DAY_MS, all: 0 };
+      const CALENDAR = new Set(['today', 'yesterday', 'week', 'lastweek', 'month', 'lastmonth', 'quarter', 'ytd', 'lastyear']);
+      const rangeIn = url.searchParams.get('range');
       const now = Date.now();
-      const from = SPAN[range] ? now - SPAN[range] : 0;
+      const num = (v) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= now + DAY_MS ? n : null; };
+      const calFrom = CALENDAR.has(rangeIn) ? num(url.searchParams.get('from')) : null;
+      const calTo = calFrom != null ? num(url.searchParams.get('to')) : null;
+      const range = calFrom != null ? rangeIn : rangeIn in SPAN ? rangeIn : '7d';
+      const from = calFrom != null ? calFrom : SPAN[range] ? now - SPAN[range] : 0;
+      const to = calTo != null && calTo > from && calTo < now ? calTo : null;   // a window that already ended
       const eth = engine.ethUsd;
       const k = (q) => (chain.isEthLike(q) ? eth : 1);
       const cash = await engine.freshCash();      // before summary, see /api/overview
@@ -941,10 +951,10 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const pnl = s.realizedUsd + s.unrealizedUsd;
 
       const rows = store.all(`SELECT ts, wallet_quote AS cash, positions_quote AS pos, fees_quote AS fee,
-        total_quote AS total, pnl_quote AS pnl, open_positions AS n FROM equity WHERE chain=? AND ts >= ? ORDER BY ts`, chain.network, from);
+        total_quote AS total, pnl_quote AS pnl, open_positions AS n FROM equity WHERE chain=? AND ts >= ?${to ? ' AND ts <= ?' : ''} ORDER BY ts`, chain.network, ...(to ? [from, to] : [from]));
       // The "now" point so the end of the chart matches the figure on the card, not
       // lagging up to 5 minutes behind it.
-      if (engine.positions.lastSync) {
+      if (engine.positions.lastSync && !to) {
         rows.push({ ts: now, cash: cash ? cash.usd : null, pos: s.exposureUsd + lo, fee: s.feeUsd, total: value, pnl, n: s.openCount, live: true });
       }
       // The last point BEFORE the window: the reference for "how much it changed in this range".
@@ -1021,7 +1031,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const by = pnlByTarget(closed);
 
       return {
-        range, from, series, baseline, extremes,
+        range, from, to, series, baseline, extremes,
         now: {
           value, cash, positionsUsd: s.exposureUsd, feeUsd: s.feeUsd, costUsd: s.costUsd,
           // leftover memecoin from positions that have closed, not yet sold, at the current price

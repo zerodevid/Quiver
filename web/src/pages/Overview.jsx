@@ -18,6 +18,36 @@ import { useClosePosition } from '../useClosePosition';
 import { canonAddr, chainInfo, CHAIN_ICON, chainRef } from '../chain';
 
 const RANGES = [['24h', '24 jam'], ['7d', '7 hari'], ['30d', '30 hari'], ['all', 'Semua']];
+const QUICK = new Set(RANGES.map((r) => r[0]));
+// Every other window, in the dropdown beside the quick buttons. Rolling ones are computed
+// by the server; calendar ones (from/to in the viewer's local time) are computed here.
+const MORE_RANGES = [
+  ['Terakhir', [['6h', '6 jam terakhir'], ['12h', '12 jam terakhir'], ['3d', '3 hari terakhir'], ['14d', '14 hari terakhir'], ['90d', '90 hari terakhir'], ['180d', '180 hari terakhir'], ['365d', '1 tahun terakhir']]],
+  ['Kalender', [['today', 'Hari ini'], ['yesterday', 'Kemarin'], ['week', 'Minggu ini'], ['lastweek', 'Minggu lalu'], ['month', 'Bulan ini'], ['lastmonth', 'Bulan lalu'], ['quarter', 'Kuartal ini'], ['ytd', 'Tahun ini'], ['lastyear', 'Tahun lalu']]],
+];
+const MORE_LABEL = Object.fromEntries(MORE_RANGES.flatMap(([, rs]) => rs));
+// from/to (ms) of a calendar window in local time; weeks start on Monday.
+function calendarWindow(key, now = new Date()) {
+  const y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+  const mondayOffset = (now.getDay() + 6) % 7;
+  const at = (...a) => new Date(...a).getTime();
+  switch (key) {
+    case 'today': return { from: at(y, m, d), to: at(y, m, d + 1) };
+    case 'yesterday': return { from: at(y, m, d - 1), to: at(y, m, d) };
+    case 'week': return { from: at(y, m, d - mondayOffset), to: at(y, m, d - mondayOffset + 7) };
+    case 'lastweek': return { from: at(y, m, d - mondayOffset - 7), to: at(y, m, d - mondayOffset) };
+    case 'month': return { from: at(y, m, 1), to: at(y, m + 1, 1) };
+    case 'lastmonth': return { from: at(y, m - 1, 1), to: at(y, m, 1) };
+    case 'quarter': return { from: at(y, m - (m % 3), 1), to: at(y, m - (m % 3) + 3, 1) };
+    case 'ytd': return { from: at(y, 0, 1), to: at(y + 1, 0, 1) };
+    case 'lastyear': return { from: at(y - 1, 0, 1), to: at(y, 0, 1) };
+    default: return null;
+  }
+}
+const rangeQuery = (range) => {
+  const w = calendarWindow(range);
+  return '?range=' + range + (w ? `&from=${w.from}&to=${w.to}` : '');
+};
 const VIEWS = [['pnl', 'PnL kumulatif'], ['value', 'Nilai']];
 // Net PnL only exists if the wallet capital is tracked (deposits/withdrawals from RPC).
 const VIEWS_NET = [['net', 'PnL bersih'], ...VIEWS];
@@ -407,7 +437,7 @@ export default function Overview() {
   const [viewPick, setView] = useState('net');
   const [shareDay, setShareDay] = useState(null);   // day card clicked in the calendar (kept stable across polls)
   const [shareMonth, setShareMonth] = useState(null);   // month card shared from the calendar header (kept stable across polls)
-  const { data: p, reload: reloadPortfolio } = usePoll('/api/portfolio?range=' + range, 30000);
+  const { data: p, reload: reloadPortfolio } = usePoll('/api/portfolio' + rangeQuery(range), 30000);
   // The same as the Positions page: a cheap endpoint, so a new position appears within ~5 seconds.
   const { data: pos, reload: reloadPos } = usePoll('/api/positions', 5000);
   // Click an active position row -> the same history drawer as the Positions page (PnL,
@@ -533,7 +563,15 @@ export default function Overview() {
         <Panel title="Pertumbuhan portofolio" className="lg:col-span-2"
           action={<div className="flex flex-wrap gap-2">
             <Segmented size="sm" aria="Tampilan grafik" value={view} onChange={setView} options={now?.netPnl != null ? VIEWS_NET : VIEWS} />
-            <Segmented size="sm" aria="Rentang waktu" value={range} onChange={setRange} options={RANGES} />
+            <Segmented size="sm" aria="Rentang waktu" value={QUICK.has(range) ? range : ''} onChange={setRange} options={RANGES} />
+            <select value={QUICK.has(range) ? '' : range} onChange={(e) => e.target.value && setRange(e.target.value)}
+              aria-label={t('Rentang waktu')}
+              className={`h-9 rounded-lg border bg-surface px-2 text-xs font-medium ${QUICK.has(range) ? 'border-border text-muted' : 'border-accent text-foreground'}`}>
+              <option value="" disabled={!QUICK.has(range)}>{t('Lainnya…')}</option>
+              {MORE_RANGES.map(([g, rs]) => (
+                <optgroup key={g} label={t(g)}>{rs.map(([k, l]) => <option key={k} value={k}>{t(l)}</option>)}</optgroup>
+              ))}
+            </select>
           </div>}>
           {p ? <GrowthChart p={p} view={view} dim={p.range !== range} /> : <Loading />}
           {p && view !== 'value' && <PnlGap p={p} />}
