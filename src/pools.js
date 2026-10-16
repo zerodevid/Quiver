@@ -110,7 +110,7 @@ class Chain {
   // ---- v4 pool state ------------------------------------------------------
   async slot0V4(poolId) {
     const slot = ethers.keccak256(coder.encode(['bytes32', 'uint256'], [poolId, POOLS_SLOT]));
-    const [w] = await this.rpc.ethCallMany([{ to: this.ADDR.poolManager, data: IF_EXT.encodeFunctionData('extsload', [slot]) }]);
+    const [w] = await this.rpc.ethCallMany([{ to: this.ADDR.poolManager, data: IF_EXT.encodeFunctionData('extsload', [slot]) }], 'latest', { share: true });
     if (!w || /^0x0*$/.test(w)) return null;
     const s = unpackSlot0(w);
     return s.sqrtPriceX96 > 0n ? s : null;
@@ -120,13 +120,13 @@ class Chain {
       to: this.ADDR.poolManager,
       data: IF_EXT.encodeFunctionData('extsload', [ethers.keccak256(coder.encode(['bytes32', 'uint256'], [id, POOLS_SLOT]))]),
     }));
-    const res = await this.rpc.ethCallMany(calls);
+    const res = await this.rpc.ethCallMany(calls, 'latest', { share: true });
     return res.map((w) => (w && !/^0x0*$/.test(w) ? unpackSlot0(w) : null));
   }
 
   // ---- v3 pool state ------------------------------------------------------
   async slot0V3(poolAddr) {
-    const [w] = await this.rpc.ethCallMany([{ to: poolAddr, data: IF_POOL3.encodeFunctionData('slot0') }]);
+    const [w] = await this.rpc.ethCallMany([{ to: poolAddr, data: IF_POOL3.encodeFunctionData('slot0') }], 'latest', { share: true });
     if (!w || w === '0x') return null;
     try {
       const d = IF_POOL3.decodeFunctionResult('slot0', w);

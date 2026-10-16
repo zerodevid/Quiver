@@ -11,6 +11,7 @@
 const https = require('node:https');
 const { URL } = require('node:url');
 const { RpcCache } = require('./rpccache');
+const { LiveCache } = require('./rpclive');
 
 const DOH = 'https://1.1.1.1/dns-query';
 
@@ -52,6 +53,10 @@ class RpcPool {
     // temporary pool to test an endpoint on the Settings page — there is no cache.
     const c = opts.cache;
     this.cache = c && c.store && c.enabled !== false ? new RpcCache({ log, ...c }) : null;
+    // Shared live reads (src/rpclive.js): one answer serves every tenant asking at the same
+    // moment. Only on pools built with cache options, i.e. production pools — a temporary
+    // pool that tests an endpoint must really hit that endpoint.
+    this.live = c ? new LiveCache(c.live || {}) : null;
   }
 
   noteHead(n) { if (Number.isFinite(n) && n > this.head) this.head = n; }
@@ -298,21 +303,54 @@ class RpcPool {
   // "lagging node" check passes — an empty log list from a lagging node
   // must not be immortalised.
   async batch(calls, opts = {}) {
-    if (!this.cache) return this.batchLive(calls, opts);
-    const plans = calls.map((c) => (c.nocache || c.method === 'eth_getLogs' ? null : this.cache.plan(c.method, c.params)));
+    if (!this.cache && !this.live) return this.batchLive(calls, opts);
+    const plans = calls.map((c) => (this.cache && !c.nocache && c.method !== 'eth_getLogs' ? this.cache.plan(c.method, c.params) : null));
     const out = new Array(calls.length).fill(null);
     const ask = [];
+    const lead = new Map();     // call index -> { plan, resolve, reject }: this batch answers it for everyone
+    const follow = [];          // [call index, Promise<item>]: another batch is already asking
     for (let i = 0; i < calls.length; i++) {
       const hit = plans[i] ? this.cache.get(plans[i], this.head) : undefined;
-      if (hit !== undefined) out[i] = { result: hit, cached: true };
-      else ask.push(i);
+      if (hit !== undefined) { out[i] = { result: hit, cached: true }; continue; }
+      const lp = this.live ? this.live.plan(calls[i]) : null;
+      if (lp) {
+        const warm = this.live.peek(lp);
+        if (warm) { out[i] = { ...warm, cached: true }; continue; }
+        const flying = this.live.flying.get(lp.key);
+        if (flying) { this.live.joined++; this.live.tally(lp.method, 'joined'); follow.push([i, flying]); continue; }
+        const d = {};
+        d.promise = new Promise((resolve, reject) => { d.resolve = resolve; d.reject = reject; });
+        d.promise.catch(() => {});     // followers handle it; keeps an unwatched rejection quiet
+        this.live.flying.set(lp.key, d.promise);
+        this.live.sent++; this.live.tally(lp.method, 'sent');
+        lead.set(i, { plan: lp, ...d });
+      }
+      ask.push(i);
     }
-    if (!ask.length) return out;
-    const res = await this.batchLive(ask.map((i) => calls[i]), opts);
-    ask.forEach((i, k) => {
-      out[i] = res[k];
-      if (plans[i] && res[k] && !res[k].error && !res[k].transient) this.cache.put(plans[i], res[k].result, this.head);
-    });
+    // Our own leads go out BEFORE waiting on anyone else's: two batches that each lead what
+    // the other follows would otherwise wait on each other forever.
+    if (ask.length) {
+      let res;
+      try { res = await this.batchLive(ask.map((i) => calls[i]), opts); }
+      catch (e) {
+        for (const l of lead.values()) { this.live.flying.delete(l.plan.key); l.reject(e); }
+        throw e;
+      }
+      ask.forEach((i, k) => {
+        out[i] = res[k];
+        if (plans[i] && res[k] && !res[k].error && !res[k].transient) this.cache.put(plans[i], res[k].result, this.head);
+        const l = lead.get(i);
+        if (l) {
+          this.live.flying.delete(l.plan.key);
+          if (res[k] && !res[k].error && !res[k].transient) this.live.store(l.plan, res[k].result);
+          l.resolve(res[k]);
+        }
+      });
+    }
+    for (const [i, p] of follow) {
+      const item = await p;
+      out[i] = item && !item.error ? { result: copyResult(item.result), cached: true } : item;
+    }
     return out;
   }
 
@@ -571,15 +609,19 @@ class RpcPool {
   // (balance and allowance are read too) — used to choose the swap pool: a pool that refuses
   // a swap is detected here, before gas is spent. An ordinary read only needs {to, data}.
   //
+  // share: the answer may be shared with other tenants asking the same thing at the same moment
+  // (src/rpclive.js, ~1 second). Only for public state such as pool prices — never for
+  // allowances, balances or anything read right after sending a transaction.
+  //
   // strict: throw if any item still fails TEMPORARILY after being tried on another
   // endpoint — for callers that must not equate "unreadable" with "revert"
   // (e.g. ownerOf: revert = NFT burned, unreadable = do not know yet).
-  async ethCallMany(items, block = 'latest', { strict = false } = {}) {
+  async ethCallMany(items, block = 'latest', { strict = false, share = false } = {}) {
     const res = await this.batch(items.map((i) => {
       const tx = { to: i.to, data: i.data };
       if (i.from) tx.from = i.from;
       if (i.value != null && BigInt(i.value) > 0n) tx.value = '0x' + BigInt(i.value).toString(16);
-      return { method: 'eth_call', params: [tx, block] };
+      return share ? { method: 'eth_call', params: [tx, block], share: true } : { method: 'eth_call', params: [tx, block] };
     }));
     if (strict) {
       // Only a REVERT may legitimately be read as null. Other errors — temporary, or "block not found"
@@ -592,7 +634,10 @@ class RpcPool {
   }
 
   // Cache summary (null = no cache in this pool) — used by the Settings page.
-  cacheStats() { return this.cache ? this.cache.stats() : null; }
+  cacheStats() {
+    if (!this.cache) return null;
+    return { ...this.cache.stats(), live: this.live ? this.live.stats() : null };
+  }
 
   stats() {
     return this.eps.map((e) => ({
@@ -603,5 +648,7 @@ class RpcPool {
     }));
   }
 }
+
+const copyResult = (v) => (v && typeof v === 'object' ? JSON.parse(JSON.stringify(v)) : v);
 
 module.exports = { RpcPool };

@@ -24,7 +24,8 @@ const HEAD = 1_000_000;
 function pool(answer, { store = new Store(':memory:'), cache = {}, head = HEAD } = {}) {
   const p = new RpcPool([{ url: 'https://a.example', archive: true }], () => {}, {
     dns_over_https: false,
-    cache: { store, chain: 'robinhood', confirmations: 64, ...cache },
+    // The shared live cache (rpclive.js) has its own test; off here so these counts stay about final answers.
+    cache: { store, chain: 'robinhood', confirmations: 64, live: { enabled: false }, ...cache },
   });
   p.calls = {};
   p.post = async (url, body) => {
