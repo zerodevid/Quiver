@@ -2142,7 +2142,7 @@ class Telegram {
   exitCard(d, p, pool = null) {
     const pair = p ? `${p.symbol0}/${p.symbol1}` : tr("posisi #{0}", [d.positionId]);
     const pnl = p?.pnlUsd;
-    const heading = d.auto ? tr("🛡 <b>KELUAR MANDIRI</b>") : d.full ? tr("🔴 <b>LP DITUTUP</b>") : tr("➖ <b>LP DIKURANGI</b>");
+    const heading = d.outside ? tr("🔌 <b>DITUTUP DI LUAR BOT</b>") : d.auto ? tr("🛡 <b>KELUAR MANDIRI</b>") : d.full ? tr("🔴 <b>LP DITUTUP</b>") : tr("➖ <b>LP DIKURANGI</b>");
     // The bolded profit/loss is the NET figure: proceeds − capital − costs
     // (gas + open & close slippage). Raw PnL is only proceeds − capital, and on
     // a thin position those costs are what separates profit from loss. Costs are placed

@@ -2564,13 +2564,16 @@ class Engine {
       if (BigInt(receipt.status) === 1n) {
         const r = await this.recordExit(plan, pos, hash, receipt);
         const msg = `#${pos.id} ditutup di luar alur bot — hasil dicatat dari ${source} ${hash.slice(0, 12)}… (${r.note})`;
-        this.notify(msg, { kind: 'exit', positionId: pos.id, txHash: hash, full: true, sold: r.sold, auto: true, target: pos.target, mirrorOf: pos.mirror_of, reason: 'likuiditas sudah nol di chain' });
+        // Found through the pool's logs = withdrawn outside the bot (another app, the wallet itself):
+        // no exit rule fired, so the card must not say so.
+        const outside = source !== 'tx bot';
+        this.notify(msg, { kind: 'exit', positionId: pos.id, txHash: hash, full: true, sold: r.sold, auto: !outside, outside, target: pos.target, mirrorOf: pos.mirror_of, reason: outside ? 'ditarik di luar bot' : 'likuiditas sudah nol di chain' });
         return r;
       }
     }
     this.positions.markClosed(pos.id, { outQuote: 0, txHash: null });
     this.notify(`#${pos.id} likuiditasnya sudah nol di chain tetapi transaksi keluarnya tidak ditemukan — dicatat hasil $0; perbaiki manual kalau dananya memang masuk wallet`, {
-      kind: 'exit', positionId: pos.id, txHash: null, full: true, auto: true, target: pos.target, mirrorOf: pos.mirror_of, reason: 'likuiditas sudah nol di chain, hasil tidak ditemukan',
+      kind: 'exit', positionId: pos.id, txHash: null, full: true, outside: true, target: pos.target, mirrorOf: pos.mirror_of, reason: 'likuiditas sudah nol di chain, hasil tidak ditemukan',
     });
     return null;
   }

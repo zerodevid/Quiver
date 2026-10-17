@@ -256,6 +256,7 @@
   "kelebihan zap": "Zap surplus",
   "sisa di wallet": "Wallet leftover",
   "🛡 <b>KELUAR MANDIRI</b>": "🛡 <b>Exit rule triggered</b>",
+  "🔌 <b>DITUTUP DI LUAR BOT</b>": "🔌 <b>Closed outside the bot</b>",
   "🔴 <b>LP DITUTUP</b>": "🔴 <b>Position closed</b>",
   "➖ <b>LP DIKURANGI</b>": "➖ <b>Liquidity reduced</b>",
   " · dipegang {0}": " · Held for {0}",

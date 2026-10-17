@@ -18,6 +18,7 @@ const exact = {
   'kita tidak punya cermin posisi ini': ['No matching bot position', 'Tidak ada posisi bot yang terkait'],
   'porsi keluar nol': ['No liquidity to withdraw', 'Tidak ada likuiditas yang dapat ditarik'],
   'likuiditas sudah nol di chain': ['On-chain liquidity is zero', 'Likuiditas di chain sudah nol'],
+  'ditarik di luar bot': ['Liquidity was withdrawn outside the bot (another app or the wallet itself)', 'Likuiditas ditarik di luar bot (aplikasi lain atau langsung dari wallet)'],
   'jumlah posisi terbuka sudah mentok': ['The open position limit has been reached', 'Batas posisi terbuka telah tercapai'],
   'nilainya nol, tidak bisa dipaksa': ['Position value is zero, so the forced size cannot be applied', 'Nilai posisi nol, nominal paksa tidak bisa diterapkan'],
   'batas satu sisi': ['one-sided limit', 'batas satu sisi'],

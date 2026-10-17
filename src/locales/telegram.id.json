@@ -4,6 +4,7 @@
   "🔴 <b>LP DITUTUP</b>": "🔴 <b>Posisi ditutup</b>",
   "➖ <b>LP DIKURANGI</b>": "➖ <b>Likuiditas dikurangi</b>",
   "🛡 <b>KELUAR MANDIRI</b>": "🛡 <b>Aturan keluar terpicu</b>",
+  "🔌 <b>DITUTUP DI LUAR BOT</b>": "🔌 <b>Ditutup di luar bot</b>",
   "🚨🚨 <b>SISA BELUM TERJUAL</b> · {0}": "⚠️ <b>Penjualan sisa tertunda</b> · {0}",
   "🧹 <b>SISA TERJUAL</b> · {0}": "🧹 <b>Token sisa terjual</b> · {0}",
   "⚠️ <b>{0}</b> masih tersangkut di wallet{1}.": "<b>{0}</b> masih tersimpan di wallet{1}.",
