@@ -369,6 +369,80 @@ function usdPerQuote(symbol, ethUsd, chain = null) {
   return (chain ? chain.isEthLike(symbol) : symbol === 'ETH' || symbol === 'WETH') ? ethUsd : 1;
 }
 
+// The checks of an entry that need nothing but the target's action row: venue, hook, fee tier,
+// quote asset, token lists and the target's minimum size. Shared by planEntry (the real
+// decision) and previewEntry (the rules simulation), so the two cannot drift apart.
+// Returns { skip: reason } or { q, noQuote, targetUsd }.
+function screenEntry(act, rules, chain, ethUsd) {
+  if (!rules.filters.venues.includes(act.venue)) return { skip: `venue ${act.venue} dimatikan` };
+  if (act.venue === 'v4' && hookBlocked(act.hooks, rules)) {
+    return { skip: `pool memakai hook ${act.hooks.slice(0, 10)}… (hook bisa menahan atau memotong penarikan: ${riskyHookFlags(act.hooks).join(', ')})` };
+  }
+  if (act.fee != null && act.fee > rules.filters.max_fee_bps) return { skip: `fee tier ${act.fee} di atas batas` };
+
+  let q = chain.quoteSideOf(act.token0, act.token1);
+  if (!q && !rules.filters.allow_no_quote) {
+    return { skip: `pool tanpa aset kuotasi yang dikenal (${Object.values(chain.QUOTES).map((x) => x.symbol).join('/')})` };
+  }
+  // No quote asset (allowed): sized and booked in USD, like USDG. side null = no money side.
+  const noQuote = !q;
+  if (noQuote) {
+    const stable = chain.QUOTES[chain.ADDR.usdg];
+    q = { side: null, symbol: stable.symbol, decimals: stable.decimals, kind: 'usd' };
+  } else if (rules.filters.quote_whitelist.length && !rules.filters.quote_whitelist.includes(q.symbol)) {
+    return { skip: `kuotasi ${q.symbol} tidak diizinkan` };
+  }
+  const memes = (noQuote ? [act.token0, act.token1] : [q.side === 0 ? act.token1 : act.token0]).map((x) => x.toLowerCase());
+  const bl = rules.filters.token_blacklist.map((x) => x.toLowerCase());
+  const wl = rules.filters.token_whitelist.map((x) => x.toLowerCase());
+  if (memes.some((t) => bl.includes(t))) return { skip: 'token masuk daftar hitam' };
+  if (wl.length && !memes.every((t) => wl.includes(t))) return { skip: 'token di luar daftar putih' };
+
+  const targetUsd = quoteToUsd(act.valueQuote || 0, q.kind, ethUsd);
+  if (targetUsd < rules.filters.min_target_quote_usd) {
+    return { skip: `posisi target cuma $${targetUsd.toFixed(2)} (< $${rules.filters.min_target_quote_usd})` };
+  }
+  return { q, noQuote, targetUsd };
+}
+
+/**
+ * Dry verdict for one past target entry under `rules`, from the stored action row alone
+ * (no pool price, no wallet): the static filters, then the size the sizing mode asks for after the
+ * per-position ceiling and the minimum. Live-only limits (cash, open exposure, daily
+ * budget, open-position count) are not applied. Returns { verdict, reason, usd }.
+ */
+function previewEntry(act, { rules, chain, ethUsd }) {
+  const scr = screenEntry(act, rules, chain, ethUsd);
+  if (scr.skip) return { verdict: 'skip', reason: scr.skip };
+  const { q, targetUsd } = scr;
+  const s = rules.sizing;
+  let usd, how = s.mode;
+  if (s.mode === 'mirror') usd = targetUsd;
+  else if (s.mode === 'multiplier') usd = targetUsd * s.multiplier;
+  else if (s.mode === 'fixed_quote') usd = q.kind === 'eth' ? s.fixed_quote_eth * ethUsd : s.fixed_quote_usd;
+  else {
+    // equity needs both wallets' equity, which a past row does not carry: shown as its pct fallback.
+    if (s.mode === 'equity') {
+      if (s.equity_fallback === 'skip') return { verdict: 'skip', reason: 'mode equity: equity tidak diketahui di simulasi dan aturannya lewati' };
+      how = 'equity (estimasi pct)';
+    }
+    usd = targetUsd * s.pct / 100;
+  }
+  if (!(usd > 0)) return { verdict: 'skip', reason: 'ukuran hasil hitung nol' };
+  let note = '';
+  if (usd > s.max_quote_per_position_usd) {
+    if (s.max_quote_per_position_usd <= 0) return { verdict: 'skip', reason: 'batas per posisi habis' };
+    usd = s.max_quote_per_position_usd; note = ` — dipotong batas per posisi ($${usd.toFixed(2)})`;
+  }
+  if (usd < s.min_quote_usd) {
+    const small = `hasilnya $${usd.toFixed(2)} (< minimum $${s.min_quote_usd})`;
+    if (!s.force_min || s.force_min_usd <= 0) return { verdict: 'skip', reason: small };
+    if (s.force_min_usd > s.max_quote_per_position_usd) return { verdict: 'skip', reason: `${small} dan paksa $${s.force_min_usd} melebihi batas per posisi` };
+    note = ` — dipaksa ke $${s.force_min_usd} (hitungan $${usd.toFixed(2)})`; usd = s.force_min_usd;
+  }
+  return { verdict: 'copy', reason: `${how} → $${usd.toFixed(2)}${note}`, usd };
+}
+
 /**
  * Build the plan for an ADD liquidity action (mint/increase).
  * ctx: { chain, store, rules, slot0, dec0, dec1, ethUsd, openExposureUsd, spentTodayUsd, openCount }
@@ -378,34 +452,9 @@ function planEntry(act, ctx) {
   const skip = (reason) => ({ verdict: 'skip', reason });
 
   if (!slot0) return skip('state pool tidak terbaca');
-  if (!rules.filters.venues.includes(act.venue)) return skip(`venue ${act.venue} dimatikan`);
-  if (act.venue === 'v4' && hookBlocked(act.hooks, rules)) {
-    return skip(`pool memakai hook ${act.hooks.slice(0, 10)}… (hook bisa menahan atau memotong penarikan: ${riskyHookFlags(act.hooks).join(', ')})`);
-  }
-  if (act.fee != null && act.fee > rules.filters.max_fee_bps) return skip(`fee tier ${act.fee} di atas batas`);
-
-  let q = chain.quoteSideOf(act.token0, act.token1);
-  if (!q && !rules.filters.allow_no_quote) {
-    return skip(`pool tanpa aset kuotasi yang dikenal (${Object.values(chain.QUOTES).map((x) => x.symbol).join('/')})`);
-  }
-  // No quote asset (allowed): sized and booked in USD, like USDG. side null = no money side.
-  const noQuote = !q;
-  if (noQuote) {
-    const stable = chain.QUOTES[chain.ADDR.usdg];
-    q = { side: null, symbol: stable.symbol, decimals: stable.decimals, kind: 'usd' };
-  } else if (rules.filters.quote_whitelist.length && !rules.filters.quote_whitelist.includes(q.symbol)) {
-    return skip(`kuotasi ${q.symbol} tidak diizinkan`);
-  }
-  const memes = (noQuote ? [act.token0, act.token1] : [q.side === 0 ? act.token1 : act.token0]).map((x) => x.toLowerCase());
-  const bl = rules.filters.token_blacklist.map((x) => x.toLowerCase());
-  const wl = rules.filters.token_whitelist.map((x) => x.toLowerCase());
-  if (memes.some((t) => bl.includes(t))) return skip('token masuk daftar hitam');
-  if (wl.length && !memes.every((t) => wl.includes(t))) return skip('token di luar daftar putih');
-
-  const targetUsd = quoteToUsd(act.valueQuote || 0, q.kind, ethUsd);
-  if (targetUsd < rules.filters.min_target_quote_usd) {
-    return skip(`posisi target cuma $${targetUsd.toFixed(2)} (< $${rules.filters.min_target_quote_usd})`);
-  }
+  const scr = screenEntry(act, rules, chain, ethUsd);
+  if (scr.skip) return skip(scr.skip);
+  const { q, noQuote, targetUsd } = scr;
   // Adding to a position we already mirror does not open a new position.
   const adding = ctx.existingUsd != null;
   if (!adding && ctx.openCount >= rules.filters.max_open_positions) return skip('jumlah posisi terbuka sudah mentok');
@@ -577,4 +626,4 @@ function planExit(act, ourPos, ctx) {
   };
 }
 
-module.exports = { DEFAULTS, HOOK_FLAGS, HOOK_PERMISSIONS, hookInfo, riskyHookFlags, hookBlocked, RULE_SPEC, equitySizing, validateRules, normalizeRules, rulesFor, deepMerge, planEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };
+module.exports = { DEFAULTS, HOOK_FLAGS, HOOK_PERMISSIONS, hookInfo, riskyHookFlags, hookBlocked, RULE_SPEC, equitySizing, validateRules, normalizeRules, rulesFor, deepMerge, planEntry, previewEntry, screenEntry, planExit, planRange, valueOfLiquidity, usdToQuote, quoteToUsd, usdPerQuote, tickSpacingFromFee };

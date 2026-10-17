@@ -3,6 +3,7 @@ import { Button, toast } from '@heroui/react';
 import { get, post } from '../api';
 import { PageHeader, Panel, Loading, Notice } from '../components/ui';
 import RulesForm from '../components/RulesForm';
+import RulesSimulation from '../components/RulesSimulation';
 import { useI18n } from '../i18n';
 
 export default function Rules() {
@@ -43,7 +44,7 @@ export default function Rules() {
       <PageHeader group="Copy" title="Aturan default" desc="Berlaku untuk semua target yang tidak punya aturan sendiri." />
       {error && <div role="alert" className="mb-4"><Notice status="danger">{error}{!rules && <Button variant="ghost" onPress={load}>{t('Coba lagi')}</Button>}</Notice></div>}
       {!rules ? !error && <Loading /> : <>
-        <Panel><RulesForm value={rules} onChange={setRules} isDisabled={saving} /></Panel>
+        <Panel><RulesForm value={rules} onChange={setRules} isDisabled={saving} /><RulesSimulation rules={rules} /></Panel>
         <div className="sticky bottom-3 z-10 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface p-4 shadow-sm">
           <div><div role="status" className="text-sm font-medium">{t(dirty ? 'Ada perubahan belum disimpan' : 'Semua perubahan tersimpan')}</div>
             <p className="mt-1 hidden text-xs text-muted sm:block">{t('Perubahan aturan tidak mengubah mode simulasi atau LIVE.')}</p></div>

@@ -5,6 +5,7 @@ import { usePoll } from '../hooks';
 import { post } from '../api';
 import { PageHeader, Panel, Text, Empty, Loading, Stat, WalletLinks, ask, CopyBtn } from '../components/ui';
 import RulesForm from '../components/RulesForm';
+import RulesSimulation from '../components/RulesSimulation';
 import WalletDetail from '../components/WalletDetail';
 import WalletHoldings from '../components/WalletHoldings';
 import { usd, kUsd, tone, ago, short } from '../fmt';
@@ -29,6 +30,7 @@ function TargetRules({ tg, onChanged }) {
     <>
       <p className="mb-5 text-sm text-muted">{t('Aturan khusus wallet ini. Selama tidak diubah, aturan default yang dipakai.')}</p>
       <RulesForm value={rules} onChange={setRules} />
+      <RulesSimulation rules={rules} address={tg.address} />
       <div className="mt-6 flex justify-end gap-2">
         {own && <Button variant="outline" onPress={reset}>{t('Pakai default')}</Button>}
         <Button onPress={save} isPending={saving}>{t('Simpan aturan')}</Button>

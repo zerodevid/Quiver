@@ -4,7 +4,7 @@ const { ensureChain, normAddr, addrHint, windowBlocks, windowUnits } = require('
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const { rulesFor, DEFAULTS, validateRules } = require('./policy');
+const { rulesFor, DEFAULTS, validateRules, previewEntry } = require('./policy');
 const { scoutWallet } = require('./scout');
 const logbuf = require('./logbuf');
 const { WalletResearch, summarize } = require('./wallet');
@@ -1889,6 +1889,55 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       cfg.rules = v.rules || {};
       saveCfg();
       return { ok: true, rules: rulesFor(cfg.rules) };
+    },
+    // Rules simulation: replays the target's recent entries (one wallet, or every target when no
+    // address is given) under DRAFT rules, so the effect of an edit is visible before saving it.
+    // Also returns what the bot actually decided then, to show which entries the edit flips.
+    'POST /api/rules/simulate': async (req) => {
+      const b = await readBody(req);
+      const addr = b.address ? canon(b.address) : null;
+      if (b.address && !isAddr(addr)) return { error: 'alamat tidak valid' };
+      const v = validateRules(b.rules || {});
+      if (v.error) return { error: v.error };
+      const rules = addr ? rulesFor(cfg.rules, JSON.stringify(v.rules || {})) : rulesFor(v.rules || {});
+      const limit = Math.min(300, Math.max(1, Number(b.limit) || 100));
+      const rows = store.all(`SELECT a.*, d.verdict dverdict, d.reason dreason FROM actions a
+        LEFT JOIN decisions d ON d.id=(SELECT MAX(id) FROM decisions WHERE action_id=a.id)
+        WHERE a.chain=? AND a.kind IN ('mint','increase') ${addr ? 'AND a.target=?' : ''} ORDER BY a.ts DESC LIMIT ?`,
+      ...[chain.network, ...(addr ? [addr] : []), limit]);
+      const f = rules.filters;
+      // Market filters read DexScreener as it is NOW (history is not kept), once per distinct pool.
+      let stats = new Map();
+      if ((f.min_liquidity_usd > 0 || f.min_volume24h_usd > 0 || f.min_pool_age_minutes > 0) && rows.length) {
+        stats = await Promise.race([
+          market.pairsMany([...new Set(rows.map((r) => r.pool_ref).filter(Boolean))]).catch(() => new Map()),
+          new Promise((r) => setTimeout(() => r(new Map()), 8000)),
+        ]);
+      }
+      const money = (x) => `$${Math.round(x).toLocaleString('en-US')}`;
+      const toks = tokenMeta();
+      const sym = (x) => toks.get(x)?.symbol || QUOTES[x]?.symbol || '?';
+      const items = rows.map((r) => {
+        const act = { venue: r.venue, hooks: r.hooks, fee: r.fee, token0: r.token0, token1: r.token1,
+          valueQuote: r.value_quote, quoteSymbol: r.quote_symbol };
+        let d;
+        try { d = previewEntry(act, { rules, chain, ethUsd: engine.ethUsd }); } catch (e) { d = { verdict: 'skip', reason: `tidak bisa dinilai: ${e.message}` }; }
+        const st = r.pool_ref ? stats.get(String(r.pool_ref).toLowerCase()) : null;
+        if (d.verdict === 'copy' && st) {
+          const age = st.pairCreatedAt ? (Date.now() - st.pairCreatedAt) / 60000 : null;
+          if (f.min_pool_age_minutes > 0 && age != null && age < f.min_pool_age_minutes) d = { verdict: 'skip', reason: `pool baru ${age.toFixed(0)} menit (< ${f.min_pool_age_minutes})` };
+          else if (f.min_liquidity_usd > 0 && st.liquidityUsd != null && st.liquidityUsd < f.min_liquidity_usd) d = { verdict: 'skip', reason: `likuiditas pool ${money(st.liquidityUsd)} (< ${money(f.min_liquidity_usd)})` };
+          else if (f.min_volume24h_usd > 0 && st.volume24hUsd != null && st.volume24hUsd < f.min_volume24h_usd) d = { verdict: 'skip', reason: `volume 24 jam ${money(st.volume24hUsd)} (< ${money(f.min_volume24h_usd)})` };
+        }
+        return { id: r.id, ts: r.ts, target: r.target, venue: r.venue, kind: r.kind, poolRef: r.pool_ref,
+          token0: r.token0, token1: r.token1, targetUsd: (r.value_quote || 0) * (chain.isEthLike(r.quote_symbol) ? engine.ethUsd : 1),
+          verdict: d.verdict, reason: d.reason, usd: d.usd ?? null,
+          actual: r.dverdict ? { verdict: r.dverdict === 'dry' ? 'copy' : r.dverdict, reason: r.dreason } : null,
+          pair: `${sym(r.token0)}/${sym(r.token1)}` };
+      });
+      const copy = items.filter((x) => x.verdict === 'copy');
+      return { items, summary: { total: items.length, copy: copy.length, skip: items.length - copy.length,
+        usd: copy.reduce((a, x) => a + (x.usd || 0), 0), marketRead: stats.size > 0 } };
     },
     'POST /api/mode': async (req) => {
       const b = await readBody(req);
