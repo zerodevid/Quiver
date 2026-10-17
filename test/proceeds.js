@@ -194,6 +194,42 @@ const row = (store, id = '1') => store.get('SELECT * FROM wpositions WHERE token
     near(r.realized_q, 1000, 'realized');
   });
 
+  // Real case (lp1, 2026-10-17): the token was sent out after its pool had been drained; the
+  // pool price at that block sat at the min-tick bound and the send was booked as 4.9e57 USD.
+  const sendAfterRug = async (sqrtThen) => {
+    const SEND = txh(600);
+    const d = world({
+      receipts: { [CLOSE_TX]: closeReceipt(), [SEND]: { blockNumber: hexb(600), gasUsed: '0x0', effectiveGasPrice: '0x0', logs: [xfer(MEME, W, '0x' + '11'.repeat(20), 800_000n * 10n ** 18n, 600, SEND)] } },
+      logs: [xfer(MEME, W, '0x' + '11'.repeat(20), 800_000n * 10n ** 18n, 600, SEND)],
+      balances: { 599: 0n, 600: 0n },
+    });
+    d.proceeds.research.priceAt = async () => sqrtThen;
+    position(d.store);
+    await d.proceeds.track(W, { head: HEAD, ethUsd: ETH });
+    return row(d.store);
+  };
+
+  await t('sent out after the pool was drained (price at the tick bound): valued at the close price', async () => {
+    const r = await sendAfterRug(mm.getSqrtRatioAtTick(-887272) + 1n);
+    near(r.realized_q, 1000, 'realized');
+    near(r.pnl_q, 0, 'pnl');
+  });
+
+  await t('sent out at a price inside the bounds but 1e9x off: valued at the close price', async () => {
+    const r = await sendAfterRug(mm.getSqrtRatioAtTick(mm.priceToTick(1e-6, 6, 18)));
+    near(r.realized_q, 1000, 'realized');
+  });
+
+  await t('a held token whose pool now shows an absurd price: unrealized stays at the close price', async () => {
+    const d = world({ receipts: { [CLOSE_TX]: closeReceipt() }, sqrtNow: mm.getSqrtRatioAtTick(mm.priceToTick(1e-6, 6, 18)) });
+    position(d.store);
+    await d.proceeds.track(W, { head: HEAD, ethUsd: ETH });
+    near(row(d.store).unrealized_q, 800, 'unrealized');
+    const rows = [{ ...row(d.store), dec0: 6, dec1: 18 }];
+    await d.proceeds.refreshHeld(rows, ETH);
+    near(rows[0].unrealized_q, 800, 'refreshed unrealized');
+  });
+
   await t('FIFO: the old balance is used up first, then the oldest position; the rest is held by the youngest position', async () => {
     const SELL = txh(700);
     const CLOSE2 = txh(550);

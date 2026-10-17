@@ -69,13 +69,41 @@ class Proceeds {
     } catch { return null; }
   }
 
+  // Same guard as sqrtNow: a token sent out after its pool was drained was valued at the
+  // bound price and booked 4.9e57 USD as realized on a $100 position.
   async sqrtAt(r, block) {
     try {
-      if (!this.chain.isV3Venue(r.venue)) return await this.research.priceAt(r.pool_ref, block);
-      if (!this.rpc.hasArchive()) return null;
-      const w = await this.rpc.callAt(r.pool_ref, IF_POOL3.encodeFunctionData('slot0'), block);
-      return BigInt(IF_POOL3.decodeFunctionResult('slot0', w)[0]);
+      let s;
+      if (!this.chain.isV3Venue(r.venue)) s = await this.research.priceAt(r.pool_ref, block);
+      else {
+        if (!this.rpc.hasArchive()) return null;
+        const w = await this.rpc.callAt(r.pool_ref, IF_POOL3.encodeFunctionData('slot0'), block);
+        s = BigInt(IF_POOL3.decodeFunctionResult('slot0', w)[0]);
+      }
+      return sqrtSane(s) ? s : null;
     } catch { return null; }
+  }
+
+  // Value of the non-quote side at the close price, per raw unit (0 when unknown) — the
+  // fallback when the pool price at the sale block / now is unreadable or absurd.
+  closeUnitOf(r, ethUsd) {
+    const s = r.s || this.sides(r);
+    if (!s || r.returned_q == null) return 0;
+    // s.side is the non-quote token's side
+    const outN = big(s.side === 0 ? r.out0 : r.out1), outQ = big(s.side === 0 ? r.out1 : r.out0);
+    if (outN === 0n) return 0;
+    const qDec = s.side === 0 ? r.dec1 : r.dec0;
+    const quoteOutUsd = (Number(outQ) / 10 ** qDec) * (s.q.kind === 'eth' ? ethUsd : 1);
+    return Math.max(0, r.returned_q - quoteOutUsd) / Number(outN);
+  }
+
+  // Pool-price value of `amount` tokens, unless it is wildly above their close-price value:
+  // a pool left with a few wei after a rug still has a price "within the bounds" but it is
+  // 1e9× off. Then the close price is the honest figure. Without a close price there is
+  // nothing to judge by, and the pool value stands.
+  plausibleUsd(r, usd, amount, closeUnit) {
+    const ref = closeUnit * Number(amount);
+    return ref > 0 && usd > ref * Proceeds.PRICE_PLAUSIBLE_X + 1 ? ref : usd;
   }
 
   // How many tokens really reached the wallet in the withdrawal tx — a zap-out via the
@@ -303,8 +331,7 @@ class Proceeds {
     for (const r of lots) {
       r.quoteOutUsd = (Number(big(r.s.side === 0 ? r.out1 : r.out0)) / 10 ** (r.s.side === 0 ? r.dec1 : r.dec0))
         * (r.s.q.kind === 'eth' ? ethUsd : 1);
-      const nonQuoteCloseUsd = Math.max(0, (r.returned_q || 0) - r.quoteOutUsd);
-      r.closeUnit = r.outN > 0n ? nonQuoteCloseUsd / Number(r.outN) : 0;
+      r.closeUnit = this.closeUnitOf(r, ethUsd);
     }
 
     // FIFO allocation over ALL token inflows, in block order: the balance before the first lot,
@@ -331,7 +358,7 @@ class Proceeds {
         if (!q.r) continue;
         q.sold += take;
         const sq = await this.sqrtAt(q.r, k.block);
-        let priced = sq ? this.usdOf(q.r, sq, take, ethUsd) : q.r.closeUnit * Number(take);
+        let priced = sq ? this.plausibleUsd(q.r, this.usdOf(q.r, sq, take, ethUsd), take, q.r.closeUnit) : q.r.closeUnit * Number(take);
         if (k.quote_usd != null) {
           // Backstop for a swap whose quote also paid for something else: proceeds far above what
           // the tokens are worth (at the close price, or the current pool price when the close
@@ -362,7 +389,7 @@ class Proceeds {
       if (held > 0n) {
         if (!sqrtCache.has(r.pool_ref)) sqrtCache.set(r.pool_ref, await this.sqrtNow(r));
         const sq = sqrtCache.get(r.pool_ref);
-        unrealized = sq ? this.usdOf(r, sq, held, ethUsd) : r.closeUnit * Number(held);
+        unrealized = sq ? this.plausibleUsd(r, this.usdOf(r, sq, held, ethUsd), held, r.closeUnit) : r.closeUnit * Number(held);
       }
       this.setRow(r, { held, sold: q.sold, realized: r.quoteOutUsd + closeUsd + q.usd, unrealized, head });
     }
@@ -386,7 +413,7 @@ class Proceeds {
       if (!bySqrt.has(r.pool_ref)) bySqrt.set(r.pool_ref, await this.sqrtNow(r));
       const sq = bySqrt.get(r.pool_ref);
       if (!sq) continue;                            // no usable price now: keep the stored value
-      const u = this.usdOf(r, sq, big(r.held_tok), ethUsd);
+      const u = this.plausibleUsd(r, this.usdOf(r, sq, big(r.held_tok), ethUsd), big(r.held_tok), this.closeUnitOf(r, ethUsd));
       r.unrealized_q = u;
       r.pnl_q = r.invested_q == null ? null : r.realized_q + u - r.invested_q;
     }
@@ -395,5 +422,7 @@ class Proceeds {
 
 // A sale's quote above this many times the tokens' close-price value (plus $1) is not trusted.
 Proceeds.SALE_PLAUSIBLE_X = 20;
+// A pool-price value above this many times the close-price value (plus $1) is not trusted.
+Proceeds.PRICE_PLAUSIBLE_X = 1000;
 
 module.exports = { Proceeds };
