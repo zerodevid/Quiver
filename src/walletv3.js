@@ -21,6 +21,7 @@ const { getLogsSafe } = require('./scout');
 const { unclaimedV3 } = require('./fees');
 const { ensureAnchor, valueAnchoredUsd } = require('./usd-anchor');
 const m = require('./v3math');
+const { sqrtClampedToRange } = require('./pools');
 
 const IF_NPM = new ethers.Interface(ABI.npmV3);
 const IF_POOL = new ethers.Interface(['function slot0() view returns (uint160,int24,uint16,uint16,uint16,uint8,bool)']);
@@ -296,9 +297,12 @@ class WalletV3 {
     // A price taken from a Swap far from the event block is an estimate —
     // on a memecoin, a few minutes can mean multiples.
     const FAR = 2000;   // ~3.4 minutes on this chain
+    const sa = m.getSqrtRatioAtTick(inf.tickLower), sb = m.getSqrtRatioAtTick(inf.tickUpper);
     for (const e of evs) {
       const h = await this.priceAt(inf.poolAddr, e.block);
-      const sqrt = h?.sqrt ?? null;
+      // A pool swept empty puts the price at the min/max tick: clamped to the range edge, as
+      // the v4 scanner does — otherwise a collect after a rug is valued at "$2.9e43".
+      const sqrt = sqrtClampedToRange(h?.sqrt ?? null, sa, sb);
       if (h && h.jarak > FAR) estimate = true;
       let princ0 = 0n, princ1 = 0n, fee0 = 0n, fee1 = 0n;
       if (e.kind === 'increase') {

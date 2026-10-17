@@ -234,6 +234,29 @@ const CLOSED_POSITIONS = { 7: { token0: ADDR.usdg, token1: MEME, fee: 10000, tic
     assert.strictEqual(p.incomplete, true, 'a Swap 5,000 blocks away (~8 minutes) must be flagged as an estimate');
   });
 
+  await t('a collect after the pool was drained is valued at the range edge, not the bound price', async () => {
+    // Real case (lp1): a WETH/STANDARD collect at a price stuck on the min tick was booked as $2.9e43.
+    const swap = (block, sq) => ({
+      address: POOL, blockNumber: '0x' + block.toString(16), logIndex: '0x0',
+      transactionHash: '0x' + block.toString(16).padStart(64, '0'),
+      topics: [TOPIC.swapV3, pad32(W), pad32(W)],
+      data: '0x' + w(0) + w(0) + w(sq) + w(0) + w(0),
+    });
+    const logs = [
+      xfer(14, '0x0', W, 100),
+      swap(109, mm.getSqrtRatioAtTick(0)),
+      ev('increase', 14, { liq: 5000, a0: 1_000_000, block: 110 }),
+      swap(199, mm.getSqrtRatioAtTick(-887272) + 1n),
+      ev('decrease', 14, { liq: 5000, block: 200 }),
+      ev('collect', 14, { a0: 1_000_000, a1: 1000, block: 201 }),
+      xfer(14, W, '0x0', 210),
+    ];
+    const position = { 14: { token0: ADDR.usdg, token1: MEME, fee: 10000, tickLower: -600, tickUpper: 600, liquidity: 0n } };
+    const v3 = new WalletV3({ ...world({ logs, posisi: position }), log: () => {} });
+    const [p] = await v3.scan(W, { from: 0, head: HEAD });
+    assert.ok(p.returnedQ > 1 && p.returnedQ < 1.01, `returned ${p.returnedQ}`);
+  });
+
   await t('an NFT that changed hands then came back still counts as ours', async () => {
     const logs = [
       xfer(7, '0x0', W, 100),
