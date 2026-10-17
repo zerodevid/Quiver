@@ -1881,7 +1881,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       }
       return { lastId, lastClosed, items };
     },
-    'GET /api/rules': () => ({ rules: rulesFor(cfg.rules), defaults: DEFAULTS, raw: cfg.rules || {} }),
+    'GET /api/rules': () => ({ rules: rulesFor(cfg.rules), defaults: DEFAULTS, raw: cfg.rules || {}, quotes: Object.values(QUOTES).map((q) => q.symbol) }),
     'POST /api/rules': async (req) => {
       const b = await readBody(req);
       const v = validateRules(b.rules || {});
@@ -1901,7 +1901,27 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       if (v.error) return { error: v.error };
       const rules = addr ? rulesFor(cfg.rules, JSON.stringify(v.rules || {})) : rulesFor(v.rules || {});
       const limit = Math.min(300, Math.max(1, Number(b.limit) || 100));
-      const rows = store.all(`SELECT a.*, d.verdict dverdict, d.reason dreason FROM actions a
+      // A hypothetical position typed in by the user instead of history: the same pipeline, one synthetic row.
+      let rows;
+      const sc = b.scenario;
+      if (sc) {
+        const quoteAddr = Object.keys(QUOTES).find((a) => QUOTES[a].symbol === sc.quote);
+        const token = String(sc.token || '').trim().toLowerCase();
+        if (!isAddr(token)) return { error: 'alamat token tidak valid' };
+        const usdVal = Number(sc.valueUsd);
+        if (!Number.isFinite(usdVal) || usdVal < 0) return { error: 'nilai posisi target harus angka' };
+        const fee = sc.fee === '' || sc.fee == null ? null : Number(sc.fee);
+        const hooks = String(sc.hooks || '').trim();
+        if (hooks && !isAddr(hooks)) return { error: 'alamat hook tidak valid' };
+        // No quote asset = a memecoin/memecoin pool; the second token is a placeholder that is not a quote.
+        const other = quoteAddr || '0x' + '00'.repeat(19) + '01';
+        const [t0, t1] = other.toLowerCase() < token ? [other.toLowerCase(), token] : [token, other.toLowerCase()];
+        const qsym = quoteAddr ? QUOTES[quoteAddr].symbol : null;
+        rows = [{ id: 0, ts: Date.now(), target: addr || '', venue: String(sc.venue || 'v3'), kind: 'scenario', pool_ref: null,
+          token0: t0, token1: t1, fee: Number.isFinite(fee) ? fee : null, hooks: hooks || null,
+          value_quote: qsym ? usdVal / (chain.isEthLike(qsym) ? (engine.ethUsd || 1) : 1) : usdVal,
+          quote_symbol: qsym || chain.QUOTES[chain.ADDR.usdg]?.symbol }];
+      } else rows = store.all(`SELECT a.*, d.verdict dverdict, d.reason dreason FROM actions a
         LEFT JOIN decisions d ON d.id=(SELECT MAX(id) FROM decisions WHERE action_id=a.id)
         WHERE a.chain=? AND a.kind IN ('mint','increase') ${addr ? 'AND a.target=?' : ''} ORDER BY a.ts DESC LIMIT ?`,
       ...[chain.network, ...(addr ? [addr] : []), limit]);
