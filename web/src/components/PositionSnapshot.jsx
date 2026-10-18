@@ -1,7 +1,7 @@
 import { breakEven } from '../breakeven';
 import { Button, Chip } from '@heroui/react';
 import { RefreshCw } from 'lucide-react';
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { usePoll, useResync } from '../hooks';
 import { useClaimFees } from '../useClaimFees';
 import { useClosePosition } from '../useClosePosition';
@@ -15,12 +15,33 @@ import { usd, price, sqrtPrice, tickPrice, ago, locale } from '../fmt';
 
 const amount = (raw, decimals) => raw == null ? '—' : (Number(raw) / 10 ** (decimals ?? 18)).toLocaleString(locale(), { maximumSignificantDigits: 7 });
 
-export default function PositionSnapshot({ id, onUpdate }) {
+const statusText = (p, closed) => closed ? 'Ditutup' : p.empty ? 'Likuiditas kosong' : p.inRange == null ? 'belum tersinkron' : p.inRange ? 'in-range' : 'di luar rentang';
+const statusColor = (p, closed) => closed ? 'default' : p.empty || p.inRange === false ? 'warning' : p.inRange === true ? 'success' : 'default';
+
+// Range status, share and refresh for the drawer header. Refresh forces a chain sync first,
+// then calls onSynced so the snapshot below reloads the fresh numbers.
+export function PositionStatusBar({ id, onSynced }) {
+  const { t } = useI18n();
+  const { data, reload } = usePoll(`/api/position?id=${encodeURIComponent(id)}`, 10000);
+  const refresh = useCallback(async () => { await reload(); onSynced?.(); }, [reload, onSynced]);
+  const [resync, syncing] = useResync(refresh);
+  const p = data?.position;
+  if (!p) return null;
+  const closed = p.status === 'closed';
+  return <div className="flex flex-wrap items-center gap-2">
+    <Chip size="sm" variant="soft" color={statusColor(p, closed)}>{t(statusText(p, closed))}</Chip>
+    <ShareButton card={positionCard(p)} iconOnly variant="tertiary" />
+    <Button size="sm" variant="tertiary" isPending={syncing} isDisabled={syncing} aria-label={t('Perbarui detail')} onPress={resync}><RefreshCw className="size-4" /></Button>
+  </div>;
+}
+
+// syncTick: bumped by the header's refresh button so this card reloads right after a sync.
+export default function PositionSnapshot({ id, onUpdate, syncTick }) {
   const { t } = useI18n();
   const { data, error, reload } = usePoll(`/api/position?id=${encodeURIComponent(id)}`, 10000);
   const refresh = useCallback(async () => { await reload(); onUpdate?.(); }, [reload, onUpdate]);
-  // The button forces a chain sync first: the numbers on this card come from the last sync.
-  const [resync, syncing] = useResync(refresh);
+  const firstTick = useRef(true);
+  useEffect(() => { if (firstTick.current) { firstTick.current = false; return; } reload(); }, [syncTick, reload]);
   const { claim, claiming } = useClaimFees(refresh);
   const { close, closing } = useClosePosition(refresh);
   const p = data?.position;
@@ -46,14 +67,7 @@ export default function PositionSnapshot({ id, onUpdate }) {
   };
   const Usd = ({ side, raw, at = current }) => { const v = tokUsd(side, raw, at); return v == null ? null : <span className="num text-muted">{usd(v)}</span>; };
   return <section className="mb-5 space-y-4">
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <h3 className="text-sm font-semibold">{t('Posisi ini')}</h3>
-      <div className="flex max-w-full flex-wrap items-center gap-2">
-        <Chip size="sm" variant="soft" color={closed ? 'default' : p.empty || p.inRange === false ? 'warning' : p.inRange === true ? 'success' : 'default'}>{t(closed ? 'Ditutup' : p.empty ? 'Likuiditas kosong' : p.inRange == null ? 'belum tersinkron' : p.inRange ? 'in-range' : 'di luar rentang')}</Chip>
-        <ShareButton card={positionCard(p)} iconOnly variant="tertiary" />
-        <Button size="sm" variant="tertiary" isPending={syncing} isDisabled={syncing} aria-label={t('Perbarui detail')} onPress={resync}><RefreshCw className="size-4" /></Button>
-      </div>
-    </div>
+    <h3 className="text-sm font-semibold">{t('Posisi ini')}</h3>
     {error && <p role="alert" className="text-xs text-warning">{error}</p>}
     <div className="rounded-lg border border-border px-3 divide-y divide-border">
       <KV label={closed ? 'Hasil' : 'Nilai likuiditas'}>{usd(synced ? (closed ? p.outUsd : p.valueUsd) : null)}</KV>

@@ -4,7 +4,7 @@
 // amounts and values, then the bot's notes — the decision on the target action that triggered it
 // and the log lines that mention this position. The price chart stays on the detail page.
 import { useEffect, useState } from 'react';
-import PositionSnapshot from './PositionSnapshot';
+import PositionSnapshot, { PositionStatusBar } from './PositionSnapshot';
 import PositionActionBar from './PositionActionBar';
 import TargetSide from './TargetSide';
 import { Button, Chip, Drawer } from '@heroui/react';
@@ -235,6 +235,7 @@ export default function PositionHistory({ id, onClose }) {
   const [d, setD] = useState(null);
   const [err, setErr] = useState(null);
   const [revision, setRevision] = useState(0);
+  const [syncTick, setSyncTick] = useState(0);
   useEffect(() => {
     if (!id) return;
     let alive = true;
@@ -258,11 +259,14 @@ export default function PositionHistory({ id, onClose }) {
                 <div className="flex min-w-0 items-center gap-3">
                   <TokenPair token0={p.token0} token1={p.token1} symbol0={p.symbol0} symbol1={p.symbol1} size={28} />
                   <div className="min-w-0">
-                    <Drawer.Heading className="flex flex-wrap items-center gap-2 text-base font-semibold">
-                      {p.symbol0}/{p.symbol1}
-                      <GmgnDot token={baseTokenOf(p)} />
-                      <Chip size="sm" variant="soft" color={closed ? 'danger' : 'success'}>{t(closed ? 'Ditutup' : 'Terbuka')}</Chip>
-                    </Drawer.Heading>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Drawer.Heading className="flex flex-wrap items-center gap-2 text-base font-semibold">
+                        {p.symbol0}/{p.symbol1}
+                        <GmgnDot token={baseTokenOf(p)} />
+                        <Chip size="sm" variant="soft" color={closed ? 'danger' : 'success'}>{t(closed ? 'Ditutup' : 'Terbuka')}</Chip>
+                      </Drawer.Heading>
+                      <PositionStatusBar key={id} id={id} onSynced={() => { setRevision((v) => v + 1); setSyncTick((v) => v + 1); }} />
+                    </div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted">
                       <span className="uppercase">{p.venue}</span><span>·</span><PositionRef p={p} id={p.token_id || p.id} />
                       {p.target && <><span>·</span><a href={'#targets/' + p.target} className="hover:underline">{t('meniru {t}', { t: p.targetLabel || short(p.target) })}</a></>}
@@ -291,7 +295,7 @@ export default function PositionHistory({ id, onClose }) {
                   <GmgnPanel token={baseTokenOf(p)} />
                   {!closed && <PnlWhy p={p} />}
                   <Cost c={p.cost} cost={p.costUsd} />
-                  <PositionSnapshot key={id} id={id} onUpdate={() => setRevision((v) => v + 1)} />
+                  <PositionSnapshot key={id} id={id} syncTick={syncTick} onUpdate={() => setRevision((v) => v + 1)} />
                   {closed && <div className="mb-4 rounded-lg border border-border p-3 text-sm">
                     <div className="flex justify-between gap-3"><span>{t('Hasil LP saat tutup (taksiran)')}</span><span className="num">{usd(p.closeUsd)}</span></div>
                     <div className="mt-1 flex justify-between gap-3"><span>{t('PnL LP saat tutup')}</span><span className={`num ${p.closeUsd != null ? tone(p.closeUsd - p.costUsd) : ''}`}>{usd(p.closeUsd != null ? p.closeUsd - p.costUsd : null)}</span></div>
