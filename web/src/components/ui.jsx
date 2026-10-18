@@ -389,10 +389,10 @@ export function PriceRange({
         <div className="absolute top-1/2 h-1 -translate-y-1/2 bg-accent"
           style={{ left: `${at100(pLo)}%`, width: `${Math.max(1, at100(pHi) - at100(pLo))}%` }} />
         {[pLo, pHi].map((x, i) => <div key={i} className="absolute top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent" style={{ left: `${at100(x)}%` }} />)}
-        {bepOnAxis && <div className="absolute inset-y-0 z-10 w-0 -translate-x-1/2 border-l-2 border-dashed border-warning" style={{ left: `${at100(bepPrice)}%` }} title={`${t('Harga BEP')}: ${price(bepPrice)} ${quote || ''}`} />}
+        {bepOnAxis && <div className="absolute inset-y-0 w-0 -translate-x-1/2 border-l-2 border-dashed border-warning" style={{ left: `${at100(bepPrice)}%` }} title={`${t('Harga BEP')}: ${price(bepPrice)} ${quote || ''}`} />}
         {/* entry: thin dim line; current/exit: solid pin edged in the card colour */}
         {pEntry != null && <div className="absolute inset-y-0.5 w-0.5 -translate-x-1/2 rounded-full bg-muted" style={{ left: `${at100(pEntry)}%` }} title={t('harga masuk')} />}
-        {pNow != null && <div className={`absolute inset-y-0 z-20 w-1 -translate-x-1/2 rounded-sm ring-1 ring-surface ${pin}`} style={{ left: `${at100(pNow)}%` }} title={t(closed ? 'harga keluar' : 'harga kini')} />}
+        {pNow != null && <div className={`absolute inset-y-0 w-1 -translate-x-1/2 rounded-sm ring-1 ring-surface ${pin}`} style={{ left: `${at100(pNow)}%` }} title={t(closed ? 'harga keluar' : 'harga kini')} />}
       </div>
       {pEntry != null && (
         <div className="num mt-0.5 text-xs whitespace-nowrap text-muted">
