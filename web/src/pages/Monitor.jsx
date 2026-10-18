@@ -348,7 +348,7 @@ function MonitorCard({ g, tf: tfGlobal, tfEpoch, dense, delay, actions }) {
         </div>}
         <div className="grid gap-3 sm:grid-cols-[auto_1fr] sm:items-center">
           <PriceRange lo={p.tick_lower} hi={p.tick_upper} cur={g.live?.tick ?? p.curTick} dec0={p0.dec0} dec1={p0.dec1} quoteSide={p0.quoteSide}
-            symbol0={p0.symbol0} symbol1={p0.symbol1} entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} showPrices={false} />
+            symbol0={p0.symbol0} symbol1={p0.symbol1} entrySqrt={p.entrySqrt} exitSqrt={p.exitSqrt} />
           <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs sm:grid-cols-4">
             <div><dt className="text-[0.6875rem] text-muted">{t('Nilai')}</dt><dd className="num font-medium">{usd(p.valueUsd)}<span className="ml-1 font-normal text-muted">/ {usd(p.costUsd)}</span></dd></div>
             <div><dt className="text-[0.6875rem] text-muted">PnL</dt><dd className={`num font-medium ${tone(p.pnlNetUsd ?? p.pnlUsd)}`}
