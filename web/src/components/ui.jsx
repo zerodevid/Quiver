@@ -332,9 +332,8 @@ export function PriceRange({
   // the upper tick is exclusive (DLMM: the price AT it sits in the next bin up — out of range)
   const inRange = pNow != null && pNow >= pLo && pNow < pHi;
   const move = pEntry != null && pNow != null ? (pNow / pEntry - 1) * 100 : null;
-  // Closed position or without a current price: the in/out status does not apply, neutral band.
-  const band = closed || pNow == null ? 'bg-accent/25 border-accent'
-    : inRange ? 'bg-success/25 border-success' : 'bg-warning/20 border-warning';
+  // Current/exit price pin: red when the open position is out of range.
+  const pin = !closed && pNow != null && !inRange ? 'bg-danger' : 'bg-foreground';
 
   // Distance to the nearest edge = how many percent the price must move before the position
   // stops earning fees.
@@ -360,23 +359,40 @@ export function PriceRange({
 
   return (
     <div className="w-44 min-w-40" title={title}>
-      {showPrices && (
-        <div className="num mb-0.5 text-xs whitespace-nowrap">
-          {price(pLo)} <span className="text-muted">–</span> {price(pHi)}
-          {quote && <span className="ml-1 text-muted">{quote}</span>}
-        </div>
-      )}
-      {/* Thin track = the whole axis; thick edged band = the position range, coloured by
-          its status so in/out reads before the text. The marker is centred on its price
-          (-translate-x-1/2), not attached by its left edge. */}
-      <div className="relative h-3.5">
+      {/* Edge prices sit above their handles, clamped inside the cell. Label widths are
+          estimated (~7px per character in a 176px cell); when the two would collide they
+          merge into one "lo – hi" label over the middle of the range. */}
+      {showPrices && (() => {
+        const w = (str) => (str.length * 7 + 4) / 1.76;
+        const place = (x, width) => Math.max(0, Math.min(100 - width, x - width / 2));
+        const sLo = price(pLo), sHi = price(pHi), q = quote ? ' ' + quote : '';
+        const xLo = at100(pLo), xHi = at100(pHi);
+        const wLo = w(sLo), wHi = w(sHi + q), lLo = place(xLo, wLo), lHi = place(xHi, wHi);
+        const merged = lLo + wLo + 3 > lHi;
+        const sAll = `${sLo} – ${sHi}`;
+        return (
+          <div className="num relative h-4 text-xs whitespace-nowrap">
+            {merged
+              ? <span className="absolute top-0" style={{ left: `${place((xLo + xHi) / 2, w(sAll + q))}%` }}>{sAll}{quote && <span className="ml-1 text-muted">{quote}</span>}</span>
+              : <>
+                <span className="absolute top-0" style={{ left: `${lLo}%` }}>{sLo}</span>
+                <span className="absolute top-0" style={{ left: `${lHi}%` }}>{sHi}{quote && <span className="ml-1 text-muted">{quote}</span>}</span>
+              </>}
+          </div>
+        );
+      })()}
+      {/* Thin grey track = the whole axis; accent line with round handles = the position
+          range; the vertical pin = the current (or exit) price. Markers are centred on their
+          price (-translate-x-1/2), not attached by their left edge. */}
+      <div className="relative h-4">
         <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-default" />
-        <div className={`absolute top-1/2 h-2 -translate-y-1/2 rounded-[1px] border-x-2 ${band}`}
-          style={{ left: `${at100(pLo)}%`, width: `${Math.max(2, at100(pHi) - at100(pLo))}%` }} />
+        <div className="absolute top-1/2 h-1 -translate-y-1/2 bg-accent"
+          style={{ left: `${at100(pLo)}%`, width: `${Math.max(1, at100(pHi) - at100(pLo))}%` }} />
+        {[pLo, pHi].map((x, i) => <div key={i} className="absolute top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent" style={{ left: `${at100(x)}%` }} />)}
         {bepOnAxis && <div className="absolute inset-y-0 z-10 w-0 -translate-x-1/2 border-l-2 border-dashed border-warning" style={{ left: `${at100(bepPrice)}%` }} title={`${t('Harga BEP')}: ${price(bepPrice)} ${quote || ''}`} />}
-        {/* masuk: garis tipis & redup; kini/keluar: titik tegas berbingkai warna kartu */}
+        {/* entry: thin dim line; current/exit: solid pin edged in the card colour */}
         {pEntry != null && <div className="absolute inset-y-0.5 w-0.5 -translate-x-1/2 rounded-full bg-muted" style={{ left: `${at100(pEntry)}%` }} title={t('harga masuk')} />}
-        {pNow != null && <div className="absolute top-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground ring-2 ring-surface" style={{ left: `${at100(pNow)}%` }} title={t(closed ? 'harga keluar' : 'harga kini')} />}
+        {pNow != null && <div className={`absolute inset-y-0 z-20 w-1 -translate-x-1/2 rounded-sm ring-1 ring-surface ${pin}`} style={{ left: `${at100(pNow)}%` }} title={t(closed ? 'harga keluar' : 'harga kini')} />}
       </div>
       {pEntry != null && (
         <div className="num mt-0.5 text-xs whitespace-nowrap text-muted">
