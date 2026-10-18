@@ -1,4 +1,4 @@
-import { createContext, lazy, Suspense, useContext, useEffect, useState } from 'react';
+import { createContext, lazy, Suspense, useContext, useEffect, useRef, useState } from 'react';
 import { Button, Chip, Toast, toast } from '@heroui/react';
 import {
   LayoutDashboard, Layers, ListChecks, Users, SlidersHorizontal, Wallet as WalletIcon,
@@ -357,7 +357,12 @@ export default function App() {
   // Value redaction: App is redrawn when its switch changes, so the whole
   // page reformats its numbers via usd()/fmtQty(), which already know the state.
   const privacy = usePrivacy();
-  const { data: status, error: statusError, reload } = usePoll('/api/overview', 5000);
+  const { data: polled, error: statusError, reload } = usePoll('/api/overview', 5000);
+  // An error or partial reply (slow server while a share card renders, a 429) has no `chain`;
+  // pages read status.chain.* unguarded, so keep showing the last complete status instead.
+  const lastStatus = useRef(null);
+  if (polled?.chain) lastStatus.current = polled;
+  const status = polled?.chain ? polled : lastStatus.current;
   // Every chain with its identity and cash: the chain picker, and the rows of the all-chains view.
   const { data: chainList } = usePoll('/api/chains', 15000);
   if (chainList?.chains) registerChains(chainList.chains);
