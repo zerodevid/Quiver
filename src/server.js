@@ -853,6 +853,33 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
 
   // Pools whose manual LP is being opened (double-click guard, see POST /api/manual/lp/open).
   const manualOpening = new Set();
+  // Prices a partial exit with the same machinery as the close dialog (engine.exitQuote): the position is
+  // scaled down to the part that leaves it, so the memecoin side is quoted on the aggregators.
+  // Fields are {} when the engine cannot quote (Solana) — the caller keeps its pro-rata figures.
+  const partialQuote = async (live, { principalBps, withFees }) => {
+    if (typeof engine.exitQuote !== 'function') return {};
+    const part = (x, bps) => (BigInt(x || '0') * BigInt(bps) / 10000n).toString();
+    const scaled = {
+      ...live,
+      amount0: part(live.amount0, principalBps), amount1: part(live.amount1, principalBps),
+      fee0: withFees ? live.fee0 : '0', fee1: withFees ? live.fee1 : '0',
+      valueUsd: (live.valueUsd || 0) * principalBps / 10000, feeUsd: withFees ? live.feeUsd : 0,
+      claimedUsd: 0, withdrawnUsd: 0, costUsd: 0,
+    };
+    try {
+      const q = await engine.exitQuote(scaled);
+      return { quoted: q.quoted, legs: q.legs, gasUsd: q.gasUsd, sellCostUsd: q.sellCostUsd, quoteReceiveUsd: q.receiveUsd, midUsd: q.midUsd };
+    } catch { return {}; }
+  };
+  // Positions whose manual partial decrease is in flight (double-click guard, see POST /api/positions/decrease).
+  const manualDecreasing = new Set();
+  // pct (0 < pct < 100) -> basis points of the position's liquidity; null when out of range or below 0.01%.
+  const decreaseBps = (pct) => {
+    const n = Number(pct);
+    if (!Number.isFinite(n) || n <= 0 || n >= 100) return null;
+    const bps = Math.round(n * 100);
+    return bps >= 1 && bps <= 9999 ? bps : null;
+  };
   const ladderJobs = new Map();
   const ladderBody = (b) => ({
     poolRef: String(b.poolRef || ''), usd: Number(b.usd),
@@ -1629,6 +1656,26 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         if (mk2?.pairs) { mk = mk2; pairs = mk2.pairs.filter(isPair); }
       }
       if (!pairs.length && mk.error) return { error: mk.error };
+      // DexScreener does not report the fee tier. It is read from the pools table / the pool itself
+      // (v3 fee(), v4 Initialize event) under a time cap; what is not ready yet is filled in on a
+      // later poll, since the lookups are cached.
+      if (!SOL) {
+        const feeOf = async (ref) => {
+          try {
+            if (ref.length === 42) {
+              const [w] = await chain.rpc.ethCallMany([{ to: ref, data: '0xddca3f43' }]);
+              return w && w !== '0x' ? Number(BigInt(w)) : null;
+            }
+            if (ref.length === 66) return (await chain.poolKeyOfId(ref))?.fee ?? null;
+          } catch { /* fee unknown */ }
+          return null;
+        };
+        const fees = await Promise.race([
+          Promise.all(pairs.map((p) => feeOf(canon(p.pool || '')))),
+          new Promise((r) => setTimeout(() => r(null), 5000)),
+        ]);
+        if (fees) pairs = pairs.map((p, i) => ({ ...p, feeTier: fees[i] }));
+      }
       return { pairs, fetchedAt: mk.fetchedAt || Date.now() };
     },
     // Detail of one pool (pair) — the equivalent of a DexScreener pair page: its tokens,
@@ -2618,6 +2665,68 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     'POST /api/positions/handback': async (req) => {
       const b = await readBody(req);
       try { return await manual.handBack(b.id); } catch (e) { return { error: e.message }; }
+    },
+    // Partial decrease: remove `pct` % of the position's liquidity and keep the rest open. The GET
+    // prices it (pro rata on the last sync) for the confirmation dialog and sends nothing.
+    'GET /api/positions/decrease-quote': async (req, url) => {
+      const id = Number(url.searchParams.get('id'));
+      const bps = decreaseBps(url.searchParams.get('pct'));
+      if (bps == null) return { error: 'persentase harus antara 0,01 dan 99,99' };
+      const live = engine.positions.live.find((p) => p.id === id);
+      if (!live) return { error: 'posisi tidak ditemukan' };
+      const f = bps / 10000;
+      const pos = store.get("SELECT target FROM positions WHERE chain=? AND id=?", chain.network, id);
+      // Raydium's decrease also sends every accumulated fee; the other venues keep them in the position.
+      const feesIncluded = live.venue === 'raydium';
+      const out = {
+        id, pct: bps / 100, feesIncluded,
+        receiveUsd: ((live.valueUsd || 0) * f) + (feesIncluded ? (live.feeUsd || 0) : 0),
+        remainUsd: (live.valueUsd || 0) * (1 - f),
+        sellDefault: !!engine.rulesFrom(pos?.target ?? null).exit.sell_leftover,
+      };
+      return { ...out, ...await partialQuote(live, { principalBps: bps, withFees: feesIncluded }) };
+    },
+    // Same read-only estimate for the claim dialog: only the unclaimed fees leave the position.
+    'GET /api/positions/claim-quote': async (req, url) => {
+      const id = Number(url.searchParams.get('id'));
+      const live = engine.positions.live.find((p) => p.id === id);
+      if (!live) return { error: 'posisi tidak ditemukan' };
+      return { id, feeUsd: live.feeUsd || 0, ...await partialQuote(live, { principalBps: 0, withFees: true }) };
+    },
+    'POST /api/positions/decrease': async (req) => {
+      const b = await readBody(req);
+      const id = Number(b.id);
+      if (!Number.isSafeInteger(id) || id <= 0) return { error: 'ID posisi tidak valid' };
+      const bps = decreaseBps(b.pct);
+      if (bps == null) return { error: 'persentase harus antara 0,01 dan 99,99 — untuk 100% pakai Tutup posisi' };
+      if (manualDecreasing.has(id)) return { error: 'pengurangan likuiditas posisi ini masih diproses — tunggu hasilnya' };
+      manualDecreasing.add(id);
+      try {
+        // Read the row inside the lock: a compound that landed meanwhile changes the liquidity.
+        const pos = store.get("SELECT * FROM positions WHERE chain=? AND id=? AND status='open'", chain.network, id);
+        if (!pos) return { error: 'posisi tidak ditemukan' };
+        const liquidity = BigInt(pos.liquidity) * BigInt(bps) / 10000n;
+        if (liquidity <= 0n) return { error: 'likuiditas posisi terlalu kecil untuk dikurangi sebesar itu' };
+        if (engine.paper?.on?.() && require('./paper').isSim(pos)) {
+          try {
+            const r = await engine.paper.close(pos, { full: false, liquidity: liquidity.toString() });
+            store.log('info', `kurangi manual: ${r.note}`);
+            return { ok: true, tx: null, outUsd: r.outUsd, sold: null };
+          } catch (e) { return { error: e.message }; }
+        }
+        if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
+        const before = pos.out_quote || 0;
+        const r = await engine.executeExit(
+          { venue: pos.venue, action: 'decrease', full: false, manual: true, liquidity: liquidity.toString(), tokenId: pos.token_id },
+          pos, { sell: b.sell == null ? undefined : !!b.sell });
+        store.log('info', `kurangi manual ${bps / 100}%: ${r.note}`);
+        const row = store.get('SELECT out_quote, quote_symbol FROM positions WHERE chain=? AND id=?', chain.network, id);
+        const k = chain.isEthLike(row?.quote_symbol) ? engine.ethUsd : 1;
+        return { ok: true, tx: r.txHash, outUsd: row?.out_quote != null ? (row.out_quote - before) * k : null, sold: r.sold || null };
+      } catch (e) {
+        store.log('error', `kurangi manual #${id} gagal: ${e.message}`);
+        return { error: e.message };
+      } finally { manualDecreasing.delete(id); }
     },
     // force: force close — the waiting compound/claim guards are skipped and the liquidity
     // is re-read from the chain (see engine.executeExit). A position already empty on

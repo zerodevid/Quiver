@@ -54,6 +54,8 @@ function PairPools({ pool, poolRef, base, className = '' }) {
                   </div>
                 </div>
               </div>) },
+            { key: 'fee', label: 'Fee pool', align: 'end', sort: (p) => p.feeTier ?? -1, render: (p) => (
+              p.feeTier == null ? '—' : p.feeTier >= DYNAMIC_FEE ? t('dinamis') : <span className="num whitespace-nowrap">{num(p.feeTier / 10000, 2)}%</span>) },
             { key: 'px', label: t('Harga {b}', { b: base }), align: 'end', sort: (p) => priceIn(p, tok), render: (p) => {
               const v = tok ? priceIn(p, tok) : null;
               return v == null ? '—' : usd(v, v < 0.01 ? 6 : 4);

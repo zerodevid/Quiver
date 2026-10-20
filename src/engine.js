@@ -2307,7 +2307,7 @@ class Engine {
   // are skipped, and the liquidity to burn is re-read from the chain — not from records
   // that can be stale — so the position really is empty. The double-tx guard (`exiting`)
   // and the closed status still apply: they prevent a second burn that is certain to revert.
-  async executeExit(plan, pos, { force = false } = {}) {
+  async executeExit(plan, pos, { force = false, sell } = {}) {
     if (this.stopping) throw new Error('bot sedang berhenti (restart) — keluar dilanjutkan saat hidup lagi');
     if (this.exiting.has(pos.id)) throw new Error('posisi ini sedang dalam proses ditutup');
     if (!force) {
@@ -2326,8 +2326,13 @@ class Engine {
         plan = { ...plan, liquidity: L.toString() };
       }
     }
+    // Manual partial decrease: the chain must hold at least the liquidity being removed.
+    if (plan.manual && !plan.full) {
+      const L = await this.chainLiquidity(pos);
+      if (L != null && L < BigInt(plan.liquidity)) throw new Error('likuiditas posisi di chain lebih kecil dari yang akan dikurangi — tunggu sinkronisasi');
+    }
     this.exiting.add(pos.id);
-    try { return await this.sendExit(plan, pos); }
+    try { return await this.sendExit(plan, pos, { sell }); }
     finally { this.exiting.delete(pos.id); }
   }
 
@@ -2513,7 +2518,7 @@ class Engine {
     } catch { return null; }
   }
 
-  async sendExit(plan, pos) {
+  async sendExit(plan, pos, { sell } = {}) {
     let tx, before, hash;
     try {
       // Exiting needs gas too. Filled BEFORE the "before" balance is read, so its unwrap
@@ -2540,13 +2545,13 @@ class Engine {
     // from the receipt once readable.
     if (rc.timeout) throw new Error(`belum terkonfirmasi setelah 90 detik — tx ${hash} mungkin masih diproses; hasilnya dicatat otomatis begitu receipt terbaca`);
     if (!rc.ok) throw new Error(`transaksi keluar revert (${hash})`);
-    return this.recordExit(plan, pos, hash, rc.receipt, before);
+    return this.recordExit(plan, pos, hash, rc.receipt, before, { sell });
   }
 
   // Booking after the exit tx is confirmed: proceeds from the receipt, leftover memecoin, then
   // the sale of the leftovers. Used by sendExit and closeEmptyPosition (a tx whose receipt
   // is only read later, or a withdrawal outside the bot).
-  async recordExit(plan, pos, hash, receipt, before = null) {
+  async recordExit(plan, pos, hash, receipt, before = null, { sell } = {}) {
     const proceeds = await this.exitProceeds(pos, before, receipt);
     // The position is recorded closed FIRST — complete with the leftover memecoin received and
     // its value at the close price — and only then are the leftovers sold. If the sale succeeds,
@@ -2577,11 +2582,20 @@ class Engine {
     // Sell the memecoin JUST received from this exit transaction. Its error must not
     // cancel recording the exit — the position really is closed on chain.
     let sold = null;
-    try { sold = await this.sellLeftover(pos, receipt, { quiet: true }); }
+    try { sold = await this.sellLeftover(pos, receipt, { quiet: true, sell }); }
     // A failed sale goes into the retry queue (keepLeftover); only reported if
     // the queue gives up.
     catch (e) { this.store.log('error', `jual sisa #${pos.id}: ${e.message}`, { quiet: true }); }
-    return { txHash: hash, sold, note: `${plan.full ? 'tutup penuh' : 'kurangi'} posisi #${pos.id}${sold ? ` · ${sold}` : ''}` };
+    const note = `${plan.full ? 'tutup penuh' : 'kurangi'} posisi #${pos.id}${sold ? ` · ${sold}` : ''}`;
+    // A manual partial decrease has no caller that reports it (exitMirror does for mirrored ones).
+    if (plan.manual && !plan.full) {
+      const k = usdPerQuote(pos.quote_symbol, this.ethUsd, this.chain);
+      this.notify(`LP dikurangi: ${note}`, {
+        kind: 'exit', positionId: pos.id, txHash: hash, full: false, sold,
+        outUsd: proceeds?.valueQuote != null ? proceeds.valueQuote * k : null, costUsd: (pos.cost_quote || 0) * k, target: pos.target,
+      });
+    }
+    return { txHash: hash, sold, note };
   }
 
   // How much really entered the wallet from the exit transaction, read from the
@@ -2734,7 +2748,8 @@ class Engine {
   // that hold the same token.
   async sellLeftover(pos, receipt, opts = {}) {
     const rules = this.rulesFrom(pos.target);
-    if (!rules.exit.sell_leftover) return null;
+    // `opts.sell` (manual decrease dialog) overrides the target's sell_leftover rule.
+    if (!(opts.sell ?? rules.exit.sell_leftover)) return null;
     // ETH/USDG, WETH/USDG, etc.: both are "money" — there is no memecoin to sell (roles = null).
     const roles = this.leftoverRoles(pos);
     if (!roles) return null;

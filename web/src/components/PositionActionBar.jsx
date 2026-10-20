@@ -8,10 +8,11 @@ import AutoCompoundButton from './AutoCompoundButton';
 import TpSlButton from './TpSlButton';
 import CompoundNowButton from './CompoundNowButton';
 import TakeoverButton from './TakeoverButton';
+import DecreaseButton from './DecreaseButton';
 import { useI18n } from '../i18n';
 
 // The labelled action row for the drawer header (the table uses icons only): harvest
-// settings, TP/SL, take over, claim fee, close. Loads the full position itself because the
+// settings, TP/SL, take over, claim fee, reduce liquidity, close. Loads the full position itself because the
 // history payload the drawer holds lacks what the buttons need (compound state, takeover, TP/SL).
 export default function PositionActionBar({ id, onUpdate }) {
   const { t } = useI18n();
@@ -30,6 +31,7 @@ export default function PositionActionBar({ id, onUpdate }) {
     <Button size="sm" variant="outline" isPending={claiming === p.id} isDisabled={busy || !(p.feeUsd > 0)} onPress={() => claim(p)}>
       <Coins className="size-3.5" />{t('Claim fee')}
     </Button>
+    <DecreaseButton p={p} reload={refresh} disabled={busy} />
     <Button size="sm" variant="danger-soft" isPending={closing === p.id} isDisabled={busy} onPress={() => close(p)}>
       <DoorOpen className="size-3.5" />{t('Tutup posisi')}
     </Button>

@@ -840,7 +840,7 @@ class SolanaEngine {
 
   // plan: {full, liquidity (the L withdrawn)}. `force` (forced close from the dashboard) is
   // accepted for the same interface; on Solana there is no pending compound that could block.
-  async executeExit(plan, pos, { force = false } = {}) {
+  async executeExit(plan, pos, { force = false, sell } = {}) {
     void force;
     if (this.exiting.has(pos.id)) throw new Error(`posisi #${pos.id} sedang ditutup`);
     this.exiting.add(pos.id);
@@ -882,7 +882,7 @@ class SolanaEngine {
         if (sent.last?.expired || sent.last?.error) { this.store.run('DELETE FROM state WHERE k=?', this.pendingExitKey(pos.id)); e.notSent = !!sent.last?.expired; }
         throw e;
       }
-      const r = await this.bookExit(pos, pend, hash, rules);
+      const r = await this.bookExit(pos, pend, hash, rules, { sell });
       this.store.run('DELETE FROM state WHERE k=?', this.pendingExitKey(pos.id));
       return r;
     } finally { this.exiting.delete(pos.id); }
@@ -893,7 +893,7 @@ class SolanaEngine {
   }
 
   // Book the exit result from the position contents read right before the transaction.
-  async bookExit(pos, pend, hash, rules) {
+  async bookExit(pos, pend, hash, rules, { sell } = {}) {
     const b = pend.before;
     const full = pend.full, bps = pend.bps, ourL = BigInt(pend.ourL);
     const takeL = full ? ourL : (ourL * BigInt(bps)) / 10_000n;
@@ -926,7 +926,8 @@ class SolanaEngine {
       outUsd: outQuote * k, costUsd: (pos.cost_quote || 0) * k, target: pos.target,
     });
     const sale = meme && { posId: pos.id, token: memeMint, amount: memeAmt.toString(), label: q.side === 0 ? t1.symbol : t0.symbol, target: pos.target, quote: q.side === 0 ? pos.token0 : pos.token1 };
-    if (left && rules.exit.sell_leftover) await this.sellLeftover(sale);
+    // `sell` (manual decrease dialog) overrides the target's sell_leftover rule.
+    if (left && (sell ?? rules.exit.sell_leftover)) await this.sellLeftover(sale);
     this.positions.resync(this.ethUsd).catch(() => {});
     return { note, txHash: hash, outUsd: outQuote * k, sale };
   }
@@ -1092,6 +1093,62 @@ class SolanaEngine {
       quoteValue: this.chain.valueAs(args(memeSide === 0 ? memeAmt : 0n, memeSide === 1 ? memeAmt : 0n), pos.quote_symbol, this.ethUsd) ?? 0,
     } : null;
     return { value: v, usd: v * usdPerQuote(pos.quote_symbol, this.ethUsd, this.chain), meme };
+  }
+
+  // A read-only simulation of closing `live` (an entry of positions.live) right now, same shape as
+  // the EVM Engine.exitQuote: the memecoin side (principal + unclaimed fee) is QUOTED on the
+  // swap router (Jupiter/Raydium, best output) instead of marked at the pool mid price, and the
+  // typical gas of an exit + sale is subtracted. Also used on a scaled-down `live` by the partial
+  // decrease / claim dialogs. Nothing is sent.
+  async exitQuote(live) {
+    const usdOf = (raw, mint) => {
+      const q = this.chain.QUOTES[mint];
+      return q ? (Number(raw) / 10 ** q.decimals) * (q.kind === 'eth' ? this.ethUsd : 1) : null;
+    };
+    const qs = this.chain.quoteSideOf(live.token0, live.token1);
+    // Quote asset to sell into; a pair with no quote asset sells both sides to USDC, as sellLeftover does.
+    const quoteMint = qs ? (qs.side === 0 ? live.token0 : live.token1) : this.chain.ADDR.usdg;
+    const memes = qs ? [qs.side === 0 ? live.token1 : live.token0] : [live.token0, live.token1];
+    const a0 = BigInt(live.amount0 || '0') + BigInt(live.fee0 || '0');
+    const a1 = BigInt(live.amount1 || '0') + BigInt(live.fee1 || '0');
+    let memeMidUsd = 0, soldUsd = 0, quoted = true, sellCostUsd = 0;
+    const legs = [];
+    const sqrt = live.markSqrt ?? live.curSqrt;
+    const kindEth = qs?.kind === 'eth';
+    for (const meme of memes) {
+      if (this.chain.QUOTES[meme]) continue;   // SOL in a SOL/USDC pool is cash, not a leftover
+      const is0 = meme === live.token0;
+      const amount = is0 ? a0 : a1;
+      if (amount <= 0n) continue;
+      const vm = sqrt ? this.chain.valueInQuote({
+        sqrtPriceX96: BigInt(sqrt), dec0: live.dec0, dec1: live.dec1, token0: live.token0, token1: live.token1,
+        amount0: is0 ? amount : 0n, amount1: is0 ? 0n : amount,
+      }) : null;
+      const midUsd = vm && Number.isFinite(vm.value) ? vm.value * (kindEth ? this.ethUsd : 1) : null;
+      let outUsd = null, via = null;
+      try {
+        const r = await this.chain.router.quote(meme, quoteMint, amount, { slippageBps: this.rulesFrom(live.target ?? null).swap.max_slippage_bps });
+        outUsd = usdOf(r.outAmount, quoteMint);
+        via = r.aggregator || 'jupiter';
+      } catch { /* no route: valued at the mid price below */ }
+      if (outUsd == null) quoted = false;
+      legs.push({ token: meme, midUsd, outUsd, via, all: outUsd != null ? [{ id: via, label: via, outUsd }] : [] });
+      memeMidUsd += midUsd ?? 0;
+      soldUsd += outUsd ?? midUsd ?? 0;
+      sellCostUsd += (midUsd ?? 0) - (outUsd ?? midUsd ?? 0);
+    }
+    const midTotalUsd = (live.valueUsd || 0) + (live.feeUsd || 0);
+    const keptUsd = Math.max(0, midTotalUsd - memeMidUsd);
+    const recent = this.store.all("SELECT kind, gas_quote FROM txs WHERE chain=? AND kind IN ('burn','sell_leftover') AND status!='gagal' AND gas_quote IS NOT NULL ORDER BY ts DESC LIMIT 12", this.network);
+    const avg = (kind) => { const x = recent.filter((r) => r.kind === kind).map((r) => Number(r.gas_quote)); return x.length ? x.reduce((a, b) => a + b, 0) / x.length : 0; };
+    const gasUsd = avg('burn') + (legs.length ? avg('sell_leftover') * legs.length : 0);
+    const receiveUsd = keptUsd + soldUsd;
+    const pnlUsd = receiveUsd + (live.claimedUsd || 0) + (live.withdrawnUsd || 0) - (live.costUsd || 0) - gasUsd;
+    return {
+      id: live.id, quoted, legs, gasUsd, midUsd: midTotalUsd, receiveUsd, sellCostUsd,
+      claimedUsd: live.claimedUsd || 0, costUsd: live.costUsd || 0,
+      pnlMidUsd: live.pnlUsd, pnlUsd, pnlPct: live.costUsd > 0 ? (pnlUsd / live.costUsd) * 100 : 0,
+    };
   }
 
   // ---- leftover tokens -----------------------------------------------------------------
