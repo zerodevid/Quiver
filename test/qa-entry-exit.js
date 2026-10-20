@@ -753,6 +753,43 @@ const nonceOf = (raw) => ethers.Transaction.from(raw).nonce;
     assert.strictEqual(max, 1);
   });
 
+  await t('a sync round stuck past 10 minutes is abandoned and a new round starts', async () => {
+    const { eng, store } = engineWith();
+    let rounds = 0;
+    const hang = new Promise(() => {});                  // never settles, like the lp1 freeze
+    eng.syncPositionsOnce = async () => { rounds++; eng.syncStep = 'pencatatan compound'; if (rounds === 1) await hang; };
+    eng.syncPositions();                                 // round 1 hangs forever
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(eng.syncBusy, true);
+    await eng.syncPositions();                           // still young: skipped
+    assert.strictEqual(rounds, 1);
+    eng.syncStartedAt = Date.now() - 11 * 60_000;
+    await eng.syncPositions();                           // stuck: replaced
+    assert.strictEqual(rounds, 2);
+    assert.strictEqual(eng.syncBusy, false, 'the new round released the flag');
+    const msg = store.all("SELECT msg FROM logs WHERE level='error'").map((r) => r.msg).join(' | ');
+    assert.match(msg, /macet 11 mnt di langkah "pencatatan compound"/);
+  });
+
+  await t('an abandoned round stops at its next step and does not clear the new round\'s flag', async () => {
+    const { eng } = engineWith();
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let reconciled = 0;
+    eng.compound.reconcile = async () => { await gate; };
+    eng.reconcileFeeClaims = async () => { reconciled++; };
+    const old = eng.syncPositions().catch((e) => e);     // hangs in the compound step
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(eng.syncStep, 'pencatatan compound');
+    // A newer round takes over (as syncPositions does once the old one is stuck) and is still running.
+    eng.syncRound += 1;
+    release();
+    const err = await old;
+    assert.match(String(err?.message), /putaran sinkron ditinggalkan/);
+    assert.strictEqual(reconciled, 0, 'the abandoned round ran no further step');
+    assert.strictEqual(eng.syncBusy, true, 'the newer round still owns the flag');
+  });
+
   await t('stopping (deploy): waits for the running entry; new entry/exit is refused', async () => {
     const { eng } = engineWith();
     eng.activeEntries = 1;

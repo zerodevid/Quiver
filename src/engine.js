@@ -48,6 +48,9 @@ const MIN_ZAP_SURPLUS_USD = 0.5;
 // payment aims at the need after the zap's own price move plus ZAP_TARGET_MARGIN.
 const ZAP_OVERSHOOT = 0.03;
 const ZAP_TARGET_MARGIN = 0.01;
+// A position sync round older than this is taken as stuck and abandoned (see syncPositions).
+// Long enough that a round busy with real exits (send, receipt, leftover sale) is not cut short.
+const SYNC_STUCK_MS = 10 * 60_000;
 
 // Large amounts for decision reasons: "$12.3k", "$1.45m". Pool liquidity written
 // in full ($1,234,567) is not readable at a glance in the decision list.
@@ -3247,19 +3250,44 @@ class Engine {
   // take longer than that, and a second round running at the same time books the same thing
   // twice: closeEmptyPosition/bookPendingExits (doubled exit proceeds and leftover sales),
   // bookPendingMints (doubled position rows). One round at a time.
+  //
+  // A round that never returns (some await in it never settles) used to hold syncBusy
+  // forever: every later round returned at once, and position values, PnL, exit triggers and
+  // the dashboard clock froze for hours (lp1, 2026-10-20 from 06:36 UTC). Past SYNC_STUCK_MS
+  // the stuck round is abandoned: the step it hangs on is logged, it stops at its next step
+  // boundary (step() throws), and a fresh round starts. Only the hung step itself can still
+  // overlap the new round — far better than no sync at all.
   async syncPositions() {
-    if (this.syncBusy || this.stopping) return;
+    if (this.stopping) return;
+    if (this.syncBusy) {
+      const age = Date.now() - (this.syncStartedAt || 0);
+      if (age < SYNC_STUCK_MS) return;
+      this.store.log('error', `sinkron posisi macet ${Math.round(age / 60_000)} mnt di langkah "${this.syncStep || '?'}" — putaran itu ditinggalkan, putaran baru dimulai`);
+    }
+    const round = this.syncRound = (this.syncRound || 0) + 1;
     this.syncBusy = true;
-    try { return await this.syncPositionsOnce(); }
-    finally { this.syncBusy = false; }
+    this.syncStartedAt = Date.now();
+    this.syncStep = null;
+    try { return await this.syncPositionsOnce(round); }
+    // An abandoned round must not clear the flag of the round that replaced it.
+    finally { if (this.syncRound === round) this.syncBusy = false; }
   }
 
-  async syncPositionsOnce() {
+  async syncPositionsOnce(round) {
+    // Marks the step being run (named in the stuck-round log) and stops a round that has
+    // been abandoned in the meantime. Called without a round (tests): never abandoned.
+    const step = (label) => {
+      if (round != null && round !== this.syncRound) throw new Error(`putaran sinkron ditinggalkan (macet di "${this.syncStep || '?'}")`);
+      this.syncStep = label;
+    };
+    step('settle simulasi');
     this.paper.settle();
+    step('harga ETH');
     if (this.cfg.prices?.auto_eth_price !== false) this.ethUsd = await this.chain.ethUsd(this.ethUsd);
     // Positions opened outside the bot appear without needing a restart (every 10 minutes).
     const addr = this.exec.address();
     if (addr && Date.now() - (this.lastAdopt || 0) > 10 * 60_000) {
+      step('adopsi posisi');
       this.lastAdopt = Date.now();
       await this.adoptOwnPositions(addr);
     }
@@ -3267,25 +3295,32 @@ class Engine {
     // minute while a piled-up window is still being paid in instalments (public archive nodes are limited per
     // minute); consecutive errors are handled like other steps, not stopping the tick.
     if (addr && this.capital.available() && Date.now() - (this.capital.lastSync || 0) > (this.capital.backlog ? 60_000 : 5 * 60_000)) {
+      step('pelacakan setoran');
       await this.capital.sync(addr).then(() => this.cleared('modal', 'pelacakan setoran: berhasil lagi'))
         .catch((e) => this.trouble('modal', `pelacakan setoran: ${e.message}`, { after: 3, afterMs: 30 * 60_000 }));
     }
     // All of these steps repeat every sync (30 seconds) — a momentary error is not reported.
-    const once = (key, label, p) => p.then(() => this.cleared(key, `${label}: berhasil lagi`))
-      .catch((e) => this.trouble(key, `${label}: ${e.message}`, { after: 5, afterMs: 5 * 60_000 }));
-    await once('compound', 'pencatatan compound', this.compound.reconcile());
-    await once('claim', 'pencatatan claim fee', this.reconcileFeeClaims());
-    await once('rekon', 'rekonsiliasi keluar', this.reconcileExits());
-    await once('simulasi', 'fee simulasi', this.paper.accrue());
+    // `run` is started only after step(), so an abandoned round does not start it.
+    const once = (key, label, run) => {
+      step(label);
+      return run().then(() => this.cleared(key, `${label}: berhasil lagi`))
+        .catch((e) => this.trouble(key, `${label}: ${e.message}`, { after: 5, afterMs: 5 * 60_000 }));
+    };
+    await once('compound', 'pencatatan compound', () => this.compound.reconcile());
+    await once('claim', 'pencatatan claim fee', () => this.reconcileFeeClaims());
+    await once('rekon', 'rekonsiliasi keluar', () => this.reconcileExits());
+    await once('simulasi', 'fee simulasi', () => this.paper.accrue());
+    step('sinkron posisi');
     await this.positions.sync(this.ethUsd);
-    await once('buku-masuk', 'pembukuan mint tertunda', this.bookPendingMints());
-    await once('buku-keluar', 'pembukuan tx keluar tertunda', this.bookPendingExits());
-    await once('zap-yatim', 'pemulihan zap tanpa LP', this.recoverStrandedZaps());
-    await once('kas', 'saldo kas', this.refreshCash());
-    await once('sisa', 'nilai token sisa', this.positions.refreshLeftovers(this.ethUsd, this.exec.address()));
+    await once('buku-masuk', 'pembukuan mint tertunda', () => this.bookPendingMints());
+    await once('buku-keluar', 'pembukuan tx keluar tertunda', () => this.bookPendingExits());
+    await once('zap-yatim', 'pemulihan zap tanpa LP', () => this.recoverStrandedZaps());
+    await once('kas', 'saldo kas', () => this.refreshCash());
+    await once('sisa', 'nilai token sisa', () => this.positions.refreshLeftovers(this.ethUsd, this.exec.address()));
     // The position's own target rules (manual/adopted positions without a target: the global rules).
     const triggers = this.positions.exitTriggers((p) => this.rulesFrom(p.target));
     for (const t of triggers) {
+      step(`pemicu keluar #${t.pos.id}`);
       if (this.stopping) break;
       if (this.exiting.has(t.pos.id)) continue;
       // Manual control: standalone exit RULES do not apply (a per-position TP/SL set by the owner
@@ -3319,8 +3354,9 @@ class Engine {
         this.trouble(`keluar:${t.pos.id}`, `keluar mandiri gagal #${t.pos.id}: ${e.message}`, { after: 2 });
       }
     }
+    step('compound otomatis');
     if (!this.stopping) await this.compound.tick(Date.now(), new Set(triggers.map((t) => t.pos.id)));
-    if (!this.stopping) await once('masuk-lagi', 'buka lagi posisi yang ditunda', this.reentryTick());
+    if (!this.stopping) await once('masuk-lagi', 'buka lagi posisi yang ditunda', () => this.reentryTick());
   }
 
   // ---- reopen a position that was deferred/closed for being far from the range -----------
