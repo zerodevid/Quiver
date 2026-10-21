@@ -137,6 +137,31 @@ function StatusFoot({ status, reload, theme, toggleTheme, privacy }) {
   const m = status?.mode;
   // The combined view pauses/resumes every chain it shows, each through its own server.
   const pause = async () => {
+    // Pausing only holds back new entries; say exactly what stops and what keeps running.
+    if (!m?.paused && !(await ask({
+      title: t('Jeda penyalinan?'),
+      confirm: t('Jeda'),
+      body: (
+        <div className="flex flex-col gap-3">
+          <div>
+            <div className="font-medium text-foreground">{t('Berhenti saat dijeda')}</div>
+            <ul className="mt-1 list-disc pl-5">
+              <li>{t('Posisi baru dari target tidak disalin.')}</li>
+              <li>{t('Compound otomatis dan manual tidak berjalan.')}</li>
+              <li>{t('Posisi yang ditutup karena di luar rentang tidak dibuka ulang.')}</li>
+            </ul>
+          </div>
+          <div>
+            <div className="font-medium text-foreground">{t('Tetap berjalan')}</div>
+            <ul className="mt-1 list-disc pl-5">
+              <li>{t('Stop loss, take profit, batas umur, dan batas di luar rentang pada posisi yang sudah terbuka.')}</li>
+              <li>{t('Ikut keluar saat target menarik likuiditas.')}</li>
+              <li>{t('Sinkron posisi dan pencatatan transaksi.')}</li>
+            </ul>
+          </div>
+        </div>
+      ),
+    }))) return;
     const keys = status?.chain?.all ? status.chain.chains || [] : [null];
     await Promise.all(keys.map((k) => post(withChain('/api/mode', k), { paused: !m?.paused })));
     reload();
