@@ -4,7 +4,7 @@ import { Button, Spinner } from '@heroui/react';
 import { Coins, DoorOpen } from 'lucide-react';
 import { usePoll, useResync } from '../hooks';
 import { chainRef } from '../chain';
-import { useClosePosition } from '../useClosePosition';
+import { useClosePosition, CloseSelected } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
 import { PageHeader, Panel, DataTable, Empty, Loading, Notice, PriceRange, Dot, Refresh, Segmented, TradeLinks, WalletLinks, baseTokenOf } from '../components/ui';
 import { TokenPair, PairName } from '../components/TokenIcon';
@@ -161,7 +161,8 @@ export default function Positions({ param }) {
   // The button forces a fresh chain read, not merely refetching the last
   // sync result — see useResync.
   const [resync, syncing] = useResync(reload);
-  const { close, forceCloseAll, closing } = useClosePosition(reload);
+  const { close, closeAll, forceCloseAll, closing } = useClosePosition(reload);
+  const [sel, setSel] = useState(() => new Set());   // ticked rows, to close only those
   const { claim, claiming } = useClaimFees(reload);
   // Click a row -> position history drawer (transactions & bot notes).
   const [hist, setHist] = useState(null);
@@ -217,12 +218,14 @@ export default function Positions({ param }) {
             ['Fee', usd(sum(open, (p) => p.feeUsd))],
             ['PnL', usd(openPnl), tone(openPnl)],
           ]} />}
+          <CloseSelected rows={shown} sel={sel} setSel={setSel} closeAll={closeAll} closing={closing} busy={claiming != null} />
           {open.length > 0 && (
             <Button size="sm" variant="outline" className="text-danger" isPending={closing != null} isDisabled={closing != null || claiming != null} onPress={() => forceCloseAll(open)}>
               {t('Tutup paksa semua ({n})', { n: open.length })}
             </Button>)}
         </div>}>
         <DataTable label="Posisi terbuka" rows={shown} rowKey={(p) => p.id} searchable onRow={(p) => setHist(p.id)}
+          selected={sel} onSelect={setSel}
           defaultSort={{ column: 'val', direction: 'descending' }}
           empty={<Empty title={lensNow === 'in' ? 'Tidak ada posisi in-range' : lensNow === 'out' ? 'Semua posisi ada di dalam rentang' : 'Belum ada posisi terbuka'}
             sub={lensNow === 'all' ? 'Posisi muncul di sini setelah bot menyalin LP dari wallet target.' : null} />}

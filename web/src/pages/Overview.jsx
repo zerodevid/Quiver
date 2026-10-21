@@ -14,7 +14,7 @@ import PositionHistory from '../components/PositionHistory';
 import { usd, kUsd, tone, num, pct, age, ago, short, txHref, aprOf, aprText, locale as fmtLocale, TXKIND, TXSTATUS } from '../fmt';
 import { isHidden, MASK } from '../privacy';
 import { useI18n, reason } from '../i18n';
-import { useClosePosition } from '../useClosePosition';
+import { useClosePosition, CloseSelected } from '../useClosePosition';
 import { canonAddr, chainInfo, CHAIN_ICON, chainRef } from '../chain';
 
 const RANGES = [['24h', '24 jam'], ['7d', '7 hari'], ['30d', '30 hari'], ['all', 'Semua']];
@@ -461,7 +461,8 @@ export default function Overview() {
   const [resync, syncing] = useResync(reloadAll);
   // The emergency "force close all" button — the same as on the Positions page, used
   // from the summary so there is no need to switch pages first when the market moves fast.
-  const { forceCloseAll, closing } = useClosePosition(reloadAll);
+  const { closeAll, forceCloseAll, closing } = useClosePosition(reloadAll);
+  const [sel, setSel] = useState(() => new Set());   // ticked rows, to close only those
   if (!d) return <Loading page />;
   const s = d.summary, T = d.totals || {};
   // The cursor can slightly LEAD the chain head last read; that is sync,
@@ -590,6 +591,7 @@ export default function Overview() {
             <span className="whitespace-nowrap"><span className="text-muted">{t('uPnL')}</span> <span className={`num font-medium ${tone(sum(open, (x) => x.pnlUsd))}`}>{usd(sum(open, (x) => x.pnlUsd))}</span></span>
           </>}
           <a href="#positions" className="font-medium text-accent hover:underline">{t('Semua posisi →')}</a>
+          <CloseSelected rows={open} sel={sel} setSel={setSel} closeAll={closeAll} closing={closing} />
           {open.length > 0 && (
             <Button size="sm" variant="outline" className="text-danger" isPending={closing != null} isDisabled={closing != null} onPress={() => forceCloseAll(open)}>
               {t('Tutup paksa semua ({n})', { n: open.length })}
@@ -598,6 +600,7 @@ export default function Overview() {
         {!pos?.positions ? <Loading text="Memuat posisi…" /> : (
           <GmgnProvider tokens={open.map((x) => chainRef(baseTokenOf(x), x))}>
           <DataTable label="Posisi aktif" rows={open} rowKey={(x) => x.id} dense onRow={(x) => setHist(x.id)}
+            selected={sel} onSelect={setSel}
             defaultSort={{ column: 'val', direction: 'descending' }}
             empty={<Empty title="Tidak ada posisi aktif" sub="Posisi muncul di sini setelah bot menyalin LP dari wallet target." />}
             columns={[

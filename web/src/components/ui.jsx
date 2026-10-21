@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Card, Chip, EmptyState, Label, Description, FieldError, TextField, Input, Select, ListBox,
-  Switch, Table, Spinner, Alert, Pagination, AlertDialog, Button,
+  Switch, Table, Spinner, Alert, Pagination, AlertDialog, Button, Checkbox,
 } from '@heroui/react';
 import { Inbox, Search, ArrowLeft, ArrowUpRight, Copy, Check, ExternalLink, RefreshCw } from 'lucide-react';
 import { price, tickPrice, sqrtPrice, widthPct, pct, short, shortId, txHref, addrHref, debankHref, lpagentHref, etherscanHref, ago } from '../fmt';
@@ -436,13 +436,23 @@ export function ChainMark({ chain, size = 'size-4' }) {
   return <img src={CHAIN_ICON[chain] || '/favicon.svg'} alt={c.label || chain} title={c.label || chain} className={`${size} shrink-0 rounded-full`} />;
 }
 
+// Row ids repeat across chains in the all-chains view (#12 on Robinhood and #12 on BSC).
+export const tableKey = (r, k) => (r?.chain ? `${r.chain}:${k}` : k);
+
 export function DataTable({
   label, columns, rows, rowKey, empty, dense, footer,
-  searchable, pageSize = 0, defaultSort, onRow, pinTop, jumpTo,
+  searchable, pageSize = 0, defaultSort, onRow, pinTop, jumpTo, selected, onSelect,
 }) {
   const [sort, setSort] = useState(defaultSort || null);
-  // Row ids repeat across chains in the all-chains view (#12 on Robinhood and #12 on BSC).
-  const keyOf = (r, i) => { const k = rowKey ? rowKey(r, i) : i; return r?.chain ? `${r.chain}:${k}` : k; };
+  const keyOf = (r, i) => tableKey(r, rowKey ? rowKey(r, i) : i);
+  // selected/onSelect (optional): a checkbox in each row's first cell; `selected` is a Set of
+  // String(tableKey(row, rowKey(row))). The checkbox is its own press target, so ticking it
+  // does not also open the row (onRow).
+  const toggle = (k) => {
+    const next = new Set(selected);
+    if (next.has(k)) next.delete(k); else next.add(k);
+    onSelect(next);
+  };
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   // The number of rows per page can be changed by the reader; the choice is remembered per table
@@ -572,8 +582,14 @@ export function DataTable({
                       {/* a row from the all-chains view: its links follow its own chain, and its
                           first cell carries the chain's logo */}
                       <OnChain chain={r.chain}>
-                        {ci === 0 && r.chain
-                          ? <span className="flex items-center gap-2"><ChainMark chain={r.chain} /><span className="min-w-0">{c.render ? c.render(r) : r[c.key]}</span></span>
+                        {ci === 0 && (r.chain || onSelect)
+                          ? <span className="flex items-center gap-2">
+                            {onSelect && <Checkbox aria-label={t('Pilih baris')} isSelected={selected?.has(String(keyOf(r, i))) || false}
+                              onChange={() => toggle(String(keyOf(r, i)))}>
+                              <Checkbox.Content><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control></Checkbox.Content>
+                            </Checkbox>}
+                            {r.chain && <ChainMark chain={r.chain} />}
+                            <span className="min-w-0">{c.render ? c.render(r) : r[c.key]}</span></span>
                           : c.render ? c.render(r) : r[c.key]}
                       </OnChain>
                     </Table.Cell>

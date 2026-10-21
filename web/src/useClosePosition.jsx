@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { toast } from '@heroui/react';
+import { Button, toast } from '@heroui/react';
 import { get, post, withChain } from './api';
-import { ask } from './components/ui';
+import { ask, tableKey } from './components/ui';
 import { muteClose } from './components/TargetAlerts';
 import { usd, short } from './fmt';
 import { useI18n } from './i18n';
@@ -132,28 +132,32 @@ export function useClosePosition(reload) {
   // do not overtake each other and if one fails the others are still tried. One confirmation
   // for all; each position's result is still reported individually.
   // `pair` (optional): the pool name if the list is only one pool's positions (Monitor),
-  // so the confirmation does not read like closing the entire portfolio.
-  const closeAll = async (list, { pair = null } = {}) => {
+  // so the confirmation does not read like closing the entire portfolio. `picked`: the list is
+  // the rows the owner ticked in a table, not every open position.
+  const closeAll = async (list, { pair = null, picked = false } = {}) => {
     if (closing != null || !list?.length) return;
     const value = list.reduce((s, p) => s + (p.valueUsd || 0), 0);
     const fee = list.reduce((s, p) => s + (p.feeUsd || 0), 0);
     const ok = await ask({
-      title: pair ? t('Tutup semua {n} posisi {pair}?', { n: list.length, pair }) : t('Tutup semua {n} posisi terbuka?', { n: list.length }),
+      title: pair ? t('Tutup semua {n} posisi {pair}?', { n: list.length, pair })
+        : picked ? t('Tutup {n} posisi terpilih?', { n: list.length })
+        : t('Tutup semua {n} posisi terbuka?', { n: list.length }),
       body: <div className="space-y-2">
         <div>{fee > 0.005
           ? t('Ditutup satu per satu; tiap posisi satu transaksi. Nilai sekarang {v} + fee {f}.', { v: usd(value), f: usd(fee) })
           : t('Ditutup satu per satu; tiap posisi satu transaksi. Nilai sekarang {v}.', { v: usd(value) })}</div>
         <LiveBatchEstimate list={list} />
       </div>,
-      confirm: t('Tutup semua'), danger: true,
+      confirm: picked ? t('Tutup terpilih') : t('Tutup semua'), danger: true,
     });
-    if (!ok) return;
+    if (!ok) return false;
     for (const p of list) {
       await run(p);
       reload?.();   // the table shrinks while the rest is still running
     }
     setClosing(null);
     reload?.();
+    return true;
   };
   // Force-close all open positions (the emergency button on the Positions page). The difference from
   // closeAll: the server bypasses the compound/claim guards that are still waiting, burns
@@ -184,4 +188,25 @@ export function useClosePosition(reload) {
     else toast.success(t('Tutup paksa selesai: {d} posisi tertutup', { d: done }), { timeout: 10000 });
   };
   return { close, closeAll, forceCloseAll, closing };
+}
+
+// The table toolbar for closing ticked rows: "select all" / "clear" and "close selected (n)".
+// `rows` are the rows the table shows; `sel` is the DataTable selection (a Set of tableKey
+// strings). Keys of rows that have since closed are ignored, not counted.
+export function CloseSelected({ rows, sel, setSel, closeAll, closing, busy = false }) {
+  const { t } = useI18n();
+  const picked = rows.filter((p) => sel.has(String(tableKey(p, p.id))));
+  if (!rows.length) return null;
+  const all = picked.length === rows.length;
+  return <>
+    <Button size="sm" variant="ghost" isDisabled={closing != null}
+      onPress={() => setSel(all ? new Set() : new Set(rows.map((p) => String(tableKey(p, p.id)))))}>
+      {all ? t('Batal pilih') : t('Pilih semua')}
+    </Button>
+    {picked.length > 0 && (
+      <Button size="sm" variant="danger-soft" isPending={closing != null} isDisabled={closing != null || busy}
+        onPress={async () => { if (await closeAll(picked, { picked: true })) setSel(new Set()); }}>
+        {t('Tutup terpilih ({n})', { n: picked.length })}
+      </Button>)}
+  </>;
 }
