@@ -9,6 +9,7 @@ const { scoutWallet } = require('./scout');
 const logbuf = require('./logbuf');
 const { WalletResearch, summarize } = require('./wallet');
 const { createSettingsRoutes } = require('./settings');
+const { createApiV1 } = require('./apiv1');
 const { Manual, layerSpec } = require('./manual');
 const { Compound } = require('./compound');
 const { Holdings } = require('./holdings');
@@ -2800,6 +2801,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     return routes[key]({ __body: body, headers: {} }, url, {});
   };
 
+  // Public read-only API (/api/v1) with API keys; the keys are managed from Settings with the dashboard token.
+  const apiV1 = createApiV1({ store, chain, callApi, log });
+  routes['GET /api/apikeys'] = () => ({ keys: apiV1.list() });
+  routes['POST /api/apikeys'] = async (req) => apiV1.create((await readBody(req)).name);
+  routes['POST /api/apikeys/revoke'] = async (req) => apiV1.revoke((await readBody(req)).id);
+
   // Assemble the data of one share card then draw it. Used by the PNG route, the Telegram
   // send route, and the "Share" button in the bot. Returns { png, caption } or { error }.
   const dayKeyIn = (ts, timeZone) => {
@@ -2853,6 +2860,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // entry), LP range, and entry/exit points. The same source as the chart card.
       // Failed or slow (GeckoTerminal) → the card is still produced, without the chart.
       opts.chart = await positionSpark(data).catch(() => null);
+
     } else if (kind === 'total' || kind === 'daily' || kind === 'month') {
       const [pf, pos] = await Promise.all([callApi('GET', '/api/portfolio', {}, { range: 'all' }), callApi('GET', '/api/positions')]);
       const all = [...(pos.positions || []), ...(pos.closed || [])];
@@ -3040,6 +3048,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // The Telegram mini app exchanges initData for a ticket here — before the gate, because
     // at that point there is no session at all.
     if (key === 'POST /api/tg/auth') return tgAuth(req, res);
+
+    // API-key door: has its own auth, so it comes before the dashboard token gate.
+    if (await apiV1.handle(req, res, url, json)) return;
 
     // ---- token gate ----
     const TOKEN = tokenNow();

@@ -839,7 +839,56 @@ function SecurityTab({ d }) {
             <Button variant="outline" onPress={() => { navigator.clipboard?.writeText(tok); toast.success(t('Tersalin')); }}><Copy className="size-4" />{t('Salin')}</Button></div>
         </Card.Content></Card>
       )}
+      <Separator />
+      <ApiKeys />
     </Section>
+  );
+}
+
+// Read-only API keys (/api/v1): each key is shown once, only its hash is stored on the server.
+function ApiKeys() {
+  const { t } = useI18n();
+  const [keys, setKeys] = useState(null);
+  const [name, setName] = useState('');
+  const [fresh, setFresh] = useState(null);
+  const load = useCallback(async () => { const r = await get('/api/apikeys'); if (!r.error) setKeys(r.keys); }, []);
+  useEffect(() => { load(); }, [load]);
+  const make = async () => {
+    const r = await post('/api/apikeys', { name });
+    if (r.error) return toast.danger(r.error);
+    setFresh(r.key); setName(''); load();
+  };
+  const revoke = async (k) => {
+    if (!(await ask({ title: t('Cabut key "{n}"? Skrip yang memakainya langsung ditolak.', { n: k.name }), confirm: t('Cabut') }))) return;
+    const r = await post('/api/apikeys/revoke', { id: k.id });
+    if (r.error) return toast.danger(r.error);
+    load();
+  };
+  return (
+    <div>
+      <div className="font-medium">{t('API key (hanya baca)')}</div>
+      <p className="mb-3 mt-1 text-sm text-muted">{t('Untuk skrip, bot, atau spreadsheet: ambil saldo, posisi terbuka, grafik saldo & PnL lewat /api/v1/*. Key tidak bisa mengubah apa pun. Kirim sebagai header Authorization: Bearer <key>.')}</p>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} placeholder={t('Nama key, mis. spreadsheet')} className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm" />
+        <Button variant="outline" isDisabled={!name.trim()} onPress={make}>{t('Buat API key')}</Button>
+      </div>
+      {fresh && (
+        <Card variant="secondary" className="mb-3"><Card.Content className="gap-2">
+          <div className="text-sm font-medium">{t('Key baru — simpan sekarang, tidak akan ditampilkan lagi')}</div>
+          <div className="flex items-center gap-2"><code className="mono flex-1 break-all rounded bg-surface px-3 py-2">{fresh}</code>
+            <Button variant="outline" onPress={() => { navigator.clipboard?.writeText(fresh); toast.success(t('Tersalin')); }}><Copy className="size-4" />{t('Salin')}</Button></div>
+        </Card.Content></Card>
+      )}
+      {keys && !keys.length && <p className="text-sm text-muted">{t('Belum ada API key.')}</p>}
+      {keys?.map((k) => (
+        <div key={k.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border py-2 text-sm first:border-t-0">
+          <span className="font-medium">{k.name}</span>
+          <code className="mono text-muted">{k.hint}</code>
+          <span className="text-xs text-muted">{k.lastUsedTs ? t('dipakai {w}', { w: ago(k.lastUsedTs) }) : t('belum pernah dipakai')}</span>
+          <Button className="ml-auto" size="sm" variant="danger" onPress={() => revoke(k)}><Trash2 className="size-4" />{t('Cabut')}</Button>
+        </div>
+      ))}
+    </div>
   );
 }
 

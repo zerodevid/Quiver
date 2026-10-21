@@ -1608,6 +1608,16 @@ const EN = {
   'Dasbor ini bisa menyalakan LIVE dan menutup posisi, jadi dilindungi token akses.':
     'This dashboard can turn on LIVE mode and close positions, so it is protected by an access token.',
   'Ganti token akses': 'Rotate access token',
+  'API key (hanya baca)': 'API keys (read-only)',
+  'Untuk skrip, bot, atau spreadsheet: ambil saldo, posisi terbuka, grafik saldo & PnL lewat /api/v1/*. Key tidak bisa mengubah apa pun. Kirim sebagai header Authorization: Bearer <key>.': 'For scripts, bots or spreadsheets: fetch balance, open positions and the balance & PnL charts through /api/v1/*. A key cannot change anything. Send it as the header Authorization: Bearer <key>.',
+  'Nama key, mis. spreadsheet': 'Key name, e.g. spreadsheet',
+  'Buat API key': 'Create API key',
+  'Key baru — simpan sekarang, tidak akan ditampilkan lagi': 'New key — save it now, it will not be shown again',
+  'Belum ada API key.': 'No API keys yet.',
+  'dipakai {w}': 'used {w}',
+  'belum pernah dipakai': 'never used',
+  'Cabut': 'Revoke',
+  'Cabut key "{n}"? Skrip yang memakainya langsung ditolak.': 'Revoke key "{n}"? Scripts using it are rejected immediately.',
   'Token lama langsung tidak berlaku; perangkat lain harus masuk ulang. Browser ini tetap masuk.':
     'The old token stops working immediately; other devices must sign in again. This browser stays signed in.',
   'Buat token baru': 'Generate new token',
