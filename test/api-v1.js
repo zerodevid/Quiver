@@ -96,12 +96,15 @@ function serve() {
   });
 
   await t('positions, equity, pnl and the index answer', async () => {
+    const b0 = await (await v1('balance', key)).json();
     const p = await (await v1('positions?status=all', key)).json();
     assert.deepEqual([p.open, p.closed], [[], []]);
     const e = await (await v1('equity?range=24h', key)).json();
     assert.ok(Array.isArray(e.series));
     const pnl = await (await v1('pnl', key)).json();
     assert.ok(Array.isArray(pnl.dailyUtc));
+    // internal fields stay out of the cash breakdown
+    assert.ok(!('ts' in (b0.cashAssets || {})));
     const idx = await (await v1('', key)).json();
     assert.ok(idx.endpoints['/api/v1/balance']);
     assert.equal((await v1('status', key)).status, 200);

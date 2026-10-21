@@ -137,7 +137,7 @@ Query: `range=6h|12h|24h|3d|7d|14d|30d|90d|180d|365d|all` (default `7d`).
 
 ### `GET /pnl`
 
-Query: `range` as above (default `30d`).
+Query: `range` as above (default `30d`), applied to `dailyUtc`.
 
 ```json
 { "chain": "robinhood", "range": "30d",
@@ -148,8 +148,8 @@ Query: `range` as above (default `30d`).
                   "wins": 8, "losses": 4, "realizedUsd": 21.3, "unrealizedUsd": 1.1, "netUsd": 18.9 } ] }
 ```
 
-`stats` and `bySource` cover all closed positions; `dailyUtc` groups realized PnL (net of gas
-and outside slippage) by UTC day of close. Win rate = wins / (wins + losses); break-even closes
+`stats` and `bySource` cover all closed positions (all time); only `dailyUtc` follows `range`. It
+groups realized PnL (net of gas and outside slippage) by UTC day of close. Win rate = wins / (wins + losses); break-even closes
 are `flat`.
 
 ### `GET /deposits`

@@ -91,7 +91,7 @@ function createApiV1({ store, chain, callApi, log = () => {} }) {
           leftoverUsd: num(n.leftoverUsd), pnlUsd: num(n.pnl), realizedUsd: num(n.realizedUsd), unrealizedUsd: num(n.unrealizedUsd),
           capitalUsd: num(n.capitalNet), netPnlUsd: num(n.netPnl), gasUsd: num(n.gasUsd), slippageUsd: num(n.slipUsd),
           openPositions: n.openCount, inRange: n.inRange,
-          cashAssets: n.cash ? { usd: num(n.cash.usd), ...Object.fromEntries(Object.entries(n.cash).filter(([k, v]) => k !== 'usd' && typeof v === 'number').map(([k, v]) => [k, num(v, 6)])) } : null,
+          cashAssets: n.cash ? { usd: num(n.cash.usd), ...Object.fromEntries(Object.entries(n.cash).filter(([k, v]) => k !== 'usd' && k !== 'ts' && typeof v === 'number').map(([k, v]) => [k, num(v, 6)])) } : null,
           capitalStartedAt: capital?.baselineTs ?? null,
         };
       },
@@ -127,11 +127,11 @@ function createApiV1({ store, chain, callApi, log = () => {} }) {
       },
     },
     pnl: {
-      desc: 'Closed-position statistics, daily realized PnL (?range=, default 30d) and result per copied source.',
+      desc: 'Closed-position statistics and result per copied source (all time), plus daily realized PnL for ?range= (default 30d).',
       run: async (q) => {
         const r = await callApi('GET', '/api/portfolio', {}, { range: q.get('range') || '30d' });
         const daily = {};
-        for (const [ts, v] of r.closed) { const k = new Date(ts).toISOString().slice(0, 10); daily[k] = (daily[k] || 0) + v; }
+        for (const [ts, v] of r.closed) { if (ts < r.from || (r.to && ts > r.to)) continue; const k = new Date(ts).toISOString().slice(0, 10); daily[k] = (daily[k] || 0) + v; }
         return {
           chain: chain.network, range: r.range,
           stats: Object.fromEntries(Object.entries(r.stats).map(([k, v]) => [k, num(v)])),
