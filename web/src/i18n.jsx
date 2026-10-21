@@ -489,6 +489,8 @@ const EN = {
   'Pilih semua': 'Select all',
   'Batal pilih': 'Clear selection',
   'Pilih baris': 'Select row',
+  'Pilih': 'Select',
+  'Selesai': 'Done',
   'Tutup paksa semua ({n})': 'Force close all ({n})',
   'Tutup paksa semua': 'Force close all',
   'Tutup paksa semua {n} posisi terbuka?': 'Force close all {n} open positions?',

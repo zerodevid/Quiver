@@ -162,7 +162,7 @@ export default function Positions({ param }) {
   // sync result — see useResync.
   const [resync, syncing] = useResync(reload);
   const { close, closeAll, forceCloseAll, closing } = useClosePosition(reload);
-  const [sel, setSel] = useState(() => new Set());   // ticked rows, to close only those
+  const [sel, setSel] = useState(null);   // ticked rows to close; null = select mode off (no checkboxes)
   const { claim, claiming } = useClaimFees(reload);
   // Click a row -> position history drawer (transactions & bot notes).
   const [hist, setHist] = useState(null);
@@ -225,7 +225,7 @@ export default function Positions({ param }) {
             </Button>)}
         </div>}>
         <DataTable label="Posisi terbuka" rows={shown} rowKey={(p) => p.id} searchable onRow={(p) => setHist(p.id)}
-          selected={sel} onSelect={setSel}
+          selected={sel} onSelect={sel ? setSel : undefined}
           defaultSort={{ column: 'val', direction: 'descending' }}
           empty={<Empty title={lensNow === 'in' ? 'Tidak ada posisi in-range' : lensNow === 'out' ? 'Semua posisi ada di dalam rentang' : 'Belum ada posisi terbuka'}
             sub={lensNow === 'all' ? 'Posisi muncul di sini setelah bot menyalin LP dari wallet target.' : null} />}

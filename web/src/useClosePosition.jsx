@@ -190,23 +190,25 @@ export function useClosePosition(reload) {
   return { close, closeAll, forceCloseAll, closing };
 }
 
-// The table toolbar for closing ticked rows: "select all" / "clear" and "close selected (n)".
-// `rows` are the rows the table shows; `sel` is the DataTable selection (a Set of tableKey
-// strings). Keys of rows that have since closed are ignored, not counted.
+// The table toolbar for closing ticked rows. The checkboxes only appear after "Pilih" (select
+// mode), so the table is not cluttered day to day: `sel` is null when select mode is off, else
+// the DataTable selection (a Set of tableKey strings). `rows` are the rows the table shows;
+// keys of rows that have since closed are ignored, not counted.
 export function CloseSelected({ rows, sel, setSel, closeAll, closing, busy = false }) {
   const { t } = useI18n();
-  const picked = rows.filter((p) => sel.has(String(tableKey(p, p.id))));
   if (!rows.length) return null;
+  if (!sel) return <Button size="sm" variant="ghost" isDisabled={closing != null} onPress={() => setSel(new Set())}>{t('Pilih')}</Button>;
+  const picked = rows.filter((p) => sel.has(String(tableKey(p, p.id))));
   const all = picked.length === rows.length;
   return <>
     <Button size="sm" variant="ghost" isDisabled={closing != null}
       onPress={() => setSel(all ? new Set() : new Set(rows.map((p) => String(tableKey(p, p.id)))))}>
       {all ? t('Batal pilih') : t('Pilih semua')}
     </Button>
-    {picked.length > 0 && (
-      <Button size="sm" variant="danger-soft" isPending={closing != null} isDisabled={closing != null || busy}
-        onPress={async () => { if (await closeAll(picked, { picked: true })) setSel(new Set()); }}>
-        {t('Tutup terpilih ({n})', { n: picked.length })}
-      </Button>)}
+    <Button size="sm" variant="danger-soft" isPending={closing != null} isDisabled={!picked.length || closing != null || busy}
+      onPress={async () => { if (await closeAll(picked, { picked: true })) setSel(null); }}>
+      {t('Tutup terpilih ({n})', { n: picked.length })}
+    </Button>
+    <Button size="sm" variant="ghost" isDisabled={closing != null} onPress={() => setSel(null)}>{t('Selesai')}</Button>
   </>;
 }

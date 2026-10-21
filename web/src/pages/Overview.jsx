@@ -462,7 +462,7 @@ export default function Overview() {
   // The emergency "force close all" button — the same as on the Positions page, used
   // from the summary so there is no need to switch pages first when the market moves fast.
   const { closeAll, forceCloseAll, closing } = useClosePosition(reloadAll);
-  const [sel, setSel] = useState(() => new Set());   // ticked rows, to close only those
+  const [sel, setSel] = useState(null);   // ticked rows to close; null = select mode off (no checkboxes)
   if (!d) return <Loading page />;
   const s = d.summary, T = d.totals || {};
   // The cursor can slightly LEAD the chain head last read; that is sync,
@@ -600,7 +600,7 @@ export default function Overview() {
         {!pos?.positions ? <Loading text="Memuat posisi…" /> : (
           <GmgnProvider tokens={open.map((x) => chainRef(baseTokenOf(x), x))}>
           <DataTable label="Posisi aktif" rows={open} rowKey={(x) => x.id} dense onRow={(x) => setHist(x.id)}
-            selected={sel} onSelect={setSel}
+            selected={sel} onSelect={sel ? setSel : undefined}
             defaultSort={{ column: 'val', direction: 'descending' }}
             empty={<Empty title="Tidak ada posisi aktif" sub="Posisi muncul di sini setelah bot menyalin LP dari wallet target." />}
             columns={[
