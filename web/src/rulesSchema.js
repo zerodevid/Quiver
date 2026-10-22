@@ -124,7 +124,7 @@ export const ANTI_RUG_GUIDE = {
   ],
   limits: [
     'Tidak ada filter yang menjamin aman. Dump bisa terjadi dalam satu blok, lebih cepat dari stop loss.',
-    'Pengecekan pembuat dan pemegang token hanya untuk jaringan EVM dan memakai Alchemy. Kalau datanya tidak terbaca, entri tetap diteruskan.',
+    'Pengecekan pembuat dan pemegang token hanya untuk jaringan EVM dan memakai Alchemy. Pengecekan honeypot, pajak, kontrak, dan holder memakai GMGN (perlu API key), website dan sosial memakai DexScreener. Kalau datanya tidak terbaca, entri tetap diteruskan.',
     'Filter yang terlalu ketat melewatkan entri yang sah. Mulai dari Seimbang, naikkan kalau masih kena.',
   ],
 };
@@ -133,13 +133,16 @@ export const ANTI_RUG_GUIDE = {
 export const ANTI_RUG_PRESETS = [
   { id: 'off', label: 'Mati', desc: 'Semua penjaga di bagian ini dimatikan, perilaku seperti sebelum ada bagian ini.', values: {
     'filters.min_pool_age_minutes': 0, 'onesided.policy': 'copy', 'filters.max_deployer_tokens': 0, 'filters.max_top_holder_pct': 0,
+    'filters.require_socials': false, 'filters.block_honeypot': false, 'filters.max_tax_pct': 0, 'filters.require_verified_contract': false, 'filters.min_holders': 0,
     'filters.min_liquidity_usd': 0, 'filters.min_volume24h_usd': 0, 'filters.allow_hooks': false, 'filters.allow_no_quote': false } },
   { id: 'balanced', label: 'Seimbang', desc: 'Menolak jebakan yang paling jelas dan tetap menerima sebagian pool baru.', values: {
     'filters.min_pool_age_minutes': 30, 'onesided.policy': 'copy', 'onesided.max_quote_usd': 50, 'filters.max_deployer_tokens': 5, 'filters.deployer_window_hours': 6,
-    'filters.max_top_holder_pct': 60, 'filters.min_liquidity_usd': 5000, 'filters.min_volume24h_usd': 10000, 'filters.allow_hooks': false, 'filters.allow_no_quote': false } },
+    'filters.max_top_holder_pct': 60,
+    'filters.require_socials': false, 'filters.block_honeypot': true, 'filters.max_tax_pct': 15, 'filters.require_verified_contract': false, 'filters.min_holders': 20, 'filters.min_liquidity_usd': 5000, 'filters.min_volume24h_usd': 10000, 'filters.allow_hooks': false, 'filters.allow_no_quote': false } },
   { id: 'strict', label: 'Ketat', desc: 'Disarankan untuk target yang sering masuk ke token baru. Lebih banyak entri sah ikut terlewat.', values: {
     'filters.min_pool_age_minutes': 60, 'onesided.policy': 'skip', 'filters.max_deployer_tokens': 3, 'filters.deployer_window_hours': 6,
-    'filters.max_top_holder_pct': 40, 'filters.min_liquidity_usd': 10000, 'filters.min_volume24h_usd': 20000, 'filters.allow_hooks': false, 'filters.allow_no_quote': false } },
+    'filters.max_top_holder_pct': 40,
+    'filters.require_socials': true, 'filters.block_honeypot': true, 'filters.max_tax_pct': 10, 'filters.require_verified_contract': true, 'filters.min_holders': 50, 'filters.min_liquidity_usd': 10000, 'filters.min_volume24h_usd': 20000, 'filters.allow_hooks': false, 'filters.allow_no_quote': false } },
 ];
 
 SCHEMA.push({ group: 'Anti rug & scam', icon: 'ti-shield-exclamation', guide: ANTI_RUG_GUIDE, presets: ANTI_RUG_PRESETS, fields: [
@@ -163,6 +166,26 @@ SCHEMA.push({ group: 'Anti rug & scam', icon: 'ti-shield-exclamation', guide: AN
     help: 'Lewati token yang satu dompetnya (bukan pool/burn) memegang lebih dari ini. Token baru sering masih dipegang pembuatnya; 0 = mati',
     rec: { value: 40, label: '40%' },
     why: 'Satu dompet dengan 40% atau lebih bisa menjatuhkan harga sendirian. Di kasus yang kita periksa, pembuat memegang hampir 100% saat posisi disalin, lalu satu dompet lain mengambil 64,6%. Efek samping: token yang baru diluncurkan dan masih dipegang pembuatnya juga terlewat, dan pengecekan token lama bisa menambah beberapa detik.' },
+  { path: 'filters.require_socials', label: 'Wajib punya website atau akun sosial', type: 'bool', when: evm,
+    help: 'Lewati token yang tidak punya website atau akun X/Telegram di DexScreener maupun GMGN',
+    rec: { value: true, label: 'Nyala' },
+    why: 'Pabrik token jarang mau repot membuat website dan akun. Token yang kamu salin sebaiknya punya jejak yang bisa dicek. Harga yang dibayar: token baru yang sah tapi belum mendaftarkan profil di DexScreener juga terlewat, dan akun yang dibuat asal-asalan tetap lolos, jadi ini penyaring kasar, bukan bukti aman.' },
+  { path: 'filters.block_honeypot', label: 'Blokir honeypot', type: 'bool', when: evm,
+    help: 'Lewati token yang ditandai GMGN tidak bisa dijual. Perlu API key GMGN di Pengaturan',
+    rec: { value: true, label: 'Nyala' },
+    why: 'Honeypot membiarkan kamu membeli tapi menolak penjualan, jadi uangmu terkunci. Tanpa API key GMGN, atau kalau GMGN belum punya datanya, token tetap diteruskan. Token yang baru beberapa menit sering belum dinilai GMGN.' },
+  { path: 'filters.max_tax_pct', label: 'Maks. pajak token (%)', type: 'number', step: 1, when: evm,
+    help: 'Lewati token yang pajak beli atau jualnya (data GMGN) lebih dari ini; 0 = mati',
+    rec: { value: 10, label: '10%' },
+    why: 'Pajak jual yang besar memakan hasil setiap kali kamu menjual token sisa, dan pajak 90%+ sama saja dengan honeypot. 10% sudah di atas pajak token yang wajar.' },
+  { path: 'filters.require_verified_contract', label: 'Wajib kontrak terverifikasi', type: 'bool', when: evm,
+    help: 'Lewati token yang kode kontraknya belum diverifikasi di explorer (data GMGN)',
+    rec: { value: true, label: 'Nyala' },
+    why: 'Kontrak yang tidak diverifikasi tidak bisa dibaca orang lain, jadi fungsi tersembunyi (cetak ulang, blokir penjualan) tidak bisa dicek. Token jebakan yang kita periksa memang belum terverifikasi. Efek samping: banyak token meme yang sah juga belum diverifikasi, jadi nyalakan untuk Ketat saja.' },
+  { path: 'filters.min_holders', label: 'Holder minimum', type: 'number', step: 10, when: evm,
+    help: 'Lewati token dengan holder lebih sedikit dari ini (data GMGN); 0 = mati',
+    rec: { value: 50, label: '50 holder' },
+    why: 'Token jebakan hanya dipegang segelintir dompet: token yang kita periksa punya 8 holder saat disalin. Holder bisa dipalsukan dengan dompet baru, jadi pasangkan dengan batas supply satu dompet.' },
   { path: 'filters.deployer_blacklist', label: 'Daftar hitam pembuat token (alamat, pisah koma)', type: 'list', when: evm,
     help: 'Token yang dicetak dari dompet ini tidak diikuti, berapa pun umurnya',
     rec: { label: 'Isi pembuat dari rug yang sudah terbukti' },

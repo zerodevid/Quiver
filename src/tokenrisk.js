@@ -37,6 +37,31 @@ function riskVerdict(info, f) {
   return null;
 }
 
+// Pure decision from the DexScreener token page and the GMGN profile (both optional, null = not read).
+// Only a PROVEN bad signal rejects: a missing source or an unreadable field never blocks an entry.
+//   ds   = Market#token(): { pairs: [{ websites, socials }] }
+//   gmgn = Market#gmgnToken(): { enabled, links, holderCount, security: { honeypot, openSource, buyTaxPct, sellTaxPct } }
+function profileVerdict({ ds, gmgn } = {}, f) {
+  const dsOk = !!(ds && !ds.error && ds.pairs?.length);
+  const gmOk = !!(gmgn && gmgn.enabled && !gmgn.error);
+  const sec = gmOk ? gmgn.security : null;
+  if (f.block_honeypot && sec?.honeypot === true) return 'GMGN menandai token ini honeypot (tidak bisa dijual)';
+  if (f.max_tax_pct > 0 && sec) {
+    const worst = Math.max(sec.buyTaxPct ?? 0, sec.sellTaxPct ?? 0);
+    if (worst > f.max_tax_pct) return `pajak token ${worst.toFixed(1)}% (> ${f.max_tax_pct}%)`;
+  }
+  if (f.require_verified_contract && sec?.openSource === false) return 'kontrak token belum terverifikasi di explorer (GMGN)';
+  if (f.min_holders > 0 && gmOk && gmgn.holderCount != null && gmgn.holderCount < f.min_holders) {
+    return `token baru punya ${gmgn.holderCount} holder (< ${f.min_holders})`;
+  }
+  if (f.require_socials && (dsOk || (gmOk && gmgn.links))) {
+    const l = gmOk ? gmgn.links || {} : {};
+    const dsLinks = dsOk && ds.pairs.some((p) => p.websites?.length || p.socials?.length);
+    if (!dsLinks && !(l.twitter || l.website || l.telegram || l.discord)) return 'token tidak punya website atau akun sosial (X/Telegram) di DexScreener maupun GMGN';
+  }
+  return null;
+}
+
 function createTokenRisk({ chain, cfg, fetchImpl = fetch, now = Date.now }) {
   const endpoints = alchemyEndpoints(chain, cfg);
   const memo = new Map();
@@ -143,4 +168,4 @@ function createTokenRisk({ chain, cfg, fetchImpl = fetch, now = Date.now }) {
   return { inspect, enabled: endpoints.length > 0 };
 }
 
-module.exports = { createTokenRisk, riskVerdict, memeTokens };
+module.exports = { createTokenRisk, riskVerdict, profileVerdict, memeTokens };

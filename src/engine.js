@@ -19,7 +19,7 @@ const { PaperBook } = require('./paper');
 const TARGET_RESEARCH_STALE_MS = 5 * 60_000;
 const { ensureAnchor } = require('./usd-anchor');
 const { rulesFor, planEntry, planExit, quoteToUsd, usdPerQuote } = require('./policy');
-const { createTokenRisk, riskVerdict, memeTokens } = require('./tokenrisk');
+const { createTokenRisk, riskVerdict, profileVerdict, memeTokens } = require('./tokenrisk');
 const { enumerateV4, livePositions } = require('./scout');
 const { Market } = require('./market');
 const m = require('./v3math');
@@ -671,6 +671,23 @@ class Engine {
     return null;
   }
 
+  // Token profile filters: website/social links (DexScreener, GMGN) and GMGN security (honeypot, tax,
+  // verified source, holders). A source that is missing or slow (past 6 seconds) never blocks an entry.
+  async tokenProfileVerdict(act, f) {
+    if (!this.market) this.market = new Market({ log: this.log, chain: this.chain });
+    const m = this.market;
+    const needGmgn = (f.block_honeypot || f.max_tax_pct > 0 || f.require_verified_contract || f.min_holders > 0 || f.require_socials) && m.gmgnEnabled();
+    for (const token of memeTokens(this.chain, act)) {
+      const [ds, gmgn] = await Promise.race([
+        Promise.all([f.require_socials ? m.token(token).catch(() => null) : null, needGmgn ? m.gmgnToken(token).catch(() => null) : null]),
+        new Promise((r) => setTimeout(() => r([null, null]), 6000)),
+      ]);
+      const why = profileVerdict({ ds, gmgn }, f);
+      if (why) return why;
+    }
+    return null;
+  }
+
   async handleEntry(act, rules) {
     // A stale entry signal is not copied. The cursor resumes from the stored block,
     // so after the VPS/RPC is down for an hour the scan catches up and finds the target's entry from
@@ -707,6 +724,10 @@ class Engine {
     const fr = rules.filters;
     if (fr.max_top_holder_pct > 0 || fr.max_deployer_tokens > 0 || fr.deployer_blacklist.length) {
       const why = await this.tokenRiskVerdict(act, fr);
+      if (why) return this.decide(act.id, 'skip', why);
+    }
+    if (fr.require_socials || fr.block_honeypot || fr.max_tax_pct > 0 || fr.require_verified_contract || fr.min_holders > 0) {
+      const why = await this.tokenProfileVerdict(act, fr);
       if (why) return this.decide(act.id, 'skip', why);
     }
     // Market filter: a pool whose liquidity or volume is thin does not produce fees

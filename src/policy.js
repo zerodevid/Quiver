@@ -143,6 +143,15 @@ const DEFAULTS = {
     max_deployer_tokens: 0,
     deployer_window_hours: 6,
     deployer_blacklist: [],
+    // Token profile filters (DexScreener links + GMGN security; unreadable = let through). false / 0 = off.
+    // require_socials: needs a website or social link. block_honeypot: GMGN says the token cannot be sold.
+    // max_tax_pct: buy/sell tax ceiling. require_verified_contract: source verified on the explorer.
+    // min_holders: GMGN holder count floor.
+    require_socials: false,
+    block_honeypot: false,
+    max_tax_pct: 0,
+    require_verified_contract: false,
+    min_holders: 0,
     // Market filters (DexScreener, read at entry). 0 = off. A pool not yet
     // indexed at all has no such figures — it is let through, the same as a
     // pool age that cannot be read.
@@ -194,6 +203,8 @@ const RULE_SPEC = {
     min_pool_age_minutes: ['num', 0, 1e7], min_target_quote_usd: ['num', 0, 1e9],
     max_top_holder_pct: ['num', 0, 100], max_deployer_tokens: ['int', 0, 100_000],
     deployer_window_hours: ['num', 0.1, 720], deployer_blacklist: ['list'],
+    require_socials: ['bool'], block_honeypot: ['bool'], max_tax_pct: ['num', 0, 100],
+    require_verified_contract: ['bool'], min_holders: ['int', 0, 1e9],
     min_liquidity_usd: ['num', 0, 1e12], min_volume24h_usd: ['num', 0, 1e12],
     max_open_positions: ['int', 0, 100_000], cooldown_seconds: ['num', 0, 1e7],
     venues: ['list'], max_fee_bps: ['int', 0, 1_000_000],
