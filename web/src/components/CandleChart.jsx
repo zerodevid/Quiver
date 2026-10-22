@@ -36,7 +36,7 @@ export function palette() {
   return {
     dark,
     up: cssColor('--success'), down: cssColor('--danger'), accent: cssColor('--accent'), warning: cssColor('--warning'),
-    muted: cssColor('--muted'), border: cssColor('--border'), fg: cssColor('--foreground'),
+    muted: cssColor('--muted'), border: cssColor('--border'), fg: cssColor('--foreground'), bg: cssColor('--surface'),
     text: dark ? '#9a9aa3' : '#6b6b76',
     // axis crosshair label: high contrast against the canvas, not a thin grey
     label: dark ? '#3a3a42' : '#4a4a55',

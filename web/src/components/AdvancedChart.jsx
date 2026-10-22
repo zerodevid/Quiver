@@ -53,7 +53,7 @@ registerOverlay({
     ];
     if (label) {
       figures.push({ type: 'text', ignoreEvent: true, attrs: { x: x1 + 4, y: y1 + 2, text: label, align: 'left', baseline: 'top' },
-        styles: { color: line, size: 10, family: 'ui-sans-serif, system-ui, sans-serif', paddingLeft: 0, paddingRight: 0, paddingTop: 0, paddingBottom: 0, backgroundColor: 'transparent' } });
+        styles: tagStyle(line) });
     }
     return figures;
   },
@@ -71,7 +71,7 @@ registerOverlay({
     const figures = [{ type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: 0, y: c.y }, { x: bounding.width, y: c.y }] }, styles: { style: 'dashed', color, size: 1 } }];
     if (label) {
       figures.push({ type: 'text', ignoreEvent: true, attrs: { x: 4, y: c.y - 2, text: label, align: 'left', baseline: 'bottom' },
-        styles: { color, size: 10, family: 'ui-sans-serif, system-ui, sans-serif', paddingLeft: 0, paddingRight: 0, paddingTop: 0, paddingBottom: 0, backgroundColor: 'transparent' } });
+        styles: tagStyle(color) });
     }
     return figures;
   },
@@ -87,6 +87,13 @@ export function supplyOf(pair, token) {
 
 const METRIC_KEY = 'lpcopy-chart-metric';
 const readMetric = () => { try { return localStorage.getItem(METRIC_KEY) === 'mc' ? 'mc' : 'price'; } catch { return 'price'; } };
+
+// Small text tag on a pill of the chart background, so a line crossing it does not strike
+// through the text (fibonacci levels, range and entry labels sit on top of each other often).
+const tagStyle = (color) => ({
+  color, size: 10, family: 'ui-sans-serif, system-ui, sans-serif', style: 'fill',
+  backgroundColor: withAlpha(PAL.bg, 0.85), borderRadius: 2, paddingLeft: 3, paddingRight: 3, paddingTop: 1, paddingBottom: 1,
+});
 
 // Theme colours for the custom overlays below. They are drawn by klinecharts outside React, so
 // the component keeps this in sync whenever the theme changes.
@@ -132,8 +139,16 @@ function robustRange(chart, defaultRange) {
   return { from: lo, to: hi };
 }
 
+// Axis labels without trailing zeros: 0.0{3}48 rather than 0.0{3}480000 (the precision is set
+// for the smallest price on the chart, so round ticks carry a long tail of zeros).
+const trimZeros = (value, precision) => {
+  const s = Number(value).toFixed(Math.max(0, precision));
+  return s.includes('.') ? s.replace(/\.?0+$/, '') : s;
+};
+
 registerYAxis({
   name: 'priceLin',
+  displayValueToText: trimZeros,
   createRange: ({ chart, defaultRange }) => {
     const r = robustRange(chart, defaultRange);
     if (!r) return defaultRange;
@@ -147,6 +162,7 @@ registerYAxis({
 const log10 = (v) => (v > 0 ? Math.log10(v) : 0);
 registerYAxis({
   name: 'logPrice',
+  displayValueToText: trimZeros,
   minSpan: (precision) => 0.05 * 10 ** -precision,
   valueToRealValue: log10,
   realValueToValue: (r) => 10 ** r,
@@ -198,6 +214,53 @@ registerOverlay({
       { type: 'text', ignoreEvent: true, attrs: { x: (x1 + x2) / 2, y: up ? y1 - 6 : y2 + 6, text, align: 'center', baseline: up ? 'bottom' : 'top' },
         styles: { style: 'stroke_fill', color: '#ffffff', backgroundColor: color, borderColor: color, size: 11, family: 'ui-sans-serif, system-ui, sans-serif', paddingLeft: 6, paddingRight: 6, paddingTop: 3, paddingBottom: 3, borderRadius: 4 } },
     ];
+  },
+});
+
+// Fibonacci retracement in the style of a charting terminal: every level has its own colour and
+// the band between two levels is filled with the colour of the farther one, so the zones read as a
+// rainbow. Point 1 = 1, point 2 = 0; the levels span the two points horizontally. Registered under
+// the built-in name so drawings saved before keep working and pick up the new look.
+const FIB_LEVELS = [
+  [0, '#787b86'], [0.236, '#f23645'], [0.382, '#ff9800'], [0.5, '#4caf50'], [0.618, '#089981'],
+  [0.786, '#00bcd4'], [1, '#787b86'], [1.618, '#2962ff'],
+];
+registerOverlay({
+  name: 'fibonacciLine', totalStep: 3,
+  needDefaultPointFigure: true, needDefaultXAxisFigure: true, needDefaultYAxisFigure: true,
+  createPointFigures: ({ coordinates, overlay, yAxis }) => {
+    const [a, b] = coordinates;
+    const [p1, p2] = overlay.points;
+    if (!a || !b || p1?.value == null || p2?.value == null) return [];
+    const x1 = Math.min(a.x, b.x), x2 = Math.max(a.x, b.x);
+    const width = Math.max(1, x2 - x1);
+    const diff = p1.value - p2.value;
+    // through the axis so a log scale puts every level at its real price
+    const yOf = (value, pct) => {
+      const y = yAxis?.convertToPixel?.(value);
+      return Number.isFinite(y) ? y : b.y + (a.y - b.y) * pct;
+    };
+    // an extension below zero has no price (and a log axis would put it far off the pane)
+    const levels = FIB_LEVELS.map(([pct, color]) => {
+      const value = p2.value + diff * pct;
+      return { pct, color, value, y: yOf(value, pct) };
+    }).filter((l) => l.value > 0);
+    const figures = [];
+    for (let i = 1; i < levels.length; i++) {
+      const lo = levels[i - 1], hi = levels[i];
+      figures.push({ type: 'rect', ignoreEvent: true, attrs: { x: x1, y: Math.min(lo.y, hi.y), width, height: Math.max(1, Math.abs(hi.y - lo.y)) },
+        styles: { style: 'fill', color: withAlpha(hi.color, 0.08) } });
+    }
+    // labels left of the levels, or just inside them when the drawing starts at the pane's edge
+    const outside = x1 > 110;
+    for (const l of levels) {
+      figures.push({ type: 'line', attrs: { coordinates: [{ x: x1, y: l.y }, { x: x2, y: l.y }] }, styles: { style: 'solid', color: l.color, size: 1 } });
+      figures.push({ type: 'text', ignoreEvent: true,
+        attrs: { x: outside ? x1 - 4 : Math.max(0, x1) + 4, y: outside ? l.y : l.y - 2, text: `${l.pct} (${fmtPrice(l.value)})`, align: outside ? 'right' : 'left', baseline: outside ? 'middle' : 'bottom' },
+        styles: tagStyle(l.color) });
+    }
+    figures.push({ type: 'line', ignoreEvent: true, attrs: { coordinates: [a, b] }, styles: { style: 'dashed', color: withAlpha('#787b86', 0.8), size: 1, dashedValue: [4, 4] } });
+    return figures;
   },
 });
 
