@@ -96,8 +96,18 @@ export function price(p) {
   if (p >= 1e9) return p.toExponential(2).replace('.', loc() === 'id-ID' ? ',' : '.');
   if (p >= 1e6) return p.toLocaleString(loc(), { maximumFractionDigits: 0 });
   if (p >= 1) return p.toLocaleString(loc(), { maximumSignificantDigits: 6 });
-  if (p >= 1e-7) return p.toLocaleString(loc(), { maximumSignificantDigits: 3 });
-  return p.toExponential(2).replace('.', loc() === 'id-ID' ? ',' : '.');
+  if (p >= 1e-4) return p.toLocaleString(loc(), { maximumSignificantDigits: 3 });
+  return tinyPrice(p);
+}
+
+const SUB = '₀₁₂₃₄₅₆₇₈₉';
+// Below 0.0001 the zeros are counted in a subscript, as DexScreener does: 0.0000000698 -> 0.0₇698.
+// Easier to read than 6.98e-8 and still exact about the magnitude.
+function tinyPrice(p) {
+  const [m, e] = p.toExponential(2).split('e');
+  const zeros = -Number(e) - 1;
+  const digits = m.replace('.', '').replace(/0+$/, '') || '0';
+  return `0${loc() === 'id-ID' ? ',' : '.'}0${String(zeros).split('').map((d) => SUB[d]).join('')}${digits}`;
 }
 
 // Token amount: from the smallest unit on chain to the display unit, then formatted
