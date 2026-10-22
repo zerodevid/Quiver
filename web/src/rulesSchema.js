@@ -88,10 +88,6 @@ export const SCHEMA = [
     { path: 'filters.max_open_positions', label: 'Maksimum posisi terbuka', type: 'number', step: 1 },
     { path: 'filters.cooldown_seconds', label: 'Jeda antar salinan di pool sama (detik)', type: 'number', step: 5 },
     { path: 'filters.min_pool_age_minutes', label: 'Umur pool minimum (menit)', type: 'number', step: 5, help: 'Pool yang baru dibuat sering jebakan; 0 = mati' },
-    { path: 'filters.max_top_holder_pct', label: 'Maks. supply satu dompet (%)', type: 'number', step: 5, help: 'Lewati token yang satu dompetnya (bukan pool/burn) memegang lebih dari ini. Token baru sering masih dipegang pembuatnya; 0 = mati' },
-    { path: 'filters.max_deployer_tokens', label: 'Maks. token baru per pembuat', type: 'number', step: 1, help: 'Lewati token dari pembuat yang sudah mencetak sebanyak ini ke dompetnya dalam jendela waktu di bawah (pabrik token); 0 = mati' },
-    { path: 'filters.deployer_window_hours', label: 'Jendela waktu pembuat (jam)', type: 'number', step: 1, when: (r) => r.filters.max_deployer_tokens > 0 },
-    { path: 'filters.deployer_blacklist', label: 'Daftar hitam pembuat token (alamat, pisah koma)', type: 'list', help: 'Token yang dicetak dari dompet ini tidak diikuti, berapa pun umurnya' },
     { path: 'filters.min_liquidity_usd', label: 'Likuiditas pool minimum (USD)', type: 'number', step: 1000, help: 'Pool tipis sulit ditutup tanpa rugi; 0 = mati' },
     { path: 'filters.min_volume24h_usd', label: 'Volume 24 jam minimum (USD)', type: 'number', step: 1000, help: 'Tanpa volume tidak ada fee, seberapa pun betulnya rentangnya; 0 = mati' },
     { path: 'filters.max_fee_bps', label: 'Batas fee pool', type: 'number', step: 1000, help: 'Dalam satuan fee Uniswap: 3000 = 0,3%, 100000 = 10%' },
@@ -101,6 +97,97 @@ export const SCHEMA = [
     { path: 'filters.token_whitelist', label: 'Daftar putih token (kosong = semua)', type: 'list' },
   ] },
 ];
+
+
+// ---- Anti rug & scam ----------------------------------------------------------------------
+// A section that gathers every guard against bait-and-dump pools. Fields from other groups are
+// shown again here through `dup`: it copies the original definition (label, help, options) and
+// only adds a recommendation. The form reads and writes by `path`, so a duplicate is the SAME stored
+// value as the original — editing it in either place changes both.
+const findField = (path) => SCHEMA.flatMap((g) => g.fields).find((f) => f.path === path);
+const dup = (path, extra) => ({ ...findField(path), ...extra });
+const evm = () => !isSolana();
+
+export const ANTI_RUG_GUIDE = {
+  intro: 'Penipu memakai pola yang berulang: token baru dibuat, uang pancingan dipasang supaya pool tampak ramai dan "dipercaya", lalu pembuatnya menjual semua token ke likuiditas yang ikut masuk. Bagian ini mengumpulkan semua penjaga untuk pola itu di satu tempat. Kolom yang sama juga ada di bagian lain dan nilainya satu: mengubah di sini berarti mengubah di sana.',
+  patterns: [
+    ['Bid satu sisi di bawah harga', 'Kamu memasang USDG di bawah harga. Pembuat menjual seluruh token ke dalamnya, jadi USDG-mu berubah menjadi token yang nilainya jatuh ke nol.'],
+    ['Pabrik token', 'Satu dompet membuat banyak token berturut-turut dan mengulang jebakan yang sama di tiap token, sering dengan dompet "pemimpin" yang ditiru bot lain.'],
+    ['Supply terkumpul di satu dompet', 'Harga dan market cap hanyalah harga terakhir di satu pool tipis dikali supply. Kalau satu dompet memegang mayoritas, satu penjualan menjatuhkannya.'],
+    ['Pool baru sekali', 'Jebakan jalan di menit-menit pertama, sebelum ada riwayat atau pengawasan.'],
+  ],
+  steps: [
+    'Pilih preset di bawah (Seimbang atau Ketat), lalu sesuaikan kolomnya.',
+    'Mulai dengan modal per posisi dan anggaran harian kecil sampai targetnya terbukti.',
+    'Setiap kali rugi karena satu token, cari pembuatnya di explorer (pengirim transaksi cetak pertama) dan masukkan ke daftar hitam pembuat.',
+  ],
+  limits: [
+    'Tidak ada filter yang menjamin aman. Dump bisa terjadi dalam satu blok, lebih cepat dari stop loss.',
+    'Pengecekan pembuat dan pemegang token hanya untuk jaringan EVM dan memakai Alchemy. Kalau datanya tidak terbaca, entri tetap diteruskan.',
+    'Filter yang terlalu ketat melewatkan entri yang sah. Mulai dari Seimbang, naikkan kalau masih kena.',
+  ],
+};
+
+// A preset only writes the anti-rug filters; sizing and budgets are left to the user.
+export const ANTI_RUG_PRESETS = [
+  { id: 'off', label: 'Mati', desc: 'Semua penjaga di bagian ini dimatikan, perilaku seperti sebelum ada bagian ini.', values: {
+    'filters.min_pool_age_minutes': 0, 'onesided.policy': 'copy', 'filters.max_deployer_tokens': 0, 'filters.max_top_holder_pct': 0,
+    'filters.min_liquidity_usd': 0, 'filters.min_volume24h_usd': 0, 'filters.allow_hooks': false, 'filters.allow_no_quote': false } },
+  { id: 'balanced', label: 'Seimbang', desc: 'Menolak jebakan yang paling jelas dan tetap menerima sebagian pool baru.', values: {
+    'filters.min_pool_age_minutes': 30, 'onesided.policy': 'copy', 'onesided.max_quote_usd': 50, 'filters.max_deployer_tokens': 5, 'filters.deployer_window_hours': 6,
+    'filters.max_top_holder_pct': 60, 'filters.min_liquidity_usd': 5000, 'filters.min_volume24h_usd': 10000, 'filters.allow_hooks': false, 'filters.allow_no_quote': false } },
+  { id: 'strict', label: 'Ketat', desc: 'Disarankan untuk target yang sering masuk ke token baru. Lebih banyak entri sah ikut terlewat.', values: {
+    'filters.min_pool_age_minutes': 60, 'onesided.policy': 'skip', 'filters.max_deployer_tokens': 3, 'filters.deployer_window_hours': 6,
+    'filters.max_top_holder_pct': 40, 'filters.min_liquidity_usd': 10000, 'filters.min_volume24h_usd': 20000, 'filters.allow_hooks': false, 'filters.allow_no_quote': false } },
+];
+
+SCHEMA.push({ group: 'Anti rug & scam', icon: 'ti-shield-exclamation', guide: ANTI_RUG_GUIDE, presets: ANTI_RUG_PRESETS, fields: [
+  dup('filters.min_pool_age_minutes', {
+    rec: { value: 60, label: '60 menit' },
+    why: 'Jebakan paling sering jalan di menit-menit pertama: pool yang jadi sasaran dalam satu kasus berumur sekitar 2 menit saat target masuk. Di data kita juga, pool di bawah 1 jam adalah penyebab rugi, bukan volumenya. Harga yang dibayar: kamu melewatkan fee di jam pertama pool.' }),
+  dup('onesided.policy', {
+    rec: { value: 'skip', label: 'Lewati' },
+    why: 'Bentuk jebakannya adalah USDG satu sisi di bawah harga: kalau harga dijatuhkan melewati rentang, semua USDG berubah jadi token yang jatuh. Dengan Lewati, bid seperti ini tidak pernah disalin. Kalau tetap mau Salin, batasi nominalnya di kolom di bawah.' }),
+  dup('onesided.max_quote_usd', {
+    rec: { value: 25, label: '$25' },
+    why: 'Membatasi kerugian per jebakan satu sisi. Hanya berlaku kalau kebijakan di atas bukan Lewati.' }),
+  { path: 'filters.max_deployer_tokens', label: 'Maks. token baru per pembuat', type: 'number', step: 1, when: evm,
+    help: 'Lewati token dari pembuat yang sudah mencetak sebanyak ini ke dompetnya dalam jendela waktu di bawah (pabrik token); 0 = mati',
+    rec: { value: 3, label: '3 token' },
+    why: 'Pembuat yang sah jarang mencetak lebih dari 1-2 token dalam beberapa jam; pabrik jebakan mencetak belasan (kasus yang kita periksa: 9 dalam 6 jam). Yang dihitung hanya cetakan langsung ke dompet pembuat, jadi launchpad yang mencetak lewat kontrak pabrik tidak ikut terblokir.' },
+  { path: 'filters.deployer_window_hours', label: 'Jendela waktu pembuat (jam)', type: 'number', step: 1, when: (r) => evm() && r.filters.max_deployer_tokens > 0,
+    rec: { value: 6, label: '6 jam' },
+    why: 'Cukup panjang untuk menangkap pabrik yang mencetak token tiap 7-15 menit, cukup pendek supaya pembuat sah yang aktif sepanjang minggu tidak terhitung.' },
+  { path: 'filters.max_top_holder_pct', label: 'Maks. supply satu dompet (%)', type: 'number', step: 5, when: evm,
+    help: 'Lewati token yang satu dompetnya (bukan pool/burn) memegang lebih dari ini. Token baru sering masih dipegang pembuatnya; 0 = mati',
+    rec: { value: 40, label: '40%' },
+    why: 'Satu dompet dengan 40% atau lebih bisa menjatuhkan harga sendirian. Di kasus yang kita periksa, pembuat memegang hampir 100% saat posisi disalin, lalu satu dompet lain mengambil 64,6%. Efek samping: token yang baru diluncurkan dan masih dipegang pembuatnya juga terlewat, dan pengecekan token lama bisa menambah beberapa detik.' },
+  { path: 'filters.deployer_blacklist', label: 'Daftar hitam pembuat token (alamat, pisah koma)', type: 'list', when: evm,
+    help: 'Token yang dicetak dari dompet ini tidak diikuti, berapa pun umurnya',
+    rec: { label: 'Isi pembuat dari rug yang sudah terbukti' },
+    why: 'Pabrik token terus membuat token baru, jadi daftar hitam token tidak berguna melawannya; daftar hitam pembuat tetap menolak semua token berikutnya. Cari pembuatnya di explorer: pengirim transaksi cetak pertama token.' },
+  dup('filters.token_blacklist', {
+    rec: { label: 'Isi token yang sudah terbukti rug' },
+    why: 'Mencegah salinan ulang token yang sudah kamu ketahui buruk. Hanya menolak token itu saja, bukan token baru dari pembuat yang sama.' }),
+  dup('filters.min_liquidity_usd', {
+    rec: { value: 10000, label: '$10.000' },
+    why: 'Pool tipis sulit ditutup tanpa rugi dan harganya mudah digerakkan beberapa ribu dolar. Catatan: pool yang belum terindeks DexScreener tidak terkena filter ini, jadi pasangkan dengan umur pool.' }),
+  dup('filters.min_volume24h_usd', {
+    rec: { value: 20000, label: '$20.000' },
+    why: 'Volume yang nyata menandakan pool dipakai orang lain. Volume bisa dipalsukan dengan wash trading, jadi ini pelengkap, bukan pengganti umur pool.' }),
+  dup('filters.allow_hooks', {
+    rec: { value: false, label: 'Mati' },
+    why: 'Hook v4 bisa menahan atau memotong penarikan. Dengan Mati, pool berhook berisiko ditolak dan hook pajak biasa tetap diikuti.' }),
+  dup('filters.allow_no_quote', {
+    rec: { value: false, label: 'Mati' },
+    why: 'Pool dua memecoin tidak punya jalan keluar ke USDG/ETH, nilainya dihitung lewat harga DexScreener yang bisa dimanipulasi, dan kamu tidak punya aset stabil untuk keluar.' }),
+  dup('sizing.max_quote_per_position_usd', {
+    rec: { value: 100, label: '$100' },
+    why: 'Batas atas kerugian satu jebakan. Mulai kecil sampai targetnya terbukti, lalu naikkan.' }),
+  dup('sizing.daily_budget_usd', {
+    rec: { value: 300, label: '$300 (sekitar 3 kali batas per posisi)' },
+    why: 'Pabrik jebakan mengulang pola tiap beberapa menit. Anggaran harian membatasi total uang yang bisa terjebak dalam satu hari walau filter lain lolos.' }),
+] });
 
 export const RULE_HELP = {
   "sizing.mode": "Tentukan modal awal salinan: likuiditas sama, persentase, kelipatan, atau nominal tetap. Hasilnya tetap dibatasi batas per posisi, eksposur, anggaran harian, dan saldo.",
