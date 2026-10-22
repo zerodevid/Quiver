@@ -889,9 +889,174 @@ function monthSvg(data, { hideAmounts = false } = {}) {
   });
 }
 
+// ---- PnL timeline card ------------------------------------------------------------------
+// The whole-portfolio card as a story of the window: cumulative realized PnL as a stepped
+// line, one step per close in close order, the coin's logo on the steps that fit, the biggest
+// wins called out above the line and the biggest losses below it, and the window's figures
+// in a row at the bottom (volume, win rate, fees, best win, positions, average hold).
+// Header: logo + period on the left, the window's PnL big on the right.
+function timelineGeometry(size) {
+  const { W, H } = SIZES[size] || SIZES.wide;
+  if (size === 'story') {
+    return { W, H, k: 1.5, logoY: 190, metaY: 290, labelY: 400, bigY: 530, maxBig: 150, stacked: true,
+      chart: { y0: 600, y1: 1440 }, rows: { up: 4, down: 3 }, stats: { y: 1500, cols: 3, rowH: 130 } };
+  }
+  if (size === 'square') {
+    return { W, H, k: 1.3, logoY: 52, metaY: 140, labelY: 210, bigY: 310, maxBig: 120, stacked: true,
+      chart: { y0: 350, y1: 850 }, rows: { up: 3, down: 2 }, stats: { y: 880, cols: 3, rowH: 96 } };
+  }
+  return { W, H, k: 1, logoY: 36, metaY: 98, labelY: 52, bigY: 116, maxBig: 66,
+    chart: { y0: 140, y1: 540 }, rows: { up: 2, down: 2 }, stats: { y: 552, cols: 6 } };
+}
+const shortUsd = (v) => (v == null ? '—' : cellUsd(Math.abs(v)).replace(/^[+−]/, ''));
+const signedUsd = (v) => (v > 0.005 ? '+' : '') + usd(v);
+const periodLabel = (range) => ({ '24h': tr('PnL 24 jam terakhir'), '7d': tr('PnL 7 hari terakhir'), '30d': tr('PnL 30 hari terakhir') })[range] || tr('PnL sepanjang waktu');
+
+// Placement of the timeline, shared with nothing else but kept apart from the SVG so the
+// geometry reads on its own: x/y of every step, the logo markers that fit without overlapping,
+// and the callouts packed into rows above (wins) and below (losses) the plot.
+function timelineLayout(data, hideAmounts) {
+  const { W, k, chart, rows } = G;
+  const x0 = PAD + 6 * k, x1 = W - PAD - 6 * k;
+  const rowH = 36 * k, padY = 14 * k;
+  const top = chart.y0 + rows.up * rowH + padY, bottom = chart.y1 - rows.down * rowH - padY;
+  const pts = data.points, n = pts.length;
+  let run = 0;
+  const cum = pts.map((p) => (run += p.v));
+  const lo = Math.min(0, ...cum), hi = Math.max(0, ...cum), spanV = hi - lo || 1;
+  const yOf = (v) => bottom - ((v - lo) / spanV) * (bottom - top);
+  // Index spacing, not time: a burst of closes in one hour still gets room for its steps.
+  const xOf = (i) => x0 + ((i + 1) / n) * (x1 - x0);
+  const steps = pts.map((p, i) => ({ ...p, i, x: xOf(i), y: yOf(cum[i]), cum: cum[i] }));
+  const label = (p) => (hideAmounts ? (p.pct == null ? HIDDEN : pct(p.pct, 1)) : signedUsd(p.v));
+  const pillSize = 16 * k, iconR = 10 * k, pillH = 28 * k;
+  const pillW = (s) => measure(s, pillSize, 700) + iconR * 2 + 26 * k;
+  // Callouts: biggest first, each into the first row where it does not touch a neighbour.
+  const place = (list, nRows, up, reserved = null) => {
+    const taken = Array.from({ length: nRows }, (_, i) => (i === 0 && reserved ? [reserved] : [])), out = [];
+    for (const p of list) {
+      const s = label(p), w = pillW(s);
+      const left = Math.min(Math.max(p.x - w / 2, x0 - 6 * k), x1 + 6 * k - w);
+      const row = taken.findIndex((r) => r.every(([a, b]) => left + w + 8 * k < a || left > b + 8 * k));
+      if (row < 0) continue;
+      taken[row].push([left, left + w]);
+      const cy = up ? chart.y0 + row * rowH + pillH / 2 : chart.y1 - row * rowH - pillH / 2;
+      out.push({ p, s, w, left, cy, up });
+    }
+    return out;
+  };
+  const last = steps[n - 1];
+  const final = { p: { ...last, v: data.total, pct: data.stats.pct }, s: hideAmounts ? (data.stats.pct == null ? HIDDEN : pct(data.stats.pct, 1)) : signedUsd(data.total) };
+  // The final total owns the top row's right end; wins fill around it.
+  final.w = measure(final.s, pillSize * 1.15, 700) + 30 * k;
+  final.left = x1 + 6 * k - final.w; final.cy = chart.y0 + pillH / 2;
+  const wins = steps.filter((p) => p.v > 0.01).sort((a, b) => b.v - a.v).slice(0, 14);
+  const losses = steps.filter((p) => p.v < -0.01).sort((a, b) => a.v - b.v).slice(0, 10);
+  const ups = place(wins, rows.up, true, [final.left, final.left + final.w]);
+  const downs = place(losses, rows.down, false);
+  // Logo markers: callouts first, then the biggest moves, skipping any that would overlap.
+  const r = 10 * k, seen = [];
+  const want = [last, ...ups.map((c) => c.p), ...downs.map((c) => c.p), ...[...steps].sort((a, b) => Math.abs(b.v) - Math.abs(a.v))];
+  for (const p of want) {
+    if (seen.length >= 60 || seen.includes(p)) continue;
+    const s = steps[p.i];
+    if (seen.some((q) => Math.hypot(q.x - s.x, q.y - s.y) < r * 2 + 3 * k)) continue;
+    seen.push(s);
+  }
+  return { x0, x1, top, bottom, yOf, steps, ups, downs, final, markers: seen, r, pillSize, iconR, pillH };
+}
+
+function timelineSvg(data, { hideAmounts = false, icons = new Map() } = {}) {
+  const { W, H, k, chart } = G;
+  const tint = sign(data.total), L = timelineLayout(data, hideAmounts);
+  const stops = T.bg.map((c, i) => `<stop offset="${(i / (T.bg.length - 1)).toFixed(2)}" stop-color="${c}"/>`).join('');
+  const zeroY = L.yOf(0), x0 = L.x0;
+  // Stepped line: along at the old total, then up/down to the new one at each close.
+  let d = `M${x0.toFixed(1)} ${zeroY.toFixed(1)}`;
+  for (const s of L.steps) d += `H${s.x.toFixed(1)}V${s.y.toFixed(1)}`;
+  const last = L.steps[L.steps.length - 1];
+  const area = `${d}V${zeroY.toFixed(1)}H${x0.toFixed(1)}Z`;
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${T.font || BASE_FONT.family}">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">${stops}</linearGradient>
+  <linearGradient id="area" x1="0" y1="${L.top}" x2="0" y2="${zeroY}" gradientUnits="userSpaceOnUse"><stop stop-color="${tint}" stop-opacity="${(T.glow * 1.6).toFixed(2)}"/><stop offset="1" stop-color="${tint}" stop-opacity="0.02"/></linearGradient>
+  <radialGradient id="glow" cx="${W * 0.75}" cy="${chart.y0}" r="${W * 0.6}" gradientUnits="userSpaceOnUse"><stop stop-color="${tint}" stop-opacity="${(T.glow * 0.7).toFixed(2)}"/><stop offset="1" stop-color="${tint}" stop-opacity="0"/></radialGradient>
+  <pattern id="dots" width="${28 * k}" height="${28 * k}" patternUnits="userSpaceOnUse"><circle cx="${14 * k}" cy="${14 * k}" r="${1.1 * k}" fill="${T.text}" fill-opacity="0.07"/></pattern>
+  <filter id="soft" x="-20%" y="-40%" width="140%" height="180%"><feGaussianBlur stdDeviation="${14 * k}"/></filter>
+</defs>
+<rect width="${W}" height="${H}" fill="url(#bg)"/><rect width="${W}" height="${H}" fill="url(#dots)"/><rect width="${W}" height="${H}" fill="url(#glow)"/>
+<svg x="${PAD}" y="${G.logoY}" width="${154 * k}" height="${28 * k}" viewBox="0 0 264 48">${MARK.replace('fill="#fff"', `fill="${T.logo || T.text}"`)}</svg>`;
+  // Period and chain under the logo.
+  const meta = `${chainName()} · ${fmtDayOnly(data.from)} – ${fmtDayOnly(data.to)}`;
+  out += fitted(meta, PAD, G.metaY, G.stacked ? W - PAD * 2 : W * 0.45, { size: 15 * k, color: T.faint });
+  // Big figure: right-aligned beside the logo (wide), or on its own line (square/story).
+  const big = hideAmounts ? (data.stats.pct == null ? HIDDEN : pct(data.stats.pct, 2)) : signedUsd(data.total);
+  const anchor = G.stacked ? 'start' : 'end', bx = G.stacked ? PAD - 3 : W - PAD;
+  const bSize = Math.min(G.maxBig, (W * (G.stacked ? 0.8 : 0.5)) / Math.max(measure(big, 1, 700), 1));
+  out += caps(periodLabel(data.range), G.stacked ? PAD : W - PAD, G.labelY, { size: 15 * k, ls: 0.2, anchor }).svg
+    + `<g filter="url(#soft)" opacity="0.5">${txt(big, bx, G.bigY, { size: bSize, weight: 700, color: tint, anchor })}</g>`
+    + txt(big, bx, G.bigY, { size: bSize, weight: 700, color: tint, anchor });
+  if (!hideAmounts && data.stats.pct != null) {
+    // Return on the capital put in, as a pill beside the figure.
+    const pz = 18 * k, s = pct(data.stats.pct, 2), pw = measure(s, pz, 600) + 24 * k, ph = 34 * k, bw = measure(big, bSize, 700);
+    const px = G.stacked ? PAD + bw + 18 * k : W - PAD - bw - 18 * k - pw, py = G.bigY - bSize * 0.36 - ph / 2;
+    out += `<rect x="${px.toFixed(1)}" y="${py.toFixed(1)}" width="${pw.toFixed(1)}" height="${ph}" rx="${rx(ph / 2)}" fill="${rgba(tint, 0.14)}" stroke="${rgba(tint, 0.35)}"/>`
+      + txt(s, px + pw / 2, py + ph / 2, { size: pz, weight: 600, color: tint, anchor: 'middle', base: 'middle' });
+  }
+  // Leader lines from each callout to its step, behind everything else in the chart.
+  const lead = (c) => {
+    const s = L.steps[c.p.i], ya = c.up ? c.cy + L.pillH / 2 : c.cy - L.pillH / 2;
+    return `<line x1="${s.x.toFixed(1)}" y1="${ya.toFixed(1)}" x2="${s.x.toFixed(1)}" y2="${s.y.toFixed(1)}" stroke="${T.text}" stroke-opacity="0.18" stroke-dasharray="${3 * k} ${4 * k}"/>`;
+  };
+  out += [...L.ups, ...L.downs].map(lead).join('');
+  out += `<line x1="${x0}" y1="${zeroY.toFixed(1)}" x2="${L.x1}" y2="${zeroY.toFixed(1)}" stroke="${T.text}" stroke-opacity="0.22" stroke-dasharray="${5 * k} ${6 * k}"/>`
+    + `<line x1="${last.x.toFixed(1)}" y1="${(L.final.cy + L.pillH / 2).toFixed(1)}" x2="${last.x.toFixed(1)}" y2="${chart.y1}" stroke="${T.text}" stroke-opacity="0.4" stroke-dasharray="${4 * k} ${5 * k}"/>`
+    + `<path d="${area}" fill="url(#area)"/>`
+    + `<path d="${d}" fill="none" stroke="${T.text}" stroke-opacity="0.85" stroke-width="${2.2 * k}" stroke-linejoin="${T.sq ? 'miter' : 'round'}"/>`;
+  // Logo markers; a win gets a light ring, a loss a ring in the loss colour.
+  L.markers.forEach((s, i) => {
+    out += token(icons.get?.(s.address), { address: s.address, symbol: s.symbol }, s.x, s.y, L.r, `tm${i}`)
+      + `<circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${L.r}" fill="none" stroke="${s.v < -0.01 ? T.down : T.text}" stroke-opacity="0.9" stroke-width="${1.6 * k}"/>`;
+  });
+  // Callout pills: wins light with dark text, losses dark with a thin border.
+  const pillOf = (c, j) => {
+    const { pillH: h, iconR: r, pillSize: z } = L, x = c.left, y = c.cy - h / 2;
+    const fill = c.up ? T.text : T.bg[T.bg.length - 1], color = c.up ? T.bg[T.bg.length - 1] : T.text;
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${c.w.toFixed(1)}" height="${h}" rx="${rx(8 * k)}" fill="${fill}"${c.up ? '' : ` stroke="${T.line}" stroke-width="1.5"`}/>`
+      + token(icons.get?.(c.p.address), { address: c.p.address, symbol: c.p.symbol }, x + 8 * k + r, c.cy, r, `tc${c.up ? 'u' : 'd'}${j}`)
+      + txt(c.s, x + 16 * k + r * 2, c.cy, { size: z, weight: 700, color, base: 'middle' });
+  };
+  out += L.ups.map(pillOf).join('') + L.downs.map(pillOf).join('');
+  // The final total: a larger pill at the end of the line, in the PnL colour.
+  const f = L.final, fz = L.pillSize * 1.15, fh = L.pillH * 1.15;
+  out += `<rect x="${f.left.toFixed(1)}" y="${(f.cy - fh / 2).toFixed(1)}" width="${f.w.toFixed(1)}" height="${fh.toFixed(1)}" rx="${rx(9 * k)}" fill="${tint}"/>`
+    + txt(f.s, f.left + f.w / 2, f.cy, { size: fz, weight: 800, color: T.bg[T.bg.length - 1], anchor: 'middle', base: 'middle' })
+    + `<circle cx="${last.x.toFixed(1)}" cy="${last.y.toFixed(1)}" r="${L.r + 5 * k}" fill="none" stroke="${tint}" stroke-width="${2 * k}"/>`;
+  // Footer figures.
+  const st = data.stats, wr = st.winRatePct;
+  const tiles = [
+    [tr('Volume'), hideAmounts ? HIDDEN : shortUsd(st.volume)],
+    [tr('Win rate'), wr == null ? '—' : `${num(wr, 0)}%`, wr == null ? null : wr >= 50 ? T.up : T.down],
+    [tr('Fee'), hideAmounts ? HIDDEN : shortUsd(st.fees), T.up],
+    [tr('Untung terbaik'), hideAmounts ? HIDDEN : signedUsd(st.best), sign(st.best)],
+    [tr('Posisi'), num(st.count)],
+    [tr('Rata-rata tahan'), age(st.avgHoldHours)],
+  ];
+  const S2 = G.stats, cols = S2.cols, cw = (W - PAD * 2) / cols, rowH = S2.rowH || 0;
+  out += `<line x1="${PAD}" y1="${S2.y}" x2="${W - PAD}" y2="${S2.y}" stroke="${T.line}"/>`;
+  tiles.forEach(([l, v, color], i) => {
+    const sx = PAD + (i % cols) * cw, sy = S2.y + Math.floor(i / cols) * rowH;
+    const ax = cols === 6 && i === cols - 1 ? sx + cw : sx, an = cols === 6 && i === cols - 1 ? 'end' : 'start';
+    out += caps(fit(l, cw - 16 * k, 12 * k, 600), ax, sy + 26 * k, { size: 12 * k, ls: 0.16, anchor: an, color: T.faint }).svg
+      + txt(fit(v, cw - 16 * k, 24 * k, 700), ax, sy + 56 * k, { size: 24 * k, weight: 700, color: color || T.text, anchor: an });
+  });
+  return out + '\n</svg>';
+}
+
 // Pick the card and draw. lang 'id'|'en'; timeZone an IANA name (e.g. 'Asia/Jakarta');
 // size/theme/layout one of the SIZES/THEMES/LAYOUTS keys (unknown ones fall back to the default).
-const LAYOUTS = { spotlight: { label: 'Sorot' }, classic: { label: 'Klasik' } };
+// timeline only exists for the whole-portfolio card; any other card falls back to spotlight.
+const LAYOUTS = { spotlight: { label: 'Sorot' }, classic: { label: 'Klasik' }, timeline: { label: 'Jejak' } };
 const sizeKey = (s) => (SIZES[s] ? s : 'wide');
 const themeKey = (t) => (THEMES[t] ? t : 'dark');
 const layoutKey = (l) => (LAYOUTS[l] ? l : 'spotlight');
@@ -900,11 +1065,13 @@ function svgOf(kind, data, opts = {}) {
     tz = opts.timeZone || null;
     fxNow = opts.fx?.rate > 0 && opts.fx.currency ? { currency: opts.fx.currency, rate: opts.fx.rate } : null;
     T = THEMES[themeKey(opts.theme)];
-    const spot = layoutKey(opts.layout) === 'spotlight';
+    const lay = layoutKey(opts.layout), timeline = kind === 'total' && lay === 'timeline';
+    const spot = lay === 'spotlight' || (lay === 'timeline' && !timeline);
     // The month card has one composition only (the calendar is the picture).
-    G = kind === 'month' ? monthGeometry(sizeKey(opts.size)) : spot ? spotGeometry(sizeKey(opts.size)) : geometry(sizeKey(opts.size));
+    G = timeline ? timelineGeometry(sizeKey(opts.size)) : kind === 'month' ? monthGeometry(sizeKey(opts.size)) : spot ? spotGeometry(sizeKey(opts.size)) : geometry(sizeKey(opts.size));
     chainNow = CHAIN_BADGE[opts.chain?.key] || { label: opts.chain?.label || CHAIN_BADGE.robinhood.label, href: '' };
     try {
+      if (timeline) return timelineSvg(data, opts);
       if (kind === 'position') return (spot ? positionSpot : positionSvg)(data, opts);
       if (kind === 'total') return (spot ? totalSpot : totalSvg)(data, opts);
       if (kind === 'daily') return (spot ? dailySpot : dailySvg)(data, opts);
@@ -944,6 +1111,7 @@ function caption(kind, data, lang, fx = null) {
 }
 function captionText(kind, data) {
   if (kind === 'position') return `${data.symbol0 || '?'} / ${data.symbol1 || '?'} ${data.pnlPct == null ? '' : pct(data.pnlPct, 2)} · Quiver`;
+  if (kind === 'total' && data.points) return `${periodLabel(data.range)} ${signedUsd(data.total)} · Quiver`;
   if (kind === 'total') { const { net, pnl } = totalPnl(data.now); return `${tr(net ? 'PnL bersih' : 'Total PnL')} ${usd(pnl)} · Quiver`; }
   if (kind === 'month') return `PnL ${data.month}: ${usd(Object.entries(data.daily).filter(([d]) => d.startsWith(data.month)).reduce((a, [, v]) => a + v, 0))} · Quiver`;
   return `PnL ${data.day}: ${usd(data.total ?? data.rows.reduce((a, r) => a + r.pnl, 0))} · Quiver`;

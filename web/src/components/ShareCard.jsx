@@ -10,12 +10,15 @@
 //   totalCard(d)     kind 'total'    — the whole portfolio
 //   dailyCard(d)     kind 'daily'    — a single day in the PnL calendar
 //   monthCard(d)     kind 'month'    — one month of the PnL calendar as a grid
+// The whole-portfolio card has a third layout, timeline: cumulative PnL of the window as a
+// stepped line with coin logos (its video is TimelineReplay).
 import { useEffect, useRef, useState } from 'react';
 import { Button, Modal, toast } from '@heroui/react';
 import { Share2, Copy, Download, Send } from 'lucide-react';
 import { Toggle, Segmented } from './ui';
 import ShareReplay from './ShareReplay';
 import MonthReplay from './MonthReplay';
+import TimelineReplay from './TimelineReplay';
 import { get, post } from '../api';
 import { authHeaders } from '../telegram';
 import { useI18n } from '../i18n';
@@ -26,7 +29,8 @@ import { useFx } from '../currency';
 // draws; unknown ones fall back to the default).
 const SIZES = [['wide', 'Lebar', 1200 / 630], ['square', 'Persegi', 1], ['story', 'Story', 1080 / 1920]];
 // Layout: spotlight = one big figure + large mascot; classic = stat tiles + chart strip.
-const LAYOUTS = [['spotlight', 'Sorot'], ['classic', 'Klasik']];
+// timeline (whole-portfolio card only) = cumulative PnL line with coin logos and callouts.
+const LAYOUTS = [['spotlight', 'Sorot'], ['classic', 'Klasik'], ['timeline', 'Jejak']];
 // Timeframe of the whole-portfolio card.
 const RANGES = [['all', 'Semua'], ['24h', '24j'], ['7d', '7h'], ['30d', '30h']];
 const THEMES = [['dark', 'Grafit'], ['midnight', 'Malam'], ['sunset', 'Senja'], ['neon', 'Neon'], ['gold', 'Emas'], ['light', 'Terang'], ['pixel', 'Piksel'], ['hell', 'Neraka']];
@@ -69,7 +73,10 @@ export function ShareDialog({ card, onClose }) {
   const last = useRef(null);                    // last card, still shown while the close animation runs
   if (card) last.current = card;
   const c = card || last.current;
-  const video = mode === 'video' && (c?.kind === 'position' || c?.kind === 'month');
+  // Timeline is only drawn for the whole-portfolio card; any other card falls back to spotlight.
+  const lay = layout === 'timeline' && c?.kind !== 'total' ? 'spotlight' : layout;
+  const hasVideo = c?.kind === 'position' || c?.kind === 'month' || c?.kind === 'total';
+  const video = mode === 'video' && hasVideo;
 
   // Hide amounts is remembered: once hidden, it usually always is.
   useEffect(() => { try { setHide(localStorage.getItem('quiver-share-hide') === '1'); } catch { /* abaikan */ } }, []);
@@ -91,7 +98,7 @@ export function ShareDialog({ card, onClose }) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(new Error(t('Server terlalu lama menggambar kartu'))), 45_000);
     setLoading(true); setErr(null);
-    const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), ...(card.month ? { month: card.month } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme, layout, cur, ...(card.kind === 'total' ? { range, coins: coins ? '1' : '0' } : {}) });
+    const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), ...(card.month ? { month: card.month } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme, layout: lay, cur, ...(card.kind === 'total' ? { range, coins: coins ? '1' : '0' } : {}) });
     fetch(`/api/share/card?${q}`, { credentials: 'same-origin', headers: authHeaders(), signal: ctl.signal })
       .then(async (r) => {
         if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `HTTP ${r.status}`); }
@@ -106,7 +113,7 @@ export function ShareDialog({ card, onClose }) {
       })
       .finally(() => { clearTimeout(timer); if (alive) setLoading(false); });
     return () => { alive = false; clearTimeout(timer); ctl.abort(); };
-  }, [card, hide, lang, size, theme, layout, cur, range, coins, t]);
+  }, [card, hide, lang, size, theme, lay, cur, range, coins, t]);
 
   useEffect(() => {
     if (!blob) { setUrl(null); return; }
@@ -121,7 +128,7 @@ export function ShareDialog({ card, onClose }) {
   }, [open, tg]);
 
   const canShare = typeof navigator !== 'undefined' && !!navigator.share && !!navigator.canShare;
-  const name = c ? `quiver-${c.name}-${layout}-${size}-${theme}.png`.replace(/[^A-Za-z0-9.+-]+/g, '-').replace(/-+/g, '-') : 'quiver.png';
+  const name = c ? `quiver-${c.name}-${lay}-${size}-${theme}.png`.replace(/[^A-Za-z0-9.+-]+/g, '-').replace(/-+/g, '-') : 'quiver.png';
   const ratio = SIZES.find(([k]) => k === size)?.[2] || 1200 / 630;
 
   const run = async (kind) => {
@@ -138,7 +145,7 @@ export function ShareDialog({ card, onClose }) {
         setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
       } else if (kind === 'telegram') {
         // The server redraws from the same data, then sends it to each chat.
-        const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, month: c.month, hide, lang, tz: tzName(), size, theme, layout, cur, ...(c.kind === 'total' ? { range, coins } : {}) });
+        const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, month: c.month, hide, lang, tz: tzName(), size, theme, layout: lay, cur, ...(c.kind === 'total' ? { range, coins } : {}) });
         if (j.error) throw new Error(j.error);
         toast.success(t('Terkirim ke Telegram'), { description: j.failed ? t('{n} chat gagal: {e}', { n: j.failed, e: j.lastErr }) : t('{n} chat', { n: j.sent }) });
       } else if (kind === 'share') {
@@ -170,16 +177,19 @@ export function ShareDialog({ card, onClose }) {
               <Modal.Heading>{t('Bagikan')}</Modal.Heading>
             </Modal.Header>
             <Modal.Body>
-              {(c?.kind === 'position' || c?.kind === 'month') && (
+              {hasVideo && (
                 <div className="mb-3">
                   <Segmented size="sm" aria="Format" value={mode} onChange={setMode} options={[['image', 'Gambar'], ['video', 'Video']]} />
                 </div>
               )}
               {video ? <>
-                {c.kind === 'month' ? <MonthReplay month={c.month} hide={hide} theme={theme} fx={cur === 'fx' ? fx : null} /> : <ShareReplay id={c.id} hide={hide} name={c.name} theme={theme} fx={cur === 'fx' ? fx : null} />}
+                {c.kind === 'total' ? <TimelineReplay range={range} hide={hide} theme={theme} fx={cur === 'fx' ? fx : null} />
+                  : c.kind === 'month' ? <MonthReplay month={c.month} hide={hide} theme={theme} fx={cur === 'fx' ? fx : null} /> : <ShareReplay id={c.id} hide={hide} name={c.name} theme={theme} fx={cur === 'fx' ? fx : null} />}
                 {/* The video has two looks: standard, or the Hell theme. Picking Standard leaves another image theme as it is. */}
-                <div className="mt-3">
+                <div className="mt-3 flex flex-wrap items-center gap-2">
                   <Segmented size="sm" aria="Tema video" value={theme === 'hell' ? 'hell' : 'dark'} onChange={(v) => { if (v === 'hell') pickTheme('hell'); else if (theme === 'hell') pickTheme('dark'); }} options={[['dark', 'Standar'], ['hell', 'Neraka']]} />
+                  {/* The portfolio video is the PnL timeline of the chosen period. */}
+                  {c.kind === 'total' && <Segmented size="sm" aria="Periode kartu" value={range} onChange={pickRange} options={RANGES.map(([k, label]) => [k, label])} />}
                 </div>
               </> : <>
               {/* The preview follows the chosen size ratio; the story is capped in height so the dialog does not tower. */}
@@ -194,19 +204,19 @@ export function ShareDialog({ card, onClose }) {
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 {/* The month card has a single composition: the calendar grid. */}
-                {c?.kind !== 'month' && <Segmented size="sm" aria="Gaya kartu" value={layout} onChange={pickLayout} options={LAYOUTS.map(([k, label]) => [k, label])} />}
+                {c?.kind !== 'month' && <Segmented size="sm" aria="Gaya kartu" value={lay} onChange={pickLayout} options={LAYOUTS.filter(([k]) => k !== 'timeline' || c?.kind === 'total').map(([k, label]) => [k, label])} />}
                 <Segmented size="sm" aria="Ukuran kartu" value={size} onChange={pickSize} options={SIZES.map(([k, label]) => [k, label])} />
                 <Segmented size="sm" aria="Tema kartu" value={theme} onChange={pickTheme} options={THEMES.map(([k, label]) => [k, label])} />
               </div>
               {/* Timeframe and coin attribution only exist for the whole-portfolio card. */}
-              {c?.kind === 'total' && (
+              {c?.kind === 'total' && !video && (
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <span className="text-xs text-muted">{t('Periode')}</span>
                   <Segmented size="sm" aria="Periode kartu" value={range} onChange={pickRange} options={RANGES.map(([k, label]) => [k, label])} />
                 </div>
               )}
               </>}
-              {c?.kind === 'total' && !video && (
+              {c?.kind === 'total' && !video && lay !== 'timeline' && (
                 <div className="mt-3">
                   <Toggle label="Tampilkan coin penggerak" desc="Coin dengan untung dan rugi terbesar di periode ini, lengkap dengan logonya." value={coins} onChange={pickCoins} />
                 </div>

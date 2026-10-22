@@ -995,5 +995,15 @@
   "Fee yang sudah diklaim": "Fees already claimed",
   "PnL riil": "Real PnL",
   "Harga tengah pool menunjukkan {0}": "Pool mid price shows {0}",
-  "⚠️ Quote jual belum terbaca, memakai harga tengah.": "⚠️ Sale quote unavailable, using the mid price."
+  "⚠️ Quote jual belum terbaca, memakai harga tengah.": "⚠️ Sale quote unavailable, using the mid price.",
+  "PnL 24 jam terakhir": "Last 24h PnL",
+  "PnL 7 hari terakhir": "Last 7 days PnL",
+  "PnL 30 hari terakhir": "Last 30 days PnL",
+  "PnL sepanjang waktu": "All-time PnL",
+  "Volume": "Volume",
+  "Fee": "Fees",
+  "Untung terbaik": "Best win",
+  "Posisi": "Positions",
+  "Rata-rata tahan": "Avg hold",
+  "tidak ada posisi yang ditutup pada periode itu": "no positions were closed in that period"
 }

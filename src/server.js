@@ -2625,6 +2625,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const m = monthOf(pf, pos, url.searchParams.get('month'), tz);
       return m.error ? m : { ...m, chain: chain.label };
     },
+    // Animated PnL timeline (the "Video" tab of the whole-portfolio card): the same figures as
+    // the timeline share card; the browser draws and records it, loading the coin logos itself.
+    'GET /api/share/timeline': async (req, url) => {
+      const pf = await callApi('GET', '/api/portfolio', {}, { range: 'all' });
+      const tl = timelineOf(pf, url.searchParams.get('range'));
+      return tl.error ? tl : { ...tl, chain: chain.label };
+    },
     'GET /api/share/telegram': () => ({
       ready: !!(telegram?.token() && telegram.chats().length), chats: telegram ? telegram.chats().length : 0,
     }),
@@ -2884,6 +2891,40 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       .reduce((a, c) => a + (c.cost_quote || 0) * kq(c.quote_symbol), 0);
     return { month, daily, counts, cost };
   };
+  // Closed positions of a window as a PnL timeline: one point per close, in close order, net of
+  // gas/outside slippage (the calendar's basis), with the memecoin it was about. Plus the
+  // footer figures: volume (capital put in), win rate, fees earned, best close, average hold.
+  // Shared by the timeline share card and its video replay. win 0 = the whole history.
+  const TIMELINE_WINDOWS = { '24h': 864e5, '7d': 7 * 864e5, '30d': 30 * 864e5 };
+  const timelineOf = (pf, range) => {
+    const win = TIMELINE_WINDOWS[range] || 0, from = win ? Date.now() - win : 0;
+    const netOf = new Map((pf.closed || []).filter(([ts]) => ts >= from).map(([, v, pid]) => [pid, v]));
+    if (!netOf.size) return { error: 'tidak ada posisi yang ditutup pada periode itu' };
+    const toks = tokenMeta();
+    const kq = (q) => (chain.isEthLike(q) ? engine.ethUsd || 0 : 1);
+    const points = [];
+    let volume = 0, fees = 0, hold = 0, holds = 0;
+    for (const r of store.all("SELECT id, token0, token1, opened_ts, closed_ts, cost_quote, claimed_quote, fees_quote, quote_symbol FROM positions WHERE chain=? AND status='closed' AND closed_ts >= ? ORDER BY closed_ts", chain.network, from)) {
+      if (!netOf.has(r.id)) continue;
+      const side = quoteSideOf(r.token0, r.token1);
+      const address = side === 1 ? r.token0 : side === 0 ? r.token1 : r.token0;
+      const cost = (r.cost_quote || 0) * kq(r.quote_symbol), v = netOf.get(r.id), fee = ((r.claimed_quote || 0) + (r.fees_quote || 0)) * kq(r.quote_symbol);
+      volume += cost; fees += fee;
+      if (r.opened_ts) { hold += r.closed_ts - r.opened_ts; holds++; }
+      // cost/fee/holdHours per close let the video run its footer figures up as the line draws.
+      points.push({ id: r.id, ts: r.closed_ts, v, pct: cost > 0 ? (v / cost) * 100 : null, cost, fee,
+        holdHours: r.opened_ts ? (r.closed_ts - r.opened_ts) / 3600000 : null, address, symbol: toks.get(address)?.symbol || '?' });
+    }
+    if (!points.length) return { error: 'tidak ada posisi yang ditutup pada periode itu' };
+    const wins = points.filter((p) => p.v > FLAT).length, losses = points.filter((p) => p.v < -FLAT).length;
+    const total = points.reduce((a, p) => a + p.v, 0);
+    return {
+      range: win ? range : 'all', from: win ? from : points[0].ts, to: Date.now(), points, total,
+      stats: { volume, fees, count: points.length, wins, losses, winRatePct: wins + losses ? (wins / (wins + losses)) * 100 : null,
+        best: Math.max(...points.map((p) => p.v)), avgHoldHours: holds ? hold / holds / 3600000 : null,
+        pct: volume > 0 ? (total / volume) * 100 : null },
+    };
+  };
   // cur 'fx': amounts in the Settings currency (Display → second currency) instead of dollars;
   // without a rate the card stays in dollars.
   const shareCardOf = async ({ kind, id, day, month, hide = false, lang = 'id', tz, size, theme, layout, cur, range = 'all', coins = false } = {}) => {
@@ -2920,7 +2961,15 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const win = kind === 'total' ? ({ '24h': 864e5, '7d': 7 * 864e5, '30d': 30 * 864e5 })[range] || 0 : 0;
       const [pf, pos] = await Promise.all([callApi('GET', '/api/portfolio', {}, { range: win ? range : 'all' }), callApi('GET', '/api/positions')]);
       const all = [...(pos.positions || []), ...(pos.closed || [])];
-      if (kind === 'total') {
+      if (kind === 'total' && opts.layout === 'timeline') {
+        // Cumulative realized PnL over the window, one coin logo per close.
+        const tl = timelineOf(pf, range);
+        if (tl.error) return tl;
+        data = tl;
+        const logos = new Map(await Promise.all([...new Set(tl.points.map((p) => p.address))]
+          .map(async (a) => [a, await icons.get(a, { wait: 4000 }).catch(() => null)])));
+        opts.icons = logos;
+      } else if (kind === 'total') {
         if (!pf.now) return { error: 'portofolio belum terbaca' };
         const prep = portfolioCard.prepare(pf, 'net');
         let now = pf.now, stats = pf.stats, since = all.reduce((a, x) => (x.opened_ts && (!a || x.opened_ts < a) ? x.opened_ts : a), null);

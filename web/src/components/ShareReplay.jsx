@@ -215,7 +215,7 @@ export function pill(ctx, s, x, y, { size = 22, color = C.text, fill = 'rgba(255
   ctx.restore();
   return w;
 }
-function tokenDisc(ctx, img, addr, sym, x, y, r) {
+export function tokenDisc(ctx, img, addr, sym, x, y, r) {
   ctx.save();
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.closePath();
   ctx.fillStyle = `oklch(0.62 0.11 ${hue(canonAddr(addr))})`; ctx.fill();
@@ -693,7 +693,7 @@ async function remux(blob) {
   } catch { return blob; }
 }
 
-function iconSrc(addr) {
+export function iconSrc(addr) {
   const a = canonAddr(addr);
   return KNOWN[a] || (isAddr(a) && !/^0x0+$/.test(a) ? withTicket(`/api/icon?a=${a}`) : null);
 }
@@ -702,8 +702,9 @@ function iconSrc(addr) {
 // month calendar replay. `draw(ctx, sec)` paints the frame at clip time `sec` (a pure
 // function of time, so the preview and the recording match); `sound()` synthesizes the
 // soundtrack (an AudioBuffer) mixed into the recording only. A new `resetKey` drops the
-// last recording, as it no longer matches what the preview shows.
-export function ReplayPlayer({ draw, end, sound, ready, error, loading, note, fileName, resetKey }) {
+// last recording, as it no longer matches what the preview shows. `w`×`h` is the canvas
+// size (square by default; the PnL timeline plays 16:9).
+export function ReplayPlayer({ draw, end, sound, ready, error, loading, note, fileName, resetKey, w = S, h = S }) {
   const { t } = useI18n();
   const canvas = useRef(null);
   const [rec, setRec] = useState(null);         // null | progress 0..1 while recording
@@ -789,8 +790,8 @@ export function ReplayPlayer({ draw, end, sound, ready, error, loading, note, fi
   const busy = rec != null;
   return (
     <div>
-      <div className="relative mx-auto w-full overflow-hidden rounded-lg border border-border bg-[#0A0B0D]" style={{ aspectRatio: 1, maxHeight: '60vh', maxWidth: '60vh' }}>
-        <canvas ref={canvas} width={S} height={S} className={`block h-full w-full ${ready ? '' : 'hidden'}`} />
+      <div className="relative mx-auto w-full overflow-hidden rounded-lg border border-border bg-[#0A0B0D]" style={{ aspectRatio: w / h, maxHeight: '60vh', maxWidth: `${(60 * w) / h}vh` }}>
+        <canvas ref={canvas} width={w} height={h} className={`block h-full w-full ${ready ? '' : 'hidden'}`} />
         {!ready && !error && <div className="flex h-full items-center justify-center text-xs text-muted">{t(loading)}</div>}
         {error && <div className="flex h-full items-center justify-center p-6 text-center text-xs text-warning">{t('Replay tidak bisa dibuat')}: {t(error)}</div>}
         {busy && <div className="absolute inset-x-0 bottom-0 h-1 bg-black/40"><div className="h-full bg-accent transition-[width]" style={{ width: `${rec * 100}%` }} /></div>}
