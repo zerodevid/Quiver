@@ -194,7 +194,9 @@ const PERIOD = {
   '1h': { type: 'hour', span: 1 }, '4h': { type: 'hour', span: 4 }, '1d': { type: 'day', span: 1 },
 };
 const TF_MS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 86400e3 };
-const ZOOM_MIN_BAR = 3; // px per bar at the widest zoom-out of a short series
+// Narrowest bar of a zoom-out, like GMGN: a young token's few candles shrink to a thin sliver with
+// empty pane around them, and a long series still fits whole in the pane.
+const MIN_BAR = 0.3;
 const periodMs = (period) => ({ minute: 60e3, hour: 3600e3, day: 86400e3 }[period?.type] || 60e3) * (period?.span || 1);
 
 // Measure tool: price change, percent change, bar count and elapsed time between two points,
@@ -739,7 +741,7 @@ export default function AdvancedChart({
   useEffect(() => {
     const el = box.current;
     PAL = pal;
-    const chart = init(el, { styles: buildStyles(pal) });
+    const chart = init(el, { styles: buildStyles(pal), layout: { barSpaceLimit: { min: MIN_BAR, max: 50 } } });
     if (!chart) return undefined;
     let sub = null;
     const loader = {
@@ -769,22 +771,9 @@ export default function AdvancedChart({
       setHover(pt?.dataIndex ?? null);
     };
     chart.subscribeAction('onCrosshairChange', onCross);
-    // Zooming out stops once every candle fits: past that point the library keeps shrinking
-    // the bars into a sliver at the right with an empty pane to its left. A short series (a
-    // young token on 4H) still squeezes down to ZOOM_MIN_BAR, else it could never be zoomed
-    // out at all.
-    const clampZoom = () => {
-      const w = chart.getSize('candle_pane', 'main')?.width;
-      const n = chart.getDataList().length;
-      if (!w || n < 2) return;
-      const min = Math.max(1, Math.min(ZOOM_MIN_BAR, (w * 0.92) / n));
-      if (chart.getBarSpace().bar < min) { chart.setBarSpace(min); chart.scrollToRealTime(); }
-    };
-    chart.subscribeAction('onZoom', clampZoom);
     setReady(true);
     return () => {
       chart.unsubscribeAction('onCrosshairChange', onCross);
-      chart.unsubscribeAction('onZoom', clampZoom);
       dispose(el); chartRef.current = null; setReady(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -826,7 +815,7 @@ export default function AdvancedChart({
     const bars = startIdx >= 0 ? n - startIdx : 0;
     const visible = span ? Math.min(n, Math.ceil(span / (TF_MS[tfRef.current] || 3600e3)))
       : Math.min(n, Math.max(90, Math.round(bars * 1.15) + 10));
-    const space = Math.max(Math.min(1.5, (w * 0.92) / n), Math.min(18, (w - 60) / (visible + 1)));
+    const space = Math.max(MIN_BAR, Math.min(1.5, (w * 0.92) / n), Math.min(18, (w - 60) / (visible + 1)));
     r.chart.setBarSpace(space);
     r.chart.setOffsetRightDistance(Math.max(40, space * 4));
     r.chart.scrollToRealTime();
