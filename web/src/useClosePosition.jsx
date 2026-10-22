@@ -3,9 +3,11 @@ import { Button, toast } from '@heroui/react';
 import { get, post, withChain } from './api';
 import { ask, tableKey } from './components/ui';
 import { muteClose } from './components/TargetAlerts';
-import { usd, short } from './fmt';
-import { useI18n } from './i18n';
+import { usd, short, txHref } from './fmt';
+import { useI18n, reason } from './i18n';
 import { LiveCloseEstimate } from './components/LiveQuote';
+
+const COMPACT = new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 4 });
 
 // The close-position flow from the dashboard, used by the list and detail pages. The server only
 // replies after the transaction is actually accepted on chain (can be ~1 minute),
@@ -82,7 +84,7 @@ export function useClosePosition(reload) {
   const [closing, setClosing] = useState(null);   // ids of the positions being closed
   // One position: send the request, wait for the chain, report via toast. Used
   // by both close-one and close-all; the confirmation is with the caller.
-  const run = async (p, { force = false } = {}) => {
+  const run = async (p, { force = false, sellTo = null } = {}) => {
     const pair = `${p.symbol0}/${p.symbol1}`;
     setClosing(p.id);
     muteClose(p.id);   // the toast for the result comes from this flow; the alert feed must not repeat it
@@ -90,7 +92,8 @@ export function useClosePosition(reload) {
       description: t('Menunggu konfirmasi di chain, bisa sampai 1–2 menit.'), isLoading: true, timeout: 0,
     });
     let r;
-    try { r = await post(withChain('/api/positions/close', p.chain), force ? { id: p.id, force: true } : { id: p.id }); }
+    const body = { id: p.id, ...(force ? { force: true } : {}), ...(sellTo ? { sellTo } : {}) };
+    try { r = await post(withChain('/api/positions/close', p.chain), body); }
     catch (e) { r = { error: e.message, lost: true }; }
     toast.close(wait);
     if (r.lost || /^HTTP 5\d\d$/.test(r.error || '')) {
@@ -101,30 +104,39 @@ export function useClosePosition(reload) {
     } else if (r.error) {
       toast.danger(t('Gagal menutup {pair}', { pair }), { description: r.error, timeout: 12000 });
     } else {
-      const parts = [
-        r.outUsd != null && t('Diterima {v}', { v: usd(r.outUsd) }),
-        r.pnlUsd != null && `PnL ${r.pnlUsd >= 0 ? '+' : ''}${usd(r.pnlUsd)}`,
-        r.sold,
-        r.tx && `tx ${short(r.tx)}`,
-      ].filter(Boolean);
-      toast.success(t('Posisi {pair} ditutup', { pair }), { description: parts.join(' · '), timeout: 10000 });
+      // One fact per line: amounts first, then the memecoin sale (route id dropped), then the tx link.
+      // Older engines print big amounts as 7.535e+5; show those as 753.5K too.
+      const sales = r.sold ? String(r.sold).split(' · ').map((m) => reason(m)
+        .replace(/(\$[\d.,]+) \([\w.-]+\)$/, '$1')
+        .replace(/\b\d+(?:\.\d+)?e\+\d+\b/g, (n) => COMPACT.format(Number(n)))) : [];
+      const description = <div className="space-y-0.5">
+        {(r.outUsd != null || r.pnlUsd != null) && <div className="num">
+          {r.outUsd != null && t('Diterima {v}', { v: usd(r.outUsd) })}
+          {r.outUsd != null && r.pnlUsd != null && ' · '}
+          {r.pnlUsd != null && <span className={r.pnlUsd >= 0 ? 'text-success' : 'text-danger'}>PnL {r.pnlUsd >= 0 ? '+' : '−'}{usd(Math.abs(r.pnlUsd))}</span>}
+        </div>}
+        {sales.map((m, i) => <div key={i}>{m}</div>)}
+        {r.tx && <a className="text-xs text-muted underline-offset-2 hover:underline" href={txHref(r.tx, p.chain)} target="_blank" rel="noreferrer">tx {short(r.tx)}</a>}
+      </div>;
+      toast.success(t('Posisi {pair} ditutup', { pair }), { description, timeout: 10000 });
     }
     return r;
   };
   const close = async (p) => {
     if (closing != null) return;
     const pair = `${p.symbol0}/${p.symbol1}`;
+    const pick = { sellTo: null };   // filled by the "sell into" choice in the estimate
     const base = p.feeUsd > 0.005
       ? t('Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v} + fee {f}.', { v: usd(p.valueUsd), f: usd(p.feeUsd) })
       : t('Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v}.', { v: usd(p.valueUsd) });
     const ok = await ask({
       title: t('Tutup posisi {pair}?', { pair }),
       // The dialog opens at once; the estimate fills in as the quote arrives (see LiveQuote.jsx).
-      body: <div className="space-y-2"><div>{base}</div><LiveCloseEstimate p={p} /></div>,
+      body: <div className="space-y-2"><div>{base}</div><LiveCloseEstimate p={p} state={pick} /></div>,
       confirm: t('Tutup posisi'), danger: true,
     });
     if (!ok) return;
-    await run(p);
+    await run(p, { sellTo: pick.sellTo });
     setClosing(null);
     reload?.();
   };

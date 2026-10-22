@@ -32,6 +32,10 @@ const fmtUnits = (raw, dec) => {
   const n = Number(raw) / 10 ** dec;
   return n >= 1 ? n.toFixed(2) : String(Number(n.toPrecision(3)));
 };
+// Token amount -> short text for messages: 753.5K rather than 7.535e+5.
+const fmtAmount = (n) => (Math.abs(n) >= 1000
+  ? new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 4 }).format(n)
+  : String(Number(n.toPrecision(4))));
 // The origin of a leftover, for messages. The sell queue now also holds tokens
 // swept from the wallet (posId null) — not just ones that came out of a position.
 const leftoverOrigin = (item) => (item.posId == null ? 'sisa di wallet' : `posisi #${item.posId}`);
@@ -2155,7 +2159,7 @@ class Engine {
         // Failing to sell is not failing to claim: the fees are already in the wallet and the item has already
         // gone into the sell queue (retryLeftovers), so the claim is still reported as a success —
         // with sellError so the caller can say "queued", not stay silent.
-        try { sold = await this.sellClaimedFee(pos, hash, result, { quiet: !!opts.quiet }); }
+        try { sold = await this.sellClaimedFee(pos, hash, result, { quiet: !!opts.quiet, to: opts.sellTo }); }
         catch (e) { sellError = e.message; this.store.log('warn', `jual fee posisi #${id}: ${e.message}`, { quiet: true }); }
       }
       return { ok: true, tx: hash, ...result, sold, sellError };
@@ -2274,11 +2278,12 @@ class Engine {
   // estimate is later replaced by the actual sale result) then sold to the same pool's
   // quote asset. Its amount is from the claim receipt, not the wallet balance — this wallet can hold
   // the same token from positions or other programs.
-  async sellClaimedFee(pos, hash, claim, { quiet = false } = {}) {
+  // `to`: the quote asset the owner picked in the claim dialog (sellTargetOf); null = the pool's own.
+  async sellClaimedFee(pos, hash, claim, { quiet = false, to = null } = {}) {
     const meme = claim?.meme;
     if (!meme || !(BigInt(meme.amount) > 0n)) return null;
     // The fee ledger row was already written by recordFeeClaim.
-    return this.sellToken({ posId: pos.id, target: pos.target, token: meme.token, quote: meme.quote,
+    return this.sellToken({ posId: pos.id, target: pos.target, token: meme.token, quote: this.sellTargetOf(to) || meme.quote,
       amount: BigInt(meme.amount), tries: 0, kind: 'fee' }, { quiet });
   }
 
@@ -2328,7 +2333,7 @@ class Engine {
   // are skipped, and the liquidity to burn is re-read from the chain — not from records
   // that can be stale — so the position really is empty. The double-tx guard (`exiting`)
   // and the closed status still apply: they prevent a second burn that is certain to revert.
-  async executeExit(plan, pos, { force = false, sell } = {}) {
+  async executeExit(plan, pos, { force = false, sell, sellTo } = {}) {
     if (this.stopping) throw new Error('bot sedang berhenti (restart) — keluar dilanjutkan saat hidup lagi');
     if (this.exiting.has(pos.id)) throw new Error('posisi ini sedang dalam proses ditutup');
     if (!force) {
@@ -2353,7 +2358,7 @@ class Engine {
       if (L != null && L < BigInt(plan.liquidity)) throw new Error('likuiditas posisi di chain lebih kecil dari yang akan dikurangi — tunggu sinkronisasi');
     }
     this.exiting.add(pos.id);
-    try { return await this.sendExit(plan, pos, { sell }); }
+    try { return await this.sendExit(plan, pos, { sell, sellTo }); }
     finally { this.exiting.delete(pos.id); }
   }
 
@@ -2539,7 +2544,7 @@ class Engine {
     } catch { return null; }
   }
 
-  async sendExit(plan, pos, { sell } = {}) {
+  async sendExit(plan, pos, { sell, sellTo } = {}) {
     let tx, before, hash;
     try {
       // Exiting needs gas too. Filled BEFORE the "before" balance is read, so its unwrap
@@ -2603,7 +2608,7 @@ class Engine {
     // Sell the memecoin JUST received from this exit transaction. Its error must not
     // cancel recording the exit — the position really is closed on chain.
     let sold = null;
-    try { sold = await this.sellLeftover(pos, receipt, { quiet: true, sell }); }
+    try { sold = await this.sellLeftover(pos, receipt, { quiet: true, sell, sellTo }); }
     // A failed sale goes into the retry queue (keepLeftover); only reported if
     // the queue gives up.
     catch (e) { this.store.log('error', `jual sisa #${pos.id}: ${e.message}`, { quiet: true }); }
@@ -2687,25 +2692,46 @@ class Engine {
 
   // Which tokens of a pair are "money" to sell INTO and which are memecoins to sell: a pair with
   // a quote asset has one memecoin (null when both sides are money, e.g. ETH/USDG); a pair
-  // without one has two, sold into USDG. null = nothing to sell.
-  leftoverRoles(pos) {
+  // without one has two, sold into USDG. null = nothing to sell. `to` (sellTargetOf) replaces the
+  // asset sold into; the pool's own quote side is still kept as it is.
+  leftoverRoles(pos, to = null) {
+    const into = this.sellTargetOf(to);
     const q = this.chain.quoteSideOf(pos.token0, pos.token1);
-    if (!q) return { quote: this.chain.ADDR.usdg.toLowerCase(), memes: [String(pos.token0).toLowerCase(), String(pos.token1).toLowerCase()] };
+    if (!q) return { quote: into || this.chain.ADDR.usdg.toLowerCase(), memes: [String(pos.token0).toLowerCase(), String(pos.token1).toLowerCase()] };
     const meme = String(q.side === 0 ? pos.token1 : pos.token0).toLowerCase();
     if (this.chain.quoteSideOf(meme, meme)) return null;
-    return { quote: String(q.side === 0 ? pos.token0 : pos.token1).toLowerCase(), memes: [meme] };
+    return { quote: into || String(q.side === 0 ? pos.token0 : pos.token1).toLowerCase(), memes: [meme] };
+  }
+
+  // Quote assets a memecoin can be sold into from the dashboard dialogs: the chain's quote assets
+  // except native ETH (the aggregators hand back the wrapped token). Their USD value is known,
+  // so the fee/leftover ledgers book the proceeds whichever one is picked.
+  sellTargets() {
+    const native = String(this.chain.ADDR.native || '').toLowerCase();
+    return Object.entries(this.chain.QUOTES || {})
+      .filter(([a]) => a.toLowerCase() !== native)
+      .map(([address, q]) => ({ address: address.toLowerCase(), symbol: q.symbol }));
+  }
+
+  // A picked sale target -> its address, or null for "the pool's own quote asset". Anything that is
+  // not one of sellTargets() is refused rather than silently sold somewhere else.
+  sellTargetOf(to) {
+    if (to == null || to === '') return null;
+    const a = String(to).toLowerCase();
+    if (!this.sellTargets().some((t) => t.address === a)) throw new Error('aset tujuan jual tidak didukung');
+    return a;
   }
 
   // A read-only simulation of closing `live` (an entry of positions.live) right now: the memecoin side
   // (principal + unclaimed fee) is QUOTED on Kyber — the same route the exit sale uses — instead
   // of marked at the pool mid price, and the gas of a typical burn + sale is subtracted. No tx is sent.
   // Returns USD figures: what lands in the wallet and the PnL that would be booked.
-  async exitQuote(live) {
+  async exitQuote(live, { to = null } = {}) {
     const usdOfQuote = (raw, quote) => {
       const q = this.chain.QUOTES[String(quote).toLowerCase()];
       return q ? (Number(raw) / 10 ** q.decimals) * (q.kind === 'eth' ? this.ethUsd : 1) : null;
     };
-    const roles = this.leftoverRoles(live);
+    const roles = this.leftoverRoles(live, to);
     const a0 = BigInt(live.amount0 || '0') + BigInt(live.fee0 || '0');
     const a1 = BigInt(live.amount1 || '0') + BigInt(live.fee1 || '0');
     const amountOf = (tok) => (String(tok).toLowerCase() === String(live.token0).toLowerCase() ? a0 : a1);
@@ -2744,7 +2770,7 @@ class Engine {
     const receiveUsd = keptUsd + soldUsd;
     const pnlUsd = receiveUsd + (live.claimedUsd || 0) + (live.withdrawnUsd || 0) - (live.costUsd || 0) - gasUsd;
     return {
-      id: live.id, quoted, legs, gasUsd,
+      id: live.id, quoted, legs, gasUsd, sellTo: roles?.quote ?? null, sellTargets: this.sellTargets(),
       midUsd: midTotalUsd, receiveUsd, sellCostUsd: memeMidUsd - memes.reduce((s, _, i) => s + (legs[i]?.outUsd ?? legs[i]?.midUsd ?? 0), 0),
       claimedUsd: live.claimedUsd || 0, costUsd: live.costUsd || 0,
       pnlMidUsd: live.pnlUsd, pnlUsd, pnlPct: live.costUsd > 0 ? (pnlUsd / live.costUsd) * 100 : 0,
@@ -2772,7 +2798,7 @@ class Engine {
     // `opts.sell` (manual decrease dialog) overrides the target's sell_leftover rule.
     if (!(opts.sell ?? rules.exit.sell_leftover)) return null;
     // ETH/USDG, WETH/USDG, etc.: both are "money" — there is no memecoin to sell (roles = null).
-    const roles = this.leftoverRoles(pos);
+    const roles = this.leftoverRoles(pos, opts.sellTo);
     if (!roles) return null;
     const me = this.exec.address().toLowerCase();
     const msgs = [];
@@ -2889,7 +2915,7 @@ class Engine {
       amount = bal < BigInt(item.amount) ? bal : BigInt(item.amount);
       if (amount === 0n) { this.dropLeftover(item); return null; }
       const meta = await this.chain.token(item.token).catch(() => null);
-      label = `${(Number(amount) / 10 ** (meta?.decimals ?? 18)).toPrecision(4)} ${meta?.symbol || item.token.slice(0, 8)}`;
+      label = `${fmtAmount(Number(amount) / 10 ** (meta?.decimals ?? 18))} ${meta?.symbol || item.token.slice(0, 8)}`;
     } catch (e) {
       // The balance is unreadable (RPC). This error used to slip through BEFORE the item was queued: leftovers
       // from an exit tx never entered the queue and were never sold by anyone.
@@ -3123,7 +3149,7 @@ class Engine {
             // The latest quote is stored so the banner on the dashboard shows the current figure.
             this.keepLeftover({ ...item, amount: amount.toString(), lastLossBps: loss, lastUsdOut: lossRef?.usdOut ?? null, lastUsdIn: lossRef?.usdIn ?? null }, why);
             const meta = await this.chain.token(item.token).catch(() => null);
-            this.alertLeftover(item, `${(Number(amount) / 10 ** (meta?.decimals ?? 18)).toPrecision(4)} ${meta?.symbol || item.token.slice(0, 8)}`, e);
+            this.alertLeftover(item, `${fmtAmount(Number(amount) / 10 ** (meta?.decimals ?? 18))} ${meta?.symbol || item.token.slice(0, 8)}`, e);
             continue;
           }
           await this.sellToken(item);

@@ -5,7 +5,7 @@ import { post, withChain } from '../api';
 import { ask } from './ui';
 import { useI18n, reason } from '../i18n';
 import { usd, short } from '../fmt';
-import { QuoteBox, QuoteRow, QuoteLegs, QuoteLoading, useLiveQuote } from './LiveQuote';
+import { QuoteBox, QuoteRow, QuoteLegs, QuoteLoading, SellTarget, useLiveQuote } from './LiveQuote';
 
 const PRESETS = [25, 50, 75];
 
@@ -19,9 +19,10 @@ function DecreaseBody({ p, state }) {
   const [pct, setPct] = useState(state.pct);
   const [sell, setSell] = useState(false);
   const [touched, setTouched] = useState(false);
+  const [to, setTo] = useState(null);
   const meme = (p.quoteSide === 1 ? p.symbol0 : p.symbol1) || 'token';
   const valid = Number(pct) > 0 && Number(pct) < 100;
-  const { data: q, error, loading } = useLiveQuote(`/api/positions/decrease-quote?id=${p.id}&pct=${encodeURIComponent(pct)}`, p.chain, { delay: 250 });
+  const { data: q, error, loading, refresh } = useLiveQuote(`/api/positions/decrease-quote?id=${p.id}&pct=${encodeURIComponent(pct)}${to ? `&to=${to}` : ''}`, p.chain, { delay: 250 });
   useEffect(() => {
     if (q && !touched) { setSell(!!q.sellDefault); state.sell = !!q.sellDefault; }
   }, [q, touched, state]);
@@ -39,11 +40,11 @@ function DecreaseBody({ p, state }) {
       </div>
       {!valid
         ? <span className="text-warning text-sm">{t('Isi persentase antara 0,01 dan 99,99. Untuk 100% pakai Tutup posisi.')}</span>
-        : loading
+        : loading && !q
           ? <QuoteLoading text={t('Menghitung estimasi…')} hint={t('Kamu bisa langsung mengurangi tanpa menunggu.')} />
           : error
             ? <span className="text-danger text-sm">{reason(error)}</span>
-            : <QuoteBox title={t('Estimasi jika dikurangi {p}%', { p: q.pct })}>
+            : <QuoteBox title={t('Estimasi jika dikurangi {p}%', { p: q.pct })} onRefresh={refresh} refreshing={loading}>
               <QuoteRow label={t('Diterima di wallet')} value={usd(sell && q.quoteReceiveUsd != null ? q.quoteReceiveUsd : q.receiveUsd)} />
               {sell && q.sellCostUsd > 0.005 && <QuoteRow label={t('Kerugian jual memecoin')} value={`−${usd(q.sellCostUsd)}`} cls="text-danger" />}
               {q.gasUsd != null && <QuoteRow label={t('Gas')} value={`−${usd(q.gasUsd)}`} />}
@@ -57,6 +58,7 @@ function DecreaseBody({ p, state }) {
           <span className="text-foreground">{t('Jual sisa token {m} sekalian', { m: meme })}</span>
         </Checkbox.Content>
       </Checkbox>
+      {sell && q && <SellTarget targets={q.sellTargets} value={to || q.sellTo} onChange={(a) => { setTo(a); state.sellTo = a; }} />}
     </div>
   );
 }
@@ -74,10 +76,10 @@ export default function DecreaseButton({ p, reload, disabled = false, size = 'sm
     if (lock.current) return;
     lock.current = true;
     try {
-      const state = { pct: 50, sell: null };
+      const state = { pct: 50, sell: null, sellTo: null };
       if (!await ask({ title: t('Kurangi likuiditas {pair}', { pair }), body: <DecreaseBody p={p} state={state} />, confirm: t('Kurangi sekarang') })) return;
       setBusy(true);
-      const r = await post(withChain('/api/positions/decrease', p.chain), { id: p.id, pct: Number(state.pct), sell: state.sell });
+      const r = await post(withChain('/api/positions/decrease', p.chain), { id: p.id, pct: Number(state.pct), sell: state.sell, ...(state.sell && state.sellTo ? { sellTo: state.sellTo } : {}) });
       if (r.error) toast.danger(t('Pengurangan likuiditas gagal'), { description: reason(r.error), timeout: 12000 });
       else {
         toast.success(t('Likuiditas dikurangi {p}%', { p: state.pct }), { description: r.tx ? `Tx: ${short(r.tx)}` : undefined });

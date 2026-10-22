@@ -863,7 +863,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   // Prices a partial exit with the same machinery as the close dialog (engine.exitQuote): the position is
   // scaled down to the part that leaves it, so the memecoin side is quoted on the aggregators.
   // Fields are {} when the engine cannot quote (Solana) — the caller keeps its pro-rata figures.
-  const partialQuote = async (live, { principalBps, withFees }) => {
+  const partialQuote = async (live, { principalBps, withFees, to = null }) => {
     if (typeof engine.exitQuote !== 'function') return {};
     const part = (x, bps) => (BigInt(x || '0') * BigInt(bps) / 10000n).toString();
     const scaled = {
@@ -874,9 +874,17 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       claimedUsd: 0, withdrawnUsd: 0, costUsd: 0,
     };
     try {
-      const q = await engine.exitQuote(scaled);
-      return { quoted: q.quoted, legs: q.legs, gasUsd: q.gasUsd, sellCostUsd: q.sellCostUsd, quoteReceiveUsd: q.receiveUsd, midUsd: q.midUsd };
+      const q = await engine.exitQuote(scaled, { to });
+      return { quoted: q.quoted, legs: q.legs, gasUsd: q.gasUsd, sellCostUsd: q.sellCostUsd, quoteReceiveUsd: q.receiveUsd, midUsd: q.midUsd,
+        sellTo: q.sellTo, sellTargets: q.sellTargets };
     } catch { return {}; }
+  };
+  // The quote asset picked in a dialog (`to` / `sellTo`) checked BEFORE any transaction is sent;
+  // engines without the choice (Solana) only accept "none". Throws the user-facing reason.
+  const sellToOf = (v) => {
+    if (v == null || v === '') return null;
+    if (typeof engine.sellTargetOf !== 'function') throw new Error('pilihan aset tujuan jual belum didukung di chain ini');
+    return engine.sellTargetOf(v);
   };
   // Positions whose manual partial decrease is in flight (double-click guard, see POST /api/positions/decrease).
   const manualDecreasing = new Set();
@@ -1184,7 +1192,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const id = Number(url.searchParams.get('id'));
       const live = engine.positions.live.find((p) => p.id === id);
       if (!live) return { error: 'posisi tidak ditemukan' };
-      try { return await engine.exitQuote(live); } catch (e) { return { error: e.message }; }
+      try {
+        const q = await engine.exitQuote(live, { to: sellToOf(url.searchParams.get('to')) });
+        // Whether the close will really sell the memecoin (the target's sell_leftover rule), so the
+        // dialog only offers a sale target when there is a sale.
+        const row = store.get('SELECT target FROM positions WHERE chain=? AND id=?', chain.network, id);
+        return { ...q, sellOn: !!engine.rulesFrom(row?.target ?? null).exit.sell_leftover };
+      } catch (e) { return { error: e.message }; }
     },
     'GET /api/position': (req, url) => {
       const id = Number(url.searchParams.get('id'));
@@ -2715,7 +2729,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       if (!Number.isSafeInteger(id) || id <= 0) return { error: 'ID posisi tidak valid' };
       // `sell`: sell the fee's memecoin side to the pool's quote asset after the claim. If not
       // sent = follow the position's harvest setting (default: sell nothing).
-      try { return await engine.claimFees(id, { sell: b.sell == null ? null : !!b.sell }); }
+      try { return await engine.claimFees(id, { sell: b.sell == null ? null : !!b.sell, sellTo: sellToOf(b.sellTo) }); }
       catch (e) { return { error: e.message }; }
     },
     // Manual control of a mirror position (see Manual.takeover). GET …/handback checks the
@@ -2747,14 +2761,18 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         remainUsd: (live.valueUsd || 0) * (1 - f),
         sellDefault: !!engine.rulesFrom(pos?.target ?? null).exit.sell_leftover,
       };
-      return { ...out, ...await partialQuote(live, { principalBps: bps, withFees: feesIncluded }) };
+      let to;
+      try { to = sellToOf(url.searchParams.get('to')); } catch (e) { return { error: e.message }; }
+      return { ...out, ...await partialQuote(live, { principalBps: bps, withFees: feesIncluded, to }) };
     },
     // Same read-only estimate for the claim dialog: only the unclaimed fees leave the position.
     'GET /api/positions/claim-quote': async (req, url) => {
       const id = Number(url.searchParams.get('id'));
       const live = engine.positions.live.find((p) => p.id === id);
       if (!live) return { error: 'posisi tidak ditemukan' };
-      return { id, feeUsd: live.feeUsd || 0, ...await partialQuote(live, { principalBps: 0, withFees: true }) };
+      let to;
+      try { to = sellToOf(url.searchParams.get('to')); } catch (e) { return { error: e.message }; }
+      return { id, feeUsd: live.feeUsd || 0, ...await partialQuote(live, { principalBps: 0, withFees: true, to }) };
     },
     'POST /api/positions/decrease': async (req) => {
       const b = await readBody(req);
@@ -2762,6 +2780,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       if (!Number.isSafeInteger(id) || id <= 0) return { error: 'ID posisi tidak valid' };
       const bps = decreaseBps(b.pct);
       if (bps == null) return { error: 'persentase harus antara 0,01 dan 99,99 — untuk 100% pakai Tutup posisi' };
+      let sellTo;
+      try { sellTo = sellToOf(b.sellTo); } catch (e) { return { error: e.message }; }
       if (manualDecreasing.has(id)) return { error: 'pengurangan likuiditas posisi ini masih diproses — tunggu hasilnya' };
       manualDecreasing.add(id);
       try {
@@ -2781,7 +2801,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         const before = pos.out_quote || 0;
         const r = await engine.executeExit(
           { venue: pos.venue, action: 'decrease', full: false, manual: true, liquidity: liquidity.toString(), tokenId: pos.token_id },
-          pos, { sell: b.sell == null ? undefined : !!b.sell });
+          pos, { sell: b.sell == null ? undefined : !!b.sell, sellTo });
         store.log('info', `kurangi manual ${bps / 100}%: ${r.note}`);
         const row = store.get('SELECT out_quote, quote_symbol FROM positions WHERE chain=? AND id=?', chain.network, id);
         const k = chain.isEthLike(row?.quote_symbol) ? engine.ethUsd : 1;
@@ -2797,6 +2817,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     'POST /api/positions/close': async (req) => {
       const b = await readBody(req);
       const force = b.force === true;
+      let sellTo;
+      try { sellTo = sellToOf(b.sellTo); } catch (e) { return { error: e.message }; }
       const pos = store.get("SELECT * FROM positions WHERE chain=? AND id=? AND status='open'", chain.network, Number(b.id));
       if (!pos) return { error: 'posisi tidak ditemukan' };
       // A virtual position (simulation with a balance) is closed in the books at the current price.
@@ -2818,7 +2840,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
             r = { txHash: null, note: `posisi #${pos.id} kosong di chain, dibukukan tertutup` };
           }
         } else {
-          r = await engine.executeExit({ venue: pos.venue, action: 'burn', full: true, liquidity: pos.liquidity, tokenId: pos.token_id }, pos, { force });
+          r = await engine.executeExit({ venue: pos.venue, action: 'burn', full: true, liquidity: pos.liquidity, tokenId: pos.token_id }, pos, { force, sellTo });
         }
         store.log('info', `tutup ${force ? 'paksa' : 'manual'}: ${r.note}`);
         // The result is read from the row just closed, with the same conversion as

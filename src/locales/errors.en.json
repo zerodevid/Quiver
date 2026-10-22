@@ -54,5 +54,7 @@
   "Urutan agregator tidak valid.": "Invalid aggregator order.",
   "Agregator tidak dikenal.": "Unknown aggregator.",
   "Nilai terlalu panjang.": "Value too long.",
-  "tidak ada rute / API menolak (lihat log)": "no route / the API refused (see the log)"
+  "tidak ada rute / API menolak (lihat log)": "no route / the API refused (see the log)",
+  "aset tujuan jual tidak didukung": "That sale target is not supported.",
+  "pilihan aset tujuan jual belum didukung di chain ini": "Choosing a sale target is not supported on this chain yet."
 }
