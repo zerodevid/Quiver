@@ -206,6 +206,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   const canon = (x) => (SOL ? String(x ?? '').trim() : String(x ?? '').trim().toLowerCase());
   const isAddr = (x) => (SOL ? !!normAddr(chain.network, x) : /^0x[0-9a-f]{40}$/.test(String(x ?? '')));
   const isRef = (x) => (SOL ? !!normAddr(chain.network, x) : /^0x[0-9a-f]{40}$|^0x[0-9a-f]{64}$/.test(String(x ?? '')));
+  // Key of a shared chart drawing list: `tok:<token address>` or `pool:<pool ref>`; null if invalid.
+  const chartKey = (x) => {
+    const [kind, ref] = String(x ?? '').split(':');
+    const r = canon(ref);
+    return (kind === 'tok' && isAddr(r)) || (kind === 'pool' && isRef(r)) ? `${kind}:${r}` : null;
+  };
   // Symbol & decimals of every token ever seen, from the `tokens` table, PLUS
   // the chain's quote assets. Native (0x0) is not an ERC-20: symbol()/decimals() cannot be
   // called, so Chain#tokens never stores its row — without this addition
@@ -1211,14 +1217,14 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       pos.syncing = row.status !== 'closed' && !live;
       pos.exitSqrt = row.exit_sqrt || null;
       pos.claimedUsd = (row.claimed_quote || 0) * k;
+      // fees_quote on a closed row is what the closing transaction harvested (feeUsd stays 0 there)
+      pos.closeFeeUsd = row.status === 'closed' ? (row.fees_quote || 0) * k : 0;
       // partial withdrawal proceeds already in the wallet while the position is still open
       pos.withdrawnUsd = row.status === 'closed' ? 0 : (row.out_quote || 0) * k;
       pos.compound = compound.status(row);
       pos.outUsd = outUsd;
       pos.quoteKind = chain.isEthLike(row.quote_symbol) ? 'eth' : 'usd';
       // Position origin: who is being copied, which position is theirs, and how much they
-      // fees_quote on a closed row is what the closing transaction harvested (feeUsd stays 0 there)
-      pos.closeFeeUsd = row.status === 'closed' ? (row.fees_quote || 0) * k : 0;
       // put in/withdrew there. The Telegram entry & close cards put it beside
       // our own figures.
       pos.origin = originOf(row, { watch: true });
@@ -1824,6 +1830,53 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const ref = canon(b.pool || '');
       if (!ref) return { error: 'pool tidak valid' };
       store.setState(`chart_overlays:${ref}`, JSON.stringify(b.data || {}));
+      return { ok: true };
+    },
+    // Drawings shared by every chart of one token (key `tok:<address>`, or `pool:<ref>` when the
+    // base token is unknown) — see web/src/chartSync.js. Each drawing is upserted/removed by id,
+    // so two charts editing different drawings never overwrite each other. Until the token has
+    // its own list, the old per-pool list (`legacy`) is offered for the chart to adopt.
+    'GET /api/chart/drawings': (req, url) => {
+      const key = chartKey(url.searchParams.get('key'));
+      if (!key) return { error: 'key tidak valid' };
+      const raw = store.getState(`chart_drawings:${chain.network}:${key}`);
+      if (raw) return { items: Object.values(JSON.parse(raw).items || {}) };
+      const legacy = canon(url.searchParams.get('legacy') || '');
+      const old = isRef(legacy) ? store.getState(`chart_overlays:${legacy}`) : null;
+      const overlays = old ? JSON.parse(old).overlays || [] : [];
+      return {
+        legacy: overlays.length > 0,
+        items: overlays.map((o, i) => ({ id: `legacy${i}`, name: o.name, points: (o.points || []).map((p) => ({ timestamp: p.timestamp, value: p.value })), styles: o.styles, extendData: o.extendData, lock: !!o.lock, unit: null })),
+      };
+    },
+    'POST /api/chart/drawings': async (req) => {
+      const b = await readBody(req);
+      const key = chartKey(b.key);
+      if (!key) return { error: 'key tidak valid' };
+      const k = `chart_drawings:${chain.network}:${key}`;
+      const raw = store.getState(k);
+      const items = raw ? JSON.parse(raw).items || {} : {};
+      for (const id of Array.isArray(b.remove) ? b.remove : []) delete items[String(id)];
+      for (const it of Array.isArray(b.upsert) ? b.upsert : []) {
+        if (!it || typeof it.id !== 'string' || it.id.length > 40 || typeof it.name !== 'string') continue;
+        items[it.id] = it;
+      }
+      // a runaway client must not grow one state row without bound
+      const list = Object.values(items).sort((x, y) => (y.updated || 0) - (x.updated || 0)).slice(0, 300);
+      const json = JSON.stringify({ items: Object.fromEntries(list.map((it) => [it.id, it])) });
+      if (json.length > 400_000) return { error: 'terlalu banyak gambar' };
+      store.setState(k, json);
+      return { ok: true };
+    },
+    // Chart preferences shared by every chart (the indicator set).
+    'GET /api/chart/prefs': () => {
+      const raw = store.getState('chart_prefs');
+      return { prefs: raw ? JSON.parse(raw) : null };
+    },
+    'POST /api/chart/prefs': async (req) => {
+      const b = await readBody(req);
+      const indicators = Array.isArray(b.prefs?.indicators) ? b.prefs.indicators.filter((x) => typeof x === 'string' && x.length <= 12).slice(0, 20) : [];
+      store.setState('chart_prefs', JSON.stringify({ indicators }));
       return { ok: true };
     },
     'GET /api/activity': (req, url) => {
@@ -2862,7 +2915,6 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       // entry), LP range, and entry/exit points. The same source as the chart card.
       // Failed or slow (GeckoTerminal) → the card is still produced, without the chart.
       opts.chart = await positionSpark(data).catch(() => null);
-
     } else if (kind === 'total' || kind === 'daily' || kind === 'month') {
       // Total card timeframe: a rolling window (24h/7d/30d) or the whole history.
       const win = kind === 'total' ? ({ '24h': 864e5, '7d': 7 * 864e5, '30d': 30 * 864e5 })[range] || 0 : 0;

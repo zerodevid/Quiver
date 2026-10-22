@@ -10,9 +10,11 @@ import PositionHistory from '../components/PositionHistory';
 import WalletPositionHistory from '../components/WalletPositionHistory';
 import { useEffect, useState } from 'react';
 import { usePoll } from '../hooks';
+import { useMarket } from '../liveCandles';
 import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, TradeLinks, DataLinks, DataTable, CopyBtn } from '../components/ui';
 import { TokenPair, TokenSym, PairName, poolHref } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
+import { drawKeyOf, savedTf } from '../chartSync';
 import { PriceChart, DexEmbed, DexInfoEmbed, GmgnEmbed, TradesTape, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc } from './PositionDetail';
 import { GmgnWallets } from '../components/Gmgn';
 import { BAND_COLORS } from '../components/CandleChart';
@@ -96,13 +98,13 @@ export default function PoolDetail({ param }) {
   const pool = d?.pool;
   const all = d ? [...d.open, ...d.closed] : [];
   const focus = focusPick === undefined ? (d?.open[0] || null) : all.find((p) => p.id === focusPick) || null;
-  const tf = tfPick || (focus?.status === 'open' ? tfFor(focus.ageHours) : '1h');
+  const tf = tfPick || savedTf(drawKeyOf(pool?.baseToken, ref), (x) => x in SECS) || (focus?.status === 'open' ? tfFor(focus.ageHours) : '1h');
   // Enough candles that the entry points of all drawn positions are still visible — not
   // only the highlighted one: even the oldest position's band starts at its entry candle.
   const firstOpen = Math.min(...(d?.open || []).map((p) => p.opened_ts || Date.now()), focus?.opened_ts || Date.now());
   const sinceOpen = (Date.now() - firstOpen) / 1000;
   const limit = focus || d?.open.length ? Math.min(1000, Math.max(120, Math.ceil(sinceOpen / SECS[tf]) + 40)) : 240;
-  const { data: m } = usePoll(pool ? `/api/market?pool=${ref}&tf=${tf}&limit=${limit}&token=${pool.baseToken || ''}${src === 'gmgn' ? '&src=gmgn' : ''}` : null, 30000);
+  const { data: m, pending: mPending, reload: reloadMarket } = useMarket(pool ? `/api/market?pool=${ref}&tf=${tf}&limit=${limit}&token=${pool.baseToken || ''}${src === 'gmgn' ? '&src=gmgn' : ''}` : null, 30000, `${tf}:${src}`);
 
   if (!d) return <Loading page />;
   if (d.error) return <Empty title="Pool tidak ditemukan" sub={d.error} />;
@@ -195,9 +197,9 @@ export default function PoolDetail({ param }) {
           action={<div className="flex flex-wrap gap-2">
             <Segmented size="sm" aria="Tampilan grafik" value={view} onChange={setView} options={VIEWS} />
             {view === 'chart' && (m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
-            {view !== 'dex' && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}
+            {view === 'gmgn' && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}
           </div>}>
-          {view === 'dex' ? <DexEmbed pool={ref} /> : view === 'gmgn' ? <GmgnEmbed token={pool.baseToken} tf={tf} p={chartP} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={chartP} m={m} tf={tf} ranges={ranges} onRangeClick={setFocus} />}
+          {view === 'dex' ? <DexEmbed pool={ref} /> : view === 'gmgn' ? <GmgnEmbed token={pool.baseToken} tf={tf} p={chartP} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={chartP} m={m} tf={tf} pending={mPending} onTf={setTf} onRetry={reloadMarket} ranges={ranges} onRangeClick={setFocus} />}
           <TradesTape pool={ref} token={pool.baseToken} base={base} quote={quote} />
         </Panel>
 

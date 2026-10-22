@@ -42,3 +42,26 @@ export function useLiveCandles(candles, secs, live, key) {
     return [...candles, { t, o: last.c, h: Math.max(last.c, e.h), l: Math.min(last.c, e.l), c: live.price, v: 0 }];
   }, [candles, secs, live, key]);
 }
+
+// /api/market poll for a chart. `want` names what the chart is asking for (timeframe + source):
+// `pending` = the reply on hand was fetched for something else (the previous timeframe), so the
+// chart keeps it under a "loading" veil instead of drawing it as the new timeframe. A reply
+// for the same `want` with a different URL (a few more candles of history) is not pending.
+export function useMarket(path, ms, want) {
+  const r = usePoll(path, ms);
+  const got = useRef(null);
+  if (r.fresh) got.current = want;
+  return { ...r, pending: !r.fresh && got.current !== want };
+}
+
+// USD price of one unit of the pool's quote asset, from the DexScreener pair: priceUsd and
+// priceNative come from the same snapshot, so their ratio is the quote asset's price (ETH ≈
+// $4,000, USDG = $1) — steady, unlike priceUsd ÷ the live pool price, which jumps every time
+// the token moves before DexScreener catches up. null when the pair does not tell.
+export function quoteUsd(pair, baseToken) {
+  if (!pair || pair.error || !(pair.priceUsd > 0)) return null;
+  const b = canonAddr(baseToken || '');
+  if (b && pair.quote?.address && canonAddr(pair.quote.address) === b) return pair.priceUsd;   // pair listed the other way round
+  if (pair.priceNative > 0 && (!b || canonAddr(pair.base?.address || '') === b)) return pair.priceUsd / pair.priceNative;
+  return null;
+}

@@ -5,9 +5,11 @@
 // Opened from the icon or symbol of a token anywhere in the dashboard: #token/0x….
 import { useEffect, useState } from 'react';
 import { Button } from '@heroui/react';
-import AdvancedChart from '../components/AdvancedChart';
+import AdvancedChart, { supplyOf } from '../components/AdvancedChart';
+import { useMarket } from '../liveCandles';
+import { drawKeyOf, savedTf } from '../chartSync';
 import { usePoll } from '../hooks';
-import { Panel, Stat, KV, Empty, Loading, Segmented, DataTable, CopyAddr, BackLink, ExtLink, TradeLinks, DataLinks, CopyBtn } from '../components/ui';
+import { Panel, Stat, KV, Empty, Loading, DataTable, CopyAddr, BackLink, ExtLink, TradeLinks, DataLinks, CopyBtn } from '../components/ui';
 import TokenIcon, { TokenPair, PairName } from '../components/TokenIcon';
 import { GmgnTokenPanel, GmgnWallets } from '../components/Gmgn';
 import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
@@ -18,9 +20,8 @@ import { usd, pct, tone, num, age, short, price, locale as fmtLocale } from '../
 import { useI18n } from '../i18n';
 import { canonAddr } from '../chain';
 
-const TFS = [['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam'], ['1d', '1 hari']];
-// Roughly one day at 5 minutes, ten days at 1 hour, a month at 4 hours.
-const LIMIT = { '5m': 288, '15m': 288, '1h': 240, '4h': 180, '1d': 180 };
+// Roughly five hours at 1 minute, one day at 5 minutes, ten days at 1 hour, a month at 4 hours.
+const LIMIT = { '1m': 300, '5m': 288, '15m': 288, '1h': 240, '4h': 180, '1d': 180 };
 
 // USD price of this token in one pool. DexScreener gives the BASE token's price; if
 // this token is actually the quote side (e.g. USDG), its price = base price ÷ base
@@ -31,12 +32,13 @@ const venueOf = (p) => (p.labels?.length ? p.labels.join(' ') : p.dexId || '');
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
 const fmtAmt = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleString(fmtLocale(), { maximumSignificantDigits: v >= 1000 ? 7 : 5 }));
 
-function TokenChart({ m, tf, poolRef }) {
-  if (m?.ohlcv?.error) return <Empty title="Grafik harga tidak tersedia" sub={m.ohlcv.error} />;
-  if (!m?.ohlcv?.candles?.length) return <Empty title="Belum ada lilin harga" sub="GeckoTerminal belum punya riwayat harga untuk pool ini." />;
-  // key={tf}: changing the candle range reloads the chart from scratch (KLineChart replays
-  // the whole history when the period changes) — drawings & indicators persist because they are stored per pool, not per instance.
-  return <AdvancedChart key={tf} candles={m.ohlcv.candles} tf={tf} quote="USD" poolRef={poolRef} />;
+// USD candles of the selected pool. The drawings are the token's (shared with every chart of
+// it), so switching pool or timeframe keeps them.
+function TokenChart({ m, tf, onTf, pending, onRetry, poolRef, token }) {
+  const candles = m?.ohlcv?.candles || [];
+  const error = pending ? null : m?.ohlcv?.error || (!candles.length ? 'GeckoTerminal belum punya riwayat harga untuk pool ini.' : null);
+  return <AdvancedChart key={poolRef} candles={candles} tf={tf} onTfChange={onTf} loading={pending} error={error} onRetry={onRetry} series="usd"
+    quote="USD" usdRate={1} supply={supplyOf(m?.pair, token)} drawKey={drawKeyOf(token)} />;
 }
 
 export default function TokenDetail({ param }) {
@@ -44,7 +46,7 @@ export default function TokenDetail({ param }) {
   const a = canonAddr(param);
   const { data: d, loading, reload } = usePoll(`/api/token?a=${encodeURIComponent(a)}`, 30000);
   const [poolPick, setPool] = useState(null);
-  const [tf, setTf] = useState('1h');
+  const [tf, setTf] = useState(() => savedTf(drawKeyOf(canonAddr(param)), (x) => x in LIMIT) || '1h');
   // Click a bot position table row -> history drawer, same as the Positions page.
   const [hist, setHist] = useState(null);
   // Click a researched wallet position row -> its on-chain events drawer. What is stored is
@@ -57,7 +59,7 @@ export default function TokenDetail({ param }) {
   const sel = pairs.find((p) => p.pool === poolPick) || pairs[0] || null;
   // Opened from a table row scrolled far down: start from the top.
   useEffect(() => { window.scrollTo(0, 0); }, []);
-  const { data: m } = usePoll(sel ? `/api/market?pool=${sel.pool}&tf=${tf}&limit=${LIMIT[tf]}&token=${a}&currency=usd&pair=0` : null, 30000);
+  const { data: m, pending: mPending, reload: reloadMarket } = useMarket(sel ? `/api/market?pool=${sel.pool}&tf=${tf}&limit=${LIMIT[tf]}&token=${a}&currency=usd&pair=0` : null, 30000, tf);
 
   if (!d) return <Loading page />;
   if (d.error) return <Empty title="Token tidak ditemukan" sub={d.error} />;
@@ -116,11 +118,10 @@ export default function TokenDetail({ param }) {
       <div className="grid items-start gap-3 lg:grid-cols-3">
         <Panel className="lg:col-span-2"
           title={t('Harga {s} dalam USD', { s: tk.symbol || '?' })}
-          desc={sel ? <span className="inline-flex items-center gap-1.5">{t('pool')} <PairName token0={sel.base.address} token1={sel.quote.address} symbol0={sel.base.symbol} symbol1={sel.quote.symbol} pool={sel.pool} /> <span className="uppercase">{venueOf(sel)}</span></span> : null}
-          action={sel && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}>
+          desc={sel ? <span className="inline-flex items-center gap-1.5">{t('pool')} <PairName token0={sel.base.address} token1={sel.quote.address} symbol0={sel.base.symbol} symbol1={sel.quote.symbol} pool={sel.pool} /> <span className="uppercase">{venueOf(sel)}</span></span> : null}>
           {d.market?.error ? <Empty title="Data pasar tidak tersedia" sub={d.market.error} />
             : !sel ? <Empty title="Belum ada pool terindeks" sub="DexScreener belum mengenal pool untuk token ini." />
-              : !m ? <Loading /> : <TokenChart m={m} tf={tf} poolRef={sel.pool} />}
+              : !m ? <Loading /> : <TokenChart m={m} tf={tf} onTf={setTf} pending={mPending} onRetry={reloadMarket} poolRef={sel.pool} token={a} />}
           {sel && <div className="mt-2 text-end text-xs text-muted">{t('lilin {tf} · GeckoTerminal', { tf })}</div>}
         </Panel>
 

@@ -17,8 +17,9 @@ import { ArrowLeft, ChevronDown, ExternalLink } from 'lucide-react';
 import { breakEven } from '../breakeven';
 import { gtTradesUrl, normalizeTrades } from '../../../src/trades.mjs';
 import { get } from '../api';
-import AdvancedChart from '../components/AdvancedChart';
-import { useLivePrice, useLiveCandles, LIVE_MS } from '../liveCandles';
+import AdvancedChart, { supplyOf } from '../components/AdvancedChart';
+import { useLivePrice, useLiveCandles, useMarket, quoteUsd, LIVE_MS } from '../liveCandles';
+import { drawKeyOf, savedTf } from '../chartSync';
 import { usePoll, useResync } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
@@ -81,7 +82,7 @@ export const writeSrc = (v) => { try { localStorage.setItem(SRC_KEY, v); } catch
 // `ranges` (optional): all open positions in this pool, so the pool detail chart
 // shows every active range as on the Monitor page. The `selected` one is the
 // position being highlighted (the entry/exit/BEP lines remain only for that one).
-export function PriceChart({ p, m, tf, ranges = null, onRangeClick = null }) {
+export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = null, ranges = null, onRangeClick = null }) {
   const { t } = useI18n();
   const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
   const hasRange = p.tick_lower != null && p.tick_upper != null;
@@ -95,20 +96,21 @@ export function PriceChart({ p, m, tf, ranges = null, onRangeClick = null }) {
   const pNow = live?.price ?? (p.curSqrt ? sqrtPrice(p.curSqrt, p.dec0, p.dec1, p.quoteSide) : (p.curTick != null ? at(p.curTick) : null));
 
   // GMGN candles are priced in USD, while the position's range/entry/BEP are in the pool's quote
-  // asset: everything is multiplied by the quote->USD rate (DexScreener's priceUsd / current price;
-  // USDG is assumed $1 if DexScreener is not available yet). Without a rate, the candles still show
-  // but the position markers are not drawn — better empty than off.
+  // asset: everything is multiplied by the quote->USD rate (the quote asset's USD price from
+  // DexScreener; USDG is assumed $1 if DexScreener is not available yet). Without a rate, the
+  // candles still show but the position markers are not drawn — better empty than off.
   const gmgn = m?.ohlcv?.source === 'gmgn';
   const quoteSym = p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null;
+  const qUsd = quoteUsd(m?.pair, p.baseToken) ?? (quoteSym === chainInfo().usdgSymbol ? 1 : null);
   const k = !gmgn ? 1
-    : m?.pair?.priceUsd > 0 && pNow > 0 ? m.pair.priceUsd / pNow
-    : quoteSym === chainInfo().usdgSymbol ? 1 : null;
+    : qUsd ?? (m?.pair?.priceUsd > 0 && pNow > 0 ? m.pair.priceUsd / pNow : null);
   const oriented = useMemo(() => (gmgn ? (m?.ohlcv?.candles || []) : orientCandles(m?.ohlcv, p.baseToken, pNow ?? pEntry)), [m, gmgn, p.baseToken, pNow, pEntry]);
   const liveK = useMemo(() => (live && k ? { ...live, price: live.price * k } : k ? live : null), [live, k]);
   const candles = useLiveCandles(oriented, SECS[tf], liveK, `${p.pool_ref}:${tf}:${gmgn ? 'gmgn' : 'gt'}`);
 
-  if (m?.ohlcv?.error) return <Empty title="Grafik harga tidak tersedia" sub={m.ohlcv.error} />;
-  if (!candles.length) return <Empty title="Belum ada lilin harga" sub={gmgn ? 'GMGN belum punya riwayat harga untuk token ini.' : 'GeckoTerminal belum punya riwayat harga untuk pool ini.'} />;
+  // No candles is shown inside the chart (its timeframe switcher stays usable), not instead of it.
+  const chartError = pending ? null : m?.ohlcv?.error
+    || (!candles.length ? (gmgn ? 'GMGN belum punya riwayat harga untuk token ini.' : 'GeckoTerminal belum punya riwayat harga untuk pool ini.') : null);
 
   const bep = breakEven(p);
   const closed = p.status === 'closed';
@@ -124,8 +126,9 @@ export function PriceChart({ p, m, tf, ranges = null, onRangeClick = null }) {
       {bep && <p className="mb-2 text-xs text-warning">
         {t('Harga BEP')}: {bep.price > 0 ? <>{price(bep.price)} {quoteSym}{pNow > 0 && <> · {pct((bep.price / pNow - 1) * 100, 2)} {t('dari harga sekarang')}</>}</> : t(bep.reason)}
       </p>}
-      <AdvancedChart key={`${p.pool_ref || p.baseToken || "pool"}:${p.id || "none"}:${tf}:${gmgn ? 'gmgn' : 'gt'}`}
-        candles={candles} tf={tf} quote={quote} poolRef={p.pool_ref || p.baseToken || null} range={range && k ? { lo: range.lo * k, hi: range.hi * k } : null}
+      <AdvancedChart key={p.pool_ref || p.baseToken || 'pool'}
+        candles={candles} tf={tf} onTfChange={onTf} loading={pending} error={chartError} onRetry={onRetry} series={gmgn ? 'gmgn' : 'gt'}
+        quote={quote} drawKey={drawKeyOf(p.baseToken, p.pool_ref)} poolRef={p.pool_ref || null} usdRate={gmgn ? 1 : qUsd} supply={supplyOf(m?.pair, p.baseToken)} range={range && k ? { lo: range.lo * k, hi: range.hi * k } : null}
         ranges={bands.length ? bands : null}
         entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: cv(pEntry) } : null}
         exit={closed ? { t: p.closed_ts, p: cv(pExit) } : null}
@@ -470,7 +473,8 @@ export default function PositionDetail({ id }) {
   const setSrc = (v) => { setSrcState(v); writeSrc(v); };
   const { close, closing } = useClosePosition(reload);
   const { claim, claiming } = useClaimFees(reload);
-  const tf = tfPick || (p ? tfFor(p.ageHours) : '1h');
+  // The last timeframe picked for this token, on any of its charts, comes before the age-based default.
+  const tf = tfPick || (p ? savedTf(drawKeyOf(p.baseToken, p.pool_ref), (x) => x in SECS) || tfFor(p.ageHours) : '1h');
   // Enough candles that the entry point is visible, plus a few before entry as context.
   // A closed position is framed around its lifetime: a little after
   // the exit, not up to now.
@@ -478,7 +482,7 @@ export default function PositionDetail({ id }) {
   const tail = p?.status === 'closed' ? Math.max(20, Math.ceil((span * 0.2) / SECS[tf])) : 0;
   const limit = p ? Math.min(1000, Math.max(120, Math.ceil(span / SECS[tf]) + 40 + tail)) : 200;
   const before = p?.status === 'closed' && p.closed_ts ? p.closed_ts + tail * SECS[tf] * 1000 : null;
-  const { data: m, reload: reloadMarket } = usePoll(p ? `/api/market?pool=${p.pool_ref}&tf=${tf}&limit=${limit}&token=${p.baseToken || ''}${before ? `&before=${before}` : ''}${src === 'gmgn' ? '&src=gmgn' : ''}` : null, 30000);
+  const { data: m, pending: mPending, reload: reloadMarket } = useMarket(p ? `/api/market?pool=${p.pool_ref}&tf=${tf}&limit=${limit}&token=${p.baseToken || ''}${before ? `&before=${before}` : ''}${src === 'gmgn' ? '&src=gmgn' : ''}` : null, 30000, `${tf}:${src}`);
   // "Refresh detail" forces a chain sync first — the value/fee/PnL figures on this page
   // come from the last sync, so merely reloading returns the same figures.
   const reloadAll = useCallback(async () => { await Promise.all([reload(), reloadMarket()]); }, [reload, reloadMarket]);
@@ -595,7 +599,7 @@ export default function PositionDetail({ id }) {
           action={<div className="flex flex-wrap gap-2">
             <Segmented size="sm" aria="Tampilan grafik" value={view} onChange={setView} options={VIEWS} />
             {view === 'chart' && (m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
-            {view !== 'dex' && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}
+            {view === 'gmgn' && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}
           </div>}>
           <div className="mb-3 flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
             <div>
@@ -618,7 +622,7 @@ export default function PositionDetail({ id }) {
             <div className="font-medium">{t('Harga BEP')}: {bep.price > 0 ? <span className="num">{price(bep.price)} {quote}{pNow > 0 && <span className="ml-2 text-xs">({pct((bep.price / pNow - 1) * 100, 2)} {t('dari harga sekarang')})</span>}</span> : t(bep.reason)}</div>
             <p className="mt-1 text-xs text-muted">{t('Estimasi termasuk fee saat ini dan hasil penarikan; tanpa fee mendatang, gas, dan slippage.')}</p>
           </div>}
-          {view === 'dex' ? <DexEmbed pool={p.pool_ref} /> : view === 'gmgn' ? <GmgnEmbed token={p.baseToken} tf={tf} p={p} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={p} m={m} tf={tf} />}
+          {view === 'dex' ? <DexEmbed pool={p.pool_ref} /> : view === 'gmgn' ? <GmgnEmbed token={p.baseToken} tf={tf} p={p} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={p} m={m} tf={tf} pending={mPending} onTf={setTf} onRetry={reloadMarket} />}
           <TradesTape pool={p.pool_ref} token={p.baseToken} base={base} quote={quote} live={!closed} />
         </Panel>
 

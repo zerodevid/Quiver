@@ -7,6 +7,10 @@ import { paintChrome } from './telegram';
 // instantly does not make the indicator blink every few seconds.
 export function usePoll(path, ms = 5000) {
   const [data, setData] = useState(null);
+  // The path `data` was fetched from: after the path changes, `data` still holds the old reply
+  // until the new one lands — `fresh` tells the two apart (a chart must not draw 1m candles
+  // under a freshly picked 1h timeframe).
+  const [dataPath, setDataPath] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const alive = useRef(true);
@@ -22,7 +26,7 @@ export function usePoll(path, ms = 5000) {
     const slow = setTimeout(() => { if (latest()) setLoading(true); }, 400);
     try {
       const d = await get(path);
-      if (latest()) { setData(d); setError(d.error || null); }
+      if (latest()) { setData(d); setDataPath(path); setError(d.error || null); }
     } catch (e) { if (latest()) setError(e.message); }
     finally { clearTimeout(slow); if (latest()) setLoading(false); }
   }, [path]);
@@ -33,7 +37,7 @@ export function usePoll(path, ms = 5000) {
     const t = setInterval(() => { if (!document.hidden) load(); }, ms);
     return () => { alive.current = false; clearInterval(t); };
   }, [load, ms]);
-  return { data, error, loading, reload: load, setData };
+  return { data, error, loading, reload: load, setData, fresh: data != null && dataPath === path };
 }
 
 // A "Refresh" button that really refreshes: ask the server to read the chain again

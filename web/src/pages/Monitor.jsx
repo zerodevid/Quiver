@@ -22,10 +22,11 @@ import { Activity, ArrowUpRight, LayoutGrid, Rows3 } from 'lucide-react';
 import { usePoll, useResync, useTick } from '../hooks';
 import { useClosePosition } from '../useClosePosition';
 import { useClaimFees } from '../useClaimFees';
-import { useLiveCandles } from '../liveCandles';
+import { useLiveCandles, useMarket, quoteUsd } from '../liveCandles';
+import { drawKeyOf, savedTf } from '../chartSync';
 import { breakEven } from '../breakeven';
 import { BAND_COLORS } from '../components/CandleChart';
-import AdvancedChart from '../components/AdvancedChart';
+import AdvancedChart, { supplyOf } from '../components/AdvancedChart';
 import AutoCompoundButton from '../components/AutoCompoundButton';
 import TakeoverButton from '../components/TakeoverButton';
 import TpSlButton from '../components/TpSlButton';
@@ -122,8 +123,7 @@ function TriggerBar({ x }) {
 // range band; the entry & BEP lines only for the selected position so it is not cluttered.
 // Starts polling after `delay` ms so the cards do not hit GeckoTerminal
 // simultaneously (quota ~30 calls/minute per IP).
-function CardChart({ g, sel, tf, onTf, tfReset, live, delay, height }) {
-  const { t } = useI18n();
+function CardChart({ g, sel, tf, onTf, live, delay, height }) {
   const p0 = g.p0;
   // The speculative token: GMGN candles are per token, and it orients GeckoTerminal's.
   const base = baseTokenOf(p0);
@@ -139,7 +139,7 @@ function CardChart({ g, sel, tf, onTf, tfReset, live, delay, height }) {
   // `pair` (DexScreener) is asked for its priceUsd: the quote -> USD rate below.
   // A failed load is retried in 8 s, not 45 s.
   const [failed, setFailed] = useState(false);
-  const { data: m } = usePoll(go ? `/api/market?pool=${p0.pool_ref}&tf=${tf}&limit=${limit}&token=${base || ''}&src=gmgn` : null, failed ? 8000 : 45000);
+  const { data: m, pending, reload } = useMarket(go ? `/api/market?pool=${p0.pool_ref}&tf=${tf}&limit=${limit}&token=${base || ''}&src=gmgn` : null, failed ? 8000 : 45000, tf);
   useEffect(() => setFailed(!!m?.ohlcv?.error), [m]);
   const at = (tick) => tickPrice(tick, p0.dec0, p0.dec1, p0.quoteSide);
   const pEntry = sel ? sqrtPrice(sel.p.entrySqrt, p0.dec0, p0.dec1, p0.quoteSide) : null;
@@ -148,9 +148,9 @@ function CardChart({ g, sel, tf, onTf, tfReset, live, delay, height }) {
   // multiplied by the quote -> USD rate (as on the position page). No rate = no markers.
   const gmgn = m?.ohlcv?.source === 'gmgn';
   const quoteSym = p0.quoteSide === 0 ? p0.symbol0 : p0.quoteSide === 1 ? p0.symbol1 : null;
+  const qUsd = quoteUsd(m?.pair, base) ?? (quoteSym === chainInfo().usdgSymbol ? 1 : null);
   const k = !gmgn ? 1
-    : m?.pair?.priceUsd > 0 && pNow > 0 ? m.pair.priceUsd / pNow
-    : quoteSym === chainInfo().usdgSymbol ? 1 : null;
+    : qUsd ?? (m?.pair?.priceUsd > 0 && pNow > 0 ? m.pair.priceUsd / pNow : null);
   const cv = (v) => (v != null && k ? v * k : null);
   const oriented = useMemo(() => (gmgn ? (m?.ohlcv?.candles || []) : orientCandles(m?.ohlcv, base, pNow ?? pEntry)), [m, gmgn, base, pNow, pEntry]);
   const liveK = useMemo(() => (live && k ? { ...live, price: live.price * k } : k ? live : null), [live, k]);
@@ -162,21 +162,12 @@ function CardChart({ g, sel, tf, onTf, tfReset, live, delay, height }) {
   const bep = sel ? breakEven(sel.p) : null;
   const quote = gmgn ? 'USD' : quoteSym;
   if (!m) return <div className="flex items-center justify-center" style={{ height }}><Loading text={go ? 'Memuat lilin…' : 'Antre…'} /></div>;
-  if (m.ohlcv?.error || !candles.length) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-1 px-4 text-center text-xs text-muted" style={{ height }}>
-        <span>{t('Grafik belum tersedia')}</span>
-        <span>{m.ohlcv?.error ? t(m.ohlcv.error) : gmgn ? t('GMGN belum punya riwayat harga untuk token ini.') : t('GeckoTerminal belum punya riwayat harga untuk pool ini.')}</span>
-        {/* The timeframe switcher lives inside the chart, so without candles a card-only
-            timeframe needs its own way back. */}
-        {tfReset && (
-          <button type="button" className="mt-1 underline underline-offset-2" onClick={tfReset}>{t('Kembali ke timeframe halaman')}</button>
-        )}
-      </div>
-    );
-  }
+  // A failed fetch / no candles is shown over the chart: its timeframe switcher stays usable.
+  const chartError = pending ? null : m.ohlcv?.error
+    || (!candles.length ? (gmgn ? 'GMGN belum punya riwayat harga untuk token ini.' : 'GeckoTerminal belum punya riwayat harga untuk pool ini.') : null);
   return (
-    <AdvancedChart key={`${p0.pool_ref}:${tf}:${gmgn ? 'gmgn' : 'gt'}`} candles={candles} tf={tf} onTfChange={onTf} quote={quote} poolRef={p0.pool_ref} title={`${p0.symbol0}/${p0.symbol1}`}
+    <AdvancedChart key={p0.pool_ref} candles={candles} tf={tf} onTfChange={onTf} loading={pending} error={chartError} onRetry={reload} series={gmgn ? 'gmgn' : 'gt'}
+      quote={quote} drawKey={drawKeyOf(base, p0.pool_ref)} poolRef={p0.pool_ref} usdRate={gmgn ? 1 : qUsd} supply={supplyOf(m?.pair, base)} title={`${p0.symbol0}/${p0.symbol1}`}
       height={height} ranges={ranges}
       entry={sel && (sel.p.opened_ts || pEntry != null) ? { t: sel.p.opened_ts, p: cv(pEntry) } : null}
       now={cv(pNow)} bep={bep?.price > 0 ? cv(bep.price) : null} />
@@ -235,7 +226,8 @@ function MonitorCard({ g, tf: tfGlobal, tfEpoch, dense, delay, actions }) {
   // The chart's own timeframe: a switch on this card wins over the page-wide choice until that changes.
   const [tfOwn, setTfOwn] = useState(null);
   useEffect(() => setTfOwn(null), [tfEpoch]);
-  const tf = tfOwn || tfGlobal;
+  // With the page on "auto", the timeframe last picked for this token (on any chart) is used.
+  const tf = tfOwn || (tfEpoch === 'auto' ? savedTf(drawKeyOf(baseTokenOf(p0), p0.pool_ref), (x) => x in SECS) : null) || tfGlobal;
   const sel = g.items.find((x) => x.p.id === pick) || g.items[0];
   const p = sel.p;
   const at = (tick) => tickPrice(tick, p0.dec0, p0.dec1, p0.quoteSide);
@@ -335,7 +327,7 @@ function MonitorCard({ g, tf: tfGlobal, tfEpoch, dense, delay, actions }) {
         </div>}
       </div>
       <div className="px-1">
-        <CardChart g={g} sel={sel} tf={tf} onTf={setTfOwn} tfReset={tfOwn && tfOwn !== tfGlobal ? () => setTfOwn(null) : null} live={g.live} delay={delay} height={dense ? 260 : 340} />
+        <CardChart g={g} sel={sel} tf={tf} onTf={setTfOwn} live={g.live} delay={delay} height={dense ? 260 : 340} />
       </div>
 
       {/* selected position: source & age (when many), linear range band, key numbers */}
