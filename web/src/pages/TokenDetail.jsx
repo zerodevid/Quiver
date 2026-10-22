@@ -34,11 +34,11 @@ const fmtAmt = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleStri
 
 // USD candles of the selected pool. The drawings are the token's (shared with every chart of
 // it), so switching pool or timeframe keeps them.
-function TokenChart({ m, tf, onTf, pending, onRetry, poolRef, token }) {
+function TokenChart({ m, tf, onTf, pending, onRetry, poolRef, token, symbol }) {
   const candles = m?.ohlcv?.candles || [];
   const error = pending ? null : m?.ohlcv?.error || (!candles.length ? 'GeckoTerminal belum punya riwayat harga untuk pool ini.' : null);
   return <AdvancedChart key={poolRef} candles={candles} tf={tf} onTfChange={onTf} loading={pending} error={error} onRetry={onRetry} series="usd"
-    quote="USD" usdRate={1} supply={supplyOf(m?.pair, token)} drawKey={drawKeyOf(token)} />;
+    quote="USD" title={symbol ? `${symbol}/USD` : null} usdRate={1} supply={supplyOf(m?.pair, token)} drawKey={drawKeyOf(token)} />;
 }
 
 export default function TokenDetail({ param }) {
@@ -121,7 +121,7 @@ export default function TokenDetail({ param }) {
           desc={sel ? <span className="inline-flex items-center gap-1.5">{t('pool')} <PairName token0={sel.base.address} token1={sel.quote.address} symbol0={sel.base.symbol} symbol1={sel.quote.symbol} pool={sel.pool} /> <span className="uppercase">{venueOf(sel)}</span></span> : null}>
           {d.market?.error ? <Empty title="Data pasar tidak tersedia" sub={d.market.error} />
             : !sel ? <Empty title="Belum ada pool terindeks" sub="DexScreener belum mengenal pool untuk token ini." />
-              : !m ? <Loading /> : <TokenChart m={m} tf={tf} onTf={setTf} pending={mPending} onRetry={reloadMarket} poolRef={sel.pool} token={a} />}
+              : !m ? <Loading /> : <TokenChart m={m} tf={tf} onTf={setTf} pending={mPending} onRetry={reloadMarket} poolRef={sel.pool} token={a} symbol={tk.symbol} />}
           {sel && <div className="mt-2 text-end text-xs text-muted">{t('lilin {tf} · GeckoTerminal', { tf })}</div>}
         </Panel>
 

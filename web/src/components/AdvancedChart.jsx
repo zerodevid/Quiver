@@ -1,7 +1,8 @@
-// Advanced chart with KLineChart, laid out like a trading terminal: timeframe switcher,
-// OHLC legend, grouped drawing toolbar (lines, fibonacci, shapes, notes, measure), magnet /
-// lock / hide, price-axis mode (linear / log / percent), an indicator menu, screenshot and
-// fullscreen.
+// Advanced chart with KLineChart, laid out like the GMGN / TradingView terminal: a plain-text
+// top bar (timeframe, chart type, indicators, Price / MCap), a borderless drawing rail on the
+// left (lines, fibonacci, shapes, notes, measure, magnet / lock / hide), the OHLC legend over
+// the candles, volume overlaid at the foot of the price pane, and a bottom bar with range
+// presets, a clock and the price-scale mode (auto / lin / log / %).
 //
 // Drawings belong to the token, not to this chart (web/src/chartSync.js): whatever is drawn
 // here shows up on every other chart of the same token — other timeframes, the Monitor card,
@@ -12,11 +13,11 @@
 // candles stay under a "loading" veil, then the series is swapped in place (no remount, so the
 // drawings, indicators and fullscreen state stay put).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { init, dispose, registerOverlay, registerYAxis } from 'klinecharts';
+import { init, dispose, registerOverlay, registerYAxis, registerIndicator } from 'klinecharts';
 import {
   TrendingUp, Minus, Ruler, Brush, GitCommitHorizontal, Square, Trash2, Magnet, Lock, LockOpen, Eye, EyeOff,
   Maximize2, Minimize2, Camera, ChevronDown, Type, Tag, MoveUpRight, Slash, ArrowRightToLine, SeparatorVertical,
-  Equal, Rows3, RotateCcw, Activity, Crosshair, Loader2, RefreshCw,
+  Equal, Rows3, RotateCcw, Crosshair, Loader2, RefreshCw, CandlestickChart, ChartNoAxesColumn, AreaChart, SquareFunction, CalendarRange,
 } from 'lucide-react';
 import { ask } from './ui';
 import { useI18n } from '../i18n';
@@ -70,7 +71,9 @@ registerOverlay({
     const { color, label } = overlay.extendData || {};
     const figures = [{ type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: 0, y: c.y }, { x: bounding.width, y: c.y }] }, styles: { style: 'dashed', color, size: 1 } }];
     if (label) {
-      figures.push({ type: 'text', ignoreEvent: true, attrs: { x: 4, y: c.y - 2, text: label, align: 'left', baseline: 'bottom' },
+      // under the OHLC legend the tag moves to the right end of the line
+      const right = c.y < LEGEND_PX + 8;
+      figures.push({ type: 'text', ignoreEvent: true, attrs: { x: right ? bounding.width - 4 : 4, y: right ? c.y + 2 : c.y - 2, text: label, align: right ? 'right' : 'left', baseline: right ? 'top' : 'bottom' },
         styles: tagStyle(color) });
     }
     return figures;
@@ -141,7 +144,9 @@ function robustRange(chart, defaultRange) {
 
 // Axis labels without trailing zeros: 0.0{3}48 rather than 0.0{3}480000 (the precision is set
 // for the smallest price on the chart, so round ticks carry a long tail of zeros).
+// A market-cap series is set to precision 0, and reads as 875.46K like on GMGN.
 const trimZeros = (value, precision) => {
+  if (precision === 0 && Math.abs(value) >= 1000) return compact(value);
   const s = Number(value).toFixed(Math.max(0, precision));
   return s.includes('.') ? s.replace(/\.?0+$/, '') : s;
 };
@@ -281,50 +286,118 @@ const TOOL_GROUPS = [
 ];
 
 const INDICATOR_GROUPS = [
-  ['Di atas harga', true, ['MA', 'EMA', 'SMA', 'BOLL', 'SAR', 'BBI', 'AVP']],
-  ['Panel bawah', false, ['VOL', 'MACD', 'RSI', 'KDJ', 'CCI', 'WR', 'OBV', 'ROC', 'MTM', 'DMI', 'AO', 'PSY', 'TRIX', 'BIAS']],
+  ['Di atas harga', true, ['VOL', 'MA', 'EMA', 'SMA', 'BOLL', 'SAR', 'BBI', 'AVP']],
+  ['Panel bawah', false, ['MACD', 'RSI', 'KDJ', 'CCI', 'WR', 'OBV', 'ROC', 'MTM', 'DMI', 'AO', 'PSY', 'TRIX', 'BIAS']],
 ];
 const INDICATOR_OVERLAY = new Set(INDICATOR_GROUPS[0][2]);
 const KNOWN_INDICATORS = new Set(INDICATOR_GROUPS.flatMap(([, , list]) => list));
 
-const AXES = [['priceLin', 'Lin'], ['logPrice', 'Log'], ['percentage', '%']];
+const AXES = [['auto', 'auto'], ['priceLin', 'lin'], ['logPrice', 'log'], ['percentage', '%']];
+
+// Chart types of the top bar (klinecharts candle.type), remembered per browser.
+const CHART_TYPES = [
+  ['candle_solid', CandlestickChart, 'Lilin'], ['candle_stroke', CandlestickChart, 'Lilin kosong'],
+  ['ohlc', ChartNoAxesColumn, 'Batang OHLC'], ['area', AreaChart, 'Area'],
+];
+const TYPE_KEY = 'lpcopy-chart-type';
+const readType = () => { try { const v = localStorage.getItem(TYPE_KEY); return CHART_TYPES.some(([id]) => id === v) ? v : 'candle_solid'; } catch { return 'candle_solid'; } };
+
+// Range presets of the bottom bar: each one picks the coarsest timeframe that still gives the span
+// RANGE_BARS bars (1D → 15m, 7D → 1H, 30D → 4H), the way a terminal's range buttons do.
+const RANGES = [['1D', 86400e3], ['7D', 7 * 86400e3], ['30D', 30 * 86400e3]];
+const RANGE_BARS = 60;
+
+// Space the legend over the candles takes: the price axis keeps the candles below it, and the
+// on-price indicators write their values under it.
+const LEGEND_PX = 44;
+
+const p2 = (n) => String(n).padStart(2, '0');
 
 // Time left in the running candle, under the last-price label on the axis.
 function countdown(ts, ms) {
   const left = Math.max(0, ts + ms - Date.now());
   const s = Math.floor(left / 1000);
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-  const p2 = (n) => String(n).padStart(2, '0');
   return h ? `${h >= 24 ? `${Math.floor(h / 24)}d ` : ''}${p2(h % 24)}:${p2(m)}:${p2(sec)}` : `${p2(m)}:${p2(sec)}`;
 }
 
+// Candle colours of the GMGN / TradingView terminal, the same in both themes: teal up, coral down.
+const UP = '#26a69a', DOWN = '#ef5350';
+const chartPalette = () => ({ ...palette(), up: UP, down: DOWN });
+const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
+
+// Volume drawn at the foot of the price pane (like GMGN), not in a pane of its own: translucent
+// bars scaled to the loudest visible bar, filling the bottom fifth, which the price axis keeps
+// clear of candles (a negative zLevel would hide it behind the pane once another on-price
+// indicator is on). It has no figures, so it never stretches the price axis. Picked as 'VOL'.
+const VOL_SHARE = 0.2;
+registerIndicator({
+  name: 'volOverlay', shortName: 'VOL', figures: [],
+  // the volume reads in the OHLC legend: no tooltip line of its own
+  createTooltipDataSource: () => ({ name: '', calcParamsText: '', features: [], legends: [] }),
+  calc: (list) => list.map(() => ({})),
+  draw: ({ ctx, chart, bounding, xAxis }) => {
+    const list = chart.getDataList();
+    const { from, to } = chart.getVisibleRange();
+    let max = 0;
+    for (let i = Math.max(0, from); i < Math.min(list.length, to); i++) max = Math.max(max, list[i].volume || 0);
+    if (!(max > 0)) return true;
+    const { gapBar } = chart.getBarSpace();
+    const w = Math.max(1, gapBar);
+    const h = bounding.height * VOL_SHARE;
+    for (let i = Math.max(0, from); i < Math.min(list.length, to); i++) {
+      const d = list[i];
+      if (!(d.volume > 0)) continue;
+      const bh = Math.max(1, (d.volume / max) * h);
+      ctx.fillStyle = withAlpha(d.close >= d.open ? UP : DOWN, PAL.dark ? 0.42 : 0.35);
+      ctx.fillRect(Math.round(xAxis.convertToPixel(i) - w / 2), bounding.height - bh, w, bh);
+    }
+    return true;
+  },
+});
+
 function buildStyles(pal) {
+  const grid = withAlpha(pal.border, pal.dark ? 0.45 : 0.6);
+  const cross = { style: 'dashed', dashedValue: [4, 3], size: 1, color: withAlpha(pal.muted, 0.75) };
+  const crossText = { backgroundColor: pal.label, borderColor: pal.label, color: '#ffffff', size: 11, family: FONT, borderRadius: 3, paddingLeft: 6, paddingRight: 6, paddingTop: 3, paddingBottom: 3 };
   return {
-    grid: { horizontal: { color: withAlpha(pal.border, 0.6) }, vertical: { show: false } },
+    grid: { horizontal: { color: grid, style: 'solid', size: 1 }, vertical: { show: true, color: grid, style: 'solid', size: 1 } },
     candle: {
       bar: {
         upColor: pal.up, downColor: pal.down, noChangeColor: pal.muted,
         upBorderColor: pal.up, downBorderColor: pal.down, noChangeBorderColor: pal.muted,
         upWickColor: pal.up, downWickColor: pal.down, noChangeWickColor: pal.muted,
       },
-      // OHLC is read from the legend strip above the canvas (it never covers a candle).
-      tooltip: { showRule: 'none' },
+      area: {
+        lineColor: pal.up, lineSize: 2,
+        backgroundColor: [{ offset: 0, color: withAlpha(pal.up, 0.01) }, { offset: 1, color: withAlpha(pal.up, 0.22) }],
+        point: { color: pal.up, rippleColor: withAlpha(pal.up, 0.3) },
+      },
+      // OHLC is read from the legend over the candles (an HTML strip, never a box over a candle);
+      // the on-price indicators write their values under it, from this offset.
+      tooltip: { showRule: 'none', offsetTop: LEGEND_PX },
       priceMark: {
-        high: { color: pal.text }, low: { color: pal.text },
+        high: { color: pal.text, textFamily: FONT }, low: { color: pal.text, textFamily: FONT },
         last: {
-          text: { family: 'ui-sans-serif, system-ui, sans-serif', size: 11 },
-          extendTexts: [{ show: true, position: 'below_price', updateInterval: 1000, size: 10, weight: 'normal', family: 'ui-monospace, SFMono-Regular, monospace', color: '#ffffff', paddingLeft: 4, paddingRight: 4, paddingTop: 0, paddingBottom: 2 }],
+          upColor: pal.up, downColor: pal.down, noChangeColor: pal.muted,
+          line: { style: 'dashed', dashedValue: [1, 2], size: 1 },
+          text: { family: FONT, size: 11, weight: '500', borderRadius: 2, paddingLeft: 5, paddingRight: 5, paddingTop: 3, paddingBottom: 2 },
+          extendTexts: [{ show: true, position: 'below_price', updateInterval: 1000, size: 10, weight: 'normal', family: 'ui-monospace, SFMono-Regular, monospace', color: '#ffffff', paddingLeft: 5, paddingRight: 5, paddingTop: 0, paddingBottom: 3 }],
         },
       },
     },
-    xAxis: { axisLine: { color: pal.border }, tickText: { color: pal.text } },
-    yAxis: { axisLine: { color: pal.border }, tickText: { color: pal.text } },
+    indicator: {
+      tooltip: { title: { family: FONT, size: 11 }, legend: { family: FONT, size: 11 } },
+      lastValueMark: { text: { family: FONT } },
+    },
+    xAxis: { axisLine: { show: false }, tickLine: { show: false }, tickText: { color: pal.text, size: 11, family: FONT, marginStart: 6 } },
+    yAxis: { axisLine: { show: false }, tickLine: { show: false }, tickText: { color: pal.text, size: 11, family: FONT, marginStart: 8, marginEnd: 8 } },
     crosshair: {
-      horizontal: { line: { color: withAlpha(pal.muted, 0.7) }, text: { backgroundColor: pal.label } },
-      vertical: { line: { color: withAlpha(pal.muted, 0.7) }, text: { backgroundColor: pal.label } },
+      horizontal: { line: cross, text: crossText },
+      vertical: { line: cross, text: crossText },
     },
     overlay: { line: { color: pal.accent }, point: { color: pal.accent, borderColor: pal.accent } },
-    separator: { color: pal.border },
+    separator: { color: pal.border, activeBackgroundColor: withAlpha(pal.accent, 0.12) },
   };
 }
 
@@ -374,6 +447,15 @@ function normalize(candles, tf) {
   return out.length > MAX_BARS ? out.slice(-MAX_BARS) : out;
 }
 
+// Local wall clock with its UTC offset, ticking on its own so the chart does not re-render.
+function Clock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => { const id = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(id); }, []);
+  const off = -now.getTimezoneOffset();
+  const tz = off ? `UTC${off > 0 ? '+' : '−'}${Math.floor(Math.abs(off) / 60)}${Math.abs(off) % 60 ? `:${p2(Math.abs(off) % 60)}` : ''}` : 'UTC';
+  return <span className="num text-muted">{p2(now.getHours())}:{p2(now.getMinutes())}:{p2(now.getSeconds())} {tz}</span>;
+}
+
 const sameBar = (a, b) => a && b && a.timestamp === b.timestamp && a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close && a.volume === b.volume;
 
 // LP position context overlays (range band, entry/exit/BEP lines) use a fixed groupId
@@ -388,7 +470,7 @@ const userOverlays = (chart) => chart.getOverlays().filter((o) => o.groupId !== 
 function slimPane(chart, id, name) {
   if (INDICATOR_OVERLAY.has(name)) return;
   const ind = chart.getIndicators({ id })[0];
-  if (ind?.paneId) chart.setPaneOptions({ id: ind.paneId, height: name === 'VOL' ? 70 : 90 });
+  if (ind?.paneId) chart.setPaneOptions({ id: ind.paneId, height: 90 });
 }
 
 // Closes a popover when the pointer goes down anywhere outside `ref`.
@@ -402,9 +484,13 @@ function useDismiss(open, ref, close) {
 }
 
 const BTN = 'flex size-7 shrink-0 items-center justify-center rounded text-muted transition-colors hover:bg-default hover:text-foreground';
+// the left rail of a wide chart: bigger, borderless, like GMGN's
+const RAIL_BTN = 'flex size-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-default hover:text-foreground';
+const ICON = 'size-[18px]';
+const TOP_BTN = 'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[0.8125rem] font-medium text-muted transition-colors hover:bg-default hover:text-foreground';
 
 // One toolbar group: the main button draws the last tool used, the caret opens a flyout.
-function ToolGroup({ group, onDraw, t, active }) {
+function ToolGroup({ group, onDraw, t, active, wide }) {
   const [open, setOpen] = useState(false);
   const [last, setLast] = useState(0);
   const ref = useRef(null);
@@ -415,9 +501,9 @@ function ToolGroup({ group, onDraw, t, active }) {
     <div ref={ref} className="relative">
       <div className="flex">
         <button type="button" title={t(label)} aria-label={t(label)} onClick={() => onDraw(name)}
-          className={`${BTN} ${active === name ? 'bg-accent/15 text-accent' : ''}`}><Icon className="size-4" /></button>
+          className={`${wide ? RAIL_BTN : BTN} ${active === name ? 'bg-accent/15 text-accent' : ''}`}><Icon className={wide ? ICON : 'size-4'} /></button>
         {multi && <button type="button" aria-label={t('Alat lain')} aria-expanded={open} onClick={() => setOpen((v) => !v)}
-          className="-ml-1 flex h-7 w-3 items-center justify-center rounded text-muted/70 hover:bg-default hover:text-foreground"><ChevronDown className="size-3 -rotate-90" /></button>}
+          className={`-ml-1 flex w-3 items-center justify-center rounded text-muted/50 hover:bg-default hover:text-foreground ${wide ? 'h-8' : 'h-7'}`}><ChevronDown className="size-3 -rotate-90" /></button>}
       </div>
       {open && (
         <div className="absolute top-0 left-full z-30 ml-1 min-w-44 rounded-lg border border-border bg-surface p-1 shadow-lg">
@@ -435,22 +521,23 @@ function ToolGroup({ group, onDraw, t, active }) {
 
 const compact = (v) => (v == null ? '—' : Number(v).toLocaleString(fmtLocale(), { notation: 'compact', maximumFractionDigits: 2 }));
 
-// OHLC strip above the canvas: the bar under the crosshair, or the latest bar.
-function Legend({ bar, prev, quote, mc, t }) {
-  if (!bar) return <div className="h-4" />;
-  const chg = prev?.close > 0 ? (bar.close / prev.close - 1) * 100 : null;
-  const up = bar.close >= bar.open;
-  const fp = mc ? (v) => `$${compact(v)}` : fmtPrice;
-  const tone = up ? 'text-success' : 'text-danger';
-  const when = new Date(bar.timestamp).toLocaleString(fmtLocale(), { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-  const cell = (k, v) => <span className="whitespace-nowrap"><span className="text-muted">{k}</span> <span className={`num ${tone}`}>{v}</span></span>;
+// OHLC legend over the top-left of the candles, GMGN style: name · timeframe, O H L C and the
+// change from the previous close, then the volume. The bar under the crosshair, or the latest.
+function Legend({ bar, prev, label, tfLabel, mc, t, wide }) {
+  if (!bar) return null;
+  const diff = prev?.close > 0 ? bar.close - prev.close : null;
+  const up = diff != null ? diff >= 0 : bar.close >= bar.open;
+  const fp = mc ? (v) => compact(v) : fmtPrice;
+  const tone = up ? 'text-[#26a69a]' : 'text-[#ef5350]';
+  const cell = (k, v) => <span className="whitespace-nowrap"><span className="text-muted">{k}</span><span className={`num ${tone}`}>{v}</span></span>;
   return (
-    <div className="flex min-h-4 min-w-0 flex-wrap items-center gap-x-2.5 text-[0.6875rem] leading-4">
-      <span className="num shrink-0 text-muted">{when}</span>
-      {cell('O', fp(bar.open))}{cell('H', fp(bar.high))}{cell('L', fp(bar.low))}{cell('C', fp(bar.close))}
-      {chg != null && <span className={`num whitespace-nowrap ${tone}`}>{chg >= 0 ? '+' : ''}{chg.toFixed(2)}%</span>}
-      <span className="hidden whitespace-nowrap sm:inline"><span className="text-muted">{t('Vol')}</span> <span className="num">{compact(bar.volume)}</span></span>
-      {(mc || quote) && <span className="hidden text-muted/80 md:inline">· {mc ? 'MCap USD' : quote}</span>}
+    <div className="pointer-events-none absolute top-1 left-2 z-[5] flex max-w-[calc(100%-5rem)] flex-col gap-0.5 text-[0.75rem] leading-4 [text-shadow:0_0_3px_var(--surface)]">
+      <div className={`flex min-w-0 items-center gap-x-2 ${wide ? 'flex-wrap' : 'overflow-hidden'}`}>
+        {label && <span className="whitespace-nowrap font-medium text-foreground">{label}<span className="text-muted"> · {tfLabel}</span></span>}
+        {wide && <>{cell('O', fp(bar.open))}{cell('H', fp(bar.high))}{cell('L', fp(bar.low))}</>}{cell('C', fp(bar.close))}
+        {diff != null && <span className={`num whitespace-nowrap ${tone}`}>{wide && <>{diff >= 0 ? '+' : '−'}{fp(Math.abs(diff))} </>}({diff >= 0 ? '+' : '−'}{Math.abs((diff / prev.close) * 100).toFixed(2)}%)</span>}
+      </div>
+      <div className="whitespace-nowrap"><span className="text-muted">{t('Volume')}</span> <span className={`num ${tone}`}>{compact(bar.volume)}</span></div>
     </div>
   );
 }
@@ -498,7 +585,10 @@ export default function AdvancedChart({
   const lockedRef = useRef(false);
   const hiddenRef = useRef(false);
   const [ready, setReady] = useState(false);
-  const [pal, setPal] = useState(palette);
+  const [pal, setPal] = useState(chartPalette);
+  const [chartType, setChartType] = useState(readType);
+  const [width, setWidth] = useState(0);
+  const spanRef = useRef(null);          // span (ms) a range preset asked for, applied by the next fit
   const [activeInds, setActiveInds] = useState(() => new Set(chartPrefs().indicators));
   // What was last picked for this token (timeframe, Price/MCap, scale) comes back, on every page it is charted.
   const [axis, setAxisState] = useState(() => viewOf(drawKey).axis || 'auto');
@@ -520,6 +610,7 @@ export default function AdvancedChart({
   const [hidden, setHidden] = useState(false);
   const [full, setFull] = useState(false);
   const [indOpen, setIndOpen] = useState(false);
+  const [menu, setMenu] = useState(null);     // open top-bar menu: 'tf' | 'type' | null
   const [drawing, setDrawing] = useState(null);
   const [note, setNote] = useState(null);       // null = closed, string = text being typed
   const [hover, setHover] = useState(null);     // data index under the crosshair, null = latest
@@ -527,6 +618,9 @@ export default function AdvancedChart({
   const indRef = useRef(null);
   const closeInd = useCallback(() => setIndOpen(false), []);
   useDismiss(indOpen, indRef, closeInd);
+  const menuRef = useRef(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  useDismiss(!!menu, menuRef, closeMenu);
 
   // Market-cap view: every price on the chart (candles, bands, lines, drawings) is multiplied by
   // `sc` = usdRate × supply; volume is left alone.
@@ -558,7 +652,7 @@ export default function AdvancedChart({
   usdRef.current = usdRate > 0 ? usdRate / sc : null;
 
   useEffect(() => {
-    const mo = new MutationObserver(() => { const p = palette(); PAL = p; setPal(p); });
+    const mo = new MutationObserver(() => { const p = chartPalette(); PAL = p; setPal(p); });
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
     return () => mo.disconnect();
   }, []);
@@ -697,12 +791,26 @@ export default function AdvancedChart({
   }, []);
 
   useEffect(() => { PAL = pal; chartRef.current?.chart.setStyles(buildStyles(pal)); }, [pal]);
-
-  // Price-axis mode.
   useEffect(() => {
     if (!ready) return;
-    chartRef.current?.chart.overrideYAxis({ paneId: 'candle_pane', name: axisName });
-  }, [ready, axisName]);
+    chartRef.current?.chart.setStyles({ candle: { type: chartType } });
+    try { localStorage.setItem(TYPE_KEY, chartType); } catch { /* ignore */ }
+  }, [ready, chartType]);
+
+  // Price-axis mode. The gaps keep the candles clear of the legend at the top and of the
+  // volume bars at the foot.
+  // klinecharts adds a gap as a share of the price range, so the legend's pixels are turned into
+  // the share that leaves them free on this pane's height.
+  const volOn = activeInds.has('VOL');
+  const paneH = full ? 0 : height;
+  useEffect(() => {
+    const chart = chartRef.current?.chart;
+    if (!ready || !chart) return;
+    const h = chart.getSize('candle_pane', 'main')?.height || paneH || 400;
+    const bottom = volOn ? 0.3 : 0.08;
+    const f = Math.min(0.4, (LEGEND_PX + 22) / h);
+    chart.overrideYAxis({ paneId: 'candle_pane', name: axisName, gap: { top: (f * (1 + bottom)) / (1 - f), bottom } });
+  }, [ready, axisName, volOn, paneH, width, activeInds]);
 
   // Initial / reset zoom: show the position's whole life (entry candle with some margin) or the
   // last ~90 bars, with the last candle a few bars in from the price axis.
@@ -712,10 +820,13 @@ export default function AdvancedChart({
     const list = r?.chart.getDataList() || [];
     const n = list.length;
     if (!r || !w || !n) return;
+    const span = spanRef.current;
+    spanRef.current = null;
     const startIdx = entry?.t ? list.findIndex((d) => d.timestamp >= entry.t) : -1;
     const bars = startIdx >= 0 ? n - startIdx : 0;
-    const visible = Math.min(n, Math.max(90, Math.round(bars * 1.15) + 10));
-    const space = Math.max(1.5, Math.min(18, (w - 60) / (visible + 1)));
+    const visible = span ? Math.min(n, Math.ceil(span / (TF_MS[tfRef.current] || 3600e3)))
+      : Math.min(n, Math.max(90, Math.round(bars * 1.15) + 10));
+    const space = Math.max(Math.min(1.5, (w * 0.92) / n), Math.min(18, (w - 60) / (visible + 1)));
     r.chart.setBarSpace(space);
     r.chart.setOffsetRightDistance(Math.max(40, space * 4));
     r.chart.scrollToRealTime();
@@ -791,8 +902,10 @@ export default function AdvancedChart({
       if (r.indicatorIds[name]) continue;
       // VOL without its three moving averages: bars only, and a one-line legend that does not
       // pile up over the bars in a narrow card
-      const spec = INDICATOR_OVERLAY.has(name) ? { name, paneId: 'candle_pane' } : name === 'VOL' ? { name, calcParams: [] } : name;
-      const id = r.chart.createIndicator(spec, false);
+      const spec = name === 'VOL' ? { name: 'volOverlay', paneId: 'candle_pane' }
+        : INDICATOR_OVERLAY.has(name) ? { name, paneId: 'candle_pane' } : name;
+      // isStack: the price pane holds VOL, MA, EMA… together (without it each one replaces the last)
+      const id = r.chart.createIndicator(spec, typeof spec === 'object');
       if (id) { r.indicatorIds[name] = id; slimPane(r.chart, id, name); }
     }
     setActiveInds(new Set(Object.keys(r.indicatorIds)));
@@ -918,6 +1031,15 @@ export default function AdvancedChart({
     a.click();
   };
 
+  // Range preset: the coarsest timeframe with RANGE_BARS bars over the span (when this chart can
+  // switch timeframe), zoomed to the span once its candles are in.
+  const showRange = (ms) => {
+    spanRef.current = ms;
+    const ids = TIMEFRAMES.map(([id]) => id);
+    const want = [...ids].reverse().find((id) => ms / TF_MS[id] >= RANGE_BARS) || ids[0];
+    if (onTfChange && want !== tf) pickTf(want); else fitView();
+  };
+
   // Keyboard: Esc cancels the drawing in progress (or leaves fullscreen), Delete removes the
   // drawing that was clicked last, Alt+R resets the view.
   const onKeyDown = (e) => {
@@ -931,7 +1053,10 @@ export default function AdvancedChart({
   useEffect(() => {
     if (!ready || !box.current) return undefined;
     let raf = 0;
-    const ro = new ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => chartRef.current?.chart.resize()); });
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => { chartRef.current?.chart.resize(); setWidth(wrap.current?.clientWidth || 0); });
+    });
     ro.observe(box.current);
     return () => { ro.disconnect(); cancelAnimationFrame(raf); };
   }, [ready]);
@@ -942,42 +1067,65 @@ export default function AdvancedChart({
     return () => { document.body.style.overflow = prev; };
   }, [full]);
 
-  const seg = (on) => `rounded px-1.5 py-1 text-[0.6875rem] font-medium transition-colors ${on ? 'bg-default text-foreground' : 'text-muted hover:text-foreground'}`;
   const list = chartRef.current?.chart.getDataList() || [];
   const legendIdx = hover != null && hover >= 0 && hover < list.length ? hover : list.length - 1;
   void tick;   // the legend reads the chart's list, which `tick` / data changes refresh
+  // a Monitor card or a phone: smaller rail, timeframes in a menu, no clock
+  const wide = width === 0 || width >= 640;
+  const tfLabel = (TIMEFRAMES.find(([id]) => id === tf) || [tf, tf])[1];
+  const typeNow = CHART_TYPES.find(([id]) => id === chartType) || CHART_TYPES[0];
+  const TypeIcon = typeNow[1];
+  const sep = <span className="mx-0.5 h-4 w-px shrink-0 bg-border" />;
+  const railBtn = wide ? RAIL_BTN : BTN;
+  const icon = wide ? ICON : 'size-4';
+  const on = 'bg-accent/15 text-accent';
+  const menuItem = (active) => `flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-start text-xs transition-colors hover:bg-default hover:text-foreground ${active ? 'text-foreground' : 'text-muted'}`;
 
   return (
     <div ref={wrap} tabIndex={-1} onKeyDown={onKeyDown}
       className={`outline-none ${full ? 'fixed inset-0 z-[60] flex flex-col bg-surface p-3' : ''}`}>
-      {/* top bar: timeframe, price axis, indicators, utilities */}
-      <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-        {full && title && <span className="mr-1 text-sm font-semibold">{title}</span>}
-        {onTfChange && (
-          <div className="flex items-center gap-0.5 rounded border border-border bg-surface/80 p-0.5" role="radiogroup" aria-label={t('Rentang lilin')}>
+      {/* top bar: timeframe, chart type, indicators, Price / MCap — utilities on the right */}
+      <div ref={menuRef} className="mb-1 flex min-h-8 flex-wrap items-center gap-0.5 border-b border-border pb-1">
+        {full && title && <span className="mr-2 text-sm font-semibold">{title}</span>}
+        {onTfChange && (wide ? (
+          <div className="flex items-center" role="radiogroup" aria-label={t('Rentang lilin')}>
             {TIMEFRAMES.map(([id, label]) => (
-              <button key={id} type="button" role="radio" aria-checked={tf === id} onClick={() => tf !== id && pickTf(id)} className={seg(tf === id)}>{label}</button>
+              <button key={id} type="button" role="radio" aria-checked={tf === id} onClick={() => tf !== id && pickTf(id)}
+                className={`${TOP_BTN} ${tf === id ? 'text-foreground' : ''}`}>{label}</button>
             ))}
           </div>
-        )}
-        {mcMul > 0 && (
-          <div className="flex items-center gap-0.5 rounded border border-border bg-surface/80 p-0.5" role="radiogroup" aria-label={t('Tampilan grafik')}>
-            {[['price', t('Harga')], ['mc', 'MCap']].map(([id, label]) => (
-              <button key={id} type="button" role="radio" aria-checked={(id === 'mc') === mc} onClick={() => setMetric(id)} className={seg((id === 'mc') === mc)}>{label}</button>
-            ))}
+        ) : (
+          <div className="relative">
+            <button type="button" aria-haspopup="menu" aria-expanded={menu === 'tf'} aria-label={t('Rentang lilin')} onClick={() => setMenu((m) => (m === 'tf' ? null : 'tf'))}
+              className={`${TOP_BTN} text-foreground`}>{tfLabel}<ChevronDown className="size-3 text-muted" /></button>
+            {menu === 'tf' && (
+              <div role="menu" className="absolute top-full left-0 z-30 mt-1 w-24 rounded-lg border border-border bg-surface p-1 shadow-lg">
+                {TIMEFRAMES.map(([id, label]) => (
+                  <button key={id} type="button" role="menuitemradio" aria-checked={tf === id} onClick={() => { setMenu(null); if (tf !== id) pickTf(id); }}
+                    className={menuItem(tf === id)}>{label}</button>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-        <div className="flex items-center gap-0.5 rounded border border-border bg-surface/80 p-0.5" role="radiogroup" aria-label={t('Skala harga')}>
-          {AXES.map(([id, label]) => (
-            <button key={id} type="button" role="radio" aria-checked={axisName === id} onClick={() => setAxis(id)} className={seg(axisName === id)}>{label}</button>
-          ))}
+        ))}
+        {onTfChange && sep}
+        <div className="relative">
+          <button type="button" aria-haspopup="menu" aria-expanded={menu === 'type'} title={t(typeNow[2])} aria-label={t('Jenis grafik')}
+            onClick={() => setMenu((m) => (m === 'type' ? null : 'type'))} className={TOP_BTN}><TypeIcon className="size-[17px]" /></button>
+          {menu === 'type' && (
+            <div role="menu" className="absolute top-full left-0 z-30 mt-1 w-44 rounded-lg border border-border bg-surface p-1 shadow-lg">
+              {CHART_TYPES.map(([id, I, label]) => (
+                <button key={id} type="button" role="menuitemradio" aria-checked={chartType === id} onClick={() => { setChartType(id); setMenu(null); }}
+                  className={menuItem(chartType === id)}><I className={`size-4 ${id === 'candle_stroke' ? 'opacity-60' : ''}`} />{t(label)}</button>
+              ))}
+            </div>
+          )}
         </div>
+        {sep}
         <div ref={indRef} className="relative">
-          <button type="button" aria-expanded={indOpen} onClick={() => setIndOpen((v) => !v)}
-            className="inline-flex h-[30px] items-center gap-1.5 rounded border border-border bg-surface/80 px-2 text-[0.6875rem] font-medium text-muted transition-colors hover:text-foreground">
-            <Activity className="size-3.5" />{t('Indikator')}
-            {activeInds.size > 0 && <span className="num rounded bg-accent/15 px-1 text-accent">{activeInds.size}</span>}
-            <ChevronDown className="size-3" />
+          <button type="button" aria-expanded={indOpen} onClick={() => setIndOpen((v) => !v)} className={`${TOP_BTN} ${indOpen ? 'text-foreground' : ''}`}>
+            <SquareFunction className="size-[17px]" /><span className={wide ? '' : 'sr-only'}>{t('Indikator')}</span>
+            {activeInds.size > 0 && <span className="num rounded bg-accent/15 px-1 text-[0.6875rem] text-accent">{activeInds.size}</span>}
           </button>
           {indOpen && (
             <div className="absolute top-full left-0 z-30 mt-1 w-72 max-w-[85vw] rounded-lg border border-border bg-surface p-2.5 shadow-lg">
@@ -986,9 +1134,9 @@ export default function AdvancedChart({
                   <div className="mb-1 text-[0.625rem] font-semibold tracking-wide text-muted uppercase">{t(label)}</div>
                   <div className="flex flex-wrap gap-1">
                     {names.map((name) => {
-                      const on = activeInds.has(name);
-                      return <button key={name} type="button" aria-pressed={on} onClick={() => toggleIndicator(name, !on)}
-                        className={`rounded border px-1.5 py-0.5 text-[0.6875rem] font-medium transition-colors ${on ? 'border-accent/60 bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}>{name}</button>;
+                      const sel = activeInds.has(name);
+                      return <button key={name} type="button" aria-pressed={sel} onClick={() => toggleIndicator(name, !sel)}
+                        className={`rounded border px-1.5 py-0.5 text-[0.6875rem] font-medium transition-colors ${sel ? 'border-accent/60 bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}>{name}</button>;
                     })}
                   </div>
                 </div>
@@ -997,35 +1145,49 @@ export default function AdvancedChart({
             </div>
           )}
         </div>
-        <span className="ml-auto flex items-center gap-0.5 rounded border border-border bg-surface/80 p-0.5">
-          <button type="button" title={`${t('Kembali ke harga terbaru')} (Alt+R)`} aria-label={t('Kembali ke harga terbaru')} onClick={fitView} className={BTN}><RotateCcw className="size-3.5" /></button>
-          <button type="button" title={t('Simpan gambar grafik')} aria-label={t('Simpan gambar grafik')} onClick={screenshot} className={BTN}><Camera className="size-3.5" /></button>
+        {mcMul > 0 && <>
+          {sep}
+          <div className="flex items-center text-[0.8125rem] font-medium" role="radiogroup" aria-label={t('Tampilan grafik')}>
+            <button type="button" role="radio" aria-checked={!mc} onClick={() => setMetric('price')} className={`rounded px-1 py-1 transition-colors ${!mc ? 'text-foreground' : 'text-muted hover:text-foreground'}`}>{t('Harga')}</button>
+            <span className="text-muted/60">/</span>
+            <button type="button" role="radio" aria-checked={mc} onClick={() => setMetric('mc')} className={`rounded px-1 py-1 transition-colors ${mc ? 'text-foreground' : 'text-muted hover:text-foreground'}`}>MCap</button>
+          </div>
+        </>}
+        <span className="ml-auto flex items-center gap-0.5">
+          <button type="button" title={`${t('Kembali ke harga terbaru')} (Alt+R)`} aria-label={t('Kembali ke harga terbaru')} onClick={fitView} className={BTN}><RotateCcw className="size-4" /></button>
+          <button type="button" title={t('Simpan gambar grafik')} aria-label={t('Simpan gambar grafik')} onClick={screenshot} className={BTN}><Camera className="size-4" /></button>
           <button type="button" title={full ? t('Keluar layar penuh') : t('Layar penuh')} aria-label={full ? t('Keluar layar penuh') : t('Layar penuh')} onClick={() => setFull((v) => !v)} className={BTN}>
-            {full ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+            {full ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
           </button>
         </span>
       </div>
 
-      <div className={`flex gap-1.5 ${full ? 'min-h-0 flex-1' : ''}`}>
-        {/* left toolbar: drawing groups, then magnet / lock / hide / clear */}
-        <div className="flex shrink-0 flex-col items-center gap-0.5 self-start rounded border border-border bg-surface/80 p-0.5" role="toolbar" aria-orientation="vertical" aria-label={t('Alat gambar')}>
-          {TOOL_GROUPS.map((g) => <ToolGroup key={g.id} group={g} onDraw={draw} t={t} active={drawing} />)}
+      <div className={`flex gap-1 ${full ? 'min-h-0 flex-1' : ''}`}>
+        {/* left rail: crosshair, drawing groups, then magnet / lock / hide / clear */}
+        <div className={`flex shrink-0 flex-col items-center self-start border-r border-border pr-1 ${wide ? 'gap-1' : 'gap-0.5'}`} role="toolbar" aria-orientation="vertical" aria-label={t('Alat gambar')}
+          title={t('Gambar tersimpan per token dan muncul di semua grafik & timeframe · Klik kanan pada gambar untuk menghapusnya · Delete menghapus gambar terpilih.')}>
+          <button type="button" title={t('Kursor')} aria-label={t('Kursor')} aria-pressed={!drawing} onClick={cancelDraw}
+            className={`${railBtn} ${!drawing ? on : ''}`}><Crosshair className={icon} /></button>
+          {TOOL_GROUPS.map((g) => <ToolGroup key={g.id} group={g} onDraw={draw} t={t} active={drawing} wide={wide} />)}
           <span className="my-0.5 h-px w-5 bg-border" />
           <button type="button" title={t('Magnet ke harga OHLC')} aria-label={t('Magnet ke harga OHLC')} aria-pressed={magnet} onClick={toggleMagnet}
-            className={`${BTN} ${magnet ? 'bg-accent/15 text-accent' : ''}`}><Magnet className="size-4" /></button>
+            className={`${railBtn} ${magnet ? on : ''}`}><Magnet className={icon} /></button>
           <button type="button" title={locked ? t('Buka kunci gambar') : t('Kunci gambar')} aria-label={locked ? t('Buka kunci gambar') : t('Kunci gambar')} aria-pressed={locked} onClick={toggleLock}
-            className={`${BTN} ${locked ? 'bg-accent/15 text-accent' : ''}`}>{locked ? <Lock className="size-4" /> : <LockOpen className="size-4" />}</button>
+            className={`${railBtn} ${locked ? on : ''}`}>{locked ? <Lock className={icon} /> : <LockOpen className={icon} />}</button>
           <button type="button" title={hidden ? t('Tampilkan gambar') : t('Sembunyikan gambar')} aria-label={hidden ? t('Tampilkan gambar') : t('Sembunyikan gambar')} aria-pressed={hidden} onClick={toggleHidden}
-            className={`${BTN} ${hidden ? 'bg-accent/15 text-accent' : ''}`}>{hidden ? <EyeOff className="size-4" /> : <Eye className="size-4" />}</button>
+            className={`${railBtn} ${hidden ? on : ''}`}>{hidden ? <EyeOff className={icon} /> : <Eye className={icon} />}</button>
           <button type="button" title={t('Hapus semua gambar')} aria-label={t('Hapus semua gambar')} onClick={clearAll}
-            className="flex size-7 shrink-0 items-center justify-center rounded text-muted transition-colors hover:bg-danger/10 hover:text-danger"><Trash2 className="size-4" /></button>
+            className={`${railBtn} hover:!bg-danger/10 hover:!text-danger`}><Trash2 className={icon} /></button>
         </div>
         <div className={`relative flex min-w-0 flex-1 flex-col ${full ? 'min-h-0' : ''}`}>
-          <Legend bar={loading ? null : list[legendIdx]} prev={list[legendIdx - 1]} quote={quote} mc={mc} t={t} />
           <div ref={box} onPointerLeave={() => setHover(null)} style={full ? undefined : { height }} className={`w-full ${full ? 'min-h-0 flex-1' : ''}`} />
+          {/* brand watermark behind the legend, like GMGN's */}
+          <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center pr-16 font-black tracking-tight text-foreground/[0.045] select-none"
+            style={{ fontSize: Math.max(28, Math.min(110, (width || 600) * 0.11)) }}>QUIVER</div>
+          {!loading && <Legend bar={list[legendIdx]} prev={list[legendIdx - 1]} label={title || quote} tfLabel={tfLabel} mc={mc} t={t} wide={wide} />}
           {/* veil while another timeframe loads, or the fetch failed */}
           {(loading || error) && (
-            <div className="absolute inset-x-0 top-4 bottom-0 z-10 flex items-center justify-center bg-surface/60 backdrop-blur-[1px]">
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-surface/60 backdrop-blur-[1px]">
               {error && !loading ? (
                 <div className="flex max-w-xs flex-col items-center gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-center text-xs shadow">
                   <span className="font-medium">{t('Grafik belum tersedia')}</span>
@@ -1034,7 +1196,7 @@ export default function AdvancedChart({
                 </div>
               ) : (
                 <span className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-3 py-1.5 text-xs text-muted shadow">
-                  <Loader2 className="size-3.5 animate-spin" />{t('Memuat lilin {tf}…', { tf: (TIMEFRAMES.find(([id]) => id === tf) || [tf, tf])[1] })}
+                  <Loader2 className="size-3.5 animate-spin" />{t('Memuat lilin {tf}…', { tf: tfLabel })}
                 </span>
               )}
             </div>
@@ -1046,16 +1208,35 @@ export default function AdvancedChart({
             </div>
           )}
           {note != null && (
-            <form onSubmit={submitNote} className="absolute top-6 left-2 z-20 flex items-center gap-1.5 rounded-lg border border-border bg-surface p-1.5 shadow-lg">
+            <form onSubmit={submitNote} className="absolute top-12 left-2 z-20 flex items-center gap-1.5 rounded-lg border border-border bg-surface p-1.5 shadow-lg">
               <input autoFocus value={note} onChange={(e) => setNote(e.target.value)} maxLength={60} placeholder={t('Teks catatan…')} aria-label={t('Teks catatan…')}
                 onKeyDown={(e) => e.key === 'Escape' && setNote(null)}
                 className="h-7 w-44 rounded border border-border bg-transparent px-2 text-xs outline-none focus:border-accent" />
               <button type="submit" className="h-7 rounded bg-accent px-2.5 text-xs font-medium text-accent-foreground">{t('Pasang')}</button>
             </form>
           )}
+          {/* bottom bar: range presets · clock · price scale */}
+          <div className="mt-0.5 flex min-h-7 items-center gap-0.5 border-t border-border pt-0.5 text-[0.8125rem]">
+            {RANGES.map(([label, ms]) => (
+              <button key={label} type="button" onClick={() => showRange(ms)} className={`${TOP_BTN} ${wide ? '' : '!px-1 text-xs'}`}>{label}</button>
+            ))}
+            <button type="button" title={t('Semua lilin')} aria-label={t('Semua lilin')} onClick={() => { spanRef.current = Infinity; fitView(); }} className={`${TOP_BTN} ${wide ? '' : '!px-1'}`}>
+              <CalendarRange className="size-4" />
+            </button>
+            <span className="ml-auto flex items-center gap-1">
+              {wide && <><Clock />{sep}</>}
+              <span className="flex items-center" role="radiogroup" aria-label={t('Skala harga')}>
+                {AXES.map(([id, label]) => {
+                  // 'auto' lit, and the scale it resolved to in plain foreground
+                  const sel = axis === id;
+                  return <button key={id} type="button" role="radio" aria-checked={sel} onClick={() => setAxis(id)}
+                    className={`rounded-md px-1.5 py-1 font-medium transition-colors ${sel ? 'bg-accent/15 text-accent' : axis === 'auto' && id === axisName ? 'text-foreground' : 'text-muted hover:text-foreground'}`}>{label}</button>;
+                })}
+              </span>
+            </span>
+          </div>
         </div>
       </div>
-      <p className="mt-1 hidden truncate text-[0.625rem] text-muted/80 sm:block" title={t('Gambar tersimpan per token dan muncul di semua grafik & timeframe · Klik kanan pada gambar untuk menghapusnya · Delete menghapus gambar terpilih.')}>{t('Gambar tersimpan per token dan muncul di semua grafik & timeframe · Klik kanan pada gambar untuk menghapusnya · Delete menghapus gambar terpilih.')}</p>
     </div>
   );
 }

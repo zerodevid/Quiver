@@ -128,7 +128,7 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
       </p>}
       <AdvancedChart key={p.pool_ref || p.baseToken || 'pool'}
         candles={candles} tf={tf} onTfChange={onTf} loading={pending} error={chartError} onRetry={onRetry} series={gmgn ? 'gmgn' : 'gt'}
-        quote={quote} drawKey={drawKeyOf(p.baseToken, p.pool_ref)} poolRef={p.pool_ref || null} usdRate={gmgn ? 1 : qUsd} supply={supplyOf(m?.pair, p.baseToken)} range={range && k ? { lo: range.lo * k, hi: range.hi * k } : null}
+        quote={quote} title={p.symbol0 && p.symbol1 ? `${p.symbol0}/${p.symbol1}` : null} drawKey={drawKeyOf(p.baseToken, p.pool_ref)} poolRef={p.pool_ref || null} usdRate={gmgn ? 1 : qUsd} supply={supplyOf(m?.pair, p.baseToken)} range={range && k ? { lo: range.lo * k, hi: range.hi * k } : null}
         ranges={bands.length ? bands : null}
         entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: cv(pEntry) } : null}
         exit={closed ? { t: p.closed_ts, p: cv(pExit) } : null}
