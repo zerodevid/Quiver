@@ -8,6 +8,7 @@ const { ensureChain } = require('./networks');
 // (tx 0x1283eeab… : actions 0x0111 = DECREASE_LIQUIDITY + TAKE_PAIR), not a guess.
 const { ethers } = require('ethers');
 const fs = require('node:fs');
+const { tokenAmount } = require('./number-format.mjs');
 const { ABI, ACT, CMD, SENTINEL } = require('./chain');
 
 const coder = ethers.AbiCoder.defaultAbiCoder();
@@ -114,7 +115,7 @@ class Executor {
     const g = Number(cfg?.gas?.max_fee_gwei);
     return BigInt(Math.round((Number.isFinite(g) && g > 0 ? g : 10) * 1e9));
   }
-  static gwei(wei) { return String(Number((Number(wei) / 1e9).toPrecision(4))); }
+  static gwei(wei) { return tokenAmount(Number(wei) / 1e9); }
 
   // Native ETH reserve that must not be used as capital: the reserve from the config,
   // or — if the gas price is currently high — the cost of ONE heaviest transaction (maximum

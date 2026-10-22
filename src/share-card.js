@@ -28,6 +28,7 @@ const { Resvg, renderAsync: renderAsyncRaw } = require('@resvg/resvg-js');
 const BASE_FONT = { family: 'Urbanist', adv: require('./urbanist-advances.json') };
 const ADV_PIXEL = require('./pixelify-advances.json');
 const { tr, localeContext } = require('./telegram-i18n');
+const { tokenPrice } = require('./number-format.mjs');
 
 const PAD = 56, SCALE = 2;
 // Card sizes. wide = X/Telegram link card; square = Instagram/Threads feed;
@@ -175,15 +176,8 @@ const usd = (v, d = 2) => (v == null || Number.isNaN(v) ? '—'
 const pct = (v, d = 1) => (v == null || Number.isNaN(v) ? '—'
   : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d }) + '%');
 const num = (v, d = 0) => (v == null ? '—' : Number(v).toLocaleString(loc(), { maximumFractionDigits: d }));
-function price(p) {
-  if (p == null || !Number.isFinite(p) || p <= 0) return '—';
-  const dot = (s) => s.replace('.', loc() === 'id-ID' ? ',' : '.');
-  if (p >= 1e9) return dot(p.toExponential(2));
-  if (p >= 1e6) return p.toLocaleString(loc(), { maximumFractionDigits: 0 });
-  if (p >= 1) return p.toLocaleString(loc(), { maximumSignificantDigits: 6 });
-  if (p >= 1e-7) return p.toLocaleString(loc(), { maximumSignificantDigits: 3 });
-  return dot(p.toExponential(2));
-}
+// Same format as the dashboard: subscript zeros for tiny prices, never 6.98e-8 (number-format.mjs).
+const price = (p) => tokenPrice(p, { locale: loc() });
 const age = (h) => (h == null ? '—'
   : h < 1 ? tr('{0} mnt', [Math.round(h * 60)])
     : h < 24 ? tr('{0} jam', [h.toFixed(1)])

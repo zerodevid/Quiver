@@ -18,7 +18,7 @@ import { drawKeyOf, savedTf } from '../chartSync';
 import { PriceChart, DexEmbed, DexInfoEmbed, GmgnEmbed, TradesTape, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc } from './PositionDetail';
 import { GmgnWallets } from '../components/Gmgn';
 import { BAND_COLORS } from '../components/CandleChart';
-import { usd, pct, tone, num, price, sqrtPrice, tickPrice, shortId, short, age } from '../fmt';
+import { usd, usdPrice, pct, tone, num, price, sqrtPrice, tickPrice, shortId, short, age } from '../fmt';
 import { useI18n } from '../i18n';
 import { canonAddr } from '../chain';
 
@@ -60,7 +60,7 @@ function PairPools({ pool, poolRef, base, className = '' }) {
               p.feeTier == null ? '—' : p.feeTier >= DYNAMIC_FEE ? t('dinamis') : <span className="num whitespace-nowrap">{num(p.feeTier / 10000, 2)}%</span>) },
             { key: 'px', label: t('Harga {b}', { b: base }), align: 'end', sort: (p) => priceIn(p, tok), render: (p) => {
               const v = tok ? priceIn(p, tok) : null;
-              return v == null ? '—' : usd(v, v < 0.01 ? 6 : 4);
+              return v == null ? '—' : usdPrice(v);
             } },
             { key: 'liq', label: 'Likuiditas', align: 'end', sort: (p) => p.liquidityUsd ?? 0, render: (p) => kUsd(p.liquidityUsd) },
             { key: 'vol', label: 'Volume 24 jam', align: 'end', sort: (p) => p.volume?.h24, render: (p) => kUsd(p.volume?.h24) },
@@ -178,7 +178,7 @@ export default function PoolDetail({ param }) {
 
       <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Stat label={t('Harga {b}', { b: base })} value={<>{price(pNow)}{quote && <span className="ml-1 text-sm font-medium text-muted">{quote}</span>}</>}
-          sub={ch24 != null ? <span><span className={tone(ch24)}>{pct(ch24, 1)}</span> {t('24 jam')}</span> : pair?.priceUsd ? usd(pair.priceUsd, pair.priceUsd < 0.01 ? 6 : 4) : null} />
+          sub={ch24 != null ? <span><span className={tone(ch24)}>{pct(ch24, 1)}</span> {t('24 jam')}</span> : pair?.priceUsd ? usdPrice(pair.priceUsd) : null} />
         <Stat label="Likuiditas pool" value={kUsd(pair?.liquidityUsd)} sub={pair ? t('volume 24 jam {v}', { v: kUsd(pair.volume?.h24) }) : null} />
         <Stat label="PnL bot di pool ini" value={all.length ? usd(upnl + realized) : '—'} fx={all.length ? upnl + realized : null} valueClass={all.length ? tone(upnl + realized) : ''}
           sub={t('{o} terbuka · {c} ditutup', { o: d.open.length, c: d.closed.length })} />

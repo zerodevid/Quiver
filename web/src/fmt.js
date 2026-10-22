@@ -1,6 +1,7 @@
 import { chainInfo, ETHERSCAN, EXPLORER_NAME } from './chain';
 import { getLocale, translate as t } from './i18n';
 import { isHidden, MASK } from './privacy';
+import { tokenPrice } from '../../src/number-format.mjs';
 
 // All number & time formats follow the language in use:
 // Indonesian uses a decimal comma (0,00201), English uses a dot (0.00201).
@@ -88,27 +89,14 @@ export function aprOf(rows) {
 export const aprText = (v) => (v == null ? '—' : v >= 1000 ? '999+%' : `${num(v, Math.abs(v) < 10 ? 1 : 0)}%`);
 
 // A token price can be 0.00000032 up to 4,200 — so use significant digits, not
-// a fixed number of decimals (0.00 tells nothing).
-export function price(p) {
-  if (p == null || !Number.isFinite(p) || p <= 0) return '—';
-  // Above one billion the full figure (337,815,857,900,711…) only breaks the width of
-  // the table column; scientific notation is more honest for a junk token price like that.
-  if (p >= 1e9) return p.toExponential(2).replace('.', loc() === 'id-ID' ? ',' : '.');
-  if (p >= 1e6) return p.toLocaleString(loc(), { maximumFractionDigits: 0 });
-  if (p >= 1) return p.toLocaleString(loc(), { maximumSignificantDigits: 6 });
-  if (p >= 1e-4) return p.toLocaleString(loc(), { maximumSignificantDigits: 3 });
-  return tinyPrice(p);
-}
-
-const SUB = '₀₁₂₃₄₅₆₇₈₉';
-// Below 0.0001 the zeros are counted in a subscript, as DexScreener does: 0.0000000698 -> 0.0₇698.
-// Easier to read than 6.98e-8 and still exact about the magnitude.
-function tinyPrice(p) {
-  const [m, e] = p.toExponential(2).split('e');
-  const zeros = -Number(e) - 1;
-  const digits = m.replace('.', '').replace(/0+$/, '') || '0';
-  return `0${loc() === 'id-ID' ? ',' : '.'}0${String(zeros).split('').map((d) => SUB[d]).join('')}${digits}`;
-}
+// a fixed number of decimals (0.00 tells nothing). Below 0.0001 the zeros are counted in a
+// subscript (0.0₇698) and above a billion it is compact (1.2B) — never 6.98e-8.
+export const price = (p) => tokenPrice(p, { locale: loc() });
+// A token's USD price: 4 decimals from one cent up, the price format above below it — a fixed
+// 6 decimals turned $0.0000000698 into "$0.000000".
+export const usdPrice = (v) => (v == null || Number.isNaN(v) ? '—'
+  : isHidden() ? '$' + MASK
+    : v >= 0.01 || v <= 0 ? rawUsd(v, 4) : '$' + price(v));
 
 // Token amount: from the smallest unit on chain to the display unit, then formatted
 // with significant digits — a token can have 6 decimals (USDG) or 18 (most of the rest).

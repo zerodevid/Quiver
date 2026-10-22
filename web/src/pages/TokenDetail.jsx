@@ -16,7 +16,7 @@ import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/
 import PositionHistory from '../components/PositionHistory';
 import WalletPositionHistory from '../components/WalletPositionHistory';
 import { DexInfoEmbed, kUsd } from './PositionDetail';
-import { usd, pct, tone, num, age, short, price, locale as fmtLocale } from '../fmt';
+import { usd, usdPrice, pct, tone, num, age, short, price, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
 import { canonAddr } from '../chain';
 
@@ -107,7 +107,7 @@ export default function TokenDetail({ param }) {
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <Stat label="Harga" value={px == null ? '—' : usd(px, px < 0.01 ? 6 : 4)}
+        <Stat label="Harga" value={px == null ? '—' : usdPrice(px)}
           sub={ch24 != null ? <span><span className={tone(ch24)}>{pct(ch24, 1)}</span> {t('24 jam')}</span> : null} />
         <Stat label="Likuiditas" value={pairs.length ? kUsd(liq) : '—'} sub={t('{n} pool', { n: pairs.length })} />
         <Stat label="Volume 24 jam" value={pairs.length ? kUsd(vol) : '—'}
@@ -162,7 +162,7 @@ export default function TokenDetail({ param }) {
                 </div>) },
               { key: 'px', label: 'Harga', align: 'end', sort: (p) => priceIn(p, a), render: (p) => {
                 const v = priceIn(p, a);
-                return v == null ? '—' : usd(v, v < 0.01 ? 6 : 4);
+                return v == null ? '—' : usdPrice(v);
               } },
               { key: 'ch', label: '24 jam', align: 'end', sort: (p) => (p.base.address === a ? p.priceChange?.h24 : null), render: (p) => (
                 p.base.address === a && p.priceChange?.h24 != null ? <span className={tone(p.priceChange.h24)}>{pct(p.priceChange.h24, 1)}</span> : <span className="text-muted">—</span>) },

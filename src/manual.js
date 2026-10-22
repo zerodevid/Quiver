@@ -14,6 +14,7 @@ const { ensureChain, windowBlocks } = require('./networks');
 // apply if set — those are rules over our own position.
 const { ethers } = require('ethers');
 const m = require('./v3math');
+const { tokenAmount } = require('./number-format.mjs');
 const { computePoolId } = require('./pools');
 const { TOPIC, ABI } = require('./chain');
 const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd, hookBlocked, riskyHookFlags, hookInfo, tickSpacingFromFee } = require('./policy');
@@ -843,7 +844,7 @@ class Manual {
       step.push({ jenis: kindName, dari: this.kaki(a, x, p, slot0), ke: this.kaki(b, y, p, slot0), ...extra });
       move(a, x, b, y);
     };
-    const fmt = (t, raw) => { const k = this.kaki(t, raw, p, slot0); return `${k.amount.toPrecision(4)} ${k.symbol}`; };
+    const fmt = (t, raw) => { const k = this.kaki(t, raw, p, slot0); return `${tokenAmount(k.amount)} ${k.symbol}`; };
 
     // 0a. top up gas from WETH if native ETH is below the reserve (engine.topUpGas)
     if (get(this.chain.ADDR.native) < reserve && get(this.chain.ADDR.weth) > 0n) {
@@ -1437,7 +1438,7 @@ class Manual {
   // aside if what is sold is native ETH.
   async amountRaw(token, input) {
     const { raw, maxVal, dec, symbol } = await this.amountInfo(token, input);
-    if (raw > maxVal) throw new Error(`saldo cuma ${(Number(maxVal) / 10 ** dec).toPrecision(6)} ${symbol}`.trim());
+    if (raw > maxVal) throw new Error(`saldo cuma ${tokenAmount((Number(maxVal) / 10 ** dec), { sig: 6 })} ${symbol}`.trim());
     return raw;
   }
 
@@ -1557,7 +1558,7 @@ class Manual {
       const d = row?.detail ? JSON.parse(row.detail) : detail;
       this.store.run('UPDATE txs SET detail=? WHERE hash=?', JSON.stringify({ ...d, amountOut: outgoing }), r.hash);
     } catch { /* history only: the swap was already sent */ }
-    const note = `${entry.toPrecision(6)} ${mi.symbol} → ${outgoing.toPrecision(6)} ${mo.symbol}`;
+    const note = `${tokenAmount(entry, { sig: 6 })} ${mi.symbol} → ${tokenAmount(outgoing, { sig: 6 })} ${mo.symbol}`;
     eng.notify(`swap manual: ${note}`);
     return { txHash: r.hash, amountOut: outRaw.toString(), note, dex: r.quote?.dex || null };
   }

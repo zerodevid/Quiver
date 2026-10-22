@@ -18,6 +18,7 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { AsyncLocalStorage } = require('node:async_hooks');
+const { tokenPrice } = require('./number-format.mjs');
 const { writeCfg } = require('./env');
 const { isSolana, normAddr, addrHint } = require('./networks');
 // The chain a conversation is currently using. The same pattern as localeContext: every
@@ -276,13 +277,8 @@ const tickPrice = (tick, dec0, dec1, quoteSide) => {
   const p1per0 = 1.0001 ** tick * 10 ** ((dec0 ?? 18) - (dec1 ?? 18));
   return quoteSide === 0 ? 1 / p1per0 : p1per0;
 };
-function price(p, sig = 3) {
-  if (p == null || !Number.isFinite(p) || p <= 0) return '—';
-  if (p >= 1e6) return p.toLocaleString(locale() === 'en' ? 'en-US' : 'id-ID', { maximumFractionDigits: 0 });
-  if (p >= 1) return p.toLocaleString(locale() === 'en' ? 'en-US' : 'id-ID', { maximumSignificantDigits: Math.max(6, sig) });
-  if (p >= 1e-7) return p.toLocaleString(locale() === 'en' ? 'en-US' : 'id-ID', { maximumSignificantDigits: sig });
-  return p.toExponential(sig - 1).replace('.', ',');
-}
+// Subscript zeros below 0.0001 (0.0₇698), compact above a billion — never 6.98e-8 (number-format.mjs).
+const price = (p, sig = 3) => tokenPrice(p, { locale: locale() === 'en' ? 'en-US' : 'id-ID', sig });
 // Prices shown side by side need enough digits to tell them apart: a narrow range at 3 significant
 // digits reads "0.00000148 … 0.00000149" with the current price on the same figure as an edge.
 function priceSet(values, maxSig = 8) {

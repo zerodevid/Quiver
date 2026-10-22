@@ -35,7 +35,7 @@ const plan = (liquidity) => ({ venue: 'v4', action: 'decrease', full: false, man
     const r = await e.executeExit(plan('250'), pos, { sell: true });
     assert.strictEqual(r.txHash, '0xabc');
     assert.strictEqual(e.sent.length, 1);
-    assert.deepStrictEqual(e.sent[0].opts, { sell: true });
+    assert.deepStrictEqual(e.sent[0].opts, { sell: true, sellTo: undefined });
     assert.ok(!e.exiting.has(7), 'lock released');
   });
 

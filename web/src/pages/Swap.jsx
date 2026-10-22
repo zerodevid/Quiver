@@ -6,7 +6,7 @@ import { useStatus } from '../App';
 import { usePoll } from '../hooks';
 import { PageHeader, Notice, Loading, KV, Panel, Empty, Refreshing, TxHash, TradeLinks, DataLinks } from '../components/ui';
 import TokenIcon, { TokenSym } from '../components/TokenIcon';
-import { usd, num, pct, short, ago, TXSTATUS } from '../fmt';
+import { usd, usdPrice, num, pct, short, ago, TXSTATUS } from '../fmt';
 import { useI18n } from '../i18n';
 import { isAddr, canonAddr, isSolana } from '../chain';
 
@@ -269,7 +269,7 @@ function Holdings({ loadErr, tokens, dari: from, onUse, onRemove, onImport, harg
                     )}
                   </span>
                   <span className="num block truncate text-xs text-muted">
-                    {x.priceUsd != null ? usd(x.priceUsd, x.priceUsd < 1 ? 6 : 2) : price === 'muat' ? '…' : t('tanpa harga')}
+                    {x.priceUsd != null ? (x.priceUsd < 1 ? usdPrice(x.priceUsd) : usd(x.priceUsd, 2)) : price === 'muat' ? '…' : t('tanpa harga')}
                   </span>
                   {!x.native && (
                     <span className="mt-1 flex items-center gap-1.5">

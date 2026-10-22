@@ -23,6 +23,7 @@ const { createTokenRisk, riskVerdict, profileVerdict, memeTokens } = require('./
 const { enumerateV4, livePositions } = require('./scout');
 const { Market } = require('./market');
 const m = require('./v3math');
+const { tokenAmount } = require('./number-format.mjs');
 
 const IF_POSM = new ethers.Interface(ABI.posmV4);
 const IF_NPM = new ethers.Interface(ABI.npmV3);
@@ -30,12 +31,8 @@ const asAddr = (t) => ('0x' + t.slice(-40)).toLowerCase();
 // Raw amount -> text for messages: 2 decimals above 1, 3 significant digits below it.
 const fmtUnits = (raw, dec) => {
   const n = Number(raw) / 10 ** dec;
-  return n >= 1 ? n.toFixed(2) : String(Number(n.toPrecision(3)));
+  return n >= 1 && n < 1e6 ? n.toFixed(2) : tokenAmount(n, { sig: 3 });
 };
-// Token amount -> short text for messages: 753.5K rather than 7.535e+5.
-const fmtAmount = (n) => (Math.abs(n) >= 1000
-  ? new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 4 }).format(n)
-  : String(Number(n.toPrecision(4))));
 // The origin of a leftover, for messages. The sell queue now also holds tokens
 // swept from the wallet (posId null) — not just ones that came out of a position.
 const leftoverOrigin = (item) => (item.posId == null ? 'sisa di wallet' : `posisi #${item.posId}`);
@@ -2716,7 +2713,7 @@ class Engine {
   // without one has two, sold into USDG. null = nothing to sell. `to` (sellTargetOf) replaces the
   // asset sold into; the pool's own quote side is still kept as it is.
   leftoverRoles(pos, to = null) {
-    const into = this.sellTargetOf(to);
+    const into = to == null ? null : this.sellTargetOf(to);
     const q = this.chain.quoteSideOf(pos.token0, pos.token1);
     if (!q) return { quote: into || this.chain.ADDR.usdg.toLowerCase(), memes: [String(pos.token0).toLowerCase(), String(pos.token1).toLowerCase()] };
     const meme = String(q.side === 0 ? pos.token1 : pos.token0).toLowerCase();
@@ -2936,7 +2933,7 @@ class Engine {
       amount = bal < BigInt(item.amount) ? bal : BigInt(item.amount);
       if (amount === 0n) { this.dropLeftover(item); return null; }
       const meta = await this.chain.token(item.token).catch(() => null);
-      label = `${fmtAmount(Number(amount) / 10 ** (meta?.decimals ?? 18))} ${meta?.symbol || item.token.slice(0, 8)}`;
+      label = `${tokenAmount(Number(amount) / 10 ** (meta?.decimals ?? 18))} ${meta?.symbol || item.token.slice(0, 8)}`;
     } catch (e) {
       // The balance is unreadable (RPC). This error used to slip through BEFORE the item was queued: leftovers
       // from an exit tx never entered the queue and were never sold by anyone.
@@ -3170,7 +3167,7 @@ class Engine {
             // The latest quote is stored so the banner on the dashboard shows the current figure.
             this.keepLeftover({ ...item, amount: amount.toString(), lastLossBps: loss, lastUsdOut: lossRef?.usdOut ?? null, lastUsdIn: lossRef?.usdIn ?? null }, why);
             const meta = await this.chain.token(item.token).catch(() => null);
-            this.alertLeftover(item, `${fmtAmount(Number(amount) / 10 ** (meta?.decimals ?? 18))} ${meta?.symbol || item.token.slice(0, 8)}`, e);
+            this.alertLeftover(item, `${tokenAmount(Number(amount) / 10 ** (meta?.decimals ?? 18))} ${meta?.symbol || item.token.slice(0, 8)}`, e);
             continue;
           }
           await this.sellToken(item);

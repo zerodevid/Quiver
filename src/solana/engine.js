@@ -12,6 +12,7 @@
 const { Engine } = require('../engine');
 const { rulesFor, planExit, quoteToUsd, usdPerQuote } = require('../policy');
 const m = require('../v3math');
+const { tokenAmount } = require('../number-format.mjs');
 const { SolanaWatcher } = require('./watcher');
 const { SolanaPositions } = require('./positions');
 const { SolanaExecutor } = require('./executor');
@@ -27,7 +28,7 @@ const TARGET_RESEARCH_STALE_MS = 5 * 60_000;
 
 const fmtUnits = (raw, dec) => {
   const n = Number(raw) / 10 ** dec;
-  return n >= 1 ? n.toFixed(2) : String(Number(n.toPrecision(3)));
+  return n >= 1 && n < 1e6 ? n.toFixed(2) : tokenAmount(n, { sig: 3 });
 };
 // Large amounts for decision reasons ("$12.3rb", "$1.45jt") — same wording as the EVM engine.
 const compactMoney = (v) => {

@@ -828,7 +828,7 @@ function fakeChain(store, { pool = poolState(), adapter = {}, prices = {}, meteo
     eng.swap = async (i, o, amt, opt) => { swaps.push({ i, o, amt, kind: opt.kind }); store.run("INSERT INTO txs(chain,hash,ts,kind,status) VALUES('solana','SWX',?, 'swap_manual','ok')", Date.now()); return { hash: 'SWX', out: 12_000_000n, usdOut: 12 }; };
     const r = await man.doSwap({ tokenIn: WSOL, tokenOut: USDC, amountRaw: 100_000_000n });
     assert.strictEqual(swaps[0].kind, 'swap_manual');
-    assert.match(r.note, /^0\.10+ SOL → 12\.0+ USDC$/);
+    assert.match(r.note, /^0\.10* SOL → 12(\.0+)? USDC$/);
     assert.strictEqual(JSON.parse(store.get("SELECT detail FROM txs WHERE hash='SWX'").detail).symbolOut, 'USDC');
   });
 

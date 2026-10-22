@@ -31,7 +31,7 @@ import TargetSide from '../components/TargetSide';
 import ShareButton, { positionCard } from '../components/ShareCard';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask, TradeLinks, DataLinks, CopyBtn } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
-import { usd, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice, widthPct, txHref, addrHref, feeApr, feeTotal, aprText, locale as fmtLocale } from '../fmt';
+import { usd, usdPrice, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice, widthPct, txHref, addrHref, feeApr, feeTotal, aprText, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
 
 export const TFS = [['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam'], ['1d', '1 hari']];
@@ -262,7 +262,7 @@ function GmgnRangeStrip({ p, pair }) {
   // Quote -> USD rate and token supply, if the market is known.
   const k = pair?.priceUsd > 0 && pNow > 0 ? pair.priceUsd / pNow : null;
   const supply = k && (pair.marketCap || pair.fdv) > 0 ? (pair.marketCap || pair.fdv) / pair.priceUsd : null;
-  const fmt = (v) => (v == null || !(v > 0) ? '—' : k ? usd(v * k, v * k < 0.01 ? 6 : 4) : `${price(v)} ${quote || ''}`);
+  const fmt = (v) => (v == null || !(v > 0) ? '—' : k ? usdPrice(v * k) : `${price(v)} ${quote || ''}`);
   const mc = (v) => (supply && v > 0 ? kUsd(v * k * supply) : null);
   const Item = ({ label, v, cls = '' }) => (
     <span className={`inline-flex items-center gap-1 ${cls}`}>
@@ -397,7 +397,7 @@ export function TradesTape({ pool, token, base, quote, live = true }) {
                       <td className={`py-1.5 font-medium ${buy ? 'text-success' : 'text-danger'}`}>{buy ? t('Beli') : t('Jual')}</td>
                       <td className="num py-1.5 text-right whitespace-nowrap">{fmtQty(x.base)} <span className="text-muted">{base}</span></td>
                       <td className={`num py-1.5 text-right whitespace-nowrap ${x.usd >= 500 ? 'font-semibold' : ''}`}>{usd(x.usd)}</td>
-                      <td className="num hidden py-1.5 text-right whitespace-nowrap text-muted sm:table-cell" title={x.priceUsd ? usd(x.priceUsd, x.priceUsd < 0.01 ? 6 : 4) : undefined}>
+                      <td className="num hidden py-1.5 text-right whitespace-nowrap text-muted sm:table-cell" title={x.priceUsd ? usdPrice(x.priceUsd) : undefined}>
                         {price(x.priceQuote)} {quote}
                       </td>
                       <td className="px-3 py-1.5 text-right whitespace-nowrap">
@@ -438,7 +438,7 @@ export function MarketPanel({ pair, pool }) {
   return (
     <>
       <div className="divide-y divide-border px-4">
-        <KV label="Harga">{usd(pair.priceUsd, pair.priceUsd < 0.01 ? 6 : 4)}</KV>
+        <KV label="Harga">{usdPrice(pair.priceUsd)}</KV>
         <KV label="Perubahan"><Changes pc={pair.priceChange} /></KV>
         <KV label="Volume 24 jam">{kUsd(pair.volume?.h24)}</KV>
         <KV label="Transaksi 24 jam">{tx ? <><span className="text-success">{num(tx.buys)}</span> <span className="font-normal text-muted">{t('beli')}</span> · <span className="text-danger">{num(tx.sells)}</span> <span className="font-normal text-muted">{t('jual')}</span></> : '—'}</KV>

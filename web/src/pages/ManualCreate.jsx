@@ -7,7 +7,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@heroui/react';
 import { get, post } from '../api';
-import { num } from '../fmt';
+import { num, price } from '../fmt';
+import { plainDecimal } from '../../../src/number-format.mjs';
 import { useI18n } from '../i18n';
 import { isAddr, canonAddr } from '../chain';
 
@@ -175,8 +176,8 @@ export function CreatePoolStep({ C }) {
           <input value={C.price} onChange={(e) => C.setPrice(e.target.value.replace(/[^\d.,eE-]/g, ''))} inputMode="decimal" placeholder="0" className={`${box} num max-w-56`} />
           <span className="text-sm text-muted">{qSym}</span>
           {C.market > 0 && (
-            <Button size="sm" variant="outline" onPress={() => C.setPrice(String(Number(C.market.toPrecision(6))))}>
-              {t('Harga pasar ≈ {p}', { p: num(C.market, 8) })}
+            <Button size="sm" variant="outline" onPress={() => C.setPrice(plainDecimal(C.market))}>
+              {t('Harga pasar ≈ {p}', { p: price(C.market) })}
             </Button>
           )}
         </div>

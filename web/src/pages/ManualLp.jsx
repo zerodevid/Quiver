@@ -941,7 +941,7 @@ export default function ManualLp({ param }) {
                   <KV label={p.symbol1}>{num(Number(p.amount1) / 10 ** p.dec1, 6)}</KV>
                   {p.swaps && <KV label="Auto-swap">{swapQty(p.swaps.length, t)}</KV>}
                   <KV label="Kas setelah dibuka">{usd(Math.max(0, p.walletCashUsd - p.valueUsd))}</KV>
-                  {p.init && <KV label="Harga awal pool">{num(p.init.price, 8)} {symQ}</KV>}
+                  {p.init && <KV label="Harga awal pool">{price(p.init.price)} {symQ}</KV>}
                 </div>
 
                 {(plan.warnings || []).map((w) => (
@@ -969,7 +969,7 @@ export default function ManualLp({ param }) {
                   <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/5 p-3">
                     <div className="text-sm font-medium">{t('Kirim transaksi sungguhan?')}</div>
                     <div className="text-sm text-muted">{t('{v} ke {pair}, rentang {r}.', { v: usd(p.valueUsd), pair: p.pair, r: damm ? t('rentang pool') : rangeLabel(lo, up, full, t) })}</div>
-                    {p.init && <div className="text-sm text-muted">{t('Pool baru {venue}, harga awal {px} {q}.', { venue: t(VENUE_LABEL[p.create?.venue] || String(p.create?.venue || '').toUpperCase()), px: num(p.init.price, 8), q: symQ || '' })}</div>}
+                    {p.init && <div className="text-sm text-muted">{t('Pool baru {venue}, harga awal {px} {q}.', { venue: t(VENUE_LABEL[p.create?.venue] || String(p.create?.venue || '').toUpperCase()), px: price(p.init.price), q: symQ || '' })}</div>}
                     <div className="flex gap-2">
                       <Button className="flex-1" onPress={open} isPending={sendOrig}>{t('Ya, buka sekarang')}</Button>
                       <Button variant="outline" onPress={() => setConfirm(false)}>{t('Batal')}</Button>

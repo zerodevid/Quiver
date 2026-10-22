@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { usePoll } from '../hooks';
-import { usd, kUsd } from '../fmt';
+import { usd, usdPrice, kUsd } from '../fmt';
 import { useI18n } from '../i18n';
 import { baseTokenOf } from './ui';
 import { canonAddr, chainRef } from '../chain';
@@ -15,7 +15,7 @@ export function TokenCell({ pair, p }) {
   if (!(px > 0)) return <span className="text-muted">—</span>;
   return (
     <div className="whitespace-nowrap" title={t('Harga dan kapitalisasi pasar token menurut DexScreener.')}>
-      {usd(px, px < 0.01 ? 6 : 4)}
+      {usdPrice(px)}
       {mc > 0 && <div className="text-xs text-muted">{t('MC {v}', { v: kUsd(mc) })}</div>}
     </div>
   );

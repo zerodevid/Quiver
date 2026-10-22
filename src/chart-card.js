@@ -13,6 +13,7 @@ const { Resvg } = require('@resvg/resvg-js');
 const fs = require('node:fs');
 const path = require('node:path');
 const { tr, localeContext } = require('./telegram-i18n');
+const { tokenPrice } = require('./number-format.mjs');
 
 const FONT_DIR = path.join(__dirname, '..', 'public', 'fonts');
 const FONTS = ['Regular', 'Medium', 'SemiBold', 'Bold'].map((w) => path.join(FONT_DIR, `Inter-${w}.ttf`));
@@ -53,15 +54,8 @@ const usd = (v, d = 2) => (v == null || !Number.isFinite(v) ? '—'
   : (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d }));
 const pct = (v, d = 1) => (v == null || !Number.isFinite(v) ? '—'
   : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toLocaleString(loc(), { minimumFractionDigits: d, maximumFractionDigits: d }) + '%');
-function price(p) {
-  if (p == null || !Number.isFinite(p) || p <= 0) return '—';
-  const dot = (s) => s.replace('.', loc() === 'id-ID' ? ',' : '.');
-  if (p >= 1e9) return dot(p.toExponential(2));
-  if (p >= 1e6) return p.toLocaleString(loc(), { maximumFractionDigits: 0 });
-  if (p >= 1) return p.toLocaleString(loc(), { maximumSignificantDigits: 6 });
-  if (p >= 1e-7) return p.toLocaleString(loc(), { maximumSignificantDigits: 3 });
-  return dot(p.toExponential(2));
-}
+// Same format as the dashboard: subscript zeros for tiny prices, never 6.98e-8 (number-format.mjs).
+const price = (p) => tokenPrice(p, { locale: loc() });
 const compactNum = (v) => (v == null || !Number.isFinite(v) ? '—'
   : Math.abs(v) >= 1e9 ? (v / 1e9).toFixed(1) + ' M'
     : Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + ' jt'

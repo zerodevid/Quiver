@@ -12,6 +12,7 @@
 // base58 addresses are CASE-SENSITIVE: never lower-cased.
 const { Manual, ticksFromPct } = require('../manual');
 const m = require('../v3math');
+const { tokenAmount } = require('../number-format.mjs');
 const u = require('./units');
 const { planRange, quoteToUsd } = require('../policy');
 const { share0, amountsForValue, CLMM_MAX_TICK } = require('./planner');
@@ -431,7 +432,7 @@ class SolanaManual extends Manual {
       step.push({ jenis: kind, dari: this.kaki(a, x, st, px), ke: this.kaki(b, y, st, px), router: 'Jupiter', ...extra });
       add(a, -x); add(b, y);
     };
-    const fmt = (t, raw) => { const k = this.kaki(t, raw, st, px); return `${k.amount.toPrecision(4)} ${k.symbol}`; };
+    const fmt = (t, raw) => { const k = this.kaki(t, raw, st, px); return `${tokenAmount(k.amount)} ${k.symbol}`; };
     const slip = rules.swap.max_slippage_bps;
 
     // 0. top up gas (engine.topUpGas)
@@ -731,7 +732,7 @@ class SolanaManual extends Manual {
 
   async amountRaw(token, input) {
     const { raw, maxVal, dec, symbol } = await this.amountInfo(token, input, { fresh: true });
-    if (raw > maxVal) throw new Error(`saldo cuma ${(Number(maxVal) / 10 ** dec).toPrecision(6)} ${symbol}`.trim());
+    if (raw > maxVal) throw new Error(`saldo cuma ${tokenAmount((Number(maxVal) / 10 ** dec), { sig: 6 })} ${symbol}`.trim());
     return raw;
   }
 
@@ -808,7 +809,7 @@ class SolanaManual extends Manual {
         ...d, tokenIn: ti, tokenOut: to, symbolIn: symIn, symbolOut: symOut, amountIn, amountOut,
       }), r.hash);
     } catch { /* history only — the swap was already sent */ }
-    const note = `${amountIn.toPrecision(6)} ${symIn} → ${amountOut.toPrecision(6)} ${symOut}`;
+    const note = `${tokenAmount(amountIn, { sig: 6 })} ${symIn} → ${tokenAmount(amountOut, { sig: 6 })} ${symOut}`;
     eng.notify(`swap manual: ${note}`);
     return { txHash: r.hash, amountOut: r.out.toString(), note, dex: 'Jupiter' };
   }
