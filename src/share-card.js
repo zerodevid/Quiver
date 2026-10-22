@@ -21,6 +21,7 @@
 // resvg has no text-measuring API, and SVG has no flowing layout.
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 const { Resvg, renderAsync: renderAsyncRaw } = require('@resvg/resvg-js');
 // The card's base font and its glyph width table (made from the same font file,
 // see the note above measure()). A theme may override via font/adv (pixel).
@@ -968,7 +969,8 @@ function timelineLayout(data, hideAmounts) {
 
 // Coin logos shrunk to a small PNG once per address. The timeline puts up to ~80 logos on one
 // card; embedding the stored files (often hundreds of KB, 1000+ px) made resvg decode them all
-// at full size and pushed the bot past pm2's memory limit. A thumbnail is a few KB.
+// at full size and pushed the bot past pm2's memory limit. A thumbnail is a few KB, already cut
+// round: resvg allocates a full-card mask for every clip-path, so the card itself uses none.
 const THUMBS = new Map(), THUMB_PX = 96, THUMB_MAX = 600;
 function thumbOf(address, icon) {
   if (!icon || !/^image\/(png|jpeg|gif)$/.test(icon.ctype)) return null;
@@ -976,7 +978,8 @@ function thumbOf(address, icon) {
   if (THUMBS.has(key)) return THUMBS.get(key);
   let out = null;
   try {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${THUMB_PX}" height="${THUMB_PX}"><image width="${THUMB_PX}" height="${THUMB_PX}" preserveAspectRatio="xMidYMid slice" href="data:${icon.ctype};base64,${icon.buf.toString('base64')}"/></svg>`;
+    const h = THUMB_PX / 2;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${THUMB_PX}" height="${THUMB_PX}"><clipPath id="c"><circle cx="${h}" cy="${h}" r="${h}"/></clipPath><image width="${THUMB_PX}" height="${THUMB_PX}" clip-path="url(#c)" preserveAspectRatio="xMidYMid slice" href="data:${icon.ctype};base64,${icon.buf.toString('base64')}"/></svg>`;
     out = { buf: Buffer.from(new Resvg(svg, { font: { loadSystemFonts: false } }).render().asPng()), ctype: 'image/png' };
   } catch { /* unreadable logo: the initial disc instead */ }
   if (THUMBS.size >= THUMB_MAX) THUMBS.delete(THUMBS.keys().next().value);
@@ -986,7 +989,12 @@ function thumbOf(address, icon) {
 
 // icons: (address) → stored logo ({ buf, ctype }) or null; read lazily, only for the logos drawn.
 function timelineSvg(data, { hideAmounts = false, icons = () => null } = {}) {
-  const logoOf = (a) => thumbOf(a, icons(a));
+  // A coin disc: the round thumbnail, or token()'s initial disc when there is no logo.
+  const disc = (a, symbol, x, y, r, id) => {
+    const t = thumbOf(a, icons(a));
+    if (!t) return token(null, { address: a, symbol }, x, y, r, id);
+    return `<image x="${(x - r).toFixed(1)}" y="${(y - r).toFixed(1)}" width="${(r * 2).toFixed(1)}" height="${(r * 2).toFixed(1)}" href="data:image/png;base64,${t.buf.toString('base64')}"/>`;
+  };
   const { W, H, k, chart } = G;
   const tint = sign(data.total), L = timelineLayout(data, hideAmounts);
   const stops = T.bg.map((c, i) => `<stop offset="${(i / (T.bg.length - 1)).toFixed(2)}" stop-color="${c}"/>`).join('');
@@ -1035,7 +1043,7 @@ function timelineSvg(data, { hideAmounts = false, icons = () => null } = {}) {
     + `<path d="${d}" fill="none" stroke="${T.text}" stroke-opacity="0.85" stroke-width="${2.2 * k}" stroke-linejoin="${T.sq ? 'miter' : 'round'}"/>`;
   // Logo markers; a win gets a light ring, a loss a ring in the loss colour.
   L.markers.forEach((s, i) => {
-    out += token(logoOf(s.address), { address: s.address, symbol: s.symbol }, s.x, s.y, L.r, `tm${i}`)
+    out += disc(s.address, s.symbol, s.x, s.y, L.r, `tm${i}`)
       + `<circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${L.r}" fill="none" stroke="${s.v < -0.01 ? T.down : T.text}" stroke-opacity="0.9" stroke-width="${1.6 * k}"/>`;
   });
   // Callout pills: wins light with dark text, losses dark with a thin border.
@@ -1043,7 +1051,7 @@ function timelineSvg(data, { hideAmounts = false, icons = () => null } = {}) {
     const { pillH: h, iconR: r, pillSize: z } = L, x = c.left, y = c.cy - h / 2;
     const fill = c.up ? T.text : T.bg[T.bg.length - 1], color = c.up ? T.bg[T.bg.length - 1] : T.text;
     return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${c.w.toFixed(1)}" height="${h}" rx="${rx(8 * k)}" fill="${fill}"${c.up ? '' : ` stroke="${T.line}" stroke-width="1.5"`}/>`
-      + token(logoOf(c.p.address), { address: c.p.address, symbol: c.p.symbol }, x + 8 * k + r, c.cy, r, `tc${c.up ? 'u' : 'd'}${j}`)
+      + disc(c.p.address, c.p.symbol, x + 8 * k + r, c.cy, r, `tc${c.up ? 'u' : 'd'}${j}`)
       + txt(c.s, x + 16 * k + r * 2, c.cy, { size: z, weight: 700, color, base: 'middle' });
   };
   out += L.ups.map(pillOf).join('') + L.downs.map(pillOf).join('');
@@ -1114,9 +1122,35 @@ function renderPng(svg, size) {
 const render = (kind, data, opts = {}) => renderPng(svgOf(kind, data, opts), opts.size);
 // The same, rasterised on libuv's thread pool: a big card takes a second or more, and the
 // server must not stall the bot's event loop meanwhile.
+// Rasterised in a child process (src/share-render.js): resvg's peak memory for a big card
+// (+80–150 MB) would otherwise count against the bot's pm2 memory limit and restart it.
+// Without a usable child (spawn fails), the libuv thread pool in this process instead.
+const RENDER_TIMEOUT_MS = 40_000;
+function renderInChild(svg, width) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(process.execPath, [path.join(__dirname, 'share-render.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (e) { reject(Object.assign(e, { spawnFailed: true })); return; }
+    const out = [], err = [];
+    const timer = setTimeout(() => child.kill('SIGKILL'), RENDER_TIMEOUT_MS);
+    child.stdout.on('data', (c) => out.push(c));
+    child.stderr.on('data', (c) => err.push(c));
+    child.on('error', (e) => { clearTimeout(timer); reject(Object.assign(e, { spawnFailed: true })); });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(Buffer.concat(out));
+      else reject(new Error(Buffer.concat(err).toString().trim() || `render kartu gagal (${signal || code})`));
+    });
+    child.stdin.on('error', () => {});   // a child that died early is reported by 'close'
+    child.stdin.end(JSON.stringify({ svg, width, fonts: FONTS, family: BASE_FONT.family }));
+  });
+}
 async function renderAsync(kind, data, opts = {}) {
-  const img = await renderAsyncRaw(svgOf(kind, data, opts), {
-    fitTo: { mode: 'width', value: SIZES[sizeKey(opts.size)].W * SCALE },
+  const svg = svgOf(kind, data, opts), width = SIZES[sizeKey(opts.size)].W * SCALE;
+  try { return await renderInChild(svg, width); } catch (e) { if (!e.spawnFailed) throw e; }
+  const img = await renderAsyncRaw(svg, {
+    fitTo: { mode: 'width', value: width },
     font: { fontFiles: FONTS, loadSystemFonts: false, defaultFontFamily: BASE_FONT.family },
   });
   return Buffer.from(img.asPng());
