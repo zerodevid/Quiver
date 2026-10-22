@@ -21,7 +21,7 @@ const GROUPS = [
   [RefreshCw, 'Siapkan token yang dibutuhkan secara otomatis.'],
   [LogOut, 'Tentukan kapan posisi ditutup dan token sisa dijual.'],
   [Filter, 'Batasi pool dan token yang boleh disalin.'],
-  [ShieldAlert, 'Penjaga dari token jebakan: panduan, preset, dan rekomendasi tiap kolom.'],
+  [ShieldAlert, 'Tolak token jebakan sebelum disalin.'],
 ];
 
 // Shared by default rules and per-target rules; collapsed fields keep their values.
@@ -72,7 +72,7 @@ export default function RulesForm({ value, onChange, isDisabled = false }) {
                         : f.type === 'list' ? <RuleList label={f.label} value={v} onChange={set} isDisabled={isDisabled} />
                         : <Text label={f.label} type="number" step={f.step} value={String(v ?? 0)} onChange={(text) => set(text === '' ? 0 : Number(text))} isDisabled={isDisabled} />}
                     </div>
-                    {help && <SettingInfo title={f.label}>{help}</SettingInfo>}
+                    {(help || f.why) && <SettingInfo title={f.label}>{f.why ? <FieldHelp help={help} field={f} /> : help}</SettingInfo>}
                   </div>
                   {f.rec && <Recommendation field={f} value={v} onUse={set} isDisabled={isDisabled} />}
                   {f.type === 'bool' && <div className="mt-2"><Chip size="sm" variant="soft" color={v ? 'accent' : 'default'}>{t(v ? 'Aktif' : 'Nonaktif')}</Chip></div>}
@@ -96,56 +96,68 @@ function RuleList({ label, value, onChange, isDisabled }) {
   </div>;
 }
 
-// Guide for the anti-rug section: how the scam works, how to use the section, the presets, and the limits.
+// Anti-rug section header: a one-line intro, the preset buttons, and a collapsed full guide.
 function AntiRugGuide({ guide, presets, value, onApply, isDisabled }) {
   const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const gid = useId();
   const isActive = (preset) => Object.entries(preset.values).every(([path, v]) => dig(value, path) === v);
-  return <div className="flex flex-col gap-4 border-t border-border p-4">
-    <p className="text-sm leading-relaxed">{t(guide.intro)}</p>
-    <div className="grid gap-3 md:grid-cols-2">
-      <div>
-        <h4 className="text-sm font-semibold">{t('Pola yang dipakai penipu')}</h4>
-        <ul className="mt-2 flex flex-col gap-2 text-sm">
-          {guide.patterns.map(([title, text]) => <li key={title}><span className="font-medium">{t(title)}.</span> <span className="text-muted">{t(text)}</span></li>)}
-        </ul>
-      </div>
-      <div>
-        <h4 className="text-sm font-semibold">{t('Cara memakai bagian ini')}</h4>
-        <ol className="mt-2 flex list-decimal flex-col gap-2 pl-5 text-sm text-muted">
-          {guide.steps.map((step) => <li key={step}>{t(step)}</li>)}
-        </ol>
-      </div>
+  return <div className="flex flex-col gap-3 border-t border-border p-4">
+    <p className="text-sm text-muted">{t(guide.short)}</p>
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-sm font-medium">{t('Preset')}</span>
+      {presets.map((preset) => <Button key={preset.id} size="sm" variant={isActive(preset) ? 'primary' : 'outline'} aria-pressed={isActive(preset)}
+        onPress={() => onApply(preset)} isDisabled={isDisabled}>{t(preset.label)}</Button>)}
+      <SettingInfo title="Preset"><div className="flex flex-col gap-2">
+        <p>{t('Preset hanya menulis kolom anti rug di bawah. Ukuran posisi dan anggaran tidak diubah.')}</p>
+        {presets.map((preset) => <p key={preset.id}><span className="font-medium text-foreground">{t(preset.label)}:</span> {t(preset.desc)}</p>)}
+      </div></SettingInfo>
+      <Button size="sm" variant="ghost" className="ml-auto" aria-expanded={open} aria-controls={gid} onPress={() => setOpen(!open)}>
+        {t('Panduan')}<ChevronDown aria-hidden="true" className={`size-4 ${open ? 'rotate-180' : ''}`} />
+      </Button>
     </div>
-    <div>
-      <h4 className="text-sm font-semibold">{t('Preset')}</h4>
-      <p className="mt-1 text-xs text-muted">{t('Preset hanya menulis kolom anti rug di bawah. Ukuran posisi dan anggaran tidak diubah.')}</p>
-      <div className="mt-2 grid gap-2 sm:grid-cols-3">
-        {presets.map((preset) => <div key={preset.id} className="flex flex-col gap-2 rounded-lg border border-border p-3">
-          <div className="flex items-center justify-between gap-2"><span className="font-medium">{t(preset.label)}</span>{isActive(preset) && <Chip size="sm" variant="soft" color="accent">{t('Sedang dipakai')}</Chip>}</div>
-          <p className="text-xs text-muted">{t(preset.desc)}</p>
-          <Button size="sm" variant="outline" onPress={() => onApply(preset)} isDisabled={isDisabled}>{t('Terapkan')}</Button>
-        </div>)}
+    <div id={gid} hidden={!open} className="flex flex-col gap-4 rounded-lg border border-border bg-surface-secondary/40 p-3">
+      <p className="text-sm leading-relaxed">{t(guide.intro)}</p>
+      <div className="grid gap-3 md:grid-cols-2">
+        <div>
+          <h4 className="text-sm font-semibold">{t('Pola yang dipakai penipu')}</h4>
+          <ul className="mt-2 flex flex-col gap-2 text-sm">
+            {guide.patterns.map(([title, text]) => <li key={title}><span className="font-medium">{t(title)}.</span> <span className="text-muted">{t(text)}</span></li>)}
+          </ul>
+        </div>
+        <div>
+          <h4 className="text-sm font-semibold">{t('Cara memakai bagian ini')}</h4>
+          <ol className="mt-2 flex list-decimal flex-col gap-2 pl-5 text-sm text-muted">
+            {guide.steps.map((step) => <li key={step}>{t(step)}</li>)}
+          </ol>
+          <h4 className="mt-4 text-sm font-semibold">{t('Batasan yang perlu diketahui')}</h4>
+          <ul className="mt-2 flex list-disc flex-col gap-1 pl-5 text-sm text-muted">
+            {guide.limits.map((text) => <li key={text}>{t(text)}</li>)}
+          </ul>
+        </div>
       </div>
-    </div>
-    <div className="rounded-lg border border-border bg-surface-secondary/40 p-3">
-      <h4 className="text-sm font-semibold">{t('Batasan yang perlu diketahui')}</h4>
-      <ul className="mt-2 flex list-disc flex-col gap-1 pl-5 text-sm text-muted">
-        {guide.limits.map((text) => <li key={text}>{t(text)}</li>)}
-      </ul>
     </div>
   </div>;
 }
 
-// Recommended value for one field, with the reason, and a button to apply it. List fields only show text:
-// applying would overwrite what the user has typed.
+// The info popover of a field that has a recommendation: its help text, then the value and the reason.
+function FieldHelp({ help, field }) {
+  const { t } = useI18n();
+  return <div className="flex flex-col gap-2">
+    {help && <p>{t(help)}</p>}
+    <p><span className="font-medium text-foreground">{t('Rekomendasi')}: {t(field.rec.label)}.</span> {t(field.why)}</p>
+  </div>;
+}
+
+// One compact line under a field: the recommended value, and a button to apply it. List fields only show the text:
+// applying would overwrite what the user has typed. The reason lives in the info popover.
 function Recommendation({ field, value, onUse, isDisabled }) {
   const { t } = useI18n();
   const hasValue = 'value' in field.rec;
   const matches = hasValue && value === field.rec.value;
-  return <div className="mt-2 rounded-md bg-surface-secondary/50 p-2 text-xs">
-    <p className="flex flex-wrap items-center gap-2"><span><span className="font-semibold">{t('Rekomendasi')}:</span> {t(field.rec.label)}</span>
-      {matches && <Chip size="sm" variant="soft" color="success">{t('Sesuai rekomendasi')}</Chip>}</p>
-    <p className="mt-1 text-muted">{t(field.why)}</p>
-    {hasValue && !matches && <Button size="sm" variant="ghost" className="mt-1" onPress={() => onUse(field.rec.value)} isDisabled={isDisabled}>{t('Pakai rekomendasi')}</Button>}
-  </div>;
+  return <p className="mt-2 flex flex-wrap items-center gap-x-2 text-xs text-muted">
+    <span>{t('Disarankan')}: <span className="font-medium text-foreground">{t(field.rec.label)}</span></span>
+    {matches && <Chip size="sm" variant="soft" color="success">{t('Sesuai')}</Chip>}
+    {hasValue && !matches && <Button size="sm" variant="ghost" onPress={() => onUse(field.rec.value)} isDisabled={isDisabled}>{t('Pakai')}</Button>}
+  </p>;
 }

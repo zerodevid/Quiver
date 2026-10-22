@@ -109,6 +109,7 @@ const dup = (path, extra) => ({ ...findField(path), ...extra });
 const evm = () => !isSolana();
 
 export const ANTI_RUG_GUIDE = {
+  short: 'Penjaga dari token jebakan. Pilih preset, atau atur kolom satu per satu; ikon i menjelaskan tiap kolom dan alasan nilai yang disarankan.',
   intro: 'Penipu memakai pola yang berulang: token baru dibuat, uang pancingan dipasang supaya pool tampak ramai dan "dipercaya", lalu pembuatnya menjual semua token ke likuiditas yang ikut masuk. Bagian ini mengumpulkan semua penjaga untuk pola itu di satu tempat. Kolom yang sama juga ada di bagian lain dan nilainya satu: mengubah di sini berarti mengubah di sana.',
   patterns: [
     ['Bid satu sisi di bawah harga', 'Kamu memasang USDG di bawah harga. Pembuat menjual seluruh token ke dalamnya, jadi USDG-mu berubah menjadi token yang nilainya jatuh ke nol.'],
