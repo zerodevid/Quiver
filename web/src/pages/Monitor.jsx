@@ -553,7 +553,7 @@ export default function Monitor() {
         {danger > 0 && <span className="font-medium text-danger">{t('{n} perlu perhatian', { n: danger })}</span>}
         <span className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1">
           <span className="whitespace-nowrap"><span className="text-muted">{t('Nilai')}</span> <span className="num font-medium">{usd(sum((p) => p.valueUsd))}</span></span>
-          <span className="whitespace-nowrap"><span className="text-muted">{t('Fee')}</span> <span className="num font-medium">{usd(sum((p) => p.feeUsd))}</span></span>
+          <span className="whitespace-nowrap"><span className="text-muted">{t('Fee')}</span> <span className="num font-medium">{usd(sum((p) => (p.feeUsd || 0) + (p.claimedUsd || 0)))}</span></span>
           <span className="whitespace-nowrap"><span className="text-muted">PnL</span> <span className={`num font-medium ${tone(pnl)}`}>{usd(pnl)}{cost > 0 && <> ({pct((pnl / cost) * 100, 2)})</>}</span></span>
           {fresh ? <LiveBadge /> : <span className="text-muted" title={t('Harga live belum terbaca; memakai hasil sinkron terakhir.')}>{t('harga dari sinkron')}{d.syncedAt ? ` · ${ago(d.syncedAt)}` : ''}</span>}
         </span>

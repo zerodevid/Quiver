@@ -1217,6 +1217,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       pos.outUsd = outUsd;
       pos.quoteKind = chain.isEthLike(row.quote_symbol) ? 'eth' : 'usd';
       // Position origin: who is being copied, which position is theirs, and how much they
+      // fees_quote on a closed row is what the closing transaction harvested (feeUsd stays 0 there)
+      pos.closeFeeUsd = row.status === 'closed' ? (row.fees_quote || 0) * k : 0;
       // put in/withdrew there. The Telegram entry & close cards put it beside
       // our own figures.
       pos.origin = originOf(row, { watch: true });
@@ -1394,7 +1396,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           cost: costOf(id, costUsd),
           closeUsd: events.find((e) => e.hash === row.tx_close)?.valueUsd ?? null,
           swapDeltaUsd: events.some((e) => e.saleDeltaUsd != null) ? events.reduce((sum, e) => sum + (e.saleDeltaUsd || 0), 0) : null,
-          costUsd, outUsd, feesUsd: (row.fees_quote || 0) * k,
+          costUsd, outUsd, feesUsd: (row.fees_quote || 0) * k, claimedUsd: (row.claimed_quote || 0) * k,
           pnlUsd: outUsd != null ? outUsd - costUsd : (open?.pnlUsd ?? null),
           open,
           leftToken: row.left_token || null, leftAmount: row.left_amount || '0', leftUsd: (row.left_quote || 0) * k,
@@ -2831,7 +2833,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   };
   // cur 'fx': amounts in the Settings currency (Display → second currency) instead of dollars;
   // without a rate the card stays in dollars.
-  const shareCardOf = async ({ kind, id, day, month, hide = false, lang = 'id', tz, size, theme, layout, cur } = {}) => {
+  const shareCardOf = async ({ kind, id, day, month, hide = false, lang = 'id', tz, size, theme, layout, cur, range = 'all', coins = false } = {}) => {
     const timeZone = tz || cfg.telegram?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const rate = cur === 'fx' ? fx.view(currencyOf(cfg)) : null;
     const opts = { hideAmounts: !!hide, lang, timeZone, size: shareCard.sizeKey(size), theme: shareCard.themeKey(theme), layout: shareCard.layoutKey(layout), chain: { key: chain.network, label: chain.label },
@@ -2862,14 +2864,53 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       opts.chart = await positionSpark(data).catch(() => null);
 
     } else if (kind === 'total' || kind === 'daily' || kind === 'month') {
-      const [pf, pos] = await Promise.all([callApi('GET', '/api/portfolio', {}, { range: 'all' }), callApi('GET', '/api/positions')]);
+      // Total card timeframe: a rolling window (24h/7d/30d) or the whole history.
+      const win = kind === 'total' ? ({ '24h': 864e5, '7d': 7 * 864e5, '30d': 30 * 864e5 })[range] || 0 : 0;
+      const [pf, pos] = await Promise.all([callApi('GET', '/api/portfolio', {}, { range: win ? range : 'all' }), callApi('GET', '/api/positions')]);
       const all = [...(pos.positions || []), ...(pos.closed || [])];
       if (kind === 'total') {
         if (!pf.now) return { error: 'portofolio belum terbaca' };
-        data = { now: pf.now, stats: pf.stats, since: all.reduce((a, x) => (x.opened_ts && (!a || x.opened_ts < a) ? x.opened_ts : a), null) };
-        // Net PnL curve over the whole history (the same view as the portfolio chart).
-        const pts = portfolioCard.prepare(pf, 'net').pts;
-        if (pts.length >= 2) opts.chart = { kind: 'line', pts: pts.map((x) => [x.t, x.v]), zero: true };
+        const prep = portfolioCard.prepare(pf, 'net');
+        let now = pf.now, stats = pf.stats, since = all.reduce((a, x) => (x.opened_ts && (!a || x.opened_ts < a) ? x.opened_ts : a), null);
+        // Closed positions of the window, net of gas/outside slippage (the calendar's basis).
+        const inWin = (pf.closed || []).filter(([ts]) => !win || ts >= Date.now() - win);
+        if (win) {
+          // PnL is the change over the window: the same delta the portfolio chart prints (deposits and
+          // withdrawals are already out of net PnL).
+          const dPnl = pf.now.pnl - (pf.baseline?.pnl ?? 0);
+          const realized = inWin.reduce((a, [, v]) => a + v, 0);
+          now = { ...pf.now, pnl: dPnl, netPnl: pf.now.netPnl != null ? prep.delta : null, realizedUsd: realized, unrealizedUsd: dPnl - realized };
+          const wins = inWin.filter(([, v]) => v > FLAT).length, losses = inWin.filter(([, v]) => v < -FLAT).length;
+          const nets = inWin.map(([, v]) => v);
+          stats = { closedCount: inWin.length, wins, losses, winRatePct: wins + losses ? (wins / (wins + losses)) * 100 : null,
+            best: nets.length ? Math.max(...nets) : null, worst: nets.length ? Math.min(...nets) : null };
+          since = Math.max(Date.now() - win, since || 0);
+        }
+        data = { now, stats, since, range: win ? range : 'all' };
+        // Net PnL curve over the window, started from zero at its left edge.
+        const base = win ? (prep.view === 'net' ? pf.baseline?.net : pf.baseline?.pnl) ?? 0 : 0;
+        const pts = prep.pts;
+        if (pts.length >= 2) opts.chart = { kind: 'line', pts: pts.map((x) => [x.t, x.v - base]), zero: true };
+        // Which coins made the rise and the drop: closed positions of the window grouped by their
+        // memecoin, with logos. Open positions are left out — their PnL is not tied to the window.
+        if (coins === true || coins === '1' || coins === 'true') {
+          const toks = tokenMeta();
+          const netOf = new Map(inWin.map(([, v, pid]) => [pid, v]));
+          const byCoin = new Map();
+          for (const r of store.all("SELECT id, token0, token1, cost_quote, quote_symbol FROM positions WHERE chain=? AND status='closed'", chain.network)) {
+            if (!netOf.has(r.id)) continue;
+            const side = quoteSideOf(r.token0, r.token1);
+            const addr = side === 1 ? r.token0 : side === 0 ? r.token1 : r.token0;
+            const c = byCoin.get(addr) || { address: addr, symbol: toks.get(addr)?.symbol || '?', pnl: 0, cost: 0, n: 0 };
+            c.pnl += netOf.get(r.id); c.cost += (r.cost_quote || 0) * (chain.isEthLike(r.quote_symbol) ? engine.ethUsd || 0 : 1); c.n++;
+            byCoin.set(addr, c);
+          }
+          const list = [...byCoin.values()].map((c) => ({ ...c, pct: c.cost > 0 ? (c.pnl / c.cost) * 100 : null }));
+          const pick = [...list.filter((c) => c.pnl > FLAT).sort((a, b) => b.pnl - a.pnl).slice(0, 3), ...list.filter((c) => c.pnl < -FLAT).sort((a, b) => a.pnl - b.pnl).slice(0, 3)];
+          const logos = new Map(await Promise.all(pick.map(async (c) => [c.address, await icons.get(c.address, { wait: 4000 }).catch(() => null)])));
+          const fin = (c) => ({ ...c, icon: logos.get(c.address) || null });
+          opts.movers = { up: pick.filter((c) => c.pnl > 0).map(fin), down: pick.filter((c) => c.pnl < 0).map(fin) };
+        }
       } else if (kind === 'month') {
         const m = monthOf(pf, pos, month, timeZone);
         if (m.error) return m;

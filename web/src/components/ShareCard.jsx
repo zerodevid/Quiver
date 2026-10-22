@@ -27,6 +27,8 @@ import { useFx } from '../currency';
 const SIZES = [['wide', 'Lebar', 1200 / 630], ['square', 'Persegi', 1], ['story', 'Story', 1080 / 1920]];
 // Layout: spotlight = one big figure + large mascot; classic = stat tiles + chart strip.
 const LAYOUTS = [['spotlight', 'Sorot'], ['classic', 'Klasik']];
+// Timeframe of the whole-portfolio card.
+const RANGES = [['all', 'Semua'], ['24h', '24j'], ['7d', '7h'], ['30d', '30h']];
 const THEMES = [['dark', 'Grafit'], ['midnight', 'Malam'], ['sunset', 'Senja'], ['neon', 'Neon'], ['gold', 'Emas'], ['light', 'Terang'], ['pixel', 'Piksel'], ['hell', 'Neraka']];
 const tzName = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ''; } };
 // The last choice is remembered in this browser.
@@ -53,6 +55,8 @@ export function ShareDialog({ card, onClose }) {
   // Amounts in dollars or in the Settings currency (Display → second currency). Without a
   // currency/rate there is nothing to choose: dollars.
   const fx = useFx();
+  const [range, setRange] = useState(() => remember('quiver-share-range', 'all', RANGES.map(([k]) => k)));
+  const [coins, setCoins] = useState(() => remember('quiver-share-coins', '0', ['0', '1']) === '1');   // top gainers/losers with coin logos
   const [curPick, setCurPick] = useState(() => remember('quiver-share-cur', 'usd', ['usd', 'fx']));
   const cur = fx ? curPick : 'usd';
   const [blob, setBlob] = useState(null);
@@ -74,6 +78,8 @@ export function ShareDialog({ card, onClose }) {
   const pickSize = (v) => { setSize(v); keep('quiver-share-size', v); };
   const pickTheme = (v) => { setTheme(v); keep('quiver-share-theme', v); };
   const pickLayout = (v) => { setLayout(v); keep('quiver-share-layout', v); };
+  const pickRange = (v) => { setRange(v); keep('quiver-share-range', v); };
+  const pickCoins = (v) => { setCoins(v); keep('quiver-share-coins', v ? '1' : '0'); };
   const pickCur = (v) => { setCurPick(v); keep('quiver-share-cur', v); };
 
   // The image is requested again when the card, language, size, theme, layout changes, or amounts are hidden.
@@ -85,7 +91,7 @@ export function ShareDialog({ card, onClose }) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(new Error(t('Server terlalu lama menggambar kartu'))), 45_000);
     setLoading(true); setErr(null);
-    const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), ...(card.month ? { month: card.month } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme, layout, cur });
+    const q = new URLSearchParams({ kind: card.kind, ...(card.id != null ? { id: card.id } : {}), ...(card.day ? { day: card.day } : {}), ...(card.month ? { month: card.month } : {}), hide: hide ? '1' : '0', lang, tz: tzName(), size, theme, layout, cur, ...(card.kind === 'total' ? { range, coins: coins ? '1' : '0' } : {}) });
     fetch(`/api/share/card?${q}`, { credentials: 'same-origin', headers: authHeaders(), signal: ctl.signal })
       .then(async (r) => {
         if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `HTTP ${r.status}`); }
@@ -100,7 +106,7 @@ export function ShareDialog({ card, onClose }) {
       })
       .finally(() => { clearTimeout(timer); if (alive) setLoading(false); });
     return () => { alive = false; clearTimeout(timer); ctl.abort(); };
-  }, [card, hide, lang, size, theme, layout, cur, t]);
+  }, [card, hide, lang, size, theme, layout, cur, range, coins, t]);
 
   useEffect(() => {
     if (!blob) { setUrl(null); return; }
@@ -132,7 +138,7 @@ export function ShareDialog({ card, onClose }) {
         setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
       } else if (kind === 'telegram') {
         // The server redraws from the same data, then sends it to each chat.
-        const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, month: c.month, hide, lang, tz: tzName(), size, theme, layout, cur });
+        const j = await post('/api/share/telegram', { kind: c.kind, id: c.id, day: c.day, month: c.month, hide, lang, tz: tzName(), size, theme, layout, cur, ...(c.kind === 'total' ? { range, coins } : {}) });
         if (j.error) throw new Error(j.error);
         toast.success(t('Terkirim ke Telegram'), { description: j.failed ? t('{n} chat gagal: {e}', { n: j.failed, e: j.lastErr }) : t('{n} chat', { n: j.sent }) });
       } else if (kind === 'share') {
@@ -192,7 +198,19 @@ export function ShareDialog({ card, onClose }) {
                 <Segmented size="sm" aria="Ukuran kartu" value={size} onChange={pickSize} options={SIZES.map(([k, label]) => [k, label])} />
                 <Segmented size="sm" aria="Tema kartu" value={theme} onChange={pickTheme} options={THEMES.map(([k, label]) => [k, label])} />
               </div>
+              {/* Timeframe and coin attribution only exist for the whole-portfolio card. */}
+              {c?.kind === 'total' && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted">{t('Periode')}</span>
+                  <Segmented size="sm" aria="Periode kartu" value={range} onChange={pickRange} options={RANGES.map(([k, label]) => [k, label])} />
+                </div>
+              )}
               </>}
+              {c?.kind === 'total' && !video && (
+                <div className="mt-3">
+                  <Toggle label="Tampilkan coin penggerak" desc="Coin dengan untung dan rugi terbesar di periode ini, lengkap dengan logonya." value={coins} onChange={pickCoins} />
+                </div>
+              )}
               {fx && !hide && (
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <span className="text-xs text-muted">{t('Nominal dalam')}</span>

@@ -486,6 +486,7 @@ export default function Overview() {
   const inRangeN = open.filter((x) => x.inRange).length;
   const outUsd = sum(open.filter((x) => x.inRange === false), (x) => x.valueUsd);
   const feeOpen = sum(open, (x) => (x.feeUsd || 0) + (x.claimedUsd || 0));
+  const feeClaimedOpen = sum(open, (x) => x.claimedUsd || 0);
   const ilRows = open.filter((x) => x.ilUsd != null);
   const ilOpen = ilRows.length ? sum(ilRows, (x) => x.ilUsd) : null;
   const portApr = aprOf(open);
@@ -533,13 +534,15 @@ export default function Overview() {
               sub={!now ? null : t('terealisasi {r} · berjalan {u}', { r: usd(now.realizedUsd), u: usd(now.unrealizedUsd) })} />}
         </Hero>
         {/* Fee without APR only gives the amount, not whether the capital is working. */}
-        <Stat label="Fee terkumpul" value={usd(s.feeUsd)} fx={s.feeUsd}
+        <Stat label="Fee terkumpul" value={usd(feeOpen)} fx={feeOpen}
           badge={portApr == null ? null : (
             <span className="num shrink-0 rounded bg-success/12 px-1.5 py-0.5 text-[0.6875rem] font-semibold whitespace-nowrap text-success"
               title={t('Fee seluruh posisi terbuka (termasuk yang sudah dipanen) disetahunkan terhadap modalnya')}>
               {t('APR {v}', { v: aprText(portApr) })}
             </span>)}
-          sub={s.costUsd > 0 ? t('{p}% dari modal · belum diklaim', { p: num((s.feeUsd / s.costUsd) * 100, 2) }) : t('belum diklaim')} />
+          sub={feeClaimedOpen > 0.005
+            ? t('belum diklaim {u} + sudah diklaim {c}', { u: usd(s.feeUsd), c: usd(feeClaimedOpen) })
+            : s.costUsd > 0 ? t('{p}% dari modal · belum diklaim', { p: num((s.feeUsd / s.costUsd) * 100, 2) }) : t('belum diklaim')} />
         {/* The core LP question: whether the fees earned cover the impermanent loss. */}
         <Stat label="Fee vs IL" value={ilOpen == null ? '—' : usd(feeOpen + ilOpen)} fx={ilOpen == null ? null : feeOpen + ilOpen}
           valueClass={ilOpen == null ? '' : tone(feeOpen + ilOpen)}

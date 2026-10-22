@@ -30,7 +30,7 @@ import TargetSide from '../components/TargetSide';
 import ShareButton, { positionCard } from '../components/ShareCard';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask, TradeLinks, DataLinks, CopyBtn } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
-import { usd, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice, widthPct, txHref, addrHref, feeApr, aprText, locale as fmtLocale } from '../fmt';
+import { usd, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice, widthPct, txHref, addrHref, feeApr, feeTotal, aprText, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
 
 export const TFS = [['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam'], ['1d', '1 hari']];
@@ -570,15 +570,17 @@ export default function PositionDetail({ id }) {
         <Stat label={closed ? 'Hasil' : 'Nilai'} value={usd(closed ? p.outUsd : p.valueUsd)} fx={closed ? p.outUsd : p.valueUsd} sub={t('modal {v}', { v: usd(p.costUsd) })} />
         {/* The APR beside the label: what decides whether this position is worth keeping
             is not the nominal fee but how fast the capital earns. */}
-        <Stat label={closed ? 'Fee (sudah diklaim)' : 'Fee belum diklaim'} value={closed ? '—' : usd(p.feeUsd)} fx={closed ? null : p.feeUsd} valueClass={!closed && p.feeUsd > 0.005 ? 'text-success' : ''}
+        <Stat label="Fee didapat" value={usd(feeTotal(p))} fx={feeTotal(p)} valueClass={feeTotal(p) > 0.005 ? 'text-success' : ''}
           badge={closed || feeApr(p) == null ? null : (
             <span className="num shrink-0 rounded bg-success/12 px-1.5 py-0.5 text-[0.6875rem] font-semibold whitespace-nowrap text-success"
-              title={t('Fee {f} dalam {age} atas modal {c}, disetahunkan', { f: usd((p.feeUsd || 0) + (p.claimedUsd || 0)), age: age(p.ageHours), c: usd(p.costUsd) })}>
+              title={t('Fee {f} dalam {age} atas modal {c}, disetahunkan', { f: usd(feeTotal(p)), age: age(p.ageHours), c: usd(p.costUsd) })}>
               {t('APR {v}', { v: aprText(feeApr(p)) })}
             </span>)}
-          sub={!closed && p.costUsd > 0 ? t('{p}% dari modal', { p: num((p.feeUsd / p.costUsd) * 100, 2) }) : null} />
+          sub={<>{p.costUsd > 0 ? t('{p}% dari modal', { p: num((feeTotal(p) / p.costUsd) * 100, 2) }) : null}
+            {!closed && p.claimedUsd > 0.005 && <div>{t('belum diklaim {u} + sudah diklaim {c}', { u: usd(p.feeUsd), c: usd(p.claimedUsd) })}</div>}</>} />
         <Stat label="PnL" value={usd(p.pnlUsd)} fx={p.pnlUsd} valueClass={tone(p.pnlUsd)}
-          sub={<span>{pct(p.pnlPct, 2)}{p.ilUsd != null && <> · IL <span className={tone(p.ilUsd)}>{usd(p.ilUsd)}</span></>}</span>} />
+          sub={<span>{pct(p.pnlPct, 2)}{p.ilUsd != null && <> · IL <span className={tone(p.ilUsd)}>{usd(p.ilUsd)}</span></>}
+            {!closed && p.claimedUsd > 0.005 && <div>{t('terealisasi {r} · berjalan {u}', { r: usd(p.claimedUsd), u: usd((p.pnlUsd || 0) - p.claimedUsd) })}</div>}</span>} />
         <Stat label={closed ? 'Ditahan' : 'Umur'} value={age(p.ageHours)} sub={t('masuk {d}', { d: fmtDate(p.opened_ts) })} />
         {/* Running cost: gas + swap spread. Not counted in PnL, although
             it is the price paid to enter and exit this position. */}

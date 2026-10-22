@@ -215,7 +215,7 @@ export default function Positions({ param }) {
           <SyncState syncedAt={d.syncedAt} pending={pending} />
           {open.length > 0 && <Totals items={[
             ['Nilai', usd(sum(open, (p) => p.valueUsd))],
-            ['Fee', usd(sum(open, (p) => p.feeUsd))],
+            ['Fee', usd(sum(open, (p) => (p.feeUsd || 0) + (p.claimedUsd || 0)))],
             ['PnL', usd(openPnl), tone(openPnl)],
           ]} />}
           <CloseSelected rows={shown} sel={sel} setSel={setSel} closeAll={closeAll} closing={closing} busy={claiming != null} />

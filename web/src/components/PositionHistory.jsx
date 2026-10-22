@@ -247,6 +247,9 @@ export default function PositionHistory({ id, onClose }) {
 
   const p = d?.position;
   const closed = p?.status === 'closed';
+  const claimed = p?.claimedUsd || 0;
+  const feeOpen = p ? (p.open?.feeUsd ?? p.feesUsd ?? 0) : 0;   // still unclaimed (open) — a closed row's feesUsd was harvested at close
+  const feeAll = p ? (closed ? (p.feesUsd || 0) + claimed : feeOpen + claimed) : 0;
   const hours = p ? ((p.closed_ts || Date.now()) - (p.opened_ts || Date.now())) / 3600000 : null;
   return (
     <GmgnProvider tokens={p ? [baseTokenOf(p)] : []}>
@@ -285,10 +288,14 @@ export default function PositionHistory({ id, onClose }) {
                 <>
                   <div className="mb-4 grid grid-cols-1 min-[360px]:grid-cols-2 gap-3">
                     <Stat label={closed ? 'PnL total (LP + sisa)' : 'PnL (belum terealisasi)'} value={p.pnlUsd == null ? '—' : usd(p.pnlUsd)} valueClass={tone(p.pnlUsd)}
-                      sub={p.costUsd > 0 && p.pnlUsd != null ? pct((p.pnlUsd / p.costUsd) * 100, 2) : t('belum tersinkron')} />
+                      sub={p.costUsd > 0 && p.pnlUsd != null ? (
+                        <>{pct((p.pnlUsd / p.costUsd) * 100, 2)}
+                          {!closed && claimed > 0.005 && <div>{t('terealisasi {r} · berjalan {u}', { r: usd(claimed), u: usd(p.pnlUsd - claimed) })}</div>}</>
+                      ) : t('belum tersinkron')} />
                     <Stat label="Umur" value={age(hours)} sub={p.opened_ts ? t('dibuka {w}', { w: ago(p.opened_ts) }) : null} />
-                    <Stat label="Fee didapat" value={usd(p.feesUsd)} valueClass={p.feesUsd > 0.005 ? 'text-success' : ''}
-                      sub={p.costUsd > 0 ? pct((p.feesUsd / p.costUsd) * 100, 2).replace('+', '') : null} />
+                    <Stat label="Fee didapat" value={usd(feeAll)} valueClass={feeAll > 0.005 ? 'text-success' : ''}
+                      sub={<>{p.costUsd > 0 ? pct((feeAll / p.costUsd) * 100, 2).replace('+', '') : null}
+                        {claimed > 0.005 && !closed && <div>{t('belum diklaim {u} + sudah diklaim {c}', { u: usd(feeOpen), c: usd(claimed) })}</div>}</>} />
                     <Stat label="Modal" value={usd(p.costUsd)} sub={closed ? t('hasil {v}', { v: usd(p.outUsd) }) : null} />
                   </div>
                   <TargetSide p={p} onRefresh={() => setRevision((v) => v + 1)} />

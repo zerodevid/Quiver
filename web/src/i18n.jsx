@@ -2332,6 +2332,12 @@ const EN = {
   'Nominal dalam': 'Amounts in',
   'Mata uang nominal': 'Amount currency',
   'klik untuk bagikan': 'click to share',
+  'Periode kartu': 'Card period',
+  '24j': '24h',
+  '7h': '7d',
+  '30h': '30d',
+  'Tampilkan coin penggerak': 'Show top coins',
+  'Coin dengan untung dan rugi terbesar di periode ini, lengkap dengan logonya.': 'The coins with the biggest gain and loss in this period, with their logos.',
   // Position replay video (ShareReplay)
   'Gambar': 'Image',
   'Video': 'Video',

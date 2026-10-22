@@ -70,6 +70,8 @@ export function apr(feeUsd, costUsd, ageHours) {
 // Position fee = unclaimed + already withdrawn to the wallet. Using only
 // the unclaimed would make a diligently harvesting position look unproductive.
 export const feeApr = (p) => (!p || p.syncing ? null : apr((p.feeUsd || 0) + (p.claimedUsd || 0), p.costUsd, p.ageHours));
+// Everything a position has earned in fees: still unclaimed + claimed earlier + (closed rows) harvested at close.
+export const feeTotal = (p) => (p ? (p.feeUsd || 0) + (p.claimedUsd || 0) + (p.closeFeeUsd || 0) : 0);
 // Combined APR of several positions: weighted by capital AND age (one large position
 // just opened must not pull the average down as if it had long sat idle).
 export function aprOf(rows) {

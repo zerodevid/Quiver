@@ -468,7 +468,35 @@ function statsRow(cols, footer) {
     out += txt(value, cx, ty + (h * 0.55 + (tall ? 12 : 6)) * k, { size, weight: 600, color: o.color || T.text });
     if (o.extra) out += fitted(o.extra[0], cx, ty + (h * 0.8 + 8) * k, width, { size: (tall ? 16 : 15) * k, color: o.extra[1] });
   });
-  if (footer) out += fitted(footer, PAD, G.footY, W - PAD * 2 - measure(chainName(), 17 * k, 500) - 60 * k, { size: 15 * k, color: T.faint });
+  return out + footerLine(footer);
+}
+function footerLine(footer) {
+  const { W, k } = G;
+  return footer ? fitted(footer, PAD, G.footY, W - PAD * 2 - measure(chainName(), 17 * k, 500) - 60 * k, { size: 15 * k, color: T.faint }) : '';
+}
+// Top gainers / top losers with the coin logo (opts.movers, built by the server from the closed
+// positions of the window): two columns side by side, or stacked when the region is narrow.
+// Rows adapt to the room: up to three each, at least one.
+function moversBlock(m, { x, y, w, h, stacked = false }, hideAmounts, idp = 'mv') {
+  const k = G.k, headH = 26 * k, gap = 28 * k;
+  const secH = stacked ? (h - gap / 2) / 2 : h, colW = stacked ? w : (w - gap) / 2;
+  const rows = Math.max(1, Math.min(3, Math.floor((secH - headH) / (30 * k))));
+  const rowH = Math.min(46 * k, (secH - headH) / rows), r = Math.min(rowH * 0.38, 20 * k);
+  let out = '';
+  [[tr('Top untung'), m.up, T.up], [tr('Top rugi'), m.down, T.down]].forEach(([label, list, color], i) => {
+    const sx = stacked ? x : x + i * (colW + gap), sy = stacked ? y + i * (secH + gap / 2) : y;
+    out += `<rect x="${sx}" y="${sy + 2}" width="${3 * k}" height="${headH - 6 * k}" rx="${rx(1.5 * k)}" fill="${color}" fill-opacity="0.8"/>`
+      + caps(label, sx + 12 * k, sy + 15 * k, { size: 13 * k, ls: 0.12 }).svg;
+    if (!list.length) out += txt('—', sx + 12 * k, sy + headH + rowH / 2, { size: 20 * k, color: T.faint, base: 'middle' });
+    list.slice(0, rows).forEach((c, j) => {
+      const cy = sy + headH + j * rowH + rowH / 2;
+      const val = hideAmounts ? (c.pct == null ? HIDDEN : pct(c.pct, 1)) : usd(c.pnl);
+      const size = Math.min(24 * k, rowH * 0.5), vw = measure(val, size, 600);
+      out += token(c.icon, { address: c.address, symbol: c.symbol }, sx + 12 * k + r, cy, r, `${idp}${i}${j}`)
+        + txt(fit(c.symbol, colW - 12 * k - r * 2 - 12 * k - vw - 14 * k, size, 600), sx + 12 * k + r * 2 + 12 * k, cy, { size, weight: 600, base: 'middle' })
+        + txt(val, sx + colW, cy, { size, weight: 600, color, anchor: 'end', base: 'middle' });
+    });
+  });
   return out;
 }
 // Token icon: a round logo (PNG/JPEG/GIF stored on the server — resvg cannot read
@@ -538,16 +566,28 @@ function positionSvg(p, { hideAmounts = false, icons = {}, chart = null } = {}) 
 // now/stats: the same shape as /api/portfolio; since: when the first position was opened.
 // The main figure is the same as the "Net PnL" card on the dashboard: wallet value minus the real
 // capital (including gas, zap, swap) if capital is tracked; otherwise, the sum of per-position PnL.
+// Timeframe chip of the total card: nothing for the whole history.
+const rangeLabel = (r) => (r && r !== 'all' ? String(r).toUpperCase() : null);
 const totalPnl = (now) => (now.netPnl != null && now.capitalNet != null
   ? { net: true, pnl: now.netPnl, cap: now.capitalNet }
   : { net: false, pnl: now.pnl, cap: now.capital });
-function totalSvg({ now, stats, since }, { hideAmounts = false, chart = null } = {}) {
+function totalSvg({ now, stats, since, range }, { hideAmounts = false, chart = null, movers = null } = {}) {
   const { net, pnl, cap } = totalPnl(now);
   const pnlPct = cap > 0 ? (pnl / cap) * 100 : null;
   const wr = stats?.winRatePct;
+  const footer = since ? tr('sejak {0} · {1}', [fmtDayOnly(since), fmtDate(Date.now())]) : fmtDate(Date.now());
+  const tiles = [
+    [tr('Total portofolio'), hideAmounts ? HIDDEN : usd(now.value)],
+    [tr('Win rate'), wr == null ? '—' : `${num(wr, 0)}%`, { color: wr == null ? T.text : wr >= 50 ? T.up : T.down,
+      extra: stats?.closedCount ? [tr('{0} menang · {1} kalah', [stats.wins, stats.losses]), T.muted] : null }],
+    [tr('Fee terkumpul'), hideAmounts ? HIDDEN : usd(now.feeUsd), { color: T.up }],
+    [tr('Posisi terbaik'), stats?.best == null ? '—' : hideAmounts ? HIDDEN : usd(stats.best), { color: sign(stats?.best) }],
+  ];
   const body = title(tr(net ? 'PnL bersih' : 'Total PnL'), [
+    [rangeLabel(range), tone(T.amber)],
     [tr('{0} posisi terbuka', [now.openCount || 0])],
     [stats?.closedCount ? tr('{0} ditutup', [stats.closedCount]) : null],
+    [movers && wr != null ? tr('win rate {0}%', [num(wr, 0)]) : null],
   ]) + hero({
     label: 'PnL', bigColor: sign(pnl),
     big: hideAmounts ? (pnlPct == null ? HIDDEN : pct(pnlPct, 2)) : usd(pnl),
@@ -556,13 +596,9 @@ function totalSvg({ now, stats, since }, { hideAmounts = false, chart = null } =
       : net ? tr('modal {0} · PnL posisi {1}', [usd(cap), usd(now.pnl)])
         : tr('terealisasi {0} · berjalan {1}', [usd(now.realizedUsd), usd(now.unrealizedUsd)]),
     subColor: hideAmounts ? T.faint : T.muted,
-  }) + statsRow([
-    [tr('Total portofolio'), hideAmounts ? HIDDEN : usd(now.value)],
-    [tr('Win rate'), wr == null ? '—' : `${num(wr, 0)}%`, { color: wr == null ? T.text : wr >= 50 ? T.up : T.down,
-      extra: stats?.closedCount ? [tr('{0} menang · {1} kalah', [stats.wins, stats.losses]), T.muted] : null }],
-    [tr('Fee terkumpul'), hideAmounts ? HIDDEN : usd(now.feeUsd), { color: T.up }],
-    [tr('Posisi terbaik'), stats?.best == null ? '—' : hideAmounts ? HIDDEN : usd(stats.best), { color: sign(stats?.best) }],
-  ], since ? tr('sejak {0} · {1}', [fmtDayOnly(since), fmtDate(Date.now())]) : fmtDate(Date.now()));
+  }) + (movers
+    ? moversBlock(movers, { x: PAD, y: G.stats.y, w: G.W - PAD * 2, h: G.footY - 24 * G.k - G.stats.y }, hideAmounts) + footerLine(footer)
+    : statsRow(tiles, footer));
   const m = mood(pnl, pnlPct);
   return frame(sign(pnl), tr('Seluruh portofolio') + ` · ${chainName()}`, body, m, stampFor(m), chart);
 }
@@ -623,7 +659,7 @@ function caps(s, x, y, { size, color = T.muted, ls = 0.18, anchor = 'start' }) {
   return { w: measure(up, size, 600) + up.length * size * ls, svg: `<text x="${x}" y="${y}" font-size="${size}" font-weight="600" fill="${color}" letter-spacing="${(size * ls).toFixed(2)}" text-anchor="${anchor}">${esc(up)}</text>` };
 }
 // `art`: SVG drawn instead of the mascot (the month calendar), placed by its own geometry.
-function spotlight({ meta, icons, title: titleText, chips = [], label, big, tint, pill, sub, stats, footer, mascotKey, art }) {
+function spotlight({ meta, icons, title: titleText, chips = [], label, big, tint, pill, sub, stats, footer, mascotKey, art, movers = null }) {
   const S = G, { W, H, k } = S;
   // The wide poses (loss/neutral) are shrunk so they stay clear of the text column.
   const m = art ? null : mascotOf(mascotKey);
@@ -684,7 +720,13 @@ ${m ? `<image x="${mx}" y="${my}" width="${mw}" height="${mh}" href="${m.href}"/
   if (sub) out += fitted(sub, px, S.pillY + 7 * k, S.right - px, { size: 19 * k, color: T.muted });
   // Three stats, each marked by a short tinted bar on its left.
   const st = S.stats, colW = st.cols === 1 ? st.w : (st.right ?? S.right) - PAD, rowH = st.rowH || 78 * k;
-  stats.forEach(([l, v, color], i) => {
+  if (movers) {
+    // Top gainers/losers instead of the stats: stacked in the single-column (square) layout, side by side otherwise;
+    // never into the mascot below the text in the story layout.
+    const limit = m && S.mascot.cx != null ? my - 14 : S.footY - 22 * k;
+    out += moversBlock(movers.m, { x: PAD, y: st.y, w: colW, h: limit - st.y, stacked: st.cols === 1 }, movers.hideAmounts, 'sm');
+  }
+  else stats.forEach(([l, v, color], i) => {
     const cw = st.cols === 1 ? colW : colW / st.cols;
     const sx = PAD + (st.cols === 1 ? 0 : i * cw), sy = st.y + (st.cols === 1 ? i * rowH : 0);
     out += `<rect x="${sx}" y="${sy}" width="${3 * k}" height="${54 * k}" rx="${rx(1.5 * k)}" fill="${tint}" fill-opacity="0.7"/>`
@@ -717,13 +759,13 @@ function positionSpot(p, { hideAmounts = false, icons = {} } = {}) {
     mascotKey: m,
   });
 }
-function totalSpot({ now, stats, since }, { hideAmounts = false } = {}) {
+function totalSpot({ now, stats, since, range }, { hideAmounts = false, movers = null } = {}) {
   const { net, pnl, cap } = totalPnl(now);
   const pnlPct = cap > 0 ? (pnl / cap) * 100 : null;
   const wr = stats?.winRatePct;
   return spotlight({
     meta: tr('Seluruh portofolio'), title: tr(net ? 'PnL bersih' : 'Total PnL'),
-    chips: [[tr('{0} posisi terbuka', [now.openCount || 0])]],
+    chips: [[rangeLabel(range), tone(T.amber)], [tr('{0} posisi terbuka', [now.openCount || 0])], [movers && wr != null ? tr('win rate {0}%', [num(wr, 0)]) : null]],
     label: 'PnL', tint: sign(pnl),
     big: hideAmounts ? (pnlPct == null ? HIDDEN : pct(pnlPct, 2)) : (pnl > 0.005 ? '+' : '') + usd(pnl),
     pill: hideAmounts || pnlPct == null ? null : pct(pnlPct, 2),
@@ -733,6 +775,7 @@ function totalSpot({ now, stats, since }, { hideAmounts = false } = {}) {
       [tr('Fee terkumpul'), hideAmounts ? HIDDEN : usd(now.feeUsd), T.up],
       [tr('Total portofolio'), hideAmounts ? HIDDEN : usd(now.value)],
     ],
+    movers: movers ? { m: movers, hideAmounts } : null,
     footer: since ? tr('sejak {0} · {1}', [fmtDayOnly(since), fmtDate(Date.now())]) : fmtDate(Date.now()),
     mascotKey: mood(pnl, pnlPct),
   });
