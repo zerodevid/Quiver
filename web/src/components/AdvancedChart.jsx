@@ -189,6 +189,7 @@ const PERIOD = {
   '1h': { type: 'hour', span: 1 }, '4h': { type: 'hour', span: 4 }, '1d': { type: 'day', span: 1 },
 };
 const TF_MS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 86400e3 };
+const ZOOM_MIN_BAR = 3; // px per bar at the widest zoom-out of a short series
 const periodMs = (period) => ({ minute: 60e3, hour: 3600e3, day: 86400e3 }[period?.type] || 60e3) * (period?.span || 1);
 
 // Measure tool: price change, percent change, bar count and elapsed time between two points,
@@ -675,12 +676,14 @@ export default function AdvancedChart({
     };
     chart.subscribeAction('onCrosshairChange', onCross);
     // Zooming out stops once every candle fits: past that point the library keeps shrinking
-    // the bars into a sliver at the right with an empty pane to its left.
+    // the bars into a sliver at the right with an empty pane to its left. A short series (a
+    // young token on 4H) still squeezes down to ZOOM_MIN_BAR, else it could never be zoomed
+    // out at all.
     const clampZoom = () => {
       const w = chart.getSize('candle_pane', 'main')?.width;
       const n = chart.getDataList().length;
       if (!w || n < 2) return;
-      const min = Math.max(1, (w * 0.92) / n);
+      const min = Math.max(1, Math.min(ZOOM_MIN_BAR, (w * 0.92) / n));
       if (chart.getBarSpace().bar < min) { chart.setBarSpace(min); chart.scrollToRealTime(); }
     };
     chart.subscribeAction('onZoom', clampZoom);
