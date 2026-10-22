@@ -2966,9 +2966,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         const tl = timelineOf(pf, range);
         if (tl.error) return tl;
         data = tl;
-        const logos = new Map(await Promise.all([...new Set(tl.points.map((p) => p.address))]
-          .map(async (a) => [a, await icons.get(a, { wait: 4000 }).catch(() => null)])));
-        opts.icons = logos;
+        // Only the logos that can be drawn are read, one at a time from disk while drawing (a
+        // window can hold hundreds of coins). Missing ones of the biggest moves are fetched first.
+        const big = [...new Set([...tl.points].sort((a, b) => Math.abs(b.v) - Math.abs(a.v)).map((p) => p.address))].slice(0, 30);
+        await Promise.all(big.map((a) => icons.get(a, { wait: 4000 }).catch(() => null)));
+        icons.enqueue(tl.points.map((p) => p.address));
+        opts.icons = (a) => icons.read(canon(a));
       } else if (kind === 'total') {
         if (!pf.now) return { error: 'portofolio belum terbaca' };
         const prep = portfolioCard.prepare(pf, 'net');

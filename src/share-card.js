@@ -966,7 +966,27 @@ function timelineLayout(data, hideAmounts) {
   return { x0, x1, top, bottom, yOf, steps, ups, downs, final, markers: seen, r, pillSize, iconR, pillH };
 }
 
-function timelineSvg(data, { hideAmounts = false, icons = new Map() } = {}) {
+// Coin logos shrunk to a small PNG once per address. The timeline puts up to ~80 logos on one
+// card; embedding the stored files (often hundreds of KB, 1000+ px) made resvg decode them all
+// at full size and pushed the bot past pm2's memory limit. A thumbnail is a few KB.
+const THUMBS = new Map(), THUMB_PX = 96, THUMB_MAX = 600;
+function thumbOf(address, icon) {
+  if (!icon || !/^image\/(png|jpeg|gif)$/.test(icon.ctype)) return null;
+  const key = `${address}:${icon.buf.length}`;
+  if (THUMBS.has(key)) return THUMBS.get(key);
+  let out = null;
+  try {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${THUMB_PX}" height="${THUMB_PX}"><image width="${THUMB_PX}" height="${THUMB_PX}" preserveAspectRatio="xMidYMid slice" href="data:${icon.ctype};base64,${icon.buf.toString('base64')}"/></svg>`;
+    out = { buf: Buffer.from(new Resvg(svg, { font: { loadSystemFonts: false } }).render().asPng()), ctype: 'image/png' };
+  } catch { /* unreadable logo: the initial disc instead */ }
+  if (THUMBS.size >= THUMB_MAX) THUMBS.delete(THUMBS.keys().next().value);
+  THUMBS.set(key, out);
+  return out;
+}
+
+// icons: (address) → stored logo ({ buf, ctype }) or null; read lazily, only for the logos drawn.
+function timelineSvg(data, { hideAmounts = false, icons = () => null } = {}) {
+  const logoOf = (a) => thumbOf(a, icons(a));
   const { W, H, k, chart } = G;
   const tint = sign(data.total), L = timelineLayout(data, hideAmounts);
   const stops = T.bg.map((c, i) => `<stop offset="${(i / (T.bg.length - 1)).toFixed(2)}" stop-color="${c}"/>`).join('');
@@ -1015,7 +1035,7 @@ function timelineSvg(data, { hideAmounts = false, icons = new Map() } = {}) {
     + `<path d="${d}" fill="none" stroke="${T.text}" stroke-opacity="0.85" stroke-width="${2.2 * k}" stroke-linejoin="${T.sq ? 'miter' : 'round'}"/>`;
   // Logo markers; a win gets a light ring, a loss a ring in the loss colour.
   L.markers.forEach((s, i) => {
-    out += token(icons.get?.(s.address), { address: s.address, symbol: s.symbol }, s.x, s.y, L.r, `tm${i}`)
+    out += token(logoOf(s.address), { address: s.address, symbol: s.symbol }, s.x, s.y, L.r, `tm${i}`)
       + `<circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${L.r}" fill="none" stroke="${s.v < -0.01 ? T.down : T.text}" stroke-opacity="0.9" stroke-width="${1.6 * k}"/>`;
   });
   // Callout pills: wins light with dark text, losses dark with a thin border.
@@ -1023,7 +1043,7 @@ function timelineSvg(data, { hideAmounts = false, icons = new Map() } = {}) {
     const { pillH: h, iconR: r, pillSize: z } = L, x = c.left, y = c.cy - h / 2;
     const fill = c.up ? T.text : T.bg[T.bg.length - 1], color = c.up ? T.bg[T.bg.length - 1] : T.text;
     return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${c.w.toFixed(1)}" height="${h}" rx="${rx(8 * k)}" fill="${fill}"${c.up ? '' : ` stroke="${T.line}" stroke-width="1.5"`}/>`
-      + token(icons.get?.(c.p.address), { address: c.p.address, symbol: c.p.symbol }, x + 8 * k + r, c.cy, r, `tc${c.up ? 'u' : 'd'}${j}`)
+      + token(logoOf(c.p.address), { address: c.p.address, symbol: c.p.symbol }, x + 8 * k + r, c.cy, r, `tc${c.up ? 'u' : 'd'}${j}`)
       + txt(c.s, x + 16 * k + r * 2, c.cy, { size: z, weight: 700, color, base: 'middle' });
   };
   out += L.ups.map(pillOf).join('') + L.downs.map(pillOf).join('');
