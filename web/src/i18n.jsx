@@ -2571,6 +2571,8 @@ const EN = {
   'Batang OHLC': 'OHLC bars',
   'Kursor': 'Cursor',
   'Semua lilin': 'All candles',
+  'Skala manual': 'Manual scale',
+  'Skala harga digeser manual — klik untuk kembali otomatis (atau klik dua kali kolom harga)': 'Price scale moved by hand — click to go back to auto (or double-click the price axis)',
   'Memuat lilin {tf}…': 'Loading {tf} candles…',
   'Kanal harga': 'Price channel',
   'Fibonacci retracement': 'Fibonacci retracement',

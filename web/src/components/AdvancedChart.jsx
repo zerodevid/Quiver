@@ -468,6 +468,25 @@ const LP_GROUP = 'lp';
 const DRAW_GROUP = 'draw';
 const userOverlays = (chart) => chart.getOverlays().filter((o) => o.groupId !== LP_GROUP);
 
+// Price-axis autoscale and vertical moves. klinecharts has no public call for them: these reach the
+// axis of the candle pane through the chart instance (klinecharts 10.0.x). Its own vertical pan
+// and axis stretch work in raw price, which on a log axis runs away from the pointer, so they are
+// switched off (scrollZoomEnabled: false) and done here in axis units instead.
+const candleYAxes = (chart) => chart.getDrawPaneById?.('candle_pane')?.getYAxisComponents?.() || [];
+const isAutoScale = (chart) => candleYAxes(chart).every((a) => a.getAutoCalcTickFlag());
+const relayout = (chart) => chart.layout?.({ measureWidth: true, update: true, buildYAxisTick: true });
+function setAutoScale(chart, on) {
+  for (const a of candleYAxes(chart)) a.setAutoCalcTickFlag(on);
+  if (on) relayout(chart);
+}
+// Sets an axis to the real (axis-unit: log10 on a log axis) range realFrom..realTo.
+function setRealRange(axis, base, realFrom, realTo) {
+  const opt = { range: base };
+  const from = axis.realValueToValue(realFrom, opt), to = axis.realValueToValue(realTo, opt);
+  const displayFrom = axis.realValueToDisplayValue(realFrom, opt), displayTo = axis.realValueToDisplayValue(realTo, opt);
+  axis.setRange({ from, to, range: to - from, realFrom, realTo, realRange: realTo - realFrom, displayFrom, displayTo, displayRange: displayTo - displayFrom });
+}
+
 // A sub-pane indicator gets a short pane so the candles keep most of the height.
 function slimPane(chart, id, name) {
   if (INDICATOR_OVERLAY.has(name)) return;
@@ -590,7 +609,8 @@ export default function AdvancedChart({
   const [pal, setPal] = useState(chartPalette);
   const [chartType, setChartType] = useState(readType);
   const [width, setWidth] = useState(0);
-  const spanRef = useRef(null);          // span (ms) a range preset asked for, applied by the next fit
+  const spanRef = useRef(null);
+  const [autoScale, setAutoScaleState] = useState(true);          // span (ms) a range preset asked for, applied by the next fit
   const [activeInds, setActiveInds] = useState(() => new Set(chartPrefs().indicators));
   // What was last picked for this token (timeframe, Price/MCap, scale) comes back, on every page it is charted.
   const [axis, setAxisState] = useState(() => viewOf(drawKey).axis || 'auto');
@@ -798,7 +818,11 @@ export default function AdvancedChart({
     const h = chart.getSize('candle_pane', 'main')?.height || paneH || 400;
     const bottom = volOn ? 0.3 : 0.08;
     const f = Math.min(0.4, (LEGEND_PX + 22) / h);
-    chart.overrideYAxis({ paneId: 'candle_pane', name: axisName, gap: { top: (f * (1 + bottom)) / (1 - f), bottom } });
+    chart.overrideYAxis({ paneId: 'candle_pane', name: axisName, scrollZoomEnabled: false, gap: { top: (f * (1 + bottom)) / (1 - f), bottom } });
+    // the price axis still stretches (handled above): keep its resize cursor
+    const pane = chart.getDrawPaneById?.('candle_pane');
+    for (const a of candleYAxes(chart)) pane?.setAxisCursor?.(true, a.id);
+    setAutoScale(chart, true); setAutoScaleState(true);
   }, [ready, axisName, volOn, paneH, width, activeInds]);
 
   // Initial / reset zoom: show the position's whole life (entry candle with some margin) or the
@@ -819,7 +843,65 @@ export default function AdvancedChart({
     r.chart.setBarSpace(space);
     r.chart.setOffsetRightDistance(Math.max(40, space * 4));
     r.chart.scrollToRealTime();
+    setAutoScale(r.chart, true); setAutoScaleState(true);
   }, [entry?.t]);
+
+  // Vertical moves like TradingView / GMGN: dragging the price pane moves the candles up and down
+  // (sideways is still klinecharts' own scroll), dragging the price axis stretches or squeezes
+  // them, and a double click on the price axis (or the "manual scale" button) puts autoscale back.
+  // A drag turns autoscale off once it has moved a few pixels vertically. Mouse and pen only: a
+  // finger keeps scrolling the page.
+  useEffect(() => {
+    const el = box.current;
+    if (!ready || !el) return undefined;
+    const sync = () => { const c = chartRef.current?.chart; if (c) setAutoScaleState(isAutoScale(c)); };
+    const inside = (b, x, y) => b && x >= b.left && x <= b.left + b.width && y >= b.top && y <= b.top + b.height;
+    const onDown = (e) => {
+      const chart = chartRef.current?.chart;
+      if (!chart || e.button !== 0 || e.pointerType === 'touch' || pendingRef.current) return;
+      const rect = el.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+      const main = chart.getSize('candle_pane', 'main');
+      const mode = inside(main, x, y) ? 'pan' : inside(chart.getSize('candle_pane', 'yAxis'), x, y) ? 'scale' : null;
+      if (!mode) return;
+      const y0 = e.clientY;
+      let bases = null;
+      const onMove = (m) => {
+        const dy = m.clientY - y0;
+        // an overlay being dragged moves itself, not the axis
+        if (draggingRef.current) return;
+        if (!bases) {
+          if (Math.abs(dy) < 4) return;
+          setAutoScale(chart, false);
+          bases = candleYAxes(chart).map((a) => [a, { ...a.getRange() }]);
+          setAutoScaleState(false);
+        }
+        const h = main.height || 1;
+        for (const [a, r] of bases) {
+          if (mode === 'pan') {
+            const shift = (dy / h) * r.realRange;
+            setRealRange(a, r, r.realFrom + shift, r.realTo + shift);
+          } else {
+            // down squeezes the candles (wider range), up stretches them, around the middle
+            const span = r.realRange * Math.exp(dy / 180), mid = (r.realFrom + r.realTo) / 2;
+            setRealRange(a, r, mid - span / 2, mid + span / 2);
+          }
+        }
+        relayout(chart);
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove, true);
+        window.removeEventListener('pointerup', onUp, true);
+        sync();
+      };
+      window.addEventListener('pointermove', onMove, true);
+      window.addEventListener('pointerup', onUp, true);
+    };
+    el.addEventListener('pointerdown', onDown, true);
+    el.addEventListener('dblclick', sync);
+    return () => { el.removeEventListener('pointerdown', onDown, true); el.removeEventListener('dblclick', sync); };
+  }, [ready]);
+  const resetScale = () => { const c = chartRef.current?.chart; if (c) { setAutoScale(c, true); setAutoScaleState(true); } };
 
   // Series updates. Three cases:
   //  - another timeframe/source: swap the whole series (after `loading` clears) and refit;
@@ -1214,6 +1296,10 @@ export default function AdvancedChart({
             </button>
             <span className="ml-auto flex items-center gap-1">
               {wide && <><Clock />{sep}</>}
+              {!autoScale && (
+                <button type="button" onClick={resetScale} title={t('Skala harga digeser manual — klik untuk kembali otomatis (atau klik dua kali kolom harga)')}
+                  className="rounded-md bg-warning/15 px-1.5 py-1 text-[0.75rem] font-medium text-warning transition-colors hover:bg-warning/25">{t('Skala manual')}</button>
+              )}
               <span className="flex items-center" role="radiogroup" aria-label={t('Skala harga')}>
                 {AXES.map(([id, label]) => {
                   // 'auto' lit, and the scale it resolved to in plain foreground
