@@ -135,6 +135,14 @@ const DEFAULTS = {
     token_blacklist: [],
     token_whitelist: [],
     min_pool_age_minutes: 0,
+    // Token risk filters (EVM, Alchemy transfer index; unreadable = let through). 0 / empty = off.
+    // max_top_holder_pct: skip when one wallet (not the pool or a burn address) holds more of the supply.
+    // max_deployer_tokens: skip when the token's creator minted this many tokens to its own wallet within
+    // deployer_window_hours (a serial launcher). deployer_blacklist: creator / first-mint addresses never followed.
+    max_top_holder_pct: 0,
+    max_deployer_tokens: 0,
+    deployer_window_hours: 6,
+    deployer_blacklist: [],
     // Market filters (DexScreener, read at entry). 0 = off. A pool not yet
     // indexed at all has no such figures — it is let through, the same as a
     // pool age that cannot be read.
@@ -184,6 +192,8 @@ const RULE_SPEC = {
   filters: {
     allow_hooks: ['bool'], hook_whitelist: ['list'], allow_no_quote: ['bool'], quote_whitelist: ['list'], token_blacklist: ['list'], token_whitelist: ['list'],
     min_pool_age_minutes: ['num', 0, 1e7], min_target_quote_usd: ['num', 0, 1e9],
+    max_top_holder_pct: ['num', 0, 100], max_deployer_tokens: ['int', 0, 100_000],
+    deployer_window_hours: ['num', 0.1, 720], deployer_blacklist: ['list'],
     min_liquidity_usd: ['num', 0, 1e12], min_volume24h_usd: ['num', 0, 1e12],
     max_open_positions: ['int', 0, 100_000], cooldown_seconds: ['num', 0, 1e7],
     venues: ['list'], max_fee_bps: ['int', 0, 1_000_000],

@@ -19,6 +19,7 @@ const { PaperBook } = require('./paper');
 const TARGET_RESEARCH_STALE_MS = 5 * 60_000;
 const { ensureAnchor } = require('./usd-anchor');
 const { rulesFor, planEntry, planExit, quoteToUsd, usdPerQuote } = require('./policy');
+const { createTokenRisk, riskVerdict, memeTokens } = require('./tokenrisk');
 const { enumerateV4, livePositions } = require('./scout');
 const { Market } = require('./market');
 const m = require('./v3math');
@@ -651,6 +652,21 @@ class Engine {
     return pair && !pair.error ? pair : null;
   }
 
+  // Token risk filters (deployer blacklist, serial launcher, supply concentration). Unreadable data
+  // (no Alchemy endpoint, rate limit, slow reply) never blocks an entry: past 8 seconds it is unknown.
+  async tokenRiskVerdict(act, filters) {
+    if (!this.tokenRisk) this.tokenRisk = createTokenRisk({ chain: this.chain, cfg: this.cfg });
+    for (const token of memeTokens(this.chain, act)) {
+      const info = await Promise.race([
+        this.tokenRisk.inspect(token, filters, act.venue === 'v3' ? act.poolRef : null).catch(() => null),
+        new Promise((r) => setTimeout(() => r(null), 8000)),
+      ]);
+      const why = riskVerdict(info, filters);
+      if (why) return why;
+    }
+    return null;
+  }
+
   async handleEntry(act, rules) {
     // A stale entry signal is not copied. The cursor resumes from the stored block,
     // so after the VPS/RPC is down for an hour the scan catches up and finds the target's entry from
@@ -683,6 +699,11 @@ class Engine {
           return this.decide(act.id, 'skip', `pool baru ${age.toFixed(0)} menit (< ${rules.filters.min_pool_age_minutes})`);
         }
       } catch { /* unreadable: do not block */ }
+    }
+    const fr = rules.filters;
+    if (fr.max_top_holder_pct > 0 || fr.max_deployer_tokens > 0 || fr.deployer_blacklist.length) {
+      const why = await this.tokenRiskVerdict(act, fr);
+      if (why) return this.decide(act.id, 'skip', why);
     }
     // Market filter: a pool whose liquidity or volume is thin does not produce fees
     // however much the target does there — the capital only bears the token's risk
