@@ -509,7 +509,7 @@ function HistCard({ h, chart, clickable, t }) {
     <div className="pointer-events-none absolute z-20 w-56 rounded-md border border-border bg-surface/95 p-2 text-[0.6875rem] shadow-lg"
       style={{ top: (main?.top || 0) + LEGEND_PX + 4, left: main ? main.left + main.width - 8 : undefined, right: main ? undefined : 64, transform: main ? 'translateX(-100%)' : undefined }}>
       <div className="mb-1 flex items-baseline justify-between gap-2">
-        <span className="mono font-semibold text-foreground">{h.label}</span>
+        <span className="mono font-semibold text-foreground">{h.label}{h.pair && <span className="ml-1 font-normal text-muted">{h.pair}</span>}</span>
         {h.pnl != null && <span className={`num font-semibold ${tone}`}>{fmtUsd(h.pnl)}{h.pnlPct != null && <> · {fmtPct(h.pnlPct, 2)}</>}</span>}
       </div>
       <div className="space-y-0.5">

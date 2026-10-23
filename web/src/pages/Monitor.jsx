@@ -35,6 +35,7 @@ import { TokenPair, PairName } from '../components/TokenIcon';
 import { GmgnDot, GmgnProvider } from '../components/GmgnDot';
 import { useAlertPrefs, alarm, bumpTitle } from '../components/TargetAlerts';
 import { orientCandles, tfFor, SECS, LiveBadge, kUsd } from './PositionDetail';
+import { lpHistoryOf, rateFinder, steadyQuote, useChartHistory, useLpHistoryToggle } from '../lpHistory';
 import { usd, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice } from '../fmt';
 import { useI18n } from '../i18n';
 import { canonAddr, chainInfo } from '../chain';
@@ -155,6 +156,11 @@ function CardChart({ g, sel, tf, onTf, live, delay, height }) {
   const oriented = useMemo(() => (gmgn ? (m?.ohlcv?.candles || []) : orientCandles(m?.ohlcv, base, pNow ?? pEntry)), [m, gmgn, base, pNow, pEntry]);
   const liveK = useMemo(() => (live && k ? { ...live, price: live.price * k } : k ? live : null), [live, k]);
   const candles = useLiveCandles(oriented, SECS[tf], liveK, `${p0.pool_ref}:${tf}:mon:${gmgn ? 'gmgn' : 'gt'}`);
+  // LP history: this pool's closed positions, at the quote rate of their own time on USD candles
+  const [showHist, setShowHist] = useLpHistoryToggle();
+  const history = useMemo(() => lpHistoryOf(g.closed, { geo: p0 }), [g.closed, p0.dec0, p0.dec1, p0.quoteSide]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const rateAt = useMemo(() => rateFinder(candles, SECS[tf], k, gmgn && !steadyQuote(quoteSym)), [candles, tf, k, gmgn, quoteSym]);
+  const hist = useChartHistory(history, rateAt);
   const ranges = useMemo(() => (k ? g.items.filter((x) => !x.full).map((x) => {
     const a = at(x.p.tick_lower), b = at(x.p.tick_upper);
     return { id: x.p.id, lo: Math.min(a, b) * k, hi: Math.max(a, b) * k, color: x.color, label: x.tag, selected: sel?.p.id === x.p.id, from: x.p.opened_ts };
@@ -170,7 +176,8 @@ function CardChart({ g, sel, tf, onTf, live, delay, height }) {
       quote={quote} drawKey={drawKeyOf(base, p0.pool_ref)} poolRef={p0.pool_ref} usdRate={gmgn ? 1 : qUsd} supply={supplyOf(m?.pair, base)} title={`${p0.symbol0}/${p0.symbol1}`}
       height={height} ranges={ranges}
       entry={sel && (sel.p.opened_ts || pEntry != null) ? { t: sel.p.opened_ts, p: cv(pEntry) } : null}
-      now={cv(pNow)} bep={bep?.price > 0 ? cv(bep.price) : null} />
+      now={cv(pNow)} bep={bep?.price > 0 ? cv(bep.price) : null}
+      history={hist} showHistory={showHist} onShowHistory={setShowHist} />
   );
 }
 
@@ -474,6 +481,12 @@ export default function Monitor() {
   // Group per pool; within a pool the most at-risk first (the selected
   // position initially), band colours follow id order so they do not change when the risk
   // order changes. The card's risk = the worst position in that pool.
+  // The last closed positions (/api/positions sends 100) per pool, for each chart's LP history.
+  const closedBy = useMemo(() => {
+    const by = new Map();
+    for (const p of d?.closed || []) { const r = canonAddr(p.pool_ref); if (!by.has(r)) by.set(r, []); by.get(r).push(p); }
+    return by;
+  }, [d]);
   const groups = useMemo(() => {
     const by = new Map();
     for (const x of items) { if (!by.has(x.ref)) by.set(x.ref, []); by.get(x.ref).push(x); }
@@ -484,11 +497,11 @@ export default function Monitor() {
       const worst = sorted[0];
       const risk = { level: worst.risk.level, score: worst.risk.score };
       for (const x of list) if (LEVEL_RANK[x.risk.level] > LEVEL_RANK[risk.level]) risk.level = x.risk.level;
-      return { ref, p0: list[0].p, items: sorted, live: list[0].live, risk, pair: mk?.pairs?.[ref] || null, hist: mon?.pools?.[ref] || null,
+      return { ref, p0: list[0].p, items: sorted, closed: closedBy.get(ref) || null, live: list[0].live, risk, pair: mk?.pairs?.[ref] || null, hist: mon?.pools?.[ref] || null,
         pnlPct: (() => { const c = list.reduce((a, x) => a + (x.p.costUsd || 0), 0); return c > 0 ? list.reduce((a, x) => a + (x.p.pnlUsd || 0), 0) / c * 100 : 0; })(),
         valueUsd: list.reduce((a, x) => a + (x.p.valueUsd || 0), 0), ageHours: Math.max(...list.map((x) => x.p.ageHours || 0)) };
     });
-  }, [items, mk, mon]);
+  }, [items, mk, mon, closedBy]);
 
   const sorted = useMemo(() => {
     const s = [...groups];

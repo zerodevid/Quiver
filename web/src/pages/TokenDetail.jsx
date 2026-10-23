@@ -3,7 +3,7 @@
 // researched wallet positions, and target moves in this token.
 //
 // Opened from the icon or symbol of a token anywhere in the dashboard: #token/0x….
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@heroui/react';
 import AdvancedChart, { supplyOf } from '../components/AdvancedChart';
 import { useMarket } from '../liveCandles';
@@ -15,10 +15,11 @@ import { GmgnTokenPanel, GmgnWallets } from '../components/Gmgn';
 import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
 import PositionHistory from '../components/PositionHistory';
 import WalletPositionHistory from '../components/WalletPositionHistory';
-import { DexInfoEmbed, kUsd } from './PositionDetail';
+import { DexInfoEmbed, kUsd, SECS } from './PositionDetail';
+import { lpHistoryOf, rateFinder, steadyQuote, useChartHistory, useLpHistoryToggle } from '../lpHistory';
 import { usd, usdPrice, pct, tone, num, age, short, price, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
-import { canonAddr } from '../chain';
+import { canonAddr, isEthLike } from '../chain';
 
 // Roughly five hours at 1 minute, one day at 5 minutes, ten days at 1 hour, a month at 4 hours.
 const LIMIT = { '1m': 300, '5m': 288, '15m': 288, '1h': 240, '4h': 180, '1d': 180 };
@@ -33,12 +34,21 @@ const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
 const fmtAmt = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleString(fmtLocale(), { maximumSignificantDigits: v >= 1000 ? 7 : 5 }));
 
 // USD candles of the selected pool. The drawings are the token's (shared with every chart of
-// it), so switching pool or timeframe keeps them.
-function TokenChart({ m, tf, onTf, pending, onRetry, poolRef, token, symbol }) {
-  const candles = m?.ohlcv?.candles || [];
+// it), so switching pool or timeframe keeps them. `history`: the bot's closed positions in this
+// token (any pool), put into USD at the rate of their own time; clicking one opens its history.
+function TokenChart({ m, tf, onTf, pending, onRetry, poolRef, token, symbol, history, onHistoryClick, ethUsd }) {
+  const [showHist, setShowHist] = useLpHistoryToggle();
+  const candles = useMemo(() => m?.ohlcv?.candles || [], [m]);
+  // each position in its own quote: USDG at 1, ETH at today's price, any other token estimated per moment
+  const rateAt = useMemo(() => {
+    const est = rateFinder(candles, SECS[tf] || 3600, null, true);
+    return (ts, poolPrice, h) => (!steadyQuote(h?.quote) ? est(ts, poolPrice) : isEthLike(h.quote) ? ethUsd || null : 1);
+  }, [candles, tf, ethUsd]);
+  const hist = useChartHistory(history, rateAt);
   const error = pending ? null : m?.ohlcv?.error || (!candles.length ? 'GeckoTerminal belum punya riwayat harga untuk pool ini.' : null);
   return <AdvancedChart key={poolRef} candles={candles} tf={tf} onTfChange={onTf} loading={pending} error={error} onRetry={onRetry} series="usd"
-    quote="USD" title={symbol ? `${symbol}/USD` : null} usdRate={1} supply={supplyOf(m?.pair, token)} drawKey={drawKeyOf(token)} />;
+    quote="USD" title={symbol ? `${symbol}/USD` : null} usdRate={1} supply={supplyOf(m?.pair, token)} drawKey={drawKeyOf(token)}
+    history={hist} showHistory={showHist} onShowHistory={setShowHist} onHistoryClick={onHistoryClick} />;
 }
 
 export default function TokenDetail({ param }) {
@@ -121,7 +131,8 @@ export default function TokenDetail({ param }) {
           desc={sel ? <span className="inline-flex items-center gap-1.5">{t('pool')} <PairName token0={sel.base.address} token1={sel.quote.address} symbol0={sel.base.symbol} symbol1={sel.quote.symbol} pool={sel.pool} /> <span className="uppercase">{venueOf(sel)}</span></span> : null}>
           {d.market?.error ? <Empty title="Data pasar tidak tersedia" sub={d.market.error} />
             : !sel ? <Empty title="Belum ada pool terindeks" sub="DexScreener belum mengenal pool untuk token ini." />
-              : !m ? <Loading /> : <TokenChart m={m} tf={tf} onTf={setTf} pending={mPending} onRetry={reloadMarket} poolRef={sel.pool} token={a} symbol={tk.symbol} />}
+              : !m ? <Loading /> : <TokenChart m={m} tf={tf} onTf={setTf} pending={mPending} onRetry={reloadMarket} poolRef={sel.pool} token={a} symbol={tk.symbol}
+                history={lpHistoryOf(d.closed, { token: a })} onHistoryClick={setHist} ethUsd={d.ethUsd} />}
           {sel && <div className="mt-2 text-end text-xs text-muted">{t('lilin {tf} · GeckoTerminal', { tf })}</div>}
         </Panel>
 

@@ -32,6 +32,7 @@ import ShareButton, { positionCard } from '../components/ShareCard';
 import { Panel, Stat, KV, Dot, Empty, Loading, Notice, Segmented, PriceRange, Refresh, ask, TradeLinks, DataLinks, CopyBtn } from '../components/ui';
 import { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, usdPrice, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice, widthPct, txHref, addrHref, feeApr, feeTotal, aprText, locale as fmtLocale } from '../fmt';
+import { rateFinder, steadyQuote, useChartHistory } from '../lpHistory';
 import { useI18n } from '../i18n';
 
 export const TFS = [['5m', '5 mnt'], ['15m', '15 mnt'], ['1h', '1 jam'], ['4h', '4 jam'], ['1d', '1 hari']];
@@ -82,8 +83,8 @@ export const writeSrc = (v) => { try { localStorage.setItem(SRC_KEY, v); } catch
 // `ranges` (optional): all open positions in this pool, so the pool detail chart
 // shows every active range as on the Monitor page. The `selected` one is the
 // position being highlighted (the entry/exit/BEP lines remain only for that one).
-// `history` (optional): closed positions of the pool for the chart's "LP history" toggle, same
-// shape as AdvancedChart's prop but in the pool's quote asset; `showHistory` / `onShowHistory` drive it.
+// `history` (optional): closed positions of the pool for the chart's "LP history" toggle
+// (lpHistoryOf, in the pool's quote asset); `showHistory` / `onShowHistory` drive it.
 export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = null, ranges = null, onRangeClick = null, history = null, showHistory = false, onShowHistory = null }) {
   const { t } = useI18n();
   const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
@@ -121,22 +122,10 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
   // GMGN candles are priced in USD: the bands are also multiplied by the quote->USD rate. Without a rate, the bands
   // are not drawn (the same as a single position range).
   const bands = k ? (ranges || []).filter((b) => b.lo > 0 && b.hi > 0).map((b) => ({ ...b, lo: b.lo * k, hi: b.hi * k })) : [];
-  // On USD candles today's quote->USD rate does not fit the past when the quote is not a stablecoin:
-  // a position is converted at the rate of its own time instead — the USD candle at the moment
-  // divided by the pool price then (entry at the open, exit at the close), falling back to today's.
-  const rateAt = useCallback((ts, poolPrice) => {
-    if (!gmgn || !(ts > 0) || !(poolPrice > 0) || !candles.length) return k;
-    let lo = 0, hi = candles.length - 1;
-    if (ts < candles[0].t || ts >= candles[hi].t + SECS[tf] * 1000) return k;
-    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (candles[mid].t <= ts) lo = mid; else hi = mid - 1; }
-    return candles[lo].c > 0 ? candles[lo].c / poolPrice : k;
-  }, [gmgn, candles, k, tf]);
-  const hist = useMemo(() => (history ? history.map((h) => {
-    const ke = rateAt(h.from, h.entry), kx = rateAt(h.to, h.exit);
-    if (!ke || !kx) return null;
-    return { ...h, lo: h.lo * ke, hi: h.hi * ke, loEnd: h.lo * kx, hiEnd: h.hi * kx,
-      entry: h.entry != null ? h.entry * ke : null, exit: h.exit != null ? h.exit * kx : null };
-  }).filter(Boolean) : null), [history, rateAt]);
+  // On USD candles of a pool quoted in a moving token, a past moment is converted at the quote's
+  // rate of that moment (lpHistory.js).
+  const rateAt = useMemo(() => rateFinder(candles, SECS[tf], k, gmgn && !steadyQuote(quoteSym)), [candles, tf, k, gmgn, quoteSym]);
+  const hist = useChartHistory(history, rateAt);
   // the same for the position itself: its entry (and, once closed, its range and exit) at their own time
   const kEntry = rateAt(p.opened_ts, pEntry), kExit = rateAt(p.closed_ts, pExit);
   // a closed range is drawn at its entry rate; an open one is where it stands today

@@ -22,6 +22,7 @@ import { GmgnWallets } from '../components/Gmgn';
 import { BAND_COLORS } from '../components/CandleChart';
 import { usd, usdPrice, pct, tone, num, price, sqrtPrice, tickPrice, shortId, short, age } from '../fmt';
 import { useI18n } from '../i18n';
+import { lpHistoryOf, useLpHistoryToggle } from '../lpHistory';
 import { canonAddr } from '../chain';
 
 const sum = (rows, f) => rows.reduce((s, r) => s + (f(r) || 0), 0);
@@ -76,11 +77,6 @@ function PairPools({ pool, poolRef, base, className = '' }) {
   );
 }
 
-// The chart's "LP history" toggle (closed positions of the pool), remembered across pools.
-const HIST_KEY = 'lpcopy-chart-lp-history';
-const readHist = () => { try { return localStorage.getItem(HIST_KEY) !== '0'; } catch { return true; } };
-const writeHist = (v) => { try { localStorage.setItem(HIST_KEY, v ? '1' : '0'); } catch { /* storage blocked */ } };
-
 export default function PoolDetail({ param }) {
   const { t } = useI18n();
   const ref = canonAddr(param);
@@ -88,8 +84,7 @@ export default function PoolDetail({ param }) {
   // undefined = automatic choice (latest open position), null = no position on the chart.
   const [focusPick, setFocus] = useState(undefined);
   const [tfPick, setTf] = useState(null);
-  const [showHist, setShowHistState] = useState(readHist);
-  const setShowHist = (v) => { setShowHistState(v); writeHist(v); };
+  const [showHist, setShowHist] = useLpHistoryToggle();
   const [view, setView] = useState('chart');
   const [src, setSrcState] = useState(readSrc);
   const setSrc = (v) => { setSrcState(v); writeSrc(v); };
@@ -151,13 +146,7 @@ export default function PoolDetail({ param }) {
   const ranges = openBands.map((p, i) => band(p, BAND_COLORS[i % BAND_COLORS.length]));
   if (focus && focus.status === 'closed' && hasRange(focus)) ranges.push(band(focus, BAND_COLORS[openBands.length % BAND_COLORS.length]));
   // LP history: every closed position but the highlighted one (already drawn as a band above).
-  const history = d.closed.filter((p) => hasRange(p) && p.closed_ts && p.id !== focus?.id).map((p) => {
-    const a = at(p.tick_lower), b = at(p.tick_upper);
-    return { id: p.id, lo: Math.min(a, b), hi: Math.max(a, b), from: p.opened_ts || null, to: p.closed_ts,
-      entry: p.entrySqrt ? sqrtPrice(p.entrySqrt, pool.dec0, pool.dec1, pool.quoteSide) : null,
-      exit: p.exitSqrt ? sqrtPrice(p.exitSqrt, pool.dec0, pool.dec1, pool.quoteSide) : null,
-      pnl: p.pnlUsd ?? null, pnlPct: p.pnlPct ?? null, fee: p.feeUsd ?? null, cost: p.costUsd ?? null, label: p.token_id ? `#${shortId(p.token_id)}` : `#${p.id}` };
-  });
+  const history = lpHistoryOf(d.closed, { geo: pool, skip: focus?.id });
 
   // Chart: pool price + (if any) the range and entry point of the selected position.
   const chartP = {
