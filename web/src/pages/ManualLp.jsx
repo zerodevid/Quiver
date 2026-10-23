@@ -9,7 +9,7 @@ import AdvancedChart from '../components/AdvancedChart';
 import { useLadder, LadderStep, LadderPreview, LAYER_CHOICES } from './ManualLadder';
 import { useCreatePool, CreatePoolStep } from './ManualCreate';
 import { PageHeader, Notice, PriceRange, Empty, KV, Segmented, TradeLinks } from '../components/ui';
-import { orientCandles, SECS, LiveBadge, fetchOlderCandles } from './PositionDetail';
+import { orientCandles, SECS, LiveBadge, fetchOlderCandles, DexInfoEmbed } from './PositionDetail';
 import { drawKeyOf } from '../chartSync';
 import { useLivePrice, useLiveCandles } from '../liveCandles';
 import TokenIcon, { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
