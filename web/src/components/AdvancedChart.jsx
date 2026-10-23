@@ -334,7 +334,9 @@ const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
 // indicator is on). It has no figures, so it never stretches the price axis. Picked as 'VOL'.
 const VOL_SHARE = 0.2;
 registerIndicator({
-  name: 'volOverlay', shortName: 'VOL', figures: [],
+  // series 'price': klinecharts sizes the price axis by the lowest precision on the pane, and the
+  // default 4 decimals turned a flat 0.000245 token into a line on an axis 0.001 wide
+  name: 'volOverlay', shortName: 'VOL', series: 'price', figures: [],
   // the volume reads in the OHLC legend: no tooltip line of its own
   createTooltipDataSource: () => ({ name: '', calcParamsText: '', features: [], legends: [] }),
   calc: (list) => list.map(() => ({})),
@@ -1150,7 +1152,7 @@ export default function AdvancedChart({
   const railBtn = wide ? RAIL_BTN : BTN;
   const icon = wide ? ICON : 'size-4';
   const on = 'bg-accent/15 text-accent';
-  const menuItem = (active) => `flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-start text-xs transition-colors hover:bg-default hover:text-foreground ${active ? 'text-foreground' : 'text-muted'}`;
+  const menuItem = (active) => `flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-start text-xs transition-colors hover:bg-default hover:text-foreground ${active ? 'bg-accent/10 text-accent' : 'text-muted'}`;
 
   return (
     <div ref={wrap} tabIndex={-1} onKeyDown={onKeyDown}
@@ -1162,7 +1164,7 @@ export default function AdvancedChart({
           <div className="flex items-center" role="radiogroup" aria-label={t('Rentang lilin')}>
             {TIMEFRAMES.map(([id, label]) => (
               <button key={id} type="button" role="radio" aria-checked={tf === id} onClick={() => tf !== id && pickTf(id)}
-                className={`${TOP_BTN} ${tf === id ? 'text-foreground' : ''}`}>{label}</button>
+                className={`${TOP_BTN} ${tf === id ? '!bg-accent/15 !text-accent' : ''}`}>{label}</button>
             ))}
           </div>
         ) : (
