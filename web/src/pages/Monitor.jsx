@@ -16,7 +16,7 @@
 // One pool = one price axis, so five positions in the same pool fit on a single
 // chart; two different pools for the same token (another fee / another quote) still
 // become two cards because their prices are not comparable.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, toast } from '@heroui/react';
 import { Activity, ArrowUpRight, LayoutGrid, Rows3 } from 'lucide-react';
 import { usePoll, useResync, useTick } from '../hooks';
@@ -34,7 +34,7 @@ import { PageHeader, Panel, Empty, Loading, Notice, PriceRange, Refresh, Segment
 import { TokenPair, PairName } from '../components/TokenIcon';
 import { GmgnDot, GmgnProvider } from '../components/GmgnDot';
 import { useAlertPrefs, alarm, bumpTitle } from '../components/TargetAlerts';
-import { orientCandles, tfFor, SECS, LiveBadge, kUsd } from './PositionDetail';
+import { orientCandles, tfFor, SECS, LiveBadge, kUsd, fetchOlderCandles } from './PositionDetail';
 import { lpHistoryOf, rateFinder, steadyQuote, useChartHistory, useLpHistoryToggle } from '../lpHistory';
 import { usd, pct, tone, num, age, ago, short, shortId, price, tickPrice, sqrtPrice } from '../fmt';
 import { useI18n } from '../i18n';
@@ -161,6 +161,9 @@ function CardChart({ g, sel, tf, onTf, live, delay, height }) {
   const history = useMemo(() => lpHistoryOf(g.closed, { geo: p0 }), [g.closed, p0.dec0, p0.dec1, p0.quoteSide]);   // eslint-disable-line react-hooks/exhaustive-deps
   const rateAt = useMemo(() => rateFinder(candles, SECS[tf], k, gmgn && !steadyQuote(quoteSym)), [candles, tf, k, gmgn, quoteSym]);
   const hist = useChartHistory(history, rateAt);
+  const firstClose = candles[0]?.c;
+  const loadMore = useCallback((before) => fetchOlderCandles({ pool: p0.pool_ref, tf, token: base, gmgn, before, ref: firstClose }),
+    [p0.pool_ref, tf, base, gmgn, firstClose]);
   const ranges = useMemo(() => (k ? g.items.filter((x) => !x.full).map((x) => {
     const a = at(x.p.tick_lower), b = at(x.p.tick_upper);
     return { id: x.p.id, lo: Math.min(a, b) * k, hi: Math.max(a, b) * k, color: x.color, label: x.tag, selected: sel?.p.id === x.p.id, from: x.p.opened_ts };
@@ -177,7 +180,7 @@ function CardChart({ g, sel, tf, onTf, live, delay, height }) {
       height={height} ranges={ranges}
       entry={sel && (sel.p.opened_ts || pEntry != null) ? { t: sel.p.opened_ts, p: cv(pEntry) } : null}
       now={cv(pNow)} bep={bep?.price > 0 ? cv(bep.price) : null}
-      history={hist} showHistory={showHist} onShowHistory={setShowHist} />
+      history={hist} showHistory={showHist} onShowHistory={setShowHist} onLoadMore={loadMore} />
   );
 }
 

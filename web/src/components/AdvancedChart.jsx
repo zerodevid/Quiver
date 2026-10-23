@@ -461,6 +461,8 @@ function precisionFor(data) {
 // quiet stretch looks broken, and a drawing anchored at a timestamp inside a gap lands on a
 // different bar on every timeframe.
 const MAX_BARS = 4000;
+const scaleRows = (rows, sc) => (sc === 1 ? rows : rows.map((d) => ({ ...d, open: d.open * sc, high: d.high * sc, low: d.low * sc, close: d.close * sc })));
+
 function normalize(candles, tf) {
   const ms = TF_MS[tf] || 3600e3;
   const byT = new Map();
@@ -679,12 +681,15 @@ function Legend({ bar, prev, label, tfLabel, mc, t, wide }) {
  *            `onShowHistory(bool)` gets the top-bar toggle (no handler = no toggle); hovering a box
  *            shows its details, clicking it calls `onHistoryClick(id)`. Optional per item: fee, cost (USD),
  *            loEnd / hiEnd (the range at the close, when the chart's unit drifts from the pool's)
+ * onLoadMore: (beforeMs) => Promise<candles> — older candles (same shape and unit as `candles`)
+ *            ending before that time; fetched when the user scrolls or zooms out past the
+ *            oldest candle, and kept until the timeframe / source changes
  */
 export default function AdvancedChart({
   candles, tf, onTfChange = null, loading = false, error = null, onRetry = null, series = '',
   quote, drawKey = null, poolRef = null, usdRate = null, supply = null, title = null, height = 420,
   range = null, ranges = null, entry = null, exit = null, now = null, bep = null,
-  history = null, showHistory = false, onShowHistory = null, onHistoryClick = null,
+  history = null, showHistory = false, onShowHistory = null, onHistoryClick = null, onLoadMore = null,
 }) {
   const { t } = useI18n();
   const wrap = useRef(null);
@@ -734,6 +739,15 @@ export default function AdvancedChart({
   const [note, setNote] = useState(null);       // null = closed, string = text being typed
   const [hover, setHover] = useState(null);     // data index under the crosshair, null = latest
   const [histHover, setHistHover] = useState(null); // id of the LP history box under the pointer
+  // Older candles fetched by scrolling past the oldest one: { k: `${tf}|${series}`, list } (raw candles).
+  const [older, setOlder] = useState({ k: null, list: [] });
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const loadMoreRef = useRef(onLoadMore);
+  loadMoreRef.current = onLoadMore;
+  const userMovedRef = useRef(false);           // scrolled or zoomed by hand since the series loaded
+  const seriesKey = `${tf}|${series}`;
+  const seriesKeyRef = useRef(seriesKey);
+  seriesKeyRef.current = seriesKey;
   const histRef = useRef(null);                 // { list, first, anchor, sc } of the boxes drawn, null = none
   const histClickRef = useRef(onHistoryClick);
   histClickRef.current = onHistoryClick;
@@ -751,10 +765,14 @@ export default function AdvancedChart({
   const mc = metric === 'mc' && mcMul > 0;
   const sc = mc ? mcMul : 1;
   const setMetric = (v) => { setMetricState(v); saveView(drawKey, { metric: v }, viewOrigin.current); try { localStorage.setItem(METRIC_KEY, v); } catch { /* ignore */ } };
-  const data = useMemo(() => {
-    const rows = normalize(candles, tf);
-    return sc === 1 ? rows : rows.map((d) => ({ ...d, open: d.open * sc, high: d.high * sc, low: d.low * sc, close: d.close * sc }));
-  }, [candles, tf, sc]);
+  const allCandles = useMemo(() => {
+    if (older.k !== seriesKey || !older.list.length || !candles?.length) return candles;
+    const t0 = candles[0].t;
+    return [...older.list.filter((c) => c.t < t0), ...candles];
+  }, [older, seriesKey, candles]);
+  const scRef = useRef(sc);
+  scRef.current = sc;
+  const data = useMemo(() => scaleRows(normalize(allCandles, tf), sc), [allCandles, tf, sc]);
   if (!loading) dataRef.current = data;
   const key = `${tf}|${series}|${mc ? 'mc' : 'px'}`;
   // Wide price swings (memecoins) are unreadable on a linear axis, so default to log past 4x —
@@ -866,8 +884,24 @@ export default function AdvancedChart({
     if (!chart) return undefined;
     let sub = null;
     const loader = {
-      // a copy: klinecharts pushes live bars into the array it is given
-      getBars: ({ callback }) => callback(dataRef.current.slice(), false),
+      // a copy: klinecharts pushes live bars into the array it is given. 'forward' = older bars,
+      // asked for when the oldest bar comes into view; only fetched once the user has scrolled
+      // or zoomed (opening a page whose candles all fit must not spend an API call).
+      getBars: ({ type, timestamp, callback }) => {
+        const fn = loadMoreRef.current;
+        if (type !== 'forward') return callback(dataRef.current.slice(), { forward: !!fn, backward: false });
+        if (!fn || !userMovedRef.current || !(timestamp > 0)) return callback([], { forward: !!fn });
+        const k = seriesKeyRef.current, tfNow = tfRef.current, sc0 = scRef.current;
+        setLoadingOlder(true);
+        Promise.resolve(fn(timestamp)).then((raw) => {
+          // the series changed meanwhile: its own init already replaced the data
+          if (seriesKeyRef.current !== k || scRef.current !== sc0) return callback([], { forward: true });
+          const got = (raw || []).filter((c) => c.t < timestamp);
+          const bars = scaleRows(normalize(got, tfNow), sc0).filter((b) => b.timestamp < timestamp);
+          if (bars.length) setOlder((o) => ({ k, list: [...got, ...(o.k === k ? o.list : [])] }));
+          callback(bars, { forward: bars.length > 0 });
+        }).catch(() => callback([], { forward: false })).finally(() => setLoadingOlder(false));
+      },
       subscribeBar: ({ callback }) => { sub = callback; },
       unsubscribeBar: () => { sub = null; },
       push: (bar) => sub?.(bar),
@@ -893,9 +927,23 @@ export default function AdvancedChart({
       setHistHover(c.paneId === 'candle_pane' ? histAt(chart, histRef.current, c.x, c.y) : null);
     };
     chart.subscribeAction('onCrosshairChange', onCross);
+    // A hand scroll / zoom allows fetching older candles. Zooming keeps the last bar in place while
+    // it is in view (TradingView / GMGN: zooming out does not leave the right side empty), and
+    // zooms around the pointer when the view is back in history.
+    const onMoved = () => { userMovedRef.current = true; };
+    const onRange = (vr) => {
+      const end = vr && vr.realTo >= chart.getDataList().length - 1;
+      chart.setZoomAnchor(end ? 'last_bar' : 'cursor');
+    };
+    chart.subscribeAction('onZoom', onMoved);
+    chart.subscribeAction('onScroll', onMoved);
+    chart.subscribeAction('onVisibleRangeChange', onRange);
     setReady(true);
     return () => {
       chart.unsubscribeAction('onCrosshairChange', onCross);
+      chart.unsubscribeAction('onZoom', onMoved);
+      chart.unsubscribeAction('onScroll', onMoved);
+      chart.unsubscribeAction('onVisibleRangeChange', onRange);
       dispose(el); chartRef.current = null; setReady(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1019,6 +1067,7 @@ export default function AdvancedChart({
       chart.setSymbol({ ticker: quote || 'PRICE', pricePrecision: mc ? 0 : precisionFor(data), volumePrecision: 2 });
       chart.setPeriod(PERIOD[tf] || PERIOD['1h']);   // resets the data through getBars
       loadedRef.current = key;
+      userMovedRef.current = false;
       setHover(null);
       setHistHover(null);
       setTick((n) => n + 1);
@@ -1423,6 +1472,11 @@ export default function AdvancedChart({
           <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center pr-16 font-black tracking-tight text-foreground/[0.045] select-none"
             style={{ fontSize: Math.max(28, Math.min(110, (width || 600) * 0.11)) }}>QUIVER</div>
           {!loading && <Legend bar={list[legendIdx]} prev={list[legendIdx - 1]} label={title || quote} tfLabel={tfLabel} mc={mc} t={t} wide={wide} />}
+          {loadingOlder && (
+            <div className="pointer-events-none absolute bottom-10 left-2 z-20 inline-flex items-center gap-1.5 rounded bg-surface/90 px-2 py-1 text-[0.6875rem] text-muted shadow">
+              <Loader2 className="size-3 animate-spin" />{t('Memuat lilin lama…')}
+            </div>
+          )}
           {histItem && <HistCard h={histItem} chart={chartRef.current?.chart} clickable={!!onHistoryClick} t={t} />}
           {/* veil while another timeframe loads, or the fetch failed */}
           {(loading || error) && (

@@ -71,6 +71,22 @@ export function orientCandles(ohlcv, baseToken, ref) {
   return cs.filter((c) => c.o > 0 && c.h > 0 && c.l > 0 && c.c > 0);
 }
 
+// Older candles for AdvancedChart's onLoadMore: up to 500 ending before `before` (ms), in the same
+// unit as the chart's own (GMGN USD, GeckoTerminal USD with `usd`, else the pool's quote, turned
+// the way `ref` — the oldest price on the chart — says). A GMGN chart that would get
+// GeckoTerminal's fallback candles gets none: the two units must not mix in one series.
+export async function fetchOlderCandles({ pool, tf, token = null, gmgn = false, usd = false, before, ref = null }) {
+  const q = new URLSearchParams({ pool, tf, limit: '500', pair: '0', before: String(before) });
+  if (token) q.set('token', token);
+  if (gmgn) q.set('src', 'gmgn');
+  if (usd) q.set('currency', 'usd');
+  const r = await get(`/api/market?${q}`);
+  const o = r?.ohlcv;
+  if (!o || o.error) throw new Error(o?.error || 'no candles');
+  if (gmgn !== (o.source === 'gmgn')) return [];
+  return gmgn || usd ? o.candles || [] : orientCandles(o, token, ref);
+}
+
 // Candle chart + position range + entry/exit markers. Also used by the pool page:
 // without a position (tick_lower null) only the candles and the current price are drawn.
 // Candle source of the Chart tab: GeckoTerminal (price in the pool's quote asset) or GMGN
@@ -126,6 +142,9 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
   // rate of that moment (lpHistory.js).
   const rateAt = useMemo(() => rateFinder(candles, SECS[tf], k, gmgn && !steadyQuote(quoteSym)), [candles, tf, k, gmgn, quoteSym]);
   const hist = useChartHistory(history, rateAt);
+  const firstClose = candles[0]?.c;
+  const loadMore = useCallback((before) => fetchOlderCandles({ pool: p.pool_ref, tf, token: p.baseToken, gmgn, before, ref: firstClose }),
+    [p.pool_ref, tf, p.baseToken, gmgn, firstClose]);
   // the same for the position itself: its entry (and, once closed, its range and exit) at their own time
   const kEntry = rateAt(p.opened_ts, pEntry), kExit = rateAt(p.closed_ts, pExit);
   // a closed range is drawn at its entry rate; an open one is where it stands today
@@ -145,7 +164,7 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
         entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: pEntry != null && kEntry ? pEntry * kEntry : null } : null}
         exit={closed ? { t: p.closed_ts, p: pExit != null && kExit ? pExit * kExit : null } : null}
         now={closed ? null : cv(pNow)} bep={cv(bep?.price)}
-        history={hist} showHistory={showHistory} onShowHistory={onShowHistory} onHistoryClick={onRangeClick} />
+        history={hist} showHistory={showHistory} onShowHistory={onShowHistory} onHistoryClick={onRangeClick} onLoadMore={p.pool_ref ? loadMore : null} />
       {bands.length > 1 && (
         <div className="mt-2 flex flex-wrap gap-1.5" role="tablist" aria-label={t('Rentang posisi di pool ini')}>
           {bands.map((b) => {

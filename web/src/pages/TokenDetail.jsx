@@ -3,7 +3,7 @@
 // researched wallet positions, and target moves in this token.
 //
 // Opened from the icon or symbol of a token anywhere in the dashboard: #token/0x….
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@heroui/react';
 import AdvancedChart, { supplyOf } from '../components/AdvancedChart';
 import { useMarket } from '../liveCandles';
@@ -15,7 +15,7 @@ import { GmgnTokenPanel, GmgnWallets } from '../components/Gmgn';
 import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
 import PositionHistory from '../components/PositionHistory';
 import WalletPositionHistory from '../components/WalletPositionHistory';
-import { DexInfoEmbed, kUsd, SECS } from './PositionDetail';
+import { DexInfoEmbed, kUsd, SECS, fetchOlderCandles } from './PositionDetail';
 import { lpHistoryOf, rateFinder, steadyQuote, useChartHistory, useLpHistoryToggle } from '../lpHistory';
 import { usd, usdPrice, pct, tone, num, age, short, price, locale as fmtLocale } from '../fmt';
 import { useI18n } from '../i18n';
@@ -45,10 +45,11 @@ function TokenChart({ m, tf, onTf, pending, onRetry, poolRef, token, symbol, his
     return (ts, poolPrice, h) => (!steadyQuote(h?.quote) ? est(ts, poolPrice) : isEthLike(h.quote) ? ethUsd || null : 1);
   }, [candles, tf, ethUsd]);
   const hist = useChartHistory(history, rateAt);
+  const loadMore = useCallback((before) => fetchOlderCandles({ pool: poolRef, tf, token, usd: true, before }), [poolRef, tf, token]);
   const error = pending ? null : m?.ohlcv?.error || (!candles.length ? 'GeckoTerminal belum punya riwayat harga untuk pool ini.' : null);
   return <AdvancedChart key={poolRef} candles={candles} tf={tf} onTfChange={onTf} loading={pending} error={error} onRetry={onRetry} series="usd"
     quote="USD" title={symbol ? `${symbol}/USD` : null} usdRate={1} supply={supplyOf(m?.pair, token)} drawKey={drawKeyOf(token)}
-    history={hist} showHistory={showHist} onShowHistory={setShowHist} onHistoryClick={onHistoryClick} />;
+    history={hist} showHistory={showHist} onShowHistory={setShowHist} onHistoryClick={onHistoryClick} onLoadMore={loadMore} />;
 }
 
 export default function TokenDetail({ param }) {
