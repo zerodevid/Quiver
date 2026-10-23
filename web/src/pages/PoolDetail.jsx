@@ -156,7 +156,7 @@ export default function PoolDetail({ param }) {
     return { id: p.id, lo: Math.min(a, b), hi: Math.max(a, b), from: p.opened_ts || null, to: p.closed_ts,
       entry: p.entrySqrt ? sqrtPrice(p.entrySqrt, pool.dec0, pool.dec1, pool.quoteSide) : null,
       exit: p.exitSqrt ? sqrtPrice(p.exitSqrt, pool.dec0, pool.dec1, pool.quoteSide) : null,
-      pnl: p.pnlUsd ?? null, pnlPct: p.pnlPct ?? null, label: p.token_id ? `#${shortId(p.token_id)}` : `#${p.id}` };
+      pnl: p.pnlUsd ?? null, pnlPct: p.pnlPct ?? null, fee: p.feeUsd ?? null, cost: p.costUsd ?? null, label: p.token_id ? `#${shortId(p.token_id)}` : `#${p.id}` };
   });
 
   // Chart: pool price + (if any) the range and entry point of the selected position.

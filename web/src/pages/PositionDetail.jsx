@@ -121,7 +121,27 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
   // GMGN candles are priced in USD: the bands are also multiplied by the quote->USD rate. Without a rate, the bands
   // are not drawn (the same as a single position range).
   const bands = k ? (ranges || []).filter((b) => b.lo > 0 && b.hi > 0).map((b) => ({ ...b, lo: b.lo * k, hi: b.hi * k })) : [];
-  const hist = useMemo(() => (k && history ? history.map((h) => ({ ...h, lo: h.lo * k, hi: h.hi * k, entry: h.entry != null ? h.entry * k : null, exit: h.exit != null ? h.exit * k : null })) : null), [history, k]);
+  // On USD candles today's quote->USD rate does not fit the past when the quote is not a stablecoin:
+  // a position is converted at the rate of its own time instead — the USD candle at the moment
+  // divided by the pool price then (entry at the open, exit at the close), falling back to today's.
+  const rateAt = useCallback((ts, poolPrice) => {
+    if (!gmgn || !(ts > 0) || !(poolPrice > 0) || !candles.length) return k;
+    let lo = 0, hi = candles.length - 1;
+    if (ts < candles[0].t || ts >= candles[hi].t + SECS[tf] * 1000) return k;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (candles[mid].t <= ts) lo = mid; else hi = mid - 1; }
+    return candles[lo].c > 0 ? candles[lo].c / poolPrice : k;
+  }, [gmgn, candles, k, tf]);
+  const hist = useMemo(() => (history ? history.map((h) => {
+    const ke = rateAt(h.from, h.entry), kx = rateAt(h.to, h.exit);
+    if (!ke || !kx) return null;
+    return { ...h, lo: h.lo * ke, hi: h.hi * ke, loEnd: h.lo * kx, hiEnd: h.hi * kx,
+      entry: h.entry != null ? h.entry * ke : null, exit: h.exit != null ? h.exit * kx : null };
+  }).filter(Boolean) : null), [history, rateAt]);
+  // the same for the position itself: its entry (and, once closed, its range and exit) at their own time
+  const kEntry = rateAt(p.opened_ts, pEntry), kExit = rateAt(p.closed_ts, pExit);
+  // a closed range is drawn at its entry rate; an open one is where it stands today
+  const kRange = closed ? kEntry : k;
+  const ranged = bands.map((b) => (b.to && b.id === p.id && kEntry ? { ...b, lo: (b.lo / k) * kEntry, hi: (b.hi / k) * kEntry } : b));
   return (
     <div>
       {gmgn && m.ohlcv.fallback && <p className="mb-2 text-xs text-warning">{t('GMGN gagal, memakai GeckoTerminal')}: {t(m.ohlcv.fallback)}</p>}
@@ -131,12 +151,12 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
       </p>}
       <AdvancedChart key={p.pool_ref || p.baseToken || 'pool'}
         candles={candles} tf={tf} onTfChange={onTf} loading={pending} error={chartError} onRetry={onRetry} series={gmgn ? 'gmgn' : 'gt'}
-        quote={quote} title={p.symbol0 && p.symbol1 ? `${p.symbol0}/${p.symbol1}` : null} drawKey={drawKeyOf(p.baseToken, p.pool_ref)} poolRef={p.pool_ref || null} usdRate={gmgn ? 1 : qUsd} supply={supplyOf(m?.pair, p.baseToken)} range={range && k ? { lo: range.lo * k, hi: range.hi * k } : null}
-        ranges={bands.length ? bands : null}
-        entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: cv(pEntry) } : null}
-        exit={closed ? { t: p.closed_ts, p: cv(pExit) } : null}
+        quote={quote} title={p.symbol0 && p.symbol1 ? `${p.symbol0}/${p.symbol1}` : null} drawKey={drawKeyOf(p.baseToken, p.pool_ref)} poolRef={p.pool_ref || null} usdRate={gmgn ? 1 : qUsd} supply={supplyOf(m?.pair, p.baseToken)} range={range && kRange ? { lo: range.lo * kRange, hi: range.hi * kRange } : null}
+        ranges={ranged.length ? ranged : null}
+        entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: pEntry != null && kEntry ? pEntry * kEntry : null } : null}
+        exit={closed ? { t: p.closed_ts, p: pExit != null && kExit ? pExit * kExit : null } : null}
         now={closed ? null : cv(pNow)} bep={cv(bep?.price)}
-        history={hist} showHistory={showHistory} onShowHistory={onShowHistory} />
+        history={hist} showHistory={showHistory} onShowHistory={onShowHistory} onHistoryClick={onRangeClick} />
       {bands.length > 1 && (
         <div className="mt-2 flex flex-wrap gap-1.5" role="tablist" aria-label={t('Rentang posisi di pool ini')}>
           {bands.map((b) => {

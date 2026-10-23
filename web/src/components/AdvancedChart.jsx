@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { ask } from './ui';
 import { useI18n } from '../i18n';
-import { price as fmtPrice, usd as fmtUsd, pct as fmtPct, locale as fmtLocale } from '../fmt';
+import { price as fmtPrice, usd as fmtUsd, pct as fmtPct, age as fmtAge, locale as fmtLocale } from '../fmt';
 import { canonAddr } from '../chain';
 import { palette, withAlpha, cssColor } from './CandleChart';
 import { subscribeDrawings, writeDrawing, drawingsOf, newDrawingId, chartPrefs, subscribePrefs, setChartPrefs, viewOf, saveView, subscribeView } from '../chartSync';
@@ -80,22 +80,28 @@ registerOverlay({
   },
 });
 
-// A closed LP position from the pool's history: its range box over its lifetime, tinted by the
+// A closed LP position from the pool's history: its range over its lifetime, tinted by the
 // result, a dashed path from the entry price to the exit price, and a "#id +$12 · +4.5%" tag.
-// Points: 1 = (open, hi), 2 = (close, lo), 3 = (open, entry price), 4 = (close, exit price).
-// Points 3/4 fall back to the band edges when the price is unknown (extendData.entry / exit false).
+// Points: 1 = (open, hi), 2 = (close, lo), 3 = (open, entry price), 4 = (close, exit price),
+// 5 = (close, hi), 6 = (open, lo). On USD candles of a pool quoted in another token the range moves
+// with that token's dollar rate, so the edges at the close (2, 5) may differ from those at the open
+// (1, 6) and the box becomes a slanted band. Points 3/4 fall back to the band edges when the price
+// is unknown (extendData.entry / exit false).
 registerOverlay({
-  name: 'lpHist', totalStep: 5,
+  name: 'lpHist', totalStep: 7,
   needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
   createPointFigures: ({ coordinates, bounding, overlay }) => {
-    const [c1, c2, ce, cx] = coordinates;
-    if (!c1 || !c2) return [];
+    const [c1, c2, ce, cx, c5, c6] = coordinates;
+    if (!c1 || !c2 || !c5 || !c6) return [];
     const { color, label, short, entry, exit, clipped } = overlay.extendData || {};
     const x1 = Math.max(0, c1.x), x2 = Math.min(bounding.width, c2.x);
     if (x2 <= x1) return [];
-    const y1 = Math.min(c1.y, c2.y), y2 = Math.max(c1.y, c2.y);
+    const y1 = Math.min(c1.y, c6.y, c2.y, c5.y), y2 = Math.max(c1.y, c6.y, c2.y, c5.y);
+    // the edges at the clipped x, along the slant
+    const at = (a, b, x) => (b.x === a.x ? a.y : a.y + ((b.y - a.y) * (x - a.x)) / (b.x - a.x));
+    const corners = [{ x: x1, y: at(c1, c5, x1) }, { x: x2, y: at(c1, c5, x2) }, { x: x2, y: at(c6, c2, x2) }, { x: x1, y: at(c6, c2, x1) }];
     const figures = [
-      { type: 'rect', ignoreEvent: true, attrs: { x: x1, y: y1, width: x2 - x1, height: Math.max(1, y2 - y1) }, styles: { style: 'stroke_fill', color: withAlpha(color, PAL.dark ? 0.09 : 0.07), borderColor: withAlpha(color, 0.45), borderSize: 1 } },
+      { type: 'polygon', ignoreEvent: true, attrs: { coordinates: corners }, styles: { style: 'stroke_fill', color: withAlpha(color, PAL.dark ? 0.09 : 0.07), borderColor: withAlpha(color, 0.45), borderSize: 1 } },
     ];
     if (entry && exit && ce && cx) {
       figures.push({ type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: ce.x, y: ce.y }, { x: cx.x, y: cx.y }] }, styles: { style: 'dashed', dashedValue: [3, 3], color: withAlpha(color, 0.7), size: 1 } });
@@ -107,7 +113,7 @@ registerOverlay({
     const text = x2 - x1 >= 110 ? label : x2 - x1 >= 16 ? short : null;
     if (text) {
       const low = y1 < LEGEND_PX + 8;
-      figures.push({ type: 'text', ignoreEvent: true, attrs: { x: x1 + 3, y: low ? y2 - 2 : y1 - 2, text, align: 'left', baseline: 'bottom' }, styles: tagStyle(color) });
+      figures.push({ type: 'text', ignoreEvent: true, attrs: { x: x1 + 3, y: low ? Math.max(corners[2].y, corners[3].y) - 2 : Math.min(corners[0].y, corners[1].y) - 2, text, align: 'left', baseline: 'bottom' }, styles: tagStyle(color) });
     }
     return figures;
   },
@@ -493,6 +499,33 @@ function Clock() {
   return <span className="num text-muted">{p2(now.getHours())}:{p2(now.getMinutes())}:{p2(now.getSeconds())} {tz}</span>;
 }
 
+// Details of the LP history box under the pointer, pinned to the top-right corner of the price pane.
+function HistCard({ h, chart, clickable, t }) {
+  const main = chart?.getSize('candle_pane', 'main');
+  const tone = h.pnl > 0 ? 'text-[#26a69a]' : h.pnl < 0 ? 'text-[#ef5350]' : 'text-muted';
+  const when = (ms) => new Date(ms).toLocaleString(fmtLocale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const row = (k, v) => v != null && <div className="flex justify-between gap-4"><span className="text-muted">{k}</span><span className="num text-right">{v}</span></div>;
+  return (
+    <div className="pointer-events-none absolute z-20 w-56 rounded-md border border-border bg-surface/95 p-2 text-[0.6875rem] shadow-lg"
+      style={{ top: (main?.top || 0) + LEGEND_PX + 4, left: main ? main.left + main.width - 8 : undefined, right: main ? undefined : 64, transform: main ? 'translateX(-100%)' : undefined }}>
+      <div className="mb-1 flex items-baseline justify-between gap-2">
+        <span className="mono font-semibold text-foreground">{h.label}</span>
+        {h.pnl != null && <span className={`num font-semibold ${tone}`}>{fmtUsd(h.pnl)}{h.pnlPct != null && <> · {fmtPct(h.pnlPct, 2)}</>}</span>}
+      </div>
+      <div className="space-y-0.5">
+        {row(t('Fee'), h.fee != null ? fmtUsd(h.fee) : null)}
+        {row(t('Modal'), h.cost != null ? fmtUsd(h.cost) : null)}
+        {row(t('Lama'), h.from > 0 ? fmtAge((h.to - h.from) / 3600e3) : null)}
+        {row(t('Rentang'), `${fmtPrice(h.lo)} – ${fmtPrice(h.hi)}`)}
+        {row(t('Masuk → keluar'), h.entry > 0 || h.exit > 0 ? `${h.entry > 0 ? fmtPrice(h.entry) : '—'} → ${h.exit > 0 ? fmtPrice(h.exit) : '—'}` : null)}
+        {row(t('Dibuka'), h.from > 0 ? when(h.from) : null)}
+        {row(t('Ditutup'), when(h.to))}
+      </div>
+      {clickable && <div className="mt-1 text-muted">{t('Klik untuk menyorot posisi ini')}</div>}
+    </div>
+  );
+}
+
 const sameBar = (a, b) => a && b && a.timestamp === b.timestamp && a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close && a.volume === b.volume;
 
 // LP position context overlays (range band, entry/exit/BEP lines) use a fixed groupId
@@ -502,6 +535,28 @@ const sameBar = (a, b) => a && b && a.timestamp === b.timestamp && a.open === b.
 const LP_GROUP = 'lp';
 const HIST_GROUP = 'lpHist';     // closed positions of the pool (the "LP history" toggle)
 const DRAW_GROUP = 'draw';
+
+// Time span a history box is drawn over: clipped to the loaded candles, null when it closed before them.
+const histSpan = (h, first, anchor) => (h.to < first ? null : { from: Math.max(h.from || first, first), to: Math.min(h.to, anchor) });
+// The history position under a point of the price pane (pane pixels); the smallest box wins where they overlap.
+function histAt(chart, hs, x, y) {
+  if (!hs || x == null || y == null) return null;
+  let best = null, area = Infinity;
+  for (const h of hs.list) {
+    const span = histSpan(h, hs.first, hs.anchor);
+    if (!span) continue;
+    const [a, b, c, d] = chart.convertToPixel([
+      { timestamp: span.from, value: h.hi * hs.sc }, { timestamp: span.to, value: (h.loEnd ?? h.lo) * hs.sc },
+      { timestamp: span.to, value: (h.hiEnd ?? h.hi) * hs.sc }, { timestamp: span.from, value: h.lo * hs.sc },
+    ], { paneId: 'candle_pane' });
+    if (!a || !b || !c || !d) continue;
+    const y1 = Math.min(a.y, b.y, c.y, d.y), y2 = Math.max(a.y, b.y, c.y, d.y);
+    if (x < a.x || x > b.x || y < y1 || y > y2) continue;
+    const s = (b.x - a.x) * (y2 - y1);
+    if (s < area) { area = s; best = h.id; }
+  }
+  return best;
+}
 const userOverlays = (chart) => chart.getOverlays().filter((o) => o.groupId !== LP_GROUP && o.groupId !== HIST_GROUP);
 
 // Price-axis autoscale and vertical moves. klinecharts has no public call for them: these reach the
@@ -621,13 +676,15 @@ function Legend({ bar, prev, label, tfLabel, mc, t, wide }) {
  * title    : short label shown in the fullscreen header (pair name)
  * history  : closed positions of this pool [{ id, lo, hi, from, to, entry, exit, pnl, pnlPct, label }]
  *            (prices in the chart's unit, from/to in ms), drawn while `showHistory` is on;
- *            `onShowHistory(bool)` gets the top-bar toggle (no handler = no toggle)
+ *            `onShowHistory(bool)` gets the top-bar toggle (no handler = no toggle); hovering a box
+ *            shows its details, clicking it calls `onHistoryClick(id)`. Optional per item: fee, cost (USD),
+ *            loEnd / hiEnd (the range at the close, when the chart's unit drifts from the pool's)
  */
 export default function AdvancedChart({
   candles, tf, onTfChange = null, loading = false, error = null, onRetry = null, series = '',
   quote, drawKey = null, poolRef = null, usdRate = null, supply = null, title = null, height = 420,
   range = null, ranges = null, entry = null, exit = null, now = null, bep = null,
-  history = null, showHistory = false, onShowHistory = null,
+  history = null, showHistory = false, onShowHistory = null, onHistoryClick = null,
 }) {
   const { t } = useI18n();
   const wrap = useRef(null);
@@ -676,6 +733,10 @@ export default function AdvancedChart({
   const [drawing, setDrawing] = useState(null);
   const [note, setNote] = useState(null);       // null = closed, string = text being typed
   const [hover, setHover] = useState(null);     // data index under the crosshair, null = latest
+  const [histHover, setHistHover] = useState(null); // id of the LP history box under the pointer
+  const histRef = useRef(null);                 // { list, first, anchor, sc } of the boxes drawn, null = none
+  const histClickRef = useRef(onHistoryClick);
+  histClickRef.current = onHistoryClick;
   const [tick, setTick] = useState(0);          // bumps when the series in the chart changes
   const indRef = useRef(null);
   const closeInd = useCallback(() => setIndOpen(false), []);
@@ -829,6 +890,7 @@ export default function AdvancedChart({
       if (c?.x == null) return;
       const [pt] = chart.convertFromPixel([{ x: c.x, y: c.y ?? 0 }], { paneId: 'candle_pane' });
       setHover(pt?.dataIndex ?? null);
+      setHistHover(c.paneId === 'candle_pane' ? histAt(chart, histRef.current, c.x, c.y) : null);
     };
     chart.subscribeAction('onCrosshairChange', onCross);
     setReady(true);
@@ -958,6 +1020,7 @@ export default function AdvancedChart({
       chart.setPeriod(PERIOD[tf] || PERIOD['1h']);   // resets the data through getBars
       loadedRef.current = key;
       setHover(null);
+      setHistHover(null);
       setTick((n) => n + 1);
       setTimeout(() => { fitView(); reconcileRef.current(true); }, first ? 60 : 0);
       return;
@@ -1084,7 +1147,7 @@ export default function AdvancedChart({
 
   // LP history: one box per closed position, rebuilt when the list, the toggle or the series changes.
   const histList = useMemo(() => (history || []).filter((h) => h.lo > 0 && h.hi > 0 && h.to > 0), [history]);
-  const histKey = useMemo(() => histList.map((h) => `${h.id}:${h.lo}:${h.hi}:${h.from}:${h.to}:${h.entry}:${h.exit}:${h.pnl}`).join('|'), [histList]);
+  const histKey = useMemo(() => histList.map((h) => `${h.id}:${h.lo}:${h.hi}:${h.loEnd}:${h.hiEnd}:${h.from}:${h.to}:${h.entry}:${h.exit}:${h.pnl}`).join('|'), [histList]);
   useEffect(() => {
     const r = chartRef.current;
     if (!r || !ready || first == null) return;
@@ -1092,16 +1155,19 @@ export default function AdvancedChart({
     if (!showHistory || loading) return;
     const specs = [];
     for (const h of histList) {
-      if (h.to < first) continue;                  // closed before the first candle loaded
-      const from = Math.max(h.from || first, first), to = Math.min(h.to, anchor);
+      const span = histSpan(h, first, anchor);
+      if (!span) continue;                         // closed before the first candle loaded
+      const { from, to } = span;
       const color = h.pnl > 0 ? UP : h.pnl < 0 ? DOWN : pal.muted;
       const pnl = h.pnl == null ? null : fmtUsd(h.pnl);
-      const tag = pnl == null ? h.label : `${h.label} ${pnl}${h.pnlPct != null ? ` · ${fmtPct(h.pnlPct, 1)}` : ''}`;
+      const life = h.from > 0 ? ` · ${fmtAge((h.to - h.from) / 3600e3)}` : '';
+      const tag = pnl == null ? `${h.label}${life}` : `${h.label} ${pnl}${h.pnlPct != null ? ` · ${fmtPct(h.pnlPct, 1)}` : ''}${life}`;
       specs.push({
         name: 'lpHist', groupId: HIST_GROUP, lock: true,
         points: [
-          { timestamp: from, value: h.hi * sc }, { timestamp: to, value: h.lo * sc },
+          { timestamp: from, value: h.hi * sc }, { timestamp: to, value: (h.loEnd ?? h.lo) * sc },
           { timestamp: from, value: (h.entry > 0 ? h.entry : h.hi) * sc }, { timestamp: to, value: (h.exit > 0 ? h.exit : h.lo) * sc },
+          { timestamp: to, value: (h.hiEnd ?? h.hi) * sc }, { timestamp: from, value: h.lo * sc },
         ],
         extendData: { color, label: tag, short: pnl, entry: h.entry > 0, exit: h.exit > 0, clipped: !(h.from >= first) },
       });
@@ -1109,6 +1175,26 @@ export default function AdvancedChart({
     if (specs.length) r.chart.createOverlay(specs);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, loading, tick, first, anchor, histKey, showHistory, pal, sc]);
+  histRef.current = showHistory && !loading && first != null ? { list: histList, first, anchor, sc } : null;
+  // a click (not a drag) on a history box picks that position
+  useEffect(() => {
+    const el = box.current;
+    if (!ready || !el) return undefined;
+    let down = null;
+    const onDown = (e) => { down = { x: e.clientX, y: e.clientY }; };
+    const onClick = (e) => {
+      const chart = chartRef.current?.chart;
+      if (!chart || !histClickRef.current || pendingRef.current || !down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return;
+      const rect = el.getBoundingClientRect(), main = chart.getSize('candle_pane', 'main');
+      if (!main) return;
+      const id = histAt(chart, histRef.current, e.clientX - rect.left - main.left, e.clientY - rect.top - main.top);
+      if (id != null) histClickRef.current(id);
+    };
+    el.addEventListener('pointerdown', onDown, true);
+    el.addEventListener('click', onClick);
+    return () => { el.removeEventListener('pointerdown', onDown, true); el.removeEventListener('click', onClick); };
+  }, [ready]);
+  const histItem = histHover != null && histRef.current ? histList.find((h) => h.id === histHover) || null : null;
   const histSum = useMemo(() => {
     const done = histList.filter((h) => h.pnl != null);
     return { n: histList.length, wins: done.filter((h) => h.pnl > 0).length, pnl: done.reduce((a, h) => a + h.pnl, 0) };
@@ -1337,6 +1423,7 @@ export default function AdvancedChart({
           <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center pr-16 font-black tracking-tight text-foreground/[0.045] select-none"
             style={{ fontSize: Math.max(28, Math.min(110, (width || 600) * 0.11)) }}>QUIVER</div>
           {!loading && <Legend bar={list[legendIdx]} prev={list[legendIdx - 1]} label={title || quote} tfLabel={tfLabel} mc={mc} t={t} wide={wide} />}
+          {histItem && <HistCard h={histItem} chart={chartRef.current?.chart} clickable={!!onHistoryClick} t={t} />}
           {/* veil while another timeframe loads, or the fetch failed */}
           {(loading || error) && (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-surface/60 backdrop-blur-[1px]">
