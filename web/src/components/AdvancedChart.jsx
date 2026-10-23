@@ -17,11 +17,11 @@ import { init, dispose, registerOverlay, registerYAxis, registerIndicator } from
 import {
   TrendingUp, Minus, Ruler, Brush, GitCommitHorizontal, Square, Trash2, Magnet, Lock, LockOpen, Eye, EyeOff,
   Maximize2, Minimize2, Camera, ChevronDown, Type, Tag, MoveUpRight, Slash, ArrowRightToLine, SeparatorVertical,
-  Equal, Rows3, RotateCcw, Crosshair, Loader2, RefreshCw, CandlestickChart, ChartNoAxesColumn, AreaChart, SquareFunction, CalendarRange,
+  Equal, Rows3, RotateCcw, Crosshair, Loader2, RefreshCw, CandlestickChart, ChartNoAxesColumn, AreaChart, SquareFunction, CalendarRange, History,
 } from 'lucide-react';
 import { ask } from './ui';
 import { useI18n } from '../i18n';
-import { price as fmtPrice, locale as fmtLocale } from '../fmt';
+import { price as fmtPrice, usd as fmtUsd, pct as fmtPct, locale as fmtLocale } from '../fmt';
 import { canonAddr } from '../chain';
 import { palette, withAlpha, cssColor } from './CandleChart';
 import { subscribeDrawings, writeDrawing, drawingsOf, newDrawingId, chartPrefs, subscribePrefs, setChartPrefs, viewOf, saveView, subscribeView } from '../chartSync';
@@ -75,6 +75,39 @@ registerOverlay({
       const right = c.y < LEGEND_PX + 8;
       figures.push({ type: 'text', ignoreEvent: true, attrs: { x: right ? bounding.width - 4 : 4, y: right ? c.y + 2 : c.y - 2, text: label, align: right ? 'right' : 'left', baseline: right ? 'top' : 'bottom' },
         styles: tagStyle(color) });
+    }
+    return figures;
+  },
+});
+
+// A closed LP position from the pool's history: its range box over its lifetime, tinted by the
+// result, a dashed path from the entry price to the exit price, and a "#id +$12 · +4.5%" tag.
+// Points: 1 = (open, hi), 2 = (close, lo), 3 = (open, entry price), 4 = (close, exit price).
+// Points 3/4 fall back to the band edges when the price is unknown (extendData.entry / exit false).
+registerOverlay({
+  name: 'lpHist', totalStep: 5,
+  needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
+  createPointFigures: ({ coordinates, bounding, overlay }) => {
+    const [c1, c2, ce, cx] = coordinates;
+    if (!c1 || !c2) return [];
+    const { color, label, short, entry, exit, clipped } = overlay.extendData || {};
+    const x1 = Math.max(0, c1.x), x2 = Math.min(bounding.width, c2.x);
+    if (x2 <= x1) return [];
+    const y1 = Math.min(c1.y, c2.y), y2 = Math.max(c1.y, c2.y);
+    const figures = [
+      { type: 'rect', ignoreEvent: true, attrs: { x: x1, y: y1, width: x2 - x1, height: Math.max(1, y2 - y1) }, styles: { style: 'stroke_fill', color: withAlpha(color, PAL.dark ? 0.09 : 0.07), borderColor: withAlpha(color, 0.45), borderSize: 1 } },
+    ];
+    if (entry && exit && ce && cx) {
+      figures.push({ type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: ce.x, y: ce.y }, { x: cx.x, y: cx.y }] }, styles: { style: 'dashed', dashedValue: [3, 3], color: withAlpha(color, 0.7), size: 1 } });
+    }
+    if (entry && ce && !clipped) figures.push({ type: 'circle', ignoreEvent: true, attrs: { x: ce.x, y: ce.y, r: 3 }, styles: { style: 'fill', color: PAL.accent } });
+    if (exit && cx) figures.push({ type: 'circle', ignoreEvent: true, attrs: { x: cx.x, y: cx.y, r: 3 }, styles: { style: 'fill', color } });
+    // the full tag on a wide box, the PnL alone on a narrow one, none on a sliver; under the OHLC
+    // legend it drops to the box's foot
+    const text = x2 - x1 >= 110 ? label : x2 - x1 >= 16 ? short : null;
+    if (text) {
+      const low = y1 < LEGEND_PX + 8;
+      figures.push({ type: 'text', ignoreEvent: true, attrs: { x: x1 + 3, y: low ? y2 - 2 : y1 - 2, text, align: 'left', baseline: 'bottom' }, styles: tagStyle(color) });
     }
     return figures;
   },
@@ -467,8 +500,9 @@ const sameBar = (a, b) => a && b && a.timestamp === b.timestamp && a.open === b.
 // syncing do not touch them (they are derived from position props, rebuilt each time props
 // change, not the user's hand drawings).
 const LP_GROUP = 'lp';
+const HIST_GROUP = 'lpHist';     // closed positions of the pool (the "LP history" toggle)
 const DRAW_GROUP = 'draw';
-const userOverlays = (chart) => chart.getOverlays().filter((o) => o.groupId !== LP_GROUP);
+const userOverlays = (chart) => chart.getOverlays().filter((o) => o.groupId !== LP_GROUP && o.groupId !== HIST_GROUP);
 
 // Price-axis autoscale and vertical moves. klinecharts has no public call for them: these reach the
 // axis of the candle pane through the chart instance (klinecharts 10.0.x). Its own vertical pan
@@ -585,11 +619,15 @@ function Legend({ bar, prev, label, tfLabel, mc, t, wide }) {
  * entry    : { t(ms), p }  exit : { t(ms), p }  now : current price — all optional,
  *            used to draw the position context (not user drawings)
  * title    : short label shown in the fullscreen header (pair name)
+ * history  : closed positions of this pool [{ id, lo, hi, from, to, entry, exit, pnl, pnlPct, label }]
+ *            (prices in the chart's unit, from/to in ms), drawn while `showHistory` is on;
+ *            `onShowHistory(bool)` gets the top-bar toggle (no handler = no toggle)
  */
 export default function AdvancedChart({
   candles, tf, onTfChange = null, loading = false, error = null, onRetry = null, series = '',
   quote, drawKey = null, poolRef = null, usdRate = null, supply = null, title = null, height = 420,
   range = null, ranges = null, entry = null, exit = null, now = null, bep = null,
+  history = null, showHistory = false, onShowHistory = null,
 }) {
   const { t } = useI18n();
   const wrap = useRef(null);
@@ -1044,6 +1082,38 @@ export default function AdvancedChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, loading, tick, first, anchor, bandKey, range?.lo, range?.hi, entry?.p, entry?.t, exit?.p, exit?.t, now, bep, pal, sc]);
 
+  // LP history: one box per closed position, rebuilt when the list, the toggle or the series changes.
+  const histList = useMemo(() => (history || []).filter((h) => h.lo > 0 && h.hi > 0 && h.to > 0), [history]);
+  const histKey = useMemo(() => histList.map((h) => `${h.id}:${h.lo}:${h.hi}:${h.from}:${h.to}:${h.entry}:${h.exit}:${h.pnl}`).join('|'), [histList]);
+  useEffect(() => {
+    const r = chartRef.current;
+    if (!r || !ready || first == null) return;
+    for (const o of r.chart.getOverlays({ groupId: HIST_GROUP })) r.chart.removeOverlay({ id: o.id });
+    if (!showHistory || loading) return;
+    const specs = [];
+    for (const h of histList) {
+      if (h.to < first) continue;                  // closed before the first candle loaded
+      const from = Math.max(h.from || first, first), to = Math.min(h.to, anchor);
+      const color = h.pnl > 0 ? UP : h.pnl < 0 ? DOWN : pal.muted;
+      const pnl = h.pnl == null ? null : fmtUsd(h.pnl);
+      const tag = pnl == null ? h.label : `${h.label} ${pnl}${h.pnlPct != null ? ` · ${fmtPct(h.pnlPct, 1)}` : ''}`;
+      specs.push({
+        name: 'lpHist', groupId: HIST_GROUP, lock: true,
+        points: [
+          { timestamp: from, value: h.hi * sc }, { timestamp: to, value: h.lo * sc },
+          { timestamp: from, value: (h.entry > 0 ? h.entry : h.hi) * sc }, { timestamp: to, value: (h.exit > 0 ? h.exit : h.lo) * sc },
+        ],
+        extendData: { color, label: tag, short: pnl, entry: h.entry > 0, exit: h.exit > 0, clipped: !(h.from >= first) },
+      });
+    }
+    if (specs.length) r.chart.createOverlay(specs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, loading, tick, first, anchor, histKey, showHistory, pal, sc]);
+  const histSum = useMemo(() => {
+    const done = histList.filter((h) => h.pnl != null);
+    return { n: histList.length, wins: done.filter((h) => h.pnl > 0).length, pnl: done.reduce((a, h) => a + h.pnl, 0) };
+  }, [histList]);
+
   // ---- toolbar actions ----
 
   // Applies one property (lock / visible / mode) to every drawing of the user.
@@ -1218,6 +1288,15 @@ export default function AdvancedChart({
             </div>
           )}
         </div>
+        {onShowHistory && histSum.n > 0 && <>
+          {sep}
+          <button type="button" aria-pressed={showHistory} onClick={() => onShowHistory(!showHistory)}
+            title={t('Riwayat LP: {n} posisi ditutup · {w} untung · PnL {v}', { n: histSum.n, w: histSum.wins, v: fmtUsd(histSum.pnl) })}
+            className={`${TOP_BTN} ${showHistory ? '!bg-accent/15 !text-accent' : ''}`}>
+            <History className="size-[17px]" /><span className={wide ? '' : 'sr-only'}>{t('Riwayat LP')}</span>
+            {showHistory && <span className={`num text-[0.6875rem] ${histSum.pnl >= 0 ? 'text-[#26a69a]' : 'text-[#ef5350]'}`}>{fmtUsd(histSum.pnl)}</span>}
+          </button>
+        </>}
         {mcMul > 0 && <>
           {sep}
           <div className="flex items-center text-[0.8125rem] font-medium" role="radiogroup" aria-label={t('Tampilan grafik')}>

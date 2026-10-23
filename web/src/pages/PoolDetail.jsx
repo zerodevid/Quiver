@@ -76,6 +76,11 @@ function PairPools({ pool, poolRef, base, className = '' }) {
   );
 }
 
+// The chart's "LP history" toggle (closed positions of the pool), remembered across pools.
+const HIST_KEY = 'lpcopy-chart-lp-history';
+const readHist = () => { try { return localStorage.getItem(HIST_KEY) !== '0'; } catch { return true; } };
+const writeHist = (v) => { try { localStorage.setItem(HIST_KEY, v ? '1' : '0'); } catch { /* storage blocked */ } };
+
 export default function PoolDetail({ param }) {
   const { t } = useI18n();
   const ref = canonAddr(param);
@@ -83,6 +88,8 @@ export default function PoolDetail({ param }) {
   // undefined = automatic choice (latest open position), null = no position on the chart.
   const [focusPick, setFocus] = useState(undefined);
   const [tfPick, setTf] = useState(null);
+  const [showHist, setShowHistState] = useState(readHist);
+  const setShowHist = (v) => { setShowHistState(v); writeHist(v); };
   const [view, setView] = useState('chart');
   const [src, setSrcState] = useState(readSrc);
   const setSrc = (v) => { setSrcState(v); writeSrc(v); };
@@ -102,10 +109,12 @@ export default function PoolDetail({ param }) {
   const focus = focusPick === undefined ? (d?.open[0] || null) : all.find((p) => p.id === focusPick) || null;
   const tf = tfPick || savedTf(drawKeyOf(pool?.baseToken, ref), (x) => x in SECS) || (focus?.status === 'open' ? tfFor(focus.ageHours) : '1h');
   // Enough candles that the entry points of all drawn positions are still visible — not
-  // only the highlighted one: even the oldest position's band starts at its entry candle.
-  const firstOpen = Math.min(...(d?.open || []).map((p) => p.opened_ts || Date.now()), focus?.opened_ts || Date.now());
+  // only the highlighted one: even the oldest position's band starts at its entry candle. With the
+  // LP history on, the closed positions count too (still capped at 1000 candles).
+  const firstOpen = Math.min(...(d?.open || []).map((p) => p.opened_ts || Date.now()), focus?.opened_ts || Date.now(),
+    ...(showHist ? (d?.closed || []).map((p) => p.opened_ts || Date.now()) : []));
   const sinceOpen = (Date.now() - firstOpen) / 1000;
-  const limit = focus || d?.open.length ? Math.min(1000, Math.max(120, Math.ceil(sinceOpen / SECS[tf]) + 40)) : 240;
+  const limit = focus || d?.open.length || (showHist && d?.closed.length) ? Math.min(1000, Math.max(120, Math.ceil(sinceOpen / SECS[tf]) + 40)) : 240;
   const { data: m, pending: mPending, reload: reloadMarket } = useMarket(pool ? `/api/market?pool=${ref}&tf=${tf}&limit=${limit}&token=${pool.baseToken || ''}${src === 'gmgn' ? '&src=gmgn' : ''}` : null, 30000, `${tf}:${src}`);
 
   if (!d) return <Loading page />;
@@ -141,6 +150,14 @@ export default function PoolDetail({ param }) {
   const openBands = focusPick === null ? [] : [...d.open].sort((a, b) => a.id - b.id).filter(hasRange);
   const ranges = openBands.map((p, i) => band(p, BAND_COLORS[i % BAND_COLORS.length]));
   if (focus && focus.status === 'closed' && hasRange(focus)) ranges.push(band(focus, BAND_COLORS[openBands.length % BAND_COLORS.length]));
+  // LP history: every closed position but the highlighted one (already drawn as a band above).
+  const history = d.closed.filter((p) => hasRange(p) && p.closed_ts && p.id !== focus?.id).map((p) => {
+    const a = at(p.tick_lower), b = at(p.tick_upper);
+    return { id: p.id, lo: Math.min(a, b), hi: Math.max(a, b), from: p.opened_ts || null, to: p.closed_ts,
+      entry: p.entrySqrt ? sqrtPrice(p.entrySqrt, pool.dec0, pool.dec1, pool.quoteSide) : null,
+      exit: p.exitSqrt ? sqrtPrice(p.exitSqrt, pool.dec0, pool.dec1, pool.quoteSide) : null,
+      pnl: p.pnlUsd ?? null, pnlPct: p.pnlPct ?? null, label: p.token_id ? `#${shortId(p.token_id)}` : `#${p.id}` };
+  });
 
   // Chart: pool price + (if any) the range and entry point of the selected position.
   const chartP = {
@@ -205,7 +222,8 @@ export default function PoolDetail({ param }) {
             {view === 'chart' && (m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
             {view === 'gmgn' && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}
           </div>}>
-          {view === 'dex' ? <DexEmbed pool={ref} /> : view === 'gmgn' ? <GmgnEmbed token={pool.baseToken} tf={tf} p={chartP} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={chartP} m={m} tf={tf} pending={mPending} onTf={setTf} onRetry={reloadMarket} ranges={ranges} onRangeClick={setFocus} />}
+          {view === 'dex' ? <DexEmbed pool={ref} /> : view === 'gmgn' ? <GmgnEmbed token={pool.baseToken} tf={tf} p={chartP} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={chartP} m={m} tf={tf} pending={mPending} onTf={setTf} onRetry={reloadMarket} ranges={ranges} onRangeClick={setFocus}
+            history={history} showHistory={showHist} onShowHistory={setShowHist} />}
           <TradesTape pool={ref} token={pool.baseToken} base={base} quote={quote} />
         </Panel>
 

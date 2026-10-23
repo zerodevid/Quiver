@@ -82,7 +82,9 @@ export const writeSrc = (v) => { try { localStorage.setItem(SRC_KEY, v); } catch
 // `ranges` (optional): all open positions in this pool, so the pool detail chart
 // shows every active range as on the Monitor page. The `selected` one is the
 // position being highlighted (the entry/exit/BEP lines remain only for that one).
-export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = null, ranges = null, onRangeClick = null }) {
+// `history` (optional): closed positions of the pool for the chart's "LP history" toggle, same
+// shape as AdvancedChart's prop but in the pool's quote asset; `showHistory` / `onShowHistory` drive it.
+export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = null, ranges = null, onRangeClick = null, history = null, showHistory = false, onShowHistory = null }) {
   const { t } = useI18n();
   const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
   const hasRange = p.tick_lower != null && p.tick_upper != null;
@@ -119,6 +121,7 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
   // GMGN candles are priced in USD: the bands are also multiplied by the quote->USD rate. Without a rate, the bands
   // are not drawn (the same as a single position range).
   const bands = k ? (ranges || []).filter((b) => b.lo > 0 && b.hi > 0).map((b) => ({ ...b, lo: b.lo * k, hi: b.hi * k })) : [];
+  const hist = useMemo(() => (k && history ? history.map((h) => ({ ...h, lo: h.lo * k, hi: h.hi * k, entry: h.entry != null ? h.entry * k : null, exit: h.exit != null ? h.exit * k : null })) : null), [history, k]);
   return (
     <div>
       {gmgn && m.ohlcv.fallback && <p className="mb-2 text-xs text-warning">{t('GMGN gagal, memakai GeckoTerminal')}: {t(m.ohlcv.fallback)}</p>}
@@ -132,7 +135,8 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
         ranges={bands.length ? bands : null}
         entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: cv(pEntry) } : null}
         exit={closed ? { t: p.closed_ts, p: cv(pExit) } : null}
-        now={closed ? null : cv(pNow)} bep={cv(bep?.price)} />
+        now={closed ? null : cv(pNow)} bep={cv(bep?.price)}
+        history={hist} showHistory={showHistory} onShowHistory={onShowHistory} />
       {bands.length > 1 && (
         <div className="mt-2 flex flex-wrap gap-1.5" role="tablist" aria-label={t('Rentang posisi di pool ini')}>
           {bands.map((b) => {
@@ -155,6 +159,7 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
         {bands.length > 1
           ? <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('{n} rentang aktif', { n: bands.length })}</span>
           : range && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang posisi')}</span>}
+        {showHistory && hist?.length > 0 && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-[#26a69a]/60 bg-[#ef5350]/15" />{t('riwayat LP ({n})', { n: hist.length })}</span>}
         {p.opened_ts && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 w-px border-l-2 border-dashed border-accent" />{t('saat masuk')}</span>}
         {pEntry != null && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-px w-4 border-t border-dashed border-muted" />{t('harga masuk')}</span>}
         {bep?.price > 0 && <span className="inline-flex items-center gap-1.5 text-warning"><span aria-hidden className="inline-block w-4 border-t-2 border-dashed border-warning" />BEP {price(bep.price)} {quoteSym}</span>}
