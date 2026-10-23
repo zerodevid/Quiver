@@ -335,7 +335,7 @@ function AutoSwap({ p }) {
 // The band follows typing (from percent × current price); once the preview for
 // the same input arrives, the bounds are replaced by the rounded tick prices.
 // Without a preview (amount not yet filled), the current price is taken from the last candle.
-function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag, bands = null }) {
+function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag, bands = null, snap = false }) {
   const { t } = useI18n();
   const [tf, setTf] = useState('1h');
   // the same candle source as the pool / position pages (remembered per browser): GMGN shows USD,
@@ -369,10 +369,29 @@ function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag
     : null), [bands, nowPrice]);
 
   // Dragged bounds (quote prices) -> percent change from the price the band is drawn against.
+  // With `snap`, each bound goes to the NEAREST tick-spacing line. The server rounds a range
+  // outwards (lower bound down, upper bound up), so on a wide grid (spacing 200 ≈ 2%) a bound
+  // dropped inside a step came back one whole step out and the band looked like it would not
+  // shrink. The percent sent sits 0.3 of a step inside the chosen line, so that outward rounding
+  // lands on it even when the price moves a little before the plan is made.
+  const sp = Number(pool.tickSpacing);
+  const grid = snap && sp >= 10 && !isSolana() ? { g: Math.log(1.0001) * sp, p0: tickPrice(0, pool.dec0, pool.dec1, pool.quoteSide) } : null;
   const drag = (a, b) => {
     if (!(nowPrice > 0)) return;
     const r2 = (p) => Math.round((p / nowPrice - 1) * 10000) / 100;
-    onDrag(r2(a), r2(b));
+    if (!grid || !(grid.p0 > 0) || !range) return onDrag(r2(a), r2(b));
+    const step = (p) => Math.round(Math.log(p / grid.p0) / grid.g);
+    let kLo = step(a), kHi = step(b);
+    if (kHi <= kLo) {
+      // narrower than one step: keep the bound that was not dragged where it is
+      if (Math.abs(Math.log(a / range.lo)) > Math.abs(Math.log(b / range.hi))) kLo = kHi - 1; else kHi = kLo + 1;
+    }
+    const at = (k) => grid.p0 * Math.exp(k * grid.g);
+    // the nudge never takes a bound across the price: that would make it a one-sided range
+    let pLo = r2(at(kLo + 0.3)), pHi = r2(at(kHi - 0.3));
+    if (at(kLo) < nowPrice && pLo >= 0) pLo = -0.01;
+    if (at(kHi) > nowPrice && pHi <= 0) pHi = 0.01;
+    onDrag(pLo, pHi);
   };
   // the pool as the pool page's chart takes it (no position: tick_lower null)
   const chartP = useMemo(() => ({
@@ -878,7 +897,7 @@ export default function ManualLp({ param }) {
               {dlmm && p && !plan?.error && <BinDistribution p={p} />}
               {!creating && pool && (
                 <ChartRange pool={pool} lo={lo} up={up} full={full} rangeOk={rangeOk} currentPrice={currentPrice}
-                  preview={pReady && !compute ? pReady : null} bands={evmShape ? shaped.bands : null}
+                  preview={pReady && !compute ? pReady : null} bands={evmShape ? shaped.bands : null} snap
                   onDrag={(a, b) => {
                     setFull(false);
                     setLower(String(Math.abs(a))); setDirDown(a > 0 ? 1 : -1);
