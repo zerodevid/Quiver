@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Card, Chip, Switch, toast } from '@heroui/react';
-import { Trash2, SlidersHorizontal, Plus, ChevronRight, ArrowLeft, Copy, Pencil, Check as CheckIcon, X, Radar } from 'lucide-react';
+import { Button, Card, Chip, Popover, Switch, toast } from '@heroui/react';
+import { Trash2, SlidersHorizontal, Plus, ChevronRight, ArrowLeft, Copy, Pencil, Check as CheckIcon, X, Radar, ChevronDown } from 'lucide-react';
 import { usePoll } from '../hooks';
 import { get, post } from '../api';
-import { PageHeader, Panel, Text, Empty, Loading, Stat, WalletLinks, ask, CopyBtn, DataTable } from '../components/ui';
+import { PageHeader, Panel, Text, Empty, Loading, Stat, WalletLinks, ask, CopyBtn, DataTable, TxHash } from '../components/ui';
+import { TokenPair, PairName } from '../components/TokenIcon';
 import RulesForm from '../components/RulesForm';
 import RulesSimulation from '../components/RulesSimulation';
 import WalletDetail from '../components/WalletDetail';
@@ -267,6 +268,31 @@ function EditableLabel({ tg, onChanged }) {
 }
 
 // Detail page of a single target: copy status + full wallet research (same as the Wallet menu).
+// The LP opens one follower trailed: pair (to its pool page), how many seconds behind, and its tx.
+function FollowedPools({ r, secs }) {
+  const { t } = useI18n();
+  return (
+    <Popover>
+      <Button size="sm" variant="ghost" aria-label={t('Pool yang dia ikuti')}>{r.pools}<ChevronDown className="size-3.5" /></Button>
+      <Popover.Content placement="bottom end" className="w-96 max-w-[calc(100vw-2rem)]">
+        <Popover.Dialog className="flex max-h-96 flex-col gap-2 overflow-y-auto p-3">
+          <Popover.Heading className="text-sm font-medium">{t('Ikut masuk {n}× · {p} pool', { n: r.hits, p: r.pools })}</Popover.Heading>
+          {(r.follows || []).map((f) => (
+            <div key={f.tx} className="flex items-center gap-2 border-t border-border pt-2 text-sm">
+              <TokenPair token0={f.token0} token1={f.token1} symbol0={f.symbol0} symbol1={f.symbol1} size={18} />
+              <div className="min-w-0 flex-1">
+                <PairName token0={f.token0} token1={f.token1} symbol0={f.symbol0} symbol1={f.symbol1} pool={f.poolRef} className="font-medium" />
+                <div className="text-xs text-muted">{t('+{d} setelah target', { d: secs(f.delaySec) })}{f.ts ? ` · ${ago(f.ts)}` : ''}</div>
+              </div>
+              <TxHash hash={f.tx} />
+            </div>
+          ))}
+        </Popover.Dialog>
+      </Popover.Content>
+    </Popover>
+  );
+}
+
 // Wallets that keep entering the same pool a few seconds after this target: copy bots like us,
 // or a rug crew trailing its bait wallet. Built from the target's stored LP research.
 function Followers({ tg, onChanged }) {
@@ -340,7 +366,7 @@ function Followers({ tg, onChanged }) {
               ) },
               { key: 'medianDelaySec', label: 'Jeda median', align: 'end', render: (r) => secs(r.medianDelaySec) },
               { key: 'minDelaySec', label: 'Jeda tercepat', align: 'end', render: (r) => secs(r.minDelaySec) },
-              { key: 'pools', label: 'Pool', align: 'end' },
+              { key: 'pools', label: 'Pool', align: 'end', render: (r) => <FollowedPools r={r} secs={secs} /> },
               { key: 'lastTs', label: 'Terakhir ikut', align: 'end', render: (r) => (r.lastTs ? ago(r.lastTs) : '—') },
               { key: 'act', label: '', sortable: false, render: (r) => (r.isTarget || r.isUs ? null : (
                 <Button size="sm" variant="ghost" onPress={() => addTarget(r.address)}><Plus className="size-3.5" />{t('Jadikan target')}</Button>

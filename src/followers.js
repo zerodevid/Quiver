@@ -63,6 +63,12 @@ async function findFollowers(rpc, chain, store, wallet, { opens = 30, windowSec 
     const k = `${r.pool_ref}:${r.opened_block}`;
     if (!seen.has(k)) { seen.add(k); entries.push(r); }
   }
+  const symbols = new Map();
+  const symbolOf = (a) => {
+    if (!a) return null;
+    if (!symbols.has(a)) symbols.set(a, store.get('SELECT symbol FROM tokens WHERE chain=? AND address=?', chain.network, a)?.symbol || null);
+    return symbols.get(a);
+  };
   const span = Math.max(1, Math.ceil((windowSec * 1000) / (chain.blockMs || 1000)));
   const byWallet = new Map();
   let done = 0;
@@ -74,9 +80,12 @@ async function findFollowers(rpc, chain, store, wallet, { opens = 30, windowSec 
     } catch { failed++; first = new Map(); }
     for (const [who, f] of first) {
       if (who === wallet) continue;
-      const w = byWallet.get(who) || { address: who, hits: 0, delays: [], pools: new Set(), lastBlock: 0, lastTs: null };
+      const w = byWallet.get(who) || { address: who, hits: 0, delays: [], pools: new Set(), lastBlock: 0, lastTs: null, follows: [] };
       w.hits++;
-      w.delays.push(((f.block - e.opened_block) * (chain.blockMs || 1000)) / 1000);
+      const delaySec = ((f.block - e.opened_block) * (chain.blockMs || 1000)) / 1000;
+      w.delays.push(delaySec);
+      // Which pools: the opens it trailed, newest first (entries are already in that order).
+      w.follows.push({ poolRef: e.pool_ref, token0: e.token0, token1: e.token1, ts: e.opened_ts, delaySec, tx: f.tx });
       w.pools.add(e.pool_ref);
       if (f.block > w.lastBlock) { w.lastBlock = f.block; w.lastTs = e.opened_ts; }
       byWallet.set(who, w);
@@ -88,6 +97,7 @@ async function findFollowers(rpc, chain, store, wallet, { opens = 30, windowSec 
     .map((w) => ({
       address: w.address, hits: w.hits, share: w.hits / entries.length,
       medianDelaySec: median(w.delays), minDelaySec: Math.min(...w.delays), pools: w.pools.size, lastTs: w.lastTs,
+      follows: w.follows.map((x) => ({ ...x, symbol0: symbolOf(x.token0), symbol1: symbolOf(x.token1) })),
     }))
     // Once is chance (a busy pool); follow-the-leader shows up again and again.
     .sort((a, b) => b.hits - a.hits || a.medianDelaySec - b.medianDelaySec)
