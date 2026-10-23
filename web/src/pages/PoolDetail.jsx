@@ -9,6 +9,8 @@ import PoolHealth from '../components/PoolHealth';
 import PositionHistory from '../components/PositionHistory';
 import WalletPositionHistory from '../components/WalletPositionHistory';
 import { useEffect, useState } from 'react';
+import { Button } from '@heroui/react';
+import { PlusCircle } from 'lucide-react';
 import { usePoll } from '../hooks';
 import { useMarket } from '../liveCandles';
 import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, TradeLinks, DataLinks, DataTable, CopyBtn } from '../components/ui';
@@ -170,6 +172,13 @@ export default function PoolDetail({ param }) {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {/* Opens this pool on the manual LP page; only the amount and range are left to fill in.
+                Manual LP needs a known quote asset (src/manual.js), so a pair without one stays disabled. */}
+            <span title={quote ? undefined : t('Pasangannya bukan aset kuotasi yang dikenal (USDG/ETH).')}>
+              <Button size="sm" isDisabled={!quote} onPress={() => { location.hash = `manual-lp/${ref}`; }}>
+                <PlusCircle className="size-4" />{t('Buka LP')}
+              </Button>
+            </span>
             <DataLinks pool={ref} dexUrl={pair?.url} />
             <TradeLinks token={pool.baseToken} pool={ref} />
           </div>
