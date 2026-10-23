@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { rulesFor, DEFAULTS, validateRules, previewEntry } = require('./policy');
 const { scoutWallet } = require('./scout');
+const { findFollowers } = require('./followers');
 const logbuf = require('./logbuf');
 const progress = require('./progress');
 const { WalletResearch, summarize } = require('./wallet');
@@ -246,6 +247,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     };
   }));
   const scoutJobs = new Map();
+  const followerJobs = new Map();
   const poolScanJobs = new Map();
   // Hot pools page: on-chain resolution of each listed pool (poolRef -> { at, d }); a pool's key
   // and fee never change, so 10 minutes only bounds how stale its "empty" flag can be.
@@ -2120,6 +2122,36 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       ).then((r) => { job.result = r; job.status = 'selesai'; })
         .catch((e) => { job.error = e.message; job.status = 'gagal'; });
       return { ok: true, status: 'jalan' };
+    },
+    // Followers of a target: wallets that keep entering the same pool seconds after it does.
+    // Reads the target's stored research, so the wallet must have been scanned first.
+    'POST /api/targets/followers': async (req) => {
+      const b = await readBody(req);
+      const addr = canon(b.address || '');
+      if (!isAddr(addr)) return { error: 'alamat tidak valid' };
+      if (SOL) return { error: 'scan pengikut belum tersedia untuk Solana' };
+      if (followerJobs.get(addr)?.status === 'jalan') return { ok: true, status: 'jalan' };
+      if (!store.get('SELECT 1 FROM wpositions WHERE chain=? AND wallet=? LIMIT 1', chain.network, addr)) {
+        return { error: 'riset wallet ini belum ada — scan kinerja LP-nya dulu' };
+      }
+      const job = { status: 'jalan', progress: 0, startedAt: Date.now(), result: null, error: null };
+      followerJobs.set(addr, job);
+      const opens = Math.min(100, Math.max(5, Number(b.opens) || 30));
+      const windowSec = Math.min(900, Math.max(5, Number(b.windowSec) || 120));
+      findFollowers(rpc, chain, store, addr, { opens, windowSec, onProgress: (p) => { job.progress = Math.round((p.scanned / p.total) * 100); } })
+        .then((r) => {
+          const targets = new Set(store.all('SELECT address FROM targets WHERE chain=?', chain.network).map((x) => x.address));
+          const me = engine.exec?.address?.()?.toLowerCase();
+          for (const f of r.followers) { f.isTarget = targets.has(f.address); f.isUs = f.address === me; }
+          job.result = r; job.status = 'selesai'; job.finishedAt = Date.now();
+        })
+        .catch((e) => { job.error = e.message; job.status = 'gagal'; job.finishedAt = Date.now(); });
+      return { ok: true, status: 'jalan' };
+    },
+    'GET /api/targets/followers': (req, url) => {
+      const j = followerJobs.get(canon(url.searchParams.get('address') || ''));
+      if (!j) return { status: 'kosong' };
+      return { status: j.status, progress: j.progress, error: j.error, result: j.result, finishedAt: j.finishedAt || null };
     },
     'GET /api/scout': (req, url) => {
       const addr = canon(url.searchParams.get('address') || '');

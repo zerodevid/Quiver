@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, Card, Chip, Switch, toast } from '@heroui/react';
-import { Trash2, SlidersHorizontal, Plus, ChevronRight, ArrowLeft, Copy, Pencil, Check as CheckIcon, X } from 'lucide-react';
+import { Trash2, SlidersHorizontal, Plus, ChevronRight, ArrowLeft, Copy, Pencil, Check as CheckIcon, X, Radar } from 'lucide-react';
 import { usePoll } from '../hooks';
-import { post } from '../api';
-import { PageHeader, Panel, Text, Empty, Loading, Stat, WalletLinks, ask, CopyBtn } from '../components/ui';
+import { get, post } from '../api';
+import { PageHeader, Panel, Text, Empty, Loading, Stat, WalletLinks, ask, CopyBtn, DataTable } from '../components/ui';
 import RulesForm from '../components/RulesForm';
 import RulesSimulation from '../components/RulesSimulation';
 import WalletDetail from '../components/WalletDetail';
@@ -267,6 +267,91 @@ function EditableLabel({ tg, onChanged }) {
 }
 
 // Detail page of a single target: copy status + full wallet research (same as the Wallet menu).
+// Wallets that keep entering the same pool a few seconds after this target: copy bots like us,
+// or a rug crew trailing its bait wallet. Built from the target's stored LP research.
+function Followers({ tg, onChanged }) {
+  const { t } = useI18n();
+  const [job, setJob] = useState(null);
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+  const poll = async () => {
+    for (;;) {
+      const d = await get('/api/targets/followers?address=' + tg.address);
+      if (!alive.current) return;
+      setJob(d);
+      if (d.status !== 'jalan') return;
+      await new Promise((ok) => setTimeout(ok, 1500));
+    }
+  };
+  // A finished scan is kept on the server; show it again when the page is reopened.
+  useEffect(() => { poll().catch(() => {}); }, [tg.address]);
+  const scan = async () => {
+    const r = await post('/api/targets/followers', { address: tg.address });
+    if (r.error) { toast.danger(t(r.error)); return; }
+    setJob({ status: 'jalan', progress: 0 });
+    poll().catch((e) => toast.danger(e.message));
+  };
+  const addTarget = async (addr) => {
+    const r = await post('/api/targets', { address: addr, label: null, enabled: false });
+    if (r.error) { toast.danger(t(r.error)); return; }
+    toast.success(t('Ditambahkan ke target (dimatikan)'));
+    onChanged(); poll().catch(() => {});
+  };
+  const res = job?.result;
+  const running = job?.status === 'jalan';
+  const secs = (v) => (v == null ? '—' : t('{v} dtk', { v: v < 10 ? v.toFixed(1) : Math.round(v) }));
+  return (
+    <Panel className="mb-4" title="Pengikut wallet ini"
+      desc="Wallet lain yang masuk ke pool yang sama beberapa detik setelah target ini membuka LP"
+      action={(
+        <Button size="sm" variant="outline" isPending={running} onPress={scan}>
+          <Radar className="size-4" />{running ? t('Memindai… {p}%', { p: job.progress || 0 }) : t(res ? 'Scan ulang' : 'Scan pengikut')}
+        </Button>
+      )}
+      bodyClass={res?.followers?.length ? 'p-0' : ''}>
+      {job?.status === 'gagal' && <p className="text-sm text-danger">{job.error}</p>}
+      {!res && job?.status !== 'gagal' && !running && (
+        <p className="text-sm text-muted">{t('Belum dipindai. Scan membaca {n} pembukaan LP terakhir target ini dan mencari wallet yang ikut masuk dalam {s} detik.', { n: 30, s: 120 })}</p>
+      )}
+      {res && !res.followers.length && (
+        <p className="text-sm text-muted">{t('Tidak ada wallet yang ikut masuk setelah {n} pembukaan LP terakhir.', { n: res.entries })}</p>
+      )}
+      {res?.followers?.length > 0 && (
+        <>
+          <p className="px-4 pt-3 text-xs text-muted">
+            {t('{n} pembukaan LP terakhir, jendela {s} detik', { n: res.entries, s: res.windowSec })}
+            {res.oldestTs ? ` · ${t('sejak {w}', { w: ago(res.oldestTs) })}` : ''}
+            {res.failed ? ` · ${t('{n} gagal dibaca', { n: res.failed })}` : ''}
+            {job.finishedAt ? ` · ${t('dipindai {w}', { w: ago(job.finishedAt) })}` : ''}
+          </p>
+          <DataTable label="Pengikut" rowKey={(r) => r.address} rows={res.followers} pageSize={10}
+            defaultSort={{ column: 'hits', direction: 'descending' }}
+            columns={[
+              { key: 'address', label: 'Wallet', render: (r) => (
+                <span className="inline-flex items-center gap-1.5">
+                  <a href={(r.isTarget ? '#targets/' : '#wallet/') + r.address} className="mono hover:underline">{short(r.address)}</a>
+                  <CopyBtn value={r.address} />
+                  {r.isUs && <Chip size="sm" variant="soft" color="accent">{t('kita')}</Chip>}
+                  {r.isTarget && !r.isUs && <Chip size="sm">{t('target')}</Chip>}
+                </span>
+              ) },
+              { key: 'hits', label: 'Ikut masuk', align: 'end', render: (r) => (
+                <span className={r.share >= 0.3 ? 'font-semibold text-warning' : ''}>{r.hits}/{res.entries}</span>
+              ) },
+              { key: 'medianDelaySec', label: 'Jeda median', align: 'end', render: (r) => secs(r.medianDelaySec) },
+              { key: 'minDelaySec', label: 'Jeda tercepat', align: 'end', render: (r) => secs(r.minDelaySec) },
+              { key: 'pools', label: 'Pool', align: 'end' },
+              { key: 'lastTs', label: 'Terakhir ikut', align: 'end', render: (r) => (r.lastTs ? ago(r.lastTs) : '—') },
+              { key: 'act', label: '', sortable: false, render: (r) => (r.isTarget || r.isUs ? null : (
+                <Button size="sm" variant="ghost" onPress={() => addTarget(r.address)}><Plus className="size-3.5" />{t('Jadikan target')}</Button>
+              )) },
+            ]} />
+        </>
+      )}
+    </Panel>
+  );
+}
+
 function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
   const { t } = useI18n();
   const tg = targets.find((x) => x.address === canonAddr(address));
@@ -324,6 +409,8 @@ function TargetDetail({ address, targets, reload, enabledOf, onToggle }) {
 
       {/* what they hold outside LP positions: cash, closed proceeds not yet sold, hoarded tokens */}
       <WalletHoldings address={tg.address} />
+
+      {!isSolana() && <Followers tg={tg} onChanged={reload} />}
 
       <h2 className="mb-3 mt-6 text-base font-semibold tracking-tight">{t('Kinerja LP wallet ini')}</h2>
       <WalletDetail address={tg.address} showTargetButton={false} onChanged={reload} />
