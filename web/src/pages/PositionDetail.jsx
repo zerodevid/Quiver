@@ -101,7 +101,10 @@ export const writeSrc = (v) => { try { localStorage.setItem(SRC_KEY, v); } catch
 // position being highlighted (the entry/exit/BEP lines remain only for that one).
 // `history` (optional): closed positions of the pool for the chart's "LP history" toggle
 // (lpHistoryOf, in the pool's quote asset); `showHistory` / `onShowHistory` drive it.
-export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = null, ranges = null, onRangeClick = null, history = null, showHistory = false, onShowHistory = null }) {
+// `pick` (optional, manual LP): { range: { lo, hi } | null, onDrag(lo, hi) } — the range being
+// chosen, in the pool's quote asset like everything else here; drawn and dragged in the chart's
+// unit (USD on GMGN candles) and handed back in the quote asset.
+export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = null, ranges = null, onRangeClick = null, history = null, showHistory = false, onShowHistory = null, pick = null }) {
   const { t } = useI18n();
   const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
   const hasRange = p.tick_lower != null && p.tick_upper != null;
@@ -149,6 +152,8 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
   const kEntry = rateAt(p.opened_ts, pEntry), kExit = rateAt(p.closed_ts, pExit);
   // a closed range is drawn at its entry rate; an open one is where it stands today
   const kRange = closed ? kEntry : k;
+  const picked = pick?.range && k ? { lo: pick.range.lo * k, hi: pick.range.hi * k } : null;
+  const pickDrag = pick?.onDrag && k ? (a, b) => pick.onDrag(a / k, b / k) : null;
   const ranged = bands.map((b) => (b.to && b.id === p.id && kEntry ? { ...b, lo: (b.lo / k) * kEntry, hi: (b.hi / k) * kEntry } : b));
   return (
     <div>
@@ -159,7 +164,8 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
       </p>}
       <AdvancedChart key={p.pool_ref || p.baseToken || 'pool'}
         candles={candles} tf={tf} onTfChange={onTf} loading={pending} error={chartError} onRetry={onRetry} series={gmgn ? 'gmgn' : 'gt'}
-        quote={quote} title={p.symbol0 && p.symbol1 ? `${p.symbol0}/${p.symbol1}` : null} drawKey={drawKeyOf(p.baseToken, p.pool_ref)} poolRef={p.pool_ref || null} usdRate={gmgn ? 1 : qUsd} supply={supplyOf(m?.pair, p.baseToken)} range={range && kRange ? { lo: range.lo * kRange, hi: range.hi * kRange } : null}
+        quote={quote} title={p.symbol0 && p.symbol1 ? `${p.symbol0}/${p.symbol1}` : null} drawKey={drawKeyOf(p.baseToken, p.pool_ref)} poolRef={p.pool_ref || null} usdRate={gmgn ? 1 : qUsd} supply={supplyOf(m?.pair, p.baseToken)} range={pick ? picked : range && kRange ? { lo: range.lo * kRange, hi: range.hi * kRange } : null}
+        pickRange={!!pick} onRangeDrag={pickDrag}
         ranges={ranged.length ? ranged : null}
         entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: pEntry != null && kEntry ? pEntry * kEntry : null } : null}
         exit={closed ? { t: p.closed_ts, p: pExit != null && kExit ? pExit * kExit : null } : null}
@@ -184,7 +190,8 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
         </div>
       )}
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-        {bands.length > 1
+        {pick ? picked && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang yang akan di-LP')} · {t('geser garis atau pita untuk mengubahnya')}{gmgn && <span className="num">· ≈ {usdPrice(picked.lo)} – {usdPrice(picked.hi)}</span>}</span>
+        : bands.length > 1
           ? <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('{n} rentang aktif', { n: bands.length })}</span>
           : range && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang posisi')}</span>}
         {showHistory && hist?.length > 0 && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-[#26a69a]/60 bg-[#ef5350]/15" />{t('riwayat LP ({n})', { n: hist.length })}</span>}

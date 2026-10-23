@@ -3,17 +3,14 @@ import { Button, Card, Spinner, toast } from '@heroui/react';
 import { Search, Check, TriangleAlert, Anchor, ArrowRight } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
-import { usePoll } from '../hooks';
 import { BAND_COLORS } from '../components/CandleChart';
-import AdvancedChart from '../components/AdvancedChart';
 import { useLadder, LadderStep, LadderPreview, LAYER_CHOICES } from './ManualLadder';
 import { useCreatePool, CreatePoolStep } from './ManualCreate';
 import { PageHeader, Notice, PriceRange, Empty, KV, Segmented, TradeLinks } from '../components/ui';
-import { orientCandles, SECS, LiveBadge, fetchOlderCandles, DexInfoEmbed } from './PositionDetail';
-import { drawKeyOf } from '../chartSync';
-import { useLivePrice, useLiveCandles } from '../liveCandles';
+import { PriceChart, SOURCES, readSrc, writeSrc, DexInfoEmbed } from './PositionDetail';
+import { useLivePrice, useMarket } from '../liveCandles';
 import TokenIcon, { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
-import { usd, kUsd, num, ago, price, tickPrice, locale } from '../fmt';
+import { usd, kUsd, num, ago, price, tickPrice, sqrtPrice, locale } from '../fmt';
 import { useI18n } from '../i18n';
 import { isSolana, isAddr, canonAddr, chainInfo } from '../chain';
 
@@ -340,16 +337,16 @@ function AutoSwap({ p }) {
 function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag, bands = null }) {
   const { t } = useI18n();
   const [tf, setTf] = useState('1h');
-  // the first answer, then each timeframe switch: the old candles stay under the chart's veil meanwhile
-  const [shownTf, setShownTf] = useState(null);
+  // the same candle source as the pool / position pages (remembered per browser): GMGN shows USD,
+  // GeckoTerminal the pool's own price — both pages read the same prices
+  const [src, setSrcState] = useState(readSrc);
+  const setSrc = (v) => { setSrcState(v); writeSrc(v); };
   const baseToken = pool.quoteSide === 0 ? pool.token1 : pool.token0;
-  const { data: m, fresh } = usePoll(`/api/market?pool=${pool.poolRef}&tf=${tf}&limit=240&pair=0&token=${baseToken || ''}`, 30000);
-  useEffect(() => { if (fresh && m) setShownTf(tf); }, [fresh, m, tf]);
+  const { data: m, pending, reload } = useMarket(`/api/market?pool=${pool.poolRef}&tf=${tf}&limit=240&token=${baseToken || ''}${src === 'gmgn' ? '&src=gmgn' : ''}`, 30000, `${tf}:${src}`);
   const live = useLivePrice(pool.poolRef, pool);
-  const acuan = live?.price ?? currentPrice;
-  const oriented = useMemo(() => orientCandles(m?.ohlcv, baseToken, acuan), [m, baseToken, acuan]);
-  const candles = useLiveCandles(oriented, SECS[tf], live, `${pool.poolRef}:${tf}`);
-  const nowPrice = acuan ?? candles[candles.length - 1]?.c ?? null;
+  // the pool price the percentages are taken from — in the pool's quote asset, whatever the chart shows
+  const nowPrice = live?.price ?? currentPrice
+    ?? (pool.curSqrt ? sqrtPrice(pool.curSqrt, pool.dec0, pool.dec1, pool.quoteSide) : pool.curTick != null ? tickPrice(pool.curTick, pool.dec0, pool.dec1, pool.quoteSide) : null);
   // No quote asset: token0 priced in token1, as everywhere else in the dashboard.
   const quote = pool.quoteSide === 0 ? pool.symbol0 : pool.symbol1;
 
@@ -368,16 +365,17 @@ function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag
     ? bands.map((b, i) => ({ id: i, lo: nowPrice * b.lo, hi: nowPrice * b.hi, color: BAND_COLORS[i % 2], label: b.usd != null ? `L${i + 1} · ${usd(b.usd)}` : `L${i + 1}`, selected: true }))
     : null), [bands, nowPrice]);
 
-  // Dragged bounds (prices) -> percent change from the price the band is drawn against.
+  // Dragged bounds (quote prices) -> percent change from the price the band is drawn against.
   const drag = (a, b) => {
     if (!(nowPrice > 0)) return;
     const r2 = (p) => Math.round((p / nowPrice - 1) * 10000) / 100;
     onDrag(r2(a), r2(b));
   };
-  const firstClose = candles[0]?.c;
-  const loadMore = useCallback((before) => fetchOlderCandles({ pool: pool.poolRef, tf, token: baseToken, before, ref: firstClose }),
-    [pool.poolRef, tf, baseToken, firstClose]);
-  const chartError = m?.ohlcv?.error || (m && !candles.length ? 'GeckoTerminal belum punya riwayat harga untuk pool ini.' : null);
+  // the pool as the pool page's chart takes it (no position: tick_lower null)
+  const chartP = useMemo(() => ({
+    pool_ref: pool.poolRef, dec0: pool.dec0, dec1: pool.dec1, quoteSide: pool.quoteSide, symbol0: pool.symbol0, symbol1: pool.symbol1,
+    baseToken, curSqrt: pool.curSqrt, curTick: pool.curTick, tick_lower: null, tick_upper: null, status: 'open',
+  }), [pool, baseToken]);
 
   return (
     <div className="rounded-md border border-border p-3">
@@ -386,22 +384,15 @@ function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag
           {range ? <>{t('Rentang')} <span className="num text-foreground">{price(range.lo)} – {price(range.hi)}</span>{quote ? ` ${quote}` : ''}</>
             : full ? t('Seluruh rentang') : t('Harga pool')}
         </span>
+        {(m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
       </div>
       {!m ? (
         <div className="flex h-[340px] items-center justify-center"><Spinner /></div>
       ) : (
         <>
-          <AdvancedChart key={pool.poolRef} candles={candles} tf={tf} onTfChange={setTf} loading={shownTf !== tf} error={chartError} series="gt"
-            quote={quote} title={pool.symbol0 && pool.symbol1 ? `${pool.symbol0}/${pool.symbol1}` : null} drawKey={drawKeyOf(baseToken, pool.poolRef)} poolRef={pool.poolRef}
-            range={range} ranges={ranges} now={nowPrice} pickRange onRangeDrag={drag} onLoadMore={loadMore} height={340} />
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-            {range && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang yang akan di-LP')} · {t('geser garis atau pita untuk mengubahnya')}</span>}
-            {full && <span>{t('Seluruh rentang — tidak ada batas untuk digambar.')}</span>}
-            <span className="ml-auto inline-flex items-center gap-3">
-              {live && <LiveBadge />}
-              {t('lilin {tf} · GeckoTerminal', { tf })}
-            </span>
-          </div>
+          <PriceChart p={chartP} m={m} tf={tf} pending={pending} onTf={setTf} onRetry={reload} ranges={ranges}
+            pick={{ range, onDrag: drag }} />
+          {full && <p className="mt-1 text-xs text-muted">{t('Seluruh rentang — tidak ada batas untuk digambar.')}</p>}
         </>
       )}
     </div>
