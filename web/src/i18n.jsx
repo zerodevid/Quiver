@@ -919,6 +919,7 @@ const EN = {
   'Jeda': 'Pause',
   'Lanjutkan': 'Resume',
   'Jeda penyalinan?': 'Pause copying?',
+  'Masuk': 'Entry',
   'Berhenti saat dijeda': 'Stops while paused',
   'Tetap berjalan': 'Keeps running',
   'Posisi baru dari target tidak disalin.': "The target's new positions are not copied.",
