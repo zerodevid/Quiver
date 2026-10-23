@@ -42,8 +42,9 @@ registerOverlay({
     const [c1, c2] = coordinates;
     if (!c1 || !c2) return [];
     const y1 = Math.min(c1.y, c2.y), y2 = Math.max(c1.y, c2.y);
-    const { fill, line, open, dim, label } = overlay.extendData || {};
-    const x1 = Math.max(0, Math.min(c1.x, c2.x));
+    const { fill, line, open, dim, label, whole } = overlay.extendData || {};
+    // whole: the range being chosen spans the pane, whatever the candles cover
+    const x1 = whole ? 0 : Math.max(0, Math.min(c1.x, c2.x));
     const x2 = open ? bounding.width : Math.min(bounding.width, Math.max(c1.x, c2.x));
     if (x2 <= x1) return [];
     const style = dim ? 'dashed' : 'solid';
@@ -213,7 +214,16 @@ registerYAxis({
   realValueToDisplayValue: (r) => 10 ** r,
   displayValueToRealValue: log10,
   createRange: ({ chart, defaultRange }) => {
-    const r = robustRange(chart, defaultRange) || defaultRange;
+    // an on-price indicator at 0 (or below) must not reach the log: log10 would put the bottom of
+    // the axis above its top and turn the chart upside down — the candles' own low is used instead
+    let r = robustRange(chart, defaultRange) || defaultRange;
+    if (!(r.from > 0) || !(r.to > r.from)) {
+      const list = chart.getDataList(), vr = chart.getVisibleRange();
+      let lo = Infinity, hi = 0;
+      for (let i = Math.max(0, vr.from); i < Math.min(list.length, vr.to); i++) { lo = Math.min(lo, list[i].low); hi = Math.max(hi, list[i].high); }
+      const from = r.from > 0 ? r.from : lo, to = r.to > from ? r.to : hi;
+      r = from > 0 && to > from ? { from, to } : { from: 1e-9, to: 1 };
+    }
     const realFrom = log10(r.from), realTo = log10(r.to);
     return { from: r.from, to: r.to, range: r.to - r.from, realFrom, realTo, realRange: realTo - realFrom, displayFrom: r.from, displayTo: r.to, displayRange: r.to - r.from };
   },
@@ -372,6 +382,38 @@ const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
 // clear of candles (a negative zLevel would hide it behind the pane once another on-price
 // indicator is on). It has no figures, so it never stretches the price axis. Picked as 'VOL'.
 const VOL_SHARE = 0.2;
+
+// AVP (volume-weighted average price since the first candle) from the candles we have: their
+// volume is in USD and there is no turnover, so klinecharts' own AVP (turnover ÷ volume) read 0,
+// a line at zero that stretched the price axis. Here: Σ USD volume ÷ Σ (USD volume ÷ close).
+registerIndicator({
+  name: 'AVP', shortName: 'AVP', series: 'price', precision: 2,
+  figures: [{ key: 'avp', title: 'AVP: ', type: 'line' }],
+  calc: (list) => {
+    let usdSum = 0, amountSum = 0;
+    return list.map((d) => {
+      const v = d.volume || 0;
+      if (v > 0 && d.close > 0) { usdSum += v; amountSum += v / d.close; }
+      return amountSum > 0 ? { avp: usdSum / amountSum } : {};
+    });
+  },
+});
+
+// Holds the range being chosen (manual LP) inside the price axis: two invisible figures at its
+// bounds, a little padded, on every bar — klinecharts sizes the axis by indicator figures, not by
+// overlays. calcParams = [lo, hi] in the chart's unit (a change of calcParams recalculates).
+registerIndicator({
+  name: 'rangeExtent', series: 'price', figures: [{ key: 'hi' }, { key: 'lo' }],
+  createTooltipDataSource: () => ({ name: '', calcParamsText: '', features: [], legends: [] }),
+  calc: (list, indicator) => {
+    const [lo, hi] = indicator.calcParams || [];
+    if (!(lo > 0 && hi > 0)) return list.map(() => ({}));
+    const f = Math.max(1.03, (hi / lo) ** 0.12);
+    return list.map(() => ({ hi: hi * f, lo: lo / f }));
+  },
+  draw: () => true,
+});
+
 registerIndicator({
   // series 'price': klinecharts sizes the price axis by the lowest precision on the pane, and the
   // default 4 decimals turned a flat 0.000245 token into a line on an axis 0.001 wide
@@ -681,6 +723,9 @@ function Legend({ bar, prev, label, tfLabel, mc, t, wide }) {
  *            `onShowHistory(bool)` gets the top-bar toggle (no handler = no toggle); hovering a box
  *            shows its details, clicking it calls `onHistoryClick(id)`. Optional per item: fee, cost (USD),
  *            loEnd / hiEnd (the range at the close, when the chart's unit drifts from the pool's)
+ * pickRange: the range is being chosen (manual LP): both bounds stay inside the price axis, get an
+ *            axis label, and with onRangeDrag(lo, hi) can be dragged — a bound by its line, the
+ *            whole band by its grip at the band's top-left corner
  * onLoadMore: (beforeMs) => Promise<candles> — older candles (same shape and unit as `candles`)
  *            ending before that time; fetched when the user scrolls or zooms out past the
  *            oldest candle, and kept until the timeframe / source changes
@@ -690,6 +735,7 @@ export default function AdvancedChart({
   quote, drawKey = null, poolRef = null, usdRate = null, supply = null, title = null, height = 420,
   range = null, ranges = null, entry = null, exit = null, now = null, bep = null,
   history = null, showHistory = false, onShowHistory = null, onHistoryClick = null, onLoadMore = null,
+  pickRange = false, onRangeDrag = null,
 }) {
   const { t } = useI18n();
   const wrap = useRef(null);
@@ -1008,6 +1054,7 @@ export default function AdvancedChart({
     const inside = (b, x, y) => b && x >= b.left && x <= b.left + b.width && y >= b.top && y <= b.top + b.height;
     const onDown = (e) => {
       const chart = chartRef.current?.chart;
+      if (e.button === 0 && grabRef.current?.(e)) return;   // a bound of the range being chosen
       if (!chart || e.button !== 0 || e.pointerType === 'touch' || pendingRef.current) return;
       const rect = el.getBoundingClientRect();
       const x = e.clientX - rect.left, y = e.clientY - rect.top;
@@ -1154,9 +1201,10 @@ export default function AdvancedChart({
     const specs = [];
     // Many bands (all open positions in the pool) or a single band. The selected one
     // is drawn last so it sits above the other bands.
+    const picked = pickRange && range?.lo > 0 && range?.hi > 0;
     const bands = bandList.length
       ? [...bandList].sort((a, b) => (a.selected ? 1 : 0) - (b.selected ? 1 : 0))
-      : range?.lo > 0 && range?.hi > 0
+      : range?.lo > 0 && range?.hi > 0 && !picked
         ? [{ lo: range.lo, hi: range.hi, color: pal.accent, selected: true, from: entry?.t, to: exit?.t }]
         : [];
     // Without a highlighted position, all bands are drawn solid — none "loses".
@@ -1178,6 +1226,16 @@ export default function AdvancedChart({
         },
       });
     }
+    // the range being chosen: on top of any ladder layers, across the whole pane, its grip tag
+    // at the top-left corner (dragging it moves the band), each bound labelled on the axis
+    if (picked) {
+      specs.push({
+        name: 'lpRange', groupId: LP_GROUP, lock: true,
+        points: [{ timestamp: first, value: range.hi * sc }, { timestamp: anchor, value: range.lo * sc }],
+        extendData: { fill: withAlpha(pal.accent, pal.dark ? 0.14 : 0.1), line: withAlpha(pal.accent, 0.75), open: true, whole: true,
+          label: onRangeDrag ? `⇕ ${t('rentang')}` : t('rentang') },
+      });
+    }
     const priceLine = (p, color, label) => specs.push({
       name: 'lpLine', groupId: LP_GROUP, lock: true,
       points: [{ timestamp: anchor, value: p * sc }], extendData: { color, label },
@@ -1186,13 +1244,14 @@ export default function AdvancedChart({
     if (entry?.t >= first) specs.push({ name: 'verticalStraightLine', groupId: LP_GROUP, lock: true, points: [{ timestamp: entry.t, value: (entry.p || 0) * sc }], styles: { line: { color: pal.accent, style: 'dashed', size: 1 } } });
     if (exit?.p > 0) priceLine(exit.p, pal.warning, t('Keluar'));
     if (bep > 0) priceLine(bep, pal.warning, 'BEP');
+    if (picked) { priceLine(range.hi, pal.accent, t('batas atas')); priceLine(range.lo, pal.accent, t('batas bawah')); }
     // the live price is the last candle's close (its axis label shows it): a line only when
     // the candles lag behind it
     const lastClose = data[data.length - 1]?.close;
     if (now > 0 && !(lastClose > 0 && Math.abs(now * sc / lastClose - 1) < 0.01)) priceLine(now, withAlpha(pal.fg, 0.55), t('Sekarang'));
     if (specs.length) r.chart.createOverlay(specs);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, loading, tick, first, anchor, bandKey, range?.lo, range?.hi, entry?.p, entry?.t, exit?.p, exit?.t, now, bep, pal, sc]);
+  }, [ready, loading, tick, first, anchor, bandKey, range?.lo, range?.hi, entry?.p, entry?.t, exit?.p, exit?.t, now, bep, pal, sc, pickRange, !!onRangeDrag]);
 
   // LP history: one box per closed position, rebuilt when the list, the toggle or the series changes.
   const histList = useMemo(() => (history || []).filter((h) => h.lo > 0 && h.hi > 0 && h.to > 0), [history]);
@@ -1248,6 +1307,102 @@ export default function AdvancedChart({
     const done = histList.filter((h) => h.pnl != null);
     return { n: histList.length, wins: done.filter((h) => h.pnl > 0).length, pnl: done.reduce((a, h) => a + h.pnl, 0) };
   }, [histList]);
+
+  // Manual LP: the range being chosen stays inside the price axis. Frozen while a bound is being
+  // dragged, so the axis does not run away under the pointer; caught up on release.
+  const extentRef = useRef(null);
+  const [rangeDragging, setRangeDragging] = useState(false);
+  useEffect(() => {
+    const r = chartRef.current;
+    if (!r || !ready || rangeDragging) return;
+    const want = pickRange && range?.lo > 0 && range?.hi > 0;
+    if (!want) {
+      if (extentRef.current) { r.chart.removeIndicator({ id: extentRef.current }); extentRef.current = null; }
+      return;
+    }
+    const calcParams = [range.lo * sc, range.hi * sc];
+    if (extentRef.current) r.chart.overrideIndicator({ id: extentRef.current, calcParams });
+    else extentRef.current = r.chart.createIndicator({ name: 'rangeExtent', paneId: 'candle_pane', calcParams }, true) || null;
+  }, [ready, pickRange, range?.lo, range?.hi, sc, rangeDragging]);
+
+  // Dragging the range being chosen: within 6px of a bound's line moves that bound, the grip tag
+  // at the band's top-left moves the whole band (its width kept as a ratio). The press is taken
+  // away from klinecharts (mousedown / touchstart), so the chart does not scroll meanwhile.
+  const pickRef = useRef(null);
+  pickRef.current = pickRange && onRangeDrag && range?.lo > 0 && range?.hi > 0 ? { range, cb: onRangeDrag, sc } : null;
+  const grabRef = useRef(null);
+  useEffect(() => {
+    const el = box.current;
+    if (!ready || !el) return undefined;
+    const where = (clientX, clientY) => {
+      const chart = chartRef.current?.chart, pk = pickRef.current;
+      if (!chart || !pk || pendingRef.current) return null;
+      const rect = el.getBoundingClientRect(), main = chart.getSize('candle_pane', 'main');
+      if (!main) return null;
+      const x = clientX - rect.left - main.left, y = clientY - rect.top - main.top;
+      if (x < 0 || x > main.width || y < 0 || y > main.height) return null;
+      const [a, b] = chart.convertToPixel([{ dataIndex: 0, value: pk.range.hi * pk.sc }, { dataIndex: 0, value: pk.range.lo * pk.sc }], { paneId: 'candle_pane' });
+      if (!a || !b) return null;
+      if (Math.abs(y - a.y) <= 6) return { kind: 'hi', chart, main, rect };
+      if (Math.abs(y - b.y) <= 6) return { kind: 'lo', chart, main, rect };
+      if (x <= 90 && y >= a.y && y <= a.y + 20) return { kind: 'band', chart, main, rect };
+      return null;
+    };
+    const valueAt = (g, clientY) => {
+      const [pt] = g.chart.convertFromPixel([{ x: 1, y: clientY - g.rect.top - g.main.top }], { paneId: 'candle_pane' });
+      return pt?.value > 0 ? pt.value / pickRef.current.sc : null;
+    };
+    let swallow = false;
+    const start = (e, clientX, clientY) => {
+      const g = where(clientX, clientY);
+      if (!g) return false;
+      const { lo: lo0, hi: hi0 } = pickRef.current.range;
+      const v0 = valueAt(g, clientY);
+      if (!(v0 > 0)) return false;
+      swallow = true;
+      e.preventDefault(); e.stopPropagation();
+      setRangeDragging(true);
+      let frame = 0, next = null;
+      const move = (cy) => {
+        const v = valueAt(g, cy);
+        if (!(v > 0)) return;
+        if (g.kind === 'hi') next = [lo0, Math.max(v, lo0 * 1.001)];
+        else if (g.kind === 'lo') next = [Math.min(v, hi0 / 1.001), hi0];
+        else next = [lo0 * (v / v0), hi0 * (v / v0)];
+        if (!frame) frame = requestAnimationFrame(() => { frame = 0; if (next) pickRef.current?.cb(next[0], next[1]); });
+      };
+      const onMove = (m) => { m.preventDefault?.(); move(m.touches ? m.touches[0].clientY : m.clientY); };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove, true);
+        window.removeEventListener('pointerup', onUp, true);
+        window.removeEventListener('pointercancel', onUp, true);
+        swallow = false;
+        setRangeDragging(false);
+      };
+      window.addEventListener('pointermove', onMove, true);
+      window.addEventListener('pointerup', onUp, true);
+      window.addEventListener('pointercancel', onUp, true);
+      return true;
+    };
+    grabRef.current = (e) => start(e, e.clientX, e.clientY);
+    // klinecharts listens to mouse / touch events, which follow the pointerdown taken above
+    const stop = (e) => { if (swallow) { e.stopPropagation(); if (e.cancelable && e.type !== 'touchstart') e.preventDefault(); } };
+    // the cursor tells a bound / the grip apart from the chart
+    const hover = (e) => {
+      if (swallow || e.buttons) return;
+      const g = where(e.clientX, e.clientY);
+      el.dataset.grab = g ? (g.kind === 'band' ? 'move' : 'ns') : '';
+    };
+    el.addEventListener('mousedown', stop, true);
+    el.addEventListener('touchstart', stop, true);
+    el.addEventListener('pointermove', hover);
+    return () => {
+      grabRef.current = null;
+      el.removeEventListener('mousedown', stop, true);
+      el.removeEventListener('touchstart', stop, true);
+      el.removeEventListener('pointermove', hover);
+    };
+  }, [ready]);
 
   // ---- toolbar actions ----
 
@@ -1467,7 +1622,8 @@ export default function AdvancedChart({
             className={`${railBtn} hover:!bg-danger/10 hover:!text-danger`}><Trash2 className={icon} /></button>
         </div>
         <div className={`relative flex min-w-0 flex-1 flex-col ${full ? 'min-h-0' : ''}`}>
-          <div ref={box} onPointerLeave={() => setHover(null)} style={full ? undefined : { height }} className={`w-full ${full ? 'min-h-0 flex-1' : ''}`} />
+          <div ref={box} onPointerLeave={() => setHover(null)} style={full ? undefined : { height }}
+            className={`w-full [&[data-grab=move]_*]:!cursor-move [&[data-grab=ns]_*]:!cursor-ns-resize ${pickRange && onRangeDrag ? 'touch-none' : ''} ${full ? 'min-h-0 flex-1' : ''}`} />
           {/* brand watermark behind the legend, like GMGN's */}
           <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center pr-16 font-black tracking-tight text-foreground/[0.045] select-none"
             style={{ fontSize: Math.max(28, Math.min(110, (width || 600) * 0.11)) }}>QUIVER</div>
