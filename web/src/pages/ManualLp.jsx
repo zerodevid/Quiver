@@ -4,11 +4,13 @@ import { Search, Check, TriangleAlert, Anchor, ArrowRight } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
 import { usePoll } from '../hooks';
-import CandleChart, { BAND_COLORS } from '../components/CandleChart';
+import { BAND_COLORS } from '../components/CandleChart';
+import AdvancedChart from '../components/AdvancedChart';
 import { useLadder, LadderStep, LadderPreview, LAYER_CHOICES } from './ManualLadder';
 import { useCreatePool, CreatePoolStep } from './ManualCreate';
-import { PageHeader, Notice, PriceRange, Empty, KV, Segmented } from '../components/ui';
-import { orientCandles, TFS, SECS, LiveBadge } from './PositionDetail';
+import { PageHeader, Notice, PriceRange, Empty, KV, Segmented, TradeLinks } from '../components/ui';
+import { orientCandles, SECS, LiveBadge, fetchOlderCandles } from './PositionDetail';
+import { drawKeyOf } from '../chartSync';
 import { useLivePrice, useLiveCandles } from '../liveCandles';
 import TokenIcon, { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, kUsd, num, ago, price, tickPrice, locale } from '../fmt';
@@ -338,8 +340,11 @@ function AutoSwap({ p }) {
 function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag, bands = null }) {
   const { t } = useI18n();
   const [tf, setTf] = useState('1h');
+  // the first answer, then each timeframe switch: the old candles stay under the chart's veil meanwhile
+  const [shownTf, setShownTf] = useState(null);
   const baseToken = pool.quoteSide === 0 ? pool.token1 : pool.token0;
-  const { data: m } = usePoll(`/api/market?pool=${pool.poolRef}&tf=${tf}&limit=240&pair=0&token=${baseToken || ''}`, 30000);
+  const { data: m, fresh } = usePoll(`/api/market?pool=${pool.poolRef}&tf=${tf}&limit=240&pair=0&token=${baseToken || ''}`, 30000);
+  useEffect(() => { if (fresh && m) setShownTf(tf); }, [fresh, m, tf]);
   const live = useLivePrice(pool.poolRef, pool);
   const acuan = live?.price ?? currentPrice;
   const oriented = useMemo(() => orientCandles(m?.ohlcv, baseToken, acuan), [m, baseToken, acuan]);
@@ -369,6 +374,10 @@ function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag
     const r2 = (p) => Math.round((p / nowPrice - 1) * 10000) / 100;
     onDrag(r2(a), r2(b));
   };
+  const firstClose = candles[0]?.c;
+  const loadMore = useCallback((before) => fetchOlderCandles({ pool: pool.poolRef, tf, token: baseToken, before, ref: firstClose }),
+    [pool.poolRef, tf, baseToken, firstClose]);
+  const chartError = m?.ohlcv?.error || (m && !candles.length ? 'GeckoTerminal belum punya riwayat harga untuk pool ini.' : null);
 
   return (
     <div className="rounded-md border border-border p-3">
@@ -377,17 +386,14 @@ function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag
           {range ? <>{t('Rentang')} <span className="num text-foreground">{price(range.lo)} – {price(range.hi)}</span>{quote ? ` ${quote}` : ''}</>
             : full ? t('Seluruh rentang') : t('Harga pool')}
         </span>
-        <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />
       </div>
       {!m ? (
-        <div className="flex h-[300px] items-center justify-center"><Spinner /></div>
-      ) : m.ohlcv?.error ? (
-        <Empty title="Grafik harga tidak tersedia" sub={m.ohlcv.error} />
-      ) : !candles.length ? (
-        <Empty title="Belum ada lilin harga" sub="GeckoTerminal belum punya riwayat harga untuk pool ini." />
+        <div className="flex h-[340px] items-center justify-center"><Spinner /></div>
       ) : (
         <>
-          <CandleChart key={pool.poolRef} candles={candles} tf={tf} quote={quote} range={range} ranges={ranges} now={nowPrice} pickRange onRangeDrag={drag} height={300} />
+          <AdvancedChart key={pool.poolRef} candles={candles} tf={tf} onTfChange={setTf} loading={shownTf !== tf} error={chartError} series="gt"
+            quote={quote} title={pool.symbol0 && pool.symbol1 ? `${pool.symbol0}/${pool.symbol1}` : null} drawKey={drawKeyOf(baseToken, pool.poolRef)} poolRef={pool.poolRef}
+            range={range} ranges={ranges} now={nowPrice} pickRange onRangeDrag={drag} onLoadMore={loadMore} height={340} />
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
             {range && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang yang akan di-LP')} · {t('geser garis atau pita untuk mengubahnya')}</span>}
             {full && <span>{t('Seluruh rentang — tidak ada batas untuk digambar.')}</span>}
@@ -733,6 +739,7 @@ export default function ManualLp({ param }) {
   const pNow = p && plan._ref === planRef ? p : null;
   const currentPrice = pNow ? tickPrice(pNow.curTick, pNow.dec0, pNow.dec1, pNow.quoteSide) : null;
   const symQ = pNow ? (pNow.quoteSide === 0 ? pNow.symbol0 : pNow.symbol1) : null;
+  const showDex = !creating && !!pool?.poolRef && !swapPool;
   // A range entirely on one side of the price is only filled with one token: below =
   // the quote asset, above = its pair token.
   const oneSide = !full && !damm && rangeOk ? (up <= 0 ? 'bawah' : lo >= 0 ? 'atas' : null) : null;
@@ -790,9 +797,9 @@ export default function ManualLp({ param }) {
               </div>
             )}>
             {creating ? <CreatePoolStep C={C} /> : pools === null ? <Spinner /> : pool && !swapPool ? (
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <TokenPair token0={pool.token0} token1={pool.token1} symbol0={pool.symbol0} symbol1={pool.symbol1} size={30} />
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="text-base font-semibold"><PairName token0={pool.token0} token1={pool.token1} symbol0={pool.symbol0} symbol1={pool.symbol1} pool={pool.poolRef} sep="/" /></div>
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted">
                     <span>{t(VENUE_LABEL[venueKey(pool)] || pool.venue.toUpperCase())}</span><span>·</span>
@@ -801,6 +808,7 @@ export default function ManualLp({ param }) {
                     <span>{pool.lastTs ? t('aksi terakhir {a}', { a: ago(pool.lastTs) }) : t('belum ada aksi terpantau')}</span>
                   </div>
                 </div>
+                <TradeLinks token={pool.quoteSide === 0 ? pool.token1 : pool.token0} pool={pool.poolRef} venue={pool.venue} />
               </div>
             ) : null}
             {!creating && pool && !swapPool && <HookInfo hook={pool.hook} rules={rules} />}
@@ -921,67 +929,71 @@ export default function ManualLp({ param }) {
           </Step>
         </div>
 
-        {/* pratinjau */}
-        <Card className="gap-0! p-0! lg:sticky lg:top-4">
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h2 className="text-sm font-semibold">{t('Pratinjau')}</h2>
-            {(L ? L.compute : compute) && <Spinner size="sm" />}
-          </div>
-          <div className="flex flex-col gap-4 p-4">
-            {L ? <LadderPreview L={L} dry={dry} /> : !ready ? (
-              <p className="text-sm text-muted">{t(creating ? 'Isi pengaturan pool, harga awal, dan nominalnya — pratinjau muncul sendiri.' : 'Pilih pool dan isi nominalnya — pratinjau muncul sendiri.')}</p>
-            ) : plan?.error ? (
-              <Notice status="danger" title={t('Belum bisa dibuka')}>{plan.error}</Notice>
-            ) : !p ? <Spinner /> : (
-              <>
-                <div>
-                  <div className="text-xs text-muted">{t('Nilai posisi')}</div>
-                  <div className="num text-[1.5rem] leading-tight font-semibold tracking-tight">{usd(p.valueUsd)}</div>
-                </div>
-                <div className="divide-y divide-border border-y border-border">
-                  <KV label={p.symbol0}>{num(Number(p.amount0) / 10 ** p.dec0, 6)}</KV>
-                  <KV label={p.symbol1}>{num(Number(p.amount1) / 10 ** p.dec1, 6)}</KV>
-                  {p.swaps && <KV label="Auto-swap">{swapQty(p.swaps.length, t)}</KV>}
-                  <KV label="Kas setelah dibuka">{usd(Math.max(0, p.walletCashUsd - p.valueUsd))}</KV>
-                  {p.init && <KV label="Harga awal pool">{price(p.init.price)} {symQ}</KV>}
-                </div>
-
-                {(plan.warnings || []).map((w) => (
-                  <div key={w} className="flex items-start gap-2 rounded-md bg-warning/10 p-2.5 text-sm text-warning">
-                    <TriangleAlert className="mt-0.5 size-4 shrink-0" /><span>{w}</span>
+        {/* Side column: the preview, then DexScreener's token card for the picked pool.
+            The preview only stays sticky while the side column holds nothing else. */}
+        <div className="flex min-w-0 flex-col gap-3">
+          <Card className={`gap-0! p-0! ${showDex ? '' : 'lg:sticky lg:top-4'}`}>
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <h2 className="text-sm font-semibold">{t('Pratinjau')}</h2>
+              {(L ? L.compute : compute) && <Spinner size="sm" />}
+            </div>
+            <div className="flex flex-col gap-4 p-4">
+              {L ? <LadderPreview L={L} dry={dry} /> : !ready ? (
+                <p className="text-sm text-muted">{t(creating ? 'Isi pengaturan pool, harga awal, dan nominalnya — pratinjau muncul sendiri.' : 'Pilih pool dan isi nominalnya — pratinjau muncul sendiri.')}</p>
+              ) : plan?.error ? (
+                <Notice status="danger" title={t('Belum bisa dibuka')}>{plan.error}</Notice>
+              ) : !p ? <Spinner /> : (
+                <>
+                  <div>
+                    <div className="text-xs text-muted">{t('Nilai posisi')}</div>
+                    <div className="num text-[1.5rem] leading-tight font-semibold tracking-tight">{usd(p.valueUsd)}</div>
                   </div>
-                ))}
+                  <div className="divide-y divide-border border-y border-border">
+                    <KV label={p.symbol0}>{num(Number(p.amount0) / 10 ** p.dec0, 6)}</KV>
+                    <KV label={p.symbol1}>{num(Number(p.amount1) / 10 ** p.dec1, 6)}</KV>
+                    {p.swaps && <KV label="Auto-swap">{swapQty(p.swaps.length, t)}</KV>}
+                    <KV label="Kas setelah dibuka">{usd(Math.max(0, p.walletCashUsd - p.valueUsd))}</KV>
+                    {p.init && <KV label="Harga awal pool">{price(p.init.price)} {symQ}</KV>}
+                  </div>
 
-                <p className="text-xs text-muted">
-                  {t('Posisi ini tidak mencermin siapa pun — ia tidak akan ikut ditutup saat target keluar.')}
-                </p>
-
-                {/* In simulation mode the button is NOT just disabled: a dead button with no way
-                    out only makes the user guess. It turns into a shortcut to the place that can
-                    change the situation. */}
-                {dry ? (
-                  <Button variant="outline" className="w-full" onPress={() => { location.hash = 'settings'; }}>
-                    {t('Nyalakan LIVE dulu')}
-                  </Button>
-                ) : !confirm ? (
-                  <Button className="w-full" onPress={() => setConfirm(true)}>
-                    {t(creating ? 'Buat pool & buka {v}' : 'Buka posisi {v}', { v: usd(p.valueUsd) })}
-                  </Button>
-                ) : (
-                  <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/5 p-3">
-                    <div className="text-sm font-medium">{t('Kirim transaksi sungguhan?')}</div>
-                    <div className="text-sm text-muted">{t('{v} ke {pair}, rentang {r}.', { v: usd(p.valueUsd), pair: p.pair, r: damm ? t('rentang pool') : rangeLabel(lo, up, full, t) })}</div>
-                    {p.init && <div className="text-sm text-muted">{t('Pool baru {venue}, harga awal {px} {q}.', { venue: t(VENUE_LABEL[p.create?.venue] || String(p.create?.venue || '').toUpperCase()), px: price(p.init.price), q: symQ || '' })}</div>}
-                    <div className="flex gap-2">
-                      <Button className="flex-1" onPress={open} isPending={sendOrig}>{t('Ya, buka sekarang')}</Button>
-                      <Button variant="outline" onPress={() => setConfirm(false)}>{t('Batal')}</Button>
+                  {(plan.warnings || []).map((w) => (
+                    <div key={w} className="flex items-start gap-2 rounded-md bg-warning/10 p-2.5 text-sm text-warning">
+                      <TriangleAlert className="mt-0.5 size-4 shrink-0" /><span>{w}</span>
                     </div>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </Card>
+                  ))}
+
+                  <p className="text-xs text-muted">
+                    {t('Posisi ini tidak mencermin siapa pun — ia tidak akan ikut ditutup saat target keluar.')}
+                  </p>
+
+                  {/* In simulation mode the button is NOT just disabled: a dead button with no way
+                      out only makes the user guess. It turns into a shortcut to the place that can
+                      change the situation. */}
+                  {dry ? (
+                    <Button variant="outline" className="w-full" onPress={() => { location.hash = 'settings'; }}>
+                      {t('Nyalakan LIVE dulu')}
+                    </Button>
+                  ) : !confirm ? (
+                    <Button className="w-full" onPress={() => setConfirm(true)}>
+                      {t(creating ? 'Buat pool & buka {v}' : 'Buka posisi {v}', { v: usd(p.valueUsd) })}
+                    </Button>
+                  ) : (
+                    <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/5 p-3">
+                      <div className="text-sm font-medium">{t('Kirim transaksi sungguhan?')}</div>
+                      <div className="text-sm text-muted">{t('{v} ke {pair}, rentang {r}.', { v: usd(p.valueUsd), pair: p.pair, r: damm ? t('rentang pool') : rangeLabel(lo, up, full, t) })}</div>
+                      {p.init && <div className="text-sm text-muted">{t('Pool baru {venue}, harga awal {px} {q}.', { venue: t(VENUE_LABEL[p.create?.venue] || String(p.create?.venue || '').toUpperCase()), px: price(p.init.price), q: symQ || '' })}</div>}
+                      <div className="flex gap-2">
+                        <Button className="flex-1" onPress={open} isPending={sendOrig}>{t('Ya, buka sekarang')}</Button>
+                        <Button variant="outline" onPress={() => setConfirm(false)}>{t('Batal')}</Button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </Card>
+          {showDex && <DexInfoEmbed pool={pool.poolRef} />}
+        </div>
       </div>
     </>
   );
