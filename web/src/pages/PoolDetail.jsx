@@ -172,13 +172,10 @@ export default function PoolDetail({ param }) {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {/* Opens this pool on the manual LP page; only the amount and range are left to fill in.
-                Manual LP needs a known quote asset (src/manual.js), so a pair without one stays disabled. */}
-            <span title={quote ? undefined : t('Pasangannya bukan aset kuotasi yang dikenal (USDG/ETH).')}>
-              <Button size="sm" isDisabled={!quote} onPress={() => { location.hash = `manual-lp/${ref}`; }}>
-                <PlusCircle className="size-4" />{t('Buka LP')}
-              </Button>
-            </span>
+            {/* Opens this pool on the manual LP page; only the amount and range are left to fill in. */}
+            <Button size="sm" onPress={() => { location.hash = `manual-lp/${ref}`; }}>
+              <PlusCircle className="size-4" />{t('Buka LP')}
+            </Button>
             <DataLinks pool={ref} dexUrl={pair?.url} />
             <TradeLinks token={pool.baseToken} pool={ref} />
           </div>

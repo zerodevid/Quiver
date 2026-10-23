@@ -22,10 +22,12 @@ const feeYield = (x) => (x.lp?.feePct != null && !x.lp.dynamicFee && x.tvlUsd > 
 // Why a pool cannot be entered (or what to watch for), most decisive first.
 function lpState(x) {
   if (!x.lp) return { ok: false, label: 'DEX lain', title: 'Bukan pool Uniswap v3/v4 yang bisa dimasuki bot.' };
-  if (x.lp.quoteSymbol == null) return { ok: false, label: 'tanpa USDG/ETH', title: 'Pasangannya bukan aset kuotasi yang dikenal (USDG/ETH).' };
   if (x.lp.dynamicFee) return { ok: false, label: 'fee dinamis', title: 'Fee diatur hook — bot tidak masuk pool berfee dinamis.' };
   if (x.lp.empty) return { ok: false, label: 'kosong', title: 'Likuiditas pool nol.' };
   if (x.lp.feePct === 0) return { ok: true, warn: 'fee 0%', title: 'Pool ini tidak membayar fee ke LP.' };
+  // No quote asset: enterable (both tokens are bought from cash), flagged because its dollar value
+  // comes from DexScreener's price.
+  if (x.lp.quoteSymbol == null) return { ok: true, warn: 'tanpa USDG/ETH', title: 'Pasangannya bukan aset kuotasi yang dikenal (USDG/ETH).' };
   if (x.lp.hook?.risky?.length) return { ok: true, warn: 'hook', title: tt('Hook bisa menahan atau memotong penarikan: {f}', { f: x.lp.hook.risky.join(', ') }) };
   return { ok: true };
 }

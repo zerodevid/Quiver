@@ -345,7 +345,8 @@ function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag
   const oriented = useMemo(() => orientCandles(m?.ohlcv, baseToken, acuan), [m, baseToken, acuan]);
   const candles = useLiveCandles(oriented, SECS[tf], live, `${pool.poolRef}:${tf}`);
   const nowPrice = acuan ?? candles[candles.length - 1]?.c ?? null;
-  const quote = pool.quoteSide === 0 ? pool.symbol0 : pool.quoteSide === 1 ? pool.symbol1 : null;
+  // No quote asset: token0 priced in token1, as everywhere else in the dashboard.
+  const quote = pool.quoteSide === 0 ? pool.symbol0 : pool.symbol1;
 
   const range = useMemo(() => {
     if (full || !rangeOk) return null;
@@ -735,8 +736,8 @@ export default function ManualLp({ param }) {
   // the quote asset, above = its pair token.
   const oneSide = !full && !damm && rangeOk ? (up <= 0 ? 'bawah' : lo >= 0 ? 'atas' : null) : null;
   const sidePool = creating ? pNow : pool;
-  const symSetor = oneSide && sidePool?.quoteSide != null
-    ? ((sidePool.quoteSide === 0) === (oneSide === 'bawah') ? sidePool.symbol0 : sidePool.symbol1) : null;
+  const symSetor = oneSide && sidePool
+    ? (((sidePool.quoteSide ?? 1) === 0) === (oneSide === 'bawah') ? sidePool.symbol0 : sidePool.symbol1) : null;
   // The preview carries the "after opening" balance; while it does not exist, use
   // our own reading — only if for the same pool, so the pair token is not wrong.
   const pReady = pNow && ready && !plan?.error ? pNow : null;

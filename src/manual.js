@@ -18,9 +18,14 @@ const { tokenAmount } = require('./number-format.mjs');
 const { computePoolId } = require('./pools');
 const { TOPIC, ABI } = require('./chain');
 const { planRange, valueOfLiquidity, usdToQuote, quoteToUsd, hookBlocked, riskyHookFlags, hookInfo, tickSpacingFromFee } = require('./policy');
+const { ensureAnchor } = require('./usd-anchor');
 
 const isNative = (t) => /^0x0{40}$/.test(String(t).toLowerCase());
 const lc = (t) => String(t || '').toLowerCase();
+// The side range percents and prices are read against. A pair with no quote asset
+// (memecoin/memecoin, e.g. HOOD/CUCK) has none: token0 priced in token1, the convention the
+// dashboard already uses for such pools (web fmt.js tickPrice with quoteSide null).
+const priceSideOf = (p) => p.quoteSide ?? 1;
 
 // Uniswap v4 uses the top bit of uint24 as the DYNAMIC FEE marker, not a fee
 // number. Without this, a pool marked dynamic reads "838.86%" — a figure that never
@@ -528,9 +533,19 @@ class Manual {
     const eng = this.engine;
     const p = pool || await this.poolByRef(poolRef);
     if (!p) return { error: 'pool tidak dikenal — pilih dari daftar atau pantau dulu targetnya' };
-    if (p.quoteSide == null) return { error: `pasangan ${p.pair} tidak punya aset kuotasi yang dikenal (USDG/ETH/WETH)` };
 
     const rules = eng.rulesFrom(target);
+    // No quote asset: sized and booked in USD (USDG) like the copy path does (policy screenEntry),
+    // valued through the DexScreener USD anchor, and both tokens are bought from cash on entry
+    // (engine.fundNoQuote) — which needs auto-swap.
+    const noQuote = p.quoteSide == null;
+    if (noQuote) {
+      if (!rules.swap.enabled) return { error: 'pool tanpa aset kuotasi butuh auto-swap, dan auto-swap dimatikan di Aturan' };
+      await ensureAnchor(this.chain, p.token0, p.token1, undefined, { force: true });
+    }
+    const stable = this.chain.QUOTES[this.chain.ADDR.usdg];
+    const quoteKind = noQuote ? 'usd' : p.quoteKind;
+    const pxSide = priceSideOf(p);
     if (p.hasHooks && hookBlocked(p.hooks, rules)) {
       return { error: `pool ini memakai hook ${String(p.hooks).slice(0, 10)}… yang bisa menahan atau memotong penarikan (${riskyHookFlags(p.hooks).join(', ')}). Masukkan alamat hook ini ke "Hook dipercaya" di Aturan kalau sudah dicek dan memang disengaja.` };
     }
@@ -554,11 +569,11 @@ class Manual {
     // a bound near the price must move away from the price, so spacing does not
     // introduce a need for the second token.
     if (!full && tickLower == null && tickUpper == null && (lowerPct != null || upperPct != null)) {
-      const r = ticksFromPct({ curTick: slot0.tick, quoteSide: p.quoteSide, lowerPct, upperPct });
+      const r = ticksFromPct({ curTick: slot0.tick, quoteSide: pxSide, lowerPct, upperPct });
       if (r.error) return r;
       ({ tickLower, tickUpper } = r);
-      if (Number(lowerPct ?? 0) <= 0) singleSide = p.quoteSide === 1 ? 'token0' : 'token1';
-      else if (Number(upperPct ?? 0) <= 0) singleSide = p.quoteSide === 1 ? 'token1' : 'token0';
+      if (Number(lowerPct ?? 0) <= 0) singleSide = pxSide === 1 ? 'token0' : 'token1';
+      else if (Number(upperPct ?? 0) <= 0) singleSide = pxSide === 1 ? 'token1' : 'token0';
     }
 
     // Range: computed by the same planRange as the automatic path.
@@ -594,15 +609,17 @@ class Manual {
 
     // Liquidity worth exactly `amount` dollars, derived from a single
     // reference measurement — position value is linear in L over the same range.
-    const wantQuote = usdToQuote(notional, p.quoteKind, eng.ethUsd);
+    const wantQuote = usdToQuote(notional, quoteKind, eng.ethUsd);
     const Lref = 10n ** 18n;
     const ref = valueOfLiquidity(this.chain, actLike, Lref, range.tickLower, range.tickUpper, slot0, p.dec0, p.dec1);
-    if (!ref.value || ref.value <= 0) return { error: 'tidak bisa menilai posisi di rentang ini' };
+    if (!ref.value || ref.value <= 0) {
+      return { error: noQuote ? 'harga dolar token belum terbaca (DexScreener) — pool tanpa aset kuotasi tidak bisa dinilai' : 'tidak bisa menilai posisi di rentang ini' };
+    }
     const L = (Lref * BigInt(Math.round(wantQuote * 1e9))) / BigInt(Math.round(ref.value * 1e9));
     if (L <= 0n) return { error: 'nominal terlalu kecil untuk rentang ini' };
 
     const est = valueOfLiquidity(this.chain, actLike, L, range.tickLower, range.tickUpper, slot0, p.dec0, p.dec1);
-    const valueUsd = quoteToUsd(est.value || 0, p.quoteKind, eng.ethUsd);
+    const valueUsd = quoteToUsd(est.value || 0, quoteKind, eng.ethUsd);
     const slip = BigInt(rules.swap.max_slippage_bps);
     const pad = (x) => (x * (10000n + slip)) / 10000n;
     const side = m.sideOfRange(slot0.tick, range.tickLower, range.tickUpper);
@@ -618,7 +635,7 @@ class Manual {
       liquidity: L.toString(),
       amount0: est.amount0.toString(), amount1: est.amount1.toString(),
       amount0Max: pad(est.amount0).toString(), amount1Max: pad(est.amount1).toString(),
-      valueQuote: est.value, quoteSymbol: p.quoteSymbol, quoteKind: p.quoteKind, quoteSide: p.quoteSide,
+      valueQuote: est.value, quoteSymbol: noQuote ? stable.symbol : p.quoteSymbol, quoteKind, quoteSide: p.quoteSide, noQuote,
       valueUsd, side, singleSide,
       mirrorOf: null, target: target ?? null, manual: true,
       curTick: slot0.tick,
@@ -640,6 +657,7 @@ class Manual {
     }
     if (valueUsd < s.min_quote_usd) warnings.push(`di bawah minimum biasa ($${s.min_quote_usd}) — biaya gas bisa memakan porsi besar`);
     if (side !== 'both') warnings.push('posisi satu sisi — fee baru diperoleh saat harga masuk rentang');
+    if (noQuote) warnings.push('pool tanpa aset kuotasi — kedua token dibeli dari kas, nilai dolarnya dari harga DexScreener');
     if (p.fee != null && p.fee >= 30000) warnings.push(`fee pool ${(p.fee / 10000).toFixed(2)}% — tinggi, hanya sepadan kalau ramai`);
 
     // Cash: executeEntry can bridge ETH<->USDG, so what is checked is the total value.
@@ -659,8 +677,8 @@ class Manual {
 
     // The effective percent after rounding to tick spacing, in the price seen by the
     // user — "−10%" can become −10.4% in a wide-spacing pool.
-    const ratio = (t) => (p.quoteSide === 1 ? 1.0001 ** (t - slot0.tick) : 1.0001 ** (slot0.tick - t));
-    const [tPriceLower, tPriceUpper] = p.quoteSide === 1 ? [range.tickLower, range.tickUpper] : [range.tickUpper, range.tickLower];
+    const ratio = (t) => (pxSide === 1 ? 1.0001 ** (t - slot0.tick) : 1.0001 ** (slot0.tick - t));
+    const [tPriceLower, tPriceUpper] = pxSide === 1 ? [range.tickLower, range.tickUpper] : [range.tickUpper, range.tickLower];
     const lowerPctEff = (1 - ratio(tPriceLower)) * 100, upperPctEff = (ratio(tPriceUpper) - 1) * 100;
 
     return {
@@ -689,12 +707,11 @@ class Manual {
     if (spec.error || !args.shape) return spec;
     const p = await this.poolByRef(args.poolRef);
     if (!p) return { error: 'pool tidak dikenal — pilih dari daftar atau pantau dulu targetnya' };
-    if (p.quoteSide == null) return { error: `pasangan ${p.pair} tidak punya aset kuotasi yang dikenal (USDG/ETH/WETH)` };
     const slot0 = this.chain.isV3Venue(p.venue)
       ? await this.chain.slot0V3(p.poolAddr || p.poolRef)
       : await this.chain.slot0V4(p.poolRef);
     if (!slot0) return { error: 'harga pool tidak terbaca sekarang' };
-    return bandTicks(spec.layers, slot0.tick, p.quoteSide, p.tickSpacing || 60);
+    return bandTicks(spec.layers, slot0.tick, priceSideOf(p), p.tickSpacing || 60);
   }
   // planLp input for one layer: pinned ticks for a shape band, percents for a ladder layer.
   static layerRange(l) {
@@ -773,7 +790,16 @@ class Manual {
   usdPer(tok, p, slot0) {
     const t = lc(tok), q = this.chain.QUOTES[t];
     if (q) return q.kind === 'eth' ? this.engine.ethUsd : 1;
-    if (!p || !slot0 || p.quoteSide == null) return null;
+    if (!p || !slot0) return null;
+    if (p.quoteSide == null) {
+      // No quote asset: one whole token through the USD anchor (null until it is fetched).
+      if (t !== lc(p.token0) && t !== lc(p.token1)) return null;
+      const one0 = t === lc(p.token0);
+      const v = this.chain.valueInQuote({ sqrtPriceX96: slot0.sqrtPriceX96,
+        amount0: one0 ? 10n ** BigInt(p.dec0) : 0n, amount1: one0 ? 0n : 10n ** BigInt(p.dec1),
+        dec0: p.dec0, dec1: p.dec1, token0: p.token0, token1: p.token1 });
+      return v?.value ?? null;
+    }
     const px = m.priceFromSqrt(slot0.sqrtPriceX96, p.dec0, p.dec1);   // token1 per token0
     const qUsd = this.usdPer(p.quoteSide === 0 ? p.token0 : p.token1);
     if (t === lc(p.token0) && p.quoteSide === 1) return px * qUsd;
@@ -817,6 +843,7 @@ class Manual {
     if (p) {
       slot0 = await (this.chain.isV3Venue(p.venue) ? this.chain.slot0V3(p.poolAddr || p.poolRef) : this.chain.slot0V4(p.poolRef))
         .catch(() => null);
+      if (p.quoteSide == null) await ensureAnchor(this.chain, p.token0, p.token1, undefined, { force: true });
     }
     const bal = await eng.exec.balances(this.balanceList(p));
     return { ...this.fromBalance(bal, p, slot0), wallet: !!eng.exec.address() };
@@ -851,6 +878,39 @@ class Manual {
       const deficit = reserve - get(this.chain.ADDR.native), exists = get(this.chain.ADDR.weth);
       const amt = exists < deficit ? exists : deficit;
       if (amt * 10n >= reserve) record('buka_bungkus', this.chain.ADDR.weth, amt, this.chain.ADDR.native, amt, { gas: true });
+    }
+
+    // 0'. No quote asset (engine.fundNoQuote): each short token is bought from USDG, sized from its
+    // USD value plus the slippage room and 1%; ETH cash is bridged to USDG first when USDG is short.
+    if (plan.noQuote) {
+      const usdg = lc(this.chain.ADDR.usdg), uDec = this.chain.usdgDecimals;
+      const k = 1 + slip / 10000;
+      const buys = [];
+      for (const [tok, need] of [[plan.token0, BigInt(plan.amount0Max)], [plan.token1, BigInt(plan.amount1Max)]]) {
+        const short = need - avail(tok);
+        if (short <= 0n) continue;
+        const usd = this.kaki(tok, short, p, slot0).usd;
+        if (!(usd > 0)) { problems.push(`harga dolar ${fmt(tok, short)} belum terbaca — tidak bisa membeli token pool tanpa kuotasi`); continue; }
+        buys.push({ tok, short, pay: BigInt(Math.ceil(usd * k * 1.01 * 10 ** uDec)) });
+      }
+      const total = buys.reduce((a, b) => a + b.pay, 0n);
+      if (buys.length && !rules.swap.enabled) problems.push('pool tanpa aset kuotasi butuh auto-swap, dan auto-swap dimatikan');
+      if (total > avail(usdg)) {
+        const short = total - avail(usdg);
+        const pay = BigInt(Math.ceil((Number(short) / 10 ** uDec / eng.ethUsd) * 1e18 * k));
+        const can = avail(this.chain.ADDR.native) + get(this.chain.ADDR.weth);
+        if (can < pay) problems.push(`kas kurang untuk jembatan: butuh ~${fmt(this.chain.ADDR.native, pay)}, bisa dipakai ${fmt(this.chain.ADDR.native, can)} (ETH+WETH)`);
+        if (avail(this.chain.ADDR.native) < pay && get(this.chain.ADDR.weth) > 0n) {
+          const deficit = pay - avail(this.chain.ADDR.native), exists = get(this.chain.ADDR.weth);
+          record('buka_bungkus', this.chain.ADDR.weth, exists < deficit ? exists : deficit, this.chain.ADDR.native, exists < deficit ? exists : deficit);
+        }
+        record('jembatan', this.chain.ADDR.native, pay, usdg, short, { maxLossBps: rules.swap.max_price_impact_bps, estimate: true });
+      }
+      for (const b of buys) record('zap', usdg, b.pay, b.tok, b.short, { maxLossBps: rules.swap.max_price_impact_bps });
+      s.set(lc(plan.token0), get(plan.token0) - BigInt(plan.amount0));
+      s.set(lc(plan.token1), get(plan.token1) - BigInt(plan.amount1));
+      for (const [t, v] of s) if (v < 0n) s.set(t, 0n);
+      return { step, problems, after: s };
     }
 
     // 0. cash into this pool's quote asset (engine.ensureQuoteAsset)
