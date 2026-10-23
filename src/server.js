@@ -1202,8 +1202,8 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       if (!live) return { error: 'posisi tidak ditemukan' };
       try {
         const q = await engine.exitQuote(live, { to: sellToOf(url.searchParams.get('to')) });
-        // Whether the close will really sell the memecoin (the target's sell_leftover rule), so the
-        // dialog only offers a sale target when there is a sale.
+        // Whether the close sells the memecoin by default (the target's sell_leftover rule); the
+        // dialog can still pick a sale target or keep the memecoin.
         const row = store.get('SELECT target FROM positions WHERE chain=? AND id=?', chain.network, id);
         return { ...q, sellOn: !!engine.rulesFrom(row?.target ?? null).exit.sell_leftover };
       } catch (e) { return { error: e.message }; }
@@ -2861,7 +2861,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
             r = { txHash: null, note: `posisi #${pos.id} kosong di chain, dibukukan tertutup` };
           }
         } else {
-          r = await engine.executeExit({ venue: pos.venue, action: 'burn', full: true, liquidity: pos.liquidity, tokenId: pos.token_id }, pos, { force, sellTo });
+          // `sell` (close dialog: sell into a quote asset or keep the memecoin) overrides the sell_leftover rule.
+          r = await engine.executeExit({ venue: pos.venue, action: 'burn', full: true, liquidity: pos.liquidity, tokenId: pos.token_id },
+            pos, { force, sell: b.sell == null ? undefined : !!b.sell, sellTo });
         }
         store.log('info', `tutup ${force ? 'paksa' : 'manual'}: ${r.note}`);
         // The result is read from the row just closed, with the same conversion as

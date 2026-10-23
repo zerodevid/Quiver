@@ -103,7 +103,7 @@ export function useClosePosition(reload) {
   // One position: send the request, wait for the chain, report the outcome. Used by both
   // close-one and close-all; the confirmation is with the caller. `modal`: follow the steps
   // (withdraw, sell…) in the progress modal instead of a waiting toast — closing one position.
-  const run = async (p, { force = false, sellTo = null, modal = false } = {}) => {
+  const run = async (p, { force = false, sell = null, sellTo = null, modal = false } = {}) => {
     const pair = `${p.symbol0}/${p.symbol1}`;
     setClosing(p.id);
     muteClose(p.id);   // the toast for the result comes from this flow; the alert feed must not repeat it
@@ -112,7 +112,7 @@ export function useClosePosition(reload) {
       description: t('Menunggu konfirmasi di chain, bisa sampai 1–2 menit.'), isLoading: true, timeout: 0,
     });
     let r;
-    const body = { id: p.id, ...(force ? { force: true } : {}), ...(sellTo ? { sellTo } : {}), ...(op ? { opId: op.id } : {}) };
+    const body = { id: p.id, ...(force ? { force: true } : {}), ...(sell != null ? { sell } : {}), ...(sell !== false && sellTo ? { sellTo } : {}), ...(op ? { opId: op.id } : {}) };
     try { r = await post(withChain('/api/positions/close', p.chain), body); }
     catch (e) { r = { error: e.message, lost: true }; }
     if (wait) toast.close(wait);
@@ -135,7 +135,7 @@ export function useClosePosition(reload) {
   const close = async (p) => {
     if (closing != null) return;
     const pair = `${p.symbol0}/${p.symbol1}`;
-    const pick = { sellTo: null };   // filled by the "sell into" choice in the estimate
+    const pick = { sell: null, sellTo: null };   // filled by the "sell into / don't sell" choice in the estimate
     const base = p.feeUsd > 0.005
       ? t('Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v} + fee {f}.', { v: usd(p.valueUsd), f: usd(p.feeUsd) })
       : t('Likuiditas ditarik dan fee diklaim dalam satu transaksi. Nilai sekarang {v}.', { v: usd(p.valueUsd) });
@@ -146,7 +146,7 @@ export function useClosePosition(reload) {
       confirm: t('Tutup posisi'), danger: true,
     });
     if (!ok) return;
-    await run(p, { sellTo: pick.sellTo, modal: true });
+    await run(p, { sell: pick.sell, sellTo: pick.sellTo, modal: true });
     setClosing(null);
     reload?.();
   };

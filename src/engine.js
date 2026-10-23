@@ -2787,7 +2787,12 @@ class Engine {
     const gasUsd = avg('burn') + (memes.length ? avg('sell_leftover') * memes.length : 0);
     const receiveUsd = keptUsd + soldUsd;
     const pnlUsd = receiveUsd + (live.claimedUsd || 0) + (live.withdrawnUsd || 0) - (live.costUsd || 0) - gasUsd;
+    // Closing without the sale: the memecoin stays in the wallet at the marking price, only the burn costs gas.
+    const keepGasUsd = avg('burn');
+    const keepPnlUsd = midTotalUsd + (live.claimedUsd || 0) + (live.withdrawnUsd || 0) - (live.costUsd || 0) - keepGasUsd;
+    const keep = { receiveUsd: midTotalUsd, gasUsd: keepGasUsd, pnlUsd: keepPnlUsd, pnlPct: live.costUsd > 0 ? (keepPnlUsd / live.costUsd) * 100 : 0 };
     return {
+      keep,
       id: live.id, quoted, legs, gasUsd, sellTo: roles?.quote ?? null, sellTargets: this.sellTargets(),
       midUsd: midTotalUsd, receiveUsd, sellCostUsd: memeMidUsd - memes.reduce((s, _, i) => s + (legs[i]?.outUsd ?? legs[i]?.midUsd ?? 0), 0),
       claimedUsd: live.claimedUsd || 0, costUsd: live.costUsd || 0,

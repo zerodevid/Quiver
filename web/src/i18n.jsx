@@ -1066,6 +1066,8 @@ const EN = {
   'PnL riil': 'Real PnL',
   'Harga tengah pool menunjukkan {v}': 'Pool mid price shows {v}',
   'Quote jual belum terbaca, memakai harga tengah.': 'Sale quote unavailable, using the mid price.',
+  'Jangan jual': "Don't sell",
+  'Memecoin tetap di wallet, dinilai dengan harga tengah pool — belum dijual.': 'The memecoin stays in the wallet, valued at the pool mid price — not sold.',
   // ---- target alerts ----
   'Peringatan target': 'Target alerts',
   'Toast dan bunyi saat wallet target membuka posisi LP, dan saat posisi salinan ditutup — lengkap dengan PnL-nya. Bunyi buka dan tutup berbeda.':

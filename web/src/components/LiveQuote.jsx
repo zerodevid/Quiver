@@ -79,33 +79,54 @@ export function useLiveQuote(path, chainName, { delay = 0 } = {}) {
   return { ...state, refresh: () => setNonce((n) => n + 1) };
 }
 
-// The estimate block of the single close dialog.
-export function CloseEstimate({ q, onRefresh, refreshing }) {
+// The estimate block of the single close dialog. `keep`: the memecoin stays in the wallet, so the
+// figures are the unsold ones (q.keep; an engine without it falls back to the mid price).
+export function CloseEstimate({ q, keep = false, onRefresh, refreshing }) {
   const { t } = useI18n();
+  const k = keep ? (q.keep || { receiveUsd: q.midUsd, gasUsd: null, pnlUsd: q.pnlMidUsd, pnlPct: q.costUsd > 0 ? (q.pnlMidUsd / q.costUsd) * 100 : 0 }) : q;
   return <QuoteBox title={t('Estimasi jika ditutup sekarang')} onRefresh={onRefresh} refreshing={refreshing}>
-    <QuoteRow label={t('Diterima di wallet')} value={usd(q.receiveUsd)} />
-    {q.sellCostUsd > 0.005 && <QuoteRow label={t('Kerugian jual memecoin')} value={`−${usd(q.sellCostUsd)}`} cls="text-danger" />}
-    <QuoteRow label={t('Gas')} value={`−${usd(q.gasUsd)}`} />
+    <QuoteRow label={t('Diterima di wallet')} value={usd(k.receiveUsd)} />
+    {!keep && q.sellCostUsd > 0.005 && <QuoteRow label={t('Kerugian jual memecoin')} value={`−${usd(q.sellCostUsd)}`} cls="text-danger" />}
+    {k.gasUsd != null && <QuoteRow label={t('Gas')} value={`−${usd(k.gasUsd)}`} />}
     {q.claimedUsd > 0.005 && <QuoteRow label={t('Fee yang sudah diklaim')} value={`+${usd(q.claimedUsd)}`} />}
-    <QuoteLegs legs={q.legs} />
-    <QuoteRow label={t('PnL riil')} value={`${signed(q.pnlUsd)} (${q.pnlPct >= 0 ? '+' : ''}${q.pnlPct.toFixed(1)}%)`}
-      cls={q.pnlUsd >= 0 ? 'text-success font-medium' : 'text-danger font-medium'} />
-    <div className="text-xs text-muted">{t('Harga tengah pool menunjukkan {v}', { v: signed(q.pnlMidUsd) })}</div>
-    {!q.quoted && <div className="text-xs text-warning">{t('Quote jual belum terbaca, memakai harga tengah.')}</div>}
+    {!keep && <QuoteLegs legs={q.legs} />}
+    <QuoteRow label={t('PnL riil')} value={`${signed(k.pnlUsd)} (${k.pnlPct >= 0 ? '+' : ''}${k.pnlPct.toFixed(1)}%)`}
+      cls={k.pnlUsd >= 0 ? 'text-success font-medium' : 'text-danger font-medium'} />
+    {keep
+      ? <div className="text-xs text-muted">{t('Memecoin tetap di wallet, dinilai dengan harga tengah pool — belum dijual.')}</div>
+      : <div className="text-xs text-muted">{t('Harga tengah pool menunjukkan {v}', { v: signed(q.pnlMidUsd) })}</div>}
+    {!keep && !q.quoted && <div className="text-xs text-warning">{t('Quote jual belum terbaca, memakai harga tengah.')}</div>}
   </QuoteBox>;
 }
 
-// `state.sellTo` (optional) receives the sale target picked here, for the caller's close request.
+// "Sell into: USDG · WETH · Don't sell" for the close dialog. The default follows the target's
+// sell_leftover rule (data.sellOn); picking a quote asset sells even when the rule is off.
+function CloseSellChoice({ targets, value, keep, onPick, onKeep }) {
+  const { t } = useI18n();
+  return <div className="flex flex-wrap items-center gap-1.5 text-sm">
+    <span className="text-muted">{t('Jual ke')}</span>
+    {(targets || []).map((x) => (
+      <Button key={x.address} size="sm" variant={!keep && value === x.address ? 'primary' : 'outline'} onPress={() => onPick(x.address)}>{x.symbol}</Button>
+    ))}
+    <Button size="sm" variant={keep ? 'primary' : 'outline'} onPress={onKeep}>{t('Jangan jual')}</Button>
+  </div>;
+}
+
+// `state.sellTo` / `state.sell` (optional) receive the choice made here, for the caller's close
+// request; `state.sell` stays null while the owner follows the default.
 export function LiveCloseEstimate({ p, state = {} }) {
   const { t } = useI18n();
   const [to, setTo] = useState(null);
+  const [sell, setSell] = useState(null);
   const { data, error, loading, refresh } = useLiveQuote(`/api/position/exit-quote?id=${p.id}${to ? `&to=${to}` : ''}`, p.chain);
   if (loading && !data) return <QuoteLoading text={t('Menghitung estimasi hasil tutup…')} hint={t('Kamu bisa langsung menutup tanpa menunggu.')} />;
   if (error || !data) return null;   // the plain dialog still works
-  const pick = (a) => { state.sellTo = a; setTo(a); };
+  const hasMeme = data.legs?.length > 0;
+  const keep = hasMeme && !(sell ?? data.sellOn !== false);
+  const pick = (a) => { state.sell = true; state.sellTo = a; setSell(true); setTo(a); };
+  const hold = () => { state.sell = false; setSell(false); };
   return <div className="space-y-2">
-    {data.sellOn !== false && data.legs?.length > 0
-      && <SellTarget targets={data.sellTargets} value={to || data.sellTo} onChange={pick} />}
-    <CloseEstimate q={data} onRefresh={refresh} refreshing={loading} />
+    {hasMeme && <CloseSellChoice targets={data.sellTargets} value={to || data.sellTo} keep={keep} onPick={pick} onKeep={hold} />}
+    <CloseEstimate q={data} keep={keep} onRefresh={refresh} refreshing={loading} />
   </div>;
 }
