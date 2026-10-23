@@ -443,7 +443,8 @@ function PoolPicker({ pools, onPick }) {
   const [sort, setSort] = useState('aktif');
   const timer = useRef(null);
   const token = canonAddr(q);
-  const isAddress = isAddr(token);
+  // A v4 pool id (32 bytes) is looked up like an address; a v3 pool address is told apart server-side.
+  const isAddress = isAddr(token) || (!isSolana() && /^0x[0-9a-f]{64}$/.test(token));
   useEffect(() => () => clearInterval(timer.current), []);
 
   const take = async (tok, all) => {
@@ -490,7 +491,7 @@ function PoolPicker({ pools, onPick }) {
     <div className="flex flex-col gap-3">
       <div className="relative">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('Cari pasangan, atau tempel alamat token')}
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('Cari pasangan, atau tempel alamat token / pool')}
           className="h-9 w-full rounded-md border border-field-border bg-surface pl-8 pr-3 text-sm outline-none focus:border-accent" />
       </div>
 
@@ -555,7 +556,7 @@ function PoolPicker({ pools, onPick }) {
         {!result.length ? (
           <div>
             <Empty title={isAddress ? (isSolana() ? 'Tidak ada pool Meteora DLMM / DAMM v2 / Orca / Raydium CLMM yang bisa dimasuki' : 'Tidak ada pool Uniswap v3/v4 yang bisa dimasuki') : 'Tidak ada pool yang cocok'}
-              sub={isAddress ? (isSolana() ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDC, USDT, atau SOL.' : 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.') : 'Tempel alamat token untuk mencari poolnya langsung dari chain.'} />
+              sub={isAddress ? (isSolana() ? 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDC, USDT, atau SOL.' : 'Token ini belum punya pool dengan likuiditas yang dipasangkan USDG atau ETH.') : 'Tempel alamat token atau pool untuk mencari poolnya langsung dari chain.'} />
             {useScan && scan.others?.length > 0 && (
               <div className="border-t border-border px-3 py-3 text-sm">
                 <div className="mb-1.5 font-medium">{t('Diperdagangkan di tempat lain')}</div>

@@ -2338,10 +2338,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     },
     // Scan pools from a token address. Made a background job like scout: a single
     // full-range scan takes a dozen seconds, too long for one HTTP reply.
+    // A pasted pool (v4 pool id, or a v3 pool address) is resolved on chain and returned alone.
     'POST /api/manual/pools/scan': async (req) => {
       const b = await readBody(req);
       const token = canon(b.token || '');
-      if (!isAddr(token)) return { error: `alamat token tidak valid — ${addrHint(chain.network)}` };
+      const poolId = !SOL && /^0x[0-9a-f]{64}$/.test(token);
+      if (!isAddr(token) && !poolId) return { error: `alamat token atau pool tidak valid — ${addrHint(chain.network)}` };
       if (poolScanJobs.get(token)?.status === 'jalan') return { ok: true, status: 'jalan' };
       const job = { status: 'jalan', progress: 0, startedAt: Date.now(), pools: null, error: null, source: 'chain' };
       poolScanJobs.set(token, job);
@@ -2354,13 +2356,22 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         const pools = mk?.pairs?.length ? await manual.dexPools(token, mk.pairs).catch((e) => { log(`pool dexscreener ${token}: ${e.message}`); return null; }) : null;
         return pools?.some(enterable) ? pools : null;
       };
-      fast().then((pools) => {
+      // One eth_call batch: a token address simply does not resolve as a pool.
+      const asPool = async () => {
+        if (SOL || !manual.resolveListed) return null;
+        const list = await manual.resolveListed([token]).catch((e) => { log(`pool lookup ${token}: ${e.message}`); return null; });
+        return list?.length ? list : null;
+      };
+      asPool().then(async (pools) => {
+        if (pools) { job.source = 'pool'; return pools; }
+        if (poolId) return [];
+        pools = await fast();
         if (pools) { job.source = 'dexscreener'; return pools; }
         return manual.scanPools(token, {
           onProgress: (p) => { job.progress = p.total ? Math.round((p.done / p.total) * 100) : 0; },
         });
       }).then(async (pools) => {
-        if (!pools.some(enterable)) job.others = await manual.otherMarket(token);
+        if (!pools.some(enterable) && !poolId && job.source !== 'pool') job.others = await manual.otherMarket(token);
         await withPoolStats(pools.filter(enterable).slice(0, 90), 8000);
         job.pools = pools; job.status = 'selesai'; job.finishedAt = Date.now();
       })
