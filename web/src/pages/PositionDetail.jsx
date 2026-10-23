@@ -96,6 +96,37 @@ const SRC_KEY = 'lpcopy-chart-src';
 export const readSrc = () => { try { return localStorage.getItem(SRC_KEY) === 'gmgn' ? 'gmgn' : 'gt'; } catch { return 'gt'; } };
 export const writeSrc = (v) => { try { localStorage.setItem(SRC_KEY, v); } catch { /* abaikan */ } };
 
+// Unit of the price chart of a pool quoted in something other than USDG (HOOD/CUCK, X/WETH): USD,
+// or the quote token as the pool itself prices it. One choice for every chart, remembered per
+// browser; charts open at the same time follow each other.
+const UNIT_KEY = 'lpcopy-chart-unit';
+const readUnit = () => { try { return localStorage.getItem(UNIT_KEY) === 'quote' ? 'quote' : 'usd'; } catch { return 'usd'; } };
+export function useChartUnit() {
+  const [unit, setUnit] = useState(readUnit);
+  useEffect(() => {
+    const sync = () => setUnit(readUnit());
+    window.addEventListener(UNIT_KEY, sync);
+    return () => window.removeEventListener(UNIT_KEY, sync);
+  }, []);
+  const set = (v) => {
+    try { localStorage.setItem(UNIT_KEY, v); } catch { /* storage blocked */ }
+    setUnit(v);
+    window.dispatchEvent(new Event(UNIT_KEY));
+  };
+  return [unit, set];
+}
+export const quoteSymOf = (p) => (p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null);
+// What a pool chart loads: its unit ('usd' / 'quote'), whether the unit can be picked, and the
+// /api/market params. USD comes from GMGN or, on the GeckoTerminal source, from GeckoTerminal's
+// USD candles; the quote unit only from GeckoTerminal. A USDG pool has no unit to pick (USDG is
+// the dollar): the source alone decides, as before.
+export function chartFeed(src, unit, quoteSym) {
+  const choice = quoteSym !== chainInfo().usdgSymbol;
+  const u = choice ? unit : src === 'gmgn' ? 'usd' : 'quote';
+  const params = u === 'quote' ? '' : src === 'gmgn' ? '&src=gmgn' : '&currency=usd';
+  return { unit: u, choice, params, key: `${src}:${u}`, src: u === 'quote' ? 'gt' : src };
+}
+
 // `ranges` (optional): all open positions in this pool, so the pool detail chart
 // shows every active range as on the Monitor page. The `selected` one is the
 // position being highlighted (the entry/exit/BEP lines remain only for that one).
@@ -104,7 +135,9 @@ export const writeSrc = (v) => { try { localStorage.setItem(SRC_KEY, v); } catch
 // `pick` (optional, manual LP): { range: { lo, hi } | null, onDrag(lo, hi) } — the range being
 // chosen, in the pool's quote asset like everything else here; drawn and dragged in the chart's
 // unit (USD on GMGN candles) and handed back in the quote asset.
-export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = null, ranges = null, onRangeClick = null, history = null, showHistory = false, onShowHistory = null, pick = null }) {
+// `feed` (chartFeed of the parent's request): which unit the candles were asked in, and whether
+// the chart offers the USD / quote switch.
+export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = null, ranges = null, onRangeClick = null, history = null, showHistory = false, onShowHistory = null, pick = null, feed = null }) {
   const { t } = useI18n();
   const at = (tick) => tickPrice(tick, p.dec0, p.dec1, p.quoteSide);
   const hasRange = p.tick_lower != null && p.tick_upper != null;
@@ -122,13 +155,17 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
   // DexScreener; USDG is assumed $1 if DexScreener is not available yet). Without a rate, the
   // candles still show but the position markers are not drawn — better empty than off.
   const gmgn = m?.ohlcv?.source === 'gmgn';
-  const quoteSym = p.quoteSide === 0 ? p.symbol0 : p.quoteSide === 1 ? p.symbol1 : null;
+  // USD candles: GMGN's, or GeckoTerminal's USD ones (not a GMGN fallback, which comes in the quote)
+  const usdC = gmgn || (feed?.unit === 'usd' && !m?.ohlcv?.fallback);
+  const [, setUnit] = useChartUnit();
+  const quoteSym = quoteSymOf(p);
   const qUsd = quoteUsd(m?.pair, p.baseToken) ?? (quoteSym === chainInfo().usdgSymbol ? 1 : null);
-  const k = !gmgn ? 1
+  const k = !usdC ? 1
     : qUsd ?? (m?.pair?.priceUsd > 0 && pNow > 0 ? m.pair.priceUsd / pNow : null);
-  const oriented = useMemo(() => (gmgn ? (m?.ohlcv?.candles || []) : orientCandles(m?.ohlcv, p.baseToken, pNow ?? pEntry)), [m, gmgn, p.baseToken, pNow, pEntry]);
+  const oriented = useMemo(() => (usdC ? (m?.ohlcv?.candles || []) : orientCandles(m?.ohlcv, p.baseToken, pNow ?? pEntry)), [m, usdC, p.baseToken, pNow, pEntry]);
   const liveK = useMemo(() => (live && k ? { ...live, price: live.price * k } : k ? live : null), [live, k]);
-  const candles = useLiveCandles(oriented, SECS[tf], liveK, `${p.pool_ref}:${tf}:${gmgn ? 'gmgn' : 'gt'}`);
+  const series = gmgn ? 'gmgn' : usdC ? 'gtusd' : 'gt';
+  const candles = useLiveCandles(oriented, SECS[tf], liveK, `${p.pool_ref}:${tf}:${series}`);
 
   // No candles is shown inside the chart (its timeframe switcher stays usable), not instead of it.
   const chartError = pending ? null : m?.ohlcv?.error
@@ -136,18 +173,18 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
 
   const bep = breakEven(p);
   const closed = p.status === 'closed';
-  const quote = gmgn ? 'USD' : quoteSym;
+  const quote = usdC ? 'USD' : quoteSym || p.symbol1;
   const cv = (v) => (v != null && k ? v * k : null);
   // GMGN candles are priced in USD: the bands are also multiplied by the quote->USD rate. Without a rate, the bands
   // are not drawn (the same as a single position range).
   const bands = k ? (ranges || []).filter((b) => b.lo > 0 && b.hi > 0).map((b) => ({ ...b, lo: b.lo * k, hi: b.hi * k })) : [];
   // On USD candles of a pool quoted in a moving token, a past moment is converted at the quote's
   // rate of that moment (lpHistory.js).
-  const rateAt = useMemo(() => rateFinder(candles, SECS[tf], k, gmgn && !steadyQuote(quoteSym)), [candles, tf, k, gmgn, quoteSym]);
+  const rateAt = useMemo(() => rateFinder(candles, SECS[tf], k, usdC && !steadyQuote(quoteSym)), [candles, tf, k, usdC, quoteSym]);
   const hist = useChartHistory(history, rateAt);
   const firstClose = candles[0]?.c;
-  const loadMore = useCallback((before) => fetchOlderCandles({ pool: p.pool_ref, tf, token: p.baseToken, gmgn, before, ref: firstClose }),
-    [p.pool_ref, tf, p.baseToken, gmgn, firstClose]);
+  const loadMore = useCallback((before) => fetchOlderCandles({ pool: p.pool_ref, tf, token: p.baseToken, gmgn, usd: usdC && !gmgn, before, ref: firstClose }),
+    [p.pool_ref, tf, p.baseToken, gmgn, usdC, firstClose]);
   // the same for the position itself: its entry (and, once closed, its range and exit) at their own time
   const kEntry = rateAt(p.opened_ts, pEntry), kExit = rateAt(p.closed_ts, pExit);
   // a closed range is drawn at its entry rate; an open one is where it stands today
@@ -158,13 +195,15 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
   return (
     <div>
       {gmgn && m.ohlcv.fallback && <p className="mb-2 text-xs text-warning">{t('GMGN gagal, memakai GeckoTerminal')}: {t(m.ohlcv.fallback)}</p>}
-      {gmgn && !k && <p className="mb-2 text-xs text-warning">{t('Kurs {q} → USD belum diketahui; rentang posisi tidak digambar di lilin GMGN.', { q: quoteSym || '?' })}</p>}
+      {usdC && !k && <p className="mb-2 text-xs text-warning">{t('Kurs {q} → USD belum diketahui; rentang posisi tidak digambar di lilin GMGN.', { q: quoteSym || '?' })}</p>}
       {bep && <p className="mb-2 text-xs text-warning">
         {t('Harga BEP')}: {bep.price > 0 ? <>{price(bep.price)} {quoteSym}{pNow > 0 && <> · {pct((bep.price / pNow - 1) * 100, 2)} {t('dari harga sekarang')}</>}</> : t(bep.reason)}
       </p>}
       <AdvancedChart key={p.pool_ref || p.baseToken || 'pool'}
-        candles={candles} tf={tf} onTfChange={onTf} loading={pending} error={chartError} onRetry={onRetry} series={gmgn ? 'gmgn' : 'gt'}
-        quote={quote} title={p.symbol0 && p.symbol1 ? `${p.symbol0}/${p.symbol1}` : null} drawKey={drawKeyOf(p.baseToken, p.pool_ref)} poolRef={p.pool_ref || null} usdRate={gmgn ? 1 : qUsd} supply={supplyOf(m?.pair, p.baseToken)} range={pick ? picked : range && kRange ? { lo: range.lo * kRange, hi: range.hi * kRange } : null}
+        candles={candles} tf={tf} onTfChange={onTf} loading={pending} error={chartError} onRetry={onRetry} series={series}
+        quote={quote} title={p.symbol0 && p.symbol1 ? `${p.symbol0}/${p.symbol1}` : null} drawKey={drawKeyOf(p.baseToken, p.pool_ref)} poolRef={p.pool_ref || null} usdRate={usdC ? 1 : qUsd} supply={supplyOf(m?.pair, p.baseToken)}
+        units={feed?.choice ? [['usd', 'USD'], ['quote', quoteSym || p.symbol1 || '?']] : null} priceUnit={usdC ? 'usd' : 'quote'} onUnit={setUnit}
+        range={pick ? picked : range && kRange ? { lo: range.lo * kRange, hi: range.hi * kRange } : null}
         pickRange={!!pick} onRangeDrag={pickDrag}
         ranges={ranged.length ? ranged : null}
         entry={p.opened_ts || pEntry != null ? { t: p.opened_ts, p: pEntry != null && kEntry ? pEntry * kEntry : null } : null}
@@ -190,7 +229,7 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
         </div>
       )}
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-        {pick ? picked && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang yang akan di-LP')} · {t('geser garis atau pita untuk mengubahnya')}{gmgn && <span className="num">· ≈ {usdPrice(picked.lo)} – {usdPrice(picked.hi)}</span>}</span>
+        {pick ? picked && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang yang akan di-LP')} · {t('geser garis atau pita untuk mengubahnya')}{usdC && <span className="num">· ≈ {usdPrice(picked.lo)} – {usdPrice(picked.hi)}</span>}</span>
         : bands.length > 1
           ? <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('{n} rentang aktif', { n: bands.length })}</span>
           : range && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-4 rounded-sm border border-accent/50 bg-accent/15" />{t('rentang posisi')}</span>}
@@ -201,7 +240,7 @@ export function PriceChart({ p, m, tf, pending = false, onTf = null, onRetry = n
         {full && <span>{t('Seluruh rentang')}</span>}
         <span className="ml-auto inline-flex items-center gap-3">
           {live && <LiveBadge />}
-          {gmgn ? t('lilin {tf} · GMGN', { tf }) : t('lilin {tf} · GeckoTerminal', { tf })}
+          {gmgn ? t('lilin {tf} · GMGN', { tf }) : t('lilin {tf} · GeckoTerminal', { tf })}{usdC ? ' · USD' : ''}
         </span>
       </div>
     </div>
@@ -511,6 +550,8 @@ export default function PositionDetail({ id }) {
   const [view, setView] = useState('chart');
   const [src, setSrcState] = useState(readSrc);
   const setSrc = (v) => { setSrcState(v); writeSrc(v); };
+  const [unit] = useChartUnit();
+  const feed = chartFeed(src, unit, p ? quoteSymOf(p) : null);
   const { close, closing } = useClosePosition(reload);
   const { claim, claiming } = useClaimFees(reload);
   // The last timeframe picked for this token, on any of its charts, comes before the age-based default.
@@ -522,7 +563,7 @@ export default function PositionDetail({ id }) {
   const tail = p?.status === 'closed' ? Math.max(20, Math.ceil((span * 0.2) / SECS[tf])) : 0;
   const limit = p ? Math.min(1000, Math.max(120, Math.ceil(span / SECS[tf]) + 40 + tail)) : 200;
   const before = p?.status === 'closed' && p.closed_ts ? p.closed_ts + tail * SECS[tf] * 1000 : null;
-  const { data: m, pending: mPending, reload: reloadMarket } = useMarket(p ? `/api/market?pool=${p.pool_ref}&tf=${tf}&limit=${limit}&token=${p.baseToken || ''}${before ? `&before=${before}` : ''}${src === 'gmgn' ? '&src=gmgn' : ''}` : null, 30000, `${tf}:${src}`);
+  const { data: m, pending: mPending, reload: reloadMarket } = useMarket(p ? `/api/market?pool=${p.pool_ref}&tf=${tf}&limit=${limit}&token=${p.baseToken || ''}${before ? `&before=${before}` : ''}${feed.params}` : null, 30000, `${tf}:${feed.key}`);
   // "Refresh detail" forces a chain sync first — the value/fee/PnL figures on this page
   // come from the last sync, so merely reloading returns the same figures.
   const reloadAll = useCallback(async () => { await Promise.all([reload(), reloadMarket()]); }, [reload, reloadMarket]);
@@ -638,7 +679,7 @@ export default function PositionDetail({ id }) {
         <Panel title={t('Harga {b} / {q}', { b: base, q: quote || '?' })} className="lg:col-span-2"
           action={<div className="flex flex-wrap gap-2">
             <Segmented size="sm" aria="Tampilan grafik" value={view} onChange={setView} options={VIEWS} />
-            {view === 'chart' && (m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
+            {view === 'chart' && feed.unit === 'usd' && (m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
             {view === 'gmgn' && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}
           </div>}>
           <div className="mb-3 flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
@@ -662,7 +703,7 @@ export default function PositionDetail({ id }) {
             <div className="font-medium">{t('Harga BEP')}: {bep.price > 0 ? <span className="num">{price(bep.price)} {quote}{pNow > 0 && <span className="ml-2 text-xs">({pct((bep.price / pNow - 1) * 100, 2)} {t('dari harga sekarang')})</span>}</span> : t(bep.reason)}</div>
             <p className="mt-1 text-xs text-muted">{t('Estimasi termasuk fee saat ini dan hasil penarikan; tanpa fee mendatang, gas, dan slippage.')}</p>
           </div>}
-          {view === 'dex' ? <DexEmbed pool={p.pool_ref} /> : view === 'gmgn' ? <GmgnEmbed token={p.baseToken} tf={tf} p={p} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={p} m={m} tf={tf} pending={mPending} onTf={setTf} onRetry={reloadMarket} />}
+          {view === 'dex' ? <DexEmbed pool={p.pool_ref} /> : view === 'gmgn' ? <GmgnEmbed token={p.baseToken} tf={tf} p={p} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={p} m={m} tf={tf} pending={mPending} onTf={setTf} onRetry={reloadMarket} feed={feed} />}
           <TradesTape pool={p.pool_ref} token={p.baseToken} base={base} quote={quote} live={!closed} />
         </Panel>
 

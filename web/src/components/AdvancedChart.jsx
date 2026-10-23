@@ -723,6 +723,8 @@ function Legend({ bar, prev, label, tfLabel, mc, t, wide }) {
  *            `onShowHistory(bool)` gets the top-bar toggle (no handler = no toggle); hovering a box
  *            shows its details, clicking it calls `onHistoryClick(id)`. Optional per item: fee, cost (USD),
  *            loEnd / hiEnd (the range at the close, when the chart's unit drifts from the pool's)
+ * units    : [[id, label]] — the price units the parent can load (USD / the quote token), shown as
+ *            a switch next to Price / MCap; `priceUnit` is the one shown, `onUnit(id)` picks another
  * pickRange: the range is being chosen (manual LP): both bounds stay inside the price axis, get an
  *            axis label, and with onRangeDrag(lo, hi) can be dragged — a bound by its line, the
  *            whole band by its grip at the band's top-left corner
@@ -735,7 +737,7 @@ export default function AdvancedChart({
   quote, drawKey = null, poolRef = null, usdRate = null, supply = null, title = null, height = 420,
   range = null, ranges = null, entry = null, exit = null, now = null, bep = null,
   history = null, showHistory = false, onShowHistory = null, onHistoryClick = null, onLoadMore = null,
-  pickRange = false, onRangeDrag = null,
+  pickRange = false, onRangeDrag = null, units = null, priceUnit = null, onUnit = null,
 }) {
   const { t } = useI18n();
   const wrap = useRef(null);
@@ -1593,6 +1595,18 @@ export default function AdvancedChart({
             <button type="button" role="radio" aria-checked={!mc} onClick={() => setMetric('price')} className={`rounded px-1 py-1 transition-colors ${!mc ? 'text-foreground' : 'text-muted hover:text-foreground'}`}>{t('Harga')}</button>
             <span className="text-muted/60">/</span>
             <button type="button" role="radio" aria-checked={mc} onClick={() => setMetric('mc')} className={`rounded px-1 py-1 transition-colors ${mc ? 'text-foreground' : 'text-muted hover:text-foreground'}`}>MCap</button>
+          </div>
+        </>}
+        {units?.length > 1 && onUnit && <>
+          {sep}
+          <div className="flex items-center text-[0.8125rem] font-medium" role="radiogroup" aria-label={t('Satuan harga')}>
+            {units.map(([id, label], i) => (
+              <span key={id} className="contents">
+                {i > 0 && <span className="text-muted/60">/</span>}
+                <button type="button" role="radio" aria-checked={priceUnit === id} onClick={() => onUnit(id)}
+                  className={`max-w-24 truncate rounded px-1 py-1 transition-colors ${priceUnit === id ? 'text-foreground' : 'text-muted hover:text-foreground'}`}>{label}</button>
+              </span>
+            ))}
           </div>
         </>}
         <span className="ml-auto flex items-center gap-0.5">

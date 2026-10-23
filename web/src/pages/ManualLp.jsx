@@ -7,7 +7,7 @@ import { BAND_COLORS } from '../components/CandleChart';
 import { useLadder, LadderStep, LadderPreview, LAYER_CHOICES } from './ManualLadder';
 import { useCreatePool, CreatePoolStep } from './ManualCreate';
 import { PageHeader, Notice, PriceRange, Empty, KV, Segmented, TradeLinks } from '../components/ui';
-import { PriceChart, SOURCES, readSrc, writeSrc, DexInfoEmbed } from './PositionDetail';
+import { PriceChart, SOURCES, readSrc, writeSrc, DexInfoEmbed, useChartUnit, chartFeed, quoteSymOf } from './PositionDetail';
 import { useLivePrice, useMarket } from '../liveCandles';
 import TokenIcon, { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
 import { usd, kUsd, num, ago, price, tickPrice, sqrtPrice, locale } from '../fmt';
@@ -342,7 +342,9 @@ function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag
   const [src, setSrcState] = useState(readSrc);
   const setSrc = (v) => { setSrcState(v); writeSrc(v); };
   const baseToken = pool.quoteSide === 0 ? pool.token1 : pool.token0;
-  const { data: m, pending, reload } = useMarket(`/api/market?pool=${pool.poolRef}&tf=${tf}&limit=240&token=${baseToken || ''}${src === 'gmgn' ? '&src=gmgn' : ''}`, 30000, `${tf}:${src}`);
+  const [unit] = useChartUnit();
+  const feed = chartFeed(src, unit, quoteSymOf(pool));
+  const { data: m, pending, reload } = useMarket(`/api/market?pool=${pool.poolRef}&tf=${tf}&limit=240&token=${baseToken || ''}${feed.params}`, 30000, `${tf}:${feed.key}`);
   const live = useLivePrice(pool.poolRef, pool);
   // the pool price the percentages are taken from — in the pool's quote asset, whatever the chart shows
   const nowPrice = live?.price ?? currentPrice
@@ -384,14 +386,14 @@ function ChartRange({ pool, lo, up, full, rangeOk, preview, currentPrice, onDrag
           {range ? <>{t('Rentang')} <span className="num text-foreground">{price(range.lo)} – {price(range.hi)}</span>{quote ? ` ${quote}` : ''}</>
             : full ? t('Seluruh rentang') : t('Harga pool')}
         </span>
-        {(m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
+        {feed.unit === 'usd' && (m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
       </div>
       {!m ? (
         <div className="flex h-[340px] items-center justify-center"><Spinner /></div>
       ) : (
         <>
           <PriceChart p={chartP} m={m} tf={tf} pending={pending} onTf={setTf} onRetry={reload} ranges={ranges}
-            pick={{ range, onDrag: drag }} />
+            pick={{ range, onDrag: drag }} feed={feed} />
           {full && <p className="mt-1 text-xs text-muted">{t('Seluruh rentang — tidak ada batas untuk digambar.')}</p>}
         </>
       )}

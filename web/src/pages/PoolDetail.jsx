@@ -17,7 +17,7 @@ import { Panel, Stat, KV, Empty, Loading, Segmented, CopyAddr, BackLink, TradeLi
 import { TokenPair, TokenSym, PairName, poolHref } from '../components/TokenIcon';
 import { BotPositions, WalletPositions, TargetMoves, wkey } from '../components/LpTables';
 import { drawKeyOf, savedTf } from '../chartSync';
-import { PriceChart, DexEmbed, DexInfoEmbed, GmgnEmbed, TradesTape, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc } from './PositionDetail';
+import { PriceChart, DexEmbed, DexInfoEmbed, GmgnEmbed, TradesTape, TFS, VIEWS, SOURCES, SECS, tfFor, kUsd, readSrc, writeSrc, useChartUnit, chartFeed, quoteSymOf } from './PositionDetail';
 import { GmgnWallets } from '../components/Gmgn';
 import { BAND_COLORS } from '../components/CandleChart';
 import { usd, usdPrice, pct, tone, num, price, sqrtPrice, tickPrice, shortId, short, age } from '../fmt';
@@ -88,6 +88,7 @@ export default function PoolDetail({ param }) {
   const [view, setView] = useState('chart');
   const [src, setSrcState] = useState(readSrc);
   const setSrc = (v) => { setSrcState(v); writeSrc(v); };
+  const [unit] = useChartUnit();
   // Click a position table row -> history drawer, same as the Positions page.
   const [hist, setHist] = useState(null);
   // Click a researched wallet position row -> its on-chain events drawer. What is stored is
@@ -110,7 +111,8 @@ export default function PoolDetail({ param }) {
     ...(showHist ? (d?.closed || []).map((p) => p.opened_ts || Date.now()) : []));
   const sinceOpen = (Date.now() - firstOpen) / 1000;
   const limit = focus || d?.open.length || (showHist && d?.closed.length) ? Math.min(1000, Math.max(120, Math.ceil(sinceOpen / SECS[tf]) + 40)) : 240;
-  const { data: m, pending: mPending, reload: reloadMarket } = useMarket(pool ? `/api/market?pool=${ref}&tf=${tf}&limit=${limit}&token=${pool.baseToken || ''}${src === 'gmgn' ? '&src=gmgn' : ''}` : null, 30000, `${tf}:${src}`);
+  const feed = chartFeed(src, unit, pool ? quoteSymOf(pool) : null);
+  const { data: m, pending: mPending, reload: reloadMarket } = useMarket(pool ? `/api/market?pool=${ref}&tf=${tf}&limit=${limit}&token=${pool.baseToken || ''}${feed.params}` : null, 30000, `${tf}:${feed.key}`);
 
   if (!d) return <Loading page />;
   if (d.error) return <Empty title="Pool tidak ditemukan" sub={d.error} />;
@@ -208,10 +210,10 @@ export default function PoolDetail({ param }) {
             : ranges.length ? <span>{t('{n} rentang posisi bot', { n: ranges.length })}</span> : null}
           action={<div className="flex flex-wrap gap-2">
             <Segmented size="sm" aria="Tampilan grafik" value={view} onChange={setView} options={VIEWS} />
-            {view === 'chart' && (m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
+            {view === 'chart' && feed.unit === 'usd' && (m?.gmgn || src === 'gmgn') && <Segmented size="sm" aria="Sumber lilin" value={src} onChange={setSrc} options={SOURCES} />}
             {view === 'gmgn' && <Segmented size="sm" aria="Rentang lilin" value={tf} onChange={setTf} options={TFS} />}
           </div>}>
-          {view === 'dex' ? <DexEmbed pool={ref} /> : view === 'gmgn' ? <GmgnEmbed token={pool.baseToken} tf={tf} p={chartP} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={chartP} m={m} tf={tf} pending={mPending} onTf={setTf} onRetry={reloadMarket} ranges={ranges} onRangeClick={setFocus}
+          {view === 'dex' ? <DexEmbed pool={ref} /> : view === 'gmgn' ? <GmgnEmbed token={pool.baseToken} tf={tf} p={chartP} pair={m?.pair} /> : !m ? <Loading /> : <PriceChart p={chartP} m={m} tf={tf} pending={mPending} onTf={setTf} onRetry={reloadMarket} ranges={ranges} onRangeClick={setFocus} feed={feed}
             history={history} showHistory={showHist} onShowHistory={setShowHist} />}
           <TradesTape pool={ref} token={pool.baseToken} base={base} quote={quote} />
         </Panel>

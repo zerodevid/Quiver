@@ -2576,6 +2576,7 @@ const EN = {
   'Riwayat LP': 'LP history', 'riwayat LP ({n})': 'LP history ({n})',
   'Riwayat LP: {n} posisi ditutup · {w} untung · PnL {v}': 'LP history: {n} closed positions · {w} in profit · PnL {v}',
   'Memuat lilin lama…': 'Loading older candles…',
+  'Satuan harga': 'Price unit',
   'Lama': 'Duration', 'Masuk → keluar': 'Entry → exit', 'Klik untuk menyorot posisi ini': 'Click to highlight this position',
   'Skala harga digeser manual — klik untuk kembali otomatis (atau klik dua kali kolom harga)': 'Price scale moved by hand — click to go back to auto (or double-click the price axis)',
   'Memuat lilin {tf}…': 'Loading {tf} candles…',
