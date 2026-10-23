@@ -134,8 +134,9 @@ function header(ctx, m, sec, t, hide, locale) {
   const run = (i < 0 ? 0 : m.steps[i].cum) + (next && sec >= TL.draw ? next.v * ease(frac) : 0);
   const done = sec >= TL.final;
   const val = done ? m.total : run;
-  const vol = i < 0 ? 0 : m.running[i].vol;
-  const big = hide ? (done ? (m.stats.pct == null ? '••••' : pct(m.stats.pct, 2)) : vol > 0 ? pct((run / vol) * 100, 2) : '••••') : signed(val);
+  // Hidden amounts: growth of the portfolio the window started with, as on the card.
+  const base = m.stats.base;
+  const big = hide ? (done ? (m.stats.pct == null ? '••••' : pct(m.stats.pct, 2)) : base > 0 ? pct((run / base) * 100, 2) : '••••') : signed(val);
   ctx.save(); ctx.shadowColor = toneOf(val); ctx.shadowBlur = 40;
   text(ctx, big, W - PAD, 200, { size: 104, weight: 800, color: toneOf(val), align: 'right' });
   ctx.restore();

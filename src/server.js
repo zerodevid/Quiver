@@ -2940,11 +2940,23 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     if (!points.length) return { error: 'tidak ada posisi yang ditutup pada periode itu' };
     const wins = points.filter((p) => p.v > FLAT).length, losses = points.filter((p) => p.v < -FLAT).length;
     const total = points.reduce((a, p) => a + p.v, 0);
+    // The headline percentage is growth of the portfolio, not PnL per dollar turned over (the same
+    // capital is reused by many closes, so total / volume reads a few percent on a strong week).
+    // Base = the portfolio value just before the window plus the net deposits made during it, so a
+    // mid-window deposit does not inflate the figure. Whole history, or no equity point before the
+    // window: the net capital, the same basis as "since the start" on the growth chart.
+    const capital = capitalOf();
+    let base = null;
+    if (win) {
+      const row = store.get('SELECT total_quote AS total FROM equity WHERE chain=? AND ts < ? AND wallet_quote IS NOT NULL ORDER BY ts DESC LIMIT 1', chain.network, from);
+      if (row?.total > 0) base = row.total + (capital ? capitalRows() : []).filter((d) => d.ts >= from).reduce((a, d) => a + (d.kind === 'deposit' ? d.usd : -d.usd), 0);
+    }
+    if (!(base > 0)) base = capital?.capitalUsd > 0 ? capital.capitalUsd : null;
     return {
       range: win ? range : 'all', from: win ? from : points[0].ts, to: Date.now(), points, total,
       stats: { volume, fees, count: points.length, wins, losses, winRatePct: wins + losses ? (wins / (wins + losses)) * 100 : null,
         best: Math.max(...points.map((p) => p.v)), avgHoldHours: holds ? hold / holds / 3600000 : null,
-        pct: volume > 0 ? (total / volume) * 100 : null },
+        base, pct: base ? (total / base) * 100 : null, volumePct: volume > 0 ? (total / volume) * 100 : null },
     };
   };
   // cur 'fx': amounts in the Settings currency (Display → second currency) instead of dollars;
