@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Button, Card, Spinner, toast } from '@heroui/react';
+import { Button, Card, Spinner } from '@heroui/react';
 import { Search, Check, TriangleAlert, Anchor, ArrowRight } from 'lucide-react';
 import { get, post } from '../api';
 import { useStatus } from '../App';
@@ -10,8 +10,9 @@ import { PageHeader, Notice, PriceRange, Empty, KV, Segmented, TradeLinks } from
 import { PriceChart, SOURCES, readSrc, writeSrc, DexInfoEmbed, useChartUnit, chartFeed, quoteSymOf } from './PositionDetail';
 import { useLivePrice, useMarket } from '../liveCandles';
 import TokenIcon, { TokenPair, TokenSym, PairName } from '../components/TokenIcon';
-import { usd, kUsd, num, ago, price, tickPrice, sqrtPrice, locale } from '../fmt';
-import { useI18n } from '../i18n';
+import { usd, kUsd, num, ago, price, tickPrice, sqrtPrice, short, txHref, locale } from '../fmt';
+import { useI18n, reason } from '../i18n';
+import { trackTx } from '../components/TxProgress';
 import { isSolana, isAddr, canonAddr, chainInfo } from '../chain';
 
 // Quick range choices: [lower bound change %, upper bound change %, label],
@@ -717,11 +718,24 @@ export default function ManualLp({ param }) {
 
   const open = async () => {
     setSending(true);
-    const r = await post(creating ? '/api/manual/create/open' : '/api/manual/lp/open', body);
+    // the steps (fund, zap, approvals, mint…) show in a modal while the server sends them
+    const pv = plan?.preview;
+    const op = trackTx({
+      title: t(creating ? 'Membuat pool & membuka posisi' : 'Membuka posisi LP'),
+      subtitle: pv ? t('{v} ke {pair}, rentang {r}.', { v: usd(pv.valueUsd), pair: pv.pair, r: damm ? t('rentang pool') : rangeLabel(lo, up, full, t) }) : null,
+      flow: 'open',
+    });
+    let r;
+    try { r = await post(creating ? '/api/manual/create/open' : '/api/manual/lp/open', { ...body, opId: op.id }); }
+    catch (e) { r = { error: e.message, lost: true }; }
     setSending(false); setConfirm(false);
-    if (r.error) return toast.danger(r.error);
+    op.finish(r, r.error ? null : <>
+      {r.note && <div>{reason(r.note)}</div>}
+      {r.positionId && <a className="text-accent hover:underline" href={`#positions/${r.positionId}`}>{t('Lihat posisi #{id}', { id: r.positionId })}</a>}
+      {r.tx && <a className="ml-3 text-muted hover:underline" href={txHref(r.tx)} target="_blank" rel="noreferrer">tx {short(r.tx)}</a>}
+    </>);
+    if (r.error) return;
     setResult(r);
-    toast.success(t(creating ? 'Pool dibuat dan posisi dibuka' : 'Posisi dibuka'));
     reloadStatus();
     loadBalance(pool?.poolRef);
   };

@@ -18,6 +18,7 @@ import StuckAlert from './components/StuckAlert';
 import SearchModal, { SearchTrigger } from './components/GlobalSearch';
 
 import { Loading, ConfirmHost, WalletLinks, ask } from './components/ui';
+import { TxProgressHost } from './components/TxProgress';
 import { hideSplash } from './splash';
 import { isMini } from './telegram';
 
@@ -430,6 +431,7 @@ export default function App() {
       {/* Toast on top: a target warning must not be covered by the bottom table row. */}
       <Toast.Provider placement="top" />
       <ConfirmHost />
+      <TxProgressHost />
       <SearchModal />
       <div className="flex min-h-dvh">
         {/* sidebar desktop */}

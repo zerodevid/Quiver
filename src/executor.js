@@ -8,6 +8,7 @@ const { ensureChain } = require('./networks');
 // (tx 0x1283eeab… : actions 0x0111 = DECREASE_LIQUIDITY + TAKE_PAIR), not a guess.
 const { ethers } = require('ethers');
 const fs = require('node:fs');
+const progress = require('./progress');
 const { tokenAmount } = require('./number-format.mjs');
 const { ABI, ACT, CMD, SENTINEL } = require('./chain');
 
@@ -174,6 +175,7 @@ class Executor {
     if (guard && !guard()) throw new Error('transaksi otomatis dibatalkan karena pengaturan berubah');
     const w = this.loadWallet();
     if (!w) throw new Error('tidak ada kunci privat — mode kirim butuh wallet');
+    progress.emit({ phase: 'prepare', kind, detail });
     const from = w.address;
     const waits = this.retryWaits || [1500, 3000];
     // gasMul: gas limit multiplier. Default 1.3x; an aggregator swap needs 2x because the router
@@ -189,6 +191,7 @@ class Executor {
       try { gasLimit = (await this.estimateGas(tx)) * mul / 10n; break; }
       catch (e) {
         if (i >= waits.length || Executor.priceRevert(e.message)) {
+          progress.fail(kind, e.message);
           throw new Error(`estimasi gas gagal (transaksi kemungkinan akan revert): ${e.message}`);
         }
         this.log(`estimasi gas ${kind} gagal (${String(e.message).slice(0, 80)}) — mungkin node tertinggal, coba lagi`);
@@ -259,6 +262,7 @@ class Executor {
       this.nonce = req.nonce + 1;
       this.store.run('INSERT OR REPLACE INTO txs(chain,hash,ts,kind,status,detail) VALUES(?,?,?,?,?,?)',
         this.chain.network, hash, Date.now(), kind, 'pending', detail ? JSON.stringify(detail) : null);
+      progress.emit({ phase: 'sent', kind, hash });
       return hash;
     }
   }
@@ -306,6 +310,7 @@ class Executor {
         // A failure burns gas too: the ETH balance changes, the cached cash goes stale as well.
         this.txSeq++;
         this.minedBlock = Math.max(this.minedBlock, parseInt(r.blockNumber, 16) || 0);
+        progress.emit({ phase: 'done', hash, ok });
         return { ok, receipt: r };
       }
       await new Promise((s) => setTimeout(s, 700));

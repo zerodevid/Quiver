@@ -7,6 +7,7 @@ const path = require('node:path');
 const { rulesFor, DEFAULTS, validateRules, previewEntry } = require('./policy');
 const { scoutWallet } = require('./scout');
 const logbuf = require('./logbuf');
+const progress = require('./progress');
 const { WalletResearch, summarize } = require('./wallet');
 const { createSettingsRoutes } = require('./settings');
 const { createApiV1 } = require('./apiv1');
@@ -671,6 +672,13 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); });
     req.on('end', () => { try { resolve(b ? JSON.parse(b) : {}); } catch { resolve({}); } });
   }));
+  // A dashboard action that sends transactions, run as the progress op named by its body's
+  // `opId` (src/progress.js), so GET /api/progress can list its transactions while it runs.
+  const tracked = (fn) => async (req, url) => {
+    const b = await readBody(req);
+    req.__body = b;
+    return progress.run(b?.opId, () => fn(req, url));
+  };
   // Via writeCfg: values from .env must not get written to config.json.
   const saveCfg = () => writeCfg(cfgPath, cfg);
 
@@ -2440,7 +2448,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       quotes: Object.entries(chain.QUOTES).map(([address, q]) => ({ address, symbol: q.symbol, kind: q.kind })),
     }),
     'POST /api/manual/create/plan': async (req) => manual.planCreate(createBody(await readBody(req))),
-    'POST /api/manual/create/open': async (req) => {
+    'POST /api/manual/create/open': tracked(async (req) => {
       if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
       const args = createBody(await readBody(req));
       const lockKey = `create:${canon(args.token)}:${canon(args.quote)}`;
@@ -2449,12 +2457,12 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       try { return await manual.openCreate(args); }
       catch (e) { log(`buat pool: ${e.message}`); return { error: e.message }; }
       finally { manualOpening.delete(lockKey); }
-    },
+    }),
     'GET /api/manual/ladder/job': async (req, url) => {
       const j = ladderJobs.get(url.searchParams.get('id') || '');
       return j ? { ...j } : { error: 'job tidak ditemukan' };
     },
-    'POST /api/manual/lp/open': async (req) => {
+    'POST /api/manual/lp/open': tracked(async (req) => {
       const b = await readBody(req);
       if (engine.dryRun() || !engine.exec.address()) return { error: 'mode simulasi: tidak mengirim transaksi' };
       // A double click (the dashboard slow to respond, a Telegram button pressed twice) used to open
@@ -2481,7 +2489,9 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
           return { error: e.message };
         }
       } finally { manualOpening.delete(lockKey); }
-    },
+    }),
+    // Transactions of a dashboard action so far (see tracked above); null once forgotten.
+    'GET /api/progress': async (req, url) => progress.get(url.searchParams.get('id') || '') || { error: 'tidak ditemukan' },
     // ?usd=1: include the USD price & value of each token with a balance (the dashboard). The Telegram bot
     // calls without it so it does not wait for DexScreener.
     'GET /api/manual/tokens': async (req, url) => {
@@ -2825,7 +2835,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
     // force: force close — the waiting compound/claim guards are skipped and the liquidity
     // is re-read from the chain (see engine.executeExit). A position already empty on
     // chain is booked via closeEmptyPosition, not sent a burn that is certain to revert.
-    'POST /api/positions/close': async (req) => {
+    'POST /api/positions/close': tracked(async (req) => {
       const b = await readBody(req);
       const force = b.force === true;
       let sellTo;
@@ -2865,7 +2875,7 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
         store.log('error', `tutup manual #${pos.id} gagal: ${e.message}`);
         return { error: e.message };
       }
-    },
+    }),
   };
 
   Object.assign(routes, createSettingsRoutes({ engine, engines, nets, chainControl, store, cfg, cfgPath, rpc, chain, log, readBody, telegram, sessionCookie, market, fx }));

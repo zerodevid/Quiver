@@ -6,6 +6,7 @@ import { muteClose } from './components/TargetAlerts';
 import { usd, short, txHref } from './fmt';
 import { useI18n, reason } from './i18n';
 import { LiveCloseEstimate } from './components/LiveQuote';
+import { trackTx } from './components/TxProgress';
 
 const COMPACT = new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 4 });
 
@@ -79,23 +80,46 @@ function LiveBatchEstimate({ list }) {
   return <BatchEstimate items={items} t={t} />;
 }
 
+// The outcome of a close, one fact per line: amounts first, then the memecoin sale (route id
+// dropped), then the tx link. Older engines print big amounts as 7.535e+5; shown as 753.5K too.
+function closedLines(r, p, t) {
+  const sales = r.sold ? String(r.sold).split(' · ').map((m) => reason(m)
+    .replace(/(\$[\d.,]+) \([\w.-]+\)$/, '$1')
+    .replace(/\b\d+(?:\.\d+)?e\+\d+\b/g, (n) => COMPACT.format(Number(n)))) : [];
+  return <div className="space-y-0.5">
+    {(r.outUsd != null || r.pnlUsd != null) && <div className="num">
+      {r.outUsd != null && t('Diterima {v}', { v: usd(r.outUsd) })}
+      {r.outUsd != null && r.pnlUsd != null && ' · '}
+      {r.pnlUsd != null && <span className={r.pnlUsd >= 0 ? 'text-success' : 'text-danger'}>PnL {r.pnlUsd >= 0 ? '+' : '−'}{usd(Math.abs(r.pnlUsd))}</span>}
+    </div>}
+    {sales.map((m, i) => <div key={i}>{m}</div>)}
+    {r.tx && <a className="text-xs text-muted underline-offset-2 hover:underline" href={txHref(r.tx, p.chain)} target="_blank" rel="noreferrer">tx {short(r.tx)}</a>}
+  </div>;
+}
+
 export function useClosePosition(reload) {
   const { t } = useI18n();
   const [closing, setClosing] = useState(null);   // ids of the positions being closed
-  // One position: send the request, wait for the chain, report via toast. Used
-  // by both close-one and close-all; the confirmation is with the caller.
-  const run = async (p, { force = false, sellTo = null } = {}) => {
+  // One position: send the request, wait for the chain, report the outcome. Used by both
+  // close-one and close-all; the confirmation is with the caller. `modal`: follow the steps
+  // (withdraw, sell…) in the progress modal instead of a waiting toast — closing one position.
+  const run = async (p, { force = false, sellTo = null, modal = false } = {}) => {
     const pair = `${p.symbol0}/${p.symbol1}`;
     setClosing(p.id);
     muteClose(p.id);   // the toast for the result comes from this flow; the alert feed must not repeat it
-    const wait = toast(t('Menutup posisi {pair}…', { pair }), {
+    const op = modal ? trackTx({ title: t('Menutup posisi {pair}', { pair }), subtitle: `#${p.id} · ${usd((p.valueUsd || 0) + (p.feeUsd || 0))}`, flow: 'close', chain: p.chain }) : null;
+    const wait = op ? null : toast(t('Menutup posisi {pair}…', { pair }), {
       description: t('Menunggu konfirmasi di chain, bisa sampai 1–2 menit.'), isLoading: true, timeout: 0,
     });
     let r;
-    const body = { id: p.id, ...(force ? { force: true } : {}), ...(sellTo ? { sellTo } : {}) };
+    const body = { id: p.id, ...(force ? { force: true } : {}), ...(sellTo ? { sellTo } : {}), ...(op ? { opId: op.id } : {}) };
     try { r = await post(withChain('/api/positions/close', p.chain), body); }
     catch (e) { r = { error: e.message, lost: true }; }
-    toast.close(wait);
+    if (wait) toast.close(wait);
+    if (op) {
+      op.finish(r, r.error ? null : closedLines(r, p, t));
+      return r;
+    }
     if (r.lost || /^HTTP 5\d\d$/.test(r.error || '')) {
       toast.warning(t('Status penutupan {pair} belum pasti', { pair }), {
         description: t('Koneksi ke server terputus sebelum ada jawaban. Transaksinya mungkin tetap diproses — cek lagi posisinya sebentar lagi.'),
@@ -104,21 +128,7 @@ export function useClosePosition(reload) {
     } else if (r.error) {
       toast.danger(t('Gagal menutup {pair}', { pair }), { description: r.error, timeout: 12000 });
     } else {
-      // One fact per line: amounts first, then the memecoin sale (route id dropped), then the tx link.
-      // Older engines print big amounts as 7.535e+5; show those as 753.5K too.
-      const sales = r.sold ? String(r.sold).split(' · ').map((m) => reason(m)
-        .replace(/(\$[\d.,]+) \([\w.-]+\)$/, '$1')
-        .replace(/\b\d+(?:\.\d+)?e\+\d+\b/g, (n) => COMPACT.format(Number(n)))) : [];
-      const description = <div className="space-y-0.5">
-        {(r.outUsd != null || r.pnlUsd != null) && <div className="num">
-          {r.outUsd != null && t('Diterima {v}', { v: usd(r.outUsd) })}
-          {r.outUsd != null && r.pnlUsd != null && ' · '}
-          {r.pnlUsd != null && <span className={r.pnlUsd >= 0 ? 'text-success' : 'text-danger'}>PnL {r.pnlUsd >= 0 ? '+' : '−'}{usd(Math.abs(r.pnlUsd))}</span>}
-        </div>}
-        {sales.map((m, i) => <div key={i}>{m}</div>)}
-        {r.tx && <a className="text-xs text-muted underline-offset-2 hover:underline" href={txHref(r.tx, p.chain)} target="_blank" rel="noreferrer">tx {short(r.tx)}</a>}
-      </div>;
-      toast.success(t('Posisi {pair} ditutup', { pair }), { description, timeout: 10000 });
+      toast.success(t('Posisi {pair} ditutup', { pair }), { description: closedLines(r, p, t), timeout: 10000 });
     }
     return r;
   };
@@ -136,7 +146,7 @@ export function useClosePosition(reload) {
       confirm: t('Tutup posisi'), danger: true,
     });
     if (!ok) return;
-    await run(p, { sellTo: pick.sellTo });
+    await run(p, { sellTo: pick.sellTo, modal: true });
     setClosing(null);
     reload?.();
   };
