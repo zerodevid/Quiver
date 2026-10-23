@@ -248,6 +248,19 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
   }));
   const scoutJobs = new Map();
   const followerJobs = new Map();
+  // The last follower scan of each wallet is kept in the state table, so it survives a restart
+  // and the target page shows it without scanning again.
+  const followersKey = (addr) => `followers:${chain.network}:${addr}`;
+  const savedFollowers = (addr) => {
+    try { return JSON.parse(store.getState(followersKey(addr), 'null')); } catch { return null; }
+  };
+  // Target / own-wallet flags are read at view time: "Add as target" changes them after the scan.
+  const flagFollowers = (r) => {
+    if (!r) return r;
+    const targets = new Set(store.all('SELECT address FROM targets WHERE chain=?', chain.network).map((x) => x.address));
+    const me = engine.exec?.address?.()?.toLowerCase();
+    return { ...r, followers: r.followers.map((f) => ({ ...f, isTarget: targets.has(f.address), isUs: f.address === me })) };
+  };
   const poolScanJobs = new Map();
   // Hot pools page: on-chain resolution of each listed pool (poolRef -> { at, d }); a pool's key
   // and fee never change, so 10 minutes only bounds how stale its "empty" flag can be.
@@ -2140,18 +2153,23 @@ function createServer({ engine, store, cfg, cfgPath, chain, rpc, log, telegram, 
       const windowSec = Math.min(900, Math.max(5, Number(b.windowSec) || 120));
       findFollowers(rpc, chain, store, addr, { opens, windowSec, onProgress: (p) => { job.progress = Math.round((p.scanned / p.total) * 100); } })
         .then((r) => {
-          const targets = new Set(store.all('SELECT address FROM targets WHERE chain=?', chain.network).map((x) => x.address));
-          const me = engine.exec?.address?.()?.toLowerCase();
-          for (const f of r.followers) { f.isTarget = targets.has(f.address); f.isUs = f.address === me; }
           job.result = r; job.status = 'selesai'; job.finishedAt = Date.now();
+          store.setState(followersKey(addr), JSON.stringify({ result: r, finishedAt: job.finishedAt }));
         })
         .catch((e) => { job.error = e.message; job.status = 'gagal'; job.finishedAt = Date.now(); });
       return { ok: true, status: 'jalan' };
     },
     'GET /api/targets/followers': (req, url) => {
-      const j = followerJobs.get(canon(url.searchParams.get('address') || ''));
-      if (!j) return { status: 'kosong' };
-      return { status: j.status, progress: j.progress, error: j.error, result: j.result, finishedAt: j.finishedAt || null };
+      const addr = canon(url.searchParams.get('address') || '');
+      const j = followerJobs.get(addr);
+      // While a re-scan runs or after it failed, the previous result stays on screen.
+      const saved = j?.status === 'selesai' ? null : savedFollowers(addr);
+      if (!j && !saved) return { status: 'kosong' };
+      if (!j) return { status: 'selesai', progress: 100, error: null, result: flagFollowers(saved.result), finishedAt: saved.finishedAt };
+      return {
+        status: j.status, progress: j.progress, error: j.error,
+        result: flagFollowers(j.result || saved?.result || null), finishedAt: j.result ? j.finishedAt : saved?.finishedAt ?? null,
+      };
     },
     'GET /api/scout': (req, url) => {
       const addr = canon(url.searchParams.get('address') || '');

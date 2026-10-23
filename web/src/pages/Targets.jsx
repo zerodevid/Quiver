@@ -309,12 +309,12 @@ function Followers({ tg, onChanged }) {
       await new Promise((ok) => setTimeout(ok, 1500));
     }
   };
-  // A finished scan is kept on the server; show it again when the page is reopened.
+  // The last scan is stored on the server (survives a restart); show it when the page opens.
   useEffect(() => { poll().catch(() => {}); }, [tg.address]);
   const scan = async () => {
     const r = await post('/api/targets/followers', { address: tg.address });
     if (r.error) { toast.danger(t(r.error)); return; }
-    setJob({ status: 'jalan', progress: 0 });
+    setJob((j) => ({ ...j, status: 'jalan', progress: 0, error: null }));
     poll().catch((e) => toast.danger(e.message));
   };
   const addTarget = async (addr) => {
